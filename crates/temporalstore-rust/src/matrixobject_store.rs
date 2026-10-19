@@ -90,8 +90,12 @@ impl MatrixObjectObjectStore {
 
     pub fn snapshot_bytes(&self) -> Result<Vec<u8>, ObjectStoreError> {
         let inner = self.inner.lock().expect("matrixobject lock poisoned");
+        // `export_snapshot` RETURNS A RESULT NOW, and this read as though it returned the
+        // snapshot itself -- so the crate's own error was never reachable here and the file did
+        // not compile against the published crate at all.
         inner
             .export_snapshot()
+            .map_err(map_matrixobject_error)?
             .to_bytes()
             .map_err(map_matrixobject_error)
     }
@@ -197,10 +201,21 @@ impl ObjectStore for MatrixObjectObjectStore {
                 break;
             }
             let block_len = objects.len();
+            // AN OBJECT KEY IS A SHARED HANDLE NOW, NOT A `String`. MatrixObject's own footprint
+            // work moved these keys to a shared text type so one allocation can back many
+            // references, which is the right change there and means a caller wanting owned
+            // characters has to say so. Spelled `to_string()` at both sites rather than relying on
+            // inference, because the marker and the collected keys are the same values and having
+            // one of them silently become the handle type is how the mismatch below was reported
+            // against the function's return rather than against the line that caused it.
             marker = objects
                 .last()
-                .map(|metadata| metadata.object_id.key.clone());
-            out.extend(objects.into_iter().map(|metadata| metadata.object_id.key));
+                .map(|metadata| metadata.object_id.key.to_string());
+            out.extend(
+                objects
+                    .into_iter()
+                    .map(|metadata| metadata.object_id.key.to_string()),
+            );
             if block_len < limit {
                 break;
             }

@@ -28,7 +28,7 @@ async fn main() {
         MatrixObjectObjectStore::new(
             "temporalstore-shared",
             StoreOptions {
-                segment_size: 16,
+                slab_size: 16,
                 max_extent_bytes: 4,
                 chunk_size: 4,
                 ..StoreOptions::default()
@@ -44,13 +44,22 @@ async fn main() {
         (2, "proto-b", b"two".to_vec()),
     ] {
         replicator
+            // THESE TWO FIELDS ARE NOT OPTIONAL TO SUPPLY, ONLY OPTIONAL TO CARRY. A shared-store
+            // WAL entry gained `staged_blocks` (pages a command cannot rebuild) and `outcomes`
+            // (what the write DID, so a successor installs results instead of re-running), and
+            // `command` became `Option` because an entry carrying outcomes has no need of it.
+            // Both new fields are `serde(default)`, so an older entry still decodes -- but a
+            // literal in Rust has to name every field, and this example had not been compiled
+            // since they arrived, because nothing builds the matrixobject feature.
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
                 wal_index,
-                command: Command::StringSet {
+                command: Some(Command::StringSet {
                     key: key.to_string(),
                     value,
-                },
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
             })
             .await
             .unwrap();

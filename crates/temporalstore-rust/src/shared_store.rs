@@ -5479,7 +5479,12 @@ mod tests {
             MatrixObjectObjectStore::new(
                 "temporalstore-shared",
                 StoreOptions {
-                    segment_size: 16,
+                    // `segment_size` BECAME `slab_size`. Not inferred from the field list:
+                    // the object-store crate's own bench prints `"segment_size={}", cfg.slab_size`,
+                    // so the external name was kept over the renamed field, and its validation
+                    // messages still read "segment_size must be positive" while checking
+                    // `slab_size`. Same unit, same meaning, new spelling.
+                    slab_size: 16,
                     max_extent_bytes: 4,
                     chunk_size: 4,
                     ..StoreOptions::default()

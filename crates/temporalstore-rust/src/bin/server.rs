@@ -1871,22 +1871,43 @@ fn wire_matrixobject_durability(
         SharedStoreReplicator, SharedStoreStorageMode, SharedStoreWalAppendMode, StorageBackend,
     };
 
-    let (bucket, cluster_id) = match storage_backend {
-        StorageBackend::MatrixObject { bucket, cluster_id } => (bucket.clone(), cluster_id.clone()),
+    // THE DIRECTORY COMES FROM THE BACKEND, NOT FROM A SECOND ENV READ. This read
+    // `TS_MATRIXOBJECT_STORE_DIR` here as a bare string literal, while
+    // `build_shared_object_store` read nothing at all and took `StoreOptions::default()` --
+    // which keeps the whole object store in memory. So a node running the matrixobject
+    // backend built TWO stores under one bucket name: this durable one, and a second,
+    // in-memory one that the startup check validated and dropped. Resolving the directory
+    // once, on the backend, is what makes those the same store.
+    let (bucket, cluster_id, store_dir) = match storage_backend {
+        StorageBackend::MatrixObject {
+            bucket,
+            cluster_id,
+            store_dir,
+        } => (
+            bucket.clone(),
+            cluster_id.clone(),
+            store_dir.display().to_string(),
+        ),
         // Other backends (raft/local/shared-path) keep their existing behavior.
         _ => return None,
     };
 
-    // TODO(networked-store): when TS_MATRIXOBJECT_ENDPOINT is configured, this
-    // durability path must target the *networked* MatrixObject object-store
-    // service (see the matching TODO in storage_backend::build_shared_object_store)
-    // instead of a node-local on-disk snapshot dir, so shard data follows shards
-    // across nodes on rebalance / node loss. The `auto` resolver already probes
-    // the endpoint and selects matrixobject only when reachable; wiring the
-    // networked ObjectStore impl here (and in build_shared_object_store) is the
-    // remaining piece. Until then this stays node-local.
-    let store_dir = std::env::var("TS_MATRIXOBJECT_STORE_DIR")
-        .unwrap_or_else(|_| "target/temporalstore-matrixobject".to_string());
+    // NODE-LOCAL, AND THE REASON IS NOT A MISSING CLIENT. What stood here was a
+    // networked-store TODO saying this path should become an HTTP client to
+    // `tools/matrixark_object_store_server.py` on :17200. That file is not in this repo --
+    // the Python removal left two validator scripts and nothing else -- and
+    // the object-store crate this store is built on has no network surface to
+    // serve such a client either. So the instruction named a dependency that does not
+    // exist, which is worse than no instruction: it reads as a small piece of wiring left
+    // undone.
+    //
+    // WHAT IS ACTUALLY TRUE, AND IS CHECKABLE: shard data follows a shard to another node
+    // exactly when `store_dir` is shared between those nodes. Under a shared mount this
+    // backend already provides data-follow; without one it does not, whatever
+    // `TS_MATRIXOBJECT_ENDPOINT` is set to -- the `auto` resolver probes that endpoint to
+    // decide whether to SELECT matrixobject, and nothing then connects to it. Making the
+    // endpoint mean what it says needs a server on the MatrixObject side first, which is a
+    // change to that project and not a loose end here.
 
     // Durable, on-disk matrixobject store: flush-on-commit snapshot that is read
     // back on construction, so its bytes survive a process restart.
