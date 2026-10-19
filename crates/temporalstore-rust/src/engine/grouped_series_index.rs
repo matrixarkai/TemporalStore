@@ -15,20 +15,41 @@
 //! into ONE allocation: an `objects` array sorted by key, saying where each object's rows begin and
 //! how many there are, and one contiguous fixed-width `rows` run holding them all in that order.
 //!
-//! Measured against what ships, bytes per row, at six occupancies (#2075):
+//! Measured against what ships, RESIDENT bytes per row, at six occupancies. The first column pair
+//! is #2075's original measurement; the second is a re-measurement on current main, pinned by
+//! `index_bytes_per_key::what_the_grouped_series_shape_costs_against_the_one_that_ships`:
 //!
-//! | points a key | a B-tree a key | this shape |
-//! |---|---|---|
-//! | 1 | 366.0 | 74.9 |
-//! | 2 | 182.9 | 50.9 |
-//! | 4 | 91.3 | 38.9 |
-//! | 10 | 38.5 | 31.7 |
-//! | 100 | 29.6 | 25.2 |
-//! | 1,000 | 26.6 | 24.1 |
+//! | points a key | #2075: B-tree | #2075: this | now: B-tree | now: this | ratio |
+//! |---|---|---|---|---|---|
+//! | 1 | 366.0 | 74.9 | 364.0 | 73.6 | 4.95x |
+//! | 2 | 182.9 | 50.9 | 182.0 | 60.5 | 3.01x |
+//! | 4 | 91.3 | 38.9 | 91.0 | 47.9 | 1.90x |
+//! | 10 | 38.5 | 31.7 | 33.3 | **35.1** | **0.95x** |
+//! | 100 | 29.6 | 25.2 | 51.1 | 25.3 | 2.02x |
+//! | 1,000 | 26.6 | 24.1 | 49.1 | 24.2 | 2.03x |
 //!
-//! Better at every occupancy, with no crossover. A row here is a `u64` and a 16-byte address -- 24
-//! bytes of data -- so 24.1 at density is 1.004x the data itself: the container overhead is a tenth of
-//! a byte a row and 24 is the floor. Going below it would mean shrinking the ROW, not the container.
+//! THE SPARSE SAVING AND THE FLOOR BOTH HOLD, which is what matters: 73.6 against 74.9 at one point
+//! a key, on a shipped shape at 364.0 against 366.0, and 24.2 against 24.1 at a thousand. A row
+//! here is a `u64` and a 16-byte address -- 24 bytes of data -- so 24.2 at density is 1.008x the
+//! data itself: the container overhead is a fraction of a byte a row and 24 is the floor. Going
+//! below it would mean shrinking the ROW, not the container.
+//!
+//! BUT "BETTER AT EVERY OCCUPANCY WITH NO CROSSOVER" WAS WRONG, and it is corrected here rather
+//! than quietly dropped, because it is the sentence a conversion would be justified by. At TEN
+//! points a key the shipped shape holds 33.3 bytes a row and this one 35.1: it loses by 5%. Ten
+//! entries fit ONE nearly-full `BTreeMap` node, which is the best a B-tree ever does.
+//!
+//! That same fact explains why the shipped column is NOT monotonic -- 33.3 at ten, rising to 51.1 at
+//! a hundred -- and why #2075's figures for it at 100 and 1,000 do not reproduce: ascending inserts
+//! leave a larger map's nodes about half full, so its per-row cost climbs again past the
+//! single-node point, and whether a measurement catches that depends on the insertion order its
+//! fixture used.
+//!
+//! SO THE SHAPE IS WORTH TAKING FOR MAPS WHOSE KEYS HOLD FEW POINTS, which is the case it was built
+//! for and where it is 2-5x better. It is not a free win everywhere: a map whose keys cluster
+//! around ten points would be made slightly worse. Check the occupancy of the map being converted
+//! -- `series_occupancy` in the test module reports it -- rather than taking the sparse figure as
+//! the whole story.
 //!
 //! WHAT IS DELIBERATELY NOT COPIED. The rows are FIXED WIDTH and kept sorted, so a lookup is two
 //! binary searches. A variable-length payload searched by walking it is refuted twice over -- on the

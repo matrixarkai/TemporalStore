@@ -6596,3 +6596,231 @@ fn what_one_set_add_costs_at_two_collection_sizes() {
          above are of something else"
     );
 }
+
+/// WHAT THE GROUPED SERIES SHAPE COSTS AGAINST THE ONE THAT SHIPS, AT SIX OCCUPANCIES.
+///
+/// # WHY THIS HAS TO BE RE-MEASURED RATHER THAN CITED
+///
+/// `engine/grouped_series_index.rs` carries a table in its own doc -- 74.9 bytes a row against
+/// 366.0 for a B-tree a key at one point a key, better at every occupancy with no crossover -- and
+/// that table is the entire justification for converting a map onto it. It was measured for #2075,
+/// nothing on main pins it, and the module has grown from 186 lines to 743 since. Its eight
+/// in-module tests cover correctness: what it holds, windows, dedupe, removal, regrouping, the wire
+/// round trip, write direction and emptiness. None of them weighs it.
+///
+/// So this weighs it, because the next two steps of that conversion rest on the number and a
+/// footprint total is re-measured, never cited.
+///
+/// # WHAT IT FOUND: THE JUSTIFICATION HOLDS AND "NO CROSSOVER" DOES NOT
+///
+///     points a key   a B-tree a key   unstamped   rebucketed   ratio
+///                1            364.0       135.3         73.6    4.95x
+///                2            182.0        79.5         60.5    3.01x
+///                4             91.0        51.8         47.9    1.90x
+///               10             33.3        35.2         35.1    0.95x
+///              100             51.1        25.1         25.3    2.02x
+///             1000             49.1        24.2         24.2    2.03x
+///
+/// The sparse end reproduces the doc's table almost exactly -- 73.6 against its 74.9, on a shipped
+/// shape measured at 364.0 against its 366.0 -- and so does the dense floor, 24.2 against 24.1. The
+/// claim the conversion rests on is sound.
+///
+/// THE CROSSOVER THE DOC DENIES IS REAL. At ten points a key the shipped shape holds 33.3 bytes a
+/// row and this one 35.1, losing by 5%. Ten entries fit ONE nearly-full `BTreeMap` node, which is
+/// the best a B-tree ever does -- and it is the same fact that makes the shipped column
+/// non-monotonic, rising from 33.3 at ten to 51.1 at a hundred, because ascending inserts leave a
+/// larger map's nodes about half full. The module's own table reports 38.5 and 31.7 there and
+/// claims no crossover at all.
+///
+/// WHAT THAT MEANS FOR THE CONVERSION, since it is the reason to measure at all: the shape is worth
+/// taking for maps whose keys hold FEW points, which is the case it was built for, and is not a
+/// free win at every occupancy. A map whose keys cluster around ten points would be made slightly
+/// worse by it.
+///
+/// # TWO MISTAKES OF MY OWN ARE BAKED INTO HOW THIS MEASURES, BOTH WORTH KEEPING
+///
+/// FIRST, THE WRONG QUANTITY. I counted allocation TRAFFIC during construction and called it
+/// footprint. That is biased against this candidate in a way that matters: its `rows` run is ONE
+/// contiguous `Vec` grown by doubling, so it allocates about twice what it ends up holding, while a
+/// B-tree allocates each node once and is charged once. `deep_heap_bytes` -- a clone under the
+/// counting allocator, which allocates exactly what the value needs -- is the footprint question
+/// and the one the doc's table is about.
+///
+/// SECOND, THE WRONG STATE, which the module's doc had already warned about. `new()` starts on
+/// `0..u32::MAX`, and on that range `block_routing_bucket` gives every key a bucket of its own --
+/// so nothing is grouped and the shape's whole mechanism is switched off. The doc calls it
+/// "precisely the regime where the amortisation vanishes" and says a decoded container is "CORRECT
+/// but uncompacted" until `rebucket`. I measured without rebucketing and read the result as the
+/// table failing to reproduce.
+///
+/// So both states are reported. The gap between them is not noise: it is what a decoded index
+/// costs before anything stamps its range.
+///
+/// Neither column sees an `Arc<str>`'s characters, because cloning an `Arc` is a refcount bump.
+/// That is symmetric here: both shapes hold exactly one handle per object -- the shipped one as its
+/// map key, this one in its `ObjectRun` -- so the comparison is like for like, and what is being
+/// weighed is the per-object container overhead, which is the whole subject.
+///
+/// # HOW THE DENOMINATOR IS HELD STILL
+///
+/// Both shapes get the SAME total number of rows, spread over different numbers of keys. That is
+/// what makes the x-axis occupancy rather than size: at one point a key the shipped shape pays a
+/// whole B-tree node per row, and at a thousand it amortises that node away, so a comparison at one
+/// occupancy says nothing about another.
+///
+/// rust-internal: measures this crates own containers, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_grouped_series_shape_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds twelve containers of 4,000 rows; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_the_grouped_series_shape_costs_against_the_one_that_ships() {
+    use crate::engine::grouped_series_index::GroupedSeriesIndex;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+
+    const ROWS: usize = 4_000;
+    const T0: u64 = 1_787_270_070_000;
+
+    let address = || crate::block_store::ElementEntry::from_parts(7, 11, 24, None, None);
+
+    println!();
+    println!("  {ROWS} rows per arm, spread over ROWS/occupancy keys");
+    println!("  the grouped shape is weighed in BOTH states: as built on the unstamped whole-");
+    println!("  keyspace range, where every key gets a bucket of its own and nothing is grouped,");
+    println!("  and after `rebucket` onto the shipped 0..{} range.", crate::DEFAULT_END_ROUTING_BUCKET);
+    println!();
+    println!("                 --------- RESIDENT bytes a row ---------");
+    println!("    points a key   a B-tree a key   unstamped   rebucketed   ratio");
+
+    let mut rows: Vec<(usize, f64, f64)> = Vec::new();
+    for occupancy in [1usize, 2, 4, 10, 100, 1_000] {
+        let objects = ROWS / occupancy;
+        // BUILT OUTSIDE BOTH WINDOWS and shared, so neither arm is charged for the characters.
+        let keys: Vec<Arc<str>> = (0..objects)
+            .map(|index| Arc::from(format!("series-{index:08}").as_str()))
+            .collect();
+
+        // --- the shape that ships: one B-tree per object key ---
+        let mut shipped: HashMap<Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
+            HashMap::new();
+        let shipped_traffic = {
+            let probe = Probe::start();
+            for key in &keys {
+                let series = shipped.entry(Arc::clone(key)).or_default();
+                for point in 0..occupancy {
+                    series.insert(T0 + point as u64, address());
+                }
+            }
+            probe.stop().chunk_bytes
+        };
+        let shipped_resident = deep_heap_bytes(&shipped);
+
+        // --- the candidate: one run per routing bucket, identity named once an object ---
+        let mut grouped = GroupedSeriesIndex::new();
+        for key in &keys {
+            for point in 0..occupancy {
+                grouped.insert(key, T0 + point as u64, address());
+            }
+        }
+        // AS BUILT, on the whole-keyspace range an unstamped state routes on. Every key has its
+        // own bucket here, so this is the shape with its grouping switched off -- which is what I
+        // measured the first time and mistook for the shape itself.
+        let grouped_unstamped = deep_heap_bytes(&grouped);
+        // AND THEN COMPACTED, which is what `install_shard_state` causes in the engine.
+        grouped.rebucket(0, crate::DEFAULT_END_ROUTING_BUCKET);
+        let grouped_resident = deep_heap_bytes(&grouped);
+        assert_eq!(
+            grouped.routing_range(),
+            (0, crate::DEFAULT_END_ROUTING_BUCKET),
+            "rebucket did not take the range it was given, so the figure below is still the \
+             uncompacted one"
+        );
+
+        // --- DENOMINATORS: both arms must hold what the row count claims, or the per-row figures
+        // --- below are divisions by a number the fixture did not build.
+        assert_eq!(
+            shipped.len(),
+            objects,
+            "the shipped arm holds {} objects, not {objects}",
+            shipped.len()
+        );
+        assert_eq!(
+            grouped.object_count(),
+            objects,
+            "the grouped arm holds {} objects, not {objects}",
+            grouped.object_count()
+        );
+        assert_eq!(
+            grouped.point_count(),
+            ROWS,
+            "the grouped arm holds {} rows, not {ROWS}",
+            grouped.point_count()
+        );
+
+        let per_row = |bytes: u64| bytes as f64 / ROWS as f64;
+        println!(
+            "    {occupancy:>12}   {:>14.1}   {:>9.1}   {:>10.1}   {:>5.2}x",
+            per_row(shipped_resident),
+            per_row(grouped_unstamped),
+            per_row(grouped_resident),
+            per_row(shipped_resident) / per_row(grouped_resident).max(0.001),
+        );
+        let _ = shipped_traffic;
+        rows.push((
+            occupancy,
+            per_row(shipped_resident),
+            per_row(grouped_resident),
+        ));
+    }
+
+    // --- THE SPARSE SAVING, WHICH IS THE JUSTIFICATION. A key holding one point is the case the
+    // --- conversion exists for: there the shipped shape pays a whole B-tree node to carry one
+    // --- 24-byte row. Measured 4.95x, against the 4.9x the module's doc claims.
+    let (_, sparse_shipped, sparse_grouped) = rows[0];
+    assert!(
+        sparse_shipped / sparse_grouped > 4.0,
+        "at one point a key the grouped shape is only {:.2}x better ({sparse_grouped:.1} bytes a \
+         row against {sparse_shipped:.1}). The doc claims 4.9x and this arm measured 4.95x, so a \
+         fall below 4x means the shape has changed and the conversion needs re-justifying.",
+        sparse_shipped / sparse_grouped
+    );
+
+    // --- AND THE DENSE FLOOR, which is the other end of the same claim: a row is a `u64` and a
+    // --- 16-byte address, so 24 bytes is the data itself and the container overhead at density is
+    // --- a fraction of a byte.
+    let (_, _, dense_grouped) = rows[rows.len() - 1];
+    assert!(
+        dense_grouped < 25.0,
+        "at a thousand points a key the grouped shape holds {dense_grouped:.1} bytes a row. A row \
+         is 24 bytes of data, so this is the container overhead and the doc puts it at 24.1; past \
+         25 the container has started costing what it exists to save."
+    );
+
+    // --- THE CROSSOVER THE DOC DENIES, PINNED AS A SET RATHER THAN ASSERTED AWAY.
+    //
+    // "Better at every occupancy with no crossover" is false, and the exception is explainable
+    // rather than mysterious: TEN entries fit one nearly-full `BTreeMap` node, which is the best a
+    // B-tree ever does. It is the same reason the shipped column is not monotonic -- 33.3 bytes a
+    // row at ten, 51.1 at a hundred -- because ascending inserts leave a larger map's nodes about
+    // half full, so its per-row cost rises again past the single-node point.
+    //
+    // Pinning the SET is what makes this a guard rather than a known-failure: the occupancy that
+    // loses today may not lose tomorrow, and a crossover appearing at a DIFFERENT occupancy is a
+    // change in the shape of the curve, which is exactly what someone converting a map onto this
+    // needs to hear about.
+    const KNOWN_CROSSOVERS: &[usize] = &[10];
+    let crossovers: Vec<usize> = rows
+        .iter()
+        .filter(|(_, shipped, grouped)| grouped >= shipped)
+        .map(|(occupancy, _, _)| *occupancy)
+        .collect();
+    assert_eq!(
+        crossovers, KNOWN_CROSSOVERS,
+        "the occupancies where the grouped shape costs MORE than the shipped one have changed: \
+         {crossovers:?} against the known {KNOWN_CROSSOVERS:?}. If one has gone, say so and take \
+         it out of the list; if a new one has arrived, the curve has changed shape and the \
+         conversion's justification has to be re-read at that occupancy."
+    );
+}
