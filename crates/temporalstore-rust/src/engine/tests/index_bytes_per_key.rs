@@ -6455,3 +6455,144 @@ fn is_the_appends_cost_the_series_or_the_shard() {
          there"
     );
 }
+
+/// WHAT ONE SET ADD COSTS AT TWO COLLECTION SIZES, because the append is not the only writer.
+///
+/// # WHY THIS IS ASKED SEPARATELY
+///
+/// The two terms removed by "An append walked the object's whole ref list twice" are not on the
+/// feature path. They are on the path EVERY block-backed write takes: the dirty mark in
+/// `push_object_dirty_onto_its_existing_pages`, which every write calls once per touched object,
+/// and the publish step's bucket derivation in `sync_bucket_index_object_blocks_with_mode`, which
+/// every kind reaches. Both were sized by the object's page count, so any object with many pages
+/// paid them -- a long feature series was just the easiest one to grow.
+///
+/// If that reading is right, a set with 3,200 members should show the same shape as a feature
+/// series with 3,200 points, and the same cure. If it is wrong, the saving was specific to the
+/// feature arm and this arm says so. Either way it is measured rather than asserted, because "it
+/// is on the shared path so it must generalise" is exactly the kind of reasoning that named the
+/// wrong cause twice already on this series.
+///
+/// # WHAT IT FOUND: THE FIX GENERALISED AND THE SET IS STILL NOT FIXED
+///
+///     members   allocs/add   bytes/add   members held
+///         400        109.4     15147.2            450
+///        3200        109.4     60189.4           3250
+///     allocations ratio 1.00x over an 8x collection, bytes ratio 3.97x
+///
+/// So an add still costs the members already there. The allocation count is FLAT while the bytes
+/// climb, which by now is a familiar signature on this series: ONE allocation sized by the
+/// entries held, the shape behind both #2235 and the dirty-mark half of #2239.
+///
+/// THE TERM #2239 REMOVED IS GONE HERE TOO, which is the half the probe was written to test.
+/// Instrumenting the shared write path around this arm, on a 3,200-member set:
+///
+///     key_states        2,976 B/add
+///     items_and_dirty     992
+///     append_delta        318
+///     components          176
+///     push_dirty            0      <- 51,952 on the feature path before #2239
+///
+/// The dirty mark is free now for a 3,200-page object whatever kind it is, so that fix was on the
+/// shared path as claimed rather than specific to the feature arm.
+///
+/// AND THAT ACCOUNTS FOR ONLY ~4.5 KB OF 60 KB. The rest -- about 55.7 KB -- is spent inside the
+/// `SetAdd` arm itself, which is the opposite of where the feature append's cost was: there the
+/// caller held 78% of it and the arm 22%. So the next step for containers is to bracket the arm,
+/// not to look again at the path they share. Two things in it are already known to be sized by
+/// the collection and neither allocates, so neither is the figure above:
+/// `resident_highest_block_id`, which takes a max over every member's address to choose an
+/// ordinal (O(members) per add, so O(members squared) to fill), and
+/// `page_an_element_vacates`, which the filer consults when an index entry names a page.
+///
+/// WRITTEN DOWN RATHER THAN ACTED ON, because "it is on the shared path so it must generalise"
+/// was the reasoning this probe existed to check, and it was half right. The same caution applies
+/// to the two candidates above: they are candidates until something moves them and the number
+/// moves with it.
+///
+/// rust-internal: measures this crates own write path, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_set_add_costs_at_two_collection_sizes -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds two shards to 400 and 3,200 members; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_one_set_add_costs_at_two_collection_sizes() {
+    use crate::types::{Command, ExecuteRequest};
+
+    const MEASURED: usize = 50;
+
+    let mut rows: Vec<(usize, u64, u64, usize)> = Vec::new();
+    for members in [400usize, 3_200usize] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        ));
+        engine.load_shard(1);
+        let key = format!("members-{members}");
+        let add = |index: usize| {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::SetAdd {
+                    key: key.clone(),
+                    member: format!("member-{index:08}").into_bytes(),
+                },
+            });
+            assert!(response.status.ok, "add {index}: {:?}", response.status);
+        };
+        // WARMED OUTSIDE THE WINDOW, so what is measured is a steady-state add and not the
+        // first-touch cost of creating the object.
+        for index in 0..members {
+            add(index);
+        }
+        let probe = Probe::start();
+        for index in 0..MEASURED {
+            add(members + index);
+        }
+        let counts = probe.stop();
+
+        // The membership the adds actually saw, read back rather than assumed.
+        let held = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.sets.get(key.as_str()).map_or(0, |members| members.len())
+        };
+        rows.push((members, counts.allocs, counts.chunk_bytes, held));
+    }
+
+    println!();
+    println!("  {MEASURED} set adds measured per arm, set warmed to size first");
+    println!("    members   allocs/add   bytes/add   members held");
+    for (members, allocs, bytes, held) in &rows {
+        println!(
+            "    {members:>7}   {:>10.1}   {:>9.1}   {held:>12}",
+            *allocs as f64 / MEASURED as f64,
+            *bytes as f64 / MEASURED as f64
+        );
+    }
+
+    let (small, small_allocs, small_bytes, small_held) = rows[0];
+    let (big, big_allocs, big_bytes, big_held) = rows[1];
+    let size_ratio = big as f64 / small as f64;
+    let alloc_ratio = big_allocs as f64 / small_allocs.max(1) as f64;
+    let byte_ratio = big_bytes as f64 / small_bytes.max(1) as f64;
+    println!();
+    println!("    collection size ratio : {size_ratio:.2}x");
+    println!("    allocations ratio     : {alloc_ratio:.2}x");
+    println!("    bytes ratio           : {byte_ratio:.2}x");
+
+    // --- DENOMINATORS: the arms must be the sizes they are labelled, and must have done work. ---
+    assert!(
+        small_allocs > 0 && big_allocs > 0,
+        "an arm allocated nothing across {MEASURED} adds: {small_allocs} and {big_allocs}"
+    );
+    assert!(
+        small_held >= small && big_held >= big,
+        "the set does not hold the members this probe warmed it with ({small_held} of {small}, \
+         {big_held} of {big}), so the arms are not the sizes they are labelled and the ratios \
+         above are of something else"
+    );
+}
