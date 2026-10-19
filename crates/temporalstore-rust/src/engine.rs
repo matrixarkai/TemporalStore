@@ -3291,6 +3291,46 @@ fn command_upsert_components(
             Some(vec![("hash", key.clone(), Some(field.clone()))])
         }
         Command::StringSet { key, .. } => Some(vec![("string", key.clone(), None)]),
+        // A feature append writes ONE NEW BLOCK PER POINT, and each one's component is that
+        // point's timestamp -- which is in the command. Same shape as the zset arm below, and it
+        // was in the `None` bucket until now, so every append wrote a record holding one
+        // `IndexItem` per point the series already had.
+        //
+        // WHAT THAT COST, MEASURED: one append to a 3,200-point series moves 3,272,240 bytes, of
+        // which the cross in `is_the_appends_cost_the_series_or_the_shard` puts ~1,333 KB on the
+        // series in ~9,459 extra allocations -- about 3 per point already present. The same defect
+        // is recorded for the container maps one function below, at 3.53 GB of index log against
+        // 16 MB for the same 20,001 messages.
+        //
+        // A TRIM DOES NOT NEED HANDLING HERE, and this is the part worth checking rather than
+        // assuming, because declaring a delta over a write that DELETED is the one way this loses
+        // data. An append past `feature_max_size` evicts the oldest points, and a rebuild from
+        // blocks would resurrect them -- but the caller already refuses the delta path on a
+        // membership shrink: `delta_key_state_change` compares `key_membership_size` across the
+        // write, and that function counts `shard.features.get(key).len()`. So a trimming append
+        // takes the whole-object record whatever this arm returns.
+        //
+        // DEDUPED, because `sorted_feature_points` collapses repeated timestamps before the write
+        // and the components have to be the ones that actually landed.
+        Command::FeatureAppend { key, points } => {
+            let mut seen = std::collections::BTreeSet::new();
+            Some(
+                points
+                    .iter()
+                    .filter(|point| seen.insert(point.timestamp_ms))
+                    .map(|point| {
+                        (
+                            "feature",
+                            key.clone(),
+                            Some(crate::engine::packed_pages::timestamped_component(
+                                point.timestamp_ms,
+                                None,
+                            )),
+                        )
+                    })
+                    .collect(),
+            )
+        }
         // A zset add writes exactly one component, and it is derivable from the command. Declaring
         // it takes the O(1) delta path; without it the record snapshots every block of the object,
         // which cost 4 allocations per member already present.
