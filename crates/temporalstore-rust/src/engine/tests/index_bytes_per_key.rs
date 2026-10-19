@@ -5804,3 +5804,140 @@ fn what_one_hash_field_write_allocates() {
          what it replaced"
     );
 }
+
+/// WHAT ONE APPEND COSTS, AND WHETHER IT TRACKS THE SERIES IT APPENDS TO.
+///
+/// # WHY THE SHAPE MATTERS MORE THAN THE NUMBER
+///
+/// A per-append figure on its own is not actionable: it could be a constant, or it could be the
+/// series' length in disguise. So this takes the figure at TWO series lengths and prints the ratio
+/// beside the length ratio. A cost that is FLAT across an 8x series is a constant per append; one
+/// that rises with the series means every append pays for the points already there, which is the
+/// difference between a store that ingests a long series cheaply and one that does not.
+///
+/// # WHAT IS AND IS NOT IN THE FIGURE
+///
+/// This drives `FeatureAppend` through the engine, so the number is the whole write path -- the
+/// block append, the index, the staged outcome, the page filing -- and not one container's growth.
+/// It is NOT an A/B against anything: it is the current cost, recorded so a later change has a
+/// before.
+///
+/// THE SERIES IS WARMED TO LENGTH FIRST, outside the probe window, so the measurement is of an
+/// append to an EXISTING series rather than of the first write that builds the structures around
+/// it.
+///
+/// rust-internal: measures this crates own write path, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_append_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "warms two series to 400 and 3,200 points and appends under the counting allocator; run \
+            by name, and ALONE -- the allocation counters are process-global"]
+fn what_one_append_costs_at_two_series_lengths() {
+    use crate::types::{Command, ExecuteRequest, FeaturePoint};
+
+    const T0: u64 = 1_787_270_070_000;
+    const APPENDS: usize = 50;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    engine.load_shard(1);
+
+    let append = |key: &str, at: u64| {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::FeatureAppend {
+                key: key.to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: at,
+                    value: vec![b'v'; 8],
+                }],
+            },
+        });
+        assert!(response.status.ok, "append to {key} at {at}: {:?}", response.status);
+    };
+
+    // One arm per series length. Each series is warmed to length OUTSIDE the probe, then measured
+    // over `APPENDS` further appends.
+    let mut rows: Vec<(usize, u64, u64, usize)> = Vec::new();
+    for warm_to in [400usize, 3_200usize] {
+        let key = format!("series-{warm_to}");
+        for index in 0..warm_to {
+            append(&key, T0 + index as u64);
+        }
+        let probe = Probe::start();
+        for index in 0..APPENDS {
+            append(&key, T0 + (warm_to + index) as u64);
+        }
+        let counts = probe.stop();
+        let points = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.features.get(&key[..]).map(|s| s.len()).unwrap_or(0)
+        };
+        rows.push((warm_to, counts.allocs, counts.chunk_bytes, points));
+    }
+
+    println!();
+    println!("  {APPENDS} appends measured per arm, series warmed to length first");
+    println!("    series length   allocs/append   bytes/append   points held");
+    for (warm_to, allocs, bytes, points) in &rows {
+        println!(
+            "    {warm_to:>13}   {:>13.1}   {:>12.1}   {points:>11}",
+            *allocs as f64 / APPENDS as f64,
+            *bytes as f64 / APPENDS as f64
+        );
+    }
+
+    // --- DENOMINATORS, asserted before any ratio is read off them. ---
+    let (small_len, small_allocs, small_bytes, small_points) = rows[0];
+    let (big_len, big_allocs, big_bytes, big_points) = rows[1];
+    assert_eq!(
+        small_len + APPENDS,
+        small_points,
+        "the short series holds {small_points} points for {} appended, so the fixture did not build \
+         the series it measures",
+        small_len + APPENDS
+    );
+    assert_eq!(
+        big_len + APPENDS,
+        big_points,
+        "the long series holds {big_points} points for {} appended",
+        big_len + APPENDS
+    );
+    assert!(
+        small_allocs > 0 && big_allocs > 0,
+        "an arm allocated nothing across {APPENDS} appends, so the probe is not seeing the allocator"
+    );
+
+    // --- AND THE SHAPE, which is what this probe exists to say. ---
+    let length_ratio = big_len as f64 / small_len as f64;
+    let alloc_ratio = big_allocs as f64 / small_allocs as f64;
+    let byte_ratio = big_bytes as f64 / small_bytes as f64;
+    println!();
+    println!("    series length ratio : {length_ratio:.2}x");
+    println!("    allocations ratio   : {alloc_ratio:.2}x");
+    println!("    bytes ratio         : {byte_ratio:.2}x");
+    println!();
+    if byte_ratio > length_ratio * 0.5 {
+        println!("    THE BYTES TRACK THE SERIES: an append pays for the points already there.");
+    } else if byte_ratio < 1.5 {
+        println!("    THE BYTES ARE FLAT: an append costs a constant, whatever the series holds.");
+    } else {
+        println!("    THE BYTES RISE SUBLINEARLY: between a constant and the series length.");
+    }
+
+    // Recorded rather than asserted as a bound, because this probe's job is to establish the
+    // figure. What IS asserted is that both arms produced one -- a silent zero here would read as
+    // a flat cost and be the most flattering possible misreading.
+    assert!(
+        small_bytes > 0 && big_bytes > 0,
+        "an arm reported zero bytes per append, which would read as a flat cost and is instead a \
+         broken measurement"
+    );
+}
