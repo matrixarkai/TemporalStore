@@ -5043,14 +5043,6 @@ fn upsert_bucket_index_block_inner(
     // recorded once they end, so the per-write refresh can skip the rest of the shard.
     let mut touched_buckets: Vec<u32> = Vec::new();
     let lookup_enabled = !shard.bucket_index.object_block_lookup.is_empty();
-    let direct_block_refs = if lookup_enabled {
-        shard
-            .bucket_index
-            .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
-            .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
-    } else {
-        None
-    };
     // CONVERGE ON THE PAGE WHEN THE PAGE IS THE IDENTITY, AND ON THE SLOT WHEN THE ELEMENT IS.
     //
     // The slot-wide removal is right while an entry's identity is its element: a new filing for
@@ -5071,41 +5063,92 @@ fn upsert_bucket_index_block_inner(
     // entries for one member. `ReplacedPage` is the caller's answer to which page that is, and it
     // is empty unless the write really is a rewrite that leaves its old page empty.
     let vacated = replaces.page_key();
-    let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = match direct_block_refs {
-        Some(block_refs) if names_a_page => {
-            let here = super::live_page_key(&entry.address);
-            let mine: Vec<_> = block_refs
-                .into_iter()
-                .filter(|block_ref| {
-                    shard
-                        .bucket_index
-                        .bucket_map
-                        .get(&block_ref.routing_bucket)
-                        .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
-                        .is_some_and(|page| {
-                            let key = super::live_page_key(&page.address);
-                            key == here || (!page.deleted && Some(key) == vacated)
+    let here = super::live_page_key(&entry.address);
+    // FILTERED WHERE THE REFS LIVE, INSTEAD OF COPIED AND THEN FILTERED.
+    //
+    // This took the object's whole ref slot with `to_vec` and filtered the copy. MEASURED on a
+    // 3,200-member set: 51,928 bytes in ONE allocation per add -- 3,250 refs at sixteen bytes --
+    // of the 60,162 an add moved, while the segment that consumed the copy allocated 0.0, because
+    // the filter keeps at most the one or two refs naming the same physical page.
+    //
+    // IT IS EVERY CONTAINER KIND. A container entry carries `component: None`, so
+    // `names_the_only_slot` is satisfied and `block_refs_for` returns the object's WHOLE slot; and
+    // `index_entry_names_a_page` is true for set, list, hash and zset, so all four reach the
+    // filtering arm and all four paid the copy.
+    //
+    // WHY THE COPY WAS THERE, and why it is not needed: a copy ends the immutable loan on the
+    // lookup before the removals below take it mutably. But the filter's own predicate reads
+    // `bucket_map` IMMUTABLY, so the slice and the map can be held together -- two immutable
+    // borrows of one struct are fine -- and only the refs that survive are cloned. The removals
+    // then run after both loans end, exactly as before. Same defect and same remedy as the dirty
+    // mark in #2239.
+    let superseded: Option<Vec<crate::engine::state::BlockLookupRef>> = if names_a_page {
+        let mine = if lookup_enabled {
+            shard
+                .bucket_index
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .map(|block_refs| {
+                    block_refs
+                        .iter()
+                        .filter(|block_ref| {
+                            shard
+                                .bucket_index
+                                .bucket_map
+                                .get(&block_ref.routing_bucket)
+                                .and_then(|bucket| {
+                                    bucket.block_index.get(&block_ref.block_ref_key)
+                                })
+                                .is_some_and(|page| {
+                                    let key = super::live_page_key(&page.address);
+                                    key == here || (!page.deleted && Some(key) == vacated)
+                                })
                         })
+                        .cloned()
+                        .collect::<Vec<_>>()
                 })
-                .collect();
-            for block_ref in &mine {
-                shard.bucket_index.remove_object_block_lookup_ref(
+        } else {
+            None
+        };
+        match mine {
+            Some(mine) => {
+                for block_ref in &mine {
+                    shard.bucket_index.remove_object_block_lookup_ref(
+                        entry.kind.as_str(),
+                        &entry.object_key,
+                        filed.as_deref(),
+                        block_ref,
+                    );
+                }
+                Some(mine)
+            }
+            None => {
+                shard.bucket_index.remove_object_block_lookup_entry(
                     entry.kind.as_str(),
                     &entry.object_key,
                     filed.as_deref(),
-                    block_ref,
                 );
+                None
             }
-            Some(mine)
         }
-        other => {
-            shard.bucket_index.remove_object_block_lookup_entry(
-                entry.kind.as_str(),
-                &entry.object_key,
-                filed.as_deref(),
-            );
-            other
-        }
+    } else {
+        // THE SLOT-WIDE REMOVAL STILL NEEDS EVERY REF, so this arm keeps the copy. A kind whose
+        // entry identity is its ELEMENT supersedes the whole slot, and the loop below removes each
+        // of those pages -- so the list is read, not discarded, and copying it is the price of
+        // handing it to a loop that mutates the index it came from.
+        let all = if lookup_enabled {
+            shard
+                .bucket_index
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .map(<[crate::engine::state::BlockLookupRef]>::to_vec)
+        } else {
+            None
+        };
+        shard.bucket_index.remove_object_block_lookup_entry(
+            entry.kind.as_str(),
+            &entry.object_key,
+            filed.as_deref(),
+        );
+        all
     };
     if let Some(block_refs) = superseded {
         for block_ref in block_refs {
