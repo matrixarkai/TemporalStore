@@ -1296,10 +1296,34 @@ pub mod bucket_visit_sites {
 
     pub(super) static LAYOUT: AtomicU64 = AtomicU64::new(0);
     pub(super) static CLEAR_DIRTY: AtomicU64 = AtomicU64::new(0);
+    /// THE TTL ROLLUP, NOT THE WHOLE REFRESH -- which the name does not say and a reader needs to
+    /// know before drawing a conclusion from a zero.
+    ///
+    /// This is charged inside `refresh_one_bucket_runtime_flags`, but inside the
+    /// `BucketTtlRollup::Recompute` arm AND inside the `else` of `if expires_at_ms.is_empty()`. So
+    /// it counts pages only when the caller asked for a TTL recompute and the shard holds at least
+    /// one expiry. The write path passes `LeaveStale`, and a store that never sets a TTL takes the
+    /// short-circuit, so on both of those this counter is zero no matter how many pages the refresh
+    /// walked.
+    ///
+    /// The refresh's own two folds are counted by [`FLAG_FOLDS`]. A probe reading this one to price
+    /// them reported 0 against a bucket of 321 pages, and a positive control -- calling the sweep
+    /// deliberately -- also reported 0, which is how the gap was found.
     pub(super) static REFRESH_FLAGS: AtomicU64 = AtomicU64::new(0);
     pub(super) static REMOVE_ALL_BUCKETS: AtomicU64 = AtomicU64::new(0);
+    /// Pages actually visited by the two unconditional folds in `refresh_one_bucket_runtime_flags`:
+    /// `all(page.deleted)` and `any(page.dirty)`.
+    ///
+    /// ITERATIONS TAKEN, NOT BUCKET LENGTH. Both folds short-circuit -- the comment at the fold says
+    /// so -- so a bucket of 321 pages can decide on page one. Charging `block_index.len()` would
+    /// report the walk this refresh did NOT do; `inspect` charges what it did.
+    pub(super) static FLAG_FOLDS: AtomicU64 = AtomicU64::new(0);
 
     /// `(layout, clear_dirty, refresh_flags, remove_all_buckets)` visits since the last reset.
+    ///
+    /// `refresh_flags` is the TTL rollup only -- see [`REFRESH_FLAGS`]. For the refresh's own folds
+    /// call [`flag_folds`]; it is deliberately not in this tuple, so that adding it cannot silently
+    /// change what an existing destructuring of four means.
     pub fn snapshot() -> (u64, u64, u64, u64) {
         (
             LAYOUT.load(Ordering::Relaxed),
@@ -1309,8 +1333,19 @@ pub mod bucket_visit_sites {
         )
     }
 
+    /// Pages visited by the refresh's own folds since the last reset. See [`FLAG_FOLDS`].
+    pub fn flag_folds() -> u64 {
+        FLAG_FOLDS.load(Ordering::Relaxed)
+    }
+
     pub fn reset() {
-        for counter in [&LAYOUT, &CLEAR_DIRTY, &REFRESH_FLAGS, &REMOVE_ALL_BUCKETS] {
+        for counter in [
+            &LAYOUT,
+            &CLEAR_DIRTY,
+            &REFRESH_FLAGS,
+            &REMOVE_ALL_BUCKETS,
+            &FLAG_FOLDS,
+        ] {
             counter.store(0, Ordering::Relaxed);
         }
     }
@@ -6246,17 +6281,30 @@ fn refresh_one_bucket_runtime_flags(
     bucket.set_in_memory(!bucket.block_index.is_empty());
     // `all` and `any` stop at the first block that decides the answer, so neither is a reliable
     // full pass; during ingest the dirty check in particular answers on block one.
-    let every_page_deleted =
-        !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
+    //
+    // COUNTED, AND COUNTED AS ITERATIONS. These two folds are the per-write cost of this function
+    // and nothing was counting them: `bucket_visit_sites::REFRESH_FLAGS` is charged further down,
+    // inside the TTL arm and inside its non-empty branch, so it reads zero on the write path and on
+    // any store without an expiry. `inspect` charges what the fold stepped over, which is the only
+    // honest figure given the short-circuit the comment above describes.
+    let mut fold_visits = 0u64;
+    let every_page_deleted = !bucket.block_index.is_empty()
+        && bucket
+            .block_index
+            .values()
+            .inspect(|_| fold_visits += 1)
+            .all(|page| page.deleted);
     bucket.set_deleted(every_page_deleted);
     let any_page_dirty = bucket
         .block_index
         .values()
+        .inspect(|_| fold_visits += 1)
         // `any(page.dirty)` ALONE, because the dirtiness is pushed onto the pages at mark
         // time now. See `push_object_dirty_onto_its_existing_pages` for why that is equivalent
         // and for the two cases that cover every page the object half used to decide.
         .any(|page| page.dirty);
     bucket.set_dirty(bucket.dirty() | any_page_dirty);
+    bucket_visit_sites::FLAG_FOLDS.fetch_add(fold_visits, std::sync::atomic::Ordering::Relaxed);
     // THE TTL MINIMUM IS A REPORTED STATISTIC, AND THE WRITE PATH NO LONGER COMPUTES IT.
     //
     // WHAT READS IT. Every reader of `BucketNode::ttl_ms` is a report or the serializer --

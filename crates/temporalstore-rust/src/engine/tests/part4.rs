@@ -4532,6 +4532,33 @@ fn bucket_runtime_flags_match_full_sweep() {
 /// something the flags cannot express, and this test says exactly what -- which is the part worth
 /// knowing before anyone tries to remove it.
 ///
+/// # THEY DISAGREE, AND THE SET IS NOT REMOVABLE
+///
+///     dirty_objects: 160
+///     pages with dirty=true: 80
+///              in the set but no page flagged dirty: 80
+///              a page flagged dirty but not in the set: 0
+///              in the set with NO live page at all: 80
+///
+/// Read the last two rows together and the answer is exact. **Nothing is dirty without being in the
+/// set** -- zero the other way -- so the flags are a strict subset and the set is not merely a
+/// cache of them. And **half the set has no live page at all**: this workload's 100 string writes
+/// mark both the data object and its `control_state:cpc:*` record, and a control-state record is
+/// not page-backed, so there is no `dirty` flag anywhere that could carry its dirtiness.
+///
+/// So the set holds exactly what the flags cannot express: dirty objects with no page. Removing it
+/// would silently lose them, which is a wrong dump rather than a slower one.
+///
+/// WHAT THE SET STILL COSTS, because "not removable" is not "free". The `String` per record this
+/// doc opens with is no longer the shape: both marking sites read `any_shared_object_key` first and
+/// hand the page index's handle to `insert_shared`, so a key the page index already holds costs a
+/// pointer rather than a second copy of the characters. An ORDERING still defeats that on an
+/// object's first write -- the mark runs before the page is filed, so there is no handle to hand
+/// over -- which `DirtyObjectIndex::adopt_shared_key` exists to repair afterwards, and which was
+/// measured at 24.0 B/key across 40,040 keys with ZERO of this index's allocations shared while it
+/// went unrepaired. The per-entry cost that remains is the `DirtyKeySet` arm, which is why
+/// `bucket_arms` reports (Empty, One, Many) rather than a length.
+///
 /// A report, not a threshold: it prints the comparison and asserts only that the workload
 /// produced something to compare.
 #[test]
