@@ -3384,6 +3384,33 @@ fn collect_upsert_index_items(
                 .and_then(|fields| fields.get(field))
                 .cloned(),
             ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
+            // THE ARM #2232 ASSUMED WAS HERE. That change made `command_upsert_components` name a
+            // component for `FeatureAppend` so an append takes the O(1) delta path instead of
+            // snapshotting the whole series -- and this match, which turns a component back into
+            // the address the item carries, had no `feature` arm. A declared feature component
+            // therefore fell to `_ => None`, the item was dropped, and the delta record named no
+            // page for the append at all. Part of that change's measured byte saving was the
+            // record becoming empty.
+            //
+            // THE SUITE ALREADY SPELLED THIS HAZARD OUT, for the hash pairing, in the failure
+            // message of `replay_under_the_gate`: `collect_upsert_index_items` "would fall to its
+            // `_ => None` arm, build no item, and the write would never reach the index log".
+            // Declaring a component is half of a pair; this is the other half, and the test below
+            // this function's own guard now asserts both halves together.
+            //
+            // The component is the point's stored timestamp in decimal -- `timestamped_component`
+            // with no identity is `stored_key.to_string()` -- so the series is read at exactly the
+            // key the write filed it under.
+            ("feature", Some(component)) => component
+                .parse::<u64>()
+                .ok()
+                .and_then(|at| {
+                    shard
+                        .features
+                        .get(object_key.as_str())
+                        .and_then(|series| series.get(&at))
+                        .cloned()
+                }),
             // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
             // -- so the member the map is keyed by is recoverable from the whole of it.
             ("zset", Some(component)) => hex::decode(component)

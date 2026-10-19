@@ -672,3 +672,203 @@ fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from()
         without_component.len()
     );
 }
+
+/// EVERY KIND THAT DECLARES AN UPSERT COMPONENT MUST HAVE A COLLECTOR ARM FOR IT.
+///
+/// # THE PAIR, AND WHY HALF OF IT IS WORSE THAN NEITHER
+///
+/// Two functions have to agree for a write to reach the index log by the O(delta) path:
+///
+///   * `command_upsert_components` names what the command wrote, as `(kind, key, component)`.
+///     Naming nothing is safe: the caller falls back to a whole-object snapshot record, which is
+///     expensive and correct.
+///   * `collect_upsert_index_items` turns each of those back into the address the item carries,
+///     by looking the component up in the resident map for its kind.
+///
+/// Declaring a component the collector has no arm for is the one combination that loses. The
+/// caller sees `Some(..)` and takes the delta path, the collector falls to `_ => None` and builds
+/// nothing, and the record names NO page for a write that wrote one -- while reporting success and
+/// looking cheaper than before, because an empty record is small.
+///
+/// THAT IS NOT HYPOTHETICAL. #2232 added a `FeatureAppend` arm to the first function and there was
+/// no `feature` arm in the second, so every feature append wrote a record naming none of its
+/// pages. The hazard was already written down for the hash pairing, in this module's own failure
+/// message: the collector "would fall to its `_ => None` arm, build no item, and the write would
+/// never reach the index log". A test of one kind did not stop it being reintroduced for another.
+///
+/// # SO THIS ASKS IT OF EVERY KIND AT ONCE
+///
+/// One real command per kind the first function can name, executed against a real engine, then
+/// both halves asserted on what the command actually produced. A kind added to the first function
+/// without an arm in the second fails here, and the failure names the kind.
+///
+/// The NEGATIVE CONTROL matters as much: the same component removed must build nothing. Without
+/// it, a collector that answered an item for every input -- the obvious way to "fix" a failure
+/// here -- would pass.
+///
+///   cargo test -p temporalstore-rust --lib every_declared_component_builds_an_index_item -- --nocapture
+#[test]
+fn every_declared_component_builds_an_index_item() {
+    use crate::types::{Command, ExecuteRequest, FeaturePoint};
+
+    const T0: u64 = 1_787_270_070_000;
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    engine.load_shard(1);
+
+    // One write per kind, each the plainest form of it, so what is being tested is the pairing
+    // and not some unusual shape of the command.
+    let commands: Vec<(&str, Command)> = vec![
+        (
+            "hash",
+            Command::HashSet {
+                key: "pair-hash".to_string(),
+                field: "f".to_string(),
+                value: b"v".to_vec(),
+            },
+        ),
+        (
+            "string",
+            Command::StringSet {
+                key: "pair-string".to_string(),
+                value: b"v".to_vec(),
+            },
+        ),
+        (
+            "zset",
+            Command::ZSetAdd {
+                key: "pair-zset".to_string(),
+                member: b"m".to_vec(),
+                score: 1.0,
+            },
+        ),
+        (
+            "set",
+            Command::SetAdd {
+                key: "pair-set".to_string(),
+                member: b"m".to_vec(),
+            },
+        ),
+        (
+            "list",
+            Command::ListPush {
+                key: "pair-list".to_string(),
+                member: b"m".to_vec(),
+                left: false,
+            },
+        ),
+        (
+            "feature",
+            Command::FeatureAppend {
+                key: "pair-feature".to_string(),
+                points: vec![FeaturePoint {
+                    timestamp_ms: T0,
+                    value: vec![b'v'; 8],
+                }],
+            },
+        ),
+    ];
+
+    for (label, command) in &commands {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: command.clone(),
+        });
+        assert!(
+            response.status.ok,
+            "the {label} write failed, so this test would be asserting the pairing over a store \
+             the command never reached: {:?}",
+            response.status
+        );
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard 1 is loaded");
+
+    println!();
+    println!("  kind      components   items   items without the component");
+    let mut checked = 0usize;
+    for (label, command) in &commands {
+        // POST-WRITE, which is when the real caller asks: a list push files under a sequence only
+        // knowable after the write, and a feature append under the timestamp it stored.
+        let named = crate::engine::command_upsert_components(command, shard).unwrap_or_else(|| {
+            panic!(
+                "`command_upsert_components` names nothing for a {label} write. If that is now \
+                 deliberate -- the kind went back to the whole-object snapshot path -- remove it \
+                 from this test's list and say why; a silent `None` here is a cost regression, \
+                 not a loss."
+            )
+        });
+        assert!(
+            !named.is_empty(),
+            "a {label} write named an EMPTY component list, which takes the delta path and then \
+             has nothing to put in the record"
+        );
+
+        let items = crate::engine::collect_upsert_index_items(shard, 1, &named, 0, 1023);
+        // THE STRIPPED FORM: the same components with the component dropped. This is what the
+        // collector sees when a kind has no arm, and it must build nothing.
+        let stripped: Vec<(&'static str, String, Option<String>)> = named
+            .iter()
+            .map(|(kind, key, _)| (*kind, key.clone(), None))
+            .collect();
+        let without = crate::engine::collect_upsert_index_items(shard, 1, &stripped, 0, 1023);
+
+        println!(
+            "  {label:<9} {:>10}   {:>5}   {:>26}",
+            named.len(),
+            items.len(),
+            without.len()
+        );
+
+        assert_eq!(
+            named.len(),
+            items.len(),
+            "a {label} write named {} component(s) and the collector built {} item(s). The \
+             missing arm is `(\"{label}\", Some(..))` in `collect_upsert_index_items`: the caller \
+             takes the delta path on the strength of the component being named, so an item that \
+             is not built is a page the record never mentions -- and the record gets SMALLER, so \
+             it reads as a saving.",
+            named.len(),
+            items.len()
+        );
+        checked += 1;
+    }
+
+    // --- DENOMINATOR: the loop must actually have run over every kind, or this passes by
+    // --- iterating nothing. The count is spelled out so adding a kind to the list without
+    // --- bumping it is a failure rather than a silent narrowing.
+    assert_eq!(
+        checked,
+        commands.len(),
+        "the pairing was checked for {checked} of {} kinds",
+        commands.len()
+    );
+    assert_eq!(
+        6, checked,
+        "this guard covers six kinds; a kind added to `command_upsert_components` belongs in this \
+         list too, and the number here is what makes leaving it out visible"
+    );
+
+    // --- AND THE NEGATIVE CONTROL, once, on the kind whose component is richest. A collector that
+    // --- answered an item for anything would satisfy every assertion above.
+    let string_only = crate::engine::collect_upsert_index_items(
+        shard,
+        1,
+        &[("hash", "pair-hash".to_string(), None)],
+        0,
+        1023,
+    );
+    assert!(
+        string_only.is_empty(),
+        "the collector built {} item(s) for a hash with NO component named. It is meant to answer \
+         only for a component it can resolve, so building something here means the assertions \
+         above prove nothing.",
+        string_only.len()
+    );
+}
