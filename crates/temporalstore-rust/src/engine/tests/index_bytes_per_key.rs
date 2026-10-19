@@ -7472,3 +7472,181 @@ fn what_the_four_converted_context_maps_cost() {
     );
     println!("  (a floor: the rebuilt B-tree packs its nodes where the engine's inserts leave them half empty)");
 }
+
+/// WHAT ONE READ OF A SHARD'S STATS ALLOCATES, AT TWO CORPUS SIZES.
+///
+/// # WHY THIS IS A PERIODIC PATH AND NOT A REPORT
+///
+/// `shard_stats` is what a node answers a stats request with, and `object_manager_stats` inside it
+/// produces the `dirty_object_count` the meta server SORTS PLACEMENT CANDIDATES BY -- so this is
+/// read on a schedule, not when someone opens a dashboard. Anything it allocates, it allocates
+/// again on the next read, for as long as the node is up.
+///
+/// # WHAT IS MEASURED
+///
+/// `Probe` counts allocations and bytes for ONE `shard_stats` call, after a warm call so that no
+/// first-call lazy initialisation lands in the measurement. The corpus is varied and the key
+/// question is the SHAPE: a figure that grows with the store is a per-read cost proportional to
+/// what the store holds, which is the thing that cannot be left on a scheduled path.
+///
+/// VARYING THE CORPUS IS THE WHOLE POINT, because a single rung cannot tell a fixed cost from a
+/// linear one -- a series that varied the wrong dimension has hidden exactly this before. The
+/// denominator asserted below is that the pages the walk reads actually accumulated.
+///
+/// # WHAT IT FOUND, AND THE TWO CANDIDATES IT CLEARED
+///
+///     corpus   live pages   allocs   alloc_bytes   bytes/page
+///         40           40      377        220745       5518.6
+///        320          320     2645        776311       2426.0
+///
+///       of which, at 320 pages:  slab summary + block store stats       0 B
+///                                object_manager_stats                4,112 B
+///                                the rest of `shard_stats`         772,199 B   (99.5%)
+///
+/// ONE STATS READ ALLOCATES THREE QUARTERS OF A MEGABYTE over a 320-page store, and it is paid again
+/// on every read. The shape is not flat -- 220,745 B over 40 pages against 776,311 over 320 -- so a
+/// share of it follows what the store holds.
+///
+/// BOTH OF THE OBVIOUS SUSPECTS ARE INNOCENT, which is why they are named here rather than left for
+/// the next reader to re-suspect:
+///
+///   * `block_store.slab_summary()` and `block_store.stats()`, taken at the top of `shard_stats`
+///     over the whole store rather than the shard, allocate **0 bytes**;
+///   * `object_manager_stats` -- the per-map `values().map(len).sum()` chains over thirteen maps,
+///     which looked like the whole-index walk -- is 4,112 B of 776,311, or 0.5%.
+///
+/// AND A FIX THAT MEASURED ZERO IS WORTH MORE THAN THE BYTES IT SAVED. The arm of
+/// `object_manager_stats` that counts live pages built a `Vec` of every page's reference to take its
+/// `.len()`, which is an allocation that buys nothing; removing it moved this probe's figure by
+/// **zero bytes**, because that arm is only taken when `object_block_lookup` is EMPTY and a store
+/// with pages never takes it. The change stands because the allocation is pointless at any size, but
+/// the lesson is the probe's: a per-read cost nobody had measured was about to be "fixed" by a line
+/// that does not execute.
+///
+/// WHAT IS NOT ANSWERED, stated so the number is not mistaken for a complete account: the remaining
+/// 99.5% is inside the rest of `shard_stats` -- the storage-stats construction and the body past it
+/// -- and this probe localises it no further. The split above is the instrument for doing that; it
+/// is not the answer.
+///
+/// rust-internal: measures this crates own allocation behaviour, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_stats_read_allocates -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "drives two corpora and probes the allocator; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_one_stats_read_allocates() {
+    use crate::types::{Command, ExecuteRequest};
+
+    println!();
+    println!("  corpus   live pages   allocs   alloc_bytes   bytes/page");
+
+    let mut measured: Vec<(usize, usize, u64, u64)> = Vec::new();
+    for rung in [40_usize, 320] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+        for index in 0..rung {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("st-{index:06}"),
+                    value: vec![b'v'; 48],
+                },
+            });
+            assert!(response.status.ok, "corpus write {index}: {:?}", response.status);
+        }
+
+        let live_pages: usize = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .map(|bucket| bucket.block_index.len())
+                .sum()
+        };
+
+        // WARM FIRST, so a one-off initialisation inside the stats path is not charged to the
+        // measurement and read as a per-call cost.
+        let warm = engine.shard_stats(1);
+        assert!(warm.is_some(), "the shard must report stats for this to measure anything");
+        // ATTRIBUTED, NOT GUESSED. `live_block_scan_sites` is keyed by the source location that
+        // asked, which is what this instrument exists for: the total says the stats read walks the
+        // shard, not WHICH line does it. Reset immediately before the measured call.
+        crate::engine::reset_live_block_scan_entries();
+        crate::engine::reset_live_block_scan_sites();
+        let probe = crate::alloc_probe::Probe::start();
+        let stats = engine.shard_stats(1);
+        let counted = probe.stop();
+        assert!(stats.is_some(), "the measured stats read returned nothing");
+        let scanned = crate::engine::live_block_scan_entries();
+        let sites = crate::engine::live_block_scan_sites_snapshot();
+
+        // SPLIT IN THREE, because the first version of this probe removed an allocation from the
+        // stats path and the figure did not move by one byte -- the line was in an arm a store with
+        // pages never takes. A total that cannot be attributed invites exactly that kind of fix.
+        let slab_probe = crate::alloc_probe::Probe::start();
+        let _ = engine.block_store.slab_summary();
+        let _ = engine.block_store.stats();
+        let slab_bytes = slab_probe.stop().alloc_bytes;
+        let om_bytes = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            let om_probe = crate::alloc_probe::Probe::start();
+            let _ = crate::engine::object_manager_stats_for_test(
+                shard,
+                0,
+                crate::DEFAULT_END_ROUTING_BUCKET,
+            );
+            om_probe.stop().alloc_bytes
+        };
+
+        println!(
+            "  {rung:>6}   {live_pages:>10}   {:>6}   {:>11}   {:>10.1}   scanned {scanned}",
+            counted.allocs,
+            counted.alloc_bytes,
+            counted.alloc_bytes as f64 / live_pages.max(1) as f64,
+        );
+        for (site, entries) in &sites {
+            println!("             {entries:>9} entries  <- {site}");
+        }
+        println!(
+            "             of which: block store slab summary + stats {slab_bytes} B, \
+object_manager_stats {om_bytes} B, rest {} B",
+            counted.alloc_bytes.saturating_sub(slab_bytes + om_bytes)
+        );
+        measured.push((rung, live_pages, counted.allocs, counted.alloc_bytes));
+    }
+
+    // --- DENOMINATOR: the walk this prices reads live pages, so the corpus has to have produced
+    // --- them. Two rungs that both held nothing would print a flat zero and read as "free".
+    for (rung, pages, _, _) in &measured {
+        assert!(
+            *pages >= *rung,
+            "corpus {rung} left only {pages} live pages, so the walk had nothing to read and the \
+             figures above are not measurements of it"
+        );
+    }
+
+    let (_, small_pages, _, small_bytes) = measured[0];
+    let (_, large_pages, _, large_bytes) = measured[1];
+    println!();
+    println!(
+        "  pages x{:.1}  ->  alloc_bytes x{:.1}",
+        large_pages as f64 / small_pages.max(1) as f64,
+        large_bytes as f64 / small_bytes.max(1) as f64,
+    );
+    println!("  a ratio near the page ratio means one stats read costs the store's size, every read.");
+    println!("  measured at x3.5 for x8.0 pages: a large fixed part, and a part that follows the store.");
+
+    // --- NO BOUND ASSERTED ON THE LEVEL. 776 KB a read is a finding, not a budget, and the share of
+    // --- it that follows the store is not yet attributed to a line -- so a threshold here would
+    // --- freeze a number nobody has explained. What IS asserted is the denominator above: that the
+    // --- corpus the figures are divided by actually exists.
+    assert!(
+        large_bytes > 0 && small_bytes > 0,
+        "one stats read allocated {small_bytes} B and {large_bytes} B at the two rungs, so at least \
+         one measured nothing and the split printed above divides into it"
+    );
+}
