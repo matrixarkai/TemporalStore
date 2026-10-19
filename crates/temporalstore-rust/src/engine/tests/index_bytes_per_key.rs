@@ -6857,7 +6857,21 @@ fn what_the_grouped_series_shape_costs_against_the_one_that_ships() {
 /// statuses, eight sources and twenty time buckets -- so most KEYS are sparse while most POINTS
 /// sit on a few dense keys, which is the mix that decides the answer.
 ///
-/// # WHAT IT FOUND: `context_indexes` IS THE TENANT, WORTH 2.81x
+/// # WHAT IT FOUND: `context_indexes` IS THE TENANT, WORTH 2.81x -- AND IT HAS SINCE MOVED
+///
+/// THE ROW BELOW IS THE COMPARISON THAT WAS MADE, NOT THE ONE THIS ARM NOW PRINTS. On the strength
+/// of it `context_indexes` was converted to `OwnedTimestampedSeries`, so the B-tree a key the
+/// 101.9 B/point column measures is no longer what that map holds. Its row now weighs the array it
+/// does hold against the grouped shape, and the five that have not moved still weigh a B-tree. The
+/// figures that decided it are kept here because a conversion whose justification is deleted is a
+/// conversion nobody can re-check.
+///
+/// AND RE-RUN AFTER THE CONVERSION THIS ARM REPORTS 1.01x, which is the result that closes the
+/// question for this map: 36.6 B/point resident against the grouped container's 36.3 for the same
+/// triples. The owned sorted array captured essentially the whole saving the grouped shape
+/// promised, so converting `context_indexes` onto `GroupedSeriesIndex` on top of this would buy
+/// nothing measurable, and the grouped container's remaining case rests on the five maps that have
+/// not moved -- each of which still needs its own workload here before anything is claimed for it.
 ///
 ///     map                keys   points   mean    shipped -> grouped   ratio
 ///     context_indexes    2038    12000    5.9      101.9 ->    36.3    2.81x
@@ -6947,17 +6961,25 @@ fn which_series_maps_the_grouped_shape_would_help() {
     let shard = shards.get(&1).expect("shard is loaded");
 
     // Weigh one map against a grouped index holding the same triples.
-    let weigh = |label: &str,
-                 map: &std::collections::HashMap<
-        std::sync::Arc<str>,
-        BTreeMap<u64, crate::block_store::ElementEntry>,
-    >| {
+    // GENERIC OVER THE SERIES TYPE, because the six maps no longer agree on one. `context_indexes`
+    // holds the owned sorted array after the conversion this arm argued for; the other five still
+    // hold a B-tree a key. Weighing them through the shared trait is what keeps the rows
+    // comparable -- each row is still "what this map resides as" against "what the grouped shape
+    // would cost for the same triples", which is the question, and the answer for a converted map
+    // is simply measured against its new resident form.
+    fn weigh<S>(
+        label: &str,
+        map: &std::collections::HashMap<std::sync::Arc<str>, S>,
+    ) -> (Occupancy, u64, u64)
+    where
+        S: crate::engine::timestamped_series::TimestampedSeries + Clone,
+    {
         let mut occ = Occupancy::default();
         let mut grouped = GroupedSeriesIndex::new();
         for (key, series) in map.iter() {
             occ.observe(series.len());
-            for (at, address) in series.iter() {
-                grouped.insert(key, *at, address.clone());
+            for (at, address) in series.points() {
+                grouped.insert(key, at, address.clone());
             }
         }
         grouped.rebucket(0, crate::DEFAULT_END_ROUTING_BUCKET);
@@ -6985,7 +7007,7 @@ fn which_series_maps_the_grouped_shape_would_help() {
             shipped_bytes as f64 / grouped_bytes.max(1) as f64,
         );
         (occ, shipped_bytes, grouped_bytes)
-    };
+    }
 
     println!();
     println!("  {EVENTS} extracted events, one unique entity and one shared per event");
@@ -7023,5 +7045,203 @@ fn which_series_maps_the_grouped_shape_would_help() {
         "on the real key distribution the grouped shape costs MORE for context_indexes \
          ({index_grouped} bytes against {index_shipped}), so it is not the tenant to convert \
          first and the choice has to be re-read against the occupancy printed above."
+    );
+}
+
+/// WHAT THE CONVERSION ACTUALLY SAVED ON `context_indexes`, WEIGHED ON ITS REAL DISTRIBUTION.
+///
+/// # WHY THIS EXISTS SEPARATELY FROM THE ARM THAT CHOSE THE MAP
+///
+/// `which_series_maps_the_grouped_shape_would_help` answered which map to convert, by comparing the
+/// B-tree a key against a `GroupedSeriesIndex` holding the same triples. This answers a different
+/// and smaller question: what the change that LANDED is worth. The map now holds
+/// `OwnedTimestampedSeries`, and the thing it no longer holds is a `BTreeMap` a key -- so the
+/// comparison here is between the container that ships and the container that shipped yesterday,
+/// built from the same content by `to_btree()`, which is the exact fold the key-state capture and
+/// the validator's report still use.
+///
+/// Both sides are weighed with `deep_heap_bytes`, which clones under the counting allocator and so
+/// reports RESIDENT bytes. Allocation traffic is a different quantity and is biased against the
+/// array, whose buffer is grown by doubling; a conversion justified on traffic would have been
+/// justified on the wrong number, which is a mistake this file has made before.
+///
+/// # TWO BEFORE-FIGURES, 22% APART, AND BOTH ARE HONEST
+///
+/// There is no single "what a B-tree a key costs" for this content, and the difference is large
+/// enough to matter:
+///
+///   * **101.9 B/point** -- the B-tree the ENGINE built, measured on this same fixture by
+///     `which_series_maps_the_grouped_shape_would_help` before the conversion. This is what the map
+///     actually held, so it is what the change actually saved.
+///   * **83.7 B/point** -- a B-tree rebuilt here from the same content by `to_btree()`, which
+///     `collect`s from a sorted iterator and so packs its nodes.
+///
+/// The second is lower because ascending insertion is the one order that leaves a B-tree half
+/// empty: every full leaf splits and the left half is never filled again. `repack_nested` exists in
+/// the decode path for exactly that reason -- and for this map it is now a no-op, because an array
+/// has no slack to repack.
+///
+/// This probe prints the rebuilt figure, because that is the one it can measure in-process, and
+/// states the engine-built one beside it. The saving is therefore reported as a RANGE whose floor
+/// is the representation change alone and whose ceiling includes the packing the array gets for
+/// free. Quoting the ceiling as though the floor did not exist, or the floor as though it were the
+/// whole change, would be one configuration's number presented as the other's.
+///
+/// WHAT NEITHER SIDE INCLUDES is the key. `ModelKey` is an `Arc<str>`, so a clone bumps a refcount
+/// and the payload is invisible to this instrument -- by design, because both containers share the
+/// identical set of handles and the difference between them is exactly the per-key series overhead
+/// this measures.
+///
+/// rust-internal: measures this crates own containers, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_context_index_map_costs_now_it_holds_the_array -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "drives 2,000 extracted context events; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_the_context_index_map_costs_now_it_holds_the_array() {
+    use crate::types::{Command, ContextEvent, ContextExtractedEventIndexes, ExecuteRequest};
+    use std::collections::{BTreeMap, HashMap};
+
+    const EVENTS: u64 = 2_000;
+    const T0: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+
+    for index in 0..EVENTS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteExtractedEvent {
+                tenant_hash: 7,
+                node_hash: 1_000 + (index % 50),
+                event: Box::new(ContextEvent {
+                    event_id_hash: 0xDEAD_0000_0000_0000 | index,
+                    event_time_ms: T0 + index,
+                    ingestion_time_ms: T0 + index,
+                    kind: 9,
+                    event_type: 2,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.7,
+                    text: "an extracted event".to_string(),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: Vec::new(),
+                }),
+                indexes: ContextExtractedEventIndexes {
+                    scope_hash: 3_001,
+                    // THE SAME FIXTURE THE CHOICE WAS MADE ON, one unique entity and one shared, so
+                    // this figure is comparable with the arm that picked this map rather than being
+                    // a second measurement of a second workload.
+                    entity_hashes: vec![500_000 + index, 1],
+                    status_hash: 600 + (index % 8),
+                    source_hash: 700 + (index % 8),
+                    event_time_bucket_ms: T0 + (index % 20) * 1_000_000,
+                    disabled_indexes: Vec::new(),
+                },
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+        assert!(
+            response.status.ok,
+            "extracted event {index}: {:?}",
+            response.status
+        );
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // The container that ships, and the one it replaced, holding identical content.
+    let mut occ = Occupancy::default();
+    let mut as_btrees: HashMap<std::sync::Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
+        HashMap::with_capacity(shard.context_indexes.len());
+    for (key, series) in shard.context_indexes.iter() {
+        occ.observe(series.len());
+        as_btrees.insert(key.clone(), series.to_btree());
+    }
+
+    let array_bytes = deep_heap_bytes(&shard.context_indexes);
+    let btree_bytes = deep_heap_bytes(&as_btrees);
+    let points = occ.entries.max(1);
+    let keys = occ.containers.max(1);
+
+    println!();
+    println!("  context_indexes after {EVENTS} extracted events: {keys} keys, {points} points");
+    println!(
+        "    B-tree a key (was)  {:>10} B   {:>7.1} B/point   {:>7.1} B/key",
+        btree_bytes,
+        btree_bytes as f64 / points as f64,
+        btree_bytes as f64 / keys as f64,
+    );
+    println!(
+        "    owned array (now)   {:>10} B   {:>7.1} B/point   {:>7.1} B/key",
+        array_bytes,
+        array_bytes as f64 / points as f64,
+        array_bytes as f64 / keys as f64,
+    );
+    // THE PACKED REBUILD IS THE CONSERVATIVE SIDE, and the engine-built figure the real one. See
+    // the two-before-figures section above; `ENGINE_BUILT_B_PER_POINT` is the measurement the arm
+    // that chose this map recorded, on this same fixture, before the conversion.
+    const ENGINE_BUILT_B_PER_POINT: f64 = 101.9;
+    let array_per_point = array_bytes as f64 / points as f64;
+    let packed_per_point = btree_bytes as f64 / points as f64;
+    println!(
+        "    landed, against the packed rebuild above: {:.2}x smaller, {:+.1}%",
+        btree_bytes as f64 / array_bytes.max(1) as f64,
+        100.0 * (array_bytes as f64 - btree_bytes as f64) / btree_bytes as f64,
+    );
+    println!(
+        "    landed, against the {ENGINE_BUILT_B_PER_POINT} B/point the ENGINE built: {:.2}x \
+smaller, {:+.1}%",
+        ENGINE_BUILT_B_PER_POINT / array_per_point,
+        100.0 * (array_per_point - ENGINE_BUILT_B_PER_POINT) / ENGINE_BUILT_B_PER_POINT,
+    );
+    // --- AND THE ORDERING OF THE TWO IS GUARDED, because the whole reason both are printed is the
+    // --- claim that a `collect` rebuild packs tighter than the engine's ascending inserts. If that
+    // --- stops being true the range is upside down and the conservative figure is not conservative.
+    assert!(
+        packed_per_point < ENGINE_BUILT_B_PER_POINT,
+        "the packed rebuild costs {packed_per_point:.1} B/point against the {ENGINE_BUILT_B_PER_POINT} \
+the engine's own build order produced, so the rebuild is no longer the conservative side and the \
+range printed above is inverted"
+    );
+    println!();
+    occ.report("context_indexes");
+
+    // --- DENOMINATORS FIRST: this conclusion is a ratio over a map the fixture had to fill, and an
+    // --- empty map would divide into a confident figure meaning nothing.
+    assert!(
+        occ.containers > 100,
+        "context_indexes holds only {} keys after {EVENTS} extracted events, so the index fan-out \
+         did not happen and both figures above are of an empty container",
+        occ.containers
+    );
+    assert!(
+        occ.entries as u64 >= EVENTS,
+        "context_indexes holds {} points for {EVENTS} events; each event writes several index \
+         entries, so the fixture is not producing the fan-out this measures",
+        occ.entries
+    );
+    // --- AND THE CONTENT IS THE SAME CONTENT, so the comparison is of representations and not of
+    // --- two different sets of points. Without this a fold that silently dropped points would
+    // --- report as a footprint win.
+    let btree_points: usize = as_btrees.values().map(BTreeMap::len).sum();
+    assert_eq!(
+        btree_points, occ.entries,
+        "the B-tree rebuild holds {btree_points} points against the array's {}, so the two sides \
+         do not hold identical content and the ratio is not a comparison of representations",
+        occ.entries
+    );
+    // --- THE VERDICT, asserted so a regression fails instead of scrolling past.
+    assert!(
+        array_bytes < btree_bytes,
+        "the owned array costs {array_bytes} bytes against the B-tree's {btree_bytes} on this \
+         map's real distribution, so the conversion did not pay and the occupancy above has moved"
     );
 }

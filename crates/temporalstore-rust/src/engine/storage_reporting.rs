@@ -1034,7 +1034,10 @@ pub(super) fn timestamped_kv_series<'a>(
         series.push(("context_event", &**key, Cow::Owned(timeline)));
     }
     for (key, timeline) in &shard.context_indexes {
-        series.push(("context_index", &key[..], Cow::Borrowed(timeline)));
+        // MATERIALISED, for the reason given over `features` above: this report is written against
+        // the stored B-tree shape and the map holds the array. One allocation per series on a
+        // reporting path, not a serving one.
+        series.push(("context_index", &key[..], Cow::Owned(timeline.to_btree())));
     }
     for (key, timeline) in &shard.context_audits {
         series.push(("context_audit", &key[..], Cow::Borrowed(timeline)));

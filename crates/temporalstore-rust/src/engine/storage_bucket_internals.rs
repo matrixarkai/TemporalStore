@@ -2924,9 +2924,26 @@ pub(super) fn sync_context_blocks_for_object(
     // address whenever a later point was written to an earlier slab. Written as `next_back()`
     // first, which is the ordering this representation makes convenient rather than the one the
     // caller needs.
-    if let Some(points) = shard.context_events().get(object_key) {
-        if let Some(newest) = points
-            .values()
+    // THE NEWEST ADDRESS A SERIES HOLDS, over whichever representation holds it.
+    //
+    // Three callers below want exactly this and they no longer agree on the container:
+    // `context_events` and `context_indexes` hold the owned sorted array, the four maps after them
+    // still hold a B-tree a key. Taken through the shared trait, so the answer cannot drift between
+    // the one written twice and the one written once.
+    //
+    // ONLY THE NEWEST BLOCK IS FILED, which is what makes a maximum sufficient: the caller pops the
+    // last address and drops the rest, because these kinds carry no component and the index holds
+    // one ref per object. Collecting every address the series ever held, into a HashSet and then a
+    // sorted Vec, made a write carry the node's whole history -- 8,322 bytes to add a summary to a
+    // node holding 20, 78,626 to add one to a node holding 320, 90.7% of the write and still
+    // climbing. The maximum equals the last element of that deduplicated sorted list, so this is
+    // the same address by the same ordering, without the set or the sort.
+    fn newest_filed_address<S>(series: &S) -> Option<ElementEntry>
+    where
+        S: super::timestamped_series::TimestampedSeries,
+    {
+        series
+            .addresses()
             .max_by(|left, right| {
                 left.block_slab_id()
                     .cmp(&right.block_slab_id())
@@ -2934,42 +2951,34 @@ pub(super) fn sync_context_blocks_for_object(
                     .then(left.length().cmp(&right.length()))
             })
             .cloned()
-        {
-            groups.push(("context_event", object_key.to_string(), vec![newest]));
-        }
+    }
+
+    if let Some(newest) = shard
+        .context_events()
+        .get(object_key)
+        .and_then(newest_filed_address)
+    {
+        groups.push(("context_event", object_key.to_string(), vec![newest]));
+    }
+    // `context_indexes` IS NOT IN THE LITERAL BELOW, because it no longer shares a type with the
+    // four that are. Pulled out rather than converted at the call, so this files from the array it
+    // holds instead of building a B-tree to read once and drop -- the same split `context_events`
+    // above already has, for the same reason.
+    if let Some(newest) = shard
+        .context_indexes
+        .get(object_key)
+        .and_then(newest_filed_address)
+    {
+        groups.push(("context_index", object_key.to_string(), vec![newest]));
     }
     for (kind, series) in [
-        ("context_index", &shard.context_indexes),
         ("context_audit", &shard.context_audits),
         ("context_child", &shard.context_children),
         ("context_summary", &shard.context_summaries),
         ("context_compression", &shard.context_compressions),
     ] {
-        if let Some(points) = series.get(object_key) {
-            // Only the NEWEST block is filed. The loop below pops the last address and drops the
-            // rest -- these kinds carry no component, so the index holds one ref per object -- so
-            // finding the maximum is all this needs.
-            //
-            // Collecting every address the series ever held, into a HashSet and then a sorted Vec,
-            // made a write carry the node's whole history: 8,322 bytes to add a summary to a node
-            // holding 20, and 78,626 to add one to a node holding 320 -- 90.7% of the write, and
-            // still climbing. The same defect was already fixed one level down, in the loop that
-            // files these groups; the list it stopped filing was still being built here.
-            //
-            // The maximum of the series equals the last element of the deduplicated, sorted list,
-            // so this is the same address by the same ordering, without the set or the sort.
-            if let Some(newest) = points
-                .values()
-                .max_by(|left, right| {
-                    left.block_slab_id()
-                        .cmp(&right.block_slab_id())
-                        .then(left.offset().cmp(&right.offset()))
-                        .then(left.length().cmp(&right.length()))
-                })
-                .cloned()
-            {
-                groups.push((kind, object_key.to_string(), vec![newest]));
-            }
+        if let Some(newest) = series.get(object_key).and_then(newest_filed_address) {
+            groups.push((kind, object_key.to_string(), vec![newest]));
         }
     }
     // Entities live grouped by node but index one entry per entity, under the composed key.
@@ -7034,8 +7043,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut context_events =
         HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
     let mut context_event_timeline = HashMap::<std::sync::Arc<str>, BTreeMap<u64, u64>>::new();
-    let mut context_indexes =
-        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    // THE ACCUMULATOR MATCHES THE FIELD, as `features` and `context_events` above already do:
+    // both helpers this map is handed to -- `insert_timestamped_secondary_view` and
+    // `reconcile_timestamped_series_membership_in_place` -- are generic over the series type, so
+    // this builds the array directly instead of building a B-tree to convert and throw away.
+    let mut context_indexes = HashMap::<
+        std::sync::Arc<str>,
+        super::timestamped_series::OwnedTimestampedSeries,
+    >::new();
     let mut context_audits =
         HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
     let mut context_entities =
@@ -9011,7 +9026,7 @@ mod model_kind_registry_guards {
         shard.set_context_event_series("ctx:event:t:n", BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_indexes
-            .insert("ctx:index:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:index:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_audits
             .insert("ctx:audit:t:n".into(), BTreeMap::from([(1u64, at.clone())]));

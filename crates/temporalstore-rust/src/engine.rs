@@ -3932,7 +3932,17 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     .get(&**key)
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
-            put("context_indexes", shard.context_indexes.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            // CAPTURED AS THE B-TREE IT HAS ALWAYS BEEN CAPTURED AS, for the reason stated over
+            // `context_events` above: the representation behind the read changed, the shape this
+            // blob carries must not, because a capture this binary writes is folded by
+            // `apply_key_state_field` in an older one.
+            put(
+                "context_indexes",
+                shard
+                    .context_indexes
+                    .get(&key[..])
+                    .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
+            );
             put("context_audits", shard.context_audits.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             put("context_children", shard.context_children.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             put("context_summaries", shard.context_summaries.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
@@ -4003,7 +4013,13 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("context_events"),
         );
-        apply_key_state_field(&mut shard.context_indexes, key, blob.get("context_indexes"));
+        // THE STORED B-TREE SHAPE, FOLDED INTO THE ARRAY, as for `context_events` just above. The
+        // type parameter is named because this map implements `KeyedState` for two value types.
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            &mut shard.context_indexes,
+            key,
+            blob.get("context_indexes"),
+        );
         apply_key_state_field(&mut shard.context_audits, key, blob.get("context_audits"));
         apply_key_state_field(&mut shard.context_children, key, blob.get("context_children"));
         apply_key_state_field(&mut shard.context_summaries, key, blob.get("context_summaries"));
@@ -7337,7 +7353,7 @@ fn object_manager_stats(
             + shard
                 .context_indexes
                 .values()
-                .map(BTreeMap::len)
+                .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>()
             + shard
                 .context_audits
@@ -7449,7 +7465,7 @@ fn object_manager_stats(
         + shard
             .context_indexes
             .values()
-            .map(BTreeMap::len)
+            .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>()
         + shard
             .context_audits

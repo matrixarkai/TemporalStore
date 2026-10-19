@@ -224,7 +224,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     shard.set_context_event_series(&key_for("context_event", suffix), series.clone());
     shard
         .context_indexes
-        .insert(key_for("context_index", suffix).into(), series.clone());
+        .insert(key_for("context_index", suffix).into(), series.clone().into());
     // The time index, keyed by the same object key the event map is keyed by.
     let mut timeline = BTreeMap::new();
     timeline.insert(TIMELINE_KEY, EVENT_ID_HASH);

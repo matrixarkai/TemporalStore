@@ -594,8 +594,31 @@ pub(super) struct ShardState {
     // ShardState is snapshotted whole.
     #[serde(default)]
     pub(super) context_event_timeline: HashMap<ModelKey, BTreeMap<u64, u64>>,
-    #[serde(default, skip_serializing)]
-    pub(super) context_indexes: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
+    // ON THE OWNED SORTED ARRAY, NOT A B-TREE A KEY.
+    //
+    // 98.1% of this map's keys hold exactly ONE point, measured over 2,000 extracted events in
+    // `which_series_maps_the_grouped_shape_would_help`: the index fans each event out across five
+    // index kinds whose cardinalities differ by orders of magnitude, and the high-cardinality ones
+    // (entity above all) give a key per value. A one-element `BTreeMap` costs 312 B in 4
+    // allocations where this array costs 48 B in 2, so that distribution is the worst possible fit
+    // for a B-tree a key and the best possible for the array.
+    //
+    // AND THIS MAP OWES NO COMPATIBILITY FIELD, which is what makes it the first tenant rather
+    // than the fifth. `OwnedTimestampedSeries` is deliberately not serializable, so a map adopting
+    // it normally keeps its stored image in a compat field under its historical wire key -- but
+    // this field was `#[serde(default, skip_serializing)]` and has no stored image at all: the key
+    // was never written, so every decode found it absent and took the default. `#[serde(skip)]` is
+    // that same pair of behaviours written as one attribute -- nothing on disk changes, no format
+    // stamp is owed, and it is what lets the value type stay unserializable.
+    //
+    // THE ATTRIBUTE AUDIT AGREES, which is worth stating because this looks like the shape it
+    // hunts. `a_field_that_stops_being_written` reports a field that GAINS `skip_serializing`
+    // WITHOUT a default -- a key that stops being written while a decode still demands it -- and it
+    // carries a test asserting that a bare `skip` is NOT reported, because `skip` is
+    // `skip_serializing` plus a default and so cannot strand a reader. This moves out of that
+    // audit's scope rather than into it.
+    #[serde(skip)]
+    pub(super) context_indexes: HashMap<ModelKey, OwnedTimestampedSeries>,
     #[serde(default)]
     pub(super) context_audits: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
     // IN-MEMORY ONLY, AND COALESCING, which are two decisions with a measurement behind each.
@@ -7599,7 +7622,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     let _ = &features;
     repack_nested(control_state);
     repack_nested(context_event_timeline);
-    repack_nested(context_indexes);
+    // `context_indexes` is an owned sorted array now, built by `collect` at decode exactly as
+    // `features` above is, so there is no half-empty B-tree node for this pass to repack.
+    let _ = &context_indexes;
     repack_nested(context_audits);
     repack_nested(context_entities);
     repack_nested(context_children);
