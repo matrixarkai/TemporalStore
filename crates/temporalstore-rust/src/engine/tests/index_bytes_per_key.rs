@@ -5941,3 +5941,186 @@ fn what_one_append_costs_at_two_series_lengths() {
          broken measurement"
     );
 }
+
+/// WHAT ONE CONTEXT-EVENT APPEND COSTS, AT TWO NODE SERIES LENGTHS.
+///
+/// # WHY THIS IS ASKED SEPARATELY FROM THE FEATURE APPEND
+///
+/// `what_one_append_costs_at_two_series_lengths` found a feature append restating the whole series
+/// per append, because `command_upsert_components` answered `None` for features and the caller
+/// then wrote a whole-object snapshot record. `ContextWriteEvent` sits in that same `None` bucket,
+/// and a context node's event series is the structure most likely to be LONG in use -- a node
+/// accumulates events for as long as it is alive.
+///
+/// But it is NOT the same arm and must not be assumed to behave the same way. A context event
+/// writes TWO resident structures per append (the event series keyed by event id, and
+/// `context_event_timeline` keyed by timeline key), it can fire auto compression, and its index
+/// entry is keyed by the event id while its page is keyed by the timeline key -- which is why
+/// `timestamped_component` takes an identity at all. So this measures the arm rather than
+/// inferring it from the feature result.
+///
+/// # THE ARMS
+///
+/// One node, warmed to `length` events outside the probe window, then `MEASURED` further appends
+/// inside it. Two lengths an octave apart, so the ratio says whether the cost tracks the series.
+///
+/// # WHAT IT FOUND, WHICH REFUTED THE PREDICTION IT WAS WRITTEN TO CONFIRM
+///
+///     series length   allocs/append   bytes/append   events held
+///               400           122.2        23258.9           450
+///              3200           122.4        61780.2          3250
+///     allocations ratio : 1.00x over an 8x series -- FLAT
+///     bytes ratio       : 2.66x
+///
+/// The allocation count does not move. So `ContextWriteEvent` is NOT carrying the defect the
+/// feature append had, even though it sits in the same `None` bucket of
+/// `command_upsert_components` and `command_object_keys` does name its key, which is what sends
+/// it down the whole-object-record path. Whatever that record costs here, it is not one
+/// allocation per event already held: at 3,200 events the feature append was spending 9,830
+/// allocations and 3.27 MB per append, and this spends 122 and 62 KB.
+///
+/// GOING AHEAD AND DECLARING ITS COMPONENTS WOULD HAVE BEEN A CHANGE WITH NO MEASURED PAYOFF,
+/// and it is not a safe one. The arm normalises the event before writing:
+/// `normalize_context_event_storage_keys` fills `event_time_ms` from `resolve_now_ms()` and
+/// `event_id_hash` from a hash of the text when either arrives as 0. The component for a context
+/// event is `timestamped_component(timeline_key, Some(event_id_hash))`, and the timeline key is
+/// derived from the time -- so for any caller that omits either field, a component derived from
+/// the command names an entry that does not exist, while the entry that does exist goes unnamed.
+/// That is a correctness hazard, not a slow path, and it was worth finding before the change
+/// rather than after.
+///
+/// WHERE THE BYTES DO COME FROM. Flat allocations with climbing bytes is the SHARD-side
+/// signature, not the series one: the cross in `is_the_appends_cost_the_series_or_the_shard`
+/// measured a 50-point series in a big shard at 985,144 B per append in almost no extra
+/// allocations. This arm calls the same `next_block_index_for_object`, which rebuilds a
+/// shard-wide map to choose one integer. So the remaining cost of BOTH appends is the same term,
+/// and it is fixed in one place rather than two.
+///
+/// rust-internal: measures this crates own write path, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_context_event_append_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds two shards to 400 and 3,200 events on ONE node; run by name, and ALONE -- the \
+            allocation counters are process-global"]
+fn what_one_context_event_append_costs_at_two_series_lengths() {
+    use crate::types::{Command, ExecuteRequest};
+
+    const T0: u64 = 1_787_270_070_000;
+    const MEASURED: usize = 50;
+
+    let event = |index: u64| crate::types::ContextEvent {
+        event_id_hash: 0xDEAD_0000_0000_0000 | index,
+        event_time_ms: T0 + index,
+        ingestion_time_ms: T0 + index,
+        kind: 9,
+        event_type: 2,
+        actor_hash: 0,
+        status: 0,
+        valid_until_ms: 0,
+        confidence: 0.9,
+        importance: 0.7,
+        text: "an event payload".to_string(),
+        source_ref: String::new(),
+        related_node_hashes: Vec::new(),
+        compact_attrs: Vec::new(),
+        vector: Vec::new(),
+    };
+
+    let mut rows: Vec<(usize, u64, u64, usize)> = Vec::new();
+    for length in [400usize, 3_200usize] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+        let write = |index: u64| {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::ContextWriteEvent {
+                    tenant_hash: 7,
+                    node_hash: 11,
+                    event: Box::new(event(index)),
+                    first_write_only: false,
+                    cold_storage: false,
+                },
+            });
+            assert!(response.status.ok, "event {index}: {:?}", response.status);
+        };
+        for index in 0..length {
+            write(index as u64);
+        }
+        let probe = Probe::start();
+        for index in 0..MEASURED {
+            write((length + index) as u64);
+        }
+        let counts = probe.stop();
+
+        // The series length the appends actually saw, READ BACK rather than assumed: auto
+        // compression can fold a window, and a fold would make `length` a fiction.
+        let held = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let object_key = crate::engine::context::context_event_key(7, 11);
+            shard
+                .context_events()
+                .get(&*object_key)
+                .map_or(0, |series| series.len())
+        };
+        rows.push((length, counts.allocs, counts.chunk_bytes, held));
+    }
+
+    println!();
+    println!("  {MEASURED} context-event appends measured per arm, node warmed to length first");
+    println!("    series length   allocs/append   bytes/append   events held");
+    for (length, allocs, bytes, held) in &rows {
+        println!(
+            "    {length:>13}   {:>13.1}   {:>12.1}   {held:>11}",
+            *allocs as f64 / MEASURED as f64,
+            *bytes as f64 / MEASURED as f64
+        );
+    }
+
+    let (small, small_allocs, small_bytes, small_held) = rows[0];
+    let (big, big_allocs, big_bytes, big_held) = rows[1];
+    let series_ratio = big as f64 / small as f64;
+    let alloc_ratio = big_allocs as f64 / small_allocs.max(1) as f64;
+    let byte_ratio = big_bytes as f64 / small_bytes.max(1) as f64;
+    println!();
+    println!("    series length ratio : {series_ratio:.2}x");
+    println!("    allocations ratio   : {alloc_ratio:.2}x");
+    println!("    bytes ratio         : {byte_ratio:.2}x");
+    println!();
+    // THREE VERDICTS, NOT TWO, because the two columns mean different things and an "or" over
+    // them would report the wrong cause. The whole-object-record defect the feature append had
+    // shows up in ALLOCATIONS -- one `IndexItem` per entry already held, so both columns climb
+    // together. A cost that climbs in BYTES while the allocation count stays flat is the opposite
+    // shape: a few large buffers sized by something other than the entry count. Collapsing those
+    // into one message is how a measurement gets read as confirming whichever cause was expected.
+    if alloc_ratio > 2.0 {
+        println!("    THE APPEND TRACKS THE SERIES: writing one event to a node costs the entries");
+        println!("    already on it, one allocation at a time, so a long-lived node gets steadily");
+        println!("    more expensive to append to -- the shape the feature append had before it");
+        println!("    declared its upsert components.");
+    } else if byte_ratio > 2.0 {
+        println!("    NOT THE SERIES TERM. The allocation count is FLAT in the node's length, so");
+        println!("    this arm is not restating one entry per event held. The bytes still climb,");
+        println!("    in a near-constant number of allocations -- a few large buffers sized by");
+        println!("    something other than the entry count, which is the SHARD-side signature the");
+        println!("    feature cross isolated (a 50-point series in a big shard cost 985,144 B per");
+        println!("    append in almost no extra allocations). Attribute it there, not here.");
+    } else {
+        println!("    THE APPEND IS FLAT in both columns: the cost does not track the events held,");
+        println!("    so this arm carries neither the whole-object-record defect nor a buffer");
+        println!("    sized by the shard.");
+    }
+
+    // --- DENOMINATORS, so a ratio is never taken over a fixture that did not build. ---
+    assert!(
+        small_allocs > 0 && big_allocs > 0,
+        "an arm allocated nothing across {MEASURED} appends: {small_allocs} and {big_allocs}"
+    );
+    assert!(
+        small_held >= small && big_held >= big,
+        "the node does not hold the events this probe warmed it with ({small_held} of {small}, \
+         {big_held} of {big}), so the arms are not the lengths they are labelled and the ratio \
+         above is of something else -- auto compression is the likely cause"
+    );
+}
