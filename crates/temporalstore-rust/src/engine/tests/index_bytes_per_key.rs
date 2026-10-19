@@ -6824,3 +6824,204 @@ fn what_the_grouped_series_shape_costs_against_the_one_that_ships() {
          conversion's justification has to be re-read at that occupancy."
     );
 }
+
+/// WHICH OF THE SIX B-TREE-BACKED SERIES MAPS THE GROUPED SHAPE WOULD ACTUALLY HELP.
+///
+/// # WHY THIS IS THE NEXT QUESTION
+///
+/// `what_the_grouped_series_shape_costs_against_the_one_that_ships` established the curve: the
+/// grouped shape is 4.95x better when a key holds ONE point, 1.9x at four, and 5% WORSE at ten,
+/// because ten entries fit one nearly-full `BTreeMap` node. So "convert a map onto it" is not a
+/// decision that can be made from the shape alone -- it depends on what the map being converted
+/// actually holds, which is why the corrected doc says to check the target's occupancy first.
+///
+/// Six `ShardState` maps are still `HashMap<ModelKey, BTreeMap<u64, ElementEntry>>`, which is
+/// exactly the shape the grouped index replaces: `context_indexes`, `context_audits`,
+/// `context_entities`, `context_children`, `context_summaries`, `context_compressions`.
+/// (`features` and the event series already moved to the owned sorted array, so they are not
+/// candidates for this.)
+///
+/// # WHAT IS MEASURED, AND WHY IT IS NOT A PROJECTION
+///
+/// Rather than apply the curve to an occupancy figure, this builds the REAL alternative: for each
+/// map it constructs a `GroupedSeriesIndex` holding the same (key, timestamp, address) triples the
+/// map holds, rebuckets it onto the shipped range, and weighs both with `deep_heap_bytes`. The
+/// comparison is then of two containers holding identical content, on the key distribution a real
+/// workload produced, rather than of a model.
+///
+/// THE WORKLOAD IS SHAPED TO PRODUCE BOTH REGIMES, because `context_indexes` has both and a
+/// single-regime fixture would answer for neither. Its five index kinds differ in cardinality by
+/// orders of magnitude: `EventKind`, `Status` and `Source` take a handful of distinct values, so
+/// their keys accumulate many points; `Entity` takes one per distinct entity, so its keys hold
+/// very few. The fixture gives each event a unique entity and a shared one, eight kinds, eight
+/// statuses, eight sources and twenty time buckets -- so most KEYS are sparse while most POINTS
+/// sit on a few dense keys, which is the mix that decides the answer.
+///
+/// # WHAT IT FOUND: `context_indexes` IS THE TENANT, WORTH 2.81x
+///
+///     map                keys   points   mean    shipped -> grouped   ratio
+///     context_indexes    2038    12000    5.9      101.9 ->    36.3    2.81x
+///
+///     occupancy: 1 point: 2000 keys (98.1%)   65-256: 36 (1.8%)   257+: 2 (0.1%)
+///
+/// The distribution is as bimodal as expected and it resolves the question: **98.1% of the keys
+/// hold exactly ONE point**, which is the regime the shape is 4.95x better in, while the handful of
+/// low-cardinality keys (kind, status, source) carry most of the POINTS. Footprint is driven by the
+/// per-key overhead, so the sparse keys decide it, and the whole container comes out 2.81x smaller
+/// on content it actually holds -- not projected from the curve but weighed against a
+/// `GroupedSeriesIndex` built from the same triples and rebucketed onto the shipped range.
+///
+/// THE OTHER FIVE MAPS ARE NOT ANSWERED HERE. This fixture drives the extracted-event index
+/// fan-out, which fills `context_indexes` and leaves `context_audits`, `context_entities`,
+/// `context_children`, `context_summaries` and `context_compressions` empty. Each prints that it
+/// was not exercised rather than a ratio, because a figure over an empty container reads as a
+/// measurement and is not one. Whichever of them is converted next needs its own workload here
+/// first.
+///
+/// rust-internal: measures this crates own containers, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_series_maps_the_grouped_shape_would_help -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "drives 2,000 extracted context events; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn which_series_maps_the_grouped_shape_would_help() {
+    use crate::engine::grouped_series_index::GroupedSeriesIndex;
+    use crate::types::{
+        Command, ContextEvent, ContextExtractedEventIndexes, ExecuteRequest,
+    };
+    use std::collections::BTreeMap;
+
+    const EVENTS: u64 = 2_000;
+    const T0: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+
+    for index in 0..EVENTS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteExtractedEvent {
+                tenant_hash: 7,
+                node_hash: 1_000 + (index % 50),
+                event: Box::new(ContextEvent {
+                    event_id_hash: 0xDEAD_0000_0000_0000 | index,
+                    event_time_ms: T0 + index,
+                    ingestion_time_ms: T0 + index,
+                    kind: 9,
+                    event_type: 2,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.7,
+                    text: "an extracted event".to_string(),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: Vec::new(),
+                }),
+                indexes: ContextExtractedEventIndexes {
+                    scope_hash: 3_001,
+                    // ONE UNIQUE ENTITY AND ONE SHARED: the unique one makes a key holding a
+                    // single point, which is the regime the shape is 4.95x better in; the shared
+                    // one makes a key holding all 2,000, which is the regime it loses in.
+                    entity_hashes: vec![500_000 + index, 1],
+                    status_hash: 600 + (index % 8),
+                    source_hash: 700 + (index % 8),
+                    event_time_bucket_ms: T0 + (index % 20) * 1_000_000,
+                    disabled_indexes: Vec::new(),
+                },
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+        assert!(
+            response.status.ok,
+            "extracted event {index}: {:?}",
+            response.status
+        );
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // Weigh one map against a grouped index holding the same triples.
+    let weigh = |label: &str,
+                 map: &std::collections::HashMap<
+        std::sync::Arc<str>,
+        BTreeMap<u64, crate::block_store::ElementEntry>,
+    >| {
+        let mut occ = Occupancy::default();
+        let mut grouped = GroupedSeriesIndex::new();
+        for (key, series) in map.iter() {
+            occ.observe(series.len());
+            for (at, address) in series.iter() {
+                grouped.insert(key, *at, address.clone());
+            }
+        }
+        grouped.rebucket(0, crate::DEFAULT_END_ROUTING_BUCKET);
+
+        let shipped_bytes = deep_heap_bytes(map);
+        let grouped_bytes = deep_heap_bytes(&grouped);
+        // AN EMPTY MAP PRINTS NO RATIO. This arm's fixture drives the extracted-event index
+        // fan-out, which fills `context_indexes` and leaves the other five untouched -- so a
+        // "0.00x" against them would read as "measured, no benefit" when nothing was measured.
+        // That is the same mistake as a test filter matching nothing and reporting ok.
+        if occ.containers == 0 {
+            println!(
+                "    {label:<22}      -- not exercised by this fixture, so nothing is claimed for it"
+            );
+            return (occ, shipped_bytes, grouped_bytes);
+        }
+        let entries = occ.entries.max(1);
+        let mean = occ.entries as f64 / occ.containers.max(1) as f64;
+        println!(
+            "    {label:<22} {:>6} keys {:>7} points  mean {mean:>6.1}   {:>8.1} -> {:>8.1} B/point  {:>5.2}x",
+            occ.containers,
+            occ.entries,
+            shipped_bytes as f64 / entries as f64,
+            grouped_bytes as f64 / entries as f64,
+            shipped_bytes as f64 / grouped_bytes.max(1) as f64,
+        );
+        (occ, shipped_bytes, grouped_bytes)
+    };
+
+    println!();
+    println!("  {EVENTS} extracted events, one unique entity and one shared per event");
+    println!("    map                      keys    points       mean      shipped -> grouped      ratio");
+    let (index_occ, index_shipped, index_grouped) = weigh("context_indexes", &shard.context_indexes);
+    let _ = weigh("context_audits", &shard.context_audits);
+    let _ = weigh("context_entities", &shard.context_entities);
+    let _ = weigh("context_children", &shard.context_children);
+    let _ = weigh("context_summaries", &shard.context_summaries);
+    let _ = weigh("context_compressions", &shard.context_compressions);
+
+    println!();
+    println!("  context_indexes occupancy, which is the distribution that decides the answer:");
+    index_occ.report("context_indexes");
+
+    // --- DENOMINATOR: the map this conclusion is about has to have been built, or every figure
+    // --- above is a division by a fixture that did nothing.
+    assert!(
+        index_occ.containers > 100,
+        "context_indexes holds only {} keys after {EVENTS} extracted events, so the index fan-out \
+         did not happen and the comparison above is of an empty container",
+        index_occ.containers
+    );
+    assert!(
+        index_occ.entries as u64 >= EVENTS,
+        "context_indexes holds {} points for {EVENTS} events; each event is meant to write several \
+         index entries, so the fixture is not producing the fan-out this measures",
+        index_occ.entries
+    );
+    // --- AND THE VERDICT, stated as an assertion so a change in the answer is a failure rather
+    // --- than a line of output nobody re-reads. The bimodal mix is what makes this interesting:
+    // --- most keys are sparse, so the per-key saving dominates even though most points are not.
+    assert!(
+        index_shipped > index_grouped,
+        "on the real key distribution the grouped shape costs MORE for context_indexes \
+         ({index_grouped} bytes against {index_shipped}), so it is not the tenant to convert \
+         first and the choice has to be re-read against the occupancy printed above."
+    );
+}
