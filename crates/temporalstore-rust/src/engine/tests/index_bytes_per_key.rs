@@ -6310,3 +6310,148 @@ fn what_choosing_the_next_block_ordinal_costs() {
         per(big_bytes)
     );
 }
+
+/// IS WHAT IS LEFT OF AN APPEND THE SERIES OR THE SHARD? The other probes conflate them.
+///
+/// # WHY THE EXISTING FIXTURE CANNOT ANSWER THIS
+///
+/// `what_one_append_costs_at_two_series_lengths` grows ONE series to 3,200 points, and each point
+/// gets its own block -- the ordinal allocator answers 3,200 after 3,200 appends. So that fixture
+/// grows the series and the shard together, and "the cost tracks the series" and "the cost tracks
+/// the shard" are the same curve in it. It measures the number correctly and cannot attribute it.
+///
+/// THEY ARE DIFFERENT PROBLEMS WITH DIFFERENT FIXES. A cost that tracks the SERIES means an append
+/// re-reads or restates the points it joins, and keeping series short would contain it. A cost
+/// that tracks the SHARD means an append pays for objects it has nothing to do with, which does
+/// not go away by keeping series short and is the worse of the two.
+///
+/// # THE CROSS
+///
+/// Three arms, so the two axes come apart:
+///
+///   A  short series,  small shard   -- the baseline
+///   B  LONG  series,  big shard     -- what the existing probe measures
+///   C  short series,  BIG shard     -- a short series in a shard holding B's worth of blocks,
+///                                      under OTHER objects
+///
+/// If C costs about what B costs, the price is the SHARD's size and the series is innocent. If C
+/// costs about what A costs, the price really is the series the append joins.
+///
+/// # WHAT IT FOUND
+///
+/// Run after #2232 (the append stopped snapshotting its series), #2234 (the ordinal allocator
+/// stopped asking the whole shard) and #2238 (its declared component actually builds an item).
+/// The figures the run prints are the attribution of the ~134 KB those three left behind; read
+/// them rather than this sentence, because the point of the arm is that the split is measured.
+///
+/// rust-internal: measures this crates own write path, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib is_the_appends_cost_the_series_or_the_shard -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds three shards, one to 3,200 blocks; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn is_the_appends_cost_the_series_or_the_shard() {
+    use crate::types::{Command, ExecuteRequest, FeaturePoint};
+
+    const T0: u64 = 1_787_270_070_000;
+    const BIG: usize = 3_200;
+    const SMALL: usize = 50;
+    const MEASURED: usize = 20;
+
+    // Seed a shard with `spread_over` filler objects of `points_each` points, then warm
+    // `measure_key` to `measure_points` and measure `MEASURED` further appends to it.
+    let run = |spread_over: usize, points_each: usize, measure_points: usize| -> (u64, u64, usize) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        ));
+        engine.load_shard(1);
+        let append = |key: &str, at: u64| {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: key.to_string(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: at,
+                        value: vec![b'v'; 8],
+                    }],
+                },
+            });
+            assert!(response.status.ok, "append {key}@{at}: {:?}", response.status);
+        };
+        for object in 0..spread_over {
+            let key = format!("filler-{object:06}");
+            for index in 0..points_each {
+                append(&key, T0 + index as u64);
+            }
+        }
+        let measure_key = "measured";
+        for index in 0..measure_points {
+            append(measure_key, T0 + index as u64);
+        }
+        let probe = Probe::start();
+        for index in 0..MEASURED {
+            append(measure_key, T0 + (measure_points + index) as u64);
+        }
+        let counts = probe.stop();
+        // The blocks the shard actually holds, read back rather than assumed: the arms are only
+        // a cross if C's shard really is the size B's is.
+        let blocks = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.bucket_index.object_block_lookup.iter().map(|(_, _, refs)| refs.len()).sum()
+        };
+        (counts.allocs, counts.chunk_bytes, blocks)
+    };
+
+    let (a_allocs, a_bytes, a_blocks) = run(0, 0, SMALL);
+    let (b_allocs, b_bytes, b_blocks) = run(0, 0, BIG);
+    // C spreads the SAME number of blocks over many objects, so the measured object stays short.
+    let (c_allocs, c_bytes, c_blocks) = run(BIG / SMALL, SMALL, SMALL);
+
+    let per = |v: u64| v as f64 / MEASURED as f64;
+    println!();
+    println!("  {MEASURED} appends measured per arm");
+    println!("    arm                            allocs/append   bytes/append   blocks in shard");
+    println!("    A short series, small shard    {:>13.1}   {:>12.1}   {a_blocks:>15}", per(a_allocs), per(a_bytes));
+    println!("    B LONG  series, big shard      {:>13.1}   {:>12.1}   {b_blocks:>15}", per(b_allocs), per(b_bytes));
+    println!("    C short series, BIG shard      {:>13.1}   {:>12.1}   {c_blocks:>15}", per(c_allocs), per(c_bytes));
+
+    let b_over_a = per(b_bytes) / per(a_bytes).max(1.0);
+    let c_over_a = per(c_bytes) / per(a_bytes).max(1.0);
+    println!();
+    println!("    B/A (series AND shard grew) : {b_over_a:.2}x");
+    println!("    C/A (only the SHARD grew)   : {c_over_a:.2}x");
+    println!();
+    // The split is reported as a share rather than a verdict, because "mostly the shard" and
+    // "mostly the series" are not the only two answers: both terms can be real at once, and a
+    // threshold would hide that.
+    let shard_share = ((per(c_bytes) - per(a_bytes)) / (per(b_bytes) - per(a_bytes)).max(1.0)) * 100.0;
+    println!("    Of what B costs above A, the SHARD accounts for {shard_share:.0}% and the");
+    println!("    SERIES for the rest. A cost on the shard side does not go away by keeping");
+    println!("    series short; a cost on the series side does.");
+
+    // --- DENOMINATORS: every arm must have done work, and the cross must actually be a cross. ---
+    assert!(
+        a_bytes > 0 && b_bytes > 0 && c_bytes > 0,
+        "an arm allocated nothing: A={a_bytes} B={b_bytes} C={c_bytes}"
+    );
+    assert!(
+        per(b_bytes) > per(a_bytes) * 1.5,
+        "arm B is not materially more expensive than A ({:.1} vs {:.1}), so this fixture no \
+         longer reproduces the cost it is attributing and the split below it is of noise",
+        per(b_bytes),
+        per(a_bytes)
+    );
+    // C's shard must really be the size B's is, or "only the shard grew" is not what happened.
+    assert!(
+        c_blocks * 2 >= b_blocks,
+        "arm C's shard holds {c_blocks} blocks against arm B's {b_blocks}, so C is not the \
+         big-shard arm it is labelled and the share above is attributing to a shard that is not \
+         there"
+    );
+}

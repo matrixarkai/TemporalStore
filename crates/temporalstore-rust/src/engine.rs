@@ -6566,24 +6566,37 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_pages(
          pages: every production site that installs a page files it in the same call, and this \
          state is reachable only by writing into `bucket_map` directly"
     );
-    // COLLECTED FIRST, so the immutable loan on the lookup ends before the pages are taken
-    // mutably. The two are disjoint fields of one struct, but the refs borrow from one of them.
-    let mut refs: Vec<crate::engine::state::BlockLookupRef> = Vec::new();
+    // THE TWO FIELDS ARE BORROWED SEPARATELY, WHICH IS WHAT THE OLD COMMENT ASKED FOR.
+    //
+    // This collected every ref of the object into a `Vec` first, and said why: "the immutable
+    // loan on the lookup ends before the pages are taken mutably. The two are disjoint fields of
+    // one struct, but the refs borrow from one of them." The second sentence is the remedy.
+    // Disjoint fields CAN be held at once -- an immutable borrow of one beside a mutable borrow
+    // of another -- as long as they are named. What forced the copy was reaching them through
+    // `object_block_refs`, a method taking `&self`, which borrows the whole index and so collides
+    // with the mutable borrow of `bucket_map` however disjoint the fields really are.
+    //
+    // MEASURED, the cost of that copy: 51,952 bytes in ONE allocation per append on a
+    // 3,200-point series -- 3,250 refs at sixteen bytes -- built, walked once, and dropped. It
+    // was the largest single term left in an append after #2232, #2234 and #2238, and the
+    // allocation count stayed flat while it grew, which is the signature of exactly this shape:
+    // one allocation sized by the entries held.
+    //
+    // The walk itself is unchanged: the same refs, in the same order, marking the same pages.
+    let index = &mut shard.bucket_index;
+    let lookup = &index.object_block_lookup;
+    let buckets = &mut index.bucket_map;
     for kind in storage_model_kinds() {
-        if let Some(entry) = shard.bucket_index.object_block_refs(kind, object_key) {
-            refs.extend(entry.iter().cloned());
-        }
-    }
-    for block_ref in refs {
-        let Some(bucket) = shard
-            .bucket_index
-            .bucket_map
-            .get_mut(&block_ref.routing_bucket)
-        else {
+        let Some(entry) = lookup.get(kind, object_key) else {
             continue;
         };
-        if let Some(page) = bucket.block_index.get_mut(&block_ref.block_ref_key) {
-            page.dirty = true;
+        for block_ref in entry.iter() {
+            let Some(bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
+                continue;
+            };
+            if let Some(page) = bucket.block_index.get_mut(&block_ref.block_ref_key) {
+                page.dirty = true;
+            }
         }
     }
 }

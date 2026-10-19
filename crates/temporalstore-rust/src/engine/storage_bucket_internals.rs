@@ -5371,7 +5371,20 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // See [`repair_object_index_against_its_pages`].
     // TARGETING, THE ONE QUESTION THE FLAG STILL ANSWERS. A lookup that cannot be trusted
     // cannot narrow the walk, so the walk is every bucket -- exactly as before.
-    let target_buckets = if !lookup_can_target {
+    // AN ADDITIVE PUBLISH NEVER READS THIS SET, so it is not built. The sweep below opens with
+    // `if !replace_existing { break; }` -- it supersedes nothing, so there is nothing to drop --
+    // and the set it would have swept costs the object's ENTIRE ref list to build: every ref
+    // iterated to collect its routing bucket, for a set that collapses to one element because
+    // every page of an object lands in its key's bucket. This function says exactly that at its
+    // other bucket-deriving site: "every address published here belongs to ONE object key, so
+    // they all land in the key's bucket. The set was a set of one."
+    //
+    // No bytes -- one element is one node -- but O(the object's pages) of work on every append,
+    // which is the same shape as the ref-list copy that
+    // `push_object_dirty_onto_its_existing_pages` used to make, on the same write path.
+    let target_buckets = if !replace_existing {
+        BTreeSet::new()
+    } else if !lookup_can_target {
         shard
             .bucket_index
             .bucket_map
@@ -5390,11 +5403,10 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             })
             .unwrap_or_default()
     };
+    // The additive case is now expressed by the set being EMPTY rather than by leaving on the
+    // first iteration, so the condition lives where the cost does. An additive publish reaches
+    // this loop with nothing to iterate; nothing already filed is disturbed, exactly as before.
     for routing_bucket in target_buckets {
-        if !replace_existing {
-            // Additive publish: nothing is being superseded, so the blocks already filed stay.
-            break;
-        }
         let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
