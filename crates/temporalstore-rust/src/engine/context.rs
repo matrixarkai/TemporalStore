@@ -16,6 +16,7 @@ use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
 use super::hashing::PageIdentity;
+use super::timestamped_series::TimestampedSeries;
 use super::{read_block_bytes, stable_object_hash, ShardState};
 /// `prefix` then two decimal parts, joined by colons, in one allocation.
 ///
@@ -1024,7 +1025,7 @@ pub(super) fn load_context_summaries(
                         cache,
                         block_store,
                         shard_id,
-                        *timeline_key,
+                        timeline_key,
                         address,
                         PageIdentity::of(shard_id, "context_summary", object_key, None),
                         routing_bucket,
@@ -1069,7 +1070,7 @@ pub(super) fn load_newest_context_summary(
                         cache,
                         block_store,
                         shard_id,
-                        *timeline_key,
+                        timeline_key,
                         address,
                         PageIdentity::of(shard_id, "context_summary", object_key, None),
                         routing_bucket,

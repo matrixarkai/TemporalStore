@@ -4253,7 +4253,7 @@ pub(crate) fn execute_on_shard(
                                 cache,
                                 block_store,
                                 shard_id,
-                                *timeline_key,
+                                timeline_key,
                                 address,
                                 PageIdentity::of(shard_id, "context_audit", &object_key, None),
                                 Some(block_routing_bucket(

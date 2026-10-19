@@ -7245,3 +7245,230 @@ range printed above is inverted"
          map's real distribution, so the conversion did not pay and the occupancy above has moved"
     );
 }
+
+/// WHAT THE FOUR CONVERTED CONTEXT SERIES MAPS COST, EACH WEIGHED AGAINST THE B-TREE IT REPLACED.
+///
+/// # WHY FOUR ARMS AND NOT ONE FIGURE
+///
+/// `context_audits`, `context_children`, `context_summaries` and `context_compressions` moved to
+/// `OwnedTimestampedSeries` together, and they do NOT share an occupancy: a node accumulates
+/// summaries at one level, children by parent, compressions by node and audits by session, each at
+/// its own rate. The curve the choice rests on -- 24.0 B a point for the array against 49.1 for the
+/// B-tree at a thousand points, 48 B against 312 at one -- has the array ahead at every occupancy,
+/// which is why all four converted; but "how far ahead" is per map and is measured here rather than
+/// read off that curve.
+///
+/// # THE COMPARISON IS OF REPRESENTATIONS, NOT OF TWO WORKLOADS
+///
+/// For each map this weighs the array it now holds against a `BTreeMap` rebuilt from the SAME
+/// content by `to_btree()` -- the fold the key-state capture and the validator's report both use --
+/// with `deep_heap_bytes`, which clones under the counting allocator and so reports resident bytes.
+///
+/// AND THE REBUILD IS THE CONSERVATIVE SIDE, for the reason
+/// `what_the_context_index_map_costs_now_it_holds_the_array` sets out at length: `to_btree()`
+/// collects from a sorted iterator and packs its nodes, where the engine's own ascending inserts
+/// leave them half empty. On `context_indexes` that difference was 22% -- 83.7 B a point rebuilt
+/// against the 101.9 the engine had actually built. So each ratio below is a FLOOR on what the
+/// conversion saved, not an estimate of it.
+///
+/// # WHAT IT FOUND: 2.60x ON ALL FOUR, AND THE FOUR ROWS ARE ONE MEASUREMENT
+///
+///     map                      keys   points   mean    B-tree -> array    ratio
+///     context_audits            400     1200   3.00     110.8 ->   42.7    2.60x
+///     context_children          400     1200   3.00     110.8 ->   42.7    2.60x
+///     context_summaries         400     1200   3.00     110.8 ->   42.7    2.60x
+///     context_compressions      400     1200   3.00     110.8 ->   42.7    2.60x
+///
+///     all four: 532,032 B as B-trees -> 204,864 B as arrays, 2.60x smaller, -61.5%
+///
+/// THE IDENTICAL ROWS ARE NOT FOUR CONFIRMATIONS OF ONE RATIO; THEY ARE ONE RATIO FOUR TIMES. This
+/// fixture gives every map the same shape -- 400 keys of 3 points, carrying the same
+/// `(u64, ElementEntry)` payload -- and at equal shape two containers of the same types cost the
+/// same, so equality here is arithmetic rather than evidence. Reading the column as four independent
+/// results would be reading the fixture's symmetry as a finding.
+///
+/// WHAT THE FOUR ARMS DO ESTABLISH SEPARATELY is that each map is reached by its OWN command and
+/// filled: the per-arm denominator asserts more than a hundred keys, which is the claim that would
+/// have failed silently if a kind's writes had stopped landing in its map. That is the part worth
+/// four arms; the ratio needs one.
+///
+/// AND THE OCCUPANCY IS THE HARD CASE ON PURPOSE. At one point a key the array wins by 6.5x (48 B
+/// against 312) and the answer would restate the sparse end of the curve. Three points a key is
+/// where a B-tree node is partly paid for, and the array still wins by 2.60x.
+///
+/// rust-internal: measures this crates own containers, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_four_converted_context_maps_cost -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "drives 400 nodes x 3 points across four context kinds; run by name, and ALONE -- the \
+            allocation counters are process-global"]
+fn what_the_four_converted_context_maps_cost() {
+    use crate::types::{
+        Command, ContextChildRef, ContextCompressionEvent, ContextPackAudit, ContextSummary,
+        ExecuteRequest,
+    };
+    use std::collections::{BTreeMap, HashMap};
+
+    const NODES: u64 = 400;
+    // MORE THAN ONE POINT A KEY ON PURPOSE. At one point a key the array wins by 6.5x and the
+    // answer would be the sparse end of the curve restated. Three points puts every map in the
+    // regime where a B-tree node is partly paid for, which is the harder case for the array.
+    const POINTS: u64 = 3;
+    const TENANT: u64 = 7907;
+    const NOW_MS: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
+
+    // FROM ONE, NOT ZERO. `ContextUpsertChildRef` refuses a zero `parent_hash` as a missing
+    // field -- the wire type cannot tell a zero hash from an absent one -- so a fixture starting at
+    // node 0 fails its first write.
+    for node in 1..=NODES {
+        for point in 0..POINTS {
+            let at = NOW_MS + node * 1_000 + point;
+            // THE KEY IS HELD CONSTANT ACROSS `point` AND THE TIMESTAMP VARIED, so each write adds
+            // a point to one series rather than creating a key. A fixture that varied the key
+            // would measure 1,200 series of one point and call it an occupancy of three.
+            for command in [
+                Command::ContextWritePackAudit {
+                    tenant_hash: TENANT,
+                    audit: ContextPackAudit {
+                        query_id: format!("q-{node}-{point}"),
+                        session_hash: 300 + node,
+                        request_time_ms: at,
+                        query_hash: 400 + node,
+                        max_prompt_tokens: 1_024,
+                        selected_tokens: 16,
+                        selected_refs: Vec::new(),
+                        blocked_refs: Vec::new(),
+                    },
+                },
+                Command::ContextUpsertChildRef {
+                    tenant_hash: TENANT,
+                    child_ref: ContextChildRef {
+                        parent_hash: node,
+                        child_hash: 600 + node * POINTS + point,
+                        updated_at_ms: at,
+                    },
+                },
+                Command::ContextUpsertSummary {
+                    tenant_hash: TENANT,
+                    summary: ContextSummary {
+                        node_hash: node,
+                        level: 1,
+                        text: format!("level-1 summary of node {node} at {point}"),
+                        valid_from_ms: at,
+                        vector: Vec::new(),
+                        embedding_model_hash: 0,
+                    },
+                },
+                Command::ContextWriteCompressionEvent {
+                    tenant_hash: TENANT,
+                    event: ContextCompressionEvent {
+                        compression_id_hash: 700 + node * POINTS + point,
+                        node_hash: node,
+                        source_start_ms: NOW_MS,
+                        source_end_ms: at,
+                        compressed_time_ms: at,
+                        summary: format!("compressed node {node} at {point}"),
+                    },
+                },
+            ] {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                });
+                assert!(
+                    response.status.ok,
+                    "node {node} point {point}: {:?}",
+                    response.status
+                );
+            }
+        }
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    fn weigh(
+        label: &str,
+        map: &HashMap<std::sync::Arc<str>, crate::engine::timestamped_series::OwnedTimestampedSeries>,
+    ) -> (Occupancy, u64, u64, usize) {
+        let mut occ = Occupancy::default();
+        let mut rebuilt: HashMap<std::sync::Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
+            HashMap::with_capacity(map.len());
+        for (key, series) in map.iter() {
+            occ.observe(series.len());
+            rebuilt.insert(key.clone(), series.to_btree());
+        }
+        let array_bytes = deep_heap_bytes(map);
+        let btree_bytes = deep_heap_bytes(&rebuilt);
+        let rebuilt_points: usize = rebuilt.values().map(BTreeMap::len).sum();
+        if occ.containers == 0 {
+            println!("    {label:<22}      -- not exercised by this fixture, so nothing is claimed for it");
+            return (occ, array_bytes, btree_bytes, rebuilt_points);
+        }
+        let points = occ.entries.max(1);
+        println!(
+            "    {label:<22} {:>6} keys {:>7} pts  mean {:>5.2}   {:>7.1} -> {:>7.1} B/pt   {:>5.2}x",
+            occ.containers,
+            occ.entries,
+            occ.entries as f64 / occ.containers.max(1) as f64,
+            btree_bytes as f64 / points as f64,
+            array_bytes as f64 / points as f64,
+            btree_bytes as f64 / array_bytes.max(1) as f64,
+        );
+        (occ, array_bytes, btree_bytes, rebuilt_points)
+    }
+
+    println!();
+    println!("  {NODES} nodes x {POINTS} points, per kind");
+    println!("    map                      keys     points      mean       B-tree -> array      ratio");
+    let arms = [
+        ("context_audits", weigh("context_audits", &shard.context_audits)),
+        ("context_children", weigh("context_children", &shard.context_children)),
+        ("context_summaries", weigh("context_summaries", &shard.context_summaries)),
+        (
+            "context_compressions",
+            weigh("context_compressions", &shard.context_compressions),
+        ),
+    ];
+
+    let mut total_array = 0u64;
+    let mut total_btree = 0u64;
+    for (name, (occ, array_bytes, btree_bytes, rebuilt_points)) in &arms {
+        // --- DENOMINATOR PER ARM: a map the fixture did not fill divides into a confident figure
+        // --- meaning nothing, and four arms make that four chances to publish one.
+        assert!(
+            occ.containers > 100,
+            "{name} holds only {} keys after {NODES} nodes, so this kind's writes are not landing \
+             in it and its row above is a measurement of an empty container",
+            occ.containers
+        );
+        // --- AND THE TWO SIDES HOLD THE SAME CONTENT, so the ratio compares representations. A
+        // --- fold that dropped points would otherwise report as a footprint win.
+        assert_eq!(
+            *rebuilt_points, occ.entries,
+            "{name}: the B-tree rebuild holds {rebuilt_points} points against the array's {}, so \
+             the two sides are not the same content",
+            occ.entries
+        );
+        assert!(
+            array_bytes < btree_bytes,
+            "{name}: the array costs {array_bytes} bytes against the B-tree's {btree_bytes} at an \
+             occupancy of {:.2}, so this conversion did not pay and the curve it rests on has moved",
+            occ.entries as f64 / occ.containers.max(1) as f64
+        );
+        total_array += array_bytes;
+        total_btree += btree_bytes;
+    }
+
+    println!();
+    println!(
+        "  all four: {total_btree} B as B-trees -> {total_array} B as arrays, {:.2}x smaller, {:+.1}%",
+        total_btree as f64 / total_array.max(1) as f64,
+        100.0 * (total_array as f64 - total_btree as f64) / total_btree as f64,
+    );
+    println!("  (a floor: the rebuilt B-tree packs its nodes where the engine's inserts leave them half empty)");
+}

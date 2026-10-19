@@ -1837,7 +1837,7 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
         fn range(
             &self,
             bounds: impl std::ops::RangeBounds<u64>,
-        ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+        ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)> {
             use std::ops::Bound;
             let start = match bounds.start_bound() {
                 Bound::Unbounded => 0,

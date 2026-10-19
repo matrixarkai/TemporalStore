@@ -3943,10 +3943,42 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
-            put("context_audits", shard.context_audits.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_children", shard.context_children.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_summaries", shard.context_summaries.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
-            put("context_compressions", shard.context_compressions.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            // The B-tree shape, as the `context_events` note above requires: a blob this
+            // binary writes is folded by `apply_key_state_field` in an older one.
+            put(
+                "context_audits",
+                shard
+                    .context_audits
+                    .get(&key[..])
+                    .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
+            );
+            // The B-tree shape, as the `context_events` note above requires: a blob this
+            // binary writes is folded by `apply_key_state_field` in an older one.
+            put(
+                "context_children",
+                shard
+                    .context_children
+                    .get(&key[..])
+                    .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
+            );
+            // The B-tree shape, as the `context_events` note above requires: a blob this
+            // binary writes is folded by `apply_key_state_field` in an older one.
+            put(
+                "context_summaries",
+                shard
+                    .context_summaries
+                    .get(&key[..])
+                    .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
+            );
+            // The B-tree shape, as the `context_events` note above requires: a blob this
+            // binary writes is folded by `apply_key_state_field` in an older one.
+            put(
+                "context_compressions",
+                shard
+                    .context_compressions
+                    .get(&key[..])
+                    .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
+            );
             put("context_entities", shard.context_entities.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             serde_json::Value::Object(blob)
         })
@@ -4020,10 +4052,22 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("context_indexes"),
         );
-        apply_key_state_field(&mut shard.context_audits, key, blob.get("context_audits"));
-        apply_key_state_field(&mut shard.context_children, key, blob.get("context_children"));
-        apply_key_state_field(&mut shard.context_summaries, key, blob.get("context_summaries"));
-        apply_key_state_field(
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            &mut shard.context_audits,
+            key,
+            blob.get("context_audits"),
+        );
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            &mut shard.context_children,
+            key,
+            blob.get("context_children"),
+        );
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            &mut shard.context_summaries,
+            key,
+            blob.get("context_summaries"),
+        );
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
             &mut shard.context_compressions,
             key,
             blob.get("context_compressions"),
@@ -7358,23 +7402,23 @@ fn object_manager_stats(
             + shard
                 .context_audits
                 .values()
-                .map(BTreeMap::len)
+                .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard
                 .context_children
                 .values()
-                .map(BTreeMap::len)
+                .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>()
             + shard
                 .context_summaries
                 .values()
-                .map(BTreeMap::len)
+                .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>()
             + shard
                 .context_compressions
                 .values()
-                .map(BTreeMap::len)
+                .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>();
         let dirty_bucket_count = if !shard.bucket_index.object_block_lookup.is_empty() {
             let mut dirty_buckets = shard
@@ -7470,23 +7514,23 @@ fn object_manager_stats(
         + shard
             .context_audits
             .values()
-            .map(BTreeMap::len)
+            .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard
             .context_children
             .values()
-            .map(BTreeMap::len)
+            .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>()
         + shard
             .context_summaries
             .values()
-            .map(BTreeMap::len)
+            .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>()
         + shard
             .context_compressions
             .values()
-            .map(BTreeMap::len)
+            .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>();
     let routing_bucket_count = routing_bucket_count(start_routing_bucket, end_routing_bucket);
     let mut dirty_buckets = shard

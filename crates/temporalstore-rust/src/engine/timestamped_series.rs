@@ -93,10 +93,15 @@ pub(super) trait TimestampedSeries {
     /// the helpers never read a window, and the first tenant to migrate immediately did. A seam is
     /// only as general as the dimension it varied -- and that applies to WHICH CALLERS WERE
     /// SAMPLED, not only to which type parameter was abstracted.
+    /// DOUBLE-ENDED, because a reader of a time window wants its NEWEST point as often as its
+    /// oldest: `load_context_summary_as_of` walks `.range(..).rev()` to decode one record instead of
+    /// the window. Both representations can do it -- `BTreeMap::range` and a slice's `iter` are each
+    /// double-ended, and `map` preserves that -- so a bare `impl Iterator` here was a bound narrower
+    /// than either implementation, and it cost a caller its reverse walk the moment a map converted.
     fn range(
         &self,
         bounds: impl std::ops::RangeBounds<u64>,
-    ) -> impl Iterator<Item = (u64, &ElementEntry)>;
+    ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)>;
 
     /// Every point, ascending, for overwriting addresses in place. The instant is handed over by
     /// value because no caller mutates it -- an instant is this map's key, and a representation
@@ -129,7 +134,7 @@ impl TimestampedSeries for BTreeMap<u64, ElementEntry> {
     fn range(
         &self,
         bounds: impl std::ops::RangeBounds<u64>,
-    ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+    ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)> {
         BTreeMap::range(self, bounds).map(|(at, address)| (*at, address))
     }
 
@@ -573,7 +578,7 @@ impl TimestampedSeries for OwnedTimestampedSeries {
     fn range(
         &self,
         bounds: impl std::ops::RangeBounds<u64>,
-    ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+    ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)> {
         let points: &[(u64, ElementEntry)] =
             self.points.as_deref().map_or(&[], |points| points.as_slice());
         let start = match bounds.start_bound() {

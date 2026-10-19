@@ -619,8 +619,18 @@ pub(super) struct ShardState {
     // audit's scope rather than into it.
     #[serde(skip)]
     pub(super) context_indexes: HashMap<ModelKey, OwnedTimestampedSeries>,
-    #[serde(default)]
-    pub(super) context_audits: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
+    // ON THE OWNED SORTED ARRAY. Measured at 24.0 B a point against the B-tree's 49.1 over 40,040
+    // keys (`what_the_feature_series_would_cost_as_an_owned_array`): 24 bytes is EXACTLY the
+    // payload -- `(u64, ElementEntry)` with a 16-byte entry -- so the array carries no per-point
+    // overhead and the B-tree roughly doubles it. Unlike the grouped shape, which loses by 5% where
+    // ten points fit one nearly-full node, the plain array has no occupancy at which it is worse.
+    //
+    // THE STORED IMAGE DOES NOT MOVE: `as_btree_maps` writes the B-tree map this field has always
+    // written and reads it back into the array, exactly as `features` above does. `default` is kept
+    // because this field has always had it -- `with` covers a PRESENT field and an absent one must
+    // still load as empty rather than fail.
+    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
+    pub(super) context_audits: HashMap<ModelKey, OwnedTimestampedSeries>,
     // IN-MEMORY ONLY, AND COALESCING, which are two decisions with a measurement behind each.
     //
     // EPHEMERAL: this map is `#[serde(skip)]`, so a restart loses it, and that is acceptable
@@ -674,12 +684,18 @@ pub(super) struct ShardState {
     // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
     // index written before this fold loads natively and one written after it stays readable by
     // an older binary.
-    #[serde(default)]
-    pub(super) context_children: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
-    #[serde(default)]
-    pub(super) context_summaries: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
-    #[serde(default)]
-    pub(super) context_compressions: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
+    // On the owned sorted array; see `context_audits` above for the measurement and for why
+    // `default` is kept beside the adapter.
+    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
+    pub(super) context_children: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // On the owned sorted array; see `context_audits` above for the measurement and for why
+    // `default` is kept beside the adapter.
+    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
+    pub(super) context_summaries: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // On the owned sorted array; see `context_audits` above for the measurement and for why
+    // `default` is kept beside the adapter.
+    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
+    pub(super) context_compressions: HashMap<ModelKey, OwnedTimestampedSeries>,
     #[serde(default)]
     #[serde(rename = "slot_index")]
     pub(super) bucket_index: CoreIndex,
@@ -7625,11 +7641,17 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // `context_indexes` is an owned sorted array now, built by `collect` at decode exactly as
     // `features` above is, so there is no half-empty B-tree node for this pass to repack.
     let _ = &context_indexes;
-    repack_nested(context_audits);
+    // FOUR OF THESE FIVE ARE OWNED SORTED ARRAYS NOW, built by `collect` at decode exactly as
+    // `features` and `context_indexes` above are, so there is no half-empty B-tree node for this
+    // pass to repack in any of them. `context_entities` is the one that remains: its inner key is
+    // an ENTITY HASH rather than a timestamp, so it is a different structure and keeps its nodes.
+    let _ = (
+        &context_audits,
+        &context_children,
+        &context_summaries,
+        &context_compressions,
+    );
     repack_nested(context_entities);
-    repack_nested(context_children);
-    repack_nested(context_summaries);
-    repack_nested(context_compressions);
     // Two levels: the series, and the member set each EXACT entry carries. A sketched bucket is
     // a fixed-size register array with nothing to repack, which is why this matches rather than
     // calling `repack_btree_set` on every bucket.

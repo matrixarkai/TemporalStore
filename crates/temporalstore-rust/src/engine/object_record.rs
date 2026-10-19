@@ -1351,7 +1351,7 @@ impl super::timestamped_series::TimestampedSeries for ObjectSlot {
     fn range(
         &self,
         bounds: impl std::ops::RangeBounds<u64>,
-    ) -> impl Iterator<Item = (u64, &ElementEntry)> {
+    ) -> impl DoubleEndedIterator<Item = (u64, &ElementEntry)> {
         use std::ops::Bound;
         let points = self
             .many

@@ -7099,16 +7099,36 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         std::sync::Arc<str>,
         super::timestamped_series::OwnedTimestampedSeries,
     >::new();
-    let mut context_audits =
-        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
+    // above already do: both helpers this is handed to are generic over the series type, so it
+    // builds the array directly rather than a B-tree to convert and throw away.
+    let mut context_audits = HashMap::<
+        std::sync::Arc<str>,
+        super::timestamped_series::OwnedTimestampedSeries,
+    >::new();
     let mut context_entities =
         HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_children =
-        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_summaries =
-        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
-    let mut context_compressions =
-        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
+    // above already do: both helpers this is handed to are generic over the series type, so it
+    // builds the array directly rather than a B-tree to convert and throw away.
+    let mut context_children = HashMap::<
+        std::sync::Arc<str>,
+        super::timestamped_series::OwnedTimestampedSeries,
+    >::new();
+    // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
+    // above already do: both helpers this is handed to are generic over the series type, so it
+    // builds the array directly rather than a B-tree to convert and throw away.
+    let mut context_summaries = HashMap::<
+        std::sync::Arc<str>,
+        super::timestamped_series::OwnedTimestampedSeries,
+    >::new();
+    // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
+    // above already do: both helpers this is handed to are generic over the series type, so it
+    // builds the array directly rather than a B-tree to convert and throw away.
+    let mut context_compressions = HashMap::<
+        std::sync::Arc<str>,
+        super::timestamped_series::OwnedTimestampedSeries,
+    >::new();
 
     for entry in entries {
         match entry.kind.as_str() {
@@ -9077,19 +9097,19 @@ mod model_kind_registry_guards {
             .insert("ctx:index:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_audits
-            .insert("ctx:audit:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:audit:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_entities
             .insert("ctx:entity:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_children
-            .insert("ctx:child:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:child:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_summaries
-            .insert("ctx:summary:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
+            .insert("ctx:summary:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_compressions
-            .insert("ctx:compression:t:n".into(), BTreeMap::from([(1u64, at)]));
+            .insert("ctx:compression:t:n".into(), BTreeMap::from([(1u64, at)]).into());
         shard
     }
 

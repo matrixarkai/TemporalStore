@@ -199,16 +199,16 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         .insert(key_for("context_node", suffix).as_str().into(), address());
     shard
         .context_audits
-        .insert(key_for("context_audit", suffix).into(), series.clone());
+        .insert(key_for("context_audit", suffix).into(), series.clone().into());
     shard
         .context_children
-        .insert(key_for("context_child", suffix).into(), series.clone());
+        .insert(key_for("context_child", suffix).into(), series.clone().into());
     shard
         .context_summaries
-        .insert(key_for("context_summary", suffix).into(), series.clone());
+        .insert(key_for("context_summary", suffix).into(), series.clone().into());
     shard
         .context_compressions
-        .insert(key_for("context_compression", suffix).into(), series.clone());
+        .insert(key_for("context_compression", suffix).into(), series.clone().into());
 
     // THE ENTITY ARM IS KEYED BY THE COLLECTION AND NOT BY THE COMPOSED KEY, which is the whole
     // reason it is a separate verdict below. The inner u64 is the ENTITY HASH, not a timestamp.
