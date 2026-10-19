@@ -6451,35 +6451,84 @@ pub(super) fn next_block_index_for_object(
     model_id: &str,
     object_key: &str,
 ) -> u32 {
-    bucket_index
-        .bucket_map
-        .get(&routing_bucket)
-        .and_then(|bucket| {
-            // THE IDENTITY COMES FROM BESIDE THE BLOCK, FROM BOTH SOURCES.
-            //
-            // A block id is an ordinal INSIDE its object and must never be reused: this store
-            // keeps a rewritten block's predecessor live, so an object numbering from zero again
-            // would have two live blocks claiming one position. The lookup holds LIVE pages only
-            // -- `insert_object_block_lookup` returns early on a deleted one -- so selecting on it
-            // alone would step back over a deleted block's ordinal and hand it out twice.
-            // `identity_of` reads the lookup for a live page and this bucket's own tombstone rows
-            // for a deleted one, which is why it is the door used here.
-            let identities = PageKeysByPosition::from_lookup(&bucket_index.object_block_lookup);
-            bucket
-                .block_index
-                .iter()
-                .filter(|(handle, block)| {
-                    block.model_id.as_str() == model_id
-                        && identities
-                            .identity_of(bucket, **handle, block)
-                            .is_some_and(|beside| &**beside.object_key == object_key)
-                })
-                .filter_map(|(_, block)| block.address.block_id())
-                .max()
-        })
-        .map_or(0, |highest| {
-            u32::try_from(highest).unwrap_or(u32::MAX).saturating_add(1)
-        })
+    let Some(bucket) = bucket_index.bucket_map.get(&routing_bucket) else {
+        return 0;
+    };
+
+    // THE IDENTITY STILL COMES FROM BESIDE THE BLOCK, FROM BOTH SOURCES -- BUT ASKED OF THE
+    // OBJECT RATHER THAN OF THE SHARD.
+    //
+    // A block id is an ordinal INSIDE its object and must never be reused: this store keeps a
+    // rewritten block's predecessor live, so an object numbering from zero again would have two
+    // live blocks claiming one position. So the highest ordinal has to be taken over the object's
+    // LIVE pages and its TOMBSTONED ones together -- the lookup holds live pages only
+    // (`insert_object_block_lookup` returns early on a deleted one), and selecting on it alone
+    // would step back over a deleted block's ordinal and hand it out twice.
+    //
+    // WHAT THIS REPLACED ASKED THE WHOLE SHARD TO ANSWER FOR ONE OBJECT. It built
+    // `PageKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s, one
+    // insert per block ref of every object in the shard -- and then walked this bucket's whole
+    // page index, calling `identity_of` on every page, to choose one integer. Both terms are
+    // sized by the shard and neither is sized by the object, so an append to a one-page object in
+    // a large shard paid for every other object in it.
+    //
+    // MEASURED, BEFORE: 475,584 bytes per call on a 3,200-block shard -- 14.5% of a feature
+    // append, and after #2232 declared that command's upsert components it is the dominant
+    // remaining term. The same call is on the context-event path, where
+    // `what_one_context_event_append_costs_at_two_series_lengths` recorded a flat allocation count
+    // with bytes still climbing 2.66x over an 8x series: the signature of a buffer sized by
+    // something other than the entries held.
+    //
+    // THE ANSWER IS THE SAME ONE, reached from the object's own two neighbours.
+    let live_highest = bucket_index
+        .object_block_refs(model_id, object_key)
+        .map(BlockRefs::as_slice)
+        .unwrap_or_default()
+        .iter()
+        // The refs span whatever buckets the object is filed in; this asks about one bucket, as
+        // the walk it replaces did -- it only ever saw `bucket.block_index`.
+        .filter(|block_ref| block_ref.routing_bucket == routing_bucket)
+        .filter_map(|block_ref| bucket.block_index.get(&block_ref.block_ref_key))
+        // `model_id` is re-tested because one handle is reachable from one ref, and the ref came
+        // from this object's slot under this kind -- but the page it names is the authority on
+        // what kind it is, which is what the walk this replaces tested.
+        .filter(|block| !block.deleted && block.model_id.as_str() == model_id)
+        .filter_map(|block| block.address.block_id())
+        .max();
+
+    // THE DELETED HALF, AND WHY IT IS STILL A WALK. A tombstone row names its page by the triple
+    // `(slab, offset, length)` and that triple carries NO ordinal, so the rows cannot answer this
+    // on their own -- the ordinal lives on the deleted page still sitting in the page index. What
+    // makes the walk affordable is that it is now CONDITIONAL: a bucket holding no tombstone row
+    // at all cannot hold a tombstoned page of this object, and `TombstoneElements` is `None` in
+    // the overwhelming majority of buckets -- its own doc measures the case it is in at 2.32%. An
+    // append-only object never reaches this arm.
+    //
+    // It also no longer builds the shard-wide position map even when it does run: a deleted
+    // page's object is stated by the tombstone row, which is the only source this half ever
+    // needed.
+    let deleted_highest = if bucket.tombstone_elements.is_empty() {
+        None
+    } else {
+        bucket
+            .block_index
+            .iter()
+            .filter(|(_, block)| block.deleted && block.model_id.as_str() == model_id)
+            .filter(|(_, block)| {
+                bucket
+                    .tombstone_element_at(&block.address)
+                    .is_some_and(|row| &*row.object_key == object_key)
+            })
+            .filter_map(|(_, block)| block.address.block_id())
+            .max()
+    };
+
+    // A page whose removal named no element states its object nowhere, so it is counted by
+    // neither half -- exactly as `identity_of` answering `None` left it uncounted before.
+    match live_highest.max(deleted_highest) {
+        Some(highest) => u32::try_from(highest).unwrap_or(u32::MAX).saturating_add(1),
+        None => 0,
+    }
 }
 
 /// THE ADDRESS THE RESIDENT MAP HOLDS FOR ONE ELEMENT, found by the component the index spells it

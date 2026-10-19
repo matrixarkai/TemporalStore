@@ -5989,12 +5989,22 @@ fn what_one_append_costs_at_two_series_lengths() {
 /// That is a correctness hazard, not a slow path, and it was worth finding before the change
 /// rather than after.
 ///
-/// WHERE THE BYTES DO COME FROM. Flat allocations with climbing bytes is the SHARD-side
-/// signature, not the series one: the cross in `is_the_appends_cost_the_series_or_the_shard`
-/// measured a 50-point series in a big shard at 985,144 B per append in almost no extra
-/// allocations. This arm calls the same `next_block_index_for_object`, which rebuilds a
-/// shard-wide map to choose one integer. So the remaining cost of BOTH appends is the same term,
-/// and it is fixed in one place rather than two.
+/// WHERE THE BYTES COME FROM IS STILL OPEN, AND ONE ANSWER HAS BEEN RULED OUT BY MEASUREMENT.
+///
+/// Flat allocations with climbing bytes is the SHARD-side signature, not the series one: the
+/// cross in `is_the_appends_cost_the_series_or_the_shard` measured a 50-point series in a big
+/// shard at 985,144 B per append in almost no extra allocations. This arm calls the same
+/// `next_block_index_for_object`, which rebuilt a shard-wide map to choose one integer, so the
+/// obvious reading was that both appends were left paying one term.
+///
+/// THEY WERE NOT. Making that function ask the object instead of the shard took the FEATURE
+/// append from 1,084,817 to 134,017 bytes at 3,200 points, and moved this one from 61,780.2 to
+/// 61,492.2 -- half a percent, which is nothing. So whatever sizes a context-event append's
+/// buffers, it is not the ordinal allocator, and the shared-term reading this paragraph used to
+/// assert was wrong. Recorded rather than deleted, because the shape it was reasoning from is
+/// sound and it is the second time on this path that a signature matched a cause that turned out
+/// not to be the one: the attribution has to come from moving the suspect and re-measuring, not
+/// from recognising the curve.
 ///
 /// rust-internal: measures this crates own write path, no product behaviour
 ///
@@ -6103,9 +6113,10 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
         println!("    NOT THE SERIES TERM. The allocation count is FLAT in the node's length, so");
         println!("    this arm is not restating one entry per event held. The bytes still climb,");
         println!("    in a near-constant number of allocations -- a few large buffers sized by");
-        println!("    something other than the entry count, which is the SHARD-side signature the");
-        println!("    feature cross isolated (a 50-point series in a big shard cost 985,144 B per");
-        println!("    append in almost no extra allocations). Attribute it there, not here.");
+        println!("    something other than the entry count.");
+        println!("    AND NOT THE ORDINAL ALLOCATOR EITHER: making that ask the object instead of");
+        println!("    the shard took a FEATURE append from 1,084,817 to 134,017 bytes and left");
+        println!("    this one at 61,492 from 61,780. The cause of these bytes is still open.");
     } else {
         println!("    THE APPEND IS FLAT in both columns: the cost does not track the events held,");
         println!("    so this arm carries neither the whole-object-record defect nor a buffer");
@@ -6122,5 +6133,180 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
         "the node does not hold the events this probe warmed it with ({small_held} of {small}, \
          {big_held} of {big}), so the arms are not the lengths they are labelled and the ratio \
          above is of something else -- auto compression is the likely cause"
+    );
+}
+
+/// WHAT CHOOSING THE NEXT BLOCK ORDINAL COSTS, AT TWO SHARD SIZES.
+///
+/// # WHY THIS IS MEASURED AT THE FUNCTION AND NOT ONLY AT THE APPEND
+///
+/// `next_block_index_for_object` answers one question -- the lowest block ordinal this object may
+/// safely use next -- and it is called on every write that adds a page. An append probe can only
+/// say that the append got cheaper; it cannot say this is why. Calling the function directly, at
+/// two shard sizes an octave apart, says whether its cost is sized by the SHARD (which has
+/// nothing to do with the question) or by the OBJECT (which is the question).
+///
+/// # WHAT IT USED TO COST
+///
+/// It built `PageKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s,
+/// one insert per block ref of every object in the shard -- and then walked the bucket's whole
+/// page index asking `identity_of` for each page, to choose one integer. Both terms sized by the
+/// shard, neither by the object. Measured by this arm on the parent commit, after the bucket bug
+/// below was fixed:
+///
+///     blocks in shard   allocs/call   bytes/call   ordinal answered
+///                 400          16.0      59648.0                400
+///                3200          22.0     475584.0               3200
+///
+/// and on this commit, 0.0 and 0.0 at both sizes, with the same two answers. The end-to-end
+/// effect is in `what_one_append_costs_at_two_series_lengths`: 1,084,817 -> 134,017 bytes per
+/// append on a 3,200-point series.
+///
+/// THE COST BOUND BELOW FAILS ON THE PARENT COMMIT, which is the only evidence that it is a guard
+/// and not a comment: it reports the 475,584 and names what would have had to come back.
+///
+/// # THE ANSWER IS ASSERTED BEFORE THE COST, AND THAT IS NOT CEREMONY
+///
+/// This probe's first version derived the routing bucket as `block_routing_bucket(&key, 0,
+/// DEFAULT_END_ROUTING_BUCKET)`, which is not the range the shard files under. So it asked about a
+/// bucket holding none of the object's pages: the call answered ordinal 0 for a 400-block object
+/// and allocated nothing, and the arm printed 0.0 bytes per call both BEFORE and AFTER the change
+/// it exists to measure. A cost probe aimed at the wrong question reports the cheapest possible
+/// answer, which reads exactly like a win. The bucket now comes out of the object's own filing,
+/// the ref list is asserted non-empty, and the ordinal is asserted to be the block count.
+///
+/// # WHAT IT COSTS NOW
+///
+/// Nothing. The live half reads the object's own ref list and takes a max; the deleted half is a
+/// walk, but a CONDITIONAL one, skipped entirely unless the bucket holds a tombstone row at all.
+/// Neither path allocates, so the assertion below is on a byte count near zero rather than on a
+/// ratio -- a ratio between two small numbers says much less than the numbers do.
+///
+/// rust-internal: measures this crates own index structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_choosing_the_next_block_ordinal_costs -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds two shards to 400 and 3,200 blocks; run by name, and ALONE -- the allocation \
+            counters are process-global"]
+fn what_choosing_the_next_block_ordinal_costs() {
+    use crate::types::{Command, ExecuteRequest, FeaturePoint};
+
+    const T0: u64 = 1_787_270_070_000;
+    const CALLS: usize = 20;
+
+    let mut rows: Vec<(usize, u64, u64, u32)> = Vec::new();
+    for blocks in [400usize, 3_200usize] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+            64 * 1024 * 1024,
+            dir.path().join("cache"),
+            dir.path().join("pages"),
+            dir.path().join("indexes"),
+        ));
+        engine.load_shard(1);
+        let key = format!("ordinal-{blocks}");
+        for index in 0..blocks {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::FeatureAppend {
+                    key: key.clone(),
+                    points: vec![FeaturePoint {
+                        timestamp_ms: T0 + index as u64,
+                        value: vec![b'v'; 8],
+                    }],
+                },
+            });
+            assert!(response.status.ok, "seed {index}: {:?}", response.status);
+        }
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        // THE BUCKET IS READ OUT OF THE OBJECT'S OWN FILING, NOT RECOMPUTED.
+        //
+        // This first spelled it `block_routing_bucket(&key, 0, DEFAULT_END_ROUTING_BUCKET)`, and
+        // the shard does not use that range -- so the call was asked about a bucket the object is
+        // not in, answered ordinal 0 for a 400-block object, and allocated nothing doing it. A
+        // cost probe that asks the wrong question measures the cheapest possible answer and reads
+        // as a win: the arm reported 0.0 bytes per call BEFORE and AFTER the change it was written
+        // to measure, which the answer assertion below is what caught.
+        let refs = shard
+            .bucket_index
+            .object_block_refs("feature", &key)
+            .map(|refs| refs.as_slice().to_vec())
+            .unwrap_or_default();
+        assert!(
+            !refs.is_empty(),
+            "the lookup holds no block ref for the {blocks}-block object this arm seeded, so there              is nothing for the ordinal allocator to find and any cost it reports is the cost of              answering about an object that is not there"
+        );
+        let routing_bucket = refs[0].routing_bucket;
+        // Warmed once outside the window, so what is measured is the steady-state answer and not
+        // a first-touch of anything the call reaches.
+        let warm = crate::engine::state::next_block_index_for_object(
+            &shard.bucket_index,
+            routing_bucket,
+            "feature",
+            &key,
+        );
+        let probe = Probe::start();
+        let mut last = 0;
+        for _ in 0..CALLS {
+            last = crate::engine::state::next_block_index_for_object(
+                &shard.bucket_index,
+                routing_bucket,
+                "feature",
+                &key,
+            );
+        }
+        let counts = probe.stop();
+        assert_eq!(
+            warm, last,
+            "the call is not deterministic across {CALLS} invocations on an unchanging shard"
+        );
+        rows.push((blocks, counts.allocs, counts.chunk_bytes, last));
+    }
+
+    println!();
+    println!("  {CALLS} calls per arm, on an unchanging shard");
+    println!("    blocks in shard   allocs/call   bytes/call   ordinal answered");
+    for (blocks, allocs, bytes, answer) in &rows {
+        println!(
+            "    {blocks:>15}   {:>11.1}   {:>10.1}   {answer:>16}",
+            *allocs as f64 / CALLS as f64,
+            *bytes as f64 / CALLS as f64
+        );
+    }
+
+    let (small, _small_allocs, small_bytes, small_answer) = rows[0];
+    let (big, _big_allocs, big_bytes, big_answer) = rows[1];
+    let per = |v: u64| v as f64 / CALLS as f64;
+    println!();
+    println!("    shard ratio : {:.2}x", big as f64 / small as f64);
+    println!("    bytes/call  : {:.1} -> {:.1}", per(small_bytes), per(big_bytes));
+    println!();
+    println!("    BEFORE, measured by this same arm on the parent commit: 16.0 allocs and");
+    println!("    59,648 B/call at 400 blocks, 22.0 and 475,584 B/call at 3,200 -- a shard-wide");
+    println!("    position map plus a walk of the bucket's whole page index, to choose one");
+    println!("    integer. Both commits answer 400 and 3,200, so the answer did not move.");
+
+    // --- THE ANSWER FIRST. A cheap call that answers wrongly is worse than an expensive one. ---
+    assert_eq!(
+        small_answer,
+        u32::try_from(small).expect("the arm's block count fits a u32"),
+        "a {small}-block object's next ordinal should be {small}"
+    );
+    assert_eq!(
+        big_answer,
+        u32::try_from(big).expect("the arm's block count fits a u32"),
+        "a {big}-block object's next ordinal should be {big}"
+    );
+    // --- AND THEN THE COST, stated as a bound rather than a ratio: both arms are meant to be
+    // --- at or near zero, and a ratio between two near-zero numbers carries no information.
+    assert!(
+        per(big_bytes) < 1_024.0,
+        "choosing one ordinal on a {big}-block shard moved {:.1} bytes per call. The shard-wide \
+         term this function used to carry is back, or a new one arrived: it reads the object's own \
+         ref list and takes a max, which allocates nothing.",
+        per(big_bytes)
     );
 }
