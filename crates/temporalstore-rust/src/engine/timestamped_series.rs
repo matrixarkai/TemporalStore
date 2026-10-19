@@ -194,6 +194,60 @@ where
     K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
     S: TimestampedSeriesWrite,
 {
+    set_point_inner(map, key, at, address, true)
+}
+
+/// THE SAME WRITE WITHOUT THE SURVIVING SET, FOR THE CALLERS THAT DO NOT WANT IT.
+///
+/// # WHY THIS EXISTS
+///
+/// The surviving set is a clone of EVERY address the series holds, so asking for it on a write to
+/// a 3,250-point series copies 3,250 addresses into a fresh vector. That is the right price for
+/// the one caller that needs them, and it was being paid by two that threw the vector away: both
+/// context-event write arms in `execute_on_shard` called the collecting door and bound the result
+/// to nothing. Every context event written to a node copied the node entire event series and
+/// dropped it.
+///
+/// MEASURED on `what_one_context_event_append_costs_at_two_series_lengths`, whose signature is
+/// what pointed here: a flat 122 allocations per append with bytes still climbing 2.66x over an
+/// 8x series -- one allocation, sized by the entries held, which is exactly one whole-series
+/// clone. That same probe had already ruled out the two causes assumed before it, the whole-object
+/// index record and the shard-wide map in the ordinal allocator, the second by moving it and
+/// re-measuring.
+///
+/// # ONE BODY, NOT TWO
+///
+/// Both doors run `set_point_inner`, because the empty-series rule is the kind of thing that gets
+/// forgotten in a copy: AN EMPTIED SERIES TAKES ITS KEY WITH IT, and a second body would be one
+/// more place for that to drift. `Vec::new()` does not allocate, so the non-collecting door moves
+/// no bytes at all.
+pub(super) fn set_point<K, S>(
+    map: &mut std::collections::HashMap<K, S>,
+    key: K,
+    at: u64,
+    address: Option<ElementEntry>,
+) where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
+    S: TimestampedSeriesWrite,
+{
+    let dropped = set_point_inner(map, key, at, address, false);
+    debug_assert!(
+        dropped.is_empty(),
+        "the non-collecting door returned addresses, so it collected the series it exists not to collect"
+    );
+}
+
+fn set_point_inner<K, S>(
+    map: &mut std::collections::HashMap<K, S>,
+    key: K,
+    at: u64,
+    address: Option<ElementEntry>,
+    collect_live: bool,
+) -> Vec<ElementEntry>
+where
+    K: std::hash::Hash + Eq + std::borrow::Borrow<str> + Clone,
+    S: TimestampedSeriesWrite,
+{
     // THE KEY ARRIVES OWNED, AND THAT IS THE WHOLE CHANGE. This took a `&str` and minted its own
     // key with `K::from(object_key)` on every call -- so a map whose key CAN be shared got a fresh
     // allocation anyway, and converting the map's key type would have shared nothing. The caller
@@ -208,7 +262,15 @@ where
         Some(address) => series.set(at, address),
         None => series.clear(at),
     }
-    let live = series.addresses().cloned().collect::<Vec<_>>();
+    // COLLECTED BEFORE THE REMOVAL BELOW, AND THAT ORDER IS LOAD-BEARING: a write that empties
+    // the series takes its key out of the map, and the surviving set the collecting caller wants
+    // is the one from before that happened -- which for an emptied series is empty anyway, and
+    // for every other write is the series still there.
+    let live = if collect_live {
+        series.addresses().cloned().collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
     if series.is_empty() {
         map.remove(for_removal.borrow());
     }

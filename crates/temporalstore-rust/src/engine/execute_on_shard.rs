@@ -3758,7 +3758,11 @@ pub(crate) fn execute_on_shard(
                             .object_block_lookup
                             .any_shared_object_key(&*object_key)
                             .unwrap_or_else(|| std::sync::Arc::from(&*object_key));
-                        super::timestamped_series::set_point_and_collect_live(
+                        // THE NON-COLLECTING DOOR. This called `set_point_and_collect_live`
+                        // and bound the result to nothing -- and that result is a clone of every
+                        // address the node event series holds, so writing one event to a node
+                        // copied the whole series and dropped it.
+                        super::timestamped_series::set_point(
                             shard.context_events_mut(),
                             std::sync::Arc::clone(&stored_key),
                             event_id_hash,
@@ -3857,7 +3861,11 @@ pub(crate) fn execute_on_shard(
                             .object_block_lookup
                             .any_shared_object_key(&*event_object_key)
                             .unwrap_or_else(|| std::sync::Arc::from(&*event_object_key));
-                        super::timestamped_series::set_point_and_collect_live(
+                        // THE NON-COLLECTING DOOR. This called `set_point_and_collect_live`
+                        // and bound the result to nothing -- and that result is a clone of every
+                        // address the node event series holds, so writing one event to a node
+                        // copied the whole series and dropped it.
+                        super::timestamped_series::set_point(
                             shard.context_events_mut(),
                             std::sync::Arc::clone(&stored_key),
                             event_id_hash,
