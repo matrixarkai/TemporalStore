@@ -629,8 +629,13 @@ pub(super) struct ShardState {
     // written and reads it back into the array, exactly as `features` above does. `default` is kept
     // because this field has always had it -- `with` covers a PRESENT field and an absent one must
     // still load as empty rather than fail.
-    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
-    pub(super) context_audits: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // MOVED INTO `objects`, under `StoredModelKind::ContextAudit` -- read it through
+    // `context_audits()` and write it through `context_audits_mut()`, which pick the kind once.
+    //
+    // Its stored image moved with it, out of a top-level key and into the consolidated
+    // map's inner table, where a series is carried by `ObjectSlotWire`'s `e` array. Each
+    // such move REMOVES a top-level key, so each needs a stamp bump or it is dropped in
+    // silence; this one shares a bump with the other two in its change.
     // IN-MEMORY ONLY, AND COALESCING, which are two decisions with a measurement behind each.
     //
     // EPHEMERAL: this map is `#[serde(skip)]`, so a restart loses it, and that is acceptable
@@ -693,12 +698,22 @@ pub(super) struct ShardState {
     // That is a format move, which `SHARD_INDEX_FORMAT_VERSION` 16 covers.
     // On the owned sorted array; see `context_audits` above for the measurement and for why
     // `default` is kept beside the adapter.
-    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
-    pub(super) context_summaries: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // MOVED INTO `objects`, under `StoredModelKind::ContextSummary` -- read it through
+    // `context_summaries()` and write it through `context_summaries_mut()`, which pick the kind once.
+    //
+    // Its stored image moved with it, out of a top-level key and into the consolidated
+    // map's inner table, where a series is carried by `ObjectSlotWire`'s `e` array. Each
+    // such move REMOVES a top-level key, so each needs a stamp bump or it is dropped in
+    // silence; this one shares a bump with the other two in its change.
     // On the owned sorted array; see `context_audits` above for the measurement and for why
     // `default` is kept beside the adapter.
-    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
-    pub(super) context_compressions: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // MOVED INTO `objects`, under `StoredModelKind::ContextCompression` -- read it through
+    // `context_compressions()` and write it through `context_compressions_mut()`, which pick the kind once.
+    //
+    // Its stored image moved with it, out of a top-level key and into the consolidated
+    // map's inner table, where a series is carried by `ObjectSlotWire`'s `e` array. Each
+    // such move REMOVES a top-level key, so each needs a stamp bump or it is dropped in
+    // silence; this one shares a bump with the other two in its change.
     #[serde(default)]
     #[serde(rename = "slot_index")]
     pub(super) bucket_index: CoreIndex,
@@ -7568,10 +7583,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         control_state_changes,
         context_event_timeline,
         context_indexes,
-        context_audits,
         context_entities,
-        context_summaries,
-        context_compressions,
 
         // ----- Nothing to pack. Each for a stated reason, not by omission. -----
         //
@@ -7671,7 +7683,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // an ENTITY HASH rather than a timestamp, so it is a different structure and keeps its nodes.
     // `context_children` is not in this list any more: it has no field here, having moved into
     // the consolidated map, so there is nothing to acknowledge.
-    let _ = (&context_audits, &context_summaries, &context_compressions);
+    // Only `context_indexes` is left to acknowledge: the other three moved into the
+    // consolidated map and have no field in this destructure any more.
+    let _ = &context_indexes;
     repack_nested(context_entities);
     // Two levels: the series, and the member set each EXACT entry carries. A sketched bucket is
     // a fixed-size register array with nothing to repack, which is why this matches rather than
@@ -7712,6 +7726,72 @@ impl ShardState {
         self.objects
             .get(&kind)
             .unwrap_or_else(|| NO_OBJECTS_OF_THIS_KIND.get_or_init(HashMap::new))
+    }
+
+    /// The context pack audits, read from the consolidated map.
+    ///
+    /// A DOOR AND NOT A FIELD, for the reason every tenant of `objects` has one: the map is keyed
+    /// by KIND first, so a caller reaching the field would have to pick the inner table itself, and
+    /// picking the wrong kind writes under someone else's kind where nothing would notice.
+    ///
+    /// The value is an `ObjectSlot` rather than an `OwnedTimestampedSeries`, and both implement
+    /// `TimestampedSeries` -- so every site reaching this map through a helper generic over
+    /// `S: TimestampedSeries` is untouched by the move.
+    pub(super) fn context_audits(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextAudit)
+    }
+
+    /// The context pack audits, for writing. Creates the kind's inner table on first use.
+    pub(super) fn context_audits_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextAudit)
+            .or_default()
+    }
+
+    /// The context summaries, read from the consolidated map.
+    ///
+    /// A DOOR AND NOT A FIELD, for the reason every tenant of `objects` has one: the map is keyed
+    /// by KIND first, so a caller reaching the field would have to pick the inner table itself, and
+    /// picking the wrong kind writes under someone else's kind where nothing would notice.
+    ///
+    /// The value is an `ObjectSlot` rather than an `OwnedTimestampedSeries`, and both implement
+    /// `TimestampedSeries` -- so every site reaching this map through a helper generic over
+    /// `S: TimestampedSeries` is untouched by the move.
+    pub(super) fn context_summaries(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextSummary)
+    }
+
+    /// The context summaries, for writing. Creates the kind's inner table on first use.
+    pub(super) fn context_summaries_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextSummary)
+            .or_default()
+    }
+
+    /// The context compression events, read from the consolidated map.
+    ///
+    /// A DOOR AND NOT A FIELD, for the reason every tenant of `objects` has one: the map is keyed
+    /// by KIND first, so a caller reaching the field would have to pick the inner table itself, and
+    /// picking the wrong kind writes under someone else's kind where nothing would notice.
+    ///
+    /// The value is an `ObjectSlot` rather than an `OwnedTimestampedSeries`, and both implement
+    /// `TimestampedSeries` -- so every site reaching this map through a helper generic over
+    /// `S: TimestampedSeries` is untouched by the move.
+    pub(super) fn context_compressions(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextCompression)
+    }
+
+    /// The context compression events, for writing. Creates the kind's inner table on first use.
+    pub(super) fn context_compressions_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextCompression)
+            .or_default()
     }
 
     /// The context child refs, read from the consolidated map.
@@ -7966,10 +8046,10 @@ impl ShardState {
         moved |= adopt_key_in(&mut self.context_events_series, object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_event_timeline, object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_indexes, object_key, &canonical);
-        moved |= adopt_key_in(&mut self.context_audits, object_key, &canonical);
+        moved |= adopt_key_in(self.context_audits_mut(), object_key, &canonical);
         moved |= adopt_key_in(self.context_children_mut(), object_key, &canonical);
-        moved |= adopt_key_in(&mut self.context_summaries, object_key, &canonical);
-        moved |= adopt_key_in(&mut self.context_compressions, object_key, &canonical);
+        moved |= adopt_key_in(self.context_summaries_mut(), object_key, &canonical);
+        moved |= adopt_key_in(self.context_compressions_mut(), object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_entities, object_key, &canonical);
         // `context_nodes` was ALREADY `ModelKey`-keyed before this change and was still
         // missing from this list, which is the failure the note above describes: a map that

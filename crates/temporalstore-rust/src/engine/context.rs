@@ -1014,7 +1014,7 @@ pub(super) fn load_context_summaries(
 ) -> Vec<ContextSummary> {
     let routing_bucket = shard_page_routing_bucket(shard, object_key);
     shard
-        .context_summaries
+        .context_summaries()
         .get(object_key)
         .map(|series| {
             series
@@ -1059,7 +1059,7 @@ pub(super) fn load_newest_context_summary(
 ) -> Option<ContextSummary> {
     let routing_bucket = shard_page_routing_bucket(shard, object_key);
     shard
-        .context_summaries
+        .context_summaries()
         .get(object_key)
         .and_then(|series| {
             series
@@ -1114,13 +1114,13 @@ pub(super) fn load_context_compression_events(
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
         let routing_bucket = shard_page_routing_bucket(shard, &object_key);
-        if let Some(series) = shard.context_compressions.get(&object_key[..]) {
-            events.extend(series.iter().filter_map(|(timeline_key, address)| {
+        if let Some(series) = shard.context_compressions().get(&object_key[..]) {
+            events.extend(series.points().filter_map(|(timeline_key, address)| {
                 read_context_value::<ContextCompressionEvent>(
                     cache,
                     block_store,
                     shard_id,
-                    *timeline_key,
+                    timeline_key,
                     address,
                     PageIdentity::of(shard_id, "context_compression", &object_key, None),
                     routing_bucket,

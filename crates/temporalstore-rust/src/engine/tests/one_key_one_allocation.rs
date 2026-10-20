@@ -449,7 +449,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_audits",
             shard
-                .context_audits
+                .context_audits()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
@@ -473,7 +473,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_summaries",
             shard
-                .context_summaries
+                .context_summaries()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
@@ -481,7 +481,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_compressions",
             shard
-                .context_compressions
+                .context_compressions()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
@@ -1099,9 +1099,9 @@ fn the_auto_compression_trigger_folds_a_window_and_keeps_the_raw_events() {
             .get(&event_key[..])
             .copied();
         let compressions: usize = shard
-            .context_compressions
+            .context_compressions()
             .values()
-            .map(|series| series.len())
+            .map(|series| series.owned_element_count())
             .sum();
         let raw_points = shard
             .context_events()

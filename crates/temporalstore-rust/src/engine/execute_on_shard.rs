@@ -4219,11 +4219,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_audit", &object_key),
             ) {
                 let series = shard
-                    .context_audits
+                    .context_audits_mut()
                     .entry(std::sync::Arc::from(object_key.as_str()))
                     .or_default();
                 for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
+                    series.set(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -4240,7 +4240,7 @@ pub(crate) fn execute_on_shard(
             let object_key = context_audit_key(tenant_hash, session_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let audits = shard
-                .context_audits
+                .context_audits()
                 .get(&object_key[..])
                 .map(|series| {
                     series
@@ -4745,11 +4745,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_summary", &object_key),
             ) {
                 let series = shard
-                    .context_summaries
+                    .context_summaries_mut()
                     .entry(std::sync::Arc::from(&object_key[..]))
                     .or_default();
                 for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
+                    series.set(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -4896,11 +4896,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_compression", &object_key),
             ) {
                 let series = shard
-                    .context_compressions
+                    .context_compressions_mut()
                     .entry(std::sync::Arc::from(&object_key[..]))
                     .or_default();
                 for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
+                    series.set(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -5022,11 +5022,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_compression", &object_key),
             ) {
                     let series = shard
-                        .context_compressions
+                        .context_compressions_mut()
                         .entry(std::sync::Arc::from(&object_key[..]))
                         .or_default();
                     for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
+                        series.set(timestamp_ms, address);
                         mutated = true;
                     }
                 }

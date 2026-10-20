@@ -783,11 +783,11 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             + deep_heap_bytes(&shard.clone_legacy_context_events_for_test())
             + deep_heap_bytes(&shard.context_event_timeline)
             + deep_heap_bytes(&shard.context_indexes)
-            + deep_heap_bytes(&shard.context_audits)
+            + deep_heap_bytes(&shard.context_audits())
             + deep_heap_bytes(&shard.context_entities)
             + deep_heap_bytes(shard.context_children())
-            + deep_heap_bytes(&shard.context_summaries)
-            + deep_heap_bytes(&shard.context_compressions);
+            + deep_heap_bytes(&shard.context_summaries())
+            + deep_heap_bytes(&shard.context_compressions());
         let whole_bytes = deep_heap_bytes(shard);
         let (arc_bytes, arc_count) = arc_payload_bytes(&shard.bucket_index);
         let (dirty_arc_bytes, dirty_arc_count, dirty_arc_shared) =
@@ -856,7 +856,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         series_occupancy(&shard.features).report("features");
         series_occupancy(shard.context_events()).report("context_events");
         series_occupancy(&shard.context_indexes).report("context_indexes");
-        series_occupancy(&shard.context_audits).report("context_audits");
+        series_occupancy(&shard.context_audits()).report("context_audits");
         series_occupancy(&shard.context_entities).report("context_entities");
 
         let mut pages_per_bucket = Occupancy::default();
@@ -3342,7 +3342,7 @@ fn how_many_times_a_context_keys_characters_exist() {
         ("context_events (Arc-keyed)", shard.context_events().keys().map(|k| &**k).collect()),
         ("context_event_timeline (Arc-keyed)", shard.context_event_timeline.keys().map(|k| &**k).collect()),
         ("context_indexes", shard.context_indexes.keys().map(|k| &**k).collect()),
-        ("context_audits", shard.context_audits.keys().map(|k| &**k).collect()),
+        ("context_audits", shard.context_audits().keys().map(|k| &**k).collect()),
         // NO KEY CHARACTERS AT ALL NOW, which is the point of this row rather than a gap in
         // it. This map was the family's largest character holder -- 800 keys and 14,000
         // characters at 400 events, 52% of every key character counted here -- and the one
@@ -3353,8 +3353,8 @@ fn how_many_times_a_context_keys_characters_exist() {
         ("context_dirty_index (no key characters)", Vec::new()),
         ("context_entities", shard.context_entities.keys().map(|k| &**k).collect()),
         ("context_children", shard.context_children().keys().map(|k| &**k).collect()),
-        ("context_summaries", shard.context_summaries.keys().map(|k| &**k).collect()),
-        ("context_compressions", shard.context_compressions.keys().map(|k| &**k).collect()),
+        ("context_summaries", shard.context_summaries().keys().map(|k| &**k).collect()),
+        ("context_compressions", shard.context_compressions().keys().map(|k| &**k).collect()),
         ("context_compression_watermark (Arc-keyed)", shard.context_compression_watermark.keys().map(|k| &**k).collect()),
         ("context_nodes (Arc-keyed)", shard.context_nodes.keys().map(|k| &**k).collect()),
     ];
@@ -7013,11 +7013,11 @@ fn which_series_maps_the_grouped_shape_would_help() {
     println!("  {EVENTS} extracted events, one unique entity and one shared per event");
     println!("    map                      keys    points       mean      shipped -> grouped      ratio");
     let (index_occ, index_shipped, index_grouped) = weigh("context_indexes", &shard.context_indexes);
-    let _ = weigh("context_audits", &shard.context_audits);
+    let _ = weigh("context_audits", &shard.context_audits());
     let _ = weigh("context_entities", &shard.context_entities);
     let _ = weigh("context_children", shard.context_children());
-    let _ = weigh("context_summaries", &shard.context_summaries);
-    let _ = weigh("context_compressions", &shard.context_compressions);
+    let _ = weigh("context_summaries", &shard.context_summaries());
+    let _ = weigh("context_compressions", &shard.context_compressions());
 
     println!();
     println!("  context_indexes occupancy, which is the distribution that decides the answer:");
@@ -7442,12 +7442,12 @@ fn what_the_four_converted_context_maps_cost() {
     println!("  {NODES} nodes x {POINTS} points, per kind");
     println!("    map                      keys     points      mean       B-tree -> array      ratio");
     let arms = [
-        ("context_audits", weigh("context_audits", &shard.context_audits)),
+        ("context_audits", weigh("context_audits", &shard.context_audits())),
         ("context_children", weigh("context_children", shard.context_children())),
-        ("context_summaries", weigh("context_summaries", &shard.context_summaries)),
+        ("context_summaries", weigh("context_summaries", &shard.context_summaries())),
         (
             "context_compressions",
-            weigh("context_compressions", &shard.context_compressions),
+            weigh("context_compressions", &shard.context_compressions()),
         ),
     ];
 

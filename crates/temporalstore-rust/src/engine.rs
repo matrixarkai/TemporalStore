@@ -123,6 +123,10 @@ use self::bucket_dump_io::*;
 use self::bucket_store::{read_bucket_index_value, bucket_index_component_block_addresses};
 use self::state::*;
 use crate::block_store::BlockAppendRecord;
+// FOR `set` ON A SLOT. A migrated series map's writer records a point through the write
+// trait, since `ObjectSlot` has no inherent `insert`. Imported anonymously because only the
+// method is wanted here.
+use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use crate::control::{
     CheckedBatchExecuteRequest, CheckedBatchExecuteResponse, CheckedExecuteRequest,
     CheckedExecuteResponse, Config, GetConfigResponse, GetInfoResponse, GetStatsResponse,
@@ -2658,7 +2662,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 17;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 18;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3655,10 +3659,10 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_nodes.get(key).map_or(0, |_| 1)
         + shard.context_events().get(key).map_or(0, |v| v.len())
         + shard.context_indexes.get(key).map_or(0, |v| v.len())
-        + shard.context_audits.get(key).map_or(0, |v| v.len())
+        + shard.context_audits().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_children().get(key).map_or(0, |v| v.owned_element_count())
-        + shard.context_summaries.get(key).map_or(0, |v| v.len())
-        + shard.context_compressions.get(key).map_or(0, |v| v.len())
+        + shard.context_summaries().get(key).map_or(0, |v| v.owned_element_count())
+        + shard.context_compressions().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_entities.get(key).map_or(0, |v| v.len())
 }
 
@@ -3948,7 +3952,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put(
                 "context_audits",
                 shard
-                    .context_audits
+                    .context_audits()
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
@@ -3966,7 +3970,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put(
                 "context_summaries",
                 shard
-                    .context_summaries
+                    .context_summaries()
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
@@ -3975,7 +3979,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put(
                 "context_compressions",
                 shard
-                    .context_compressions
+                    .context_compressions()
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
@@ -4053,7 +4057,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_indexes"),
         );
         apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            &mut shard.context_audits,
+            shard.context_audits_mut(),
             key,
             blob.get("context_audits"),
         );
@@ -4063,12 +4067,12 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_children"),
         );
         apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            &mut shard.context_summaries,
+            shard.context_summaries_mut(),
             key,
             blob.get("context_summaries"),
         );
         apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            &mut shard.context_compressions,
+            shard.context_compressions_mut(),
             key,
             blob.get("context_compressions"),
         );
@@ -5245,11 +5249,11 @@ fn maybe_auto_compress_context_node(
         ),
     ) {
         let series = shard
-            .context_compressions
+            .context_compressions_mut()
             .entry(std::sync::Arc::from(&compression_key[..]))
             .or_default();
         for (timestamp_ms, address) in addresses {
-            series.insert(timestamp_ms, address);
+            series.set(timestamp_ms, address);
             mutated = true;
         }
     }
@@ -5594,11 +5598,11 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_nodes.remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
     removed |= shard.context_indexes.remove(key).is_some();
-    removed |= shard.context_audits.remove(key).is_some();
+    removed |= shard.context_audits_mut().remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
     removed |= shard.context_children_mut().remove(key).is_some();
-    removed |= shard.context_summaries.remove(key).is_some();
-    removed |= shard.context_compressions.remove(key).is_some();
+    removed |= shard.context_summaries_mut().remove(key).is_some();
+    removed |= shard.context_compressions_mut().remove(key).is_some();
     removed
 }
 
@@ -6237,11 +6241,17 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
             series.values().map(|address| address.block_slab_id()),
         );
     }
-    for series in shard.context_audits.values() {
+    for series in shard.context_audits().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            // The slot's own accessor, as for `context_children`: same addresses, and
+            // it needs no trait in scope.
+            series
+                .owned_elements()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(_, address)| address.block_slab_id()),
         );
     }
     for series in shard.context_entities.values() {
@@ -6264,18 +6274,30 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
                 .map(|(_, address)| address.block_slab_id()),
         );
     }
-    for series in shard.context_summaries.values() {
+    for series in shard.context_summaries().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            // The slot's own accessor, as for `context_children`: same addresses, and
+            // it needs no trait in scope.
+            series
+                .owned_elements()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(_, address)| address.block_slab_id()),
         );
     }
-    for series in shard.context_compressions.values() {
+    for series in shard.context_compressions().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            // The slot's own accessor, as for `context_children`: same addresses, and
+            // it needs no trait in scope.
+            series
+                .owned_elements()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(_, address)| address.block_slab_id()),
         );
     }
     // control_state_pages is the block-backed control-state model and MUST be in the
@@ -6548,11 +6570,11 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_nodes.contains_key(key)
         || shard.context_events().contains_key(key)
         || shard.context_indexes.contains_key(key)
-        || shard.context_audits.contains_key(key)
+        || shard.context_audits().contains_key(key)
         || shard.context_entities.contains_key(key)
         || shard.context_children().contains_key(key)
-        || shard.context_summaries.contains_key(key)
-        || shard.context_compressions.contains_key(key)
+        || shard.context_summaries().contains_key(key)
+        || shard.context_compressions().contains_key(key)
 }
 
 /// Mark every page an object ALREADY HAS as dirty, at the moment the object is marked.
@@ -7443,11 +7465,11 @@ fn object_manager_stats(
             + shard.context_nodes.len()
             + shard.context_events().len()
             + shard.context_indexes.len()
-            + shard.context_audits.len()
+            + shard.context_audits().len()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard.context_children().len()
-            + shard.context_summaries.len()
-            + shard.context_compressions.len();
+            + shard.context_summaries().len()
+            + shard.context_compressions().len();
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
         let secondary_block_ref_count = shard.strings.len()
@@ -7468,9 +7490,9 @@ fn object_manager_stats(
                 .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>()
             + shard
-                .context_audits
+                .context_audits()
                 .values()
-                .map(timestamped_series::OwnedTimestampedSeries::len)
+                .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard
@@ -7479,14 +7501,14 @@ fn object_manager_stats(
                 .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
             + shard
-                .context_summaries
+                .context_summaries()
                 .values()
-                .map(timestamped_series::OwnedTimestampedSeries::len)
+                .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
             + shard
-                .context_compressions
+                .context_compressions()
                 .values()
-                .map(timestamped_series::OwnedTimestampedSeries::len)
+                .map(|slot| slot.owned_element_count())
                 .sum::<usize>();
         let dirty_bucket_count = if !shard.bucket_index.object_block_lookup.is_empty() {
             // COUNTED BEFORE ANY SET IS BUILT, because in two cases the set cannot change the
@@ -7583,11 +7605,11 @@ fn object_manager_stats(
         + shard.context_nodes.len()
         + shard.context_events().len()
         + shard.context_indexes.len()
-        + shard.context_audits.len()
+        + shard.context_audits().len()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard.context_children().len()
-        + shard.context_summaries.len()
-        + shard.context_compressions.len();
+        + shard.context_summaries().len()
+        + shard.context_compressions().len();
     let block_ref_count = shard.strings.len()
         + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
@@ -7606,9 +7628,9 @@ fn object_manager_stats(
             .map(timestamped_series::OwnedTimestampedSeries::len)
             .sum::<usize>()
         + shard
-            .context_audits
+            .context_audits()
             .values()
-            .map(timestamped_series::OwnedTimestampedSeries::len)
+            .map(|slot| slot.owned_element_count())
             .sum::<usize>()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard
@@ -7617,14 +7639,14 @@ fn object_manager_stats(
             .map(|slot| slot.owned_element_count())
             .sum::<usize>()
         + shard
-            .context_summaries
+            .context_summaries()
             .values()
-            .map(timestamped_series::OwnedTimestampedSeries::len)
+            .map(|slot| slot.owned_element_count())
             .sum::<usize>()
         + shard
-            .context_compressions
+            .context_compressions()
             .values()
-            .map(timestamped_series::OwnedTimestampedSeries::len)
+            .map(|slot| slot.owned_element_count())
             .sum::<usize>();
     let routing_bucket_count = routing_bucket_count(start_routing_bucket, end_routing_bucket);
     let mut dirty_buckets = shard

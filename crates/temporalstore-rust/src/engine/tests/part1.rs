@@ -4,6 +4,10 @@
 //! Part 1 of engine tests, split from engine/tests.rs.
 #![allow(clippy::all)]
 use super::*;
+// FOR `points()` ON A SLOT: `super::*` re-exports the engine's items but not this trait,
+// and two summary readers here walk a migrated series. Anonymous, because only the method
+// is wanted.
+use crate::engine::timestamped_series::TimestampedSeries as _;
 
 // shared-corpus: dynamic_event_replication_mode_selection
 /// Is the per-object memory permanent, or does a storage cycle give some of it back?
@@ -3733,11 +3737,11 @@ fn what_reading_one_summary_actually_costs() {
             let shard = shards.get(&1).expect("loaded shard");
             let key = super::context::context_summary_key(7201, 60, 2);
             let series = shard
-                .context_summaries
+                .context_summaries()
                 .get(&key[..])
                 .expect("the summary series must exist, or this measures nothing");
             let address = series
-                .iter()
+                .points()
                 .next()
                 .map(|(_, address)| address.clone())
                 .expect("one entry");
@@ -3801,9 +3805,9 @@ fn what_reading_one_summary_actually_costs() {
                 .filter_map(|node_hash| {
                     let key = super::context::context_summary_key(7201, node_hash, 2);
                     shard
-                        .context_summaries
+                        .context_summaries()
                         .get(&key[..])
-                        .and_then(|series| series.iter().next())
+                        .and_then(|series| series.points().next())
                         .map(|(_, address)| {
                             (
                                 super::hashing::block_routing_bucket(&key, start, end),
@@ -7567,11 +7571,11 @@ fn where_a_record_is_kept_everywhere() {
         ("context_events", shard.context_events().len()),
         ("context_event_timeline", shard.context_event_timeline.len()),
         ("context_indexes", shard.context_indexes.len()),
-        ("context_audits", shard.context_audits.len()),
+        ("context_audits", shard.context_audits().len()),
         ("context_entities", shard.context_entities.len()),
         ("context_children", shard.context_children().len()),
-        ("context_summaries", shard.context_summaries.len()),
-        ("context_compressions", shard.context_compressions.len()),
+        ("context_summaries", shard.context_summaries().len()),
+        ("context_compressions", shard.context_compressions().len()),
         ("context_dirty_index", shard.context_dirty_index.len()),
         ("context_compression_watermark", shard.context_compression_watermark.len()),
         ("wal_resident_pages", shard.wal_resident_blocks.len()),

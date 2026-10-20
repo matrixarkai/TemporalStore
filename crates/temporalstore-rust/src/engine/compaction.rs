@@ -529,7 +529,7 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "context_audit",
-        &shard.context_audits,
+        shard.context_audits(),
         &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -549,12 +549,12 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "context_summary",
-        &shard.context_summaries,
+        shard.context_summaries(),
         &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_compression",
-        &shard.context_compressions,
+        shard.context_compressions(),
         &slab_page_counts,
     ));
     reports.retain(|report| report.object_count > 0 || report.index_refs > 0);

@@ -1039,7 +1039,7 @@ pub(super) fn timestamped_kv_series<'a>(
         // reporting path, not a serving one.
         series.push(("context_index", &key[..], Cow::Owned(timeline.to_btree())));
     }
-    for (key, timeline) in &shard.context_audits {
+    for (key, timeline) in shard.context_audits() {
         // Materialised, as for `features` above: the report's type is the stored B-tree and
         // this map holds the array. A reporting path, not a serving one.
         series.push(("context_audit", &key[..], Cow::Owned(timeline.to_btree())));
@@ -1049,12 +1049,12 @@ pub(super) fn timestamped_kv_series<'a>(
         // this map holds the array. A reporting path, not a serving one.
         series.push(("context_child", &key[..], Cow::Owned(timeline.to_btree())));
     }
-    for (key, timeline) in &shard.context_summaries {
+    for (key, timeline) in shard.context_summaries() {
         // Materialised, as for `features` above: the report's type is the stored B-tree and
         // this map holds the array. A reporting path, not a serving one.
         series.push(("context_summary", &key[..], Cow::Owned(timeline.to_btree())));
     }
-    for (key, timeline) in &shard.context_compressions {
+    for (key, timeline) in shard.context_compressions() {
         // Materialised, as for `features` above: the report's type is the stored B-tree and
         // this map holds the array. A reporting path, not a serving one.
         series.push(("context_compression", &key[..], Cow::Owned(timeline.to_btree())));

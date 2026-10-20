@@ -2817,11 +2817,11 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.context_nodes.is_empty()
         || !shard.context_events().is_empty()
         || !shard.context_indexes.is_empty()
-        || !shard.context_audits.is_empty()
+        || !shard.context_audits().is_empty()
         || !shard.context_entities.is_empty()
         || !shard.context_children().is_empty()
-        || !shard.context_summaries.is_empty()
-        || !shard.context_compressions.is_empty()
+        || !shard.context_summaries().is_empty()
+        || !shard.context_compressions().is_empty()
 }
 
 /// Bring the bucket index up to date for ONE object key, across every context kind.
@@ -3018,9 +3018,9 @@ pub(super) fn sync_context_blocks_for_object(
         groups.push(("context_child", object_key.to_string(), vec![newest]));
     }
     for (kind, series) in [
-        ("context_audit", &shard.context_audits),
-        ("context_summary", &shard.context_summaries),
-        ("context_compression", &shard.context_compressions),
+        ("context_audit", shard.context_audits()),
+        ("context_summary", shard.context_summaries()),
+        ("context_compression", shard.context_compressions()),
     ] {
         if let Some(newest) = series.get(object_key).and_then(newest_filed_address) {
             groups.push((kind, object_key.to_string(), vec![newest]));
@@ -3813,7 +3813,7 @@ fn visit_model_live_blocks(
             &mut emit,
         );
         visit_timestamped_series(
-            &shard.context_audits,
+            shard.context_audits(),
             ModelKind::ContextAudit,
             &accept,
             &mut emit,
@@ -3861,13 +3861,13 @@ fn visit_model_live_blocks(
             &mut emit,
         );
         visit_timestamped_series(
-            &shard.context_summaries,
+            shard.context_summaries(),
             ModelKind::ContextSummary,
             &accept,
             &mut emit,
         );
         visit_timestamped_series(
-            &shard.context_compressions,
+            shard.context_compressions(),
             ModelKind::ContextCompression,
             &accept,
             &mut emit,
@@ -7120,10 +7120,12 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
     // above already do: both helpers this is handed to are generic over the series type, so it
     // builds the array directly rather than a B-tree to convert and throw away.
-    let mut context_audits = HashMap::<
-        std::sync::Arc<str>,
-        super::timestamped_series::OwnedTimestampedSeries,
-    >::new();
+    // THE ACCUMULATOR IS SLOTS NOW, as `context_children` above already is: the
+    // reconcile takes ONE type parameter for both sides and the target is the
+    // consolidated map's inner table. `ObjectSlot` implements `TimestampedSeriesWrite`,
+    // so `insert_timestamped_secondary_view` fills it unchanged.
+    let mut context_audits =
+        HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     let mut context_entities =
         HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
     // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
@@ -7137,17 +7139,21 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
     // above already do: both helpers this is handed to are generic over the series type, so it
     // builds the array directly rather than a B-tree to convert and throw away.
-    let mut context_summaries = HashMap::<
-        std::sync::Arc<str>,
-        super::timestamped_series::OwnedTimestampedSeries,
-    >::new();
+    // THE ACCUMULATOR IS SLOTS NOW, as `context_children` above already is: the
+    // reconcile takes ONE type parameter for both sides and the target is the
+    // consolidated map's inner table. `ObjectSlot` implements `TimestampedSeriesWrite`,
+    // so `insert_timestamped_secondary_view` fills it unchanged.
+    let mut context_summaries =
+        HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
     // above already do: both helpers this is handed to are generic over the series type, so it
     // builds the array directly rather than a B-tree to convert and throw away.
-    let mut context_compressions = HashMap::<
-        std::sync::Arc<str>,
-        super::timestamped_series::OwnedTimestampedSeries,
-    >::new();
+    // THE ACCUMULATOR IS SLOTS NOW, as `context_children` above already is: the
+    // reconcile takes ONE type parameter for both sides and the target is the
+    // consolidated map's inner table. `ObjectSlot` implements `TimestampedSeriesWrite`,
+    // so `insert_timestamped_secondary_view` fills it unchanged.
+    let mut context_compressions =
+        HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
 
     for entry in entries {
         match entry.kind.as_str() {
@@ -7536,7 +7542,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
     if saw_context_audits {
         reconcile_timestamped_series_membership_in_place(
-            &mut shard.context_audits,
+            shard.context_audits_mut(),
             context_audits,
         );
     }
@@ -7551,13 +7557,13 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
     if saw_context_summaries {
         reconcile_timestamped_series_membership_in_place(
-            &mut shard.context_summaries,
+            shard.context_summaries_mut(),
             context_summaries,
         );
     }
     if saw_context_compressions {
         reconcile_timestamped_series_membership_in_place(
-            &mut shard.context_compressions,
+            shard.context_compressions_mut(),
             context_compressions,
         );
     }
@@ -9115,7 +9121,7 @@ mod model_kind_registry_guards {
             .context_indexes
             .insert("ctx:index:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
-            .context_audits
+            .context_audits_mut()
             .insert("ctx:audit:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_entities
@@ -9124,10 +9130,10 @@ mod model_kind_registry_guards {
             .context_children_mut()
             .insert("ctx:child:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
-            .context_summaries
+            .context_summaries_mut()
             .insert("ctx:summary:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
-            .context_compressions
+            .context_compressions_mut()
             .insert("ctx:compression:t:n".into(), BTreeMap::from([(1u64, at)]).into());
         shard
     }

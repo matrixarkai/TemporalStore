@@ -1730,7 +1730,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 routing_bucket,
             )?;
         }
-        for (key, series) in shard.context_audits.iter_mut() {
+        for (key, series) in shard.context_audits_mut().iter_mut() {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -1756,7 +1756,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 routing_bucket,
             )?;
         }
-        for (key, series) in shard.context_summaries.iter_mut() {
+        for (key, series) in shard.context_summaries_mut().iter_mut() {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -1769,7 +1769,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 routing_bucket,
             )?;
         }
-        for (key, series) in shard.context_compressions.iter_mut() {
+        for (key, series) in shard.context_compressions_mut().iter_mut() {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,

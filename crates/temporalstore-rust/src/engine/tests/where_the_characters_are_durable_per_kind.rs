@@ -198,16 +198,16 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         .context_nodes
         .insert(key_for("context_node", suffix).as_str().into(), address());
     shard
-        .context_audits
+        .context_audits_mut()
         .insert(key_for("context_audit", suffix).into(), series.clone().into());
     shard
         .context_children_mut()
         .insert(key_for("context_child", suffix).into(), series.clone().into());
     shard
-        .context_summaries
+        .context_summaries_mut()
         .insert(key_for("context_summary", suffix).into(), series.clone().into());
     shard
-        .context_compressions
+        .context_compressions_mut()
         .insert(key_for("context_compression", suffix).into(), series.clone().into());
 
     // THE ENTITY ARM IS KEYED BY THE COLLECTION AND NOT BY THE COMPOSED KEY, which is the whole
@@ -298,10 +298,10 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "feature" => shard.features.contains_key(&key[..]),
         "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
         "context_node" => shard.context_nodes.contains_key(key.as_str()),
-        "context_audit" => shard.context_audits.contains_key(&key[..]),
+        "context_audit" => shard.context_audits().contains_key(&key[..]),
         "context_child" => shard.context_children().contains_key(&key[..]),
-        "context_summary" => shard.context_summaries.contains_key(&key[..]),
-        "context_compression" => shard.context_compressions.contains_key(&key[..]),
+        "context_summary" => shard.context_summaries().contains_key(&key[..]),
+        "context_compression" => shard.context_compressions().contains_key(&key[..]),
         "context_event" => shard.context_events().contains_key(key.as_str()),
         "context_index" => shard.context_indexes.contains_key(&key[..]),
         other => panic!(
@@ -545,16 +545,16 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.context_nodes.contains_key(key) {
         found.push("context_nodes");
     }
-    if shard.context_audits.contains_key(key) {
+    if shard.context_audits().contains_key(key) {
         found.push("context_audits");
     }
     if shard.context_children().contains_key(key) {
         found.push("context_children");
     }
-    if shard.context_summaries.contains_key(key) {
+    if shard.context_summaries().contains_key(key) {
         found.push("context_summaries");
     }
-    if shard.context_compressions.contains_key(key) {
+    if shard.context_compressions().contains_key(key) {
         found.push("context_compressions");
     }
     if shard.context_events().contains_key(key) {
