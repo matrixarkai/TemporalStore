@@ -291,6 +291,28 @@ pub struct ShardCanonicalStorageStats {
     pub stream_slab_count: u64,
     #[serde(alias = "storage_zone_total_bytes")]
     pub storage_slab_total_bytes: u64,
+    /// Physical bytes written per logical byte written, in PARTS PER MILLION (1.0x = 1_000_000).
+    ///
+    /// `bytes_written / logical_bytes_written`, both already counted by `BlockStoreStats`, so this
+    /// costs no accounting on any write path. Zero when nothing logical has been written yet --
+    /// the convention the slab descriptor's own ratio already uses ("or 0 when the slab has no
+    /// logical bytes"), so a fresh store reports 0 rather than a division or a misleading 1.0.
+    ///
+    /// WHY IT IS PUBLISHED AT ALL. Amplification was measured in probes and described in prose and
+    /// appeared in no report, so nothing watched it between measurements. A figure that is only
+    /// ever produced by a probe is a figure nobody sees move.
+    #[serde(default)]
+    pub logical_write_amplification_ppm: u64,
+    /// Physical bytes the store occupies per physical byte that is live, in PARTS PER MILLION.
+    ///
+    /// `total_known_physical_bytes / live_physical_bytes` from the slab summary. What pushes it
+    /// above 1_000_000 is reclaimable space a compaction has not taken yet, which is the thing this
+    /// ratio exists to make visible. Zero when nothing is live.
+    ///
+    /// NOT THE SAME QUANTITY AS THE SLAB UTILISATION ALREADY ON A DESCRIPTOR, which is per slab and
+    /// expressed in basis points; this is the whole store in ppm.
+    #[serde(default)]
+    pub space_amplification_ppm: u64,
     #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
     #[serde(alias = "storage_zone_stale_bytes")]

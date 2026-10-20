@@ -1005,6 +1005,25 @@ impl TemporalEngine {
         Ok(())
     }
 
+    /// A ratio in PARTS PER MILLION, or 0 when the denominator is 0.
+    ///
+    /// # WHY PPM AND WHY ZERO
+    ///
+    /// Parts per million keeps a ratio in an integer field: 1.0x is 1_000_000, and a report carries
+    /// no float. Zero for a zero denominator is the convention already in this tree -- the slab
+    /// descriptor's utilisation is documented as "or 0 when the slab has no logical bytes" -- and it
+    /// is the honest answer for a fresh store, where 1_000_000 would read as "no amplification
+    /// measured" when nothing has been measured at all.
+    ///
+    /// SATURATING, because `numerator * 1_000_000` overflows `u64` above about 18 TB and a report
+    /// that wraps is worse than one that caps.
+    fn ppm_ratio(numerator: u64, denominator: u64) -> u64 {
+        if denominator == 0 {
+            return 0;
+        }
+        numerator.saturating_mul(1_000_000) / denominator
+    }
+
     pub(super) fn shard_stats(&self, shard_id: ShardId) -> Option<ShardStats> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let info = self
@@ -1118,6 +1137,18 @@ impl TemporalEngine {
                     .saturating_add(block_store_slabs.delayed_destroy_slabs)
                     .saturating_add(block_store_slabs.purged_slabs),
                 storage_slab_total_bytes: block_store_slabs.total_known_physical_bytes,
+                // THE TWO AMPLIFICATION RATIOS, in parts per million. Both divisions are guarded
+                // the way the slab descriptor's own ratio is -- zero denominator reports 0, not a
+                // panic and not a misleading 1.0 -- and both numerators and denominators are
+                // counters that already existed, so neither costs anything on a write path.
+                logical_write_amplification_ppm: Self::ppm_ratio(
+                    block_store.bytes_written,
+                    block_store.logical_bytes_written,
+                ),
+                space_amplification_ppm: Self::ppm_ratio(
+                    block_store_slabs.total_known_physical_bytes,
+                    block_store_slabs.live_physical_bytes,
+                ),
                 storage_slab_used_bytes: block_store_slabs.live_physical_bytes,
                 storage_slab_stale_bytes: block_store_slabs.reclaimable_physical_bytes,
                 page_reads: block_store.reads,

@@ -7803,3 +7803,155 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
         );
     }
 }
+
+/// THE TWO PUBLISHED AMPLIFICATION RATIOS ARE THE RATIO THEY NAME.
+///
+/// # WHY A PUBLISHED FIGURE NEEDS THIS
+///
+/// Amplification was measured in probes and described in prose and appeared in no report, so
+/// nothing watched it between measurements. Publishing it fixes that only if the published number is
+/// the quantity its name claims -- a field computed once and never checked is how a counter ends up
+/// declared and never incremented, or counting a fraction of its call sites, which this tree has
+/// found six times.
+///
+/// So this pins the DEFINITION as an identity against the counters it is derived from, rather than
+/// asserting a bound. A bound would pass on the wrong arithmetic as long as the wrong answer landed
+/// inside it.
+///
+/// # WHAT THE WRITE RATIO IS NOT, WHICH MATTERS MORE THAN WHAT IT IS
+///
+/// Measured here at **0.1367x** -- 7,000 physical bytes for 51,200 logical. A write amplification
+/// BELOW ONE is not a defect: records are compressed on the way down and writes are coalesced, so
+/// many logical records share one physical append. The terms are printed beside the ratio for
+/// exactly that reason.
+///
+/// AND IT IS NOT COMPARABLE TO A REPLICATED STORE'S FIGURE. This counts one node's physical appends.
+/// A store configured with three data replicas multiplies its own physical term by three before any
+/// of this arithmetic happens, so a 3x figure there and a 0.1367x figure here are not the same
+/// measurement of the same thing, and neither is reachable from the other by tuning. Three replicas
+/// is a durability choice; the number that follows from it is not an efficiency result. Published
+/// side by side without that said, the smaller number reads as the better engine.
+///
+/// WHAT WOULD MAKE THEM COMPARABLE is a replica count to multiply by, and this crate has none --
+/// replication here is a `ReplicationMode` (raft or shared storage), not a factor. So the honest
+/// published quantity is per-node physical over logical, which is what this is.
+///
+/// # AND IT MAKES A VACUOUS PASS VISIBLE
+///
+/// Both ratios are 0 when their denominator is 0, which is the convention the slab descriptor's own
+/// utilisation already uses. That means a fixture which wrote nothing would satisfy every assertion
+/// here by reporting 0 against 0. The denominators are therefore asserted non-zero BEFORE the
+/// identities, and the branch taken is printed, so "it passed" cannot mean "it measured nothing".
+#[test]
+fn the_published_amplification_ratios_are_the_ratio_they_name() {
+    use crate::types::{Command, ExecuteRequest};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    // --- THE ZERO CASE FIRST, on a shard that has not been written to. Asserted as the implication
+    // --- rather than as a flat 0, because a load is free to write something and the property is
+    // --- "zero denominator reports zero", not "a fresh shard reports zero".
+    let fresh = engine.shard_stats(1).expect("a loaded shard reports stats");
+    let fresh_store = engine.block_store.stats();
+    if fresh_store.logical_bytes_written == 0 {
+        assert_eq!(
+            fresh.storage.logical_write_amplification_ppm, 0,
+            "nothing logical has been written, so the write ratio must report 0 rather than a \
+             division or a misleading 1_000_000"
+        );
+        println!("  zero case exercised: no logical bytes written yet, write ratio reports 0");
+    } else {
+        println!(
+            "  zero case NOT exercised: the load wrote {} logical bytes",
+            fresh_store.logical_bytes_written
+        );
+    }
+
+    for index in 0..200 {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("amp-{index:06}"),
+                value: vec![b'v'; 256],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let after = engine.shard_stats(1).expect("a loaded shard reports stats");
+    let store = engine.block_store.stats();
+    let slabs = engine.block_store.slab_summary();
+
+    // --- DENOMINATORS BEFORE IDENTITIES, so neither identity can be satisfied by 0 == 0.
+    assert!(
+        store.logical_bytes_written > 0,
+        "200 writes left logical_bytes_written at 0, so the write ratio's denominator is zero and \
+         the identity below would hold vacuously"
+    );
+    let expected_write = store
+        .bytes_written
+        .saturating_mul(1_000_000)
+        / store.logical_bytes_written;
+    assert_eq!(
+        after.storage.logical_write_amplification_ppm, expected_write,
+        "the published write amplification is not physical/logical: {} physical bytes over {} \
+         logical should be {expected_write} ppm, and {} was published",
+        store.bytes_written,
+        store.logical_bytes_written,
+        after.storage.logical_write_amplification_ppm,
+    );
+
+    if slabs.live_physical_bytes > 0 {
+        let expected_space = slabs
+            .total_known_physical_bytes
+            .saturating_mul(1_000_000)
+            / slabs.live_physical_bytes;
+        assert_eq!(
+            after.storage.space_amplification_ppm, expected_space,
+            "the published space amplification is not known/live: {} known physical bytes over {} \
+             live should be {expected_space} ppm, and {} was published",
+            slabs.total_known_physical_bytes,
+            slabs.live_physical_bytes,
+            after.storage.space_amplification_ppm,
+        );
+        println!(
+            "  space amplification {:.4}x  ({} known / {} live physical bytes)",
+            expected_space as f64 / 1_000_000.0,
+            slabs.total_known_physical_bytes,
+            slabs.live_physical_bytes,
+        );
+    } else {
+        println!("  space amplification not exercised: nothing is live on a slab yet");
+    }
+
+    println!(
+        "  logical write amplification {:.4}x  ({} physical / {} logical bytes written)",
+        expected_write as f64 / 1_000_000.0,
+        store.bytes_written,
+        store.logical_bytes_written,
+    );
+    // THE TERMS THAT EXPLAIN A RATIO BELOW 1, printed because an unexplained one in a published
+    // field invites the reader to assume a defect. Two things pull physical below logical: records
+    // compressed on the way down, and writes coalesced so that many logical records share one
+    // physical append.
+    println!(
+        "  of which: {} records compressed, {} bytes saved by compression; {} physical appends for \
+{} logical bytes",
+        store.compressed_records_written,
+        store.compression_bytes_saved,
+        store.writes,
+        store.logical_bytes_written,
+    );
+    assert!(
+        store.writes > 0,
+        "the block store recorded no appends, so the physical term above is not a measurement of \
+         this fixture's writes"
+    );
+}
