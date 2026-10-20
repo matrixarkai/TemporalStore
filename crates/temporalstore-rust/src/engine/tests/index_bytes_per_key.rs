@@ -785,7 +785,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             + deep_heap_bytes(&shard.context_indexes)
             + deep_heap_bytes(&shard.context_audits)
             + deep_heap_bytes(&shard.context_entities)
-            + deep_heap_bytes(&shard.context_children)
+            + deep_heap_bytes(shard.context_children())
             + deep_heap_bytes(&shard.context_summaries)
             + deep_heap_bytes(&shard.context_compressions);
         let whole_bytes = deep_heap_bytes(shard);
@@ -3352,7 +3352,7 @@ fn how_many_times_a_context_keys_characters_exist() {
         // assertion below pins it so a reversion shows up as characters reappearing.
         ("context_dirty_index (no key characters)", Vec::new()),
         ("context_entities", shard.context_entities.keys().map(|k| &**k).collect()),
-        ("context_children", shard.context_children.keys().map(|k| &**k).collect()),
+        ("context_children", shard.context_children().keys().map(|k| &**k).collect()),
         ("context_summaries", shard.context_summaries.keys().map(|k| &**k).collect()),
         ("context_compressions", shard.context_compressions.keys().map(|k| &**k).collect()),
         ("context_compression_watermark (Arc-keyed)", shard.context_compression_watermark.keys().map(|k| &**k).collect()),
@@ -7015,7 +7015,7 @@ fn which_series_maps_the_grouped_shape_would_help() {
     let (index_occ, index_shipped, index_grouped) = weigh("context_indexes", &shard.context_indexes);
     let _ = weigh("context_audits", &shard.context_audits);
     let _ = weigh("context_entities", &shard.context_entities);
-    let _ = weigh("context_children", &shard.context_children);
+    let _ = weigh("context_children", shard.context_children());
     let _ = weigh("context_summaries", &shard.context_summaries);
     let _ = weigh("context_compressions", &shard.context_compressions);
 
@@ -7391,16 +7391,32 @@ fn what_the_four_converted_context_maps_cost() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    fn weigh(
+    // GENERIC OVER THE SERIES TYPE, because the four maps no longer share one: `context_children`
+    // lives in the consolidated map and its value is an `ObjectSlot`. An array literal of calls
+    // forces a single type parameter across its arms, which is what made this generic rather than
+    // four separate calls.
+    fn weigh<S>(
         label: &str,
-        map: &HashMap<std::sync::Arc<str>, crate::engine::timestamped_series::OwnedTimestampedSeries>,
-    ) -> (Occupancy, u64, u64, usize) {
+        map: &HashMap<std::sync::Arc<str>, S>,
+    ) -> (Occupancy, u64, u64, usize)
+    where
+        S: crate::engine::timestamped_series::TimestampedSeries + Clone,
+    {
         let mut occ = Occupancy::default();
         let mut rebuilt: HashMap<std::sync::Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
             HashMap::with_capacity(map.len());
         for (key, series) in map.iter() {
             occ.observe(series.len());
-            rebuilt.insert(key.clone(), series.to_btree());
+            // THROUGH THE TRAIT, not an inherent `to_btree`: a generic function cannot call one,
+            // and both representations answer `points()` identically -- which is the property this
+            // comparison rests on in any case.
+            rebuilt.insert(
+                key.clone(),
+                series
+                    .points()
+                    .map(|(at, address)| (at, address.clone()))
+                    .collect(),
+            );
         }
         let array_bytes = deep_heap_bytes(map);
         let btree_bytes = deep_heap_bytes(&rebuilt);
@@ -7427,7 +7443,7 @@ fn what_the_four_converted_context_maps_cost() {
     println!("    map                      keys     points      mean       B-tree -> array      ratio");
     let arms = [
         ("context_audits", weigh("context_audits", &shard.context_audits)),
-        ("context_children", weigh("context_children", &shard.context_children)),
+        ("context_children", weigh("context_children", shard.context_children())),
         ("context_summaries", weigh("context_summaries", &shard.context_summaries)),
         (
             "context_compressions",

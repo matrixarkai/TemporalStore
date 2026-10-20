@@ -201,7 +201,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         .context_audits
         .insert(key_for("context_audit", suffix).into(), series.clone().into());
     shard
-        .context_children
+        .context_children_mut()
         .insert(key_for("context_child", suffix).into(), series.clone().into());
     shard
         .context_summaries
@@ -299,7 +299,7 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
         "context_node" => shard.context_nodes.contains_key(key.as_str()),
         "context_audit" => shard.context_audits.contains_key(&key[..]),
-        "context_child" => shard.context_children.contains_key(&key[..]),
+        "context_child" => shard.context_children().contains_key(&key[..]),
         "context_summary" => shard.context_summaries.contains_key(&key[..]),
         "context_compression" => shard.context_compressions.contains_key(&key[..]),
         "context_event" => shard.context_events().contains_key(key.as_str()),
@@ -548,7 +548,7 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.context_audits.contains_key(key) {
         found.push("context_audits");
     }
-    if shard.context_children.contains_key(key) {
+    if shard.context_children().contains_key(key) {
         found.push("context_children");
     }
     if shard.context_summaries.contains_key(key) {

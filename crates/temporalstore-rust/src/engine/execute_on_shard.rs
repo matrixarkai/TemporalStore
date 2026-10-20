@@ -3,6 +3,7 @@
 
 //! Standalone per-shard command execution extracted from engine.rs.
 use super::timestamped_series::TimestampedSeries as _;
+use super::timestamped_series::TimestampedSeriesWrite as _;
 use super::*;
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
@@ -4639,11 +4640,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_child", &object_key),
             ) {
                     let series = shard
-                        .context_children
+                        .context_children_mut()
                         .entry(std::sync::Arc::from(&object_key[..]))
                         .or_default();
                     for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
+                        series.set(timestamp_ms, address);
                         mutated = true;
                     }
                 }

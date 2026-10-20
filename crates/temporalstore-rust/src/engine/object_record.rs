@@ -1271,6 +1271,26 @@ impl From<ObjectRecord> for ObjectSlot {
     }
 }
 
+/// A SERIES IN THE STORED SHAPE, INTO A SLOT. `OwnedTimestampedSeries` has the same conversion and
+/// every fixture for a series map used it, so a migrated map's fixtures read exactly as they did.
+///
+/// The array's sorted invariant comes free: a `BTreeMap` iterates in key order, so the collected
+/// array is already sorted by instant and no sort is needed to establish what every reader
+/// binary-searches on.
+impl From<std::collections::BTreeMap<u64, ElementEntry>> for ObjectSlot {
+    fn from(points: std::collections::BTreeMap<u64, ElementEntry>) -> Self {
+        let points: Vec<(u64, ElementEntry)> = points.into_iter().collect();
+        Self {
+            record: ObjectRecord::default(),
+            many: if points.is_empty() {
+                None
+            } else {
+                Some(Box::new(points))
+            },
+        }
+    }
+}
+
 /// THE THREE THE MAPS ACTUALLY CALL, DELEGATED RATHER THAN REACHED THROUGH.
 ///
 /// Every one of these forwards to the record and adds nothing. They exist so that wrapping the
@@ -1412,6 +1432,22 @@ impl super::timestamped_series::TimestampedSeries for ObjectSlot {
         points[start..end.max(start)]
             .iter()
             .map(|(instant, address)| (*instant, address))
+    }
+}
+
+impl ObjectSlot {
+    /// The series as the `BTreeMap` the stored shape and the reports are written against.
+    ///
+    /// MATERIALISED, and only on paths that want that shape: the key-state capture, which must keep
+    /// carrying what it has always carried, and the validator's report, whose own type is the
+    /// B-tree. `OwnedTimestampedSeries` has the same method for the same two callers. A serving
+    /// read goes through `TimestampedSeries` and allocates nothing.
+    pub(super) fn to_btree(&self) -> std::collections::BTreeMap<u64, ElementEntry> {
+        self.owned_elements()
+            .unwrap_or(&[])
+            .iter()
+            .map(|(at, address)| (*at, address.clone()))
+            .collect()
     }
 }
 

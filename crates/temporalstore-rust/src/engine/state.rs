@@ -684,10 +684,13 @@ pub(super) struct ShardState {
     // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
     // index written before this fold loads natively and one written after it stays readable by
     // an older binary.
-    // On the owned sorted array; see `context_audits` above for the measurement and for why
-    // `default` is kept beside the adapter.
-    #[serde(default, with = "super::timestamped_series::as_btree_maps")]
-    pub(super) context_children: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // MOVED INTO `objects`, under `StoredModelKind::ContextChild`. There is no field here any
+    // more: read it through `context_children()` and write it through `context_children_mut()`,
+    // which pick the kind once. See those doors for why a field would have been the wrong shape.
+    //
+    // Its stored image moved with it -- out of a top-level `context_children` key and into the
+    // consolidated map's inner table, where a series is carried by `ObjectSlotWire`'s `e` array.
+    // That is a format move, which `SHARD_INDEX_FORMAT_VERSION` 16 covers.
     // On the owned sorted array; see `context_audits` above for the measurement and for why
     // `default` is kept beside the adapter.
     #[serde(default, with = "super::timestamped_series::as_btree_maps")]
@@ -7567,7 +7570,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         context_indexes,
         context_audits,
         context_entities,
-        context_children,
         context_summaries,
         context_compressions,
 
@@ -7667,12 +7669,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // `features` and `context_indexes` above are, so there is no half-empty B-tree node for this
     // pass to repack in any of them. `context_entities` is the one that remains: its inner key is
     // an ENTITY HASH rather than a timestamp, so it is a different structure and keeps its nodes.
-    let _ = (
-        &context_audits,
-        &context_children,
-        &context_summaries,
-        &context_compressions,
-    );
+    // `context_children` is not in this list any more: it has no field here, having moved into
+    // the consolidated map, so there is nothing to acknowledge.
+    let _ = (&context_audits, &context_summaries, &context_compressions);
     repack_nested(context_entities);
     // Two levels: the series, and the member set each EXACT entry carries. A sketched bucket is
     // a fixed-size register array with nothing to repack, which is why this matches rather than
@@ -7713,6 +7712,36 @@ impl ShardState {
         self.objects
             .get(&kind)
             .unwrap_or_else(|| NO_OBJECTS_OF_THIS_KIND.get_or_init(HashMap::new))
+    }
+
+    /// The context child refs, read from the consolidated map.
+    ///
+    /// # WHY A DOOR AND NOT A FIELD
+    ///
+    /// The same reason the control-state blocks have one: `objects` is keyed by KIND first, so a
+    /// caller reaching the field would have to pick the inner table itself, and picking the wrong
+    /// kind writes a child ref under someone else's kind where nothing would notice. The door picks
+    /// the kind once.
+    ///
+    /// # WHAT CHANGED FOR A READER, WHICH IS ALMOST NOTHING
+    ///
+    /// The value type is `ObjectSlot` rather than `OwnedTimestampedSeries`, and both implement
+    /// `TimestampedSeries` -- so every site that reaches this map through a helper generic over
+    /// `S: TimestampedSeries` is untouched. Only a site calling the owned array's own inherent API
+    /// had to move to the slot's.
+    pub(super) fn context_children(
+        &self,
+    ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextChild)
+    }
+
+    /// The context child refs, for writing. Creates the kind's inner table on first use.
+    pub(super) fn context_children_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextChild)
+            .or_default()
     }
 
     /// The control-state blocks, read from the consolidated map.
@@ -7938,7 +7967,7 @@ impl ShardState {
         moved |= adopt_key_in(&mut self.context_event_timeline, object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_indexes, object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_audits, object_key, &canonical);
-        moved |= adopt_key_in(&mut self.context_children, object_key, &canonical);
+        moved |= adopt_key_in(self.context_children_mut(), object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_summaries, object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_compressions, object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_entities, object_key, &canonical);

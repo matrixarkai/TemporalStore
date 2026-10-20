@@ -544,7 +544,7 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "context_child",
-        &shard.context_children,
+        shard.context_children(),
         &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(

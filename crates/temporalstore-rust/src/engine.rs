@@ -2658,7 +2658,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 16;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 17;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3656,7 +3656,7 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + shard.context_events().get(key).map_or(0, |v| v.len())
         + shard.context_indexes.get(key).map_or(0, |v| v.len())
         + shard.context_audits.get(key).map_or(0, |v| v.len())
-        + shard.context_children.get(key).map_or(0, |v| v.len())
+        + shard.context_children().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_summaries.get(key).map_or(0, |v| v.len())
         + shard.context_compressions.get(key).map_or(0, |v| v.len())
         + shard.context_entities.get(key).map_or(0, |v| v.len())
@@ -3957,7 +3957,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put(
                 "context_children",
                 shard
-                    .context_children
+                    .context_children()
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
@@ -4058,7 +4058,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             blob.get("context_audits"),
         );
         apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            &mut shard.context_children,
+            shard.context_children_mut(),
             key,
             blob.get("context_children"),
         );
@@ -4423,6 +4423,38 @@ impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
 {
     fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
         self.insert(key.into(), value.into());
+    }
+
+    fn remove_entry(&mut self, key: &str) {
+        self.remove(key);
+    }
+}
+
+/// THE SAME CONVERSION FOR THE CONSOLIDATED MAP'S INNER TABLE, which is where a migrated series
+/// map lives.
+///
+/// `capture_key_states` writes the stored B-tree shape into the index-log blobs, and with no base
+/// index `persistence.rs` folds those blobs straight through `apply_key_states` with nothing
+/// decoded -- so that shape arrives on a path the decode fold never sees, whatever representation
+/// the map holds. The two impls above say the same thing for the owned-array maps; this says it for
+/// the slot map.
+///
+/// It does not overlap the blanket `impl<V> KeyedState<V> for HashMap<ModelKey, V>`: that one gives
+/// this map `KeyedState<ObjectSlot>`, and this gives it `KeyedState<BTreeMap<..>>`. Different type
+/// parameter, same `Self`, so a call site names which one it means -- and the migrated maps' folds
+/// do, with a turbofish.
+///
+/// BUILT THROUGH THE WRITE TRAIT RATHER THAN A `From`, so the slot's array keeps the invariant its
+/// own door keeps: sorted by instant, because every reader binary-searches it.
+impl KeyedState<std::collections::BTreeMap<u64, ElementEntry>>
+    for std::collections::HashMap<state::ModelKey, object_record::ObjectSlot>
+{
+    fn insert_entry(&mut self, key: &str, value: std::collections::BTreeMap<u64, ElementEntry>) {
+        let mut slot = object_record::ObjectSlot::default();
+        for (at, address) in value {
+            timestamped_series::TimestampedSeriesWrite::set(&mut slot, at, address);
+        }
+        self.insert(key.into(), slot);
     }
 
     fn remove_entry(&mut self, key: &str) {
@@ -5564,7 +5596,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.context_indexes.remove(key).is_some();
     removed |= shard.context_audits.remove(key).is_some();
     removed |= shard.context_entities.remove(key).is_some();
-    removed |= shard.context_children.remove(key).is_some();
+    removed |= shard.context_children_mut().remove(key).is_some();
     removed |= shard.context_summaries.remove(key).is_some();
     removed |= shard.context_compressions.remove(key).is_some();
     removed
@@ -6219,11 +6251,17 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
             series.values().map(|address| address.block_slab_id()),
         );
     }
-    for series in shard.context_children.values() {
+    for series in shard.context_children().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            // The slot's own accessor rather than the owned array's `values()`: same addresses, and
+            // it needs no trait in scope.
+            series
+                .owned_elements()
+                .unwrap_or(&[])
+                .iter()
+                .map(|(_, address)| address.block_slab_id()),
         );
     }
     for series in shard.context_summaries.values() {
@@ -6512,7 +6550,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.context_indexes.contains_key(key)
         || shard.context_audits.contains_key(key)
         || shard.context_entities.contains_key(key)
-        || shard.context_children.contains_key(key)
+        || shard.context_children().contains_key(key)
         || shard.context_summaries.contains_key(key)
         || shard.context_compressions.contains_key(key)
 }
@@ -7407,7 +7445,7 @@ fn object_manager_stats(
             + shard.context_indexes.len()
             + shard.context_audits.len()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
-            + shard.context_children.len()
+            + shard.context_children().len()
             + shard.context_summaries.len()
             + shard.context_compressions.len();
         let object_count = bucket_object_count.max(secondary_object_count);
@@ -7436,9 +7474,9 @@ fn object_manager_stats(
                 .sum::<usize>()
             + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
             + shard
-                .context_children
+                .context_children()
                 .values()
-                .map(timestamped_series::OwnedTimestampedSeries::len)
+                .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
             + shard
                 .context_summaries
@@ -7547,7 +7585,7 @@ fn object_manager_stats(
         + shard.context_indexes.len()
         + shard.context_audits.len()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
-        + shard.context_children.len()
+        + shard.context_children().len()
         + shard.context_summaries.len()
         + shard.context_compressions.len();
     let block_ref_count = shard.strings.len()
@@ -7574,9 +7612,9 @@ fn object_manager_stats(
             .sum::<usize>()
         + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
         + shard
-            .context_children
+            .context_children()
             .values()
-            .map(timestamped_series::OwnedTimestampedSeries::len)
+            .map(|slot| slot.owned_element_count())
             .sum::<usize>()
         + shard
             .context_summaries

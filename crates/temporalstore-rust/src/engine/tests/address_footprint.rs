@@ -359,7 +359,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
         ("context_indexes", Box::new(shard.context_indexes.values().flat_map(|s| s.values()))),
         ("context_audits", Box::new(shard.context_audits.values().flat_map(|s| s.values()))),
         ("context_entities", Box::new(shard.context_entities.values().flat_map(|s| s.values()))),
-        ("context_children", Box::new(shard.context_children.values().flat_map(|s| s.values()))),
+        ("context_children", Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
         ("context_summaries", Box::new(shard.context_summaries.values().flat_map(|s| s.values()))),
         (
             "context_compressions",
@@ -1185,7 +1185,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
         Box::new(shard.context_indexes.values().flat_map(|s| s.values())),
         Box::new(shard.context_audits.values().flat_map(|s| s.values())),
         Box::new(shard.context_entities.values().flat_map(|s| s.values())),
-        Box::new(shard.context_children.values().flat_map(|s| s.values())),
+        Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
         Box::new(shard.context_summaries.values().flat_map(|s| s.values())),
         Box::new(shard.context_compressions.values().flat_map(|s| s.values())),
     ] {
@@ -1396,7 +1396,7 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
         Box::new(shard.context_indexes.values().map(|s| s.len())),
         Box::new(shard.context_audits.values().map(|s| s.len())),
         Box::new(shard.context_entities.values().map(|s| s.len())),
-        Box::new(shard.context_children.values().map(|s| s.len())),
+        Box::new(shard.context_children().values().map(|s| s.owned_element_count())),
         Box::new(shard.context_summaries.values().map(|s| s.len())),
         Box::new(shard.context_compressions.values().map(|s| s.len())),
     ] {
@@ -1796,7 +1796,7 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
     one_container(&shard.features);
     one_container(&shard.context_indexes);
     one_container(&shard.context_audits);
-    one_container(&shard.context_children);
+    one_container(shard.context_children());
     one_container(&shard.context_summaries);
     one_container(&shard.context_compressions);
     assert_eq!(

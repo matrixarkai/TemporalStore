@@ -7569,7 +7569,7 @@ fn where_a_record_is_kept_everywhere() {
         ("context_indexes", shard.context_indexes.len()),
         ("context_audits", shard.context_audits.len()),
         ("context_entities", shard.context_entities.len()),
-        ("context_children", shard.context_children.len()),
+        ("context_children", shard.context_children().len()),
         ("context_summaries", shard.context_summaries.len()),
         ("context_compressions", shard.context_compressions.len()),
         ("context_dirty_index", shard.context_dirty_index.len()),

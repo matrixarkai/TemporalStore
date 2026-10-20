@@ -465,7 +465,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_children",
             shard
-                .context_children
+                .context_children()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),

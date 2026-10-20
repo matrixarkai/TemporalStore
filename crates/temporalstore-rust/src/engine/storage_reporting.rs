@@ -1044,7 +1044,7 @@ pub(super) fn timestamped_kv_series<'a>(
         // this map holds the array. A reporting path, not a serving one.
         series.push(("context_audit", &key[..], Cow::Owned(timeline.to_btree())));
     }
-    for (key, timeline) in &shard.context_children {
+    for (key, timeline) in shard.context_children() {
         // Materialised, as for `features` above: the report's type is the stored B-tree and
         // this map holds the array. A reporting path, not a serving one.
         series.push(("context_child", &key[..], Cow::Owned(timeline.to_btree())));

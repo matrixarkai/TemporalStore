@@ -30,7 +30,7 @@ fn remove_timestamped_series(
         "feature" => shard.features.remove(object_key).is_some(),
         "context_index" => shard.context_indexes.remove(object_key).is_some(),
         "context_audit" => shard.context_audits.remove(object_key).is_some(),
-        "context_child" => shard.context_children.remove(object_key).is_some(),
+        "context_child" => shard.context_children_mut().remove(object_key).is_some(),
         "context_summary" => shard.context_summaries.remove(object_key).is_some(),
         "context_compression" => shard.context_compressions.remove(object_key).is_some(),
         // NOT A TIMESTAMPED KIND. Distinguished from "the key was not there" by the caller, which
@@ -57,7 +57,7 @@ fn apply_timestamped_point(
         "feature" => apply(&mut shard.features, object_key, at, address),
         "context_index" => apply(&mut shard.context_indexes, object_key, at, address),
         "context_audit" => apply(&mut shard.context_audits, object_key, at, address),
-        "context_child" => apply(&mut shard.context_children, object_key, at, address),
+        "context_child" => apply(shard.context_children_mut(), object_key, at, address),
         "context_summary" => apply(&mut shard.context_summaries, object_key, at, address),
         "context_compression" => apply(&mut shard.context_compressions, object_key, at, address),
         _ => return None,
@@ -1498,7 +1498,7 @@ impl TemporalEngine {
         append_series_shape(&mut out, "feature", &shard.features);
         append_series_shape(&mut out, "context_index", &shard.context_indexes);
         append_series_shape(&mut out, "context_audit", &shard.context_audits);
-        append_series_shape(&mut out, "context_child", &shard.context_children);
+        append_series_shape(&mut out, "context_child", shard.context_children());
         append_series_shape(&mut out, "context_summary", &shard.context_summaries);
         append_series_shape(&mut out, "context_compression", &shard.context_compressions);
         let mut hashes: Vec<_> = shard.hashes.iter().collect();

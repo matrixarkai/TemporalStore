@@ -861,17 +861,17 @@ pub(super) fn load_context_children(
 ) -> Vec<ContextChildRef> {
     let routing_bucket = shard_page_routing_bucket(shard, object_key);
     shard
-        .context_children
+        .context_children()
         .get(object_key)
         .map(|series| {
             series
-                .iter()
+                .points()
                 .filter_map(|(timeline_key, address)| {
                     read_context_value::<ContextChildRef>(
                         cache,
                         block_store,
                         shard_id,
-                        *timeline_key,
+                        timeline_key,
                         address,
                         PageIdentity::of(shard_id, "context_child", object_key, None),
                         routing_bucket,

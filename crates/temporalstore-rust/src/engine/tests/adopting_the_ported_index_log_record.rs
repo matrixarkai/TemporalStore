@@ -562,10 +562,25 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 16,
-        "costed against 16; if this is red the stamp moved and the adoption's cost has to be \
+        current, 17,
+        "costed against 17; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 16 -> 17, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 17 was spent on `context_children` moving out of its own top-level field and into the
+    // consolidated map, which REMOVES a key from the stored index. That is the same category as
+    // every bump before it -- a change to the NAMED SERVED index -- and this module costs the
+    // POSITIONAL index-log row, which carries no struct version at all. `index_log::INDEX_ITEM_SLOTS`
+    // and the row's shape are untouched, so the 550-against-595 comparison for eight page items is
+    // exactly where it was.
+    //
+    // WORTH NOTING FOR THE NEXT SEVEN, since this is the first of eight such moves: each one
+    // removes another top-level key, and each therefore needs its own bump unless they land in a
+    // single change. A migration that reused a stamp would leave an index written at that stamp
+    // decoding without the key and losing it in silence, which is the failure this pin's whole
+    // family of guards exists to make loud.
+    //
     // RE-READ AT 15 -> 16, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 16 was spent on `ObjectSlot` gaining a stored form for its owned element array: the slot's
@@ -602,8 +617,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 15 && current != 17,
-        "bracketed, so 16 is exact and not an artefact of the comparison above"
+        current != 16 && current != 18,
+        "bracketed, so 17 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail
