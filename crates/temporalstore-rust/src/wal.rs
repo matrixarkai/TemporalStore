@@ -8848,6 +8848,19 @@ mod tests {
     ///
     /// The identifier is assembled at runtime so this guard's own source does not contain the
     /// name it counts: a guard that lists names otherwise feeds on its own list.
+    ///
+    /// # WHY THE NAMING COUNT IS SIX AND THEN SEVEN, AND WHAT THE REAL ASSERTION IS
+    ///
+    /// Two different things are checked here and only one is the property. The mutation triple --
+    /// `(entry, insert, remove) == (0, 0, 1)` -- IS the property: the field is written through one
+    /// door and cleared by the roll, and by nothing else. The naming count is a TRIPWIRE, so that a
+    /// new line naming the field has to be looked at by someone before it lands.
+    ///
+    /// It went from six to seven when `stats_without_rescan` was added, which reads the field to
+    /// compose `persistent_bytes` exactly as `stats` does. That is a reader, which the triple above
+    /// proves rather than asserts: a reader cannot change `(0, 0, 1)`. Raising this number is
+    /// therefore the right response to a reader and the WRONG response to a writer -- if the triple
+    /// moves, the door has been opened again and the number is not the thing to change.
     #[test]
     fn the_durable_byte_figure_has_exactly_one_writer() {
         let source = include_str!("wal.rs");
@@ -8869,9 +8882,9 @@ mod tests {
             .collect();
         assert_eq!(
             naming.len(),
-            6,
+            7,
             "the lines naming the field changed; every one of them is either the declaration, \
-             its initialiser, the single writer, the roll that clears it, or one of the two \
+             its initialiser, the single writer, the roll that clears it, or one of the three \
              readers: {naming:#?}"
         );
 
