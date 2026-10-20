@@ -399,47 +399,40 @@ fn the_slots_owned_array_stays_sorted_through_out_of_order_writes() {
 ///
 /// # WHAT THIS IS FOR
 ///
-/// `ObjectSlot::many` is `#[serde(skip)]` under a `#[serde(transparent)]` struct, so a slot's
-/// stored image is exactly the bare record's and the owned array serializes to nothing. The
-/// tenancy witness on `set_owned_elements` refuses a durable per-element tenant on that basis
-/// alone. A premise asserted only in prose goes stale silently; this one is driven.
+/// `ObjectSlot::many` has a stored form now -- `e` of `ObjectSlotWire`, skipped when empty -- and
+/// `SHARD_INDEX_FORMAT_VERSION` moved with it. This replaces the test that asserted the opposite,
+/// whose failure message was the instruction for that change.
 ///
-/// # THE TWO LAYERS, AND WHY BOTH
+/// # THREE CLAIMS, AND THE THIRD IS THE ONE THE STAMP MOVE RESTS ON
 ///
-/// The byte-identity half pins what `#[serde(transparent)]` is claiming -- that wrapping the
-/// record cost the record nothing on the wire. The round-trip half goes through
-/// `encode_index_bytes` and `decode_index_bytes`, which is the layer that DECIDES: that is the
-/// codec a dump manifest's index actually carries, so an attribute change a slot-level
-/// `serde_json` call happened not to reach would still be caught here.
+/// (a) the array survives the codec a dump manifest actually carries, which is what makes a durable
+/// per-element tenant safe to register; (b) an element-free slot stores no `e` key, so the only
+/// cost for the common slot is the `r` wrapper; and (c) **an image of the OLD shape is REFUSED**.
 ///
-/// # THE POSITIVE CONTROL IS THE FIRST ASSERTION, NOT A COURTESY
-///
-/// A fixture whose array never got populated round-trips to zero elements and passes everything
-/// below while proving nothing -- the same vacuity as a test filter that selects nothing and
-/// prints `ok`. So the count is asserted non-zero BEFORE the round-trip, and the rows go in out
-/// of order so the door's sort is exercised rather than assumed.
-///
-/// # WHEN THIS FAILS, ITS MESSAGE IS THE INSTRUCTION
-///
-/// A surviving array means the stored form has landed, and the witness is now refusing a
-/// registration that has become correct.
+/// (c) is what makes a one-sided stamp check survivable. The check is `stored < current`, so an
+/// older binary does NOT refuse a newer image -- it decodes it. That is only safe if the two shapes
+/// cannot be read as each other: the new form requires `r`, and the old form carried the record's
+/// own keys and no `r`, so each refuses the other and both land on "no usable index", which replays.
+/// Were the old shape instead to decode into a plausible record, every object would come back with
+/// a default address and nothing would report an error.
 ///
 /// rust-internal: guards this crate's own stored shape, no product behaviour
 #[test]
-fn the_owned_element_array_reaches_no_stored_image() {
+fn the_owned_element_array_reaches_the_stored_image() {
     fn element(offset: u64) -> crate::block_store::ElementEntry {
         crate::block_store::ElementEntry::from_parts(3, offset, 16, Some(0), Some(11))
     }
 
-    // THE SAFE TENANCY, which is the one that compiles: `context_index` is `skip_serializing`
-    // already, so an empty stored image costs it a rebuild and nothing else.
+    // THE DURABLE TENANCY, which is the arm that could not be spelled before this change.
     let mut slot = slot_at(1, 0, 32);
     slot.set_owned_elements(
-        OwnedElementTenancy::RebuiltAtLoad(StoredModelKind::ContextIndex),
+        OwnedElementTenancy::DurableOnTheWire {
+            kind: StoredModelKind::ContextIndex,
+        },
         vec![(30, element(192)), (10, element(64)), (20, element(128))],
     );
 
-    // --- POSITIVE CONTROL. Both halves below are vacuous over an empty array.
+    // --- POSITIVE CONTROL, as before: every assertion below is vacuous over an empty array.
     assert_eq!(
         slot.owned_element_count(),
         3,
@@ -447,18 +440,7 @@ fn the_owned_element_array_reaches_no_stored_image() {
          over an empty array and measure nothing"
     );
 
-    // --- (a) THE SLOT'S STORED IMAGE IS THE BARE RECORD'S, BYTE FOR BYTE.
-    let with_elements = serde_json::to_vec(&slot).expect("a slot serializes");
-    let bare = serde_json::to_vec(&slot_at(1, 0, 32)).expect("a bare slot serializes");
-    assert_eq!(
-        with_elements, bare,
-        "a slot carrying three owned elements no longer serializes identically to the same slot \
-         carrying none, so the owned array has reached the wire and the tenancy witness in \
-         `object_record.rs` is now refusing a registration that has become correct. Read \
-         `OwnedElementWireForm`'s doc: it lists what to delete."
-    );
-
-    // --- (b) THROUGH THE CODEC A DUMP MANIFEST ACTUALLY CARRIES.
+    // --- (a) THROUGH THE CODEC A DUMP MANIFEST ACTUALLY CARRIES.
     let mut shard = ShardState::default();
     shard.insert_control_state_block("k1".into(), slot.clone());
     let bytes = crate::engine::encode_index_bytes(&shard);
@@ -468,25 +450,41 @@ fn the_owned_element_array_reaches_no_stored_image() {
         .control_state_blocks()
         .get("k1")
         .expect("the key round-tripped away, so this measures the codec and not the array");
-
-    // THE RECORD DID SURVIVE. Without this, a codec that dropped the whole slot would satisfy
-    // the element assertion below and read as the premise holding.
     assert_eq!(
         restored_slot.record(),
         slot.record(),
         "the fixed-width record did not survive the round-trip, so the element count below is \
-         measuring a broken codec rather than the owned array's absence from the wire"
+         measuring a broken codec rather than the array"
     );
-
     assert_eq!(
         restored_slot.owned_element_count(),
-        0,
-        "THE OWNED ELEMENT ARRAY NOW SURVIVES A ROUND-TRIP THROUGH THE INDEX CODEC, so the \
-         premise the tenancy witness rests on is gone and the witness must go with it -- in this \
-         change, not later. A durable per-element tenant is now safe to register, while \
-         `OwnedElementTenancy::DurableOnTheWire` still cannot be spelled, which refuses correct \
-         code. Delete, all in one change: `OwnedElementWireForm`; the `wire_form` field of \
-         `DurableOnTheWire`; the empty match arm in `ObjectSlot::set_owned_elements`; the pointer \
-         at `ShardState::objects`' declaration in `state.rs`; and this test. See #2165."
+        3,
+        "the owned element array did not survive the index codec, so it has no stored form after \
+         all and a durable per-element tenant would lose its elements at the next dump"
+    );
+
+    // --- (b) AN ELEMENT-FREE SLOT STORES NO `e`, which is what keeps the common slot cheap.
+    let bare = serde_json::to_vec(&slot_at(1, 0, 32)).expect("a bare slot serializes");
+    let bare_text = String::from_utf8(bare).expect("the slot's image is text");
+    assert!(
+        !bare_text.contains("\"e\""),
+        "an element-free slot stored an `e` key ({bare_text}), so `skip_serializing_if` is not \
+         taking and every slot in the shard pays for an empty array"
+    );
+    assert!(
+        bare_text.contains("\"r\""),
+        "the slot's image carries no `r` ({bare_text}), so it is not the new shape and claim (c) \
+         below would be comparing the old shape with itself"
+    );
+
+    // --- (c) THE OLD SHAPE IS REFUSED, NOT MIS-PARSED. This is the stamp move's safety argument.
+    let record_only = serde_json::to_vec(&slot.record()).expect("a record serializes");
+    let as_old_shape = serde_json::from_slice::<ObjectSlot>(&record_only);
+    assert!(
+        as_old_shape.is_err(),
+        "an image of the OLD slot shape -- the bare record, with no `r` -- decoded as a slot. The \
+         stamp check is one-sided, so an older binary reads a newer image without refusing it; \
+         that is only safe while the two shapes cannot be read as each other. If this passes, an \
+         upgrade-then-roll-back returns every object with a default address and reports nothing."
     );
 }

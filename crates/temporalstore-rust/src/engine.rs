@@ -2658,7 +2658,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 15;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 16;
 
 /// Serialize a shard index, stamping the current format version.
 ///

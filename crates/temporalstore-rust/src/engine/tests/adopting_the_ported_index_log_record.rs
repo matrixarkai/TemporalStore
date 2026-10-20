@@ -562,10 +562,25 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 15,
-        "costed against 15; if this is red the stamp moved and the adoption's cost has to be \
+        current, 16,
+        "costed against 16; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 15 -> 16, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 16 was spent on `ObjectSlot` gaining a stored form for its owned element array: the slot's
+    // image stops being the bare record's and becomes `{"r": record}` plus an `e` array when the
+    // object has one. That is a change to the SERVED index's value shape -- the same category as
+    // 14 (this very map's value becoming a consolidated record) and 15 (a sketch merge changing a
+    // bucket value) -- and this module costs the POSITIONAL index-log row, which carries no struct
+    // version at all. Nothing in `index_log::INDEX_ITEM_SLOTS` or the positional row moved, so the
+    // 550-against-595 comparison for eight page items is exactly where it was.
+    //
+    // AND THE NINE HARVESTS STAY NINE. The element-name slot leaving the row was the ninth and the
+    // only format break among them; a slot gaining a wire form in the SERVED index adds nothing to
+    // that list, because the list is about what a `prost` field cannot express slot-for-slot in the
+    // positional row.
+    //
     // RE-READ AT 14 -> 15, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 15 was spent on merging `control_state_change_sketch` into `control_state_changes`, whose
@@ -587,8 +602,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 14 && current != 16,
-        "bracketed, so 15 is exact and not an artefact of the comparison above"
+        current != 15 && current != 17,
+        "bracketed, so 16 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

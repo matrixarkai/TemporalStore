@@ -827,6 +827,64 @@ impl PageLayoutStore {
 // THE WIRE FORM, AND A DECODER THAT REFUSES BY NAME
 // =================================================================================================
 
+/// THE SLOT'S STORED SPELLING: a record, and the owned element array when there is one.
+///
+/// # WHY TWO FIELDS RATHER THAN A FLATTENED ONE
+///
+/// `#[serde(flatten)]` and `#[serde(untagged)]` both buffer the input before they can decide, which
+/// on this type means a `Content` allocation per object on the load path -- the decode walks every
+/// slot in the shard. Two named fields decide by key, so nothing is buffered.
+///
+/// # WHY AN OLD IMAGE IS REFUSED RATHER THAN MISREAD, IN BOTH DIRECTIONS
+///
+/// The slot's image used to be the bare record's, so it carried the record's own keys and no `r`.
+/// Under this form `r` is REQUIRED, so an old image fails to decode -- and a stale stamp already
+/// answers "no usable index", the same answer a missing file gets, so the store replays and rebuilds.
+///
+/// The stamp check is ONE-SIDED (`stored < current`), so a NEWER image is not refused by an older
+/// binary. That direction is safe for the mirror-image reason: an older binary reading `{"r": ...}`
+/// looks for the record's required fields, does not find them, and refuses. Undecodable also
+/// replays. What makes a one-sided check survivable here is that neither direction can decode the
+/// other's shape into something plausible.
+///
+/// `e` is skipped when empty, so the only cost for an element-free slot is the `r` wrapper.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub(super) struct ObjectSlotWire {
+    /// The fixed-width record. REQUIRED, which is what refuses an image of the older shape.
+    r: ObjectRecord,
+    /// The owned element array, absent when empty.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    e: Vec<(u64, ElementEntry)>,
+}
+
+impl From<ObjectSlot> for ObjectSlotWire {
+    fn from(slot: ObjectSlot) -> Self {
+        Self {
+            r: slot.record,
+            e: slot.many.map(|many| *many).unwrap_or_default(),
+        }
+    }
+}
+
+impl From<ObjectSlotWire> for ObjectSlot {
+    /// AN EMPTY ARRAY DECODES TO `None`, not to `Some(vec![])`.
+    ///
+    /// The two are equal to every reader here, and `None` is what the in-memory type produces for an
+    /// emptied series -- so decoding an absent `e` into `Some(vec![])` would make a reloaded slot
+    /// hold an allocation the same slot never held before the dump, and the footprint figures either
+    /// side of a reload would stop matching.
+    fn from(wire: ObjectSlotWire) -> Self {
+        Self {
+            record: wire.r,
+            many: if wire.e.is_empty() {
+                None
+            } else {
+                Some(Box::new(wire.e))
+            },
+        }
+    }
+}
+
 /// The stored spelling. Short keys because this is one row per object and there are many of them.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub(super) struct ObjectRecordWire {
@@ -1045,25 +1103,23 @@ pub(super) fn address_word_from_parts(block_slab_id: u32, offset: u32) -> u64 {
 /// allocation more than a single-buffer layout at every length tested, which is not a price worth
 /// `unsafe` to avoid.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(transparent)]
+#[serde(from = "ObjectSlotWire", into = "ObjectSlotWire")]
 pub(super) struct ObjectSlot {
     /// The fixed-width record, unchanged and still `Copy`.
     pub(super) record: ObjectRecord,
     /// The owned element array, for an object whose elements do not fit the record's inline arms.
     ///
-    /// SKIPPED ON THE WIRE, AND THAT IS CORRECT RATHER THAN DEFERRED. No map stores elements here
-    /// yet -- the first tenant holds exactly one record per key and no elements at all -- so there
-    /// is nothing a stored form could carry, and `#[serde(transparent)]` over the one remaining
-    /// field makes this type's stored image BYTE-IDENTICAL to the bare record's. That is what lets
-    /// this land without moving the format stamp. The wire representation arrives with the first
-    /// tenant that actually populates it, in the change that moves the stamp for other reasons.
+    /// ON THE WIRE NOW, under the key `e` of [`ObjectSlotWire`], and skipped when empty so an
+    /// element-free slot stores only its record. This is the change the previous note deferred:
+    /// the array had no stored form, the tenancy witness refused a durable tenant on that basis,
+    /// and `SHARD_INDEX_FORMAT_VERSION` moves with this so an image written either side of it is
+    /// refused and replayed rather than mis-read.
     ///
     /// PRIVATE TO THIS MODULE, AND THAT IS THE ENFORCEMENT RATHER THAN A STYLE CHOICE. The
     /// only path that puts elements here is [`ObjectSlot::set_owned_elements`], and it
     /// demands a tenancy witness whose durable arm cannot be spelled -- see
     /// [`OwnedElementTenancy`]. A `pub(super)` field would let any engine module assign the
     /// array directly, and the witness would then be advice rather than a check.
-    #[serde(skip)]
     many: Option<Box<Vec<(u64, ElementEntry)>>>,
 }
 
@@ -1106,7 +1162,7 @@ const _: () = assert!(std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>
 ///
 /// The owned array has no stored form -- see `many` above, and the test named in the deletion
 /// list below, which measures that rather than restating it. So the second tenancy is not merely
-/// discouraged here, it is UNSPELLABLE: its witness field has type [`OwnedElementWireForm`],
+/// discouraged here, it was UNSPELLABLE: its witness field had an uninhabited type,
 /// which has no values, so there is nothing a call site can put in the hole and the registration
 /// does not compile. Issue #2165.
 ///
@@ -1127,37 +1183,18 @@ const _: () = assert!(std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>
 pub(super) enum OwnedElementTenancy {
     /// The elements are re-derived at load, and the stored image is not expected to carry them.
     RebuiltAtLoad(StoredModelKind),
-    /// The elements are the stored copy. UNCONSTRUCTIBLE while the array has no stored form.
+    /// The elements are the stored copy, carried under `e` of [`ObjectSlotWire`].
+    ///
+    /// CONSTRUCTIBLE NOW. It was not while the array had no stored form, and the hole it carried
+    /// (an uninhabited enum) is deleted with this change exactly as its own
+    /// doc instructed: keeping the witness afterwards would refuse a registration that had become
+    /// correct, and a guard that fires on correct code gets deleted rather than obeyed.
     DurableOnTheWire {
         /// The tenant making the claim.
         kind: StoredModelKind,
-        /// The hole with nothing to put in it.
-        wire_form: OwnedElementWireForm,
     },
 }
 
-/// THE ABSENCE OF A STORED FORM, AS A TYPE WITH NO VALUES.
-///
-/// An uninhabited enum. The moment the owned array gains a stored form, this type gains an
-/// inhabitant to describe it -- and that is the loud failure rather than a silent pass: the door
-/// below discharges the durable arm with `match wire_form {}`, an empty match that compiles ONLY
-/// over an uninhabited type. A variant added here makes that match non-exhaustive, so the build
-/// fails with `E0004` NAMING the variant, at the door, instead of this guard quietly becoming
-/// vacuous and being kept for the wrong reason.
-///
-/// A width assertion would not do this job. `size_of` is zero for an uninhabited enum AND zero
-/// for a unit struct, so it would pass either way and prove nothing. Exhaustiveness is the
-/// property, so exhaustiveness is what is asserted.
-///
-/// WHEN THAT HAPPENS, DELETE ALL OF THIS IN THE CHANGE THAT LANDS THE STORED FORM:
-///   1. this type, and the `wire_form` field of `OwnedElementTenancy::DurableOnTheWire`;
-///   2. the `match wire_form {}` arm in [`ObjectSlot::set_owned_elements`];
-///   3. the pointer at `ShardState::objects`' declaration in `state.rs`;
-///   4. `the_owned_element_array_reaches_no_stored_image`, which measures the premise and fails
-///      when it goes.
-/// Keeping the witness afterwards would refuse a registration that had become correct, and a
-/// guard that fires on correct code gets deleted rather than obeyed.
-pub(super) enum OwnedElementWireForm {}
 
 impl ObjectSlot {
     /// A slot holding one record and no element array.
@@ -1201,8 +1238,10 @@ impl ObjectSlot {
     ///
     /// `many` is private to this module, so this is the whole write surface for the array rather
     /// than the recommended one. A caller names its tenant and says whether the elements are
-    /// re-derived at load or are themselves the stored copy; the second is unspellable while the
-    /// array has no stored form. See [`OwnedElementTenancy`] and [`OwnedElementWireForm`].
+    /// re-derived at load or are themselves the stored copy. The second was unspellable while the
+    /// array had no stored form; it has one now, under `e` of [`ObjectSlotWire`], so both arms are
+    /// reachable and the claim is a statement a reviewer checks rather than one a type refuses.
+    /// See [`OwnedElementTenancy`].
     ///
     /// Sorted on the way in, which is what keeps the array's own access argument true: the type
     /// doc claims a sorted contiguous array that binary-searches in O(log N), and a door that
@@ -1212,12 +1251,14 @@ impl ObjectSlot {
         tenancy: OwnedElementTenancy,
         mut elements: Vec<(u64, ElementEntry)>,
     ) {
+        // BOTH ARMS ARE REACHABLE NOW, and the match stays because the claim and the tenant it is
+        // made for still belong together in a diff -- which is the half a reviewer can see and a
+        // compiler cannot. What it no longer does is refuse the durable arm: the array has a stored
+        // form under `e` of `ObjectSlotWire`, so a tenant claiming its elements are the stored copy
+        // is making a claim that is now true.
         match tenancy {
             OwnedElementTenancy::RebuiltAtLoad(_) => {}
-            // UNREACHABLE BECAUSE IT IS UNSPELLABLE, and this empty match is the proof rather
-            // than a consequence of it: it compiles only while `OwnedElementWireForm` has no
-            // values, so the day one arrives this line is what refuses to build.
-            OwnedElementTenancy::DurableOnTheWire { wire_form, .. } => match wire_form {},
+            OwnedElementTenancy::DurableOnTheWire { .. } => {}
         }
         elements.sort_unstable_by_key(|(when, _)| *when);
         self.many = Some(Box::new(elements));
