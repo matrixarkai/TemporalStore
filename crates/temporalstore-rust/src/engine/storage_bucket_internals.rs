@@ -6253,7 +6253,7 @@ fn refresh_one_bucket_runtime_flags(
     // `any(page.dirty)` now. The parameter stays because removing it would touch every caller for
     // no behavioural reason, and because the next reader should see that this function was handed
     // the set and chose not to consult it rather than never having had access to it.
-    _dirty_objects: &DirtyObjectIndex,
+    dirty_objects: &DirtyObjectIndex,
     expires_at_ms: &BTreeMap<Arc<str>, u64>,
     // THE IDENTITIES, AND SEPARATELY THE DECISION TO REBUILD. ONE PARAMETER WAS CARRYING BOTH
     // AND THAT WAS WRONG IN A WAY A TEST CAUGHT.
@@ -6295,15 +6295,23 @@ fn refresh_one_bucket_runtime_flags(
             .inspect(|_| fold_visits += 1)
             .all(|page| page.deleted);
     bucket.set_deleted(every_page_deleted);
-    let any_page_dirty = bucket
-        .block_index
-        .values()
-        .inspect(|_| fold_visits += 1)
-        // `any(page.dirty)` ALONE, because the dirtiness is pushed onto the pages at mark
-        // time now. See `push_object_dirty_onto_its_existing_pages` for why that is equivalent
-        // and for the two cases that cover every page the object half used to decide.
-        .any(|page| page.dirty);
-    bucket.set_dirty(bucket.dirty() | any_page_dirty);
+    // ASKED OF THE INDEX, NOT FOLDED OVER THE PAGES. The dirty-object index already records which
+    // routing bucket each dirty object belongs to -- it is recorded there at mark time, beside the
+    // bucket that was just computed for the key -- so this is one ordered-map lookup where it was
+    // a pass over the bucket's pages. The parameter was already threaded to this function and
+    // ignored; `DirtyObjectIndex::has_bucket` carries the argument for why the answer is the same
+    // or safer.
+    //
+    // AND IT COMBINES WITH `|`, WHICH IS WHAT MAKES THE SUBSTITUTION SOUND HERE RATHER THAN
+    // GENERALLY. A bucket already marked dirty stays dirty, so the only way this can differ from
+    // the fold is by reporting dirt the fold would have missed -- an object with no live page, or a
+    // page not yet filed. Both of those refuse a release and keep data resident. The sibling fold
+    // in `clear_published_object_dirty_state` ASSIGNS instead, and is deliberately left as a fold:
+    // `insert_container_tombstone_entry` files a page `dirty: true` and sets the bucket flag
+    // directly without a mark, so a tombstone's dirt need not be in the index, and an assignment is
+    // where that would cost something.
+    let bucket_holds_dirty_object = dirty_objects.has_bucket(bucket.routing_bucket);
+    bucket.set_dirty(bucket.dirty() | bucket_holds_dirty_object);
     bucket_visit_sites::FLAG_FOLDS.fetch_add(fold_visits, std::sync::atomic::Ordering::Relaxed);
     // THE TTL MINIMUM IS A REPORTED STATISTIC, AND THE WRITE PATH NO LONGER COMPUTES IT.
     //

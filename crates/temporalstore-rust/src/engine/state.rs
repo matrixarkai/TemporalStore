@@ -4590,6 +4590,28 @@ impl DirtyObjectIndex {
         self.by_bucket.keys().copied()
     }
 
+    /// Does this routing bucket hold a dirty object? One ordered-map lookup.
+    ///
+    /// WHAT THIS REPLACES, AND WHY IT IS THE SAFE DIRECTION. `refresh_one_bucket_runtime_flags`
+    /// answered the same question by folding `any(page.dirty)` over every page the bucket holds.
+    /// This index is a strict SUPERSET of what that fold can find:
+    /// `dirty_objects_versus_the_blocks_own_dirty_flags` measures zero pages dirty whose object is
+    /// not in here, while half the members have no live page at all -- a string write marks the
+    /// data object AND its control-state record, and control state is not page-backed. So reading
+    /// this can only ever report MORE dirt, which refuses a bucket release and raises an eviction
+    /// weight; it cannot report less, which is the direction that would lose unflushed state.
+    pub(super) fn has_bucket(&self, routing_bucket: u32) -> bool {
+        self.by_bucket.contains_key(&routing_bucket)
+    }
+
+    /// How many dirty objects this routing bucket holds. One ordered-map lookup.
+    pub(super) fn bucket_count(&self, routing_bucket: u32) -> u64 {
+        self.by_bucket
+            .get(&routing_bucket)
+            .map(|keys| keys.len() as u64)
+            .unwrap_or(0)
+    }
+
     /// How many buckets sit in each arm of `DirtyKeySet`: (Empty, One, Many).
     ///
     /// The arm is the footprint -- `One` holds a pointer, `Many` holds a B-tree node sized for
