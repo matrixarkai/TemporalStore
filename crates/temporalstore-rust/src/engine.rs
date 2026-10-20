@@ -7320,6 +7320,15 @@ pub(crate) fn object_manager_stats_for_test(
     object_manager_stats(shard, start_routing_bucket, end_routing_bucket)
 }
 
+/// The dirty-bucket count when no set is needed: the flagged buckets are already the whole answer.
+///
+/// Named rather than written as a bare `flagged_dirty`, so the fast path in `object_manager_stats`
+/// states that it is returning THE ANSWER and not a lower bound on it. See the two cases set out
+/// there; both make the union equal to this count.
+fn return_dirty_bucket_count(flagged_dirty: usize) -> usize {
+    flagged_dirty
+}
+
 fn object_manager_stats(
     shard: &ShardState,
     start_routing_bucket: u32,
@@ -7442,6 +7451,32 @@ fn object_manager_stats(
                 .map(timestamped_series::OwnedTimestampedSeries::len)
                 .sum::<usize>();
         let dirty_bucket_count = if !shard.bucket_index.object_block_lookup.is_empty() {
+            // COUNTED BEFORE ANY SET IS BUILT, because in two cases the set cannot change the
+            // answer and building it is the whole allocation of this function.
+            //
+            // MEASURED: `what_one_stats_read_allocates` puts the `BTreeSet` below at 4,112 of the
+            // 5,249 bytes one stats read allocates over a 320-page store -- and the thirteen
+            // per-map sums above it at ZERO, which is worth stating because they are what this
+            // function looks like it spends its time on. A `BTreeSet` collect buffers the whole
+            // iterator before building the tree, so its cost is the bucket count whether or not
+            // the loop that follows needs it.
+            //
+            // THE TWO CASES ARE EXACT, NOT APPROXIMATE. The answer is the union of the flagged
+            // buckets with, per dirty object, every bucket holding one of its blocks. A union
+            // cannot exceed the bucket count, so if every bucket is already flagged the union IS
+            // the bucket count; and with no dirty objects the loop iterates nothing. The comment
+            // below already says the first of those is the normal case during ingest, because
+            // `mark_async_dirty_object` flags an object's routing bucket as it records it.
+            let bucket_total = shard.bucket_index.bucket_map.len();
+            let flagged_dirty = shard
+                .bucket_index
+                .bucket_map
+                .values()
+                .filter(|bucket| bucket.dirty())
+                .count();
+            if flagged_dirty >= bucket_total || shard.dirty_objects.is_empty() {
+                return_dirty_bucket_count(flagged_dirty)
+            } else {
             let mut dirty_buckets = shard
                 .bucket_index
                 .bucket_map
@@ -7460,7 +7495,6 @@ fn object_manager_stats(
             // that is the normal case -- `mark_async_dirty_object` marks an object's routing
             // bucket dirty as it records the object, so the collect above already has them.
             // Stopping there is exact, not an approximation.
-            let bucket_total = shard.bucket_index.bucket_map.len();
             if dirty_buckets.len() < bucket_total {
                 for object_key in shard.dirty_objects.iter() {
                     dirty_buckets
@@ -7471,6 +7505,7 @@ fn object_manager_stats(
                 }
             }
             dirty_buckets.len()
+            }
         } else {
             shard
                 .bucket_index

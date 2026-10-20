@@ -7523,10 +7523,26 @@ fn what_the_four_converted_context_maps_cost() {
 /// the lesson is the probe's: a per-read cost nobody had measured was about to be "fixed" by a line
 /// that does not execute.
 ///
-/// WHAT IS NOT ANSWERED, stated so the number is not mistaken for a complete account: the remaining
-/// 99.5% is inside the rest of `shard_stats` -- the storage-stats construction and the body past it
-/// -- and this probe localises it no further. The split above is the instrument for doing that; it
-/// is not the answer.
+/// WHAT WAS NOT ANSWERED THEN, AND IS NOW. The 99.5% was inside the rest of `shard_stats`, and the
+/// split above found it in two steps:
+///
+///   * **the write-ahead log's full-file scan**, 771,062 of 776,311 B -- `stats` answered
+///     `last_sequence` by reading the whole log on every read. Replaced by the cached sequence the
+///     write path already trusts, scanning once on a miss. That took the read to 5,249 B.
+///   * **the dirty-bucket `BTreeSet`**, 4,112 of the remaining 5,249 B -- and the thirteen per-map
+///     `values().map(len).sum()` chains beside it at **ZERO**, which is the opposite of how they
+///     look. A `BTreeSet` collect buffers its iterator before building the tree; the sums walk keys
+///     and allocate nothing. Skipped in the two cases where the set cannot change the answer.
+///
+/// THE READ IS NOW FLAT: 1,137 B at 40 pages and 1,137 B at 320, where it began at 220,745 and
+/// 776,311. Flat is the property that matters -- a scheduled read whose cost follows the store is
+/// the thing that cannot be left in place -- and it is why the assertion below is about growth.
+///
+/// AND THE ROWS BELOW DO NOT SUM TO THE TOTAL, BY CONSTRUCTION. Three of them price expressions by
+/// REPLICATING them against the same shard: `wal.stats`, the per-map sums, and a dirty-bucket set.
+/// Two of those the path no longer runs. They are kept because they are what the saving is measured
+/// against, and labelled because 4,112 B printed beneath a 1,137 B total otherwise reads as a
+/// contradiction.
 ///
 /// rust-internal: measures this crates own allocation behaviour, no product behaviour
 ///
@@ -7651,6 +7667,44 @@ fn what_one_stats_read_allocates() {
             let _ = crate::engine::storage_bucket_internals::bucket_index_node_bytes(shard);
             probe.stop().alloc_bytes
         };
+        // THE TWO HALVES OF `object_manager_stats`, priced apart. The per-map sums look like the
+        // cost and this fixture writes only strings, so twelve of the thirteen maps they walk are
+        // empty -- which is exactly the kind of thing that has to be measured rather than reasoned
+        // about, because three earlier guesses at a cost in this function were wrong.
+        let (sums_bytes, dirty_set_bytes) = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            let sums = {
+                let probe = crate::alloc_probe::Probe::start();
+                let total = shard.strings.len()
+                    + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
+                    + shard.sets.values().map(std::collections::BTreeMap::len).sum::<usize>()
+                    + shard.lists.values().map(std::collections::BTreeMap::len).sum::<usize>()
+                    + shard.zsets.values().map(std::collections::BTreeMap::len).sum::<usize>()
+                    + shard.features.values().map(|series| series.len()).sum::<usize>()
+                    + shard.context_nodes.len();
+                let counted = probe.stop().alloc_bytes;
+                assert!(total > 0, "the sums walked nothing, so their price is not measured");
+                counted
+            };
+            let dirty_set = {
+                let probe = crate::alloc_probe::Probe::start();
+                let set = shard
+                    .bucket_index
+                    .bucket_map
+                    .iter()
+                    .filter_map(|(bucket, node)| node.dirty().then_some(*bucket))
+                    .collect::<std::collections::BTreeSet<_>>();
+                let counted = probe.stop().alloc_bytes;
+                assert!(
+                    !set.is_empty(),
+                    "no bucket read dirty, so the set this prices was empty and its price is not \
+                     a measurement"
+                );
+                counted
+            };
+            (sums, dirty_set)
+        };
 
         println!(
             "  {rung:>6}   {live_pages:>10}   {:>6}   {:>11}   {:>10.1}   scanned {scanned}",
@@ -7668,6 +7722,10 @@ fn what_one_stats_read_allocates() {
         println!(
             "             priced separately: slab+store {slab_bytes} B, object_manager_stats \
 {om_bytes} B, cache.stats {cache_bytes} B, bucket_index bytes {index_bytes} B",
+        );
+        println!(
+            "             replicated, NOT parts of the total: the per-map sums {sums_bytes} B, a \
+dirty-bucket BTreeSet {dirty_set_bytes} B (the fast path skips building it)"
         );
         println!(
             "             OFF THE PATH NOW: wal.stats {wal_bytes} B would be charged to every read \
@@ -7716,6 +7774,18 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
         large_bytes > 0 && small_bytes > 0,
         "one stats read allocated {small_bytes} B and {large_bytes} B at the two rungs, so at least \
          one measured nothing and the split printed above divides into it"
+    );
+    // --- THE READ DOES NOT FOLLOW THE STORE. Measured at 1,137 B on both rungs after the scan and
+    // --- the set came off the path, where it was 220,745 and 776,311 before. A level is a fixture
+    // --- figure; the SHAPE is the claim, so growth is what is asserted. Allowing 1.5x over an 8x
+    // --- corpus leaves room for a fixed cost that is not perfectly constant without admitting a
+    // --- term that scales.
+    assert!(
+        (large_bytes as f64) < (small_bytes as f64) * 1.5,
+        "one stats read allocated {small_bytes} B over {small_pages} pages and {large_bytes} B over \
+         {large_pages} -- it is following the store again. `shard_stats` is what a node answers a \
+         stats request with, so a term that scales is paid on every read: check whether a full-file \
+         log scan or a per-bucket collect has come back onto the path."
     );
     // --- AND THE SCAN IS OFF THE PATH, ASSERTED AS A COUNT. This is the whole claim: a stats read
     // --- must not run a full-file scan of the log. `stats_full_scans` moves only when one happens,
