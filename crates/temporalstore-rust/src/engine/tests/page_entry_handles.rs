@@ -1407,8 +1407,16 @@ fn page_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>,
 /// the failure mode a migration would have had -- hex parsed as a length, a handle parsed as a
 /// string -- does not exist here, and what remains is exactly this one: a name with no row.
 #[test]
-#[should_panic(expected = "no stored model kind for model id \"not_a_model_kind\"")]
 fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
+    // THE REFUSAL IS ASSERTED ON THE ERROR, NOT THROUGH `should_panic`, AND THAT IS THE FIX.
+    //
+    // This was `should_panic` over an `.expect()`. `expect` renders its error with `Debug`,
+    // which ESCAPES the quotes the message puts around the model id, so the expectation
+    // carried a bare quote where the panic carried a backslashed one. The substring could
+    // never match, however right the refusal was, and this test was red on main for that
+    // reason alone -- while its twin below, which calls `stored_model_kind` directly and so
+    // reaches the expectation unescaped, passed the whole time. Reading the error here
+    // removes the question: the assertion is against the `Display` text a caller sees.
     // PLANTED ON A REAL ENTRY. Encoding a hand-written map would make this test assert about an
     // address wire shape it has no business knowing; mutating one field of a genuine encoding
     // plants exactly the defect and nothing else.
@@ -1418,8 +1426,19 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
     })
     .expect("encode");
     json["model_id"] = serde_json::Value::String("not_a_model_kind".to_string());
-    let _ = serde_json::from_value::<crate::engine::state::StoredPageEntry>(json)
-        .expect("the decode must be reached");
+    let error = serde_json::from_value::<crate::engine::state::StoredPageEntry>(json)
+        .err()
+        .expect("a spelling with no row must be refused, not decoded")
+        .to_string();
+    assert!(
+        error.contains("no stored model kind for model id"),
+        "the decode refused with {error:?} rather than by naming the unplaceable spelling"
+    );
+    assert!(
+        error.contains("not_a_model_kind"),
+        "the refusal named no spelling: {error:?}. The message has to carry the name, or an
+         operator cannot tell which stored kind their store and this binary disagree about"
+    );
 }
 
 /// THE OBJECT [`sample_entry`] BELONGS TO, named once rather than at each encode.

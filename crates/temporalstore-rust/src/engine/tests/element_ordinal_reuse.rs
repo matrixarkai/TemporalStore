@@ -2818,12 +2818,33 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         rest[..end].to_string()
     };
 
-    // WHAT `apply_key_states` FOLDS: thirteen maps, each PER KEY.
+    // WHAT `apply_key_states` FOLDS: twelve maps, each PER KEY. `features`, `expires_at_ms`,
+    // `control_state_changes`, `control_state_selection`, `context_nodes`, `context_events`,
+    // `context_indexes`, `context_audits`, `context_children`, `context_summaries`,
+    // `context_compressions`, `context_entities`.
+    //
+    // RE-ENUMERATED, WHICH IS WHAT THE MESSAGE BELOW DEMANDS, AND TWO THINGS HAD MOVED.
+    //
+    // THE NEEDLE BROKE, AND THAT IS THE SERIOUS ONE. Seven of these calls are turbofished now --
+    // `apply_key_state_field::<BTreeMap<u64, ElementEntry>, _>(` -- because a map whose stored
+    // blob shape differs from its resident shape has to name the type parameter. `...field(` does
+    // not match `...field::<`, so this count read FIVE against a function that folds twelve. A
+    // needle that silently stops matching makes a count read LOW, and a low count here reads as
+    // "the fold shrank" rather than as "the instrument broke", which is the more dangerous of the
+    // two misreadings. Both call forms are counted below.
+    //
+    // THE BARE IDENTIFIER IS NOT COUNTED, DELIBERATELY. It appears fourteen times in this window
+    // against twelve calls, because two of those are prose in the comments -- so counting the
+    // identifier trades one contamination for another.
+    //
+    // AND ONE MAP GENUINELY LEFT: `control_state_change_sketch`, merged into
+    // `control_state_changes` at stamp 15, so thirteen is twelve on the merits too.
     let folded = window("fn apply_key_states(");
-    let folded_maps = folded.matches("apply_key_state_field(").count();
+    let folded_maps = folded.matches("apply_key_state_field(").count()
+        + folded.matches("apply_key_state_field::<").count();
     assert_eq!(
-        folded_maps, 13,
-        "apply_key_states folds {folded_maps} maps, not the thirteen this finding rests on; \
+        folded_maps, 12,
+        "apply_key_states folds {folded_maps} maps, not the twelve this finding rests on -- CHECK THE NEEDLE FIRST, a call form this count cannot see reads as a map that is not folded; \
          re-enumerate them before trusting the exclusion below"
     );
     // STILL EXCLUDED FROM THIS FUNCTION, and now for a different reason than when this was
