@@ -1078,8 +1078,28 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     println!(
         "  ShardState {state} bytes: three routing-range fields, and the shard id it is served under"
     );
+    // THE NUMBER WENT DOWN, WHICH THE MESSAGE BELOW DOES NOT ANTICIPATE, AND BOTH HALVES OF THE
+    // SHRINK ARE ATTRIBUTED. Measured with this test run ALONE on each tree, because the suite's
+    // 4-thread mode contaminates several part1 counters:
+    //
+    //   pin 1,904  ->  1,792 on #2252  ->  1,648 here
+    //
+    // 112 OF IT WAS ALREADY STALE ON MAIN. The owned-array conversions and the first map migration
+    // shrank this struct and nobody moved the pin, so it was red before this change touched it --
+    // the third such pin in this campaign, after the second stamp tripwire in `page_entry_names`
+    // and the fold count in `element_ordinal_reuse`. A width pin only works if something runs it.
+    //
+    // 144 IS THIS CHANGE, AND IT IS EXACTLY THE ARITHMETIC. `context_audits`,
+    // `context_summaries` and `context_compressions` each left as a
+    // `HashMap<Arc<str>, OwnedTimestampedSeries>` -- 48 bytes of `RandomState` plus table header
+    // apiece, 3 x 48 = 144. Predicted before the measurement and confirmed by it, which is worth
+    // stating because a struct-width delta that does NOT equal the removed fields' widths would
+    // mean padding had moved and the remaining fields had repacked.
+    //
+    // SO THIS IS PAID DOWN, NOT WIDENED, which is the direction the message below demands. Five
+    // of the eight per-element maps still have their own field; each will take another 48 off.
     assert_eq!(
-        1_904, state,
+        1_648, state,
         "`ShardState` is {state} bytes. It was 1,880 before the routing range was carried on it \
          and 1,888 after -- the two u32s, with THAT flag landing in padding this struct already \
          had -- and 1,904 since it also carries the shard id it is served under. THAT step cost \
@@ -1087,7 +1107,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
          predicted, and an `Option<u64>` would have cost the same sixteen. It is paid rather than \
          argued down because there is one of this struct per shard. A change here means either a \
          field was added or a flag stopped being free; say which, and pay it down rather than \
-         widening this number."
+         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map, and five such maps are left."
     );
     assert_eq!(
         4,
