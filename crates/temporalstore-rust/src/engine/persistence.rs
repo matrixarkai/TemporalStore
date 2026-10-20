@@ -1150,7 +1150,11 @@ impl TemporalEngine {
                 block_store_slabs_compat: block_store_slabs.clone(),
                 block_store,
                 block_store_slabs,
-                write_ahead_log: self.wal_store.stats(shard_id),
+                // WITHOUT THE FULL-FILE SCAN. `stats` answers `last_sequence` by scanning the
+                // whole log, which `what_one_stats_read_allocates` measures at 99.3% of everything
+                // this function allocates -- and this function is what a node answers a stats
+                // request with, so it was paid on every read. See `stats_without_rescan`.
+                write_ahead_log: self.wal_store.stats_without_rescan(shard_id),
             }
         })
     }

@@ -7542,6 +7542,7 @@ fn what_one_stats_read_allocates() {
     println!("  corpus   live pages   allocs   alloc_bytes   bytes/page");
 
     let mut measured: Vec<(usize, usize, u64, u64)> = Vec::new();
+    let mut scan_counts: Vec<(usize, usize, u64, u64)> = Vec::new();
     for rung in [40_usize, 320] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = probe_engine_on(dir.path(), crate::DEFAULT_END_ROUTING_BUCKET);
@@ -7576,9 +7577,14 @@ fn what_one_stats_read_allocates() {
         // shard, not WHICH line does it. Reset immediately before the measured call.
         crate::engine::reset_live_block_scan_entries();
         crate::engine::reset_live_block_scan_sites();
+        // THE SCAN COUNTER ACROSS THE MEASURED CALL. `stats_full_scans` moves only when a
+        // full-file scan actually runs, so this is the exact statement of "the stats path does not
+        // scan the log" -- a count, not a byte threshold that drifts with the fixture.
+        let scans_before = engine.wal_store.raw_stats(1).stats_full_scans;
         let probe = crate::alloc_probe::Probe::start();
         let stats = engine.shard_stats(1);
         let counted = probe.stop();
+        let scans_after = engine.wal_store.raw_stats(1).stats_full_scans;
         assert!(stats.is_some(), "the measured stats read returned nothing");
         let scanned = crate::engine::live_block_scan_entries();
         let sites = crate::engine::live_block_scan_sites_snapshot();
@@ -7601,6 +7607,50 @@ fn what_one_stats_read_allocates() {
             );
             om_probe.stop().alloc_bytes
         };
+        // THE THREE SUB-REPORTS `shard_stats` EMBEDS, priced one at a time. The two bucket-index
+        // byte functions are excluded deliberately: both bodies only sum, so neither can allocate,
+        // and a row of zeroes for them would suggest the probe had tested something.
+        let cache_bytes = {
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = engine.cache.stats();
+            probe.stop().alloc_bytes
+        };
+        let wal_bytes = {
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = engine.wal_store.stats(1);
+            probe.stop().alloc_bytes
+        };
+        // AND THE WAL CALL SPLIT, because `stats` touches the disk twice: a full-file scan for the
+        // last sequence, and a segment walk for `persistent_bytes`. `raw_stats` does neither and
+        // `cached_last_sequence` is the floor, so the three together say which read costs what.
+        let wal_raw_bytes = {
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = engine.wal_store.raw_stats(1);
+            probe.stop().alloc_bytes
+        };
+        let wal_cached_bytes = {
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = engine.wal_store.cached_last_sequence(1);
+            probe.stop().alloc_bytes
+        };
+        let wal_scan_bytes = {
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = engine.wal_store.probe_last_sequence_scan(1);
+            probe.stop().alloc_bytes
+        };
+        let wal_segment_bytes = {
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = engine.wal_store.probe_all_segment_bytes(1);
+            probe.stop().alloc_bytes
+        };
+        let index_bytes = {
+            let shards = engine.shards.read().expect("shards lock poisoned");
+            let shard = shards.get(&1).expect("shard 1 loaded");
+            let probe = crate::alloc_probe::Probe::start();
+            let _ = crate::engine::storage_bucket_internals::bucket_index_resident_bytes(shard);
+            let _ = crate::engine::storage_bucket_internals::bucket_index_node_bytes(shard);
+            probe.stop().alloc_bytes
+        };
 
         println!(
             "  {rung:>6}   {live_pages:>10}   {:>6}   {:>11}   {:>10.1}   scanned {scanned}",
@@ -7611,12 +7661,30 @@ fn what_one_stats_read_allocates() {
         for (site, entries) in &sites {
             println!("             {entries:>9} entries  <- {site}");
         }
+        // PRICES OF INDIVIDUAL CALLS, NOT PARTS OF THE TOTAL ABOVE. `wal.stats` is priced here
+        // because it is what the stats path USED to call and what the saving is measured against;
+        // the path now calls `stats_without_rescan`, so its price is no longer inside the total and
+        // the rows deliberately do not sum to it.
         println!(
-            "             of which: block store slab summary + stats {slab_bytes} B, \
-object_manager_stats {om_bytes} B, rest {} B",
-            counted.alloc_bytes.saturating_sub(slab_bytes + om_bytes)
+            "             priced separately: slab+store {slab_bytes} B, object_manager_stats \
+{om_bytes} B, cache.stats {cache_bytes} B, bucket_index bytes {index_bytes} B",
+        );
+        println!(
+            "             OFF THE PATH NOW: wal.stats {wal_bytes} B would be charged to every read \
+if the stats path still called it ({scans_after} total scans seen, {} across the measured read)",
+            scans_after.saturating_sub(scans_before)
+        );
+        println!(
+            "             the wal call: stats {wal_bytes} B, raw_stats {wal_raw_bytes} B, \
+cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
+            wal_bytes.saturating_sub(wal_raw_bytes)
+        );
+        println!(
+            "             those two: full-file scan {wal_scan_bytes} B, segment walk \
+{wal_segment_bytes} B"
         );
         measured.push((rung, live_pages, counted.allocs, counted.alloc_bytes));
+        scan_counts.push((rung, live_pages, scans_after.saturating_sub(scans_before), wal_bytes));
     }
 
     // --- DENOMINATOR: the walk this prices reads live pages, so the corpus has to have produced
@@ -7649,4 +7717,19 @@ object_manager_stats {om_bytes} B, rest {} B",
         "one stats read allocated {small_bytes} B and {large_bytes} B at the two rungs, so at least \
          one measured nothing and the split printed above divides into it"
     );
+    // --- AND THE SCAN IS OFF THE PATH, ASSERTED AS A COUNT. This is the whole claim: a stats read
+    // --- must not run a full-file scan of the log. `stats_full_scans` moves only when one happens,
+    // --- and the warm call before the measurement has already seeded the cached sequence, so a
+    // --- scan here would mean the path went back to `stats`. A byte bound would say the same thing
+    // --- less exactly and would drift with the fixture's log size.
+    for (rung, _, scans, _) in &scan_counts {
+        assert_eq!(
+            *scans, 0,
+            "a warm stats read ran {scans} full-file WAL scan(s) at corpus {rung}. That scan is \
+             99.3% of what this read used to allocate -- 771,062 of 776,311 bytes over a 320-page \
+             store -- and `shard_stats` is what a node answers a stats request with, so it is paid \
+             again on every read. Use `stats_without_rescan`, which takes the sequence from the \
+             cache the append path maintains and scans only on a miss."
+        );
+    }
 }

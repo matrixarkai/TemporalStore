@@ -2690,6 +2690,89 @@ impl LocalWriteAheadLogStore {
     /// `last_wal_sequence_at` scan that `stats()` performs. `last_sequence` / `persistent_bytes`
     /// carry their last-appended cached values rather than a fresh disk read. Used by the phase-1
     /// aging test to read the scan counters without perturbing them.
+    /// `stats`, WITHOUT the full-file scan, for callers read on a schedule.
+    ///
+    /// # WHY THIS EXISTS
+    ///
+    /// `stats` answers `last_sequence` with `last_wal_sequence_at`, a full-file scan. Measured by
+    /// `what_one_stats_read_allocates`, that scan is **771,062 of the 776,311 bytes one
+    /// `shard_stats` read allocates over a 320-page store -- 99.3%** -- and it grows with the log,
+    /// while every other part of that read is flat or zero. `shard_stats` is what a node answers a
+    /// stats request with, so the scan was paid again on every read for as long as the node was up.
+    ///
+    /// # WHY THE CACHED SEQUENCE IS SOUND HERE
+    ///
+    /// It is already trusted for strictly more: [`Self::cached_last_sequence`] records that the
+    /// per-write index-anchor step used to call `stats` on EVERY write and was moved onto the cache
+    /// because the embedded rescan was an `O(records)`-per-write cost "confirmed dominant by stack
+    /// sampling". A value good enough to anchor the index on the write path is good enough for a
+    /// report.
+    ///
+    /// # THE SCAN IS KEPT FOR THE ONE CASE THAT NEEDS IT
+    ///
+    /// A store that has neither appended nor scanned for this shard has no cached value, and
+    /// returning 0 there would under-report after a cold load. So a miss scans -- and SEEDS the
+    /// cache with what it found, which is the same seeding the append path performs on restart --
+    /// making the scan once per shard per process instead of once per read.
+    ///
+    /// `persistent_bytes` is computed exactly as `stats` computes it. The segment walk behind it
+    /// measured a flat 497 B, so there is nothing to win by changing it and a number to lose.
+    pub fn stats_without_rescan(&self, shard_id: ShardId) -> WriteAheadLogStats {
+        let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        // CACHE FIRST, AND THE COUNTER ONLY MOVES WHEN A SCAN ACTUALLY HAPPENS. `stats`
+        // increments `stats_full_scans` unconditionally; doing that here would report scans this
+        // path no longer performs to the four probes that read the counter.
+        let last_sequence = match inner.last_sequence_by_shard.get(&shard_id).copied() {
+            Some(sequence) => sequence,
+            None => {
+                inner.stats.stats_full_scans = inner.stats.stats_full_scans.saturating_add(1);
+                let scanned = last_wal_sequence_at(&inner.root, shard_id)
+                    .map(|(sequence, _)| sequence)
+                    .unwrap_or_default();
+                inner.last_sequence_by_shard.insert(shard_id, scanned);
+                scanned
+            }
+        };
+        let path = active_wal_path(&mut inner, shard_id);
+        let sealed_bytes = wal_all_segment_bytes(&inner.root, shard_id)
+            .saturating_sub(path.metadata().map(|metadata| metadata.len()).unwrap_or(0));
+        let durable_active = inner
+            .durable_active_bytes_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0);
+        let durable_sequence = inner
+            .durable_sequence_by_shard
+            .get(&shard_id)
+            .copied()
+            .unwrap_or(0);
+        WriteAheadLogStats {
+            last_sequence,
+            persistent_bytes: sealed_bytes.saturating_add(durable_active),
+            last_flushed_sequence: durable_sequence,
+            ..inner.stats
+        }
+    }
+
+    /// TEST-ONLY DOORS onto the two disk reads `stats` performs, so a probe can price them apart.
+    ///
+    /// Both are free functions over `inner.root`, which is private, and the question they answer --
+    /// which of the two reads a scheduled `stats` call is paying for -- cannot be asked from
+    /// outside without them. Neither door is reachable in a release build.
+    #[cfg(any(test, feature = "alloc-probe"))]
+    pub fn probe_last_sequence_scan(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        last_wal_sequence_at(&inner.root, shard_id)
+            .map(|(sequence, _)| sequence)
+            .unwrap_or_default()
+    }
+
+    #[cfg(any(test, feature = "alloc-probe"))]
+    pub fn probe_all_segment_bytes(&self, shard_id: ShardId) -> u64 {
+        let inner = self.inner.lock().expect("write-ahead log lock poisoned");
+        wal_all_segment_bytes(&inner.root, shard_id)
+    }
+
     pub fn raw_stats(&self, shard_id: ShardId) -> WriteAheadLogStats {
         let inner = self.inner.lock().expect("write-ahead log lock poisoned");
         WriteAheadLogStats {
