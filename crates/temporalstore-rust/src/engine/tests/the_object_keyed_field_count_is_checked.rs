@@ -159,12 +159,16 @@ fn is_domain_keyed(ty: &str) -> bool {
         return false;
     };
     let key = rest.split(',').next().unwrap_or("").trim();
-    const DOMAINS: [&str; 4] = ["AddressMap", "CounterSeries", "U64Ledger", "RollupDomain"];
+    // `SideTable` is the merged domain key: the three stored domain-keyed fields became one, so the
+    // list that was four names is two. `RollupDomain` stays because `rollups` is `serde(skip)` and
+    // did not join -- folding a skipped map into a serialized one PERSISTS it, which this campaign
+    // already paid for once at a 2.27x stored-index cost and did not pay again here.
+    const DOMAINS: [&str; 2] = ["SideTable", "RollupDomain"];
     DOMAINS.contains(&key)
 }
 
 #[test]
-fn the_object_keyed_field_count_is_nine_and_the_query_can_see_a_wrapped_type() {
+fn the_object_keyed_field_count_is_seven_and_the_query_can_see_a_wrapped_type() {
     let fields = shard_state_fields();
     assert!(
         fields.len() >= 25,
@@ -210,7 +214,7 @@ fn the_object_keyed_field_count_is_nine_and_the_query_can_see_a_wrapped_type() {
 
     assert_eq!(
         plain.len() + domain.len(),
-        9,
+        7,
         "object-keyed field count moved. Plain: {:?}. Domain: {:?}. If a merge landed, this \
          number is the campaign's headline and belongs in the pull request body; if it moved \
          without one, a field was added and the denominator changed under the campaign.",
@@ -218,5 +222,5 @@ fn the_object_keyed_field_count_is_nine_and_the_query_can_see_a_wrapped_type() {
         domain.iter().map(|(n, _)| n.as_str()).collect::<Vec<_>>()
     );
     assert_eq!(plain.len(), 5, "the plain object-keyed fields changed: {names:?}");
-    assert_eq!(domain.len(), 4, "the domain-keyed fields changed");
+    assert_eq!(domain.len(), 2, "the domain-keyed fields changed");
 }
