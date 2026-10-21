@@ -100,7 +100,7 @@ fn a_shard_with_expiring_pages(buckets: u32) -> ShardState {
         crate::engine::set_expiry(&mut shard, object_key, FAR_FUTURE_MS);
     }
     assert!(
-        !shard.expires_at_ms.is_empty(),
+        !shard.expires_at_ms().is_empty(),
         "the fixture must have expiries, or the computation under test short-circuits and both \
          halves of every pair below would agree for the wrong reason"
     );

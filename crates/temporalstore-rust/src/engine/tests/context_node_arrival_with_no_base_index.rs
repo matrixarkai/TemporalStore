@@ -265,7 +265,7 @@ fn no_context_node_entry_arrives_through_a_load_with_no_base_index() {
         let shards = reloaded.shards.read().expect("engine lock poisoned");
         shards.get(&7).map_or((false, false, None), |shard| {
             (
-                shard.expires_at_ms.contains_key(KEY),
+                shard.expires_at_ms().contains_key(KEY),
                 shard.strings().contains_key(KEY),
                 shard.applied_wal_sequence,
             )
@@ -321,7 +321,7 @@ fn with_no_index_log_either_the_deadline_shows_which_source_delivered_it() {
         let shards = reloaded.shards.read().expect("engine lock poisoned");
         shards.get(&7).map_or((false, false, false, None), |shard| {
             (
-                shard.expires_at_ms.contains_key(KEY),
+                shard.expires_at_ms().contains_key(KEY),
                 shard.strings().contains_key(KEY),
                 shard.context_nodes().contains_key(KEY),
                 shard.applied_wal_sequence,

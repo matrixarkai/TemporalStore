@@ -5017,7 +5017,7 @@ fn how_many_times_one_object_key_is_stored() {
             holders += 1;
         }
     }
-    for key in shard.expires_at_ms.keys() {
+    for key in shard.expires_at_ms().keys() {
         if **key == *sample {
             allocations.insert(key.as_ptr());
             holders += 1;
@@ -5064,7 +5064,7 @@ fn how_many_times_one_object_key_is_stored() {
         .iter()
         .map(|(_model, object, _refs)| object.len())
         .sum();
-    let expiry_key_bytes: usize = shard.expires_at_ms.keys().map(|key| key.len()).sum();
+    let expiry_key_bytes: usize = shard.expires_at_ms().keys().map(|key| key.len()).sum();
     let total = key_bytes + block_key_bytes + lookup_key_bytes + expiry_key_bytes;
 
     println!(

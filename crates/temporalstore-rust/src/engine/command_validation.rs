@@ -522,7 +522,7 @@ pub(super) fn validate_command_preconditions(
         // command fail its precondition and abort a shard load.
         Command::CommonExpire { key, .. } => {
             if shard
-                .expires_at_ms
+                .expires_at_ms()
                 .get(key.as_str())
                 .map(|expires_at| *expires_at <= resolve_now_ms())
                 .unwrap_or(false)
@@ -935,7 +935,7 @@ pub(super) fn validate_command_preconditions(
     } = command
     {
         if shard
-            .expires_at_ms
+            .expires_at_ms()
             .get(key.as_str())
             .map(|expires_at| *expires_at <= resolve_now_ms())
             .unwrap_or(false)

@@ -475,7 +475,7 @@ impl TemporalEngine {
         let shards = self.shards.read().expect("engine lock poisoned");
         shards
             .iter()
-            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms.len() as u64))
+            .map(|(shard_id, shard)| (*shard_id, shard.expires_at_ms().len() as u64))
             .collect()
     }
 
@@ -913,7 +913,7 @@ impl TemporalEngine {
             .into_iter()
             .map(|key| {
                 let size = key_membership_size(shard, &key);
-                let deadline = shard.expires_at_ms.get(key.as_str()).copied();
+                let deadline = shard.expires_at_ms().get(key.as_str()).copied();
                 (key, size, deadline)
             })
             .collect();
@@ -1523,7 +1523,7 @@ impl TemporalEngine {
             let plan = match &request.command {
                 Command::StringGet { key } => {
                     if shard
-                        .expires_at_ms
+                        .expires_at_ms()
                         .get(key.as_str())
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
@@ -1543,7 +1543,7 @@ impl TemporalEngine {
                 }
                 Command::HashGetAll { key } => {
                     if shard
-                        .expires_at_ms
+                        .expires_at_ms()
                         .get(key.as_str())
                         .map(|expires_at| *expires_at <= resolve_now_ms())
                         .unwrap_or(false)
@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 23;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 24;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3660,7 +3660,7 @@ fn collect_command_index_items_for(
 /// entry those maps hold for the key. Used to decide whether the capture below is needed at all.
 fn key_membership_size(shard: &ShardState, key: &str) -> usize {
     shard.features().get(key).map_or(0, |v| v.len())
-        + usize::from(shard.expires_at_ms.contains_key(key))
+        + usize::from(shard.expires_at_ms().contains_key(key))
         + shard.control_state_changes.get(key).map_or(0, |v| v.len())
         + usize::from(shard.control_state_selection.contains_key(key))
         + shard.context_nodes().get(key).map_or(0, |_| 1)
@@ -3715,7 +3715,7 @@ fn delta_key_state_change(
         .iter()
         .any(|(key, size_before, deadline_before)| {
             key_membership_size(shard, key) < *size_before
-                || shard.expires_at_ms.get(key.as_str()).copied() != *deadline_before
+                || shard.expires_at_ms().get(key.as_str()).copied() != *deadline_before
         })
 }
 
@@ -3922,7 +3922,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                 .get(&key[..])
                 .and_then(|v| serde_json::to_value(v.to_btree()).ok()),
         );
-            put("expires_at_ms", shard.expires_at_ms.get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
+            put("expires_at_ms", shard.expires_at_ms().get(key.as_str()).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_changes", shard.control_state_changes.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             put("control_state_selection", shard.control_state_selection.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             put(
@@ -4034,7 +4034,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         );
         // DIRECT WRITE TO `expires_at_ms` -- the deadline-ordered mirror is invalidated at the
         // end of this function. See the note there.
-        apply_key_state_field(&mut shard.expires_at_ms, key, blob.get("expires_at_ms"));
+        apply_key_state_field(shard.expires_at_ms_mut(), key, blob.get("expires_at_ms"));
         apply_key_state_field(
             &mut shard.control_state_changes,
             key,
@@ -5286,7 +5286,7 @@ fn ttl_ms(shard: &mut ShardState, key: &str) -> i64 {
     }
     associated_record_keys(key)
         .into_iter()
-        .filter_map(|record_key| shard.expires_at_ms.get(record_key.as_str()).copied())
+        .filter_map(|record_key| shard.expires_at_ms().get(record_key.as_str()).copied())
         .map(|expires_at| expires_at.saturating_sub(resolve_now_ms()) as i64)
         .min()
         .unwrap_or(-1)
@@ -5385,7 +5385,7 @@ where
 /// than as keys that silently never expire.
 pub(in crate::engine) fn expiry_index_disagreements(shard: &ShardState) -> usize {
     let mut disagreements = 0usize;
-    for (key, expires_at) in shard.expires_at_ms.iter() {
+    for (key, expires_at) in shard.expires_at_ms().iter() {
         if !shard
             .expiry_by_deadline
             .contains_key(&(*expires_at, key.clone()))
@@ -5394,7 +5394,7 @@ pub(in crate::engine) fn expiry_index_disagreements(shard: &ShardState) -> usize
         }
     }
     for ((expires_at, key), ()) in shard.expiry_by_deadline.iter() {
-        if shard.expires_at_ms.get(key) != Some(expires_at) {
+        if shard.expires_at_ms().get(key) != Some(expires_at) {
             disagreements = disagreements.saturating_add(1);
         }
     }
@@ -5422,7 +5422,7 @@ pub(in crate::engine) fn set_expiry(shard: &mut ShardState, key: String, expires
         .any_shared_object_key(&key);
     let shared: std::sync::Arc<str> = existing.unwrap_or_else(|| std::sync::Arc::from(key));
     if let Some(previous) = shard
-        .expires_at_ms
+        .expires_at_ms_mut()
         .insert(std::sync::Arc::clone(&shared), expires_at)
     {
         shard
@@ -5439,7 +5439,7 @@ pub(in crate::engine) fn clear_expiry(shard: &mut ShardState, key: &str) -> bool
     // is a move of that handle rather than a fresh allocation of the same text. The
     // `key.to_string()` this replaces was a third copy on every removal, built only to be
     // dropped.
-    match shard.expires_at_ms.remove_entry(key) {
+    match shard.expires_at_ms_mut().remove_entry(key) {
         Some((shared, previous)) => {
             shard.expiry_by_deadline.remove(&(previous, shared));
             true
@@ -5454,7 +5454,7 @@ pub(in crate::engine) fn clear_expiry(shard: &mut ShardState, key: &str) -> bool
 /// not this one. Rebuilding on first use keeps the persisted format unchanged and costs one pass
 /// per load rather than a migration.
 pub(in crate::engine) fn ensure_expiry_order(shard: &mut ShardState) {
-    if shard.expiry_by_deadline.is_empty() && !shard.expires_at_ms.is_empty() {
+    if shard.expiry_by_deadline.is_empty() && !shard.expires_at_ms().is_empty() {
         // THIS `clone` IS THE SHARING, AND THAT IS WHY THE REBUILD NEEDS NO CARE. On an `Arc` it
         // is a refcount bump, so a mirror rebuilt here points at the characters the key-ordered
         // map already holds. It matters because `serde` does NOT restore sharing: each occurrence
@@ -5462,11 +5462,21 @@ pub(in crate::engine) fn ensure_expiry_order(shard: &mut ShardState) {
         // like after a restore is whatever this loop does rather than whatever the write path
         // did. Spelled `key.to_string()` -- the natural thing to leave in place -- a restored
         // shard would silently hold two copies again while a freshly written one held one.
-        for (key, expires_at) in shard.expires_at_ms.iter() {
-            shard
-                .expiry_by_deadline
-                .insert((*expires_at, key.clone()), ());
-        }
+        // BOTH SIDES AS FIELDS. The source is behind a door now, and a door borrows the whole
+        // shard, which cannot coexist with the mutable insert into the mirror below. Reaching
+        // `u64_ledgers` directly keeps them disjoint -- and a snapshot would have been WRONG, not
+        // merely slower: a cloned map's keys are fresh allocations, so the mirror would point at
+        // copies instead of the characters the key-ordered map holds, which is the sharing this
+        // loop exists to restore.
+        let source = shard
+            .u64_ledgers
+            .get(&crate::engine::state::U64Ledger::Expiry)
+            .expect("the expiry domain is non-empty here, checked just above");
+        let pairs: Vec<((u64, crate::engine::state::ModelKey), ())> = source
+            .iter()
+            .map(|(key, expires_at)| ((*expires_at, key.clone()), ()))
+            .collect();
+        shard.expiry_by_deadline.extend(pairs);
     }
 }
 
@@ -5518,7 +5528,7 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
     // Nothing can have expired if nothing has an expiry. Checked before anything else because
     // this runs on every command -- 51 call sites -- and the walk below used to build four owned
     // keys, one of them with `format!`, purely to look them up and drop them again.
-    if shard.expires_at_ms.is_empty() {
+    if shard.expires_at_ms().is_empty() {
         return false;
     }
 
@@ -5527,7 +5537,7 @@ fn remove_if_expired(shard: &mut ShardState, key: &str) -> bool {
 
     let expired = |shard: &ShardState, candidate: &str, now: u64| {
         shard
-            .expires_at_ms
+            .expires_at_ms()
             .get(candidate)
             .is_some_and(|expires_at| *expires_at <= now)
     };

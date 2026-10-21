@@ -1402,7 +1402,7 @@ impl TemporalEngine {
                 address.block_slab_id(), address.offset(), address.length()
             ));
         }
-        for (key, deadline) in &shard.expires_at_ms {
+        for (key, deadline) in shard.expires_at_ms() {
             out.push_str(&format!("expires {key} at={deadline}\n"));
         }
         let mut seen: Vec<_> = shard.seen.iter().collect();

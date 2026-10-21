@@ -761,7 +761,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
         let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
         let expiry_bytes =
-            deep_heap_bytes(&shard.expires_at_ms) + deep_heap_bytes(&shard.expiry_by_deadline);
+            deep_heap_bytes(shard.expires_at_ms()) + deep_heap_bytes(&shard.expiry_by_deadline);
         let core_rest_bytes = deep_heap_bytes(&shard.bucket_index)
             .saturating_sub(bucket_map_bytes)
             .saturating_sub(lookup_bytes);
@@ -1313,7 +1313,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 .saturating_sub(lookup_bytes);
             let dirty_bytes = deep_heap_bytes(&shard.dirty_objects);
             let recency_bytes = deep_heap_bytes(&shard.bucket_recency);
-            let expiry_bytes = deep_heap_bytes(&shard.expires_at_ms)
+            let expiry_bytes = deep_heap_bytes(shard.expires_at_ms())
                 + deep_heap_bytes(&shard.expiry_by_deadline);
             let whole_bytes = deep_heap_bytes(shard);
             let (arc_bytes, arc_count) = arc_payload_bytes(&shard.bucket_index);
@@ -2320,7 +2320,7 @@ fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, 
         ("bucket_index, the rest of CoreIndex", core_rest),
         ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
         ("bucket_recency", deep_heap_bytes(&shard.bucket_recency)),
-        ("expires_at_ms", deep_heap_bytes(&shard.expires_at_ms)),
+        ("expires_at_ms", deep_heap_bytes(shard.expires_at_ms())),
         ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
         ("wal_resident_blocks", deep_heap_bytes(&shard.wal_resident_blocks)),
         ("bucket-index Arc<str> payloads", arc_bytes),
@@ -2549,14 +2549,14 @@ fn how_many_structures_hold_an_entry_for_one_object() {
         let ttl_cohort: usize = 500 * scale;
         let ttl_before = {
             let shards = engine.shards.read().expect("engine lock poisoned");
-            shards.get(&1).expect("shard").expires_at_ms.len()
+            shards.get(&1).expect("shard").expires_at_ms().len()
         };
         let before = snapshot_census(&engine);
         seed_strings_from(&engine, "t", base_strings + 2_000_000, ttl_cohort, Some(86_400_000));
         let after = snapshot_census(&engine);
         let ttl_after = {
             let shards = engine.shards.read().expect("engine lock poisoned");
-            shards.get(&1).expect("shard").expires_at_ms.len()
+            shards.get(&1).expect("shard").expires_at_ms().len()
         };
         // NON-VACUITY: a deadline cohort that files no deadline would make the two expiry rows read
         // as free, which is the whole question this case exists to answer.
@@ -2601,7 +2601,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
             let lookup_n = shard.bucket_index.object_block_lookup.len();
             let dirty_n = shard.dirty_objects.len();
             let recency_n = shard.bucket_recency.len();
-            let expiry_n = shard.expires_at_ms.len();
+            let expiry_n = shard.expires_at_ms().len();
             let deadline_n = shard.expiry_by_deadline.len();
             let wal_n = shard.wal_resident_blocks.len();
             let buckets_now = shard.bucket_index.bucket_map.values().count();
@@ -2888,9 +2888,9 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     // bound below would be re-derived on a corpus nobody checked.
     assert_eq!(
         PINNED_DEADLINES,
-        shard.expires_at_ms.len(),
+        shard.expires_at_ms().len(),
         "the fixture seeded {PINNED_DEADLINES} deadlines and the shard holds {}; the bracket's          whole reason for carrying them is that this map is not empty",
-        shard.expires_at_ms.len()
+        shard.expires_at_ms().len()
     );
 
     // --- THE POPULATION, PINNED. Each of these is a denominator or a regime control, and every
@@ -3104,9 +3104,9 @@ fn what_the_deadline_merge_would_trade() {
     // which it is before any figure is taken.
     assert_eq!(
         DEADLINES,
-        shard.expires_at_ms.len(),
+        shard.expires_at_ms().len(),
         "the fixture seeded {DEADLINES} deadlines and the keyed map holds {}",
-        shard.expires_at_ms.len()
+        shard.expires_at_ms().len()
     );
     assert_eq!(
         DEADLINES,
@@ -3120,7 +3120,7 @@ fn what_the_deadline_merge_would_trade() {
          all keys, recovering on some -- is not present and the break-even below is meaningless"
     );
 
-    let keyed_b = deep_heap_bytes(&shard.expires_at_ms);
+    let keyed_b = deep_heap_bytes(shard.expires_at_ms());
     let ordered_b = deep_heap_bytes(&shard.expiry_by_deadline);
     let keys = shard.strings().len();
 
@@ -4256,7 +4256,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
         ("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         (
             "expires_at_ms",
-            shard.expires_at_ms.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+            shard.expires_at_ms().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
     ];
 

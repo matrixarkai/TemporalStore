@@ -42,7 +42,7 @@ use crate::alloc_probe::Probe;
 /// the difference the whole change is about, and it is a count rather than a reading.
 fn distinct_key_allocations(shard: &crate::engine::state::ShardState) -> usize {
     let mut seen: std::collections::HashSet<usize> = std::collections::HashSet::new();
-    for key in shard.expires_at_ms.keys() {
+    for key in shard.expires_at_ms().keys() {
         seen.insert(Arc::as_ptr(key) as *const u8 as usize);
     }
     for (_, key) in shard.expiry_by_deadline.keys() {
@@ -81,7 +81,7 @@ fn the_expiry_pair_shares_one_allocation_on_both_paths() {
     let fresh = shard_with_deadlines(DEADLINES);
     assert_eq!(
         DEADLINES,
-        fresh.expires_at_ms.len(),
+        fresh.expires_at_ms().len(),
         "denominator: the fixture did not file the deadlines it reports"
     );
     assert_eq!(
@@ -98,7 +98,7 @@ fn the_expiry_pair_shares_one_allocation_on_both_paths() {
         .expect("an index this build wrote must decode in this build");
     assert_eq!(
         DEADLINES,
-        restored.expires_at_ms.len(),
+        restored.expires_at_ms().len(),
         "the decode lost deadlines, so the sharing figure below is measuring a different shard"
     );
     // NON-VACUITY FOR THE REBUILD: the mirror must come back EMPTY from a decode, or
@@ -186,14 +186,14 @@ fn the_arc_keyed_deadline_map_writes_the_same_bytes_as_a_string_keyed_one() {
     let restored = crate::engine::decode_index_bytes(&image)
         .expect("the real index image must decode");
     assert_eq!(
-        fresh.expires_at_ms.len(),
-        restored.expires_at_ms.len(),
+        fresh.expires_at_ms().len(),
+        restored.expires_at_ms().len(),
         "the real index image lost deadlines across a round trip"
     );
-    for (key, deadline) in fresh.expires_at_ms.iter() {
+    for (key, deadline) in fresh.expires_at_ms().iter() {
         assert_eq!(
             Some(deadline),
-            restored.expires_at_ms.get(&**key),
+            restored.expires_at_ms().get(&**key),
             "deadline for {key} did not survive the real index round trip"
         );
     }
@@ -215,7 +215,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
     let weigh = |shard: &crate::engine::state::ShardState| -> (u64, u64) {
         let point = {
             let probe = Probe::start();
-            let copy = shard.expires_at_ms.clone();
+            let copy = shard.expires_at_ms().clone();
             std::hint::black_box(&copy);
             let counts = probe.stop();
             drop(copy);
@@ -273,7 +273,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
     // the same probe. That is the only pair of numbers that may be subtracted.
     let mut before_point: BTreeMap<String, u64> = BTreeMap::new();
     let mut before_ordered: BTreeMap<(u64, String), ()> = BTreeMap::new();
-    for (key, deadline) in fresh.expires_at_ms.iter() {
+    for (key, deadline) in fresh.expires_at_ms().iter() {
         before_point.insert(key.to_string(), *deadline);
         before_ordered.insert((*deadline, key.to_string()), ());
     }
@@ -327,7 +327,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
     // the bytes, rounded to pointer alignment. Only then are the two arms the same quantity.
     let mut counted: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut shared_text_bytes = 0usize;
-    for key in fresh.expires_at_ms.keys() {
+    for key in fresh.expires_at_ms().keys() {
         if counted.insert(Arc::as_ptr(key) as *const u8 as usize) {
             shared_text_bytes += (16 + key.len() + 7) / 8 * 8;
         }
@@ -354,7 +354,7 @@ fn what_the_expiry_pair_costs_per_deadline_on_both_paths() {
         after_complete as f64 / DEADLINES as f64,
         (before_total as f64 - after_complete as f64) / DEADLINES as f64,
         100.0 * (before_total as f64 - after_complete as f64) / before_total as f64,
-        fresh.expires_at_ms.keys().next().map(|k| k.len()).unwrap_or(0)
+        fresh.expires_at_ms().keys().next().map(|k| k.len()).unwrap_or(0)
     );
 
     assert!(fresh_point > 0 && fresh_ordered > 0, "non-vacuity: a map weighed zero");

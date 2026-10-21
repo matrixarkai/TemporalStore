@@ -412,7 +412,7 @@ impl TemporalEngine {
                     .into_iter()
                     .map(|key| {
                         let size = key_membership_size(shard, &key);
-                        let deadline = shard.expires_at_ms.get(key.as_str()).copied();
+                        let deadline = shard.expires_at_ms().get(key.as_str()).copied();
                         (key, size, deadline)
                     })
                     .collect();

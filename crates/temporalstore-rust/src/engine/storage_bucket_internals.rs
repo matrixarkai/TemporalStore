@@ -737,7 +737,7 @@ pub(super) fn storage_gc_snapshot_with_samples_from_entries(
         .iter()
         .filter_map(|entry| {
             let eligible_after_ms = shard
-                .expires_at_ms
+                .expires_at_ms()
                 .get(entry.object_key.as_ref())
                 .copied()
                 .unwrap_or(0);
@@ -6467,13 +6467,26 @@ fn refresh_all_bucket_runtime_flags(
     } else {
         None
     };
+    // THE EXPIRY TABLE AS A FIELD, TAKEN BEFORE THE LOOP. `expires_at_ms()` borrows the whole
+    // shard, which cannot coexist with the mutable walk of `index.bucket_map` below;
+    // `u64_ledgers` is a different field from `bucket_index`, so reaching it directly keeps the
+    // two borrows disjoint.
+    // `BTreeMap::new()` IS CONST, so the empty table a domain-less shard borrows needs no
+    // `OnceLock` and no allocation -- and a function-local static keeps it from inviting an
+    // unrelated third borrower.
+    static EMPTY_EXPIRY: std::collections::BTreeMap<crate::engine::state::ModelKey, u64> =
+        std::collections::BTreeMap::new();
+    let expiry = shard
+        .u64_ledgers
+        .get(&crate::engine::state::U64Ledger::Expiry)
+        .unwrap_or(&EMPTY_EXPIRY);
     for bucket in index.bucket_map.values_mut() {
         refresh_one_bucket_runtime_flags(
             shard_id,
             bucket,
             now,
             &shard.dirty_objects,
-            &shard.expires_at_ms,
+            expiry,
             keys.as_ref(),
             rebuild_object_index,
             ttl_rollup,
@@ -6498,6 +6511,16 @@ fn refresh_all_bucket_runtime_flags(
 /// compares only by presence is asserted in `the_write_path_leaves_the_bucket_ttl_alone`.
 #[cfg_attr(test, track_caller)]
 pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
+    // The expiry table as a field, for the reason the sibling sweep above gives: a door
+    // borrows the whole shard and cannot coexist with the mutable bucket walk below.
+    static EMPTY_EXPIRY_TARGETED: std::collections::BTreeMap<
+        crate::engine::state::ModelKey,
+        u64,
+    > = std::collections::BTreeMap::new();
+    let expiry = shard
+        .u64_ledgers
+        .get(&crate::engine::state::U64Ledger::Expiry)
+        .unwrap_or(&EMPTY_EXPIRY_TARGETED);
     if shard.buckets_pending_flag_refresh.is_empty() {
         return;
     }
@@ -6534,7 +6557,7 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
             bucket,
             now,
             &shard.dirty_objects,
-            &shard.expires_at_ms,
+            expiry,
             // The targeted path is the write path, so the object-index rebuild stays off, the
             // TTL is left stale by name, and there is no source to hand over. See
             // `refresh_all_bucket_runtime_flags`.

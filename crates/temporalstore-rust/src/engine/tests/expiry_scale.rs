@@ -73,9 +73,9 @@ fn deadline_census(engine: &TemporalEngine, shard_id: ShardId) -> (usize, usize)
     let now = now_ms();
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&shard_id).expect("shard is loaded");
-    let held = shard.expires_at_ms.len();
+    let held = shard.expires_at_ms().len();
     let due = shard
-        .expires_at_ms
+        .expires_at_ms()
         .values()
         .filter(|expires_at| **expires_at <= now)
         .count();
@@ -454,12 +454,12 @@ fn folding_a_delta_cannot_leave_a_stale_deadline_mirror() {
     super::apply_key_states(&mut shard, &key_states);
 
     assert_eq!(
-        shard.expires_at_ms.get("moved").copied(),
+        shard.expires_at_ms().get("moved").copied(),
         Some(9_000),
         "the fold should have moved this deadline"
     );
     assert!(
-        !shard.expires_at_ms.contains_key("dropped"),
+        !shard.expires_at_ms().contains_key("dropped"),
         "the fold should have removed this deadline"
     );
 
@@ -472,7 +472,7 @@ fn folding_a_delta_cannot_leave_a_stale_deadline_mirror() {
          apply_key_states writes expires_at_ms directly, so it must invalidate expiry_by_deadline \
          -- ensure_expiry_order will not repair a mirror that is merely wrong, only one that is \
          empty.",
-        shard.expires_at_ms.len(),
+        shard.expires_at_ms().len(),
         shard.expiry_by_deadline.len(),
     );
     // And the moved deadline is reachable at its NEW position, not only absent from its old one.
@@ -1241,7 +1241,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
-            base_state.expires_at_ms.contains_key(key.as_str()),
+            base_state.expires_at_ms().contains_key(key.as_str()),
             "the base index taken before the round does not name {key}. The base is supposed to \
              be the STALE source that still believes this key is alive -- with it already absent, \
              a fold that applies nothing would look exactly like one that works"
@@ -1343,7 +1343,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
-            control.expires_at_ms.contains_key(key.as_str()),
+            control.expires_at_ms().contains_key(key.as_str()),
             "CONTROL: a load that does not fold the delta came back WITHOUT {key}'s deadline. \
              Something other than the fold is already removing it, so the treatment below proves \
              nothing -- it would pass with the fold deleted"
@@ -1356,10 +1356,10 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
          page half of the fold has nothing to wipe and asserting it wiped them is vacuous"
     );
     assert_eq!(
-        control.expires_at_ms.len(),
+        control.expires_at_ms().len(),
         LIVE_KEYS + DUE_KEYS,
         "CONTROL: the unfolded base holds {} deadlines, expected all {} the fixture wrote",
-        control.expires_at_ms.len(),
+        control.expires_at_ms().len(),
         LIVE_KEYS + DUE_KEYS
     );
     assert_eq!(
@@ -1383,14 +1383,14 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         base_before.len(),
         record.items.len(),
         record.key_states.len(),
-        control.expires_at_ms.len(),
-        folded.expires_at_ms.len(),
+        control.expires_at_ms().len(),
+        folded.expires_at_ms().len(),
     );
 
     for index in 0..DUE_KEYS {
         let key = due_key(index);
         assert!(
-            !folded.expires_at_ms.contains_key(key.as_str()),
+            !folded.expires_at_ms().contains_key(key.as_str()),
             "the fold left {key} holding the deadline the round cleared. The delta's blob for it \
              is bare -- no `expires_at_ms` field -- which `apply_key_state_field` is supposed to \
              read as a removal, and the stale base is the only other source in this load. An \
@@ -1409,18 +1409,18 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         );
     }
     assert_eq!(
-        folded.expires_at_ms.len(),
+        folded.expires_at_ms().len(),
         LIVE_KEYS,
         "the folded index holds {} deadlines, expected exactly the {LIVE_KEYS} live ones. The \
          unfolded control holds {} -- a folded count equal to the control's is a fold that \
          applied nothing",
-        folded.expires_at_ms.len(),
-        control.expires_at_ms.len()
+        folded.expires_at_ms().len(),
+        control.expires_at_ms().len()
     );
     for index in [0usize, LIVE_KEYS / 2, LIVE_KEYS - 1] {
         let key = format!("live-{index:08}");
         assert!(
-            folded.expires_at_ms.contains_key(key.as_str()),
+            folded.expires_at_ms().contains_key(key.as_str()),
             "the fold removed {key}, which the round did not touch. The covered-key wipe reaches \
              every key the blobs name, so a delta naming more than it removed deletes live data \
              on recovery"
@@ -1940,7 +1940,7 @@ fn a_deadline_set_with_options_is_visible_to_the_sweep() {
     fn deadline_is_recorded(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.expires_at_ms.contains_key(key)
+        shard.expires_at_ms().contains_key(key)
     }
     fn deadline_is_in_the_mirror(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
@@ -1953,7 +1953,7 @@ fn a_deadline_set_with_options_is_visible_to_the_sweep() {
     fn record_is_gone(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id).expect("shard is loaded");
-        !shard.control_state().contains_key(key) && !shard.expires_at_ms.contains_key(key)
+        !shard.control_state().contains_key(key) && !shard.expires_at_ms().contains_key(key)
     }
 
     let engine = TemporalEngine::default();
@@ -2184,7 +2184,7 @@ fn a_with_options_deadline_survives_recovery() {
     fn deadline_for(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> Option<u64> {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id).expect("shard is loaded");
-        shard.expires_at_ms.get(key).copied()
+        shard.expires_at_ms().get(key).copied()
     }
     /// Did replay INSTALL this record's outcome? That is the premise of the whole test -- a
     /// record with outcomes is installed rather than re-executed -- so the page the write
@@ -2401,7 +2401,7 @@ fn a_lapsed_deadline_hides_a_seen_set_and_a_token_bucket_from_their_own_reads() 
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         shard
-            .expires_at_ms
+            .expires_at_ms()
             .get(key)
             .is_some_and(|expires_at| *expires_at <= now_ms())
     }
@@ -2623,7 +2623,7 @@ fn a_lapsed_deadline_hides_a_context_node_from_every_context_read() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         shard
-            .expires_at_ms
+            .expires_at_ms()
             .get(key)
             .is_some_and(|expires_at| *expires_at <= now_ms())
     }
@@ -2947,19 +2947,19 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
          the suffix beyond the base, which is a different path from the one under test"
     );
     assert!(
-        !base_state.expires_at_ms.contains_key(armed_key),
+        !base_state.expires_at_ms().contains_key(armed_key),
         "DENOMINATOR: the base already names a deadline for {armed_key}, before anything armed \
          one. The base is the stale source that has never heard of it -- with it already \
          present, a fold that applies NOTHING would look exactly like one that works"
     );
-    let base_moved = base_state.expires_at_ms.get(moved_key).copied();
+    let base_moved = base_state.expires_at_ms().get(moved_key).copied();
     assert!(
         base_moved.is_some(),
         "DENOMINATOR: the base does not name a deadline for {moved_key}, so the move half has \
          no stale value to be corrected away from"
     );
     assert!(
-        base_state.expires_at_ms.contains_key(persist_key),
+        base_state.expires_at_ms().contains_key(persist_key),
         "DENOMINATOR for the clearing CONTROL: the base does not name {persist_key}"
     );
 
@@ -3003,18 +3003,18 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 is loaded");
         assert!(
-            shard.expires_at_ms.contains_key(armed_key),
+            shard.expires_at_ms().contains_key(armed_key),
             "DENOMINATOR: the LIVE shard has no deadline for {armed_key} after CommonExpire, so \
              there is no deadline for recovery to lose"
         );
         assert!(
-            !shard.expires_at_ms.contains_key(persist_key),
+            !shard.expires_at_ms().contains_key(persist_key),
             "DENOMINATOR for the control: the LIVE shard still holds a deadline for \
              {persist_key} after CommonPersist"
         );
         (
-            shard.expires_at_ms.get(armed_key).copied(),
-            shard.expires_at_ms.get(moved_key).copied(),
+            shard.expires_at_ms().get(armed_key).copied(),
+            shard.expires_at_ms().get(moved_key).copied(),
             shard.applied_wal_sequence.unwrap_or(0),
         )
     };
@@ -3071,18 +3071,18 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
         .load_index_base_only(1, false)
         .expect("the base index should load");
     assert!(
-        !control.expires_at_ms.contains_key(armed_key),
+        !control.expires_at_ms().contains_key(armed_key),
         "CONTROL: the unfolded base already holds a deadline for {armed_key}. Something other \
          than the fold supplies it, so the arm half would pass with the capture deleted"
     );
     assert_eq!(
-        control.expires_at_ms.get(moved_key).copied(),
+        control.expires_at_ms().get(moved_key).copied(),
         base_moved,
         "CONTROL: the unfolded base does not hold {moved_key}'s ORIGINAL deadline, so the move \
          half cannot tell a corrected value from the stale one"
     );
     assert!(
-        control.expires_at_ms.contains_key(persist_key),
+        control.expires_at_ms().contains_key(persist_key),
         "CONTROL: the unfolded base has already lost {persist_key}'s deadline"
     );
 
@@ -3098,16 +3098,16 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
          holds {persist_key}; {appended} delta record(s) to anchor {max_anchor} (live WAL \
          {live_wal_sequence}). Unfolded: {} deadlines, {armed_key}=None, {moved_key}={:?}. \
          Folded: {} deadlines, {armed_key}={:?}, {moved_key}={:?}",
-        control.expires_at_ms.len(),
-        control.expires_at_ms.get(moved_key).copied(),
-        folded.expires_at_ms.len(),
-        folded.expires_at_ms.get(armed_key).copied(),
-        folded.expires_at_ms.get(moved_key).copied(),
+        control.expires_at_ms().len(),
+        control.expires_at_ms().get(moved_key).copied(),
+        folded.expires_at_ms().len(),
+        folded.expires_at_ms().get(armed_key).copied(),
+        folded.expires_at_ms().get(moved_key).copied(),
     );
 
     // ---- HALF ONE: the ARMED deadline survives (0 -> 1, a growth the gate could not see) ----
     assert_eq!(
-        folded.expires_at_ms.get(armed_key).copied(),
+        folded.expires_at_ms().get(armed_key).copied(),
         live_armed,
         "the folded load did not recover the deadline {armed_key} was given. The base never had \
          one and the delta record is the only other source in this load, so a missing or \
@@ -3120,7 +3120,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     // Asserted separately and on its own key: a fix that captured only when a deadline
     // APPEARED would satisfy half one completely and leave this one holding the stale value.
     assert_eq!(
-        folded.expires_at_ms.get(moved_key).copied(),
+        folded.expires_at_ms().get(moved_key).copied(),
         live_moved,
         "the folded load came back with the WRONG deadline for {moved_key}. The stale base \
          holds {base_moved:?} and the live shard holds {live_moved:?}; recovering the base's \
@@ -3134,7 +3134,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     // that the change does anything, and a mutation reverting the arm/move handling leaves it
     // passing.
     assert!(
-        !folded.expires_at_ms.contains_key(persist_key),
+        !folded.expires_at_ms().contains_key(persist_key),
         "CONTROL: the folded load brought back the deadline PERSIST removed from {persist_key}. \
          This direction was already covered by the membership shrink, so a failure here is this \
          change having broken it rather than having missed it"
@@ -3144,17 +3144,17 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     // The capture wipes and restores whole per-key maps, so a blob naming more keys than the
     // write touched deletes live state on recovery.
     assert_eq!(
-        folded.expires_at_ms.len(),
+        folded.expires_at_ms().len(),
         LIVE_KEYS + 2,
         "the folded index holds {} deadlines, expected the {LIVE_KEYS} background keys plus \
          {armed_key} and {moved_key}, and not {persist_key}. The unfolded control holds {}",
-        folded.expires_at_ms.len(),
-        control.expires_at_ms.len()
+        folded.expires_at_ms().len(),
+        control.expires_at_ms().len()
     );
     for index in [0usize, LIVE_KEYS / 2, LIVE_KEYS - 1] {
         let key = format!("live-{index:08}");
         assert!(
-            folded.expires_at_ms.contains_key(key.as_str()),
+            folded.expires_at_ms().contains_key(key.as_str()),
             "the fold dropped {key}, which none of the three writes touched"
         );
     }

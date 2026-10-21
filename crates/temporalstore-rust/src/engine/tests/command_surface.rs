@@ -60,7 +60,7 @@ fn shard_state(engine: &TemporalEngine, key: &str) -> (bool, bool) {
     let shard = shards.get(&1).expect("shard 1 is loaded");
     (
         shard.strings().contains_key(key),
-        shard.expires_at_ms.contains_key(key),
+        shard.expires_at_ms().contains_key(key),
     )
 }
 
@@ -602,7 +602,7 @@ fn a_deadline_already_in_the_past_removes_the_key_now() {
 fn stored_deadline_ms(engine: &TemporalEngine, key: &str) -> Option<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    shard.expires_at_ms.get(key).copied()
+    shard.expires_at_ms().get(key).copied()
 }
 
 /// `SET key value KEEPTTL` replaces the value and leaves the deadline running.

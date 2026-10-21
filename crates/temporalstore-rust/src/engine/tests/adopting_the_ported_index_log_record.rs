@@ -562,10 +562,26 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 23,
-        "costed against 23; if this is red the stamp moved and the adoption's cost has to be \
+        current, 24,
+        "costed against 24; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 23 -> 24, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 24 is `expires_at_ms` joining `u64_ledgers` as a third domain. It was a STORED top-level key
+    // and is gone, which is 14's shape -- and the consequence is specific: an index written at 23
+    // loads with NO DEADLINES, so every key with a TTL becomes immortal until something writes its
+    // expiry again. Not a missing read; a dropped guarantee.
+    //
+    // THE INNER CONTAINER CHANGED TOO, for all three domains, and that is a correctness choice
+    // rather than a tidy one. `expires_at_ms` is a `BTreeMap` and three production sites ITERATE
+    // it, so dropping it into the `HashMap` the other two domains used would have made those walks
+    // depend on a hash seed. The other two are environment-gated and empty as shipped, so they
+    // lose nothing by becoming ordered.
+    //
+    // This module costs the POSITIONAL index-log row, which carries no struct version, so the
+    // 550-against-595 comparison for eight page items is untouched.
+    //
     // RE-READ AT 22 -> 23, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 23 is `strings` and `context_nodes` becoming one domain-keyed `address_maps`. `strings` was a
@@ -705,8 +721,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 22 && current != 24,
-        "bracketed, so 23 is exact and not an artefact of the comparison above"
+        current != 23 && current != 25,
+        "bracketed, so 24 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

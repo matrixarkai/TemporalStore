@@ -266,7 +266,7 @@ impl TemporalEngine {
             .read()
             .expect("shards lock poisoned")
             .get(&request.shard_id)
-            .map(|shard| shard.expires_at_ms.len())
+            .map(|shard| shard.expires_at_ms().len())
             .unwrap_or_default();
         let compaction_utility = self
             .shards

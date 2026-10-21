@@ -1463,7 +1463,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
                 deep_heap_bytes(&shard.bucket_index.object_block_lookup),
             ),
             ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
-            ("expires_at_ms", deep_heap_bytes(&shard.expires_at_ms)),
+            ("expires_at_ms", deep_heap_bytes(shard.expires_at_ms())),
             ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
             ("strings", deep_heap_bytes(shard.strings())),
             ("hashes", deep_heap_bytes(&shard.hashes)),

@@ -360,7 +360,7 @@ fn base_with_deadlines_and_anchor_less_deltas(
     // DENOMINATOR TWO: the base must HOLD every deadline. A base that holds none is one where a
     // fold that applies nothing and a fold that applies everything look the same.
     let held = (0..keys)
-        .filter(|index| base_state.expires_at_ms.contains_key(deadline_key(*index).as_str()))
+        .filter(|index| base_state.expires_at_ms().contains_key(deadline_key(*index).as_str()))
         .count();
     assert_eq!(
         held, keys,
@@ -481,7 +481,7 @@ fn the_fold_applies_an_anchor_less_delta_no_base_anchor_can_reflect() {
     let after: Vec<(String, bool)> = (0..KEYS)
         .map(|index| {
             let key = deadline_key(index);
-            let still_held = loaded.expires_at_ms.contains_key(key.as_str());
+            let still_held = loaded.expires_at_ms().contains_key(key.as_str());
             (key, still_held)
         })
         .collect();
@@ -654,7 +654,7 @@ fn every_record_the_fold_met_was_decided_by_its_own_anchor() {
     // AND THE OUTCOME, so a change that keeps every sequence above and still loses the removals
     // is not scored a pass.
     let still_held = (0..KEYS)
-        .filter(|index| loaded.expires_at_ms.contains_key(deadline_key(*index).as_str()))
+        .filter(|index| loaded.expires_at_ms().contains_key(deadline_key(*index).as_str()))
         .count();
     assert_eq!(
         still_held, 0,

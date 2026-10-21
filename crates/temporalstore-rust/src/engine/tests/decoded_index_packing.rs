@@ -216,7 +216,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
             "{label}: the control-state series must come back entry for entry"
         );
         assert_eq!(
-            shard.expires_at_ms, decoded.expires_at_ms,
+            shard.expires_at_ms(), decoded.expires_at_ms(),
             "{label}: the expiry map must come back entry for entry"
         );
         assert_eq!(

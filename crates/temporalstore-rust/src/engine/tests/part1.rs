@@ -4816,7 +4816,7 @@ fn where_a_record_is_kept() {
         ("strings", shard.strings().len()),
         ("hashes", shard.hashes.len()),
         ("sets", shard.sets.len()),
-        ("expires_at_ms", shard.expires_at_ms.len()),
+        ("expires_at_ms", shard.expires_at_ms().len()),
         ("seen", shard.seen.len()),
         ("wal_resident_pages", shard.wal_resident_blocks.len()),
         ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
@@ -7556,7 +7556,7 @@ fn where_a_record_is_kept_everywhere() {
         ("lists", shard.lists.len()),
         ("seen", shard.seen.len()),
         ("buckets", shard.buckets.len()),
-        ("expires_at_ms", shard.expires_at_ms.len()),
+        ("expires_at_ms", shard.expires_at_ms().len()),
         ("features", shard.features().len()),
         ("feature_values", shard.feature_values().len()),
         ("feature_rollups", shard.feature_rollups().len()),
@@ -10218,7 +10218,7 @@ fn the_two_expiry_indexes_agree() {
     let shard = shards.get(&1).expect("shard 1 is loaded");
     // The denominator: an empty index agrees with an empty index, and proves nothing.
     assert!(
-        !shard.expires_at_ms.is_empty(),
+        !shard.expires_at_ms().is_empty(),
         "no deadlines survived the workload, so agreement here is vacuous"
     );
     assert_eq!(
@@ -10226,7 +10226,7 @@ fn the_two_expiry_indexes_agree() {
         0,
         "the key-ordered and deadline-ordered expiry indexes disagree: {} deadlines vs {} ordered \
          entries -- a write path is bypassing set_expiry/clear_expiry",
-        shard.expires_at_ms.len(),
+        shard.expires_at_ms().len(),
         shard.expiry_by_deadline.len(),
     );
 }

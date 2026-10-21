@@ -135,6 +135,33 @@ pub(super) type ModelKey = Arc<str>;
 /// every `ModelKey`-keyed per-kind map, and four hand-written copies of a pointer comparison is
 /// four places for one of them to drift. The decision is taken before the move so the shared borrow
 /// ends before the mutable one.
+/// THE SAME MOVE ON AN ORDERED MAP, and a sibling rather than a generic bound.
+///
+/// Two of the three `u64_ledgers` domains are `BTreeMap`-keyed now -- the container changed so that
+/// `expires_at_ms` could join without its iteration order becoming hash-seeded. `adopt_key_in`
+/// takes a `HashMap`, and abstracting the two behind a "map-like" trait would be a new abstraction
+/// for two callers. Four lines twice is the cheaper honesty.
+fn adopt_key_in_ordered<V>(
+    map: &mut BTreeMap<ModelKey, V>,
+    object_key: &str,
+    canonical: &ModelKey,
+) -> bool {
+    let moves = match map.get_key_value(object_key) {
+        Some((held, _)) => !Arc::ptr_eq(held, canonical),
+        None => false,
+    };
+    if !moves {
+        return false;
+    }
+    match map.remove(object_key) {
+        Some(value) => {
+            map.insert(Arc::clone(canonical), value);
+            true
+        }
+        None => false,
+    }
+}
+
 fn adopt_key_in<V>(
     map: &mut HashMap<ModelKey, V>,
     object_key: &str,
@@ -215,30 +242,11 @@ pub(super) struct ShardState {
     /// full sweep, so a fresh process starts from fully recomputed flags.
     #[serde(skip)]
     pub(super) buckets_pending_flag_refresh: BTreeSet<u32>,
-    /// Deadlines, kept in key order for the point lookup `ttl_ms` needs.
-    ///
-    /// MUTATE THIS THROUGH `set_expiry` / `clear_expiry`, never directly: `expiry_by_deadline`
-    /// below mirrors it and the two must agree. `the_two_expiry_indexes_agree` fails if they
-    /// drift.
-    ///
-    /// THE KEY IS AN `Arc<str>` SO THAT THIS MAP AND ITS MIRROR HOLD ONE COPY OF THE CHARACTERS
-    /// BETWEEN THEM, not one each. A deadline used to cost two independent `String`s of the same
-    /// text -- this map's key and the mirror's tuple element -- which is two of the five copies a
-    /// live object was measured to keep. `set_expiry` allocates once and hands both maps a
-    /// refcounted handle to it.
-    ///
-    /// THE STORED BYTES DO NOT MOVE. `serde`'s `rc` feature is enabled, so an `Arc<str>` key
-    /// serializes as the same string a `String` key did, and the index image is byte-identical --
-    /// asserted by `the_expiry_key_change_writes_the_same_index_bytes` rather than argued from the
-    /// feature flag. So this owes no format stamp.
-    ///
-    /// AND SHARING DOES NOT SURVIVE A DECODE, which is the part worth knowing. `serde` gives each
-    /// occurrence its own allocation on the way back in; what restores the sharing is
-    /// `ensure_expiry_order`, whose `key.clone()` on an `Arc` IS the sharing operation rather than
-    /// a copy. That is measured on both paths -- fresh, and after a dump and restore -- by
-    /// `the_expiry_pair_shares_one_allocation_on_both_paths`, because an argument that a rebuild
-    /// shares is not a measurement that it does.
-    pub(super) expires_at_ms: BTreeMap<Arc<str>, u64>,
+    // THE EXPIRY LEDGER IS A DOMAIN OF `u64_ledgers` NOW, behind `expires_at_ms()` and
+    // `expires_at_ms_mut()`. It is a `u64` per object key, which is what the other two
+    // domains are, so the merge adds a domain key and no union. The deadline-ORDERED
+    // mirror below keeps its own field: a different key shape answering a different
+    // question.
     /// The same deadlines, DEADLINE-ordered, so the keys that are due are a PREFIX.
     ///
     /// Walking `expires_at_ms` in key order to find due keys made time-to-expire a function of
@@ -512,7 +520,11 @@ pub(super) struct ShardState {
     // The key type is `ModelKey` for both: this map used to be `String`-keyed and so held a
     // key other maps already held as their own allocation, which is exactly what
     // `string_keyed_holders` reports.
-    pub(super) u64_ledgers: HashMap<U64Ledger, HashMap<ModelKey, u64>>,
+    // THE INNER CONTAINER IS A `BTreeMap` FOR EVERY DOMAIN, because `expires_at_ms` joined
+    // and three production sites ITERATE it -- the validator report and two sweeps -- so a
+    // `HashMap` would make those walks depend on a hash seed. The other two domains are
+    // environment-gated and empty as shipped, and an empty `BTreeMap` is narrower anyway.
+    pub(super) u64_ledgers: HashMap<U64Ledger, BTreeMap<ModelKey, u64>>,
     // Derived, in-memory rollup ladder over `control_state` for O(levels) sum-family
     // window aggregates (frequency caps / long-window counts). Serde-skipped: rebuilt
     // lazily from the authoritative counter series and never blocks recovery. Gated by
@@ -7533,7 +7545,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     let ShardState {
         // ----- Packed here. Deserialized, and filled one entry at a time. -----
         wal_resident_blocks,
-        expires_at_ms,
         sets,
         seen,
         zsets,
@@ -7563,7 +7574,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // immediately after this function and DRAINS it, so packing it is a pass over data that is
         // about to be dropped. The only entry in this list whose absence makes a decode cheaper.
         control_state_selection: _,
-        u64_ledgers: _,
+        u64_ledgers,
         context_dirty_index: _,
         bucket_recency: _,
         // Not deserialized: `#[serde(skip)]`, so a decode leaves it default-empty and there is
@@ -7592,8 +7603,13 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 
     // THE KEY ALLOCATIONS, BROUGHT BACK TOGETHER. The same reasoning as the packing above: the
     // decode is both the cause and the only moment at which the whole structure is in hand.
-    let _adopted =
-        adopt_canonical_key_allocations(expires_at_ms, &bucket_index.object_block_lookup);
+    // THE EXPIRY TABLE IS A DOMAIN OF `u64_ledgers` NOW, so this pass reaches it through the
+    // domain rather than a field binding. Same argument as every other term in this function:
+    // dropping it would cost the expiry keys their canonical handle with nothing failing.
+    let _adopted = adopt_canonical_key_allocations(
+        u64_ledgers.entry(U64Ledger::Expiry).or_default(),
+        &bucket_index.object_block_lookup,
+    );
     // AND THE HASHED MAPS, which this pass used to leave with their decoded allocations. See
     // `adopt_canonical_key_allocations_in_hashed`: an in-place re-key is byte-neutral, measured,
     // so there is no format stamp owed and no reason to leave the duplication behind.
@@ -7637,7 +7653,8 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     REPACK_ADOPTED_FIELDS.fetch_add(_adopted_fields, std::sync::atomic::Ordering::Relaxed);
 
     repack_btree_map(wal_resident_blocks);
-    repack_btree_map(expires_at_ms);
+    // `expires_at_ms` has no field here any more: it is a domain of `u64_ledgers`, whose
+    // tables are ordered maps built by the decode and not half-empty B-tree nodes.
     sets.repack_decoded();
     zsets.repack_decoded();
     lists.repack_decoded();
@@ -7816,6 +7833,9 @@ pub(super) enum U64Ledger {
     ControlStateUuid,
     /// Per-object compression watermarks.
     ContextCompressionWatermark,
+    /// Per-object expiry instants: the deadline a key is dropped at. Paired with
+    /// `expiry_by_deadline`, which is the deadline-ORDERED mirror and keeps its own field.
+    Expiry,
 }
 
 impl U64Ledger {
@@ -7830,6 +7850,7 @@ impl U64Ledger {
         match self {
             U64Ledger::ControlStateUuid => "control_state_uuid",
             U64Ledger::ContextCompressionWatermark => "context_compression_watermark",
+            U64Ledger::Expiry => "expires_at_ms",
         }
     }
 
@@ -7838,6 +7859,7 @@ impl U64Ledger {
         match spelling {
             "control_state_uuid" => Some(U64Ledger::ControlStateUuid),
             "context_compression_watermark" => Some(U64Ledger::ContextCompressionWatermark),
+            "expires_at_ms" => Some(U64Ledger::Expiry),
             _ => None,
         }
     }
@@ -7864,7 +7886,7 @@ impl<'de> serde::Deserialize<'de> for U64Ledger {
 
 /// The empty ledger a domain with nothing in it answers with, so the readers hand out a borrow
 /// without the caller learning whether the domain has a table yet.
-static NO_U64_IN_THIS_LEDGER: std::sync::OnceLock<HashMap<ModelKey, u64>> =
+static NO_U64_IN_THIS_LEDGER: std::sync::OnceLock<BTreeMap<ModelKey, u64>> =
     std::sync::OnceLock::new();
 
 /// WHICH ROLLUP LADDER, so the two domains cannot collide in one map.
@@ -7952,33 +7974,48 @@ impl ShardState {
             .unwrap_or_else(|| NO_COUNTERS_IN_THIS_SERIES.get_or_init(HashMap::new))
     }
 
+    /// Per-object expiry instants.
+    ///
+    /// THE DEADLINE-ORDERED MIRROR IS A SEPARATE FIELD AND STAYS ONE. `expiry_by_deadline` is keyed
+    /// by `(deadline, key)` so that the sweep can walk due keys in order; this map answers "when
+    /// does THIS key expire". Two different questions, two different key shapes, and only this one
+    /// is a `u64` per object key.
+    pub(super) fn expires_at_ms(&self) -> &BTreeMap<ModelKey, u64> {
+        self.u64_ledger(U64Ledger::Expiry)
+    }
+
+    /// The expiry instants, for writing. Creates the domain's table on first use.
+    pub(super) fn expires_at_ms_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
+        self.u64_ledgers.entry(U64Ledger::Expiry).or_default()
+    }
+
     /// The control-state dedup ledger's expiry instants.
-    pub(super) fn control_state_uuid(&self) -> &HashMap<ModelKey, u64> {
+    pub(super) fn control_state_uuid(&self) -> &BTreeMap<ModelKey, u64> {
         self.u64_ledger(U64Ledger::ControlStateUuid)
     }
 
     /// The dedup ledger, for writing. Creates the domain's table on first use.
-    pub(super) fn control_state_uuid_mut(&mut self) -> &mut HashMap<ModelKey, u64> {
+    pub(super) fn control_state_uuid_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
         self.u64_ledgers.entry(U64Ledger::ControlStateUuid).or_default()
     }
 
     /// Per-object compression watermarks.
-    pub(super) fn context_compression_watermark(&self) -> &HashMap<ModelKey, u64> {
+    pub(super) fn context_compression_watermark(&self) -> &BTreeMap<ModelKey, u64> {
         self.u64_ledger(U64Ledger::ContextCompressionWatermark)
     }
 
     /// The watermarks, for writing. Creates the domain's table on first use.
-    pub(super) fn context_compression_watermark_mut(&mut self) -> &mut HashMap<ModelKey, u64> {
+    pub(super) fn context_compression_watermark_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
         self.u64_ledgers
             .entry(U64Ledger::ContextCompressionWatermark)
             .or_default()
     }
 
     /// One ledger, empty rather than absent, for the same reason `objects_of_kind` is.
-    fn u64_ledger(&self, ledger: U64Ledger) -> &HashMap<ModelKey, u64> {
+    fn u64_ledger(&self, ledger: U64Ledger) -> &BTreeMap<ModelKey, u64> {
         self.u64_ledgers
             .get(&ledger)
-            .unwrap_or_else(|| NO_U64_IN_THIS_LEDGER.get_or_init(HashMap::new))
+            .unwrap_or_else(|| NO_U64_IN_THIS_LEDGER.get_or_init(BTreeMap::new))
     }
 
     /// The control-state rollup ladder. Empty when `Config::control_rollup_enabled()` is off,
@@ -8406,15 +8443,15 @@ impl ShardState {
         // `context_nodes` was ALREADY `ModelKey`-keyed before this change and was still
         // missing from this list, which is the failure the note above describes: a map that
         // CAN share and is not listed here keeps its own equal copy and nothing fails.
-        moved |= adopt_key_in(&mut self.context_nodes_mut(), object_key, &canonical);
+        moved |= adopt_key_in(self.context_nodes_mut(), object_key, &canonical);
         // Keyed by the EVENT object key, so it is another holder of a key the event pair
         // already holds. Found only by grepping from the crate root: the write is a
         // multi-line `insert` in `engine.rs`, which a search rooted at `engine/` misses.
-        moved |= adopt_key_in(self.context_compression_watermark_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.context_compression_watermark_mut(), object_key, &canonical);
         // THE DEDUP LEDGER JOINS THE ADOPTION, which it could not while it was
         // `String`-keyed: a `String` key is its own allocation by construction, so there
         // was nothing for this pass to point at a shared handle.
-        moved |= adopt_key_in(self.control_state_uuid_mut(), object_key, &canonical);
+        moved |= adopt_key_in_ordered(self.control_state_uuid_mut(), object_key, &canonical);
         // NOT CONTEXT MAPS, AND THEY BELONG HERE ANYWAY. A raw key written as a string, a
         // feature series and a selection lands in all three of those maps -- measured, 64 of 64
         // keys in `why_there_are_many_per_key_maps_and_not_one` -- and only `strings` could
@@ -8487,7 +8524,7 @@ mod does_the_sharing_survive_a_decode {
         if let Some((k, _)) = shard.strings().get_key_value(key) {
             seen.insert(k.as_ptr() as usize);
         }
-        if let Some((k, _)) = shard.expires_at_ms.get_key_value(key) {
+        if let Some((k, _)) = shard.expires_at_ms().get_key_value(key) {
             seen.insert(k.as_ptr() as usize);
         }
         if let Some(p) = shard.bucket_index.object_block_lookup.key_ptr("strings", key) {
@@ -8509,7 +8546,7 @@ mod does_the_sharing_survive_a_decode {
         // The write path's end state: ONE allocation, every holder a refcount bump.
         let shared: Arc<str> = Arc::from(key);
         shard.strings_mut().insert(Arc::clone(&shared), ElementEntry::default());
-        shard.expires_at_ms.insert(Arc::clone(&shared), 1);
+        shard.expires_at_ms_mut().insert(Arc::clone(&shared), 1);
         shard.dirty_objects.insert_shared(Arc::clone(&shared), 0);
 
         let before = distinct_key_allocations(&shard, key);
@@ -8540,7 +8577,7 @@ mod does_the_sharing_survive_a_decode {
             BlockLookupRef { routing_bucket: 0, block_ref_key: 1 },
         );
         shard.strings_mut().insert(Arc::clone(&shared), ElementEntry::default());
-        shard.expires_at_ms.insert(Arc::clone(&shared), 1);
+        shard.expires_at_ms_mut().insert(Arc::clone(&shared), 1);
         assert_eq!(distinct_key_allocations(&shard, key), 1, "the write path shares");
 
         let bytes = serde_json::to_vec(&shard).expect("encode");
