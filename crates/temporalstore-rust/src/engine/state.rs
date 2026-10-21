@@ -494,8 +494,12 @@ pub(super) struct ShardState {
     // window aggregates (frequency caps / long-window counts). Serde-skipped: rebuilt
     // lazily from the authoritative counter series and never blocks recovery. Gated by
     // Config.control_rollup_enabled(); empty and inert when the gate is off.
+    // ONE FIELD FOR BOTH LADDERS NOW, keyed by `RollupDomain`, behind
+    // `control_state_rollups()` / `_mut()` and `feature_rollups()` / `_mut()`. Still
+    // serde-skipped, so nothing on disk moved and no stamp is owed. The domain key is what keeps
+    // the two key spaces from colliding; see `RollupDomain`.
     #[serde(skip)]
-    pub(super) control_state_rollups: HashMap<String, RollupEntry>,
+    pub(super) rollups: HashMap<RollupDomain, HashMap<String, RollupEntry>>,
     // Transient per-execute hint: when true (async_storage + control_coalesce_persist),
     // control-state counter writes skip the redundant per-write whole-series block rewrite
     // and rely on the index snapshot + WAL replay for durability, exactly like the
@@ -513,8 +517,6 @@ pub(super) struct ShardState {
     // and inert when off.
     #[serde(skip)]
     pub(super) feature_values: HashMap<String, BTreeMap<u64, i64>>,
-    #[serde(skip)]
-    pub(super) feature_rollups: HashMap<String, RollupEntry>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<ModelKey, ElementEntry>,
     /// THE EVENT SERIES, ON THE OWNED SORTED ARRAY.
@@ -7626,11 +7628,10 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // refill happens in the expiry path rather than here, and is left to it.
         buckets_pending_flag_refresh: _,
         expiry_by_deadline: _,
-        control_state_rollups: _,
+        rollups: _,
         control_coalesce_persist: _,
         control_distinct_sketch: _,
         feature_values: _,
-        feature_rollups: _,
         dirty_objects: _,
         promote_scan_done: _,
         evict_sampler: _,
@@ -7729,6 +7730,28 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 
 /// The empty map a kind with no objects answers with, so the reader below can hand out a borrow
 /// without the caller learning whether the kind has a bucket yet.
+/// WHICH ROLLUP LADDER, so the two domains cannot collide in one map.
+///
+/// `control_state_rollups` and `feature_rollups` were separate fields of identical type, handed to
+/// one shared primitive. They are one field now, keyed by this. A flat merge would have let a
+/// control-state key equal to a feature key overwrite the other domain's entry, and the staleness
+/// guard compares a built length against a series length -- so the collision would not be caught,
+/// it would be recomputed against the wrong series and answered with a wrong sum.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub(super) enum RollupDomain {
+    /// The ladder over `control_state`'s counter series.
+    ControlState,
+    /// The ladder over `feature_values`, the feature series' numeric view.
+    Feature,
+}
+
+/// The empty ladder a domain with nothing in it answers with, so the readers below hand out a
+/// borrow without the caller learning whether the domain has a table yet. Same shape, and the same
+/// reason, as `NO_OBJECTS_OF_THIS_KIND` below.
+static NO_ROLLUPS_IN_THIS_DOMAIN: std::sync::OnceLock<
+    HashMap<String, super::control_rollup::RollupEntry>,
+> = std::sync::OnceLock::new();
+
 static NO_OBJECTS_OF_THIS_KIND: std::sync::OnceLock<HashMap<ModelKey, super::object_record::ObjectSlot>> =
     std::sync::OnceLock::new();
 
@@ -7738,6 +7761,41 @@ impl ShardState {
     /// Answers an empty map for a kind that holds nothing, rather than an `Option`, because every
     /// caller of this wants to look a key up or iterate -- and "this kind has no bucket yet" is
     /// not a distinction any of them should have to carry.
+    /// The control-state rollup ladder. Empty when `Config::control_rollup_enabled()` is off,
+    /// which is the default.
+    pub(super) fn control_state_rollups(&self) -> &HashMap<String, super::control_rollup::RollupEntry> {
+        self.rollups_of_domain(RollupDomain::ControlState)
+    }
+
+    /// The control-state ladder, for writing. Creates the domain's table on first use.
+    pub(super) fn control_state_rollups_mut(
+        &mut self,
+    ) -> &mut HashMap<String, super::control_rollup::RollupEntry> {
+        self.rollups.entry(RollupDomain::ControlState).or_default()
+    }
+
+    /// The feature rollup ladder.
+    pub(super) fn feature_rollups(&self) -> &HashMap<String, super::control_rollup::RollupEntry> {
+        self.rollups_of_domain(RollupDomain::Feature)
+    }
+
+    /// The feature ladder, for writing. Creates the domain's table on first use.
+    pub(super) fn feature_rollups_mut(
+        &mut self,
+    ) -> &mut HashMap<String, super::control_rollup::RollupEntry> {
+        self.rollups.entry(RollupDomain::Feature).or_default()
+    }
+
+    /// One domain's ladder, empty rather than absent, for the same reason `objects_of_kind` is.
+    fn rollups_of_domain(
+        &self,
+        domain: RollupDomain,
+    ) -> &HashMap<String, super::control_rollup::RollupEntry> {
+        self.rollups
+            .get(&domain)
+            .unwrap_or_else(|| NO_ROLLUPS_IN_THIS_DOMAIN.get_or_init(HashMap::new))
+    }
+
     pub(super) fn objects_of_kind(
         &self,
         kind: super::storage_bucket_internals::StoredModelKind,

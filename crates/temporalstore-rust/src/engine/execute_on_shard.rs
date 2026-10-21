@@ -2719,7 +2719,7 @@ pub(crate) fn execute_on_shard(
                         })
                         .unwrap_or_default();
                     shard.feature_values.insert(key.clone(), decoded);
-                    shard.feature_rollups.remove(&key);
+                    shard.feature_rollups_mut().remove(&key);
                 }
                 CommandResponse::Aggregate {
                     value: control_rollup::feature_windowed_sum(shard, &key, start_ms, end_ms),

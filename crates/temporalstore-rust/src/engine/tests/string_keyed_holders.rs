@@ -139,7 +139,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     );
     record(
         "control_state_rollups",
-        shard.control_state_rollups.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        shard.control_state_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
     record(
         "feature_values",
@@ -147,7 +147,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     );
     record(
         "feature_rollups",
-        shard.feature_rollups.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        shard.feature_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
     // `RecordedMap` keeps its map private and exposes only `keys()`, so this is the one way to
     // ask the question from outside that module.
