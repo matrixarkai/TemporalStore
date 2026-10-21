@@ -8256,3 +8256,127 @@ fn what_consolidating_five_holders_would_cost() {
          costing the absent members and this comparison needs re-deriving"
     );
 }
+
+/// THE CROSSOVER AGAINST A FIXED-WIDTH NODE, WHICH IS WHAT THE CONSOLIDATED MAP ACTUALLY HOLDS.
+///
+/// `what_consolidating_five_holders_would_cost` prices a union of five `Option` members -- 128
+/// bytes wide, crossover 75.7% -- and that is a design the tree does not use. `ObjectRecord` is a
+/// FIXED 24 bytes: a deadline word that is a value or a handle, an address word that is a value or
+/// a handle, a page size, sixteen flag bits and a model id. An absent attribute is a CLEARED BIT,
+/// not an empty slot, so a key holding one attribute pays the same 24 bytes as a key holding all of
+/// them -- the sparse arm stops growing with the number of members the design can represent.
+///
+/// That is the whole difference between the two shapes, and it is why the union number could not be
+/// used to decide whether folding more maps in pays. Same four arms as the union probe so the two
+/// are directly comparable.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_consolidating_into_a_fixed_node_would_cost -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds five map shapes at 20,000 keys; run by name"]
+fn what_consolidating_into_a_fixed_node_would_cost() {
+    use crate::engine::object_record::ObjectSlot;
+    use crate::engine::timestamped_series::OwnedTimestampedSeries;
+    const KEYS: usize = 20_000;
+
+    let key = |i: usize| -> std::sync::Arc<str> { std::sync::Arc::from(format!("k{i:08}").as_str()) };
+    let address = |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 64, Some(0), Some(i as u64));
+    let series = |i: usize| {
+        let mut s = OwnedTimestampedSeries::default();
+        s.insert(i as u64, address(i));
+        s
+    };
+    let slot_with_elements = |i: usize| -> ObjectSlot {
+        let mut b = std::collections::BTreeMap::new();
+        b.insert(i as u64, address(i));
+        ObjectSlot::from(b)
+    };
+
+    let shared: Vec<std::sync::Arc<str>> = (0..KEYS).map(key).collect();
+
+    // ARM A: the five separate maps, every key in all five.
+    let mut m_strings: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    let mut m_series: HashMap<std::sync::Arc<str>, OwnedTimestampedSeries> = HashMap::new();
+    let mut m_selection: HashMap<std::sync::Arc<str>, (u64, Vec<u8>, u8)> = HashMap::new();
+    let mut m_seen: HashMap<std::sync::Arc<str>, (u64, u64)> = HashMap::new();
+    let mut m_buckets: HashMap<std::sync::Arc<str>, (f64, u64)> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_strings.insert(std::sync::Arc::clone(k), address(i));
+        m_series.insert(std::sync::Arc::clone(k), series(i));
+        m_selection.insert(std::sync::Arc::clone(k), (7, vec![b's'; 8], 1));
+        m_seen.insert(std::sync::Arc::clone(k), (i as u64, 0));
+        m_buckets.insert(std::sync::Arc::clone(k), (1.0, i as u64));
+    }
+    let five_maps = deep_heap_bytes(&m_strings)
+        + deep_heap_bytes(&m_series)
+        + deep_heap_bytes(&m_selection)
+        + deep_heap_bytes(&m_seen)
+        + deep_heap_bytes(&m_buckets);
+
+    // ARM B: one slot map, every key carrying its elements.
+    let mut full: HashMap<std::sync::Arc<str>, ObjectSlot> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        full.insert(std::sync::Arc::clone(k), slot_with_elements(i));
+    }
+    let node_full = deep_heap_bytes(&full);
+
+    // ARM C: the losing arm -- every key in ONE map, as a bare address.
+    let mut bare: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        bare.insert(std::sync::Arc::clone(k), address(i));
+    }
+    let one_bare = deep_heap_bytes(&bare);
+
+    // ARM D: the same keys as nodes holding ONLY an address -- the sparse arm. No element array, so
+    // the `many` arm is `None` and the absent attributes are cleared bits.
+    let mut sparse: HashMap<std::sync::Arc<str>, ObjectSlot> = HashMap::new();
+    for k in shared.iter() {
+        sparse.insert(std::sync::Arc::clone(k), ObjectSlot::default());
+    }
+    let node_sparse = deep_heap_bytes(&sparse);
+
+    let win_per_key = (five_maps as f64 - node_full as f64) / KEYS as f64;
+    let loss_per_key = (node_sparse as f64 - one_bare as f64) / KEYS as f64;
+
+    println!();
+    println!("  {KEYS} keys, key allocations SHARED in every arm");
+    println!(
+        "    ElementEntry {} B, ObjectRecord {} B, ObjectSlot {} B",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<crate::engine::object_record::ObjectRecord>(),
+        std::mem::size_of::<ObjectSlot>()
+    );
+    println!();
+    println!("  FULL OVERLAP:");
+    println!("    five maps     {five_maps:>10} B   {:>7.1} B/key", five_maps as f64 / KEYS as f64);
+    println!("    one node map  {node_full:>10} B   {:>7.1} B/key", node_full as f64 / KEYS as f64);
+    println!("    saves {:>+7.1} B/key", win_per_key);
+    println!();
+    println!("  NO OVERLAP:");
+    println!("    one bare map  {one_bare:>10} B   {:>7.1} B/key", one_bare as f64 / KEYS as f64);
+    println!("    nodes, sparse {node_sparse:>10} B   {:>7.1} B/key", node_sparse as f64 / KEYS as f64);
+    println!("    costs {:>+7.1} B/key", loss_per_key);
+    println!();
+    if win_per_key + loss_per_key > 0.0 {
+        let crossover = loss_per_key / (win_per_key + loss_per_key);
+        println!("  CROSSOVER AGAINST A FIXED NODE: pays above {:.1}% overlap", 100.0 * crossover);
+        println!("  the union shape's crossover was 75.7%, and the measured overlap is 50.0%");
+        println!(
+            "  SO FOLDING MORE MAPS IN {} resident footprint at the measured overlap.",
+            if crossover < 0.5 { "REDUCES" } else { "INCREASES" }
+        );
+    } else {
+        println!("  one arm did not move; the crossover is undefined on these numbers");
+    }
+
+    // THE SPARSE ARM IS THE WHOLE COMPARISON. A fixed node's sparse cost must not depend on how
+    // many attributes the design can hold -- that independence is what separates it from the union
+    // shape measured beside this. If a node ever grows an Option-shaped member, this stops holding.
+    assert!(
+        std::mem::size_of::<ObjectSlot>() <= 32,
+        "the slot has grown past 32 bytes, so it is no longer the fixed-width node this \
+         comparison is about and the crossover has to be re-derived"
+    );
+}
