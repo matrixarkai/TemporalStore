@@ -8380,3 +8380,129 @@ fn what_consolidating_into_a_fixed_node_would_cost() {
          comparison is about and the crossover has to be re-derived"
     );
 }
+
+/// WHAT A ONE-ADDRESS-PER-KEY MAP WOULD LOSE BY FOLDING INTO THE NODE, AND WHERE A NODE REALLY LIVES.
+///
+/// Two claims, because asking the first produced the second.
+///
+/// ONE: `strings` CANNOT fold. `ObjectRecord` is 24 bytes -- an address word, a page size, sixteen
+/// flag bits, a model id -- and has no field for `ElementEntry::block_id`, the u16 naming which page
+/// of the object an entry is, nor for its generation. 8+8+4+2+1 is 23, padded to 24, so the single
+/// spare byte cannot take a u16, and widening the record would cost the property that makes one node
+/// per key affordable at all. Every entry this fixture writes carries both, so the fold would drop a
+/// stored fact rather than merely rearrange one.
+///
+/// TWO: `context_nodes` HAS NO PRODUCTION WRITER. Sixty-four nodes written through
+/// `Command::ContextUpsertNode` leave that map empty, because `write_context_node` frames a node as
+/// a HASH BLOCK -- its own comment says the block "lands in `shard.hashes` under
+/// `CONTEXT_NODE_FIELD`" -- and the only `.insert` into `context_nodes` anywhere in the tree is
+/// inside `#[cfg(test)]`.
+///
+/// THE SECOND CLAIM IS DRIVEN, NOT GREPPED, and that distinction is the point. "Nothing writes this
+/// map" from a name search has been wrong in this tree before. Here the production command runs, the
+/// map is read after it, and the hash map is checked to have gained the entries instead -- so the
+/// emptiness is a measured consequence of where a node is filed, not an absence of search hits.
+///
+/// rust-internal: reads this crate's own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib a_node_is_a_hash_field_and_strings_cannot_fold -- --nocapture
+#[test]
+fn a_node_is_a_hash_field_and_strings_cannot_fold() {
+    use crate::types::{Command, ExecuteRequest};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    let loaded = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "a-node-is-a-hash-field".to_string(),
+        shard_uri: "local://a-node-is-a-hash-field/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: crate::DEFAULT_END_ROUTING_BUCKET,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    });
+    assert!(loaded.status.ok, "fixture could not load shard 1: {:?}", loaded.status);
+
+    for i in 0..64u64 {
+        let set = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: format!("k{i:04}"), value: vec![b'v'; 256] },
+        });
+        assert!(set.status.ok, "string set {i}: {:?}", set.status);
+        let upsert = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextUpsertNode {
+                tenant_hash: 7,
+                node: Box::new(crate::types::ContextNode {
+                    node_hash: 1_000 + i,
+                    parent_hash: 0,
+                    kind: 3,
+                    canonical_name: format!("node_{i:08}"),
+                    l0: "a node".to_string(),
+                    status: 0,
+                    last_event_time_ms: 0,
+                    l1_ref: String::new(),
+                    raw_metadata_ref: String::new(),
+                    vector: Vec::new(),
+                    embedding_model_hash: 0,
+                    embedding_updated_at_ms: 0,
+                    summary_vector: Vec::new(),
+                    summary_vector_valid_from_ms: 0,
+                    summary_vector_model_hash: 0,
+                }),
+            },
+        });
+        assert!(upsert.status.ok, "context node {i}: {:?}", upsert.status);
+    }
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    let string_entries: Vec<&ElementEntry> = shard.strings.values().collect();
+    let with_block_id = string_entries.iter().filter(|e| e.block_id().is_some()).count();
+    let with_generation = string_entries.iter().filter(|e| e.generation().is_some()).count();
+
+    println!();
+    println!("  widths: ElementEntry {} B, ObjectRecord {} B -- the record has no field for a",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<crate::engine::object_record::ObjectRecord>());
+    println!("  block id or a generation, and its one spare byte cannot take a u16.");
+    println!();
+    println!("  strings:       {:>4} entries, {with_block_id} with a block id, {with_generation} with a generation",
+        string_entries.len());
+    println!("  context_nodes: {:>4} entries after 64 upserts", shard.context_nodes.len());
+    println!("  hashes:        {:>4} keys -- where a node is actually filed", shard.hashes.len());
+
+    // CLAIM ONE. The fixture must have written strings, or the counts below are about nothing.
+    assert!(
+        !string_entries.is_empty(),
+        "no string entries landed, so the fold question is not being asked of anything"
+    );
+    assert_eq!(
+        with_block_id,
+        string_entries.len(),
+        "not every string entry carries a block id any more. The fold into a 24-byte record was \
+         refused BECAUSE they all do; if that has changed, re-derive whether the fold is lossless \
+         rather than assuming either answer."
+    );
+
+    // CLAIM TWO. Driven: the upserts succeeded above, so an empty map here is where a node is
+    // filed, not whether one was written.
+    assert!(
+        shard.context_nodes.is_empty(),
+        "`context_nodes` gained {} entries from 64 upserts, so a node is no longer filed only as \
+         a hash field and the claim that this map has no production writer is now false",
+        shard.context_nodes.len()
+    );
+    assert!(
+        !shard.hashes.is_empty(),
+        "the hash map is empty after 64 node upserts, so the nodes went somewhere this test does \
+         not name -- and the emptiness of `context_nodes` above proves nothing until this holds"
+    );
+}
