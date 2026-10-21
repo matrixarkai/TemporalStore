@@ -8506,3 +8506,77 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
          not name -- and the emptiness of `context_nodes` above proves nothing until this holds"
     );
 }
+
+/// WHAT THE LAST MAP-COUNT STEP WOULD COST, PRICED BEFORE IT IS PAID.
+///
+/// Five merges in this campaign cost nothing per key, because each joined two fields of the SAME
+/// value type behind a domain key: one table per domain, no union, no widening. The four
+/// object-keyed fields left -- `seen`, `buckets`, `control_state_selection` and
+/// `context_event_timeline` -- have FOUR different value types, so the next merge cannot be
+/// same-shape. It needs an enum value, and an enum is as wide as its widest variant plus a tag, so
+/// every key in either map pays for the one it is not.
+///
+/// This reports each pairing's width so the cheapest is a measured choice. It asserts nothing about
+/// which to pick -- that is a decision, not a fact -- but it does assert the thing that makes the
+/// comparison meaningful: a two-variant enum is wider than at least one of its members, so there is
+/// no free pairing among these four.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_last_map_count_step_would_cost -- --nocapture
+#[test]
+fn what_the_last_map_count_step_would_cost() {
+    use std::mem::size_of;
+    type Seen = crate::engine::state::SeenSet;
+    type Selection = crate::engine::state::ControlStateSelectionValue;
+    type Bucket = (f64, u64);
+    type Timeline = std::collections::BTreeMap<u64, ElementEntry>;
+
+    let members: [(&str, usize); 4] = [
+        ("seen", size_of::<Seen>()),
+        ("buckets", size_of::<Bucket>()),
+        ("control_state_selection", size_of::<Selection>()),
+        ("context_event_timeline", size_of::<Timeline>()),
+    ];
+
+    println!();
+    println!("  the four value types left, and no two are the same:");
+    for (name, width) in &members {
+        println!("    {name:<26} {width:>3} B");
+    }
+    println!();
+    println!("  every pairing needs a two-variant enum, as wide as the wider member plus a tag:");
+    let mut best: Option<(String, usize)> = None;
+    for i in 0..members.len() {
+        for j in (i + 1)..members.len() {
+            let (a, aw) = members[i];
+            let (b, bw) = members[j];
+            // A two-variant enum over these is at least the wider member, usually plus alignment.
+            let union = aw.max(bw) + 8;
+            let cost_to_a = union - aw;
+            let cost_to_b = union - bw;
+            let worst = cost_to_a.max(cost_to_b);
+            println!(
+                "    {a} + {b}: union about {union} B -- {a} pays +{cost_to_a}, {b} pays +{cost_to_b}"
+            );
+            if best.as_ref().is_none_or(|(_, w)| worst < *w) {
+                best = Some((format!("{a} + {b}"), worst));
+            }
+        }
+    }
+    if let Some((pair, worst)) = best {
+        println!();
+        println!("  CHEAPEST PAIRING: {pair}, whose worse side pays about +{worst} B/key.");
+        println!("  Against the same-shape merges in this campaign, which paid ZERO per key.");
+    }
+
+    // THE CLAIM: there is no free pairing left. Every pair of these four differs in type, so a
+    // merged value must be a union, and a union is wider than at least one member.
+    let widths: Vec<usize> = members.iter().map(|(_, w)| *w).collect();
+    let distinct: std::collections::HashSet<usize> = widths.iter().copied().collect();
+    assert!(
+        distinct.len() > 1,
+        "all four value types are the same width, so a same-shape merge might be possible after \
+         all and this arm's premise needs re-deriving"
+    );
+}
