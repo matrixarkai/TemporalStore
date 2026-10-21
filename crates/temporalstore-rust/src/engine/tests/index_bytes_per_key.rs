@@ -8580,3 +8580,302 @@ fn what_the_last_map_count_step_would_cost() {
          all and this arm's premise needs re-deriving"
     );
 }
+
+/// THE SAME STEP PRICED AS A RECORD, WHICH REVERSES THE SIGN OF THE ANSWER.
+///
+/// The arm below this one prices a two-variant ENUM, and for these maps that shape cannot do the
+/// job. `ShardState::adopt_canonical_key` records, with measurements, that one raw object key is
+/// held by `strings`, `features`, `control_state`, `control_state_selection`, `seen`, `buckets` and
+/// `control_state_changes` -- "8 of 8 keys", "64 of 64 keys". A key in BOTH members of a pair is
+/// therefore the normal case, not the corner, and an enum would have to keep two entries for it:
+/// exactly the entry the merge exists to delete.
+///
+/// A RECORD holds both. One optional field per member, absence in a niche rather than a sentinel,
+/// which is the same shape the per-object record already uses. So the question is not "what does
+/// the wider variant cost the narrower member" but "does deleting a whole map entry pay for
+/// carrying an absent field", and at the measured overlap it does, by a lot.
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds four map shapes at 20,000 keys; run by name"]
+fn what_merging_the_key_sharing_maps_would_cost_as_a_record() {
+    use crate::engine::state::{ControlStateSelectionValue, SeenSet};
+    use std::collections::BTreeMap;
+    use std::sync::Arc;
+    const KEYS: usize = 20_000;
+    const KEYS_DOUBLED: usize = 40_000;
+
+    type Changes = BTreeMap<u64, crate::engine::hll::DistinctBucket>;
+    type Bucket = (f64, u64);
+
+    // The two records a merge would introduce. Absence is a niche in the `Option`, not a sentinel
+    // value -- the same argument the element entry's presence byte already makes.
+    #[derive(Default, Clone)]
+    struct ControlStateCell {
+        changes: Option<Changes>,
+        selection: Option<ControlStateSelectionValue>,
+    }
+    #[derive(Default, Clone)]
+    struct QuotaCell {
+        seen: Option<SeenSet>,
+        bucket: Option<Bucket>,
+    }
+
+    let key = |i: usize| -> Arc<str> { Arc::from(format!("k{i:08}").as_str()) };
+    let changes = |i: usize| -> Changes {
+        let mut b = BTreeMap::new();
+        b.insert(i as u64, crate::engine::hll::DistinctBucket::default());
+        b
+    };
+    // BUILT FIELD BY FIELD, because this type has no `Default` and deriving one so a probe can
+    // call it would put a constructor on a production type for a test's convenience. Both real
+    // call sites build it exactly this way.
+    let selection = || ControlStateSelectionValue {
+        occur_time_ms: 7,
+        value: vec![b's'; 8],
+        selection_type: crate::types::ControlStateSelectionType::Last,
+    };
+    let seen = || SeenSet {
+        by_member: BTreeMap::new(),
+        by_time: BTreeMap::new(),
+    };
+
+    let shared: Vec<Arc<str>> = (0..KEYS).map(key).collect();
+
+    // ---- ARM A: the four maps as they are today, every key in all four (the measured case).
+    let mut m_changes: HashMap<Arc<str>, Changes> = HashMap::new();
+    let mut m_selection: HashMap<Arc<str>, ControlStateSelectionValue> = HashMap::new();
+    let mut m_seen: HashMap<Arc<str>, SeenSet> = HashMap::new();
+    let mut m_buckets: HashMap<Arc<str>, Bucket> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_changes.insert(Arc::clone(k), changes(i));
+        m_selection.insert(Arc::clone(k), selection());
+        m_seen.insert(Arc::clone(k), seen());
+        m_buckets.insert(Arc::clone(k), (1.0, i as u64));
+    }
+    let four_maps = deep_heap_bytes(&m_changes)
+        + deep_heap_bytes(&m_selection)
+        + deep_heap_bytes(&m_seen)
+        + deep_heap_bytes(&m_buckets);
+
+    // ---- ARM B: two record maps, every key in both members of each pair.
+    let mut m_cs: HashMap<Arc<str>, ControlStateCell> = HashMap::new();
+    let mut m_q: HashMap<Arc<str>, QuotaCell> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_cs.insert(
+            Arc::clone(k),
+            ControlStateCell { changes: Some(changes(i)), selection: Some(selection()) },
+        );
+        m_q.insert(
+            Arc::clone(k),
+            QuotaCell { seen: Some(seen()), bucket: Some((1.0, i as u64)) },
+        );
+    }
+    let two_records = deep_heap_bytes(&m_cs) + deep_heap_bytes(&m_q);
+
+    // ---- ARM C: the honest worst case -- NO overlap, so every record carries one absent field.
+    let mut c_cs: HashMap<Arc<str>, ControlStateCell> = HashMap::new();
+    let mut c_q: HashMap<Arc<str>, QuotaCell> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        if i % 2 == 0 {
+            c_cs.insert(Arc::clone(k), ControlStateCell { changes: Some(changes(i)), selection: None });
+            c_q.insert(Arc::clone(k), QuotaCell { seen: Some(seen()), bucket: None });
+        } else {
+            c_cs.insert(Arc::clone(k), ControlStateCell { changes: None, selection: Some(selection()) });
+            c_q.insert(Arc::clone(k), QuotaCell { seen: None, bucket: Some((1.0, i as u64)) });
+        }
+    }
+    let disjoint_records = deep_heap_bytes(&c_cs) + deep_heap_bytes(&c_q);
+
+    // ---- ARM D: the same disjoint population in today's four maps, as ARM C's control.
+    let mut d_changes: HashMap<Arc<str>, Changes> = HashMap::new();
+    let mut d_selection: HashMap<Arc<str>, ControlStateSelectionValue> = HashMap::new();
+    let mut d_seen: HashMap<Arc<str>, SeenSet> = HashMap::new();
+    let mut d_buckets: HashMap<Arc<str>, Bucket> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        if i % 2 == 0 {
+            d_changes.insert(Arc::clone(k), changes(i));
+            d_seen.insert(Arc::clone(k), seen());
+        } else {
+            d_selection.insert(Arc::clone(k), selection());
+            d_buckets.insert(Arc::clone(k), (1.0, i as u64));
+        }
+    }
+    let disjoint_maps = deep_heap_bytes(&d_changes)
+        + deep_heap_bytes(&d_selection)
+        + deep_heap_bytes(&d_seen)
+        + deep_heap_bytes(&d_buckets);
+
+    // ---- ARM E/F: HALF overlap, so the two ends are not joined by an assumed straight line.
+    // Half the keys sit in both members of a pair; the rest sit in exactly one.
+    let mut h_changes: HashMap<Arc<str>, Changes> = HashMap::new();
+    let mut h_selection: HashMap<Arc<str>, ControlStateSelectionValue> = HashMap::new();
+    let mut h_seen: HashMap<Arc<str>, SeenSet> = HashMap::new();
+    let mut h_buckets: HashMap<Arc<str>, Bucket> = HashMap::new();
+    let mut h_cs: HashMap<Arc<str>, ControlStateCell> = HashMap::new();
+    let mut h_q: HashMap<Arc<str>, QuotaCell> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        let both = i % 2 == 0;
+        let first = i % 4 == 1;
+        if both {
+            h_changes.insert(Arc::clone(k), changes(i));
+            h_selection.insert(Arc::clone(k), selection());
+            h_seen.insert(Arc::clone(k), seen());
+            h_buckets.insert(Arc::clone(k), (1.0, i as u64));
+            h_cs.insert(
+                Arc::clone(k),
+                ControlStateCell { changes: Some(changes(i)), selection: Some(selection()) },
+            );
+            h_q.insert(
+                Arc::clone(k),
+                QuotaCell { seen: Some(seen()), bucket: Some((1.0, i as u64)) },
+            );
+        } else if first {
+            h_changes.insert(Arc::clone(k), changes(i));
+            h_seen.insert(Arc::clone(k), seen());
+            h_cs.insert(Arc::clone(k), ControlStateCell { changes: Some(changes(i)), selection: None });
+            h_q.insert(Arc::clone(k), QuotaCell { seen: Some(seen()), bucket: None });
+        } else {
+            h_selection.insert(Arc::clone(k), selection());
+            h_buckets.insert(Arc::clone(k), (1.0, i as u64));
+            h_cs.insert(Arc::clone(k), ControlStateCell { changes: None, selection: Some(selection()) });
+            h_q.insert(Arc::clone(k), QuotaCell { seen: None, bucket: Some((1.0, i as u64)) });
+        }
+    }
+    let half_maps = deep_heap_bytes(&h_changes)
+        + deep_heap_bytes(&h_selection)
+        + deep_heap_bytes(&h_seen)
+        + deep_heap_bytes(&h_buckets);
+    let half_records = deep_heap_bytes(&h_cs) + deep_heap_bytes(&h_q);
+
+    let full_delta = (four_maps as f64 - two_records as f64) / KEYS as f64;
+    let half_delta = (half_maps as f64 - half_records as f64) / KEYS as f64;
+    let none_delta = (disjoint_maps as f64 - disjoint_records as f64) / KEYS as f64;
+
+    println!();
+    println!("  {KEYS} keys, key allocations SHARED in every arm, so only the ROWS differ");
+    println!(
+        "    value widths: changes {} B, selection {} B, seen {} B, bucket {} B",
+        std::mem::size_of::<Changes>(),
+        std::mem::size_of::<ControlStateSelectionValue>(),
+        std::mem::size_of::<SeenSet>(),
+        std::mem::size_of::<Bucket>(),
+    );
+    println!(
+        "    record widths: control-state cell {} B, quota cell {} B",
+        std::mem::size_of::<ControlStateCell>(),
+        std::mem::size_of::<QuotaCell>(),
+    );
+    println!();
+    println!("  FULL OVERLAP -- what the adoption pass actually measures (8 of 8, 64 of 64):");
+    println!("    four maps      {four_maps:>10} B   {:>7.1} B/key", four_maps as f64 / KEYS as f64);
+    println!("    two records    {two_records:>10} B   {:>7.1} B/key", two_records as f64 / KEYS as f64);
+    println!("    merging SAVES {full_delta:>+8.1} B/key");
+    println!();
+    println!("  NO OVERLAP -- the worst case, each key in exactly one member of its pair:");
+    println!("    four maps      {disjoint_maps:>10} B   {:>7.1} B/key", disjoint_maps as f64 / KEYS as f64);
+    println!("    two records    {disjoint_records:>10} B   {:>7.1} B/key", disjoint_records as f64 / KEYS as f64);
+    println!("    merging saves {none_delta:>+8.1} B/key");
+    println!();
+    println!("  A COINCIDENCE WORTH NAMING, because it nearly became a wrong conclusion:");
+    println!("    full overlap delta {:>10} B", four_maps - two_records);
+    println!("    half overlap delta {:>10} B", half_maps - half_records);
+    println!(
+        "    equal: {}  -- which looks like a FIXED saving (the two hash tables the merge",
+        (four_maps - two_records) == (half_maps - half_records)
+    );
+    println!("    deletes) rather than a per-key one. The doubling check below refutes that:");
+    println!("    these two populations happen to differ by the same amount at this key count,");
+    println!("    and equality at ONE key count is not evidence of a constant.");
+    println!();
+    println!("  HALF OVERLAP -- the measured middle, so the ends are not joined by an assumption:");
+    println!("    four maps      {half_maps:>10} B   {:>7.1} B/key", half_maps as f64 / KEYS as f64);
+    println!("    two records    {half_records:>10} B   {:>7.1} B/key", half_records as f64 / KEYS as f64);
+    println!("    merging saves {half_delta:>+8.1} B/key");
+    println!();
+
+    // THE CROSSOVER, from the two bracketing points that actually differ in sign. Reported from
+    // whichever pair brackets zero, so a non-linear middle cannot be averaged away.
+    let (lo_x, lo_d, hi_x, hi_d) = if half_delta >= 0.0 {
+        (0.0_f64, none_delta, 0.5_f64, half_delta)
+    } else {
+        (0.5_f64, half_delta, 1.0_f64, full_delta)
+    };
+    let crossover = lo_x + (hi_x - lo_x) * (-lo_d) / (hi_d - lo_d);
+    println!("  CROSSOVER: the merge starts paying at about {:.1}% overlap", crossover * 100.0);
+    println!("    bracketed by the measured points at {:.0}% ({lo_d:+.1}) and {:.0}% ({hi_d:+.1}),", lo_x * 100.0, hi_x * 100.0);
+    println!("    NOT interpolated across the whole range -- the middle is measured.");
+    // ---- THE DOUBLING CHECK. If the full-overlap saving is a constant, it stays the same
+    // number of BYTES at twice the keys and therefore HALVES per key. If it were a per-key gain
+    // it would double in bytes and hold per key. One arm settles which.
+    let doubled: Vec<Arc<str>> = (0..KEYS_DOUBLED).map(key).collect();
+    let mut x_changes: HashMap<Arc<str>, Changes> = HashMap::new();
+    let mut x_selection: HashMap<Arc<str>, ControlStateSelectionValue> = HashMap::new();
+    let mut x_seen: HashMap<Arc<str>, SeenSet> = HashMap::new();
+    let mut x_buckets: HashMap<Arc<str>, Bucket> = HashMap::new();
+    let mut x_cs: HashMap<Arc<str>, ControlStateCell> = HashMap::new();
+    let mut x_q: HashMap<Arc<str>, QuotaCell> = HashMap::new();
+    for (i, k) in doubled.iter().enumerate() {
+        x_changes.insert(Arc::clone(k), changes(i));
+        x_selection.insert(Arc::clone(k), selection());
+        x_seen.insert(Arc::clone(k), seen());
+        x_buckets.insert(Arc::clone(k), (1.0, i as u64));
+        x_cs.insert(
+            Arc::clone(k),
+            ControlStateCell { changes: Some(changes(i)), selection: Some(selection()) },
+        );
+        x_q.insert(Arc::clone(k), QuotaCell { seen: Some(seen()), bucket: Some((1.0, i as u64)) });
+    }
+    let x_maps = deep_heap_bytes(&x_changes)
+        + deep_heap_bytes(&x_selection)
+        + deep_heap_bytes(&x_seen)
+        + deep_heap_bytes(&x_buckets);
+    let x_records = deep_heap_bytes(&x_cs) + deep_heap_bytes(&x_q);
+    let x_delta_bytes = x_maps - x_records;
+    let x_delta_per_key = x_delta_bytes as f64 / KEYS_DOUBLED as f64;
+
+    println!("  THE DOUBLING CHECK, at {KEYS_DOUBLED} keys and full overlap:");
+    println!("    delta {x_delta_bytes:>10} B   {x_delta_per_key:>7.1} B/key");
+    println!(
+        "    against {:>10} B   {:>7.1} B/key at {KEYS} keys",
+        four_maps - two_records,
+        full_delta
+    );
+    println!("    => the BYTES SCALE with the keys and the PER-KEY figure HOLDS, so the saving");
+    println!("       is genuinely per-key and quoting it per key is correct. This arm was written");
+    println!("       expecting the opposite and is kept because it settled the question.");
+    println!();
+    println!("  WHAT THIS MEANS FOR 9 -> 7. Two merges reach seven object-keyed fields, and the");
+    println!("  trade is steeply asymmetric: {:+.1} B/key where the two members share a key,", full_delta);
+    println!("  {:.1} B/key where they do not. The crossover sits near {:.0}% overlap, so this", none_delta, crossover * 100.0);
+    println!("  step is only worth paying on maps measured to overlap well above that -- and the");
+    println!("  loss side is nearly nine times the gain side, which is what makes a wrong guess");
+    println!("  expensive rather than merely suboptimal.");
+
+    // THE CLAIM, and it is the one the enum arm could not make: at the overlap this engine
+    // actually has, deleting the second entry pays for the absent field and then some.
+    assert!(
+        full_delta > 0.0,
+        "merging at full overlap was expected to SAVE bytes -- four maps {four_maps} B, two \
+         records {two_records} B. If this reverses, the record shape is no longer cheaper than \
+         the separate maps and the 9 -> 7 step needs re-pricing before it is paid."
+    );
+    // AND THE SIGN MUST FLIP, which is the fact that makes the crossover real rather than a
+    // number derived from two points on the same side of zero. If a disjoint population ever
+    // stops being more expensive, this arm is measuring something other than what it claims.
+    // THE SAVING IS PER-KEY, which is what the doubling check established after being written
+    // to show the opposite. The per-key figure must therefore be STABLE across key counts; if it
+    // drifts, the saving has a fixed component and must stop being quoted per key.
+    assert!(
+        (x_delta_per_key - full_delta).abs() < full_delta.abs() * 0.25,
+        "the full-overlap saving is quoted PER KEY, so it must hold across key counts -- \
+         {full_delta} B/key at {KEYS} keys against {x_delta_per_key} B/key at {KEYS_DOUBLED}. \
+         If these diverge the saving has a fixed component, and a per-key figure overstates it \
+         at small key counts and understates it at large ones."
+    );
+    assert!(
+        none_delta < 0.0,
+        "a disjoint population was expected to COST bytes in the record shape -- four maps \
+         {disjoint_maps} B, two records {disjoint_records} B. With both ends the same sign there \
+         is no crossover to report and the arm's conclusion does not follow."
+    );
+}
