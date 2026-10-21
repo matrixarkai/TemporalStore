@@ -2842,11 +2842,11 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
         // same disagreement this test has always been about, reached through a mechanism that still
         // exists. Without this the install gate would be tested by planting a value nothing reads.
         let address = restored
-            .strings
+            .strings_mut()
             .remove("lifecycle")
             .expect("manifest string address");
         restored
-            .strings
+            .strings_mut()
             .insert("lifecycle-renamed-to-move-its-derived-id".into(), address);
         reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
@@ -3617,7 +3617,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).unwrap();
-        let address = shard.strings.get("target").unwrap().clone();
+        let address = shard.strings().get("target").unwrap().clone();
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
@@ -5002,7 +5002,7 @@ fn how_many_times_one_object_key_is_stored() {
 
     // Pick one object and find every place its text is stored, by pointer.
     let sample = shard
-        .strings
+        .strings()
         .keys()
         .next()
         .expect("the workload must produce at least one string object")
@@ -5011,7 +5011,7 @@ fn how_many_times_one_object_key_is_stored() {
     let mut allocations: HashSet<*const u8> = HashSet::new();
     let mut holders = 0usize;
 
-    for key in shard.strings.keys() {
+    for key in shard.strings().keys() {
         if *key == sample {
             allocations.insert(key.as_ptr());
             holders += 1;
@@ -5050,7 +5050,7 @@ fn how_many_times_one_object_key_is_stored() {
         "the store holds no page at all, so the page index's absence from the holder list above          says nothing about where this key is held"
     );
 
-    let key_bytes: usize = shard.strings.keys().map(|key| key.len()).sum();
+    let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
     // STRUCTURALLY ZERO, AND KEPT AS A ROW RATHER THAN DELETED. The page index held one `Arc<str>`
     // per entry; it holds none, so its contribution to the key text of this store is nothing at
     // all. The row stays in the table because the table is read as "where the key copies live",
@@ -7853,7 +7853,7 @@ fn per_record_structure_census() {
     // came off the page entry -- so it equalled `block_lookup_keys` by construction and printed
     // 1.00/record beside it. The level it counted is gone; the row goes with it rather than being
     // rewritten into a third spelling of the same number.
-    let strings = shard.strings.len();
+    let strings = shard.strings().len();
     let wal_resident = shard.wal_resident_blocks.len();
     let dirty_objects = shard.dirty_objects.len();
 
@@ -7878,7 +7878,7 @@ fn per_record_structure_census() {
     // String bytes each structure actually holds. RSS is ~2.8 KB/record and a key byte costs
     // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
     // which structure to attack first.
-    let key_bytes: usize = shard.strings.keys().map(|key| key.len()).sum();
+    let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
     // ZERO, AND THE ROW IS KEPT BECAUSE THE TABLE IS A LIST OF PLACES. The page index held one
     // `Arc<str>` of key text per entry. It holds none: no key, a one-byte kind spelled by a
     // `&'static str`, and no element name. So this structure contributes no heap text, and the
@@ -7919,7 +7919,7 @@ fn per_record_structure_census() {
     );
     let total_string_bytes =
         key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
-    let sample_key_len = shard.strings.keys().next().map_or(0, |name| name.len());
+    let sample_key_len = shard.strings().keys().next().map_or(0, |name| name.len());
     let perb = |n: usize| n as f64 / RECORDS as f64;
     println!(
         "  string bytes held per record (sample key is {sample_key_len} B):

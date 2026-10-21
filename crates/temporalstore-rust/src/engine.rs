@@ -1533,7 +1533,7 @@ impl TemporalEngine {
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
-                        address: shard.strings.get(key.as_str()).cloned(),
+                        address: shard.strings().get(key.as_str()).cloned(),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -1896,7 +1896,7 @@ impl TemporalEngine {
     pub fn string_block_cache_key_for_test(&self, shard_id: ShardId, key: &str) -> Option<CacheKey> {
         let shards = self.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id)?;
-        let address = shard.strings.get(key)?;
+        let address = shard.strings().get(key)?;
         let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
         Some(CacheKey::page_with_slot(
             shard_id,
@@ -1911,7 +1911,7 @@ impl TemporalEngine {
         let mut shards = self.shards.write().expect("engine lock poisoned");
         shards
             .get_mut(&shard_id)
-            .and_then(|shard| shard.strings.remove(key))
+            .and_then(|shard| shard.strings_mut().remove(key))
             .is_some()
     }
 
@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 22;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 23;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3391,7 +3391,7 @@ fn collect_upsert_index_items(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
+            ("string", None) => shard.strings().get(object_key.as_str()).cloned(),
             // THE ARM #2232 ASSUMED WAS HERE. That change made `command_upsert_components` name a
             // component for `FeatureAppend` so an append takes the O(1) delta path instead of
             // snapshotting the whole series -- and this match, which turns a component back into
@@ -3660,7 +3660,7 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + usize::from(shard.expires_at_ms.contains_key(key))
         + shard.control_state_changes.get(key).map_or(0, |v| v.len())
         + usize::from(shard.control_state_selection.contains_key(key))
-        + shard.context_nodes.get(key).map_or(0, |_| 1)
+        + shard.context_nodes().get(key).map_or(0, |_| 1)
         + shard.context_events().get(key).map_or(0, |v| v.len())
         + shard.context_indexes().get(key).map_or(0, |v| v.len())
         + shard.context_audits().get(key).map_or(0, |v| v.owned_element_count())
@@ -3925,7 +3925,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put(
             "context_nodes",
             shard
-                .context_nodes
+                .context_nodes()
                 .get(key.as_str())
                 .and_then(|v| serde_json::to_value(v).ok()),
         );
@@ -4042,7 +4042,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("control_state_selection"),
         );
-        apply_key_state_field(&mut shard.context_nodes, key, blob.get("context_nodes"));
+        apply_key_state_field(shard.context_nodes_mut(), key, blob.get("context_nodes"));
         // THE STORED B-TREE SHAPE, CONVERTED INTO THE ARRAY. `capture_key_states` writes a
         // `context_events` field into the index-log blobs; when no base index decodes,
         // `persistence.rs` takes `ShardState::default()` and folds those blobs straight through
@@ -5591,7 +5591,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= recorded_map::drop_object::<recorded_map::ListKind>(shard, key, deletion.clone());
     removed |= recorded_map::drop_object::<recorded_map::ZSetKind>(shard, key, deletion);
     removed |= clear_expiry(shard, key);
-    removed |= shard.strings.remove(key).is_some();
+    removed |= shard.strings_mut().remove(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
     removed |= shard.seen.remove(key).is_some();
     if shard.features_mut().remove(key).is_some() {
@@ -5605,7 +5605,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.remove_control_state_block(key).is_some();
     removed |= shard.control_state_changes.remove(key).is_some();
     removed |= shard.control_state_selection.remove(key).is_some();
-    removed |= shard.context_nodes.remove(key).is_some();
+    removed |= shard.context_nodes_mut().remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
     removed |= shard.context_indexes_mut().remove(key).is_some();
     removed |= shard.context_audits_mut().remove(key).is_some();
@@ -6192,7 +6192,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
     absorb_live_block_slab_ids(
         &mut ids,
         &mut visited,
-        shard.strings.values().map(|address| address.block_slab_id()),
+        shard.strings().values().map(|address| address.block_slab_id()),
     );
     for fields in shard.hashes.values() {
         absorb_live_block_slab_ids(
@@ -6233,7 +6233,7 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         &mut ids,
         &mut visited,
         shard
-            .context_nodes
+            .context_nodes()
             .values()
             .map(|address| address.block_slab_id()),
     );
@@ -6565,7 +6565,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
             .unwrap_or(false)
     });
     bucket_index_exists
-        || shard.strings.contains_key(key)
+        || shard.strings().contains_key(key)
         || shard.hashes.contains_key(key)
         || shard.sets.contains_key(key)
         || shard.lists.contains_key(key)
@@ -6577,7 +6577,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.control_state_blocks().contains_key(key)
         || shard.control_state_changes.contains_key(key)
         || shard.control_state_selection.contains_key(key)
-        || shard.context_nodes.contains_key(key)
+        || shard.context_nodes().contains_key(key)
         || shard.context_events().contains_key(key)
         || shard.context_indexes().contains_key(key)
         || shard.context_audits().contains_key(key)
@@ -7464,7 +7464,7 @@ fn object_manager_stats(
                     .count();
                 (0, live_blocks, 0)
             };
-        let secondary_object_count = shard.strings.len()
+        let secondary_object_count = shard.strings().len()
             + shard.hashes.len()
             + shard.sets.len()
             + shard.lists.len()
@@ -7472,7 +7472,7 @@ fn object_manager_stats(
             + shard.features().len()
             + shard.control_state().len()
             + shard.control_state_changes.len()
-            + shard.context_nodes.len()
+            + shard.context_nodes().len()
             + shard.context_events().len()
             + shard.context_indexes().len()
             + shard.context_audits().len()
@@ -7485,13 +7485,13 @@ fn object_manager_stats(
             + shard.context_compressions().len();
         let object_count = bucket_object_count.max(secondary_object_count);
         let dirty_object_count = bucket_dirty_object_count.max(shard.dirty_objects.len());
-        let secondary_block_ref_count = shard.strings.len()
+        let secondary_block_ref_count = shard.strings().len()
             + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
             + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
             + shard.features().values().map(|series| series.len()).sum::<usize>()
-            + shard.context_nodes.len()
+            + shard.context_nodes().len()
             + shard
                 .context_events()
                 .values()
@@ -7611,14 +7611,14 @@ fn object_manager_stats(
         };
     }
 
-    let object_count = shard.strings.len()
+    let object_count = shard.strings().len()
         + shard.hashes.len()
         + shard.sets.len()
         + shard.lists.len()
         + shard.zsets.len()
         + shard.features().len()
         + shard.control_state().len()
-        + shard.context_nodes.len()
+        + shard.context_nodes().len()
         + shard.context_events().len()
         + shard.context_indexes().len()
         + shard.context_audits().len()
@@ -7629,13 +7629,13 @@ fn object_manager_stats(
         + shard.context_children().len()
         + shard.context_summaries().len()
         + shard.context_compressions().len();
-    let block_ref_count = shard.strings.len()
+    let block_ref_count = shard.strings().len()
         + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()
         + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
         + shard.features().values().map(|series| series.len()).sum::<usize>()
-        + shard.context_nodes.len()
+        + shard.context_nodes().len()
         + shard
             .context_events()
             .values()

@@ -1168,7 +1168,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
 
         // --- THE CONTROL, at 0.00% on a kind whose component is LEGITIMATELY absent. ---
         assert!(
-            shard.strings.contains_key(string_key),
+            shard.strings().contains_key(string_key),
             "[{arm}] the control's string is gone: a page whose component is absent BY DESIGN was \
              caught by a change that is only about the hash arm"
         );

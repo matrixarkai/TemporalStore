@@ -691,7 +691,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    assert_eq!(KEYS, shard.strings.len(), "denominator: the fixture did not seed what it reports");
+    assert_eq!(KEYS, shard.strings().len(), "denominator: the fixture did not seed what it reports");
 
     // CLASSIFIED BY WHAT THE INLINE ARM ACTUALLY ACCEPTS, which is "ordinal absent OR ordinal
     // zero" -- not by "ordinal absent", which is what an earlier draft of this counter asked and
@@ -703,7 +703,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     let mut needs_layout = 0usize;
     let mut with_generation = 0usize;
     let mut largest_ordinal = 0u64;
-    for address in shard.strings.values() {
+    for address in shard.strings().values() {
         match address.block_id() {
             None => inline_ordinal_absent += 1,
             Some(0) => inline_ordinal_zero += 1,
@@ -736,7 +736,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     // drifts from the converter again fails here rather than printing a wrong percentage.
     let mut converted_inline = 0usize;
     let mut converted_layout = 0usize;
-    for address in shard.strings.values() {
+    for address in shard.strings().values() {
         match address.block_id() {
             None | Some(0) => {
                 let record = ObjectRecord::from_object_rows(address, 1, None, true)
@@ -1385,7 +1385,7 @@ fn a_context_node_write_lands_in_the_hash_field_not_in_context_nodes() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let in_hashes = shard.hashes.len();
-    let in_context_nodes = shard.context_nodes.len();
+    let in_context_nodes = shard.context_nodes().len();
     println!(
         "after one context-node write through the real command: `hashes` holds {in_hashes} \
          object(s), `context_nodes` holds {in_context_nodes}"
@@ -1455,7 +1455,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         vec![
-            ("control_state (the i64 series)", deep_heap_bytes(&shard.control_state())),
+            ("control_state (the i64 series)", deep_heap_bytes(shard.control_state())),
             ("control_state_blocks (THE RECORD)", deep_heap_bytes(shard.control_state_blocks())),
             ("bucket_index.bucket_map", deep_heap_bytes(&shard.bucket_index.bucket_map)),
             (
@@ -1465,7 +1465,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
             ("dirty_objects", deep_heap_bytes(&shard.dirty_objects)),
             ("expires_at_ms", deep_heap_bytes(&shard.expires_at_ms)),
             ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
-            ("strings", deep_heap_bytes(&shard.strings)),
+            ("strings", deep_heap_bytes(shard.strings())),
             ("hashes", deep_heap_bytes(&shard.hashes)),
             ("features", deep_heap_bytes(shard.features())),
         ]

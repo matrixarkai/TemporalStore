@@ -125,7 +125,7 @@ fn a_key_held_by_several_maps_is_one_allocation() {
         (
             "strings",
             shard
-                .strings
+                .strings()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect::<Vec<_>>(),
@@ -418,7 +418,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_nodes",
             shard
-                .context_nodes
+                .context_nodes()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),

@@ -194,7 +194,7 @@ fn load_context_node(
         .map(|address| (address, PageIdentity::of(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD))))
         .or_else(|| {
             shard
-                .context_nodes
+                .context_nodes()
                 .get(object_key)
                 .map(|address| (address, PageIdentity::of(shard_id, "context_node", object_key, None)))
         })
@@ -648,7 +648,7 @@ pub(crate) fn execute_on_shard(
                         .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                    shard.strings.insert(stored_key, address);
+                    shard.strings_mut().insert(stored_key, address);
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
@@ -688,7 +688,7 @@ pub(crate) fn execute_on_shard(
                         .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                    shard.strings.insert(stored_key, address);
+                    shard.strings_mut().insert(stored_key, address);
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
                 // This write sets a value AND a deadline. Recording only the block passes a probe
@@ -719,7 +719,7 @@ pub(crate) fn execute_on_shard(
             keep_ttl,
         } => {
             remove_if_expired(shard, &key);
-            let old_value = shard.strings.get(key.as_str()).and_then(|address| {
+            let old_value = shard.strings().get(key.as_str()).and_then(|address| {
                 read_block_bytes(
                     cache,
                     block_store,
@@ -774,7 +774,7 @@ pub(crate) fn execute_on_shard(
                         .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                    shard.strings.insert(stored_key, address);
+                    shard.strings_mut().insert(stored_key, address);
                     if let Some(ttl_ms) = ttl_ms {
                         let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                         crate::engine::set_expiry(shard, key.clone(), expires_at);
@@ -872,7 +872,7 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= mark_bucket_index_object_deleted(shard, &key);
-            mutated |= shard.strings.remove(key.as_str()).is_some();
+            mutated |= shard.strings_mut().remove(key.as_str()).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
         }
@@ -3571,7 +3571,7 @@ pub(crate) fn execute_on_shard(
                                 // authority; one element named for both arms is wrong for whichever arm it does
                                 // not describe, and this chain named the field for both.
                                 shard
-                                    .context_nodes
+                                    .context_nodes()
                                     .get(object_key.as_str())
                                     .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
                         })
@@ -3674,7 +3674,7 @@ pub(crate) fn execute_on_shard(
                         // authority; one element named for both arms is wrong for whichever arm it does
                         // not describe, and this chain named the field for both.
                         shard
-                            .context_nodes
+                            .context_nodes()
                             .get(object_key.as_str())
                             .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
                 })
@@ -3726,7 +3726,7 @@ pub(crate) fn execute_on_shard(
                                 // authority; one element named for both arms is wrong for whichever arm it does
                                 // not describe, and this chain named the field for both.
                                 shard
-                                    .context_nodes
+                                    .context_nodes()
                                     .get(object_key.as_str())
                                     .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
                         })
@@ -5117,7 +5117,7 @@ pub(crate) fn execute_on_shard(
                         // authority; one element named for both arms is wrong for whichever arm it does
                         // not describe, and this chain named the field for both.
                         shard
-                            .context_nodes
+                            .context_nodes()
                             .get(node_key.as_str())
                             .map(|address| (address, PageIdentity::of(shard_id, "context_node", &node_key, None)))
                 })

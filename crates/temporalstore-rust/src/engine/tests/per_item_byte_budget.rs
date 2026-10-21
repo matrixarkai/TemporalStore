@@ -974,13 +974,13 @@ impl ItemCounts {
 
 fn count_items(shard: &crate::engine::state::ShardState) -> ItemCounts {
     let mut counts = ItemCounts::default();
-    counts.model_map_addresses = shard.strings.len()
+    counts.model_map_addresses = shard.strings().len()
         + shard.features().values().map(|series| series.len()).sum::<usize>()
         + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
         + shard.sets.values().map(|members| members.len()).sum::<usize>()
         + shard.zsets.values().map(|members| members.len()).sum::<usize>()
         + shard.lists.values().map(|items| items.len()).sum::<usize>();
-    counts.records = shard.strings.len() + shard.features().values().map(|s| s.len()).sum::<usize>();
+    counts.records = shard.strings().len() + shard.features().values().map(|s| s.len()).sum::<usize>();
     counts.bucket_nodes = shard.bucket_index.bucket_map.len();
     counts.block_index_entries = shard
         .bucket_index

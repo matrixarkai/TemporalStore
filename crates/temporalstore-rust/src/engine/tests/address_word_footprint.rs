@@ -124,7 +124,7 @@ fn count_addresses(shard: &crate::engine::state::ShardState) -> AddressCount {
     AddressCount {
         buckets: shard.bucket_index.bucket_map.len(),
         page_entries: pages_per_bucket.iter().sum(),
-        model_map: shard.strings.len(),
+        model_map: shard.strings().len(),
         pages_per_bucket,
     }
 }

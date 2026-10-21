@@ -685,14 +685,14 @@ fn the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_th
 
         // Put the model-map addresses into the state an older index decodes into. The bucket index
         // is rebuilt FROM these below, which is what a replay tail and a bulk flush both do.
-        let keys: Vec<String> = shard.strings.keys().map(|key| key.to_string()).collect();
+        let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
         assert!(
             !keys.is_empty(),
             "{label}: the string model map is empty, so the reconstruct has no source"
         );
         for key in &keys {
-            let older = as_an_older_build_wrote_it(shard.strings.get(key.as_str()).expect("key present"));
-            shard.strings.insert(key.as_str().into(), older);
+            let older = as_an_older_build_wrote_it(shard.strings().get(key.as_str()).expect("key present"));
+            shard.strings_mut().insert(key.as_str().into(), older);
         }
 
         // THE PRODUCTION RECONSTRUCT, with the argument under test.
@@ -814,10 +814,10 @@ fn scoping_is_exact_only_while_every_page_carries_the_shards_own_placement() {
         let _released = assert_no_released_bucket_is_dirty(shard);
 
         if break_it {
-            let keys: Vec<String> = shard.strings.keys().map(|key| key.to_string()).collect();
+            let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
             for key in &keys {
-                let older = as_an_older_build_wrote_it(shard.strings.get(key.as_str()).expect("key"));
-                shard.strings.insert(key.as_str().into(), older);
+                let older = as_an_older_build_wrote_it(shard.strings().get(key.as_str()).expect("key"));
+                shard.strings_mut().insert(key.as_str().into(), older);
             }
             rebuild_bucket_first_index(1, shard, 0, WIDE_END_BUCKET);
             refresh_bucket_runtime_flags(shard);

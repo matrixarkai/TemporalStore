@@ -936,7 +936,7 @@ pub(super) fn load_context_node_vector(
         })
         .or_else(|| {
             shard
-                .context_nodes
+                .context_nodes()
                 .get(object_key.as_str())
                 .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
         })
@@ -984,7 +984,7 @@ pub(super) fn load_context_node(
         })
         .or_else(|| {
             shard
-                .context_nodes
+                .context_nodes()
                 .get(object_key.as_str())
                 .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
         })

@@ -236,7 +236,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard should exist");
-        let address = shard.strings.get("target").expect("target address should exist");
+        let address = shard.strings().get("target").expect("target address should exist");
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,
@@ -352,7 +352,7 @@ fn cache_replacement_policy_soak() {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
         let address = shard
-            .strings
+            .strings()
             .get("soak-target")
             .expect("target page address")
             .clone();
@@ -607,7 +607,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
             .get(&1)
             .expect("shard should exist after index replay");
         let address = shard
-            .strings
+            .strings()
             .get("target")
             .expect("target address should be restored from index")
             .clone();

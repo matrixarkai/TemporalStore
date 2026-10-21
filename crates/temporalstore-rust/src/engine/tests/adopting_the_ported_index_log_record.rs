@@ -562,10 +562,27 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 22,
-        "costed against 22; if this is red the stamp moved and the adoption's cost has to be \
+        current, 23,
+        "costed against 23; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 22 -> 23, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 23 is `strings` and `context_nodes` becoming one domain-keyed `address_maps`. `strings` was a
+    // STORED top-level key and is gone, which is 14's shape -- and the consequence is the worst of
+    // this family so far: an index written at 22 would load with EVERY STRING VALUE's address
+    // missing, so a store full of keys serves none of them. `context_nodes` was stored too and
+    // moves the same way; it has no production writer, so its table is empty either way.
+    //
+    // IT IS A SAME-SHAPE MERGE, NOT A FOLD INTO `objects`, and the distinction is costed: #2259
+    // drove that an `ElementEntry` carries a block id and a generation the 24-byte record has no
+    // field for, so a slot cannot hold one without dropping a stored fact. Keeping the value type
+    // and adding a domain key costs nothing per key -- which is the whole reason this bump buys a
+    // map rather than bytes.
+    //
+    // This module costs the POSITIONAL index-log row, which carries no struct version, so the
+    // 550-against-595 comparison for eight page items is untouched.
+    //
     // RE-READ AT 21 -> 22, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 22 is `control_state` and `feature_values` becoming one domain-keyed `counter_series`.
@@ -688,8 +705,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 21 && current != 23,
-        "bracketed, so 22 is exact and not an artefact of the comparison above"
+        current != 22 && current != 24,
+        "bracketed, so 23 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

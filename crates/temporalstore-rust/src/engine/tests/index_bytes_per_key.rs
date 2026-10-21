@@ -611,7 +611,7 @@ fn strings_arc_payload_bytes(shard: &crate::engine::state::ShardState) -> (u64, 
     let mut seen: HashSet<usize> = HashSet::new();
     let mut bytes = 0u64;
     let mut shared = 0usize;
-    for key in shard.strings.keys() {
+    for key in shard.strings().keys() {
         let ptr = key.as_ptr() as usize;
         if seen.contains(&ptr) {
             continue;
@@ -725,7 +725,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         let shard = shards.get(&1).expect("shard is loaded");
 
         // --- Denominators FIRST, every one asserted non-empty. ---
-        let string_keys = shard.strings.len();
+        let string_keys = shard.strings().len();
         let series_map_keys = shard.features().len();
         let live_keys = string_keys + series_map_keys;
         let feature_points: usize = shard.features().values().map(|s| s.len()).sum();
@@ -756,7 +756,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         );
 
         // --- Footprint, structure by structure. ---
-        let strings_bytes = deep_heap_bytes(&shard.strings);
+        let strings_bytes = deep_heap_bytes(shard.strings());
         let features_bytes = deep_heap_bytes(shard.features());
         let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
         let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
@@ -778,7 +778,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // added here rather than assumed away, because `whole_bytes` below clones the whole shard
         // and would count it whether this line did or not, and a breakdown that silently omitted a
         // field would disagree with that total the first time the drain stopped working.
-        let context_bytes = deep_heap_bytes(&shard.context_nodes)
+        let context_bytes = deep_heap_bytes(shard.context_nodes())
             + deep_heap_bytes(shard.context_events())
             + deep_heap_bytes(&shard.clone_legacy_context_events_for_test())
             + deep_heap_bytes(&shard.context_event_timeline)
@@ -1272,7 +1272,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             let shard = shards.get(&1).expect("shard is loaded");
 
             // --- Denominators FIRST, asserted, because a zero divides into anything. ---
-            let string_keys = shard.strings.len();
+            let string_keys = shard.strings().len();
             let series_map_keys = shard.features().len();
             let live_keys = string_keys + series_map_keys;
             let feature_points: usize = shard.features().values().map(|s| s.len()).sum();
@@ -1304,7 +1304,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             );
 
             // --- The same rows, computed by the same helpers, so the two ranges compare. ---
-            let strings_bytes = deep_heap_bytes(&shard.strings);
+            let strings_bytes = deep_heap_bytes(shard.strings());
             let features_bytes = deep_heap_bytes(shard.features());
             let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
             let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
@@ -1538,7 +1538,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
             deep_heap_bytes(&shard.bucket_index.object_block_lookup),
             deep_heap_bytes(&shard.dirty_objects),
             deep_heap_bytes(shard),
-            shard.strings.len() + shard.features().len(),
+            shard.strings().len() + shard.features().len(),
             shard.bucket_index.bucket_map.values().count(),
             shard
                 .bucket_index
@@ -1945,10 +1945,10 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
 
-        let live_keys = shard.strings.len() + shard.features().len();
+        let live_keys = shard.strings().len() + shard.features().len();
         assert_eq!(
             strings_n,
-            shard.strings.len(),
+            shard.strings().len(),
             "denominator: the string map must hold every key seeded at {label}"
         );
 
@@ -2312,7 +2312,7 @@ fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, 
     let (arc_bytes, _) = arc_payload_bytes(&shard.bucket_index);
     let (dirty_arc_bytes, _, _) = dirty_arc_payload_bytes(shard);
     vec![
-        ("strings", deep_heap_bytes(&shard.strings)),
+        ("strings", deep_heap_bytes(shard.strings())),
         ("features", deep_heap_bytes(shard.features())),
         ("hashes", deep_heap_bytes(&shard.hashes)),
         ("bucket_index.bucket_map", bucket_map),
@@ -2504,13 +2504,13 @@ fn how_many_structures_hold_an_entry_for_one_object() {
         let (base_keys, buckets, pages) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let keys = shard.strings.len() + shard.features().len();
+            let keys = shard.strings().len() + shard.features().len();
             let buckets = shard.bucket_index.bucket_map.values().count();
             let pages: usize =
                 shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum();
             assert_eq!(
                 base_strings,
-                shard.strings.len(),
+                shard.strings().len(),
                 "denominator: the string map does not hold the base population"
             );
             assert_eq!(
@@ -2595,7 +2595,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let rows = census_bytes(shard);
-            let strings_n = shard.strings.len();
+            let strings_n = shard.strings().len();
             let features_n = shard.features().len();
             let hashes_n = shard.hashes.len();
             let lookup_n = shard.bucket_index.object_block_lookup.len();
@@ -2895,7 +2895,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
 
     // --- THE POPULATION, PINNED. Each of these is a denominator or a regime control, and every
     // --- one of them is asserted before a single ratio is written.
-    let string_keys = shard.strings.len();
+    let string_keys = shard.strings().len();
     let series_map_keys = shard.features().len();
     let feature_points: usize = shard.features().values().map(|s| s.len()).sum();
     let bucket_count = shard.bucket_index.bucket_map.values().count();
@@ -3115,14 +3115,14 @@ fn what_the_deadline_merge_would_trade() {
          and neither figure below is about the state this prices"
     );
     assert!(
-        shard.strings.len() > DEADLINES,
+        shard.strings().len() > DEADLINES,
         "every key carries a deadline in this fixture, so the asymmetry this measures -- paying on \
          all keys, recovering on some -- is not present and the break-even below is meaningless"
     );
 
     let keyed_b = deep_heap_bytes(&shard.expires_at_ms);
     let ordered_b = deep_heap_bytes(&shard.expiry_by_deadline);
-    let keys = shard.strings.len();
+    let keys = shard.strings().len();
 
     let recoverable_per_deadline = keyed_b as f64 / DEADLINES as f64;
     let cost_b = (STRING_TABLE_CAPACITY * SLOT_WIDENING_B) as f64;
@@ -3212,7 +3212,7 @@ fn which_resident_maps_hold_their_own_key_characters() {
     let mut strings_total = 0usize;
     let mut strings_shared = 0usize;
     let mut seen: HashSet<usize> = HashSet::new();
-    for key in shard.strings.keys() {
+    for key in shard.strings().keys() {
         let ptr = key.as_ptr() as usize;
         if !seen.insert(ptr) {
             continue;
@@ -3356,7 +3356,7 @@ fn how_many_times_a_context_keys_characters_exist() {
         ("context_summaries", shard.context_summaries().keys().map(|k| &**k).collect()),
         ("context_compressions", shard.context_compressions().keys().map(|k| &**k).collect()),
         ("context_compression_watermark (Arc-keyed)", shard.context_compression_watermark().keys().map(|k| &**k).collect()),
-        ("context_nodes (Arc-keyed)", shard.context_nodes.keys().map(|k| &**k).collect()),
+        ("context_nodes (Arc-keyed)", shard.context_nodes().keys().map(|k| &**k).collect()),
     ];
 
     let mut copies: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
@@ -3579,7 +3579,7 @@ fn what_a_per_shard_resident_bound_recovers() {
             deep_heap_bytes(&shard.bucket_index.object_block_lookup),
             deep_heap_bytes(&shard.dirty_objects),
             deep_heap_bytes(shard),
-            shard.strings.len() + shard.features().len(),
+            shard.strings().len() + shard.features().len(),
             shard.bucket_index.bucket_map.values().count(),
             shard
                 .bucket_index
@@ -3990,7 +3990,7 @@ fn what_one_key_with_one_page_costs() {
             .values()
             .map(|b| b.block_index.len())
             .sum();
-        (whole + arc + dirty_arc, shard.strings.len(), pages)
+        (whole + arc + dirty_arc, shard.strings().len(), pages)
     };
 
     let (before, keys0, pages0) = total(&engine);
@@ -4222,7 +4222,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
     // maintaining a list of, which maps are keyed by what. An allowlist of map names goes stale
     // the moment a map is converted; a pointer does not.
     let holders: Vec<(&str, Vec<(&str, usize)>)> = vec![
-        ("strings", shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
+        ("strings", shard.strings().keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         ("features", shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         (
             "control_state",
@@ -5045,7 +5045,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
         let mut shard = crate::engine::state::ShardState::default();
         for i in 0..KEYS {
             shard
-                .strings
+                .strings_mut()
                 .insert(std::sync::Arc::from(format!("s-{i:06}").as_str()), address(i));
         }
         let probe = Probe::start();
@@ -7701,13 +7701,13 @@ fn what_one_stats_read_allocates() {
             let shard = shards.get(&1).expect("shard 1 loaded");
             let sums = {
                 let probe = crate::alloc_probe::Probe::start();
-                let total = shard.strings.len()
+                let total = shard.strings().len()
                     + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
                     + shard.sets.values().map(std::collections::BTreeMap::len).sum::<usize>()
                     + shard.lists.values().map(std::collections::BTreeMap::len).sum::<usize>()
                     + shard.zsets.values().map(std::collections::BTreeMap::len).sum::<usize>()
                     + shard.features().values().map(|series| series.len()).sum::<usize>()
-                    + shard.context_nodes.len();
+                    + shard.context_nodes().len();
                 let counted = probe.stop().alloc_bytes;
                 assert!(total > 0, "the sums walked nothing, so their price is not measured");
                 counted
@@ -8464,7 +8464,7 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    let string_entries: Vec<&ElementEntry> = shard.strings.values().collect();
+    let string_entries: Vec<&ElementEntry> = shard.strings().values().collect();
     let with_block_id = string_entries.iter().filter(|e| e.block_id().is_some()).count();
     let with_generation = string_entries.iter().filter(|e| e.generation().is_some()).count();
 
@@ -8476,7 +8476,7 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
     println!();
     println!("  strings:       {:>4} entries, {with_block_id} with a block id, {with_generation} with a generation",
         string_entries.len());
-    println!("  context_nodes: {:>4} entries after 64 upserts", shard.context_nodes.len());
+    println!("  context_nodes: {:>4} entries after 64 upserts", shard.context_nodes().len());
     println!("  hashes:        {:>4} keys -- where a node is actually filed", shard.hashes.len());
 
     // CLAIM ONE. The fixture must have written strings, or the counts below are about nothing.
@@ -8495,10 +8495,10 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
     // CLAIM TWO. Driven: the upserts succeeded above, so an empty map here is where a node is
     // filed, not whether one was written.
     assert!(
-        shard.context_nodes.is_empty(),
+        shard.context_nodes().is_empty(),
         "`context_nodes` gained {} entries from 64 upserts, so a node is no longer filed only as \
          a hash field and the claim that this map has no production writer is now false",
-        shard.context_nodes.len()
+        shard.context_nodes().len()
     );
     assert!(
         !shard.hashes.is_empty(),

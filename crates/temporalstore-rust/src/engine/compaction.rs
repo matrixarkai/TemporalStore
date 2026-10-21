@@ -147,7 +147,7 @@ pub(super) fn model_compaction_policy_reports(
             "feature"
         } else if shard.control_state_blocks().contains_key(key) {
             "control_state"
-        } else if shard.context_nodes.contains_key(key) {
+        } else if shard.context_nodes().contains_key(key) {
             "context_node"
         } else if split_context_entity_key(key)
             .map(|(collection_key, entity_hash)| {
@@ -461,8 +461,8 @@ pub(super) fn compaction_model_layout_reports(
     let mut reports = Vec::new();
     reports.push(compaction_layout_from_addresses(
         "string",
-        shard.strings.len(),
-        shard.strings.values().cloned(),
+        shard.strings().len(),
+        shard.strings().values().cloned(),
         &slab_page_counts,
         None,
     ));
@@ -513,8 +513,8 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "context_node",
-        shard.context_nodes.len(),
-        shard.context_nodes.values().cloned(),
+        shard.context_nodes().len(),
+        shard.context_nodes().values().cloned(),
         &slab_page_counts,
         None,
     ));

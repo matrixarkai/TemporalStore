@@ -1394,7 +1394,7 @@ impl TemporalEngine {
             return String::from("<no shard>");
         };
         let mut out = String::new();
-        let mut strings: Vec<_> = shard.strings.iter().collect();
+        let mut strings: Vec<_> = shard.strings().iter().collect();
         strings.sort_by(|left, right| left.0.cmp(right.0));
         for (key, address) in strings {
             out.push_str(&format!(
@@ -1905,7 +1905,7 @@ impl TemporalEngine {
                 match (item.kind.as_str(), component.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
-                        shard.strings.remove(item.object_key.as_str());
+                        shard.strings_mut().remove(item.object_key.as_str());
                     }
                     ("hash", Some(field)) => {
                         // `&field.to_string()` because this kind's element IS a `String` and the replayed item
@@ -2044,7 +2044,7 @@ impl TemporalEngine {
                     .object_block_lookup
                     .any_shared_object_key(item.object_key.as_str())
                     .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
-                shard.strings.insert(stored_key, address);
+                shard.strings_mut().insert(stored_key, address);
                 true
             }
             // The component is what the map is keyed by, encoded. Each of these mirrors the
@@ -2477,7 +2477,7 @@ impl TemporalEngine {
             .read()
             .expect("engine lock poisoned")
             .get(&shard_id)
-            .and_then(|shard| shard.strings.get(key).cloned())
+            .and_then(|shard| shard.strings().get(key).cloned())
     }
 
     /// Write every in-process-only block into the block store, so the index can travel.
@@ -2541,7 +2541,7 @@ impl TemporalEngine {
             let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
             (
                 shard
-                    .strings
+                    .strings()
                     .iter()
                     .filter(|(_, address)| {
                         crate::wal_record::is_wal_resident(address.block_slab_id())
@@ -2598,7 +2598,7 @@ impl TemporalEngine {
                         .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                    shard.strings.insert(stored_key, durable.clone());
+                    shard.strings_mut().insert(stored_key, durable.clone());
                     super::upsert_bucket_index_block(
                         shard,
                         shard_id,
@@ -2650,7 +2650,7 @@ impl TemporalEngine {
                 count += 1;
             }
         };
-        for address in shard.strings.values() {
+        for address in shard.strings().values() {
             check(address);
         }
         for fields in shard.hashes.values() {

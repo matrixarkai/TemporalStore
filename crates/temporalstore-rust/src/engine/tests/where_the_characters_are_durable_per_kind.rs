@@ -159,7 +159,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     let mut shard = ShardState::default();
 
     shard
-        .strings
+        .strings_mut()
         .insert(key_for("string", suffix).as_str().into(), address());
     shard
         .hashes
@@ -195,7 +195,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
         },
     );
     shard
-        .context_nodes
+        .context_nodes_mut()
         .insert(key_for("context_node", suffix).as_str().into(), address());
     shard
         .context_audits_mut()
@@ -260,7 +260,7 @@ fn round_trip(shard: &ShardState) -> ShardState {
 fn the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source() {
     let shard = shard_with_one_object_of_every_kind(WRITTEN_SUFFIX);
     assert!(
-        !shard.strings.is_empty(),
+        !shard.strings().is_empty(),
         "fixture must be populated or the round trip is of nothing"
     );
 
@@ -272,7 +272,7 @@ fn the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source() {
          durability result in this module may be the lookup answering about itself"
     );
     assert!(
-        !reloaded.strings.is_empty(),
+        !reloaded.strings().is_empty(),
         "positive control: the round trip must carry SOMETHING, or the empty lookup above is \
          simply an empty shard"
     );
@@ -290,14 +290,14 @@ fn the_lookup_is_empty_after_a_round_trip_so_it_cannot_be_the_source() {
 fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
     let key = key_for(kind, suffix);
     match kind {
-        "string" => shard.strings.contains_key(key.as_str()),
+        "string" => shard.strings().contains_key(key.as_str()),
         "hash" => shard.hashes.contains_key(&key),
         "set" => shard.sets.contains_key(&key),
         "zset" => shard.zsets.contains_key(&key),
         "list" => shard.lists.contains_key(&key),
         "feature" => shard.features().contains_key(&key[..]),
         "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
-        "context_node" => shard.context_nodes.contains_key(key.as_str()),
+        "context_node" => shard.context_nodes().contains_key(key.as_str()),
         "context_audit" => shard.context_audits().contains_key(&key[..]),
         "context_child" => shard.context_children().contains_key(&key[..]),
         "context_summary" => shard.context_summaries().contains_key(&key[..]),
@@ -550,7 +550,7 @@ fn a_context_index_object_key_is_durable_in_its_own_map_now() {
 /// in none" a measurement rather than a tautology produced by leaving them out.
 fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     let mut found = Vec::new();
-    if shard.strings.contains_key(key) {
+    if shard.strings().contains_key(key) {
         found.push("strings");
     }
     if shard.hashes.contains_key(key) {
@@ -571,7 +571,7 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.control_state_blocks().contains_key(key) {
         found.push("control_state_blocks");
     }
-    if shard.context_nodes.contains_key(key) {
+    if shard.context_nodes().contains_key(key) {
         found.push("context_nodes");
     }
     if shard.context_audits().contains_key(key) {

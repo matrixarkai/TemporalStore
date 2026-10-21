@@ -1035,7 +1035,7 @@ impl TemporalEngine {
         shards.get(&shard_id).map(|state| {
             let block_store = self.block_store.stats();
             let block_store_slabs = self.block_store.slab_summary();
-            let string_records = state.strings.len();
+            let string_records = state.strings().len();
             let hash_records = state.hashes.len();
             let set_records = state.sets.len();
             let list_records = state.lists.len();

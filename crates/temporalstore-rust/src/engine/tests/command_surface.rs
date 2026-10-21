@@ -59,7 +59,7 @@ fn shard_state(engine: &TemporalEngine, key: &str) -> (bool, bool) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     (
-        shard.strings.contains_key(key),
+        shard.strings().contains_key(key),
         shard.expires_at_ms.contains_key(key),
     )
 }
@@ -933,15 +933,15 @@ fn a_deadline_equal_to_the_instant_has_already_passed() {
 
     // ---- and the shard agrees with the answers -----------------------------------------
     assert!(
-        !shard.strings.contains_key("boundary:past"),
+        !shard.strings().contains_key("boundary:past"),
         "the collected key must leave `strings`, not just answer that it did",
     );
     assert!(
-        !shard.strings.contains_key("boundary:equal"),
+        !shard.strings().contains_key("boundary:equal"),
         "the key whose deadline equals the instant must leave `strings` too",
     );
     assert!(
-        shard.strings.contains_key("boundary:future"),
+        shard.strings().contains_key("boundary:future"),
         "the key that has not reached its deadline must still be in `strings`",
     );
 }

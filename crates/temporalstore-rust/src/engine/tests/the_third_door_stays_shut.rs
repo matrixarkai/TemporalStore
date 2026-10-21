@@ -148,11 +148,11 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&SHARD).expect("the shard is loaded");
         let live = shard
-            .strings
+            .strings()
             .get(KEY)
             .expect("the written string is resident")
             .clone();
-        shard.context_nodes.insert(KEY.into(), live);
+        shard.context_nodes_mut().insert(KEY.into(), live);
     }
 
     let expired = engine.execute(ExecuteRequest {
@@ -178,7 +178,7 @@ fn planted_arrived(engine: &TemporalEngine) -> bool {
     let shards = engine.shards.read().expect("engine lock poisoned");
     shards
         .get(&SHARD)
-        .map_or(false, |shard| shard.context_nodes.contains_key(KEY))
+        .map_or(false, |shard| shard.context_nodes().contains_key(KEY))
 }
 
 fn decisions_for_this_shard() -> Vec<(ShardId, u64, bool)> {
@@ -339,7 +339,7 @@ fn the_fold_driven_directly_decides_whether_this_map_arrives() {
          states are applied, so an empty list means `apply_key_states` never ran"
     );
 
-    let arrived = folded.context_nodes.contains_key(KEY);
+    let arrived = folded.context_nodes().contains_key(KEY);
     println!("  the planted `context_nodes` entry survived the fold: {arrived}");
     assert!(
         arrived,

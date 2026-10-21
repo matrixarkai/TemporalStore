@@ -76,7 +76,7 @@ fn shard_state(engine: &TemporalEngine, key: &str) -> (bool, bool) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     (
-        shard.strings.contains_key(key),
+        shard.strings().contains_key(key),
         shard.expires_at_ms.contains_key(key),
     )
 }

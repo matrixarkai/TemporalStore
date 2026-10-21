@@ -1547,7 +1547,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard_id,
             "string",
             shard
-                .strings
+                .strings_mut()
                 .iter_mut()
                 .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,
@@ -1696,7 +1696,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             shard_id,
             "context_node",
             shard
-                .context_nodes
+                .context_nodes_mut()
                 .iter_mut()
                 .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,

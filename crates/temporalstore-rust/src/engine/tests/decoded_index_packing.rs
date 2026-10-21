@@ -190,7 +190,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
     let list_entries: usize = shard.lists.values().map(|list| list.len()).sum();
     assert_eq!(64, list_entries, "denominator: 64 list entries seeded");
     assert!(
-        !shard.strings.is_empty(),
+        !shard.strings().is_empty(),
         "denominator: the string map must hold keys"
     );
 

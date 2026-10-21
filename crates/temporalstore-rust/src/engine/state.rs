@@ -262,7 +262,14 @@ pub(super) struct ShardState {
     /// `expires_at_ms` above: the ordering here is the whole point of this map and is untouched,
     /// but the characters it orders are the ones that map already holds.
     pub(super) expiry_by_deadline: BTreeMap<(u64, Arc<str>), ()>,
-    pub(super) strings: HashMap<ModelKey, ElementEntry>,
+    // ONE FIELD FOR BOTH ADDRESS MAPS NOW, keyed by `AddressMap`, behind `strings()` /
+    // `_mut()` and `context_nodes()` / `_mut()`. `default`, because an index written before
+    // this merge carries `strings` and no `address_maps` and must still DECODE -- the stamp
+    // is what refuses it, and a decode error would hide that, which is the defect
+    // `an_ungated_store_is_refused_before_it_is_served` caught when `counter_series` shipped
+    // without one.
+    #[serde(default)]
+    pub(super) address_maps: HashMap<AddressMap, HashMap<ModelKey, ElementEntry>>,
     // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
     // index on load; do not duplicate in checkpoints", which was true while this field was
     // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
@@ -531,8 +538,6 @@ pub(super) struct ShardState {
     // aggregate) plus the shared rollup ladder over it. Serde-skipped; rebuilt lazily on the
     // FeatureAggQuery read path when stale. Gated by Config.control_rollup_enabled(); empty
     // and inert when off.
-    #[serde(default)]
-    pub(super) context_nodes: HashMap<ModelKey, ElementEntry>,
     /// THE EVENT SERIES, ON THE OWNED SORTED ARRAY.
     ///
     /// Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
@@ -7615,7 +7620,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // `hashes` IS BOUND, AND NOT FOR PACKING -- there is still nothing in it to pack, for
         // the reason just given. It is bound because its FIELD NAMES come out of a decode as
         // freshly minted handles and have to be pointed at the pool; see the adoption below.
-        strings,
+        address_maps,
         hashes,
         buckets: _,
         objects,
@@ -7630,7 +7635,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         context_events_compat: _,
         control_state_selection: _,
         u64_ledgers: _,
-        context_nodes: _,
         context_dirty_index: _,
         bucket_recency: _,
         // Not deserialized: `#[serde(skip)]`, so a decode leaves it default-empty and there is
@@ -7666,7 +7670,10 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // so there is no format stamp owed and no reason to leave the duplication behind.
     REPACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let _adopted_hashed = adopt_canonical_key_allocations_in_hashed(
-        strings,
+        // THE STRING ADDRESSES ARE IN `address_maps` NOW, so this pass reaches them through
+        // the domain's table. Same argument as the Feature kind's term and the control-state
+        // one below: dropping it costs the keys their canonical handle with nothing failing.
+        address_maps.entry(AddressMap::Strings).or_default(),
         &bucket_index.object_block_lookup,
     ) + adopt_canonical_key_allocations_in_hashed(
         // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
@@ -7750,6 +7757,64 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 
 /// The empty map a kind with no objects answers with, so the reader below can hand out a borrow
 /// without the caller learning whether the kind has a bucket yet.
+/// WHICH ADDRESS MAP, so two independent key spaces cannot collide in one table.
+///
+/// `strings` and `context_nodes` are both one `ElementEntry` per object key. This is a SAME-SHAPE
+/// merge -- one value type plus a domain key -- not a fold into `objects`: #2259 drove that an
+/// `ElementEntry` carries a block id and a generation which the 24-byte `ObjectRecord` has no field
+/// for, so a slot cannot hold one without dropping a stored fact. Keeping the value type and adding
+/// a domain costs nothing per key.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub(super) enum AddressMap {
+    /// Redis-style string values: one block address per key.
+    Strings,
+    /// Context nodes. NO PRODUCTION WRITER -- a node is filed as a hash field, which #2259 drove --
+    /// but read on a dozen paths as a fallback, so it stays a domain rather than being deleted.
+    ContextNodes,
+}
+
+impl AddressMap {
+    /// THE STORED SPELLING, the old field name, for the reason `U64Ledger::as_str` gives.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            AddressMap::Strings => "strings",
+            AddressMap::ContextNodes => "context_nodes",
+        }
+    }
+
+    /// The map a stored spelling names, or `None` for one this binary does not declare.
+    pub(super) fn from_stored_name(spelling: &str) -> Option<Self> {
+        match spelling {
+            "strings" => Some(AddressMap::Strings),
+            "context_nodes" => Some(AddressMap::ContextNodes),
+            _ => None,
+        }
+    }
+}
+
+impl serde::Serialize for AddressMap {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AddressMap {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let spelling = String::deserialize(deserializer)?;
+        AddressMap::from_stored_name(&spelling).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "no address map for {spelling:?}. A stored name this binary does not declare is \
+                 the store and the engine disagreeing about which maps exist, and mapping it onto \
+                 one it does have would file addresses under the wrong map."
+            ))
+        })
+    }
+}
+
+/// The empty table a domain with nothing in it answers with.
+static NO_ADDRESSES_IN_THIS_MAP: std::sync::OnceLock<HashMap<ModelKey, ElementEntry>> =
+    std::sync::OnceLock::new();
+
 /// WHICH COUNTER SERIES, so two independent key spaces cannot collide in one table.
 ///
 /// `control_state` and `feature_values` are both an instant-keyed `BTreeMap<u64, i64>` per object
@@ -7905,6 +7970,33 @@ impl ShardState {
     /// caller of this wants to look a key up or iterate -- and "this kind has no bucket yet" is
     /// not a distinction any of them should have to carry.
     /// The control-state counter series.
+    /// Redis-style string values, one address per key.
+    pub(super) fn strings(&self) -> &HashMap<ModelKey, ElementEntry> {
+        self.addresses_of(AddressMap::Strings)
+    }
+
+    /// The string addresses, for writing. Creates the domain's table on first use.
+    pub(super) fn strings_mut(&mut self) -> &mut HashMap<ModelKey, ElementEntry> {
+        self.address_maps.entry(AddressMap::Strings).or_default()
+    }
+
+    /// Context-node addresses. Read as a fallback; nothing in production writes this.
+    pub(super) fn context_nodes(&self) -> &HashMap<ModelKey, ElementEntry> {
+        self.addresses_of(AddressMap::ContextNodes)
+    }
+
+    /// The context-node addresses, for writing. Creates the domain's table on first use.
+    pub(super) fn context_nodes_mut(&mut self) -> &mut HashMap<ModelKey, ElementEntry> {
+        self.address_maps.entry(AddressMap::ContextNodes).or_default()
+    }
+
+    /// One domain's table, empty rather than absent, as `objects_of_kind` is.
+    fn addresses_of(&self, map: AddressMap) -> &HashMap<ModelKey, ElementEntry> {
+        self.address_maps
+            .get(&map)
+            .unwrap_or_else(|| NO_ADDRESSES_IN_THIS_MAP.get_or_init(HashMap::new))
+    }
+
     pub(super) fn control_state(&self) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
         self.counters_of(CounterSeries::ControlState)
     }
@@ -8385,7 +8477,7 @@ impl ShardState {
         // `context_nodes` was ALREADY `ModelKey`-keyed before this change and was still
         // missing from this list, which is the failure the note above describes: a map that
         // CAN share and is not listed here keeps its own equal copy and nothing fails.
-        moved |= adopt_key_in(&mut self.context_nodes, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.context_nodes_mut(), object_key, &canonical);
         // Keyed by the EVENT object key, so it is another holder of a key the event pair
         // already holds. Found only by grepping from the crate root: the write is a
         // multi-line `insert` in `engine.rs`, which a search rooted at `engine/` misses.
@@ -8402,7 +8494,7 @@ impl ShardState {
         // handle at its own write site, which runs BEFORE the page index holds one -- so it
         // minted, while the maps adopted here later converged on the page index's
         // allocation. Three holders, two allocations, and no byte probe would have said so.
-        moved |= adopt_key_in(&mut self.strings, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.strings_mut(), object_key, &canonical);
         // `control_state` TOO, for its RAW-keyed half. The counter commands file the raw object
         // key, so it is a fourth holder of characters `strings`, `features` and
         // `control_state_selection` already agreed on -- measured at 8 of 8 keys, four holders
@@ -8575,7 +8667,7 @@ mod does_the_sharing_survive_a_decode {
     /// therefore witness nothing. One shared handle gives 1; independent copies give one per holder.
     fn distinct_key_allocations(shard: &ShardState, key: &str) -> usize {
         let mut seen: BTreeSet<usize> = BTreeSet::new();
-        if let Some((k, _)) = shard.strings.get_key_value(key) {
+        if let Some((k, _)) = shard.strings().get_key_value(key) {
             seen.insert(k.as_ptr() as usize);
         }
         if let Some((k, _)) = shard.expires_at_ms.get_key_value(key) {
@@ -8599,7 +8691,7 @@ mod does_the_sharing_survive_a_decode {
 
         // The write path's end state: ONE allocation, every holder a refcount bump.
         let shared: Arc<str> = Arc::from(key);
-        shard.strings.insert(Arc::clone(&shared), ElementEntry::default());
+        shard.strings_mut().insert(Arc::clone(&shared), ElementEntry::default());
         shard.expires_at_ms.insert(Arc::clone(&shared), 1);
         shard.dirty_objects.insert_shared(Arc::clone(&shared), 0);
 
@@ -8630,7 +8722,7 @@ mod does_the_sharing_survive_a_decode {
             &shared,
             BlockLookupRef { routing_bucket: 0, block_ref_key: 1 },
         );
-        shard.strings.insert(Arc::clone(&shared), ElementEntry::default());
+        shard.strings_mut().insert(Arc::clone(&shared), ElementEntry::default());
         shard.expires_at_ms.insert(Arc::clone(&shared), 1);
         assert_eq!(distinct_key_allocations(&shard, key), 1, "the write path shares");
 

@@ -174,16 +174,16 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 fn round_trip_every_page_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
-    let keys: Vec<String> = shard.strings.keys().map(|key| key.to_string()).collect();
+    let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
     for key in &keys {
-        let before = shard.strings.get(key.as_str()).expect("key present").clone();
+        let before = shard.strings().get(key.as_str()).expect("key present").clone();
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
             "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
-        shard.strings.insert(key.as_str().into(), older);
+        shard.strings_mut().insert(key.as_str().into(), older);
     }
     keys.len()
 }
@@ -330,14 +330,14 @@ fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
             "the shard under test is not carrying 0..{NARROW_END}, so what follows would measure \
              the fallback rather than the fix"
         );
-        let before = shard.strings.get(key.as_str()).expect("key present").clone();
+        let before = shard.strings().get(key.as_str()).expect("key present").clone();
         let address = as_an_older_build_wrote_it(&before);
         assert_eq!(
             address, before,
             "the wire round trip changed the address. `rs` is inert -- the address holds no routing \
              bucket -- so this has to be the identity."
         );
-        shard.strings.insert(key.as_str().into(), address.clone());
+        shard.strings_mut().insert(key.as_str().into(), address.clone());
 
         if sync_path {
             crate::engine::storage_bucket_internals::sync_bucket_index_object_blocks(
@@ -429,7 +429,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
             "the shard is not carrying 0..{stamp}, so the arm below files by something else"
         );
         for key in &keys {
-            let address = shard.strings.get(key.as_str()).expect("key present").clone();
+            let address = shard.strings().get(key.as_str()).expect("key present").clone();
             crate::engine::storage_bucket_internals::upsert_bucket_index_block(
                 shard, 1, "string", key, None, address, true,
             );
@@ -514,7 +514,7 @@ fn narrowing_the_writers_removes_no_page_that_was_already_filed() {
     );
 
     let key = keys[0].clone();
-    let address = shard.strings.get(key.as_str()).expect("key present").clone();
+    let address = shard.strings().get(key.as_str()).expect("key present").clone();
     crate::engine::storage_bucket_internals::upsert_bucket_index_block(
         shard, 1, "string", &key, None, address, true,
     );
@@ -1099,7 +1099,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     // SO THIS IS PAID DOWN, NOT WIDENED, which is the direction the message below demands. Five
     // of the eight per-element maps still have their own field; each will take another 48 off.
     assert_eq!(
-        1_312, state,
+        1_264, state,
         "`ShardState` is {state} bytes. It was 1,880 before the routing range was carried on it \
          and 1,888 after -- the two u32s, with THAT flag landing in padding this struct already \
          had -- and 1,904 since it also carries the shard id it is served under. THAT step cost \
@@ -1107,7 +1107,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
          predicted, and an `Option<u64>` would have cost the same sixteen. It is paid rather than \
          argued down because there is one of this struct per shard. A change here means either a \
          field was added or a flag stopped being free; say which, and pay it down rather than \
-         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map. `features` followed them for another 48, and the last three -- `context_events`, `context_entities`, `context_indexes` -- took 144 more, so this is 1,456. ALL EIGHT per-element series are in `objects`, and the two rollup ladders merged into one domain-keyed field for another 48, so this is 1,408. Every 48 from here comes from merging same-shaped maps or folding a value into `ObjectRecord`, not from the series family, which is finished. The two u64 ledgers merged for another 48 and the two counter series for another, so this is 1,312 -- 592 off the 1,904 this campaign started at, and every 48 of it is one HashMap header that stopped existing."
+         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map. `features` followed them for another 48, and the last three -- `context_events`, `context_entities`, `context_indexes` -- took 144 more, so this is 1,456. ALL EIGHT per-element series are in `objects`, and the two rollup ladders merged into one domain-keyed field for another 48, so this is 1,408. Every 48 from here comes from merging same-shaped maps or folding a value into `ObjectRecord`, not from the series family, which is finished. The two u64 ledgers merged for another 48 and the two counter series for another, and the two address maps for another, so this is 1,264 -- 640 off the 1,904 this campaign started at, and every 48 of it is one HashMap header that stopped existing."
     );
     assert_eq!(
         4,

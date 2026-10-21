@@ -105,11 +105,11 @@ fn plant_in_base_index(dir: &std::path::Path, stamp: u32) {
          changes nothing"
     );
     let live = restored
-        .strings
+        .strings()
         .get(WRITTEN)
         .expect("the written string is in the flushed index")
         .clone();
-    restored.context_nodes.insert(PLANTED.into(), live);
+    restored.context_nodes_mut().insert(PLANTED.into(), live);
     restored.index_format_version = stamp;
     std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
 }
@@ -119,7 +119,7 @@ fn planted_arrived(engine: &TemporalEngine) -> bool {
     let shards = engine.shards.read().expect("engine lock poisoned");
     shards
         .get(&7)
-        .map_or(false, |shard| shard.context_nodes.contains_key(PLANTED))
+        .map_or(false, |shard| shard.context_nodes().contains_key(PLANTED))
 }
 
 /// THE BASE-INDEX DOOR IS STAMPED, AND A STALE STAMP KEEPS THE ENTRY OUT.
@@ -214,11 +214,11 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&7).expect("shard 7 is loaded");
         let live = shard
-            .strings
+            .strings()
             .get(WRITTEN)
             .expect("the written string is resident")
             .clone();
-        shard.context_nodes.insert(PLANTED.into(), live);
+        shard.context_nodes_mut().insert(PLANTED.into(), live);
     }
     engine.flush_shard_index(7);
 
@@ -230,7 +230,7 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
     let mut image = crate::engine::decode_index_bytes(&manifest.index_bytes)
         .expect("the manifest index image decodes");
     assert!(
-        image.context_nodes.contains_key(PLANTED),
+        image.context_nodes().contains_key(PLANTED),
         "denominator: the exported image must carry the planted entry, or the install below \
          proves nothing"
     );
@@ -253,7 +253,7 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&7).expect("shard 7 is loaded");
-        shard.context_nodes.remove(PLANTED);
+        shard.context_nodes_mut().remove(PLANTED);
     }
     assert!(
         !planted_arrived(&engine),

@@ -2191,8 +2191,8 @@ pub(super) fn model_map_block_address(
     component: Option<&str>,
 ) -> Option<ElementEntry> {
     match (model_id, component) {
-        ("string", None) => shard.strings.get(object_key).cloned(),
-        ("context_node", None) => shard.context_nodes.get(object_key).cloned(),
+        ("string", None) => shard.strings().get(object_key).cloned(),
+        ("context_node", None) => shard.context_nodes().get(object_key).cloned(),
         _ => None,
     }
 }
@@ -2808,14 +2808,14 @@ pub(super) fn bucket_index_resident_bytes(shard: &ShardState) -> u64 {
 /// `promote_scan_done` fast-skip flag before the shard has any state to reconcile. Short-circuits
 /// on the first non-empty map; never clones.
 pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
-    !shard.strings.is_empty()
+    !shard.strings().is_empty()
         || !shard.hashes.is_empty()
         || !shard.sets.is_empty()
         || !shard.lists.is_empty()
         || !shard.zsets.is_empty()
         || !shard.features().is_empty()
         || !shard.control_state_blocks().is_empty()
-        || !shard.context_nodes.is_empty()
+        || !shard.context_nodes().is_empty()
         || !shard.context_events().is_empty()
         || !shard.context_indexes().is_empty()
         || !shard.context_audits().is_empty()
@@ -2915,7 +2915,7 @@ pub(super) fn sync_blocks_for_written_components(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings.get(object_key.as_str()).cloned(),
+            ("string", None) => shard.strings().get(object_key.as_str()).cloned(),
             _ => None,
         };
         let Some(address) = address else {
@@ -2947,7 +2947,7 @@ pub(super) fn sync_context_blocks_for_object(
     // takes a mutable one.
     let mut groups: Vec<(&'static str, String, Vec<ElementEntry>)> = Vec::new();
 
-    if let Some(address) = shard.context_nodes.get(object_key) {
+    if let Some(address) = shard.context_nodes().get(object_key) {
         groups.push(("context_node", object_key.to_string(), vec![address.clone()]));
     }
     // THE EVENT SERIES IS NO LONGER THE SAME TYPE AS THE OTHER FIVE, so it cannot ride in the
@@ -3645,7 +3645,7 @@ fn visit_model_live_blocks(
         accept: impl Fn(&str, &ElementEntry) -> bool,
         mut emit: impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
     ) {
-        for (key, address) in &shard.strings {
+        for (key, address) in shard.strings() {
             if accept(key, address) {
                 emit(ModelKind::String, KeyRef::Shared(key), None, address);
             }
@@ -3796,7 +3796,7 @@ fn visit_model_live_blocks(
                 emit(ModelKind::ControlState, KeyRef::Shared(key), None, &address);
             }
         }
-        for (key, address) in &shard.context_nodes {
+        for (key, address) in shard.context_nodes() {
             if accept(key, address) {
                 emit(ModelKind::ContextNode, KeyRef::Shared(key), None, address);
             }
@@ -6547,7 +6547,7 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
 
 pub(super) fn object_still_has_hot_block(shard: &ShardState, object_key: &str) -> bool {
     shard
-        .strings
+        .strings()
         .get(object_key)
         .map(|address| crate::wal_record::is_wal_resident(address.block_slab_id()))
         .unwrap_or(false)
@@ -7378,7 +7378,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
 
     if saw_strings {
-        shard.strings = strings;
+        // THE WRITE DOOR, DEREFERENCED: an assignment target is reported by E0615 exactly
+        // like a read, so the door pass gave this site the read accessor.
+        *shard.strings_mut() = strings;
     }
     // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into a component
     // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map
@@ -8279,7 +8281,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.as_str().into(), held.clone());
+        shard.strings_mut().insert(key.as_str().into(), held.clone());
         install_page(shard, routing_bucket, &key, block(&key, "string", None, held));
         key
     }
@@ -8297,7 +8299,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, u32::MAX);
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(std::sync::Arc::from(key), held.clone());
+        shard.strings_mut().insert(std::sync::Arc::from(key), held.clone());
         install_page(shard, routing_bucket, key, block(key, "string", None, held));
         routing_bucket
     }
@@ -8319,7 +8321,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings.insert(key.as_str().into(), held.clone());
+        shard.strings_mut().insert(key.as_str().into(), held.clone());
         let dirty = BlockIndex {
             dirty: true,
             ..block(&key, "string", None, held)
@@ -8561,7 +8563,7 @@ mod release_refusal_guards {
     #[test]
     fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
         let (mut shard, key) = releasable_shard(7, "disagreement-key");
-        shard.strings.insert(std::sync::Arc::from(key.as_str()), address(7, 4_096));
+        shard.strings_mut().insert(std::sync::Arc::from(key.as_str()), address(7, 4_096));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -8599,7 +8601,7 @@ mod release_refusal_guards {
             .hashes
             .insert_element_for_test(&kind_key, std::sync::Arc::from("field"), held.clone());
         install_page(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
-        shard.strings.insert(std::sync::Arc::from(disagreement_key.as_str()), address(5, 4_096));
+        shard.strings_mut().insert(std::sync::Arc::from(disagreement_key.as_str()), address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -8697,7 +8699,7 @@ mod release_walk_scale {
     /// a comparison of a store with itself.
     fn release_four_of(buckets: u32) -> (u64, usize, usize, usize) {
         let (mut shard, landed) = shard_with(buckets);
-        let live_pages = shard.strings.len();
+        let live_pages = shard.strings().len();
         let candidates = [landed[0], landed[1], landed[2], landed[3]];
 
         reset_bucket_scoped_model_entries();
@@ -8800,7 +8802,7 @@ mod release_walk_scale {
         fn reload_one_of(buckets: u32) -> (u64, usize) {
             let (mut shard, landed) = shard_with(buckets);
             let victim = landed[0];
-            let live_pages = shard.strings.len();
+            let live_pages = shard.strings().len();
             let outcome = release_bucket_blocks(&mut shard, &[victim]);
             assert_eq!(outcome.released_buckets, vec![victim], "{outcome:?}");
 
@@ -8896,7 +8898,7 @@ mod live_block_scan_coverage {
         let (shard, _landed) = shard_with(BUCKETS);
 
         assert_eq!(
-            shard.strings.len(),
+            shard.strings().len(),
             BUCKETS as usize,
             "one live page per bucket",
         );
@@ -8968,7 +8970,7 @@ mod live_block_scan_coverage {
         let outcome = release_bucket_blocks(&mut shard, &[victim]);
         assert_eq!(outcome.released_buckets, vec![victim], "{outcome:?}");
 
-        let live_pages = shard.strings.len();
+        let live_pages = shard.strings().len();
         let indexed_pages = shard
             .bucket_index
             .bucket_map
@@ -9106,7 +9108,7 @@ mod model_kind_registry_guards {
     fn shard_holding_one_page_of_every_kind() -> ShardState {
         let mut shard = ShardState::default();
         let at = address(7);
-        shard.strings.insert("s".into(), at.clone());
+        shard.strings_mut().insert("s".into(), at.clone());
         shard
             .hashes
             .insert_elements_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
@@ -9129,7 +9131,7 @@ mod model_kind_registry_guards {
             record.set_address(&at);
             record.into()
         });
-        shard.context_nodes.insert("ctx:node:t:n".into(), at.clone());
+        shard.context_nodes_mut().insert("ctx:node:t:n".into(), at.clone());
         shard.set_context_event_series("ctx:event:t:n", BTreeMap::from([(1u64, at.clone())]));
         shard
             .context_indexes_mut()

@@ -164,16 +164,16 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 fn round_trip_every_page_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
-    let keys: Vec<String> = shard.strings.keys().map(|key| key.to_string()).collect();
+    let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
     for key in &keys {
-        let before = shard.strings.get(key.as_str()).expect("key present").clone();
+        let before = shard.strings().get(key.as_str()).expect("key present").clone();
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
             "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
-        shard.strings.insert(key.as_str().into(), older);
+        shard.strings_mut().insert(key.as_str().into(), older);
     }
     keys.len()
 }
@@ -303,11 +303,11 @@ fn neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range() {
             // the MODEL MAP rather than the bucket index -- both rebuilds repopulate the index FROM
             // the model maps, so the model map is the input and the index is the output.
             assert_eq!(
-                shard.strings.len(),
+                shard.strings().len(),
                 keys.len(),
                 "{rebuild}/0..{rebuild_end}: the model map holds {} of {} written keys, so the \
                  rebuild below is not being handed the fixture",
-                shard.strings.len(),
+                shard.strings().len(),
                 keys.len()
             );
 
