@@ -135,7 +135,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     );
     record(
         "control_state_uuid",
-        shard.control_state_uuid.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        shard.control_state_uuid().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
     record(
         "control_state_rollups",

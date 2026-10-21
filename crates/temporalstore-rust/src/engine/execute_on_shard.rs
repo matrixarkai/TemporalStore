@@ -3214,11 +3214,16 @@ pub(crate) fn execute_on_shard(
             let is_duplicate = if let Some(uuid) = uuid.as_ref().filter(|u| !u.is_empty()) {
                 let dedup_key = format!("{key}\u{1}{uuid}");
                 gc_control_state_uuid(shard, now);
-                let dup = matches!(shard.control_state_uuid.get(&dedup_key), Some(expiry) if *expiry > now);
+                let dup = matches!(shard.control_state_uuid().get(&dedup_key[..]), Some(expiry) if *expiry > now);
                 if !dup {
                     shard
-                        .control_state_uuid
-                        .insert(dedup_key, now.saturating_add(CONTROL_STATE_UUID_DEDUP_MS));
+                        .control_state_uuid_mut()
+                        // `Arc<str>`, because the ledger is `ModelKey`-keyed now and joins the
+                        // key adoption. One allocation here, at the only site that inserts.
+                        .insert(
+                            std::sync::Arc::from(dedup_key.as_str()),
+                            now.saturating_add(CONTROL_STATE_UUID_DEDUP_MS),
+                        );
                 }
                 dup
             } else {

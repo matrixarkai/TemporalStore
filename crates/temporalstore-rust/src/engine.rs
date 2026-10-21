@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 20;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 21;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -5211,7 +5211,7 @@ fn maybe_auto_compress_context_node(
         None => return false,
     };
     let watermark = shard
-        .context_compression_watermark
+        .context_compression_watermark()
         .get(event_object_key)
         .copied()
         .unwrap_or(0);
@@ -5268,7 +5268,7 @@ fn maybe_auto_compress_context_node(
         }
     }
     shard
-        .context_compression_watermark
+        .context_compression_watermark_mut()
         .insert(std::sync::Arc::from(&event_object_key[..]), window.end_ms);
     invalidate_context_record(cache, shard_id, &compression_key);
     mutated

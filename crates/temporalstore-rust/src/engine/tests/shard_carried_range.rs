@@ -1099,7 +1099,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     // SO THIS IS PAID DOWN, NOT WIDENED, which is the direction the message below demands. Five
     // of the eight per-element maps still have their own field; each will take another 48 off.
     assert_eq!(
-        1_408, state,
+        1_360, state,
         "`ShardState` is {state} bytes. It was 1,880 before the routing range was carried on it \
          and 1,888 after -- the two u32s, with THAT flag landing in padding this struct already \
          had -- and 1,904 since it also carries the shard id it is served under. THAT step cost \
@@ -1107,7 +1107,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
          predicted, and an `Option<u64>` would have cost the same sixteen. It is paid rather than \
          argued down because there is one of this struct per shard. A change here means either a \
          field was added or a flag stopped being free; say which, and pay it down rather than \
-         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map. `features` followed them for another 48, and the last three -- `context_events`, `context_entities`, `context_indexes` -- took 144 more, so this is 1,456. ALL EIGHT per-element series are in `objects`, and the two rollup ladders merged into one domain-keyed field for another 48, so this is 1,408. Every 48 from here comes from merging same-shaped maps or folding a value into `ObjectRecord`, not from the series family, which is finished."
+         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map. `features` followed them for another 48, and the last three -- `context_events`, `context_entities`, `context_indexes` -- took 144 more, so this is 1,456. ALL EIGHT per-element series are in `objects`, and the two rollup ladders merged into one domain-keyed field for another 48, so this is 1,408. Every 48 from here comes from merging same-shaped maps or folding a value into `ObjectRecord`, not from the series family, which is finished. The two u64 ledgers merged for another 48, so this is 1,360 -- 544 off the 1,904 this campaign started at."
     );
     assert_eq!(
         4,

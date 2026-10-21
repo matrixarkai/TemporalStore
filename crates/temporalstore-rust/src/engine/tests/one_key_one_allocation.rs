@@ -490,7 +490,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_compression_watermark",
             shard
-                .context_compression_watermark
+                .context_compression_watermark()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
@@ -1096,7 +1096,7 @@ fn the_auto_compression_trigger_folds_a_window_and_keeps_the_raw_events() {
         let shard = shards.get(&1).expect("shard is loaded");
         let event_key = format!("ctx:event:{TENANT}:{NODE}");
         let watermark = shard
-            .context_compression_watermark
+            .context_compression_watermark()
             .get(&event_key[..])
             .copied();
         let compressions: usize = shard

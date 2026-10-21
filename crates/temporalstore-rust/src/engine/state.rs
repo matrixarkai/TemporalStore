@@ -489,7 +489,12 @@ pub(super) struct ShardState {
     // double-count. Lazily garbage-collected on write; in-memory + serde-default so
     // it is rebuilt via command replay and never blocks recovery.
     #[serde(default)]
-    pub(super) control_state_uuid: HashMap<String, u64>,
+    // ONE FIELD FOR BOTH u64 LEDGERS NOW, keyed by `U64Ledger`, behind
+    // `control_state_uuid()` / `_mut()` and `context_compression_watermark()` / `_mut()`.
+    // The key type is `ModelKey` for both: this map used to be `String`-keyed and so held a
+    // key other maps already held as their own allocation, which is exactly what
+    // `string_keyed_holders` reports.
+    pub(super) u64_ledgers: HashMap<U64Ledger, HashMap<ModelKey, u64>>,
     // Derived, in-memory rollup ladder over `control_state` for O(levels) sum-family
     // window aggregates (frequency caps / long-window counts). Serde-skipped: rebuilt
     // lazily from the authoritative counter series and never blocks recovery. Gated by
@@ -683,8 +688,6 @@ pub(super) struct ShardState {
     // folded into a ContextCompressionEvent for this event object key. In-memory and
     // ephemeral (serde-skipped); on loss the auto-compression trigger re-compresses
     // the oldest pending window idempotently (stable compression id per window).
-    #[serde(skip)]
-    pub(super) context_compression_watermark: HashMap<ModelKey, u64>,
     // Entities are grouped by their OWNING NODE, not one map key per entity: the key is
     // `ctx:entity:{tenant}:{node}` (context_entity_collection_key) and the BTreeMap holds every
     // entity of that node. The inner u64 is the ENTITY HASH, not a timestamp -- unlike
@@ -7617,10 +7620,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // about to be dropped. The only entry in this list whose absence makes a decode cheaper.
         context_events_compat: _,
         control_state_selection: _,
-        control_state_uuid: _,
+        u64_ledgers: _,
         context_nodes: _,
         context_dirty_index: _,
-        context_compression_watermark: _,
         bucket_recency: _,
         // Not deserialized: `#[serde(skip)]`, so a decode leaves it default-empty and there is
         // nothing in it to pack. `expiry_by_deadline` is the one of these that IS refilled by
@@ -7730,6 +7732,70 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 
 /// The empty map a kind with no objects answers with, so the reader below can hand out a borrow
 /// without the caller learning whether the kind has a bucket yet.
+/// WHICH u64-PER-KEY LEDGER, so two independent key spaces cannot collide in one table.
+///
+/// `control_state_uuid` held a dedup ledger's expiry instant and `context_compression_watermark`
+/// held a compression watermark: both a `u64` per object key, otherwise unrelated. The merge is
+/// COUNT-DRIVEN and the domain key is what makes it safe -- a shared table keyed by the object key
+/// alone would let a dedup key equal to a context key overwrite the other ledger's value, and
+/// neither reader validates what it finds.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub(super) enum U64Ledger {
+    /// Expiry instants for the control-state dedup ledger, capped by `gc_control_state_uuid`.
+    ControlStateUuid,
+    /// Per-object compression watermarks.
+    ContextCompressionWatermark,
+}
+
+impl U64Ledger {
+    /// THE STORED SPELLING, and it is the OLD FIELD NAME on purpose.
+    ///
+    /// This enum keys a SERIALIZED map, so the spelling is on the wire and is a durable name --
+    /// the same position `StoredModelKind` is in, which is why that one also writes its own
+    /// `Serialize` through a spelling instead of deriving one. Using the names these two maps had
+    /// as fields keeps a stored image readable by eye and stops the spelling drifting from the
+    /// thing it replaced.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            U64Ledger::ControlStateUuid => "control_state_uuid",
+            U64Ledger::ContextCompressionWatermark => "context_compression_watermark",
+        }
+    }
+
+    /// The ledger a stored spelling names, or `None` for one this binary does not declare.
+    pub(super) fn from_stored_name(spelling: &str) -> Option<Self> {
+        match spelling {
+            "control_state_uuid" => Some(U64Ledger::ControlStateUuid),
+            "context_compression_watermark" => Some(U64Ledger::ContextCompressionWatermark),
+            _ => None,
+        }
+    }
+}
+
+impl serde::Serialize for U64Ledger {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for U64Ledger {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let spelling = String::deserialize(deserializer)?;
+        U64Ledger::from_stored_name(&spelling).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "no u64 ledger for {spelling:?}. A stored ledger name this binary does not \
+                 declare is the store and the engine disagreeing about which ledgers exist, and \
+                 mapping it onto one it does have would file values under the wrong ledger."
+            ))
+        })
+    }
+}
+
+/// The empty ledger a domain with nothing in it answers with, so the readers hand out a borrow
+/// without the caller learning whether the domain has a table yet.
+static NO_U64_IN_THIS_LEDGER: std::sync::OnceLock<HashMap<ModelKey, u64>> =
+    std::sync::OnceLock::new();
+
 /// WHICH ROLLUP LADDER, so the two domains cannot collide in one map.
 ///
 /// `control_state_rollups` and `feature_rollups` were separate fields of identical type, handed to
@@ -7761,6 +7827,35 @@ impl ShardState {
     /// Answers an empty map for a kind that holds nothing, rather than an `Option`, because every
     /// caller of this wants to look a key up or iterate -- and "this kind has no bucket yet" is
     /// not a distinction any of them should have to carry.
+    /// The control-state dedup ledger's expiry instants.
+    pub(super) fn control_state_uuid(&self) -> &HashMap<ModelKey, u64> {
+        self.u64_ledger(U64Ledger::ControlStateUuid)
+    }
+
+    /// The dedup ledger, for writing. Creates the domain's table on first use.
+    pub(super) fn control_state_uuid_mut(&mut self) -> &mut HashMap<ModelKey, u64> {
+        self.u64_ledgers.entry(U64Ledger::ControlStateUuid).or_default()
+    }
+
+    /// Per-object compression watermarks.
+    pub(super) fn context_compression_watermark(&self) -> &HashMap<ModelKey, u64> {
+        self.u64_ledger(U64Ledger::ContextCompressionWatermark)
+    }
+
+    /// The watermarks, for writing. Creates the domain's table on first use.
+    pub(super) fn context_compression_watermark_mut(&mut self) -> &mut HashMap<ModelKey, u64> {
+        self.u64_ledgers
+            .entry(U64Ledger::ContextCompressionWatermark)
+            .or_default()
+    }
+
+    /// One ledger, empty rather than absent, for the same reason `objects_of_kind` is.
+    fn u64_ledger(&self, ledger: U64Ledger) -> &HashMap<ModelKey, u64> {
+        self.u64_ledgers
+            .get(&ledger)
+            .unwrap_or_else(|| NO_U64_IN_THIS_LEDGER.get_or_init(HashMap::new))
+    }
+
     /// The control-state rollup ladder. Empty when `Config::control_rollup_enabled()` is off,
     /// which is the default.
     pub(super) fn control_state_rollups(&self) -> &HashMap<String, super::control_rollup::RollupEntry> {
@@ -8190,7 +8285,11 @@ impl ShardState {
         // Keyed by the EVENT object key, so it is another holder of a key the event pair
         // already holds. Found only by grepping from the crate root: the write is a
         // multi-line `insert` in `engine.rs`, which a search rooted at `engine/` misses.
-        moved |= adopt_key_in(&mut self.context_compression_watermark, object_key, &canonical);
+        moved |= adopt_key_in(self.context_compression_watermark_mut(), object_key, &canonical);
+        // THE DEDUP LEDGER JOINS THE ADOPTION, which it could not while it was
+        // `String`-keyed: a `String` key is its own allocation by construction, so there
+        // was nothing for this pass to point at a shared handle.
+        moved |= adopt_key_in(self.control_state_uuid_mut(), object_key, &canonical);
         // NOT CONTEXT MAPS, AND THEY BELONG HERE ANYWAY. A raw key written as a string, a
         // feature series and a selection lands in all three of those maps -- measured, 64 of 64
         // keys in `why_there_are_many_per_key_maps_and_not_one` -- and only `strings` could

@@ -3355,7 +3355,7 @@ fn how_many_times_a_context_keys_characters_exist() {
         ("context_children", shard.context_children().keys().map(|k| &**k).collect()),
         ("context_summaries", shard.context_summaries().keys().map(|k| &**k).collect()),
         ("context_compressions", shard.context_compressions().keys().map(|k| &**k).collect()),
-        ("context_compression_watermark (Arc-keyed)", shard.context_compression_watermark.keys().map(|k| &**k).collect()),
+        ("context_compression_watermark (Arc-keyed)", shard.context_compression_watermark().keys().map(|k| &**k).collect()),
         ("context_nodes (Arc-keyed)", shard.context_nodes.keys().map(|k| &**k).collect()),
     ];
 
@@ -4238,7 +4238,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
         ),
         (
             "control_state_uuid",
-            shard.control_state_uuid.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+            shard.control_state_uuid().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
         (
             "control_state_rollups",
