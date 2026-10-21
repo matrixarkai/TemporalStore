@@ -7,7 +7,6 @@ use super::*;
 // FOR `points()` ON A SLOT: `super::*` re-exports the engine's items but not this trait,
 // and two summary readers here walk a migrated series. Anonymous, because only the method
 // is wanted.
-use crate::engine::timestamped_series::TimestampedSeries as _;
 
 // shared-corpus: dynamic_event_replication_mode_selection
 /// Is the per-object memory permanent, or does a storage cycle give some of it back?
@@ -1478,18 +1477,18 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
         ElementEntry::from_parts(9, 0, 1, None, None),
     );
     shard
-        .features
+        .features_mut()
         .entry("feature".into())
         .or_default()
-        .insert(
+        .set(
             10,
             ElementEntry::from_parts(10, 0, 1, None, None),
         );
     shard
-        .features
+        .features_mut()
         .entry("sequence".into())
         .or_default()
-        .insert(
+        .set(
             11,
             ElementEntry::from_parts(11, 0, 1, None, None),
         );
@@ -7558,7 +7557,7 @@ fn where_a_record_is_kept_everywhere() {
         ("seen", shard.seen.len()),
         ("buckets", shard.buckets.len()),
         ("expires_at_ms", shard.expires_at_ms.len()),
-        ("features", shard.features.len()),
+        ("features", shard.features().len()),
         ("feature_values", shard.feature_values.len()),
         ("feature_rollups", shard.feature_rollups.len()),
         ("control_state", shard.control_state.len()),

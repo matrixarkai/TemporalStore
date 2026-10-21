@@ -1042,7 +1042,7 @@ impl TemporalEngine {
             let _ = list_records;
             let zset_records = state.zsets.len();
             let _ = zset_records;
-            let feature_records = state.features.len();
+            let feature_records = state.features().len();
             // ZERO BY CONSTRUCTION, AND THAT IS WHAT IT ALWAYS MEASURED. This read the length
             // of `ShardState::sequences`, a map no production path ever wrote: Sequence rows
             // live in `features` and are counted by `feature_records` above. The map is gone;

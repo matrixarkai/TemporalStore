@@ -88,6 +88,24 @@ fn one_series_rows_as_json() -> serde_json::Value {
 /// Lifted out of a throwaway `ShardState`'s `features` map: `features` and the retired
 /// `sequences` map had IDENTICAL types, so this is byte-for-byte what a pre-fold binary wrote
 /// under the other name. It cannot be built by setting the field -- this binary has not got one.
+/// The value to file under one field, which can no longer be the same for both arms.
+///
+/// The refusal arm needs the LEGACY SERIES shape, because that is what a stored `sequences` map
+/// held. The control arm needs a payload its own field's type accepts -- and after the feature
+/// series moved into `objects` there is no surviving top-level map that takes an element-entry
+/// row, so the two arms cannot share one payload any more. What the pair isolates is the STAMP,
+/// which both arms still vary alone, so the control is intact; it is the payload that stopped
+/// being shareable, and this function is where that is visible rather than implied.
+fn payload_for(field: &str) -> serde_json::Value {
+    if field == "sequences" {
+        one_legacy_series_as_json()
+    } else {
+        // `control_state` rows are `i64`. Any live field would do for the control's purpose; this
+        // one is a plain map whose shape needs no helper.
+        serde_json::json!({ SERIES_KEY: { "1700000000000": 1i64 } })
+    }
+}
+
 fn one_legacy_series_as_json() -> serde_json::Value {
     // Built on `one_series_rows_as_json` so the two shapes this module uses -- the whole MAP for
     // a serialized index field, and the ROWS alone for a key-state blob -- cannot drift apart.
@@ -97,7 +115,9 @@ fn one_legacy_series_as_json() -> serde_json::Value {
 /// A whole index image at `stamp`, carrying the series under `field`.
 ///
 /// `field` is the variable the paired arms differ in: `"sequences"` is the retired name this
-/// binary no longer has, `"features"` the live one it does. Everything else is identical, which
+/// binary no longer has, `"control_state"` a live one it does. The STAMP is what each arm
+/// varies alone -- the payloads differ now, because no live top-level map takes the legacy
+/// series shape since the feature series moved into `objects`; see `payload_for`. Which
 /// is what makes the pair an attribution control rather than two unrelated fixtures.
 fn index_image_carrying(field: &str, stamp: u32) -> Vec<u8> {
     let mut state = ShardState::default();
@@ -106,7 +126,7 @@ fn index_image_carrying(field: &str, stamp: u32) -> Vec<u8> {
     let object = value
         .as_object_mut()
         .expect("a serialized ShardState is a JSON object");
-    let previous = object.insert(field.to_string(), one_legacy_series_as_json());
+    let previous = object.insert(field.to_string(), payload_for(field));
     if field == "sequences" {
         // THE INSERT'S RETURN IS A GUARD: `None` means this binary really has no `sequences`
         // field, so the image is the legacy-only shape these arms are about. A `Some` would mean
@@ -159,7 +179,7 @@ fn door_one_the_base_index_refuses_a_stale_stamp_carrying_the_retired_map() {
     );
     assert_eq!(stale, decoded.index_format_version);
     assert!(
-        decoded.features.is_empty(),
+        decoded.features().is_empty(),
         "the decode folded the retired map into `features` by itself, so this fixture cannot tell \
          a refusal from a fold"
     );
@@ -188,7 +208,7 @@ fn door_one_the_base_index_refuses_a_stale_stamp_carrying_the_retired_map() {
 /// The control: the same image at the current stamp reaches the load path and is accepted.
 #[test]
 fn door_one_control_the_same_image_at_the_current_stamp_is_accepted() {
-    let image = index_image_carrying("features", SHARD_INDEX_FORMAT_VERSION);
+    let image = index_image_carrying("control_state", SHARD_INDEX_FORMAT_VERSION);
     let dir = tempfile::tempdir().expect("tempdir");
     let (engine, index_dir) = engine_over_dirs(dir.path(), "indexes");
     std::fs::write(index_dir.join(format!("shard-{SHARD}.index.json")), &image).expect("plant");
@@ -198,8 +218,11 @@ fn door_one_control_the_same_image_at_the_current_stamp_is_accepted() {
         .expect("a current-stamped image must be ACCEPTED, or the refusal arm beside this one is \
                  about a fixture the loader never opens");
     assert!(
-        state.features.contains_key(SERIES_KEY),
-        "the accepted image did not carry the series, so this control is about nothing"
+        // The planted field, not `features()`: what this arm proves is that an image at the
+        // current stamp is accepted AND keeps the rows it carried. Which live field carries them
+        // is incidental -- see `payload_for` for why it can no longer be a series-shaped one.
+        state.control_state.contains_key(SERIES_KEY),
+        "the accepted image did not carry the planted rows, so this control is about nothing"
     );
 }
 
@@ -233,7 +256,7 @@ fn a_manifest_carrying(
     restored.index_format_version = stamp;
     let mut value = serde_json::to_value(&restored).expect("the manifest index serializes");
     let object = value.as_object_mut().expect("a JSON object");
-    let previous = object.insert(field.to_string(), one_legacy_series_as_json());
+    let previous = object.insert(field.to_string(), payload_for(field));
     if field == "sequences" {
         assert!(previous.is_none(), "this binary still has a `sequences` field");
     } else {
@@ -294,7 +317,7 @@ fn door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map() {
 /// The control: the same manifest at the current stamp installs and its series survives.
 #[test]
 fn door_two_control_the_same_manifest_at_the_current_stamp_installs() {
-    let (dir, manifest) = a_manifest_carrying("features", SHARD_INDEX_FORMAT_VERSION);
+    let (dir, manifest) = a_manifest_carrying("control_state", SHARD_INDEX_FORMAT_VERSION);
     let (target, _index_dir) = engine_over_dirs(dir.path(), "restore-indexes");
     target
         .install_bucket_dump_manifest(&manifest)
@@ -306,10 +329,10 @@ fn door_two_control_the_same_manifest_at_the_current_stamp_installs() {
         shards
             .get(&SHARD)
             .expect("the shard is loaded")
-            .features
+            .control_state
             .contains_key(SERIES_KEY)
     };
-    println!("\n=== DOOR 2 control, stamp {SHARD_INDEX_FORMAT_VERSION} ===\n  series present after install+load: {present}");
+    println!("\n=== DOOR 2 control, stamp {SHARD_INDEX_FORMAT_VERSION} ===\n  planted rows present after install+load: {present}");
     assert!(
         present,
         "the current-stamped manifest installed and its series did not survive, so door 2's \
@@ -339,12 +362,12 @@ fn door_three_the_index_log_fold_cannot_deliver_the_retired_map() {
     // ARM: the retired name, with prior state under the SAME key so the clearing behaviour is
     // observable rather than inferred.
     let mut shard = ShardState::default();
-    shard.features.insert(
+    shard.features_mut().insert(
         SERIES_KEY.into(),
         BTreeMap::from([(1u64, ElementEntry::from_parts(1, 0, 8, Some(0), Some(0)))]).into(),
     );
     assert!(
-        shard.features.contains_key(SERIES_KEY),
+        shard.features().contains_key(SERIES_KEY),
         "DENOMINATOR: the prior state was not seeded"
     );
     crate::engine::apply_key_states(
@@ -352,11 +375,11 @@ fn door_three_the_index_log_fold_cannot_deliver_the_retired_map() {
         &[serde_json::json!({ "key": SERIES_KEY, "sequences": one_series_rows_as_json() })],
     );
     let retired_rows_arrived = shard
-        .features
+        .features()
         .get(SERIES_KEY)
-        .map(|rows| rows.contains_key(&ROW_TIMESTAMP_MS))
+        .map(|rows| rows.get(ROW_TIMESTAMP_MS).is_some())
         .unwrap_or(false);
-    let prior_state_cleared = !shard.features.contains_key(SERIES_KEY);
+    let prior_state_cleared = !shard.features().contains_key(SERIES_KEY);
 
     // CONTROL: the live name, same blob shape, same call, same value.
     let mut control = ShardState::default();
@@ -365,9 +388,9 @@ fn door_three_the_index_log_fold_cannot_deliver_the_retired_map() {
         &[serde_json::json!({ "key": SERIES_KEY, "features": one_series_rows_as_json() })],
     );
     let live_rows_arrived = control
-        .features
+        .features()
         .get(SERIES_KEY)
-        .map(|rows| rows.contains_key(&ROW_TIMESTAMP_MS))
+        .map(|rows| rows.get(ROW_TIMESTAMP_MS).is_some())
         .unwrap_or(false);
 
     println!(

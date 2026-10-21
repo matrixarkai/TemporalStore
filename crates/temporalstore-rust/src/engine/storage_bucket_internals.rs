@@ -2812,7 +2812,7 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.sets.is_empty()
         || !shard.lists.is_empty()
         || !shard.zsets.is_empty()
-        || !shard.features.is_empty()
+        || !shard.features().is_empty()
         || !shard.control_state_blocks().is_empty()
         || !shard.context_nodes.is_empty()
         || !shard.context_events().is_empty()
@@ -3788,7 +3788,7 @@ fn visit_model_live_blocks(
                 }
             }
         }
-        visit_timestamped_series(&shard.features, ModelKind::Feature, &accept, &mut emit);
+        visit_timestamped_series(&shard.features(), ModelKind::Feature, &accept, &mut emit);
         for (key, record) in shard.control_state_blocks() {
             let address = record.address();
             if accept(key, &address) {
@@ -7102,8 +7102,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     let mut sets = HashMap::<super::state::ModelKey, BTreeMap<Vec<u8>, ElementEntry>>::new();
     let mut lists = HashMap::<super::state::ModelKey, BTreeMap<i64, ElementEntry>>::new();
     let mut zsets = HashMap::<super::state::ModelKey, BTreeMap<Vec<u8>, (u64, ElementEntry)>>::new();
+    // SLOTS NOW, as the four context kinds' accumulators already are: the reconcile
+    // takes one type parameter for both sides and the target is the consolidated map's
+    // inner table.
     let mut features =
-        HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
+        HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     let mut control_state = HashMap::<super::state::ModelKey, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
     let mut context_events =
@@ -7474,7 +7477,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // can check -- and leaving it would have read as coverage of a decode that no longer happens.
     // The reason the decode no longer happens is written at the combined container arm above.
     if saw_features {
-        reconcile_timestamped_series_membership_in_place(&mut shard.features, features);
+        reconcile_timestamped_series_membership_in_place(shard.features_mut(), features);
         // The feature numeric view + rollup are derived from the feature series; drop them so
         // they rebuild lazily from the series reconcile just materialized.
         super::control_rollup::feature_clear_all(shard);
@@ -9106,7 +9109,7 @@ mod model_kind_registry_guards {
             .sets
             .insert_elements_for_test("t", BTreeMap::from([(vec![2u8], at.clone())]));
         shard
-            .features
+            .features_mut()
             .insert("f".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard.insert_control_state_block("c".into(), {
             // Through `set_address`, like production. Building a record by hand here would make

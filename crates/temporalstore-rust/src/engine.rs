@@ -151,6 +151,10 @@ use crate::types::{
 use crate::wal::{LocalWriteAheadLogStore, WriteAheadLogRecord};
 use context::{context_index_ref_identity, validate_context_index_lookup};
 use matrixcache::{CacheEntryInfo, CacheGcReport, CacheKey, MultiLayerCache};
+// FOR THE SLOT'S SERIES SURFACE: `ObjectSlot` implements these, and the names it keeps
+// (`len`, `get`, `is_empty`) already matched the call sites -- only the trait was out of
+// scope here. Anonymous, because only the methods are wanted.
+use crate::engine::timestamped_series::TimestampedSeries as _;
 
 #[derive(Debug, Clone)]
 pub struct TemporalEngine {
@@ -2662,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 18;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 19;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3410,9 +3414,9 @@ fn collect_upsert_index_items(
                 .ok()
                 .and_then(|at| {
                     shard
-                        .features
+                        .features()
                         .get(object_key.as_str())
-                        .and_then(|series| series.get(&at))
+                        .and_then(|series| series.get(at))
                         .cloned()
                 }),
             // `zset_component` is `hex::encode(member)` -- the score no longer rides this string
@@ -3652,7 +3656,7 @@ fn collect_command_index_items_for(
 /// Counting, not capturing: twelve `len()` calls and no allocation, against serializing every
 /// entry those maps hold for the key. Used to decide whether the capture below is needed at all.
 fn key_membership_size(shard: &ShardState, key: &str) -> usize {
-    shard.features.get(key).map_or(0, |v| v.len())
+    shard.features().get(key).map_or(0, |v| v.len())
         + usize::from(shard.expires_at_ms.contains_key(key))
         + shard.control_state_changes.get(key).map_or(0, |v| v.len())
         + usize::from(shard.control_state_selection.contains_key(key))
@@ -3911,7 +3915,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
         put(
             "features",
             shard
-                .features
+                .features()
                 .get(&key[..])
                 .and_then(|v| serde_json::to_value(v.to_btree()).ok()),
         );
@@ -4021,7 +4025,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // types, exactly as the event map does: the blob carries the B-tree shape and the map
         // holds the array.
         apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            &mut shard.features,
+            shard.features_mut(),
             key,
             blob.get("features"),
         );
@@ -5584,7 +5588,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.strings.remove(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
     removed |= shard.seen.remove(key).is_some();
-    if shard.features.remove(key).is_some() {
+    if shard.features_mut().remove(key).is_some() {
         removed = true;
         control_rollup::feature_forget(shard, key);
     }
@@ -6212,11 +6216,11 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
             members.values().map(|(_, address)| address.block_slab_id()),
         );
     }
-    for series in shard.features.values() {
+    for series in shard.features().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            series.addresses().map(|address| address.block_slab_id()),
         );
     }
     absorb_live_block_slab_ids(
@@ -6562,7 +6566,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.zsets.contains_key(key)
         || shard.buckets.contains_key(key)
         || shard.seen.contains_key(key)
-        || shard.features.contains_key(key)
+        || shard.features().contains_key(key)
         || shard.control_state.contains_key(key)
         || shard.control_state_blocks().contains_key(key)
         || shard.control_state_changes.contains_key(key)
@@ -7459,7 +7463,7 @@ fn object_manager_stats(
             + shard.sets.len()
             + shard.lists.len()
             + shard.zsets.len()
-            + shard.features.len()
+            + shard.features().len()
             + shard.control_state.len()
             + shard.control_state_changes.len()
             + shard.context_nodes.len()
@@ -7477,7 +7481,7 @@ fn object_manager_stats(
             + shard.sets.values().map(BTreeMap::len).sum::<usize>()
             + shard.lists.values().map(BTreeMap::len).sum::<usize>()
             + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
-            + shard.features.values().map(|series| series.len()).sum::<usize>()
+            + shard.features().values().map(|series| series.len()).sum::<usize>()
             + shard.context_nodes.len()
             + shard
                 .context_events()
@@ -7600,7 +7604,7 @@ fn object_manager_stats(
         + shard.sets.len()
         + shard.lists.len()
         + shard.zsets.len()
-        + shard.features.len()
+        + shard.features().len()
         + shard.control_state.len()
         + shard.context_nodes.len()
         + shard.context_events().len()
@@ -7615,7 +7619,7 @@ fn object_manager_stats(
         + shard.sets.values().map(BTreeMap::len).sum::<usize>()
         + shard.lists.values().map(BTreeMap::len).sum::<usize>()
         + shard.zsets.values().map(BTreeMap::len).sum::<usize>()
-        + shard.features.values().map(|series| series.len()).sum::<usize>()
+        + shard.features().values().map(|series| series.len()).sum::<usize>()
         + shard.context_nodes.len()
         + shard
             .context_events()

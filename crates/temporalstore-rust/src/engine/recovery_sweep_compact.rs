@@ -1642,7 +1642,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 &mut rewrite_stats,
             )?;
         }
-        for (key, series) in shard.features.iter_mut() {
+        for (key, series) in shard.features_mut().iter_mut() {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,

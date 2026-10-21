@@ -1670,9 +1670,9 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 
     // THE CONTROL, at the value it was given, through the path this change does not touch.
     let control = shard
-        .features
+        .features()
         .get("folded")
-        .and_then(|series| series.get(&7u64))
+        .and_then(|series| series.get(7u64))
         .cloned();
     assert!(
         control.is_some(),
@@ -1871,15 +1871,15 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
         .expires_at_ms
         .insert(std::sync::Arc::from("carry-ttl"), 1_800_000_000_000u64);
     shard
-        .features
+        .features_mut()
         .entry("carry-ttl".into())
         .or_default()
-        .insert(11u64, address.clone());
+        .set(11u64, address.clone());
 
     // THE DENOMINATOR: both must actually be there, or "unchanged" below is comparing absences.
     assert!(
         shard.expires_at_ms.contains_key("carry-ttl")
-            && shard.features.get("carry-ttl").is_some_and(|s| !s.is_empty()),
+            && shard.features().get("carry-ttl").is_some_and(|s| !s.is_empty()),
         "the fixture did not establish a deadline and a series, so neither arm below means anything"
     );
 
@@ -1892,7 +1892,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     super::fold_carried_container_elements(shard, &carry);
 
     let deadline_after_carry = shard.expires_at_ms.get("carry-ttl").copied();
-    let series_after_carry = shard.features.get("carry-ttl").map(|s| s.len()).unwrap_or(0);
+    let series_after_carry = shard.features().get("carry-ttl").map(|s| s.len()).unwrap_or(0);
     println!(
         "[carry-ttl] after a container-only carry: deadline={deadline_after_carry:?} \
          series_len={series_after_carry}"
@@ -1921,7 +1921,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     let capture = vec![serde_json::json!({ "key": "carry-ttl" })];
     super::apply_key_states(shard, &capture);
     let deadline_after_capture = shard.expires_at_ms.get("carry-ttl").copied();
-    let series_after_capture = shard.features.get("carry-ttl").map(|s| s.len()).unwrap_or(0);
+    let series_after_capture = shard.features().get("carry-ttl").map(|s| s.len()).unwrap_or(0);
     println!(
         "[carry-ttl] after a genuine capture that omits them: deadline={deadline_after_capture:?} \
          series_len={series_after_capture}"

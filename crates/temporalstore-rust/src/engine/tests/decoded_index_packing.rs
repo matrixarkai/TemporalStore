@@ -123,7 +123,7 @@ fn encoded_index(
     packing_seed(&engine, strings_n, series_keys, series_points);
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&SHARD).expect("shard is loaded");
-    let points: usize = shard.features.values().map(|series| series.len()).sum();
+    let points: usize = shard.features().values().map(|series| series.len()).sum();
     let list_entries: usize = shard.lists.values().map(|list| list.len()).sum();
     let container = crate::engine::encode_index_bytes(shard);
     let plain = crate::engine::encode_index_bytes_as_plain_json(shard);
@@ -184,8 +184,8 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
     let shard = shards.get(&SHARD).expect("shard is loaded");
 
     // DENOMINATORS, before any comparison: an empty map compares equal to an empty map.
-    assert_eq!(3, shard.features.len(), "denominator: three series seeded");
-    let points: usize = shard.features.values().map(|series| series.len()).sum();
+    assert_eq!(3, shard.features().len(), "denominator: three series seeded");
+    let points: usize = shard.features().values().map(|series| series.len()).sum();
     assert_eq!(1_200, points, "denominator: 400 points in each of three series");
     let list_entries: usize = shard.lists.values().map(|list| list.len()).sum();
     assert_eq!(64, list_entries, "denominator: 64 list entries seeded");
@@ -204,7 +204,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
         let decoded = crate::engine::decode_index_bytes(&bytes)
             .unwrap_or_else(|error| panic!("{label} index must decode: {error}"));
         assert_eq!(
-            shard.features, decoded.features,
+            shard.features(), decoded.features(),
             "{label}: the feature series must come back entry for entry"
         );
         assert_eq!(
@@ -271,18 +271,21 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
         // And the ORDER, not only the contents: a repack that sorted differently would still
         // compare equal as a map while handing every range read a different answer.
         let encoded_order: Vec<u64> = shard
-            .features
+            .features()
             .get("f0")
             .expect("the first series is seeded")
-            .keys()
-            .copied()
+            // `points()` rather than a key view: the trait has none, and the ORDER this test
+            // asserts is exactly what `points()` promises, so it is the correct method here and
+            // not merely the available one.
+            .points()
+            .map(|(at, _)| at)
             .collect();
         let decoded_order: Vec<u64> = decoded
-            .features
+            .features()
             .get("f0")
             .expect("the first series decodes")
-            .keys()
-            .copied()
+            .points()
+            .map(|(at, _)| at)
             .collect();
         assert_eq!(
             encoded_order, decoded_order,
@@ -315,15 +318,15 @@ fn what_a_decoded_series_costs_against_one_packed_in_one_go() {
 
         let decoded =
             crate::engine::decode_index_bytes(&container).expect("the container index decodes");
-        let decoded_points: usize = decoded.features.values().map(|s| s.len()).sum();
+        let decoded_points: usize = decoded.features().values().map(|s| s.len()).sum();
         assert_eq!(
             seeded_points, decoded_points,
             "denominator: the decode must put every point back, or the ratio below divides by the \
              wrong number"
         );
 
-        let decoded_bytes = deep_heap_bytes(&decoded.features);
-        let control = packed_like(&decoded.features);
+        let decoded_bytes = deep_heap_bytes(&decoded.features());
+        let control = packed_like(&decoded.features());
         let control_points: usize = control.values().map(|s| s.len()).sum();
         assert_eq!(
             decoded_points, control_points,
@@ -384,7 +387,7 @@ fn what_a_cold_load_spends_decoding_an_index_at_three_corpus_sizes() {
         let decoded =
             crate::engine::decode_index_bytes(&container).expect("the container index decodes");
         let counts = probe.stop();
-        let decoded_points: usize = decoded.features.values().map(|s| s.len()).sum();
+        let decoded_points: usize = decoded.features().values().map(|s| s.len()).sum();
         assert_eq!(
             seeded_points, decoded_points,
             "denominator: the decode must put every point back"
@@ -406,7 +409,7 @@ fn what_a_cold_load_spends_decoding_an_index_at_three_corpus_sizes() {
         let decoded =
             crate::engine::decode_index_bytes(&container).expect("the container index decodes");
         let largest = decoded
-            .features
+            .features()
             .values()
             .map(|series| series.len())
             .max()

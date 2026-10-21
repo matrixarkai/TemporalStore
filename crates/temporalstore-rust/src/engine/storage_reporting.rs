@@ -1010,7 +1010,7 @@ pub(super) fn timestamped_kv_series<'a>(
 ) -> Vec<(&'static str, &'a str, std::borrow::Cow<'a, BTreeMap<u64, ElementEntry>>)> {
     use std::borrow::Cow;
     let mut series = Vec::new();
-    for (key, timeline) in &shard.features {
+    for (key, timeline) in shard.features() {
         // MATERIALISED, because this report is written against the stored B-tree shape and the
         // map holds the array. One allocation per series on a reporting path, not a serving one.
         series.push(("feature", &key[..], Cow::Owned(timeline.to_btree())));

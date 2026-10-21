@@ -3,6 +3,10 @@
 
 //! Command inspection, admission control, and precondition validation helpers, split from engine.rs.
 use super::*;
+// FOR THE SLOT'S SERIES SURFACE: `ObjectSlot` implements these, and the names it keeps
+// (`len`, `get`, `is_empty`) already matched the call sites -- only the trait was out of
+// scope here. Anonymous, because only the methods are wanted.
+use crate::engine::timestamped_series::TimestampedSeries as _;
 
 /// The key a command READS (does not write), for LRU recency tracking. Covers the
 /// key-addressed read commands; the hash-addressed context queries are omitted (their
@@ -529,7 +533,7 @@ pub(super) fn validate_command_preconditions(
         }
         Command::FeatureAppend { key, points } => {
             let current = shard
-                .features
+                .features()
                 .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);
@@ -549,7 +553,7 @@ pub(super) fn validate_command_preconditions(
                 return Err(Status::error("invalid_argument", "Invalid write policy"));
             }
             let current = shard
-                .features
+                .features()
                 .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);
@@ -562,7 +566,7 @@ pub(super) fn validate_command_preconditions(
         }
         Command::FeatureReplace { key, points, .. } => {
             let current = shard
-                .features
+                .features()
                 .get(&key[..])
                 .map(|series| series.len())
                 .unwrap_or(0);

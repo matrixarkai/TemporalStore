@@ -80,7 +80,7 @@ pub(super) fn sequence_rows_in_range(
     let routing_bucket =
         crate::engine::hashing::block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     shard
-        .features
+        .features()
         .get(key)
         .map(|series| {
             series

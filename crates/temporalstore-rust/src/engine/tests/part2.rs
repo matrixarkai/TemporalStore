@@ -3812,11 +3812,11 @@ fn feature_append_packs_many_timestamp_values_into_one_block() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let series = shards
             .get(&1)
-            .and_then(|shard| shard.features.get("packed-feature"))
+            .and_then(|shard| shard.features().get("packed-feature"))
             .expect("feature series should exist");
         (
-            series.get(&10).expect("first point").clone(),
-            series.get(&20).expect("second point").clone(),
+            series.get(10).expect("first point").clone(),
+            series.get(20).expect("second point").clone(),
         )
     };
     assert_eq!(first_address, second_address);
@@ -4031,7 +4031,7 @@ fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let series = shards
             .get(&1)
-            .and_then(|shard| shard.features.get("chunked-feature"))
+            .and_then(|shard| shard.features().get("chunked-feature"))
             .expect("feature series should exist");
         unique_timestamped_kv_block_addresses(series)
     };
@@ -4090,7 +4090,7 @@ fn feature_append_keeps_oversized_single_timestamped_value_readable() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let series = shards
             .get(&1)
-            .and_then(|shard| shard.features.get("oversized-single-feature"))
+            .and_then(|shard| shard.features().get("oversized-single-feature"))
             .expect("feature series should exist");
         unique_timestamped_kv_block_addresses(series)
     };
@@ -4183,10 +4183,10 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_block() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let series = shards
             .get_mut(&1)
-            .and_then(|shard| shard.features.get_mut("layout-feature"))
+            .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
-        let address = series.get(&10).expect("packed page").clone();
-        series.insert(30, address);
+        let address = series.get(10).expect("packed page").clone();
+        series.set(30, address);
     }
 
     let report = engine.storage_recovery_report(1);
@@ -4232,9 +4232,11 @@ fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let series = shards
             .get_mut(&1)
-            .and_then(|shard| shard.features.get_mut("layout-feature"))
+            .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
-        series.remove(&20);
+        // `clear` is the trait's spelling, and it returns nothing where `remove` returned
+        // the removed value -- which this site discarded anyway.
+        series.clear(20);
     }
 
     let report = engine.storage_recovery_report(1);
@@ -4285,11 +4287,11 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
         let series = shard
-            .features
+            .features_mut()
             .entry("layout-feature".into())
             .or_default();
-        series.insert(10, address.clone());
-        series.insert(20, address);
+        series.set(10, address.clone());
+        series.set(20, address);
     }
 
     let report = engine.storage_recovery_report(1);
@@ -4336,10 +4338,10 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
         shard
-            .features
+            .features_mut()
             .entry("corrupt-feature".into())
             .or_default()
-            .insert(10, address);
+            .set(10, address);
     }
 
     let query = engine.execute(ExecuteRequest {
@@ -4399,10 +4401,10 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("loaded shard");
         shard
-            .features
+            .features_mut()
             .entry("versioned-feature".into())
             .or_default()
-            .insert(10, address);
+            .set(10, address);
     }
 
     let readiness = engine.storage_production_readiness_report(1);
@@ -4447,11 +4449,11 @@ fn feature_compaction_rewrites_shared_packed_block_once() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let series = shards
             .get(&1)
-            .and_then(|shard| shard.features.get("compact-packed-feature"))
+            .and_then(|shard| shard.features().get("compact-packed-feature"))
             .expect("feature series should exist");
         (
-            series.get(&10).expect("first point").clone(),
-            series.get(&20).expect("second point").clone(),
+            series.get(10).expect("first point").clone(),
+            series.get(20).expect("second point").clone(),
         )
     };
     assert_eq!(first_address, second_address);

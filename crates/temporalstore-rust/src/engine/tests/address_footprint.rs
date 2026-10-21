@@ -353,7 +353,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     for (name, addresses) in [
         (
             "features",
-            Box::new(shard.features.values().flat_map(|series| series.values()))
+            Box::new(shard.features().values().flat_map(|series| series.addresses()))
                 as Box<dyn Iterator<Item = &ElementEntry>>,
         ),
         ("context_indexes", Box::new(shard.context_indexes.values().flat_map(|s| s.values()))),
@@ -1180,7 +1180,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     }
     // Same flattening as the walk above, for the same reason.
     for addresses in [
-        Box::new(shard.features.values().flat_map(|s| s.values()))
+        Box::new(shard.features().values().flat_map(|s| s.addresses()))
             as Box<dyn Iterator<Item = &ElementEntry>>,
         Box::new(shard.context_indexes.values().flat_map(|s| s.values())),
         Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
@@ -1392,7 +1392,7 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
     // Erased to the LENGTHS, which is all this census observes, so the two representations can
     // ride in one literal: `features` holds the owned array and the context kinds hold B-trees.
     for lengths in [
-        Box::new(shard.features.values().map(|s| s.len())) as Box<dyn Iterator<Item = usize>>,
+        Box::new(shard.features().values().map(|s| s.len())) as Box<dyn Iterator<Item = usize>>,
         Box::new(shard.context_indexes.values().map(|s| s.len())),
         Box::new(shard.context_audits().values().map(|s| s.owned_element_count())),
         Box::new(shard.context_entities.values().map(|s| s.len())),
@@ -1793,7 +1793,7 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
         "context_summaries",
         "context_compressions",
     ];
-    one_container(&shard.features);
+    one_container(&shard.features());
     one_container(&shard.context_indexes);
     one_container(&shard.context_audits());
     one_container(shard.context_children());

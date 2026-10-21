@@ -124,7 +124,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         "strings",
         shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
-    record("features", shard.features.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("features", shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     record(
         "control_state_selection",
         shard.control_state_selection.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
@@ -465,7 +465,7 @@ fn distinct_addresses_per_raw_key(
         }
     };
     note(shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    note(shard.features.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.control_state.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());

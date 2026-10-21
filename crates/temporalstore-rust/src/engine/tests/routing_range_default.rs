@@ -1949,7 +1949,7 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
         let shard = shards.get(&1).expect("shard 1");
         let in_model_maps = shard.strings.len()
             + shard.hashes.values().map(|fields| fields.len()).sum::<usize>()
-            + shard.features.values().map(|series| series.len()).sum::<usize>()
+            + shard.features().values().map(|series| series.len()).sum::<usize>()
             + shard.context_nodes.len()
             + shard.control_state_blocks().len();
         let in_bucket_index = shard

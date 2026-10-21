@@ -832,7 +832,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
         "the series must hold exactly one page entry -- it holds {anonymous}"
     );
     assert!(
-        shard.features.contains_key("fold-f"),
+        shard.features().contains_key("fold-f"),
         "the series must hold a durable model-map entry, because that is what makes its nameless \
          page entry recoverable"
     );

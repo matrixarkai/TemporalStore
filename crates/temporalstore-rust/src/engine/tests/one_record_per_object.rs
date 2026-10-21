@@ -1467,7 +1467,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
             ("expiry_by_deadline", deep_heap_bytes(&shard.expiry_by_deadline)),
             ("strings", deep_heap_bytes(&shard.strings)),
             ("hashes", deep_heap_bytes(&shard.hashes)),
-            ("features", deep_heap_bytes(&shard.features)),
+            ("features", deep_heap_bytes(&shard.features())),
         ]
     };
 

@@ -183,7 +183,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     let mut series = BTreeMap::new();
     series.insert(1_000u64, address());
     shard
-        .features
+        .features_mut()
         .insert(key_for("feature", suffix).into(), series.clone().into());
     shard.insert_control_state_block(
         key_for("control_state", suffix).as_str().into(),
@@ -295,7 +295,7 @@ fn kind_map_holds(shard: &ShardState, kind: &str, suffix: &str) -> bool {
         "set" => shard.sets.contains_key(&key),
         "zset" => shard.zsets.contains_key(&key),
         "list" => shard.lists.contains_key(&key),
-        "feature" => shard.features.contains_key(&key[..]),
+        "feature" => shard.features().contains_key(&key[..]),
         "control_state" => shard.control_state_blocks().contains_key(key.as_str()),
         "context_node" => shard.context_nodes.contains_key(key.as_str()),
         "context_audit" => shard.context_audits().contains_key(&key[..]),
@@ -536,7 +536,7 @@ fn maps_naming(shard: &ShardState, key: &str) -> Vec<&'static str> {
     if shard.lists.contains_key(key) {
         found.push("lists");
     }
-    if shard.features.contains_key(key) {
+    if shard.features().contains_key(key) {
         found.push("features");
     }
     if shard.control_state_blocks().contains_key(key) {

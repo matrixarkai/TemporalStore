@@ -18643,11 +18643,11 @@ fn what_a_packed_block_looks_like_in_the_index() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard loaded");
-    let series = shard.features.get("packed:feature").expect("series present");
+    let series = shard.features().get("packed:feature").expect("series present");
 
     eprintln!("  timestamps in the series: {}", series.len());
     let mut distinct = std::collections::HashSet::new();
-    for (timestamp, address) in series.iter() {
+    for (timestamp, address) in series.points() {
         eprintln!(
             "    ts={timestamp} slab={} off={} len={} page_id={:?}",
             address.block_slab_id(),

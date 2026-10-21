@@ -143,7 +143,7 @@ fn live_pages(shard: &ShardState) -> usize {
 }
 
 fn rebuilt_points(shard: &ShardState, key: &str) -> usize {
-    shard.features.get(key).map(|s| s.len()).unwrap_or(0)
+    shard.features().get(key).map(|s| s.len()).unwrap_or(0)
 }
 
 /// rust-internal: drives the engine's own command surface
@@ -165,7 +165,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_pages_over_a_store_that_has_some
 
     // What a `skip_serializing` map always looks like on load: empty. So the rebuild below is the
     // only source of the series, which is what makes the fault arm in the next test a loss.
-    shard.features.clear();
+    shard.features_mut().clear();
 
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
@@ -212,7 +212,7 @@ fn a_torn_page_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
     // is the SAME fixture rather than a second one that might differ for another reason.
     crate::engine::storage_bucket_internals::reset_view_rebuild_page_failure_counts();
-    shard.features.clear();
+    shard.features_mut().clear();
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
         shard,
@@ -229,7 +229,7 @@ fn a_torn_page_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
         "DENOMINATOR: {torn} page files torn, so arm B read a healthy store and is arm A again"
     );
     crate::engine::storage_bucket_internals::reset_view_rebuild_page_failure_counts();
-    shard.features.clear();
+    shard.features_mut().clear();
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
         shard,
@@ -238,7 +238,7 @@ fn a_torn_page_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     let (torn_failures, torn_decode_failures) =
         crate::engine::storage_bucket_internals::view_rebuild_page_failure_counts();
     let torn_points = rebuilt_points(shard, "torn");
-    let key_present = shard.features.contains_key("torn");
+    let key_present = shard.features().contains_key("torn");
 
     println!("=== the same store, read cleanly and then torn ===");
     println!("  clean: {clean_points} of {POINTS} points, {clean_failures} unreadable");

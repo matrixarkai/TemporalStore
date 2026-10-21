@@ -142,7 +142,7 @@ pub(super) fn model_compaction_policy_reports(
             "list"
         } else if shard.zsets.contains_key(key) {
             "zset"
-        } else if shard.features.contains_key(key) {
+        } else if shard.features().contains_key(key) {
             "feature"
         } else if shard.control_state_blocks().contains_key(key) {
             "control_state"
@@ -507,7 +507,7 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "feature",
-        &shard.features,
+        &shard.features(),
         &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(

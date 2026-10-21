@@ -97,7 +97,7 @@ fn a_real_dump_manifest() -> DumpFixture {
             ROW_TIMESTAMP_MS,
             ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
         );
-        shard.features.insert(SERIES_KEY.into(), series.into());
+        shard.features_mut().insert(SERIES_KEY.into(), series.into());
     }
     let manifest = engine
         .create_bucket_dump_manifest(SHARD, Vec::new())
@@ -111,7 +111,7 @@ fn a_real_dump_manifest() -> DumpFixture {
     assert!(
         crate::engine::decode_index_bytes(&manifest.index_bytes)
             .expect("a manifest this binary wrote must decode")
-            .features
+            .features()
             .contains_key(SERIES_KEY),
         "the manifest's image does not carry the series, so the payload arms are about nothing"
     );
@@ -195,7 +195,7 @@ fn persisted_index_has_series(index_dir: &std::path::Path, shard: ShardId) -> bo
     let bytes = std::fs::read(path).expect("the install persisted a base index");
     crate::engine::decode_index_bytes(&bytes)
         .expect("the persisted base index decodes")
-        .features
+        .features()
         .contains_key(SERIES_KEY)
 }
 
@@ -227,7 +227,7 @@ fn engine_over_a_planted_base_index(stamp: u32) -> (tempfile::TempDir, TemporalE
         ROW_TIMESTAMP_MS,
         ElementEntry::from_parts(1, 4_096, 128, Some(3), Some(7)),
     );
-    state.features.insert(SERIES_KEY.into(), series.into());
+    state.features_mut().insert(SERIES_KEY.into(), series.into());
     let image = serde_json::to_vec(&state).expect("the image serializes");
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -280,7 +280,7 @@ fn the_base_index_door_accepts_the_same_image_at_the_current_stamp() {
         "the same image at the CURRENT stamp was refused, so arm 1 proves nothing about the stamp",
     );
     assert!(
-        state.features.contains_key(SERIES_KEY),
+        state.features().contains_key(SERIES_KEY),
         "the accepted image did not carry the series, so this control is about nothing"
     );
 }
@@ -396,7 +396,7 @@ fn the_same_manifest_at_the_current_stamp_installs_and_round_trips_its_series() 
         shards
             .get(&SHARD)
             .expect("the shard is loaded")
-            .features
+            .features()
             .contains_key(SERIES_KEY)
     };
     println!(

@@ -132,7 +132,7 @@ fn a_key_held_by_several_maps_is_one_allocation() {
         (
             "features",
             shard
-                .features
+                .features()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),

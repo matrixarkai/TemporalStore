@@ -2280,9 +2280,20 @@ pub(crate) fn execute_on_shard(
         }
         Command::FeatureAppend { key, points } => {
             remove_if_expired(shard, &key);
-            let series = shard.features.entry(std::sync::Arc::from(&key[..])).or_default();
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
+            // `ShardState` where `&mut shard.features` borrowed one field, so this read of
+            // `shard.bucket_index` can no longer sit inside the append call below -- the
+            // two borrows are no longer disjoint. Taken here, before the series is
+            // borrowed, which is also the order this block reads best in.
+            let next_block_index = crate::engine::state::next_block_index_for_object(
+                &shard.bucket_index,
+                routing_bucket,
+                "feature",
+                &key,
+            );
+            let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             let points = sorted_feature_points(points);
             let mut published: Vec<ElementEntry> = Vec::new();
             let mut replaced_any = false;
@@ -2299,14 +2310,17 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
-                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
+                next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
                     // A replaced timestamp supersedes a block, and a superseded block must be
                     // dropped rather than joined -- so record it and take the restating path.
-                    if series.insert(timestamp_ms, address.clone()).is_some() {
+                    // `set` returns nothing where `insert` returned the superseded value,
+                    // so the question has to be asked BEFORE the write rather than read off it.
+                    if series.get(timestamp_ms).is_some() {
                         replaced_any = true;
                     }
+                    series.set(timestamp_ms, address.clone());
                     published.push(address);
                     mutated = true;
                 }
@@ -2322,7 +2336,7 @@ pub(crate) fn execute_on_shard(
             mutated |= trimmed;
             if replaced_any || trimmed {
                 // Something was superseded or evicted: the live set has to be restated in full.
-                let live_addresses = series.values().cloned().collect::<Vec<_>>();
+                let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
                 sync_bucket_index_object_blocks(
                     shard,
                     shard_id,
@@ -2354,9 +2368,20 @@ pub(crate) fn execute_on_shard(
             policy,
         } => {
             remove_if_expired(shard, &key);
-            let series = shard.features.entry(std::sync::Arc::from(&key[..])).or_default();
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
+            // `ShardState` where `&mut shard.features` borrowed one field, so this read of
+            // `shard.bucket_index` can no longer sit inside the append call below -- the
+            // two borrows are no longer disjoint. Taken here, before the series is
+            // borrowed, which is also the order this block reads best in.
+            let next_block_index = crate::engine::state::next_block_index_for_object(
+                &shard.bucket_index,
+                routing_bucket,
+                "feature",
+                &key,
+            );
+            let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             let mut accepted_points = Vec::new();
             let mut accepted_timestamps = BTreeSet::new();
             // Process points in REQUEST order, NOT pre-collapsed by timestamp. feature ADD
@@ -2366,7 +2391,7 @@ pub(crate) fn execute_on_shard(
             // keep the LAST duplicate under InsertIfAbsent. accepted_points is sorted+collapsed
             // just before the append below (UPSERT/ReplaceExisting keep last-wins, matching).
             for point in points {
-                let exists = series.contains_key(&point.timestamp_ms)
+                let exists = series.get(point.timestamp_ms).is_some()
                     || accepted_timestamps.contains(&point.timestamp_ms);
                 let should_write = match policy {
                     FeatureWritePolicy::Upsert => true,
@@ -2390,10 +2415,10 @@ pub(crate) fn execute_on_shard(
                     routing_bucket,
                     async_storage,
                     true,
-                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
+                next_block_index,
             ) {
                     for (timestamp_ms, address) in addresses {
-                        series.insert(timestamp_ms, address);
+                        series.set(timestamp_ms, address);
                         mutated = true;
                     }
                 }
@@ -2406,7 +2431,7 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
             );
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
                 shard,
                 shard_id,
@@ -2442,7 +2467,7 @@ pub(crate) fn execute_on_shard(
                 CacheKey::feature_query(shard_id, &key, start_ms, end_ms, count),
                 || {
                     let points = shard
-                        .features
+                        .features()
                         .get(&key[..])
                         .map(|series| {
                             let mut page_cache = HashMap::new();
@@ -2498,7 +2523,7 @@ pub(crate) fn execute_on_shard(
             }
             let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
             let points = shard
-                .features
+                .features()
                 .get(&key[..])
                 .map(|series| {
                     let mut page_cache = HashMap::new();
@@ -2543,9 +2568,20 @@ pub(crate) fn execute_on_shard(
             points,
         } => {
             remove_if_expired(shard, &key);
-            let series = shard.features.entry(std::sync::Arc::from(&key[..])).or_default();
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
+            // `ShardState` where `&mut shard.features` borrowed one field, so this read of
+            // `shard.bucket_index` can no longer sit inside the append call below -- the
+            // two borrows are no longer disjoint. Taken here, before the series is
+            // borrowed, which is also the order this block reads best in.
+            let next_block_index = crate::engine::state::next_block_index_for_object(
+                &shard.bucket_index,
+                routing_bucket,
+                "feature",
+                &key,
+            );
+            let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             let replaced = series
                 .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                 .map(|(timestamp_ms, _)| timestamp_ms)
@@ -2569,10 +2605,10 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
-                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
+                next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
+                    series.set(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -2584,7 +2620,7 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
             );
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
                 shard,
                 shard_id,
@@ -2609,7 +2645,7 @@ pub(crate) fn execute_on_shard(
                 None,
                 true,
             );
-            mutated |= shard.features.remove(&key[..]).is_some();
+            mutated |= shard.features_mut().remove(&key[..]).is_some();
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
@@ -2642,7 +2678,7 @@ pub(crate) fn execute_on_shard(
                 // is parsed through the SAME aggregate_feature_values path, so the folded values
                 // are bit-identical to the raw scan; rebuild when the series length changed.
                 let feature_len = shard
-                    .features
+                    .features()
                     .get(&key[..])
                     .map(|series| series.len())
                     .unwrap_or(0);
@@ -2653,17 +2689,17 @@ pub(crate) fn execute_on_shard(
                     .unwrap_or(feature_len > 0);
                 if stale {
                     let decoded: BTreeMap<u64, i64> = shard
-                        .features
+                        .features()
                         .get(&key[..])
                         .map(|series| {
                             series
-                                .iter()
+                                .points()
                                 .filter_map(|(timestamp_ms, address)| {
                                     read_feature_point(
                                         cache,
                                         block_store,
                                         shard_id,
-                                        *timestamp_ms,
+                                        timestamp_ms,
                                         address,
                                         PageIdentity::of(shard_id, "feature", &key, None),
                                         Some(block_routing_bucket(
@@ -2674,7 +2710,7 @@ pub(crate) fn execute_on_shard(
                                     )
                                     .map(|point| {
                                         (
-                                            *timestamp_ms,
+                                            timestamp_ms,
                                             aggregate_feature_values(&[point.value], "sum"),
                                         )
                                     })
@@ -2690,7 +2726,7 @@ pub(crate) fn execute_on_shard(
                 }
             } else {
                 let values = shard
-                    .features
+                    .features()
                     .get(&key[..])
                     .map(|series| {
                         series
@@ -2722,9 +2758,20 @@ pub(crate) fn execute_on_shard(
         }
         Command::SequenceAdd { key, rows } => {
             remove_if_expired(shard, &key);
-            let series = shard.features.entry(std::sync::Arc::from(&key[..])).or_default();
             let routing_bucket =
                 block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
+            // HOISTED ABOVE THE SERIES BORROW. `features_mut()` borrows the whole
+            // `ShardState` where `&mut shard.features` borrowed one field, so this read of
+            // `shard.bucket_index` can no longer sit inside the append call below -- the
+            // two borrows are no longer disjoint. Taken here, before the series is
+            // borrowed, which is also the order this block reads best in.
+            let next_block_index = crate::engine::state::next_block_index_for_object(
+                &shard.bucket_index,
+                routing_bucket,
+                "feature",
+                &key,
+            );
+            let series = shard.features_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             let points = rows
                 .into_iter()
                 .filter_map(|row| {
@@ -2745,10 +2792,10 @@ pub(crate) fn execute_on_shard(
                 routing_bucket,
                 async_storage,
                 true,
-                crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "feature", &key),
+                next_block_index,
             ) {
                 for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
+                    series.set(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -2760,7 +2807,7 @@ pub(crate) fn execute_on_shard(
                 series,
                 feature_max_size,
             );
-            let live_addresses = series.values().cloned().collect::<Vec<_>>();
+            let live_addresses = series.addresses().cloned().collect::<Vec<_>>();
             sync_bucket_index_object_blocks(
                 shard,
                 shard_id,
@@ -2786,7 +2833,7 @@ pub(crate) fn execute_on_shard(
                 };
             }
             let rows = shard
-                .features
+                .features()
                 .get(&key[..])
                 .map(|series| {
                     series

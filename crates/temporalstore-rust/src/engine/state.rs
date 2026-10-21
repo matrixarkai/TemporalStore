@@ -355,9 +355,9 @@ pub(super) struct ShardState {
     /// `what_the_feature_series_would_cost_as_an_owned_array` is that measurement and asserts the
     /// array stays the smaller of the two.
     ///
-    /// The stored image does not move: see [`super::timestamped_series::as_btree_maps`].
-    #[serde(with = "super::timestamped_series::as_btree_maps")]
-    pub(super) features: HashMap<ModelKey, OwnedTimestampedSeries>,
+    /// The stored image DID move, finally: these series are in `objects` under
+    /// `StoredModelKind::Feature` now, behind `features()` and `features_mut()`. The measurement
+    /// above still holds and is why the array came first -- it was the groundwork for this.
     /// THE KEY IS A SHARED HANDLE, AND ONLY HALF OF THEM CAN ACTUALLY SHARE.
     ///
     /// This map holds two kinds of key. The counter commands file the RAW object key, which
@@ -7578,7 +7578,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         seen,
         zsets,
         lists,
-        features,
         control_state,
         control_state_changes,
         context_event_timeline,
@@ -7596,7 +7595,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         strings,
         hashes,
         buckets: _,
-        objects: _,
+        objects,
         object_page_layouts: _,
         // Not a B-tree at all: the owned sorted array map is `serde(skip)` and is filled by
         // `fold_legacy_context_events`. An array has no half-empty-leaf shape for this pass to
@@ -7651,7 +7650,18 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         strings,
         &bucket_index.object_block_lookup,
     ) + adopt_canonical_key_allocations_in_hashed(
-        features,
+        // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
+        // inner table rather than through a field. Dropping this term instead would have cost
+        // feature keys their canonical handle with NOTHING failing: the keys compare equal and
+        // only the sharing is lost.
+        //
+        // IT COVERS THE FEATURE KIND ONLY, deliberately. `strings`, `features` and
+        // `control_state` are the three maps this pass has ever covered; the four context kinds
+        // that moved into `objects` before this were never in it, and adopting every kind here
+        // would be a behaviour change nothing has measured.
+        objects
+            .entry(super::storage_bucket_internals::StoredModelKind::Feature)
+            .or_default(),
         &bucket_index.object_block_lookup,
     ) + adopt_canonical_key_allocations_in_hashed(
         control_state,
@@ -7669,9 +7679,10 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     sets.repack_decoded();
     zsets.repack_decoded();
     lists.repack_decoded();
-    // `features` is an owned sorted array now, built by `collect` at decode, so there is no
-    // half-empty B-tree node to repack and nothing here to do for it.
-    let _ = &features;
+    // `features` has no field here any more -- its series are in `objects`, and the adoption
+    // above is the one thing this pass owed them. `objects` itself holds owned sorted arrays
+    // built by `collect` at decode, so there is no half-empty B-tree node for this pass to
+    // repack either.
     repack_nested(control_state);
     repack_nested(context_event_timeline);
     // `context_indexes` is an owned sorted array now, built by `collect` at decode exactly as
@@ -7737,6 +7748,24 @@ impl ShardState {
     /// The value is an `ObjectSlot` rather than an `OwnedTimestampedSeries`, and both implement
     /// `TimestampedSeries` -- so every site reaching this map through a helper generic over
     /// `S: TimestampedSeries` is untouched by the move.
+    /// The feature series.
+    ///
+    /// THE LARGEST OF THE EIGHT, AND THE ONLY ONE IN THE DECODE'S KEY-ADOPTION PASS. See
+    /// `repack_decoded_index`, where `objects` had to stop being `_` so this kind's table could be
+    /// adopted in the field's place.
+    pub(super) fn features(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::Feature)
+    }
+
+    /// The feature series, for writing. Creates the kind's inner table on first use.
+    pub(super) fn features_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::Feature)
+            .or_default()
+    }
+
     pub(super) fn context_audits(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextAudit)
     }
@@ -8089,7 +8118,7 @@ impl ShardState {
         // THREE allocations before these two joined -- each was holding its own copy.
         moved |= adopt_key_in(&mut self.seen, object_key, &canonical);
         moved |= adopt_key_in(&mut self.buckets, object_key, &canonical);
-        moved |= adopt_key_in(&mut self.features, object_key, &canonical);
+        moved |= adopt_key_in(self.features_mut(), object_key, &canonical);
         moved |= adopt_key_in(&mut self.control_state_selection, object_key, &canonical);
         // `control_state_changes` TOO. Seven holders of one raw key text reported TWO
         // allocations before this line, at 8 of 8 keys, with this map owning the second --
