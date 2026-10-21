@@ -8117,3 +8117,142 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
         "the stored index is no larger with the two kinds than without ({with_bytes} against          {without_bytes}), so they are not being persisted and the durability this change claims          does not exist"
     );
 }
+
+/// THE BREAK-EVEN FOR FIVE HOLDERS, WHICH IS THE SHAPE THE WORKLOAD ACTUALLY HAS.
+///
+/// `what_consolidating_three_holders_would_cost` prices a THREE-map fold and puts the crossover at
+/// 78% overlap. `why_there_are_many_per_key_maps_and_not_one` then shows the real distribution: of
+/// 128 distinct key texts, 64 are held by FIVE maps and 64 by ONE, so the overlap is 50% and the
+/// three-holder crossover does not decide it. Five holders save four key fields and four tables per
+/// shared key where three save two, so this crossover must be lower; how much lower is this arm.
+///
+/// The consolidated entry has to be the UNION of all five values, each optional, because a key held
+/// by one map has nothing for the other four. That is what makes the sparse arm expensive, and it
+/// is the cost a map-count target pays on a workload that is not fully overlapped.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_consolidating_five_holders_would_cost -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds five map shapes at 20,000 keys; run by name"]
+fn what_consolidating_five_holders_would_cost() {
+    use crate::engine::timestamped_series::OwnedTimestampedSeries;
+    const KEYS: usize = 20_000;
+
+    #[allow(dead_code)]
+    #[derive(Clone)]
+    struct Consolidated5 {
+        address: Option<ElementEntry>,
+        series: Option<OwnedTimestampedSeries>,
+        selection: Option<(u64, Vec<u8>, u8)>,
+        seen: Option<(u64, u64)>,
+        bucket: Option<(f64, u64)>,
+    }
+
+    let key = |i: usize| -> std::sync::Arc<str> { std::sync::Arc::from(format!("k{i:08}").as_str()) };
+    let address = |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 64, Some(0), Some(i as u64));
+    let series = |i: usize| {
+        let mut s = OwnedTimestampedSeries::default();
+        s.insert(i as u64, address(i));
+        s
+    };
+
+    let shared: Vec<std::sync::Arc<str>> = (0..KEYS).map(key).collect();
+
+    // ARM A: five maps, every key in all five. Keys SHARED, so this prices fields and tables only.
+    let mut m_strings: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    let mut m_series: HashMap<std::sync::Arc<str>, OwnedTimestampedSeries> = HashMap::new();
+    let mut m_selection: HashMap<std::sync::Arc<str>, (u64, Vec<u8>, u8)> = HashMap::new();
+    let mut m_seen: HashMap<std::sync::Arc<str>, (u64, u64)> = HashMap::new();
+    let mut m_buckets: HashMap<std::sync::Arc<str>, (f64, u64)> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_strings.insert(std::sync::Arc::clone(k), address(i));
+        m_series.insert(std::sync::Arc::clone(k), series(i));
+        m_selection.insert(std::sync::Arc::clone(k), (7, vec![b's'; 8], 1));
+        m_seen.insert(std::sync::Arc::clone(k), (i as u64, 0));
+        m_buckets.insert(std::sync::Arc::clone(k), (1.0, i as u64));
+    }
+    let five_maps = deep_heap_bytes(&m_strings)
+        + deep_heap_bytes(&m_series)
+        + deep_heap_bytes(&m_selection)
+        + deep_heap_bytes(&m_seen)
+        + deep_heap_bytes(&m_buckets);
+
+    // ARM B: one map, every value present.
+    let mut m_one: HashMap<std::sync::Arc<str>, Consolidated5> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        m_one.insert(
+            std::sync::Arc::clone(k),
+            Consolidated5 {
+                address: Some(address(i)),
+                series: Some(series(i)),
+                selection: Some((7, vec![b's'; 8], 1)),
+                seen: Some((i as u64, 0)),
+                bucket: Some((1.0, i as u64)),
+            },
+        );
+    }
+    let one_full = deep_heap_bytes(&m_one);
+
+    // ARM C: the losing arm -- every key in ONE map.
+    let mut c_strings: HashMap<std::sync::Arc<str>, ElementEntry> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        c_strings.insert(std::sync::Arc::clone(k), address(i));
+    }
+    let one_bare = deep_heap_bytes(&c_strings);
+
+    // ARM D: the same keys consolidated, four slots empty.
+    let mut d_one: HashMap<std::sync::Arc<str>, Consolidated5> = HashMap::new();
+    for (i, k) in shared.iter().enumerate() {
+        d_one.insert(
+            std::sync::Arc::clone(k),
+            Consolidated5 {
+                address: Some(address(i)),
+                series: None,
+                selection: None,
+                seen: None,
+                bucket: None,
+            },
+        );
+    }
+    let one_sparse = deep_heap_bytes(&d_one);
+
+    let win_per_key = (five_maps as f64 - one_full as f64) / KEYS as f64;
+    let loss_per_key = (one_sparse as f64 - one_bare as f64) / KEYS as f64;
+
+    println!();
+    println!("  {KEYS} keys, key allocations SHARED in every arm");
+    println!("    Consolidated5 is {} B wide", std::mem::size_of::<Consolidated5>());
+    println!();
+    println!("  FULL OVERLAP -- every key in all five:");
+    println!("    five maps     {five_maps:>10} B   {:>7.1} B/key", five_maps as f64 / KEYS as f64);
+    println!("    one map       {one_full:>10} B   {:>7.1} B/key", one_full as f64 / KEYS as f64);
+    println!("    consolidation saves {:>+7.1} B/key", win_per_key);
+    println!();
+    println!("  NO OVERLAP -- every key in one map only:");
+    println!("    one bare map  {one_bare:>10} B   {:>7.1} B/key", one_bare as f64 / KEYS as f64);
+    println!("    one map sparse {one_sparse:>9} B   {:>7.1} B/key", one_sparse as f64 / KEYS as f64);
+    println!("    consolidation costs {:>+7.1} B/key", loss_per_key);
+    println!();
+    if win_per_key + loss_per_key > 0.0 {
+        let crossover = loss_per_key / (win_per_key + loss_per_key);
+        println!("  BREAK-EVEN AT FIVE HOLDERS: pays above {:.1}% overlap", 100.0 * crossover);
+        println!("  MEASURED OVERLAP: 50.0% (64 of 128 key texts held by five maps)");
+        println!(
+            "  SO ON THIS FIXTURE, consolidating these five would {} resident footprint.",
+            if crossover < 0.5 { "REDUCE" } else { "INCREASE" }
+        );
+    } else {
+        println!("  one arm did not move; the crossover is undefined on these numbers");
+    }
+
+    // THE DIRECTION OF THE SPARSE ARM IS THE CLAIM. A union entry is at least as wide as its widest
+    // member, so a key holding one value pays for the four it does not have. If that stops being
+    // true the arithmetic above is void, not merely different.
+    assert!(
+        one_sparse > one_bare,
+        "the sparse consolidated arm is no larger than the bare map, so a union entry has stopped \
+         costing the absent members and this comparison needs re-deriving"
+    );
+}
