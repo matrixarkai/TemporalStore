@@ -6476,10 +6476,11 @@ fn refresh_all_bucket_runtime_flags(
     // unrelated third borrower.
     static EMPTY_EXPIRY: std::collections::BTreeMap<crate::engine::state::ModelKey, u64> =
         std::collections::BTreeMap::new();
-    let expiry = shard
-        .u64_ledgers
-        .get(&crate::engine::state::U64Ledger::Expiry)
-        .unwrap_or(&EMPTY_EXPIRY);
+    let expiry = crate::engine::state::u64s_ref(
+        &shard.side_tables,
+        crate::engine::state::SideTable::Expiry,
+    )
+    .unwrap_or(&EMPTY_EXPIRY);
     for bucket in index.bucket_map.values_mut() {
         refresh_one_bucket_runtime_flags(
             shard_id,
@@ -6517,10 +6518,11 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
         crate::engine::state::ModelKey,
         u64,
     > = std::collections::BTreeMap::new();
-    let expiry = shard
-        .u64_ledgers
-        .get(&crate::engine::state::U64Ledger::Expiry)
-        .unwrap_or(&EMPTY_EXPIRY_TARGETED);
+    let expiry = crate::engine::state::u64s_ref(
+        &shard.side_tables,
+        crate::engine::state::SideTable::Expiry,
+    )
+    .unwrap_or(&EMPTY_EXPIRY_TARGETED);
     if shard.buckets_pending_flag_refresh.is_empty() {
         return;
     }

@@ -562,7 +562,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 24,
+        current, 25,
         "costed against 24; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
@@ -721,8 +721,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 23 && current != 25,
-        "bracketed, so 24 is exact and not an artefact of the comparison above"
+        current != 24 && current != 26,
+        "bracketed, so 25 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

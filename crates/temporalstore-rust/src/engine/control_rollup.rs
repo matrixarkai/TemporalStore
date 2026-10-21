@@ -159,11 +159,12 @@ pub(crate) fn windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end
     // behind a door too since the counter maps merged, so the same disjointness argument has to
     // cover it -- `counter_series` and `rollups` are separate fields, and a door call on either
     // would borrow the whole shard and conflict with the other.
-    let series = shard
-        .counter_series
-        .get(&super::state::CounterSeries::ControlState)
-        .and_then(|table| table.get(key))
-        .unwrap_or(&empty_series);
+    let series = super::state::counters_ref(
+        &shard.side_tables,
+        super::state::SideTable::ControlStateCounters,
+    )
+    .and_then(|table| table.get(key))
+    .unwrap_or(&empty_series);
     let table = shard
         .rollups
         .entry(super::state::RollupDomain::ControlState)
@@ -176,11 +177,12 @@ pub(crate) fn windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end
 pub(crate) fn feature_windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let empty_series = BTreeMap::new();
     // Disjoint field borrows, as in `windowed_sum` above and for the same reason.
-    let series = shard
-        .counter_series
-        .get(&super::state::CounterSeries::Feature)
-        .and_then(|table| table.get(key))
-        .unwrap_or(&empty_series);
+    let series = super::state::counters_ref(
+        &shard.side_tables,
+        super::state::SideTable::FeatureCounters,
+    )
+    .and_then(|table| table.get(key))
+    .unwrap_or(&empty_series);
     let table = shard
         .rollups
         .entry(super::state::RollupDomain::Feature)

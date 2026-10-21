@@ -276,8 +276,19 @@ pub(super) struct ShardState {
     // is what refuses it, and a decode error would hide that, which is the defect
     // `an_ungated_store_is_refused_before_it_is_served` caught when `counter_series` shipped
     // without one.
-    #[serde(default)]
-    pub(super) address_maps: HashMap<AddressMap, HashMap<ModelKey, ElementEntry>>,
+    // ONE FIELD FOR EVERY DOMAIN-KEYED SIDE TABLE, keyed by `SideTable`, behind the same four
+    // doors as before. THE VARIANT WRAPS THE TABLE, NOT THE ENTRY, so no key pays a byte: the tag
+    // is paid once per domain, four times in total, and every inner map keeps its exact type.
+    // That is what makes this merge free where a union of the two VALUE types would have cost
+    // 16.4 B/key at best and 144.2 at worst -- see
+    // `index_bytes_per_key::what_merging_the_key_sharing_maps_would_cost_as_a_record`.
+    //
+    // `with`, not `default`: each stored spelling has exactly ONE table type, so the decode reads
+    // the key first and deserializes the value as that key's type. No variant tag reaches the
+    // wire, and the stored image is the same four spellings it always was -- under one object
+    // instead of split across two.
+    #[serde(default, with = "side_table_serde")]
+    pub(super) side_tables: HashMap<SideTable, SideTableData>,
     // DURABLE, AND THIS LINE SAID IT WAS NOT. It read "Rebuildable from the durable bucket/block
     // index on load; do not duplicate in checkpoints", which was true while this field was
     // `skip_serializing` and the element name on a page-index entry was the durable spelling of a
@@ -360,44 +371,10 @@ pub(super) struct ShardState {
     // explicitly instead of defaulting to it.
     #[serde(default)]
     pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
-    /// Feature series as an OWNED SORTED ARRAY, written in the B-tree shape it has always had.
-    ///
-    /// Measured: a `BTreeMap` of 1,000 points costs **49.1 B a point** where the payload is 24 --
-    /// `(u64, ElementEntry)` with a 16-byte entry -- and the array costs **24.0 B a point, exactly
-    /// the payload**. At a 40,040-key corpus that is this row going 49.1 -> 24.0 B/key, which is
-    /// 25.0 B/key off the resident index and the largest single row left in it.
-    /// `what_the_feature_series_would_cost_as_an_owned_array` is that measurement and asserts the
-    /// array stays the smaller of the two.
-    ///
-    /// The stored image DID move, finally: these series are in `objects` under
-    /// `StoredModelKind::Feature` now, behind `features()` and `features_mut()`. The measurement
-    /// above still holds and is why the array came first -- it was the groundwork for this.
-    /// THE KEY IS A SHARED HANDLE, AND ONLY HALF OF THEM CAN ACTUALLY SHARE.
-    ///
-    /// This map holds two kinds of key. The counter commands file the RAW object key, which
-    /// `strings`, `features` and `control_state_selection` may hold too -- measured at 8 of 8
-    /// keys in `which_string_keyed_holders_duplicate_a_key_another_map_holds`, where those three
-    /// agreed on one allocation and this map owned a second copy of the same characters. The
-    /// family operators file a DECORATED key (`control_state:<family>:<key>`) that no other map
-    /// holds, so that half has nothing to share with and converting it buys nothing.
-    ///
-    /// Both halves are `ModelKey` because one map cannot have two key types; the saving is per
-    /// RAW key, not per entry, and that probe asserts the split so the two denominators cannot
-    /// drift into each other unnoticed.
-    ///
-    /// The stored image does not move: `Arc<str>` serializes as the same string a `String` did.
-    // ONE FIELD FOR BOTH COUNTER SERIES NOW, keyed by `CounterSeries`, behind
-    // `control_state()` / `_mut()` and `feature_values()` / `_mut()`. Both are
-    // `ModelKey`-keyed: `feature_values` was `String`-keyed and so held a key other maps
-    // already held as its own allocation.
-    // `default`, WHICH `control_state` DID NOT NEED AND THIS DOES. That field carried no
-    // serde attribute, so it was REQUIRED -- and an index written before this merge has
-    // `control_state` and no `counter_series`, so without a default it fails to DECODE.
-    // The refusal for such an index has to come from the STAMP one layer up; a decode
-    // error would hide the stamp check rather than exercise it, which is what
-    // `an_ungated_store_is_refused_before_it_is_served` asserts.
-    #[serde(default)]
-    pub(super) counter_series: HashMap<CounterSeries, HashMap<ModelKey, BTreeMap<u64, i64>>>,
+    // THE COUNTER SERIES ARE DOMAINS OF `side_tables` NOW, behind `control_state()` /
+    // `_mut()` and `feature_values()` / `_mut()` exactly as before. Their stored spellings
+    // -- "control_state" and "feature_values" -- are unchanged; only the object they sit
+    // under is.
     /// Counter-series blocks, one per control-state object key.
     ///
     /// THE VALUE IS A RECORD RATHER THAN A BARE ADDRESS, and this is the first map to hold one.
@@ -510,21 +487,8 @@ pub(super) struct ShardState {
         HashMap<ModelKey, BTreeMap<u64, super::hll::DistinctBucket>>,
     #[serde(default, alias = "control_state_fol")]
     pub(super) control_state_selection: HashMap<ModelKey, ControlStateSelectionValue>,
-    // UUID idempotency ledger for control-state writes: uuid -> expiry_ms. Mirrors
-    // the control_state 300s dedup window so at-least-once queue replays do not
-    // double-count. Lazily garbage-collected on write; in-memory + serde-default so
-    // it is rebuilt via command replay and never blocks recovery.
-    #[serde(default)]
-    // ONE FIELD FOR BOTH u64 LEDGERS NOW, keyed by `U64Ledger`, behind
-    // `control_state_uuid()` / `_mut()` and `context_compression_watermark()` / `_mut()`.
-    // The key type is `ModelKey` for both: this map used to be `String`-keyed and so held a
-    // key other maps already held as their own allocation, which is exactly what
-    // `string_keyed_holders` reports.
-    // THE INNER CONTAINER IS A `BTreeMap` FOR EVERY DOMAIN, because `expires_at_ms` joined
-    // and three production sites ITERATE it -- the validator report and two sweeps -- so a
-    // `HashMap` would make those walks depend on a hash seed. The other two domains are
-    // environment-gated and empty as shipped, and an empty `BTreeMap` is narrower anyway.
-    pub(super) u64_ledgers: HashMap<U64Ledger, BTreeMap<ModelKey, u64>>,
+    // THE THREE u64 LEDGERS ARE DOMAINS OF `side_tables` NOW, behind the same six doors.
+    // Their stored spellings are unchanged; only the object they sit under is.
     // Derived, in-memory rollup ladder over `control_state` for O(levels) sum-family
     // window aggregates (frequency caps / long-window counts). Serde-skipped: rebuilt
     // lazily from the authoritative counter series and never blocks recovery. Gated by
@@ -7549,7 +7513,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         seen,
         zsets,
         lists,
-        counter_series,
+        side_tables,
         control_state_changes,
         context_event_timeline,
 
@@ -7561,7 +7525,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // `hashes` IS BOUND, AND NOT FOR PACKING -- there is still nothing in it to pack, for
         // the reason just given. It is bound because its FIELD NAMES come out of a decode as
         // freshly minted handles and have to be pointed at the pool; see the adoption below.
-        address_maps,
         hashes,
         buckets: _,
         objects,
@@ -7574,7 +7537,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // immediately after this function and DRAINS it, so packing it is a pass over data that is
         // about to be dropped. The only entry in this list whose absence makes a decode cheaper.
         control_state_selection: _,
-        u64_ledgers,
         context_dirty_index: _,
         bucket_recency: _,
         // Not deserialized: `#[serde(skip)]`, so a decode leaves it default-empty and there is
@@ -7607,7 +7569,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // domain rather than a field binding. Same argument as every other term in this function:
     // dropping it would cost the expiry keys their canonical handle with nothing failing.
     let _adopted = adopt_canonical_key_allocations(
-        u64_ledgers.entry(U64Ledger::Expiry).or_default(),
+        u64s_in(side_tables, SideTable::Expiry),
         &bucket_index.object_block_lookup,
     );
     // AND THE HASHED MAPS, which this pass used to leave with their decoded allocations. See
@@ -7618,7 +7580,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // THE STRING ADDRESSES ARE IN `address_maps` NOW, so this pass reaches them through
         // the domain's table. Same argument as the Feature kind's term and the control-state
         // one below: dropping it costs the keys their canonical handle with nothing failing.
-        address_maps.entry(AddressMap::Strings).or_default(),
+        addresses_in(side_tables, SideTable::Strings),
         &bucket_index.object_block_lookup,
     ) + adopt_canonical_key_allocations_in_hashed(
         // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
@@ -7640,9 +7602,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // have cost every control-state key its canonical handle with NOTHING failing: the
         // keys compare equal and only the sharing is lost, which is the same silent
         // regression the Feature kind's term above exists to prevent.
-        counter_series
-            .entry(CounterSeries::ControlState)
-            .or_default(),
+        counters_in(side_tables, SideTable::ControlStateCounters),
         &bucket_index.object_block_lookup,
     );
     REPACK_ADOPTED_HASHED.fetch_add(_adopted_hashed, std::sync::atomic::Ordering::Relaxed);
@@ -7663,8 +7623,13 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // built by `collect` at decode, so there is no half-empty B-tree node for this pass to
     // repack either.
     // Both counter domains, since the field they shared is one map now.
-    for table in counter_series.values_mut() {
-        repack_nested(table);
+    // ONLY THE COUNTER TABLES HAVE NESTED B-TREES. The address tables hold a fixed-width entry
+    // per key and have nothing to pack, which is why they were in the "nothing to pack" group
+    // before the merge -- the merge must not quietly start walking them.
+    for data in side_tables.values_mut() {
+        if let SideTableData::Counters(table) = data {
+            repack_nested(table);
+        }
     }
     repack_nested(context_event_timeline);
     // `context_indexes` has no field here any more: it is in `objects`, like every other
@@ -7710,6 +7675,278 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 /// `ElementEntry` carries a block id and a generation which the 24-byte `ObjectRecord` has no field
 /// for, so a slot cannot hold one without dropping a stored fact. Keeping the value type and adding
 /// a domain costs nothing per key.
+/// EVERY DOMAIN-KEYED SIDE TABLE, in one enum, because they are now one field.
+///
+/// The spellings are the ones the two predecessor enums used, so an image's keys are untouched by
+/// the merge. They must stay DISTINCT across all four for that to hold, which the test beside this
+/// module checks rather than leaving to inspection.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub(super) enum SideTable {
+    /// Redis-style string values: one block address per key.
+    Strings,
+    /// Context nodes. NO PRODUCTION WRITER -- a node is filed as a hash field -- but read on a
+    /// dozen paths as a fallback, so it stays a domain rather than being deleted.
+    ContextNodes,
+    /// The control-state counter series.
+    ControlStateCounters,
+    /// The feature numeric view.
+    FeatureCounters,
+    /// The control-state dedup ledger's expiry instants.
+    ControlStateUuid,
+    /// Per-object compression watermarks.
+    ContextCompressionWatermark,
+    /// Per-object expiry instants. Paired with `expiry_by_deadline`, which is the deadline-ORDERED
+    /// mirror and keeps its own field: a different key shape answering a different question.
+    Expiry,
+}
+
+/// WHICH TABLE SHAPE A DOMAIN HOLDS. Three of them, so this is an enum and not the bool it was --
+/// a third shape arriving is exactly when a two-valued predicate stops being adequate, and the
+/// codec matches on this rather than on the domain so a fourth is a variant and an arm.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(super) enum SideTableShape {
+    /// One block address per object key.
+    Addresses,
+    /// One counter series per object key.
+    Counters,
+    /// One `u64` per object key, ORDERED -- three production sites iterate the expiry table and a
+    /// hash order would make those walks depend on a per-process seed.
+    U64s,
+}
+
+impl SideTable {
+    /// Every domain, for the serde round trip and for the guards that enumerate them.
+    pub(super) const ALL: &'static [SideTable] = &[
+        SideTable::Strings,
+        SideTable::ContextNodes,
+        SideTable::ControlStateCounters,
+        SideTable::FeatureCounters,
+        SideTable::ControlStateUuid,
+        SideTable::ContextCompressionWatermark,
+        SideTable::Expiry,
+    ];
+
+    /// THE STORED SPELLING, which is the old field or domain name in every case. A serialized map
+    /// key is a durable name, so these are as load-bearing as a format constant.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            SideTable::Strings => "strings",
+            SideTable::ContextNodes => "context_nodes",
+            SideTable::ControlStateCounters => "control_state",
+            SideTable::FeatureCounters => "feature_values",
+            SideTable::ControlStateUuid => "control_state_uuid",
+            SideTable::ContextCompressionWatermark => "context_compression_watermark",
+            SideTable::Expiry => "expires_at_ms",
+        }
+    }
+
+    /// The domain a stored spelling names, or `None` for one this binary does not declare.
+    pub(super) fn from_stored_name(spelling: &str) -> Option<Self> {
+        match spelling {
+            "strings" => Some(SideTable::Strings),
+            "context_nodes" => Some(SideTable::ContextNodes),
+            "control_state" => Some(SideTable::ControlStateCounters),
+            "feature_values" => Some(SideTable::FeatureCounters),
+            "control_state_uuid" => Some(SideTable::ControlStateUuid),
+            "context_compression_watermark" => Some(SideTable::ContextCompressionWatermark),
+            "expires_at_ms" => Some(SideTable::Expiry),
+            _ => None,
+        }
+    }
+
+    /// WHICH TABLE SHAPE THIS DOMAIN HOLDS. The decode needs it before it has a value to inspect,
+    /// which is the whole reason no variant tag has to reach the wire.
+    pub(super) const fn shape(self) -> SideTableShape {
+        match self {
+            SideTable::Strings | SideTable::ContextNodes => SideTableShape::Addresses,
+            SideTable::ControlStateCounters | SideTable::FeatureCounters => {
+                SideTableShape::Counters
+            }
+            SideTable::ControlStateUuid
+            | SideTable::ContextCompressionWatermark
+            | SideTable::Expiry => SideTableShape::U64s,
+        }
+    }
+}
+
+impl serde::Serialize for SideTable {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+/// One domain's table. TWO SHAPES, AND THE KEY DECIDES WHICH -- never the value, so a corrupt
+/// pairing is refused by the decode rather than discovered by a door.
+#[derive(Clone, Debug)]
+pub(super) enum SideTableData {
+    /// One block address per object key.
+    Addresses(HashMap<ModelKey, ElementEntry>),
+    /// One counter series per object key.
+    Counters(HashMap<ModelKey, BTreeMap<u64, i64>>),
+    /// One `u64` per object key, in an ORDERED map for the reason `SideTableShape::U64s` gives.
+    U64s(BTreeMap<ModelKey, u64>),
+}
+
+/// One domain's ADDRESS table, created on first use, reached through the map rather than through
+/// `self`.
+///
+/// A FREE FUNCTION AND NOT A METHOD, deliberately. Two callers hold a destructured `ShardState` or
+/// need this table while borrowing a different field, and a method taking `&mut self` would borrow
+/// the whole struct -- the recorded hazard that broke four sites when the series maps merged. Over
+/// the map alone, the borrow stays as narrow as the old field access was.
+pub(super) fn addresses_in(
+    tables: &mut HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> &mut HashMap<ModelKey, ElementEntry> {
+    debug_assert_eq!(domain.shape(), SideTableShape::Addresses, "{}", domain.as_str());
+    match tables
+        .entry(domain)
+        .or_insert_with(|| SideTableData::Addresses(HashMap::new()))
+    {
+        SideTableData::Addresses(table) => table,
+        _ => unreachable!(
+            "the {} domain does not hold an address table; a table's shape is resolved from its \
+             spelling on decode, so this cannot come off the wire",
+            domain.as_str()
+        ),
+    }
+}
+
+/// One domain's `u64` ledger, created on first use. Same argument as `addresses_in`.
+pub(super) fn u64s_in(
+    tables: &mut HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> &mut BTreeMap<ModelKey, u64> {
+    debug_assert_eq!(domain.shape(), SideTableShape::U64s, "{}", domain.as_str());
+    match tables
+        .entry(domain)
+        .or_insert_with(|| SideTableData::U64s(BTreeMap::new()))
+    {
+        SideTableData::U64s(table) => table,
+        _ => unreachable!(
+            "the {} domain does not hold a u64 ledger; a table's shape is resolved from its \
+             spelling on decode, so this cannot come off the wire",
+            domain.as_str()
+        ),
+    }
+}
+
+/// One domain's `u64` ledger for reading, or `None` when it holds nothing.
+pub(super) fn u64s_ref(
+    tables: &HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> Option<&BTreeMap<ModelKey, u64>> {
+    match tables.get(&domain) {
+        Some(SideTableData::U64s(table)) => Some(table),
+        _ => None,
+    }
+}
+
+/// One domain's COUNTER table, created on first use. Same argument as `addresses_in`.
+pub(super) fn counters_in(
+    tables: &mut HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> &mut HashMap<ModelKey, BTreeMap<u64, i64>> {
+    debug_assert_eq!(domain.shape(), SideTableShape::Counters, "{}", domain.as_str());
+    match tables
+        .entry(domain)
+        .or_insert_with(|| SideTableData::Counters(HashMap::new()))
+    {
+        SideTableData::Counters(table) => table,
+        _ => unreachable!(
+            "the {} domain does not hold a counter table; a table's shape is resolved from its \
+             spelling on decode, so this cannot come off the wire",
+            domain.as_str()
+        ),
+    }
+}
+
+/// One domain's counter table for reading, or `None` when the domain holds nothing. Borrows the
+/// map rather than the struct, for the reason `addresses_in` gives.
+pub(super) fn counters_ref(
+    tables: &HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> Option<&HashMap<ModelKey, BTreeMap<u64, i64>>> {
+    match tables.get(&domain) {
+        Some(SideTableData::Counters(table)) => Some(table),
+        _ => None,
+    }
+}
+
+/// The merged field's codec. The VALUE's type depends on the KEY, which no derive can express, so
+/// the map is visited by hand: read the spelling, resolve the domain, then deserialize the table as
+/// that domain's shape. An unknown spelling is skipped rather than refused -- a forward-compatible
+/// reader must survive a domain a newer binary added, and the stamp is what refuses an image this
+/// binary should not serve at all.
+pub(super) mod side_table_serde {
+    use super::{ElementEntry, ModelKey, SideTable, SideTableData, SideTableShape};
+    use std::collections::{BTreeMap, HashMap};
+
+    pub(crate) fn serialize<S: serde::Serializer>(
+        tables: &HashMap<SideTable, SideTableData>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeMap;
+        let mut map = serializer.serialize_map(Some(tables.len()))?;
+        // ORDERED BY THE DECLARATION, not by the hash, so the stored bytes do not depend on a
+        // per-process hash seed. An index whose bytes move without its contents moving defeats
+        // every byte-for-byte comparison this campaign relies on.
+        for domain in SideTable::ALL {
+            match tables.get(domain) {
+                Some(SideTableData::Addresses(table)) => map.serialize_entry(domain, table)?,
+                Some(SideTableData::Counters(table)) => map.serialize_entry(domain, table)?,
+                Some(SideTableData::U64s(table)) => map.serialize_entry(domain, table)?,
+                None => {}
+            }
+        }
+        map.end()
+    }
+
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<HashMap<SideTable, SideTableData>, D::Error> {
+        struct Visitor;
+        impl<'de> serde::de::Visitor<'de> for Visitor {
+            type Value = HashMap<SideTable, SideTableData>;
+
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a map of side-table spellings to their tables")
+            }
+
+            fn visit_map<A: serde::de::MapAccess<'de>>(
+                self,
+                mut access: A,
+            ) -> Result<Self::Value, A::Error> {
+                let mut out = HashMap::new();
+                while let Some(spelling) = access.next_key::<String>()? {
+                    match SideTable::from_stored_name(&spelling).map(|d| (d, d.shape())) {
+                        Some((domain, SideTableShape::Addresses)) => {
+                            let table: HashMap<ModelKey, ElementEntry> = access.next_value()?;
+                            out.insert(domain, SideTableData::Addresses(table));
+                        }
+                        Some((domain, SideTableShape::Counters)) => {
+                            let table: HashMap<ModelKey, BTreeMap<u64, i64>> =
+                                access.next_value()?;
+                            out.insert(domain, SideTableData::Counters(table));
+                        }
+                        Some((domain, SideTableShape::U64s)) => {
+                            let table: BTreeMap<ModelKey, u64> = access.next_value()?;
+                            out.insert(domain, SideTableData::U64s(table));
+                        }
+                        // A spelling this binary does not declare. Skipped, not refused: see the
+                        // module note above.
+                        None => {
+                            let _: serde::de::IgnoredAny = access.next_value()?;
+                        }
+                    }
+                }
+                Ok(out)
+            }
+        }
+        deserializer.deserialize_map(Visitor)
+    }
+}
+
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
 pub(super) enum AddressMap {
     /// Redis-style string values: one block address per key.
@@ -7923,55 +8160,78 @@ impl ShardState {
     /// The control-state counter series.
     /// Redis-style string values, one address per key.
     pub(super) fn strings(&self) -> &HashMap<ModelKey, ElementEntry> {
-        self.addresses_of(AddressMap::Strings)
+        self.addresses_of(SideTable::Strings)
     }
 
     /// The string addresses, for writing. Creates the domain's table on first use.
     pub(super) fn strings_mut(&mut self) -> &mut HashMap<ModelKey, ElementEntry> {
-        self.address_maps.entry(AddressMap::Strings).or_default()
+        self.addresses_of_mut(SideTable::Strings)
     }
 
     /// Context-node addresses. Read as a fallback; nothing in production writes this.
     pub(super) fn context_nodes(&self) -> &HashMap<ModelKey, ElementEntry> {
-        self.addresses_of(AddressMap::ContextNodes)
+        self.addresses_of(SideTable::ContextNodes)
     }
 
     /// The context-node addresses, for writing. Creates the domain's table on first use.
     pub(super) fn context_nodes_mut(&mut self) -> &mut HashMap<ModelKey, ElementEntry> {
-        self.address_maps.entry(AddressMap::ContextNodes).or_default()
+        self.addresses_of_mut(SideTable::ContextNodes)
     }
 
     /// One domain's table, empty rather than absent, as `objects_of_kind` is.
-    fn addresses_of(&self, map: AddressMap) -> &HashMap<ModelKey, ElementEntry> {
-        self.address_maps
-            .get(&map)
-            .unwrap_or_else(|| NO_ADDRESSES_IN_THIS_MAP.get_or_init(HashMap::new))
+    fn addresses_of(&self, map: SideTable) -> &HashMap<ModelKey, ElementEntry> {
+        debug_assert_eq!(map.shape(), SideTableShape::Addresses, "{}", map.as_str());
+        match self.side_tables.get(&map) {
+            Some(SideTableData::Addresses(table)) => table,
+            // Absent, or -- impossible for a decoded image, see `addresses_of_mut` -- the other
+            // shape. Both answer empty here because a READ has nothing to lose by doing so.
+            _ => NO_ADDRESSES_IN_THIS_MAP.get_or_init(HashMap::new),
+        }
+    }
+
+    /// One domain's table for writing, created on first use.
+    ///
+    /// REFUSES A WRONG PAIRING RATHER THAN REPLACING IT. Each spelling has exactly one table
+    /// shape, the decode resolves the shape FROM THE SPELLING, and
+    /// `every_side_table_domain_round_trips_as_its_own_shape` pins that. So a domain holding the
+    /// other shape here is unreachable -- and quietly swapping in an empty table of the right
+    /// shape would discard whatever it held, which is the failure mode this arm exists to avoid.
+    fn addresses_of_mut(&mut self, map: SideTable) -> &mut HashMap<ModelKey, ElementEntry> {
+        addresses_in(&mut self.side_tables, map)
     }
 
     pub(super) fn control_state(&self) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
-        self.counters_of(CounterSeries::ControlState)
+        self.counters_of(SideTable::ControlStateCounters)
     }
 
     /// The control-state counters, for writing. Creates the domain's table on first use.
     pub(super) fn control_state_mut(&mut self) -> &mut HashMap<ModelKey, BTreeMap<u64, i64>> {
-        self.counter_series.entry(CounterSeries::ControlState).or_default()
+        self.counters_of_mut(SideTable::ControlStateCounters)
     }
 
     /// The feature numeric view.
     pub(super) fn feature_values(&self) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
-        self.counters_of(CounterSeries::Feature)
+        self.counters_of(SideTable::FeatureCounters)
     }
 
     /// The feature numeric view, for writing. Creates the domain's table on first use.
     pub(super) fn feature_values_mut(&mut self) -> &mut HashMap<ModelKey, BTreeMap<u64, i64>> {
-        self.counter_series.entry(CounterSeries::Feature).or_default()
+        self.counters_of_mut(SideTable::FeatureCounters)
     }
 
     /// One domain's table, empty rather than absent, as `objects_of_kind` is.
-    fn counters_of(&self, series: CounterSeries) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
-        self.counter_series
-            .get(&series)
-            .unwrap_or_else(|| NO_COUNTERS_IN_THIS_SERIES.get_or_init(HashMap::new))
+    fn counters_of(&self, series: SideTable) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
+        debug_assert_eq!(series.shape(), SideTableShape::Counters, "{}", series.as_str());
+        match self.side_tables.get(&series) {
+            Some(SideTableData::Counters(table)) => table,
+            _ => NO_COUNTERS_IN_THIS_SERIES.get_or_init(HashMap::new),
+        }
+    }
+
+    /// One domain's counter table for writing, created on first use. Refuses a wrong pairing for
+    /// the reason `addresses_of_mut` gives.
+    fn counters_of_mut(&mut self, series: SideTable) -> &mut HashMap<ModelKey, BTreeMap<u64, i64>> {
+        counters_in(&mut self.side_tables, series)
     }
 
     /// Per-object expiry instants.
@@ -7981,40 +8241,38 @@ impl ShardState {
     /// does THIS key expire". Two different questions, two different key shapes, and only this one
     /// is a `u64` per object key.
     pub(super) fn expires_at_ms(&self) -> &BTreeMap<ModelKey, u64> {
-        self.u64_ledger(U64Ledger::Expiry)
+        self.u64s_of(SideTable::Expiry)
     }
 
     /// The expiry instants, for writing. Creates the domain's table on first use.
     pub(super) fn expires_at_ms_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
-        self.u64_ledgers.entry(U64Ledger::Expiry).or_default()
+        u64s_in(&mut self.side_tables, SideTable::Expiry)
     }
 
     /// The control-state dedup ledger's expiry instants.
     pub(super) fn control_state_uuid(&self) -> &BTreeMap<ModelKey, u64> {
-        self.u64_ledger(U64Ledger::ControlStateUuid)
+        self.u64s_of(SideTable::ControlStateUuid)
     }
 
     /// The dedup ledger, for writing. Creates the domain's table on first use.
     pub(super) fn control_state_uuid_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
-        self.u64_ledgers.entry(U64Ledger::ControlStateUuid).or_default()
+        u64s_in(&mut self.side_tables, SideTable::ControlStateUuid)
     }
 
     /// Per-object compression watermarks.
     pub(super) fn context_compression_watermark(&self) -> &BTreeMap<ModelKey, u64> {
-        self.u64_ledger(U64Ledger::ContextCompressionWatermark)
+        self.u64s_of(SideTable::ContextCompressionWatermark)
     }
 
     /// The watermarks, for writing. Creates the domain's table on first use.
     pub(super) fn context_compression_watermark_mut(&mut self) -> &mut BTreeMap<ModelKey, u64> {
-        self.u64_ledgers
-            .entry(U64Ledger::ContextCompressionWatermark)
-            .or_default()
+        u64s_in(&mut self.side_tables, SideTable::ContextCompressionWatermark)
     }
 
     /// One ledger, empty rather than absent, for the same reason `objects_of_kind` is.
-    fn u64_ledger(&self, ledger: U64Ledger) -> &BTreeMap<ModelKey, u64> {
-        self.u64_ledgers
-            .get(&ledger)
+    fn u64s_of(&self, ledger: SideTable) -> &BTreeMap<ModelKey, u64> {
+        debug_assert_eq!(ledger.shape(), SideTableShape::U64s, "{}", ledger.as_str());
+        u64s_ref(&self.side_tables, ledger)
             .unwrap_or_else(|| NO_U64_IN_THIS_LEDGER.get_or_init(BTreeMap::new))
     }
 

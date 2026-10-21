@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 24;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 25;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -5468,10 +5468,11 @@ pub(in crate::engine) fn ensure_expiry_order(shard: &mut ShardState) {
         // merely slower: a cloned map's keys are fresh allocations, so the mirror would point at
         // copies instead of the characters the key-ordered map holds, which is the sharing this
         // loop exists to restore.
-        let source = shard
-            .u64_ledgers
-            .get(&crate::engine::state::U64Ledger::Expiry)
-            .expect("the expiry domain is non-empty here, checked just above");
+        let source = crate::engine::state::u64s_ref(
+            &shard.side_tables,
+            crate::engine::state::SideTable::Expiry,
+        )
+        .expect("the expiry domain is non-empty here, checked just above");
         let pairs: Vec<((u64, crate::engine::state::ModelKey), ())> = source
             .iter()
             .map(|(key, expires_at)| ((*expires_at, key.clone()), ()))

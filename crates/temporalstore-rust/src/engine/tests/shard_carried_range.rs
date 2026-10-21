@@ -1089,7 +1089,10 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     // the third such pin in this campaign, after the second stamp tripwire in `page_entry_names`
     // and the fold count in `element_ordinal_reuse`. A width pin only works if something runs it.
     //
-    // 144 IS THIS CHANGE, AND IT IS EXACTLY THE ARITHMETIC. `context_audits`,
+    // 96 IS THIS CHANGE: TWO HashMap HEADERS, because three fields became one. The arithmetic below
+    // is the previous step's and is kept because the same reasoning applies to each.
+    //
+    // 144 WAS AN EARLIER CHANGE, AND IT IS EXACTLY THE ARITHMETIC. `context_audits`,
     // `context_summaries` and `context_compressions` each left as a
     // `HashMap<Arc<str>, OwnedTimestampedSeries>` -- 48 bytes of `RandomState` plus table header
     // apiece, 3 x 48 = 144. Predicted before the measurement and confirmed by it, which is worth
@@ -1099,7 +1102,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     // SO THIS IS PAID DOWN, NOT WIDENED, which is the direction the message below demands. Five
     // of the eight per-element maps still have their own field; each will take another 48 off.
     assert_eq!(
-        1_192, state,
+        1_096, state,
         "`ShardState` is {state} bytes. It was 1,880 before the routing range was carried on it \
          and 1,888 after -- the two u32s, with THAT flag landing in padding this struct already \
          had -- and 1,904 since it also carries the shard id it is served under. THAT step cost \
@@ -1107,7 +1110,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
          predicted, and an `Option<u64>` would have cost the same sixteen. It is paid rather than \
          argued down because there is one of this struct per shard. A change here means either a \
          field was added or a flag stopped being free; say which, and pay it down rather than \
-         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map. `features` followed them for another 48, and the last three -- `context_events`, `context_entities`, `context_indexes` -- took 144 more, so this is 1,456. ALL EIGHT per-element series are in `objects`, and the two rollup ladders merged into one domain-keyed field for another 48, so this is 1,408. Every 48 from here comes from merging same-shaped maps or folding a value into `ObjectRecord`, not from the series family, which is finished. The two u64 ledgers merged for another 48 and the two counter series for another, and the two address maps for another, so this is 1,192 -- 712 off the 1,904 this campaign started at, and every 48 of it is one HashMap header that stopped existing."
+         widening this number. It was 1,792 after `context_children` moved into the consolidated map and 1,648 once `context_audits`, `context_summaries` and `context_compressions` followed it -- 48 bytes a map. `features` followed them for another 48, and the last three -- `context_events`, `context_entities`, `context_indexes` -- took 144 more, so this is 1,456. ALL EIGHT per-element series are in `objects`, and the two rollup ladders merged into one domain-keyed field for another 48, so this is 1,408. Every 48 from here comes from merging same-shaped maps or folding a value into `ObjectRecord`, not from the series family, which is finished. The two u64 ledgers merged for another 48 and the two counter series for another, and the two address maps for another, so this is 1,192. THE TWO ADDRESS MAPS AND THE TWO COUNTER SERIES THEN BECAME ONE FIELD -- not a same-shape merge like the four before it, because their value types differ, but a merge whose variant wraps the TABLE rather than the entry, so the tag is paid once per domain and no key pays a byte. That is one more HashMap header gone, so this is 1,144. THE THREE u64 LEDGERS THEN JOINED THE SAME FIELD -- a third table shape behind the same domain key, by the same argument -- so this is 1,096: 808 off the 1,904 this campaign started at, and every 48 of it is one HashMap header that stopped existing. THE OBJECT-KEYED FIELD COUNT IS SEVEN HERE, which is the floor this campaign was measured against."
     );
     assert_eq!(
         4,
