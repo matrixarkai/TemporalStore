@@ -90,32 +90,23 @@ const ALLOWED: &[(&str, &str, &str)] = &[
          category as `from_plain`: naming the wire form is not leaking the in-memory one.",
     ),
     (
-        "state.rs",
-        "plant_legacy_context_event_for_test",
-        "A TEST FIXTURE inside a production file, planting what a decoded image carrying the\
-         legacy key leaves in the compatibility field. It names the STORED shape because that is\
-         what it is imitating. Allowlisted rather than excluded for the reason the `plain` entry\
-         above states: this guard's production rule is a path rule, not a `#[cfg(test)]` rule.",
+        "object_record.rs",
+        "from",
+        "THE CONVERSION FROM THE STORED SHAPE. `ObjectSlot` gained the same pair of B-tree\
+         conversions `OwnedTimestampedSeries` already had, and this is the inbound half: a decode\
+         and a key-state fold both hand over the stored `BTreeMap` and this is what turns one into\
+         a slot. Naming the stored form IS the point, exactly as it is for the entry of the same\
+         name on `timestamped_series.rs` below. The omission was an oversight when the slot grew\
+         these methods, and the guard was red on main until it was added.",
     ),
     (
-        "state.rs",
-        "clone_legacy_context_events_for_test",
-        "A TEST FIXTURE inside a production file, the read counterpart of the planter above. It\
-         returns a copy of the compatibility field alone so a footprint test can price that field\
-         rather than the whole shard, so its return type IS the stored shape.",
-    ),
-    (
-        "state.rs",
-        "<no enclosing fn>",
-        "A DETECTOR ARTEFACT, NOT A SIGNATURE -- and recorded as one rather than as an allowance.\
-         The line is the `context_events_compat` FIELD declaration, and a field reads\
-         `lowercase_name: Type` exactly as a parameter does, so the matcher's fallback branch\
-         cannot tell the two apart and `enclosing_function` has no function to find. The field\
-         must name the stored shape: it carries the serde key this map has always had and the\
-         decode fold drains it. NARROWING THE MATCHER TO EXCLUDE FIELD DECLARATIONS WOULD RETIRE\
-         THIS ENTRY, and that narrowing is filed as #2172 -- cited here so the retirement is\
-         findable rather than archaeological. Until then this entry is broader than an allowlist\
-         entry should be: it would also cover a future top-level naming in this file.",
+        "object_record.rs",
+        "to_btree",
+        "THE REPORTING AND CAPTURE PROJECTION, the outbound half of the pair above and the same\
+         category as `timestamped_series.rs`'s `to_btree`: it materialises the B-tree for the\
+         key-state capture, which must keep carrying what it has always carried, and for the\
+         validator's report, whose own type is a `BTreeMap`. A serving read goes through\
+         `TimestampedSeries` and allocates nothing.",
     ),
     (
         "timestamped_series.rs",

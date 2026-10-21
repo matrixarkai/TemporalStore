@@ -533,82 +533,12 @@ pub(super) struct ShardState {
     // sketches on the CHANGE write path. Serde-skipped; set on every execute.
     #[serde(skip)]
     pub(super) control_distinct_sketch: bool,
-    // Derived, in-memory feature-aggregate rollup: the numeric view of the feature series
-    // (feature_values, decoded via aggregate_feature_values so it is bit-identical to the raw
-    // aggregate) plus the shared rollup ladder over it. Serde-skipped; rebuilt lazily on the
-    // FeatureAggQuery read path when stale. Gated by Config.control_rollup_enabled(); empty
-    // and inert when off.
-    /// THE EVENT SERIES, ON THE OWNED SORTED ARRAY.
-    ///
-    /// Keyed by EVENT ID HASH, aligning events with entities/embeddings so update and delete
-    /// address one event directly in log n instead of scanning the whole series of a node (mem0
-    /// delete carries the event id, not the time, so it previously had no way to locate one).
-    ///
-    /// THE REPRESENTATION IS [`OwnedTimestampedSeries`] AND NO LONGER A `BTreeMap`. One owned
-    /// sorted array per key, eight bytes in the map value and two allocations when it holds
-    /// anything, against a 24-byte B-tree header and a 280-byte root node allocated for the first
-    /// element alone. See that type for the measured pair of numbers and for why an array is the
-    /// right shape for an append-mostly series read by single instant.
-    ///
-    /// NOT SERIALIZED. The stored image is the compatibility field below, under the wire key this
-    /// map has always had, so the image is unchanged and no format stamp is owed. This field is
-    /// filled from that one by [`ShardState::fold_legacy_context_events`] at decode, which DRAINS
-    /// the other to empty -- so there is exactly one live copy of this data at every moment after
-    /// the decode returns.
-    // THE EVENT SERIES ARE IN `objects` NOW, under `StoredModelKind::ContextEvent`, which is
-    // where every other context kind already lives. The doors below kept their names and their
-    // signatures changed, so no call site moved -- the census those doors were created for had
-    // already been taken.
-    //
-    // AND THEY ARE DURABLE NOW, WHICH THIS FIELD'S `skip` MEANT THEY WERE NOT. `objects` is
-    // serialized, so a decode no longer has to rebuild them from the compat key and the fold
-    // below. That is the treatment the other context kinds have; the format stamp is what makes
-    // an older index rebuild rather than load empty.
-    /// THE COMPATIBILITY KEY, AND ITS OWN REMOVAL CONDITION.
-    ///
-    /// The event series also live in `context_events_series` above, which is authoritative. This
-    /// copy exists only so that what a stored image carries under `context_events` is exactly what
-    /// it carried before, in both directions: an index written by this binary is readable by an
-    /// older one, and one written by an older binary still delivers its rows here.
-    ///
-    /// IT KEEPS `skip_serializing`, WHICH IS WHAT IT ALREADY HAD. This map is not written into a
-    /// new image at all -- it is derived at load from the block decode -- so the stored image is
-    /// byte-identical, not merely compatible. `default` is what still lets an image written before
-    /// `skip_serializing` landed deliver its rows, and that is the case the decode fold is for.
-    ///
-    /// WHY IT CANNOT JUST BE DELETED YET. Two reasons, and NEITHER IS A DOOR THAT FORGETS TO
-    /// CHECK THE STAMP. Every door that installs a stored index does check it, through
-    /// `persistence::refuse_stale_index_stamp`. An argument resting on an unguarded door was
-    /// written here first and was wrong; these two do not rest on one, which is why they survive
-    /// that door being shut.
-    ///
-    /// First, THE STAMP CANNOT REFUSE A ROW IT DOES NOT KNOW ABOUT. `index_stamp_is_stale` is
-    /// `shard.index_format_version < SHARD_INDEX_FORMAT_VERSION` -- `<` and not `!=` -- so an
-    /// image at the CURRENT stamp is accepted by every door, and the stamp is a single integer
-    /// that says nothing about which keys an image carries. So an accepted, perfectly current
-    /// image can still carry `context_events`, and with this field gone its rows would not be
-    /// refused: they would be silently ignored, which is the one outcome worse than a refusal.
-    ///
-    /// Second, and this is the path the decode fold does NOT reach at all: THE KEY-STATE CAPTURE
-    /// CARRIES THIS MAP UNDER ITS OWN NAME. `capture_key_states` writes a `context_events` field
-    /// into the index-log blobs and `apply_key_states` reads it back -- written by THIS binary at
-    /// THIS stamp, and folded on a path that takes `ShardState::default()` and decodes nothing,
-    /// so no staleness test is reached and none could apply if it were. That path is covered by
-    /// the `KeyedState` conversion in `engine.rs`, which turns the stored B-tree shape the blob
-    /// carries into the array -- a conversion and not a mirror, because there is one live copy.
-    ///
-    /// REMOVE THIS -- the field, the decode fold and the conversion -- once no stored image and no
-    /// captured blob this binary can meet still carries the key under its old name. That is a
-    /// statement about what is reachable, not about which doors are
-    /// guarded, and it is the one to re-check rather than the stamp coverage.
-    ///
-    /// PRIVATE, AND THAT IS WHAT MAKES "DRAINED AND NEVER REFILLED" A PROPERTY OF THE CODE
-    /// rather than a request. Nothing outside `state.rs` can reach this field, and inside it the
-    /// only writer is the fold, which empties it. That is the difference between a decode-only
-    /// landing spot and a second live copy, and it is one line of code wide -- the mirror version
-    /// of this change refilled it at the end of the fold.
-    #[serde(rename = "context_events", default, skip_serializing)]
-    context_events_compat: HashMap<String, BTreeMap<u64, ElementEntry>>,
+    // THE LEGACY COMPATIBILITY FIELD IS GONE, and the condition its own doc set is what
+    // retired it: no door can deliver a top-level `context_events` key any more. Pre-stamp
+    // images are refused on every one of `decode_index_bytes`'s callers, and images at stamp
+    // 20 or later do not carry the key, because the event series moved into `objects` there
+    // and this field was `skip_serializing`. The field, the decode fold and its counter went
+    // together, and no format stamp was owed because the field never wrote anything.
     // Time index over the same events: timeline_key -> event_id_hash, where timeline_key stays
     // timestamp_ms * CONTEXT_TIMELINE_FANOUT + (id % FANOUT). The primary map above is ordered
     // by hash, which is effectively random, so a time window is no longer a contiguous range in
@@ -7632,7 +7562,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // ascending insert, so it is exactly what this pass is for -- but the fold runs
         // immediately after this function and DRAINS it, so packing it is a pass over data that is
         // about to be dropped. The only entry in this list whose absence makes a decode cheaper.
-        context_events_compat: _,
         control_state_selection: _,
         u64_ledgers: _,
         context_dirty_index: _,
@@ -8530,99 +8459,8 @@ impl ShardState {
         moved
     }
 
-    /// Drain the legacy top-level event map into the array map at decode.
-    ///
-    /// # WHAT THIS IS FOR, AND IT IS NOT AN UNGUARDED DOOR
-    ///
-    /// Every door that installs a stored index checks the stamp, through
-    /// `persistence::refuse_stale_index_stamp`. What the stamp cannot do is refuse a row it does
-    /// not know about: the test is `<` rather than `!=`, so an image at the CURRENT stamp is
-    /// accepted everywhere, and the stamp is one integer that says nothing about which keys the
-    /// image carries. An accepted image can therefore still carry `context_events`, and a reader
-    /// looking only at the array map would find it empty -- the rows gone, destroyed exactly as a
-    /// deletion would destroy them, with no refusal anywhere because there was nothing for a door
-    /// to refuse.
-    ///
-    /// # A MOVE AND NOT A MERGE, BECAUSE THE DESTINATION IS PROVABLY EMPTY
-    ///
-    /// `context_events_series` is `#[serde(skip)]`, so a freshly decoded `ShardState` always has it
-    /// at `Default` -- empty. This runs on the `decode_index_bytes` wrapper, immediately after the
-    /// decode, so every key in the legacy map is an arrival and there is nothing to merge with.
-    ///
-    /// THAT IS WHY THE DISAGREEMENT COUNTER THIS SHIPPED WITH IS GONE. It counted
-    /// both-present-and-different, and under the mirror that was reachable. With one live copy the
-    /// destination is empty by construction, so that branch could never be taken: an assertion that
-    /// can only ever be true is the third state of an assertion, and a counter nothing can increment
-    /// is indistinguishable from a counter that is broken. What replaced it counts the PREMISE
-    /// FAILING instead -- see [`legacy_context_event_fold_over_live_map_count`] -- which is
-    /// reachable, assertable, and has a negative control.
-    ///
-    /// UNCONDITIONAL, and reached from the one place that cannot be bypassed: `decode_index_bytes`
-    /// wraps every codec arm, and its own note says a step written there "is a thing nobody can
-    /// forget" where one written per arm "would be a thing to remember".
-    pub(super) fn fold_legacy_context_events(&mut self) {
-        if self.context_events_compat.is_empty() {
-            return;
-        }
-        // THE PREMISE, CHECKED RATHER THAN ASSUMED. If the array map is already populated when this
-        // runs, this is not a fresh decode -- the fold has been called twice, or called on a live
-        // state -- and a blind insert would then silently overwrite live series with whatever an
-        // old image happened to carry. Counted and the live entry KEPT, which is the same choice
-        // the mirror version made for the same reason: recovery behaviour must not depend on which
-        // copy happens to differ.
-        let folding_over_live = !self.context_events().is_empty();
-        let legacy = std::mem::take(&mut self.context_events_compat);
-        let mut kept_live = 0u64;
-        for (key, points) in legacy {
-            if self.context_events().contains_key(&*key) {
-                kept_live += 1;
-                continue;
-            }
-            self.context_events_mut()
-                .insert(ModelKey::from(&*key), points.into());
-        }
-        if folding_over_live && kept_live > 0 {
-            LEGACY_CONTEXT_EVENT_FOLD_OVER_LIVE_MAP
-                .fetch_add(kept_live, std::sync::atomic::Ordering::Relaxed);
-        }
-        // AND THE COMPATIBILITY FIELD IS LEFT EMPTY. `std::mem::take` above did that; it is restated
-        // here because the mirror version REFILLED it at exactly this point, and that one line was
-        // the whole difference between a decode-only landing spot and a second live copy.
-        debug_assert!(
-            self.context_events_compat.is_empty(),
-            "the compatibility field must be empty after the fold -- a non-empty one is a second \
-             live copy, which is the shape this was converted away from"
-        );
-    }
 }
 
-/// HOW MANY LEGACY KEYS ARRIVED AT A FOLD WHOSE DESTINATION WAS ALREADY LIVE.
-///
-/// Zero on every ordinary decode, because `context_events_series` is `#[serde(skip)]` and is
-/// therefore empty on a freshly decoded state. A non-zero reading means the fold ran somewhere it
-/// was not meant to -- twice over one state, or over a state already serving -- and that each such
-/// key was LEFT ALONE rather than overwritten by the old image.
-///
-/// THIS REPLACED A COUNTER THAT COULD NOT FIRE. The mirror version counted the two copies arriving
-/// different, which was reachable while both were live and became unreachable the moment there was
-/// one. A counter whose branch no execution can take proves nothing by reading zero, so the
-/// quantity was changed to one that can.
-///
-/// EXPOSED RATHER THAN LOGGED, for the same reason `index_load_path_counts` is: the fold cannot
-/// refuse, so a caller cannot tell from its return value that anything was wrong, and a log line is
-/// not something a test can assert on.
-static LEGACY_CONTEXT_EVENT_FOLD_OVER_LIVE_MAP: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// Read the count.
-pub(crate) fn legacy_context_event_fold_over_live_map_count() -> u64 {
-    LEGACY_CONTEXT_EVENT_FOLD_OVER_LIVE_MAP.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Forget the count, so a test measures its own folds rather than the suite before it.
-pub(crate) fn reset_legacy_context_event_fold_over_live_map_count() {
-    LEGACY_CONTEXT_EVENT_FOLD_OVER_LIVE_MAP.store(0, std::sync::atomic::Ordering::Relaxed);
-}
 
 /// THE TEST-ONLY DOORS INTO THE COMPATIBILITY FIELD.
 ///
@@ -8631,29 +8469,8 @@ pub(crate) fn reset_legacy_context_event_fold_over_live_map_count() {
 /// plant what a stored image carries and read back what the fold left behind.
 #[cfg(test)]
 impl ShardState {
-    /// Plant a series in the compatibility field alone, which is what a decoded image carrying the
-    /// legacy key leaves there.
-    pub(super) fn plant_legacy_context_event_for_test(
-        &mut self,
-        object_key: &str,
-        series: BTreeMap<u64, ElementEntry>,
-    ) {
-        self.context_events_compat
-            .insert(object_key.to_string(), series);
-    }
 
-    /// How many keys the compatibility field holds. The fold must leave this at zero.
-    pub(super) fn legacy_context_event_len_for_test(&self) -> usize {
-        self.context_events_compat.len()
-    }
 
-    /// A copy of the compatibility field alone, so a footprint test can price it rather than the
-    /// whole shard.
-    pub(super) fn clone_legacy_context_events_for_test(
-        &self,
-    ) -> HashMap<String, BTreeMap<u64, ElementEntry>> {
-        self.context_events_compat.clone()
-    }
 }
 
 #[cfg(test)]

@@ -3221,7 +3221,10 @@ pub(super) fn decode_index_bytes(bytes: &[u8]) -> Result<ShardState, String> {
     // would be a thing to remember; written on the wrapper it covers every arm and every caller,
     // which is what matters because an image carrying the legacy key is not necessarily STALE --
     // the staleness test is `<`, so a current-stamp image is accepted at every door.
-    state.fold_legacy_context_events();
+    // THE LEGACY EVENT FOLD IS GONE. Its own purpose, recorded above, was an image at the
+    // CURRENT stamp still carrying the top-level `context_events` key -- false since stamp
+    // 20 moved the event series into `objects`. Pre-stamp images are refused on every
+    // caller, so the key arrives from no door.
     Ok(state)
 }
 

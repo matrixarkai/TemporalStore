@@ -9,16 +9,18 @@
 //!
 //!   1. **The array is a timestamped series.** Sorted whatever order points arrive in, including
 //!      duplicates and removals, and it gives its allocation back when it empties.
-//!   2. **The compatibility field is DRAINED and never refilled.** That is the single property the
-//!      whole shape rests on: one live copy of this data at every moment after a decode returns.
-//!      The mirror this change was first written with is gone, and so are its agreement predicate
-//!      and that predicate's negative control -- not because they failed, but because with one
-//!      copy they have nothing to check.
-//!   3. **The two paths that can carry the legacy key are both covered** -- a decode of an image
-//!      that carries it, and the key-state capture that carries it with no decode at all. Neither
-//!      is a door that forgets to check the stamp: every installing door checks it. What the stamp
-//!      cannot do is refuse a row it does not know about, because the test is `<` and a
-//!      current-stamp image is accepted everywhere.
+//!   2. **The legacy key has NO DOOR**, which is what retired the compatibility field this module
+//!      was built around. The old claim here was that the field is drained and never refilled --
+//!      one live copy at every moment after a decode returns. There is no field now, and the
+//!      claim that replaced it is stronger: nothing can deliver a top-level `context_events` key.
+//!      A pre-stamp image is refused on every one of `decode_index_bytes`'s six callers, and an
+//!      image at stamp 20 or later does not carry the key because the series moved into `objects`
+//!      there. The second half is the one driven below, because the stamp test is `<` and so cannot
+//!      refuse a current-stamp image over a key it does not know -- what makes that safe is that no
+//!      binary at or above 20 produces one.
+//!   3. **The capture path writes the array map with nothing decoded.** That path is unchanged: a
+//!      key-state blob carries the series under its own name and `apply_key_states` converts the
+//!      stored B-tree shape into the array, with no decode and no landing spot in between.
 //!
 //! What is NOT claimed is a footprint win on a live shard. The compatibility field costs nothing
 //! after the fold drains it, but the array and the B-tree are never both resident long enough for
@@ -133,154 +135,19 @@ fn the_array_and_the_btree_shape_round_trip_without_loss() {
     assert_eq!(original.len(), array.len(), "and no point was dropped");
 }
 
-/// THE PROPERTY THE WHOLE SHAPE RESTS ON: the fold DRAINS the compatibility field, and nothing
-/// refills it.
-///
-/// This is the test that would have caught the shape this change was first written with. That
-/// revision refilled the field at the end of the fold and mirrored it from every mutator, so two
-/// copies were live and a bulk rebuild had a window in which a reader could be served the stale
-/// one. The assertion is therefore not "the copies agree" -- which that revision could also pass
-/// -- but "there is only one copy", which it could not.
-///
-/// rust-internal: measures this crate's own resident structures, no product behaviour
-#[test]
-fn the_fold_drains_the_compatibility_field_and_no_write_refills_it() {
-    let mut shard = ShardState::default();
 
-    // What a decoded image carrying the legacy key leaves behind.
-    shard.plant_legacy_context_event_for_test("ctx:event:t:a", series_of(&[1, 2, 3]));
-    shard.plant_legacy_context_event_for_test("ctx:event:t:b", series_of(&[9]));
-    assert_eq!(
-        2,
-        shard.legacy_context_event_len_for_test(),
-        "the fixture planted what a decode would have left"
-    );
-    assert!(
-        shard.context_events().is_empty(),
-        "before the fold the array map is empty -- which is exactly the state in which a reader \
-         served only from it would find the rows GONE"
-    );
 
-    shard.fold_legacy_context_events();
-
-    assert_eq!(2, shard.context_events().len(), "both keys arrived");
-    assert_eq!(
-        Some(&address(2)),
-        shard
-            .context_events()
-            .get("ctx:event:t:a")
-            .and_then(|series| series.get(2)),
-        "and the points came with them"
-    );
-    assert_eq!(
-        0,
-        shard.legacy_context_event_len_for_test(),
-        "THE FIELD IS EMPTY AFTER THE FOLD. A non-empty one is a second live copy, and a second \
-         live copy is a divergence window during every bulk rebuild"
-    );
-
-    // AND NO WRITE PUTS ANYTHING BACK. Every production write path for this map goes through the
-    // array map; this drives the three shapes of write and re-checks the field after each.
-    super::super::timestamped_series::set_point_and_collect_live(
-        shard.context_events_mut(),
-        std::sync::Arc::from("ctx:event:t:c"),
-        5,
-        Some(address(5)),
-    );
-    assert_eq!(
-        0,
-        shard.legacy_context_event_len_for_test(),
-        "a point write must not touch the compatibility field"
-    );
-
-    shard.set_context_event_series("ctx:event:t:d", series_of(&[6, 7]));
-    assert_eq!(
-        0,
-        shard.legacy_context_event_len_for_test(),
-        "a whole-series install must not touch it either -- this is the key-state path"
-    );
-
-    shard.context_events_mut().remove("ctx:event:t:a");
-    assert_eq!(
-        0,
-        shard.legacy_context_event_len_for_test(),
-        "nor a removal, which is the half a mirrored pair used to lose"
-    );
-    assert_eq!(
-        3,
-        shard.context_events().len(),
-        "denominator: the array map really holds the three keys those writes left"
-    );
-}
-
-/// THE PREMISE OF THE FOLD, AND THE COUNTER THAT CATCHES IT FAILING.
-///
-/// The fold is a move rather than a merge because its destination is empty by construction -- the
-/// array field is `#[serde(skip)]`, so a freshly decoded state has it at `Default`. That premise is
-/// checked rather than assumed: if the fold runs over a populated map, the live entry is KEPT and
-/// counted, so the old image cannot silently overwrite live series.
-///
-/// THIS REPLACED A COUNTER THAT COULD NOT FIRE. The mirror revision counted the two copies arriving
-/// different, which became unreachable the moment there was one copy -- a counter whose branch no
-/// execution can take proves nothing by reading zero. This one is reachable, and here is the
-/// execution that reaches it.
-///
-/// rust-internal: measures this crate's own resident structures, no product behaviour
-#[test]
-fn a_fold_over_a_live_map_keeps_the_live_entry_and_counts_it() {
-    crate::engine::state::reset_legacy_context_event_fold_over_live_map_count();
-
-    // THE ORDINARY CASE FIRST, as the control: an empty destination counts nothing.
-    let mut fresh = ShardState::default();
-    fresh.plant_legacy_context_event_for_test("ctx:event:t:a", series_of(&[1]));
-    fresh.fold_legacy_context_events();
-    assert_eq!(
-        0,
-        crate::engine::state::legacy_context_event_fold_over_live_map_count(),
-        "a fold onto an empty map is every ordinary decode and must count nothing"
-    );
-
-    // NOW THE PREMISE FAILING: a live series under the same key the legacy image carries.
-    let mut live = ShardState::default();
-    live.set_context_event_series("ctx:event:t:a", series_of(&[1]));
-    live.plant_legacy_context_event_for_test("ctx:event:t:a", series_of(&[2]));
-    live.plant_legacy_context_event_for_test("ctx:event:t:b", series_of(&[7]));
-    live.fold_legacy_context_events();
-
-    assert_eq!(
-        1,
-        crate::engine::state::legacy_context_event_fold_over_live_map_count(),
-        "exactly one key was already live -- the second was absent from the array map, which is an \
-         arrival and not a premise failure"
-    );
-    assert_eq!(
-        Some(&address(1)),
-        live.context_events()
-            .get("ctx:event:t:a")
-            .and_then(|series| series.get(1)),
-        "THE LIVE ENTRY IS KEPT. An old image must not overwrite a series that is already serving"
-    );
-    assert!(
-        live.context_events().contains_key("ctx:event:t:b"),
-        "and the key that was only in the legacy copy still arrived -- the fold must not refuse \
-         the load, because an unopenable store is the worst outcome on this path"
-    );
-    assert_eq!(
-        0,
-        live.legacy_context_event_len_for_test(),
-        "and the field is still drained, even on the path where the premise failed"
-    );
-    crate::engine::state::reset_legacy_context_event_fold_over_live_map_count();
-}
-
-/// THE PATH THE DECODE FOLD CANNOT SEE.
+/// THE PATH NO DECODE FOLD EVER COVERED, AND THE ONLY ONE LEFT.
 ///
 /// `capture_key_states` writes a `context_events` field into the index-log blobs. When no base
 /// index decodes, `persistence.rs` takes `ShardState::default()` and folds those blobs straight
-/// through `apply_key_states` -- so `fold_legacy_context_events` is never called and cannot cover
-/// them. This is not an unguarded door: there is no stored index on this path for a stamp to
-/// describe, and the blob was written by this binary at this stamp. What covers it is the
-/// `KeyedState` conversion from the stored B-tree shape into the array.
+/// through `apply_key_states`. This is not an unguarded door: there is no stored index on this
+/// path for a stamp to describe, and the blob was written by this binary at this stamp. What
+/// covers it is the `KeyedState` conversion from the stored B-tree shape into the array.
+///
+/// THE DECODE FOLD THIS ARM'S TITLE REFERS TO IS GONE, and the path it could not see is the
+/// only one left. That is why this arm survives the compatibility field's removal unchanged:
+/// it never tested the fold, it tested the path the fold did not cover.
 ///
 /// THE REMOVAL HALF IS DRIVEN TOO. `apply_key_state_field` reads an ABSENT field as "this key had
 /// none" and REMOVES the entry, so the path writes removals as well as inserts.
@@ -304,11 +171,6 @@ fn the_capture_path_writes_the_array_map_with_nothing_decoded() {
             .map_or(0, |slot| slot.owned_element_count()),
         "the key-state fold delivered the series into the array map with nothing decoded"
     );
-    assert_eq!(
-        0,
-        shard.legacy_context_event_len_for_test(),
-        "and it did not put anything in the compatibility field, which only a decode fills"
-    );
 
     // THE REMOVAL HALF: a blob naming the key but carrying no `context_events` field.
     let departure = serde_json::json!({ "key": "ctx:event:t:a", "features": {} });
@@ -320,65 +182,6 @@ fn the_capture_path_writes_the_array_map_with_nothing_decoded() {
     );
 }
 
-/// THE STORED IMAGE IS UNCHANGED, which is the whole reason the compatibility field exists and the
-/// reason no format stamp is owed.
-///
-/// This map was ALREADY `skip_serializing` before this change, so the assertion is the strong one:
-/// the key is absent from what this binary writes, exactly as it was absent before. And an image
-/// that still carries it -- one written before `skip_serializing` landed, or one arriving through a
-/// dump manifest -- still delivers its rows, through `default` on the compatibility field and then
-/// the fold.
-///
-/// rust-internal: measures this crate's own resident structures, no product behaviour
-#[test]
-fn the_stored_image_still_omits_the_key_and_still_reads_one_that_carries_it() {
-    let mut shard = ShardState::default();
-    shard.set_context_event_series("ctx:event:t:a", series_of(&[1, 2]));
-
-    let encoded = serde_json::to_value(&shard).expect("the shard state encodes");
-    assert!(
-        encoded.get("context_events").is_none(),
-        "this map is `skip_serializing` and must stay so -- writing it would change the stored \
-         image and owe a format stamp"
-    );
-    assert!(
-        encoded.get("context_events_series").is_none(),
-        "and the array map must not appear under a NEW key either, which would be the same format \
-         change wearing a different name"
-    );
-
-    // AND THE READ DIRECTION, end to end: an image carrying the legacy key decodes into the
-    // compatibility field, and the fold moves it across and leaves that field empty.
-    let mut carried = encoded.clone();
-    carried
-        .as_object_mut()
-        .expect("the encoded state is an object")
-        .insert(
-            "context_events".to_string(),
-            serde_json::json!({ "ctx:event:t:b": series_of(&[5]) }),
-        );
-    let mut decoded: ShardState =
-        serde_json::from_value(carried).expect("an image carrying the legacy key decodes");
-    assert_eq!(
-        1,
-        decoded.legacy_context_event_len_for_test(),
-        "the legacy key landed in the compatibility field"
-    );
-    decoded.fold_legacy_context_events();
-    assert_eq!(
-        Some(&address(5)),
-        decoded
-            .context_events()
-            .get("ctx:event:t:b")
-            .and_then(|series| series.get(5)),
-        "and the fold delivered it to the array map"
-    );
-    assert_eq!(
-        0,
-        decoded.legacy_context_event_len_for_test(),
-        "leaving the compatibility field empty, which is the one property this shape rests on"
-    );
-}
 
 /// WHAT THE ARRAY COSTS AGAINST THE B-TREE IT REPLACES -- in BYTES and in ALLOCATIONS, reported as
 /// two numbers because they are two different components and one standing in for the other is how
@@ -451,5 +254,82 @@ fn the_owned_array_is_eight_bytes_and_two_allocations_where_the_btree_is_twenty_
     println!(
         "B-tree it replaces: {} B inline, one 280-byte root node allocated for the first element",
         std::mem::size_of::<BTreeMap<u64, ElementEntry>>()
+    );
+}
+/// THE LEGACY EVENT KEY HAS NO DOOR LEFT, which is why the compatibility field is gone.
+///
+/// # WHAT REPLACED "DRAINED AND NEVER REFILLED"
+///
+/// This module used to assert that a decode-only landing spot was drained by a fold and never
+/// written again. There is no landing spot now, and the claim that retired it is stronger: nothing
+/// can deliver a top-level `context_events` key at all.
+///
+/// The field was filled by serde alone, from a `ShardState` image carrying that key. Two facts
+/// close that path, and neither is "nothing writes it":
+///
+///   * **A pre-stamp image is refused on every path.** `decode_index_bytes` records that all six of
+///     its callers read `index_format_version`, and `the_dump_door_reads_the_index_stamp` and
+///     `page_entry_names` drive the refusal on the base-index and manifest doors.
+///   * **An image at stamp 20 or later does not carry the key.** That is the half this arm drives:
+///     the event series moved into `objects` at 20, so the encoder emits no such key, and a
+///     current-stamp image that somehow carried one would be IGNORED rather than folded.
+///
+/// The second point is the one worth a test, because the stamp check is `<` and therefore cannot
+/// refuse a current-stamp image over a key it does not know. What makes that safe is not the gate;
+/// it is that no binary at or above 20 produces the key.
+#[test]
+fn the_legacy_event_key_has_no_door_left() {
+    let mut shard = ShardState::default();
+    shard.set_context_event_series("ctx:event:t:a", series_of(&[1, 2]));
+
+    let encoded = serde_json::to_value(&shard).expect("the shard state encodes");
+
+    // THE ENCODER EMITS NO SUCH KEY, under the old name or a new one. This is the half that makes
+    // the field unreachable rather than merely unused.
+    assert!(
+        encoded.get("context_events").is_none(),
+        "the encoder emitted a top-level `context_events` key, so an image carrying the legacy \
+         name is reachable again and the compatibility field was retired too early"
+    );
+    assert!(
+        encoded.get("context_events_series").is_none(),
+        "and it must not appear under a NEW top-level key either, which would be the same format \
+         change wearing a different name"
+    );
+
+    // AND THE SERIES IS IN `objects`, which is where the key went. Asserted so that the absence
+    // above cannot be satisfied by the series having gone missing altogether -- an encoder that
+    // emitted nothing at all would pass the two checks above for the wrong reason.
+    let objects = encoded
+        .get("objects")
+        .and_then(|value| value.as_object())
+        .expect("the consolidated map is on the wire");
+    assert!(
+        objects.contains_key("context_event"),
+        "the event series is in neither a top-level key nor the consolidated map, so this arm is \
+         measuring an encoder that dropped the data: {:?}",
+        objects.keys().collect::<Vec<_>>()
+    );
+
+    // A CURRENT-STAMP IMAGE CARRYING THE RETIRED KEY DECODES AND IGNORES IT. `ShardState` has no
+    // `deny_unknown_fields`, so this is what would happen to one -- and no reachable image is one.
+    let mut carried = encoded.clone();
+    carried
+        .as_object_mut()
+        .expect("the encoded state is an object")
+        .insert(
+            "context_events".to_string(),
+            serde_json::json!({ "ctx:event:t:b": series_of(&[5]) }),
+        );
+    let decoded: ShardState =
+        serde_json::from_value(carried).expect("an image carrying the retired key still decodes");
+    assert!(
+        decoded.context_events().get("ctx:event:t:b").is_none(),
+        "the retired key was folded into the live map, so something still reads it"
+    );
+    assert!(
+        decoded.context_events().contains_key("ctx:event:t:a"),
+        "the series that WAS on the wire did not survive the round trip, so this arm proves \
+         nothing about the retired key"
     );
 }

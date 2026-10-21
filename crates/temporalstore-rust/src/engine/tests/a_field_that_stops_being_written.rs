@@ -147,10 +147,19 @@ fn a_field_that_stops_being_written_must_still_decode_an_image_that_lacks_it() {
     );
 
     let fields = fields_of(source, "pub(super) struct ShardState {");
+    // A NON-VACUITY FLOOR, NOT A BUDGET, AND IT HAD TO COME DOWN. This refuses to run
+    // unless the matcher finds a plausible number of fields, so a matcher that silently
+    // stops matching cannot satisfy the property below over an empty set. It was 40.
+    // `ShardState` has 33 fields now -- the map consolidation removed thirteen -- so the
+    // floor was failing for the OPPOSITE of the reason it was written: the structure
+    // shrank, not the matcher. Thirty still catches a matcher that finds nothing or a
+    // handful, and is NOT a target: a floor on a shrinking structure has to track the
+    // structure or it becomes a tripwire for progress.
     assert!(
-        fields.len() >= 40,
-        "only {} field(s) were found in the ShardState body, and it has far more than that -- the \
-         field matcher is not matching, so every assertion below is over an almost empty set",
+        fields.len() >= 30,
+        "only {} field(s) were found in the ShardState body, which has around 33 -- the
+         field matcher is not matching, so every assertion below is over an almost empty
+         set",
         fields.len()
     );
 
@@ -180,12 +189,21 @@ fn a_field_that_stops_being_written_must_still_decode_an_image_that_lacks_it() {
     // --- NON-VACUOUS. Without this the test passes while watching nothing, and it would keep
     // --- passing through the whole migration, which is when it matters most.
     let stopping: Vec<&Field> = fields.iter().filter(|f| f.stops_being_written()).collect();
+    // THE COUNT FELL, AND HERE IS WHICH ONE WENT. It was two. `context_events_compat` carried
+    // `#[serde(rename = "context_events", default, skip_serializing)]` and was retired once no
+    // door could deliver its key -- see `the_event_series_on_the_owned_array`. One field is
+    // left: the `skip_serializing_if = "Option::is_none"` deadline on the record wire form,
+    // which is a CONDITIONAL skip and a different shape from a bare `skip_serializing`, always
+    // paired with a default.
+    //
+    // SO THE GUARD STILL WATCHES SOMETHING, BUT ONLY JUST, and that is worth saying rather
+    // than hiding behind a lowered number. At one field this floor has stopped being much of
+    // a control. If that last field ever goes, RETIRE this guard rather than lowering the
+    // floor to zero -- a control that cannot fail is worse than no control, because it reads
+    // as coverage.
     assert!(
-        stopping.len() >= 2,
-        "only {} field(s) stop being written, and this guard was written when there were more. \
-         Either the count fell -- say which stopped and whether this guard still watches anything \
-         -- or the attribute matcher broke",
-        stopping.len()
+        stopping.len() >= 1,
+        "no field stops being written: retire this guard rather than lowering the floor"
     );
 
     // --- THE BARE FIELDS, PRINTED RATHER THAN LISTED IN PROSE, so the warning cannot go stale.

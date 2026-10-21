@@ -773,14 +773,14 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             + deep_heap_bytes(&shard.lists)
             + deep_heap_bytes(&shard.seen)
             + deep_heap_bytes(&shard.buckets);
-        // THE COMPATIBILITY FIELD IS PRICED TOO, AND IT IS EXPECTED TO BE ZERO. The fold drains
-        // it at decode and no mutator refills it, so after a load it holds nothing -- but it is
-        // added here rather than assumed away, because `whole_bytes` below clones the whole shard
-        // and would count it whether this line did or not, and a breakdown that silently omitted a
-        // field would disagree with that total the first time the drain stopped working.
+        // THE COMPATIBILITY FIELD IS NO LONGER PRICED, BECAUSE IT NO LONGER EXISTS. It used to be
+        // added here rather than assumed away -- `whole_bytes` below clones the whole shard and
+        // would count it whether this line did or not, so a breakdown that silently omitted a
+        // field would disagree with that total the first time its drain stopped working. That
+        // reasoning is why the term was here and why nothing replaces it: there is no field left
+        // for the total to count.
         let context_bytes = deep_heap_bytes(shard.context_nodes())
             + deep_heap_bytes(shard.context_events())
-            + deep_heap_bytes(&shard.clone_legacy_context_events_for_test())
             + deep_heap_bytes(&shard.context_event_timeline)
             + deep_heap_bytes(shard.context_indexes())
             + deep_heap_bytes(shard.context_audits())
