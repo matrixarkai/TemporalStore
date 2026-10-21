@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Storage snapshot/sample reporting + bucket-index maintenance internals, split from engine.rs.
+use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 use crate::engine::reports::StageWalkCharges;
 use std::sync::Arc;
@@ -2816,9 +2817,9 @@ pub(super) fn shard_has_model_entries(shard: &ShardState) -> bool {
         || !shard.control_state_blocks().is_empty()
         || !shard.context_nodes.is_empty()
         || !shard.context_events().is_empty()
-        || !shard.context_indexes.is_empty()
+        || !shard.context_indexes().is_empty()
         || !shard.context_audits().is_empty()
-        || !shard.context_entities.is_empty()
+        || !shard.context_entities().is_empty()
         || !shard.context_children().is_empty()
         || !shard.context_summaries().is_empty()
         || !shard.context_compressions().is_empty()
@@ -3000,7 +3001,7 @@ pub(super) fn sync_context_blocks_for_object(
     // holds instead of building a B-tree to read once and drop -- the same split `context_events`
     // above already has, for the same reason.
     if let Some(newest) = shard
-        .context_indexes
+        .context_indexes()
         .get(object_key)
         .and_then(newest_filed_address)
     {
@@ -3027,8 +3028,8 @@ pub(super) fn sync_context_blocks_for_object(
         }
     }
     // Entities live grouped by node but index one entry per entity, under the composed key.
-    if let Some(series) = shard.context_entities.get(object_key) {
-        for (entity_hash, address) in series.iter() {
+    if let Some(series) = shard.context_entities().get(object_key) {
+        for (entity_hash, address) in series.points() {
             groups.push((
                 "context_entity",
                 format!("{object_key}:{entity_hash}"),
@@ -3046,9 +3047,9 @@ pub(super) fn sync_context_blocks_for_object(
         // File the ONE block this key names. The composed key above is
         // `{collection_key}:{entity_hash}`, which IS this key, so both paths file the same shape.
         if let Some(address) = shard
-            .context_entities
+            .context_entities()
             .get(&collection_key[..])
-            .and_then(|series| series.get(&entity_hash))
+            .and_then(|series| series.get(entity_hash))
         {
             groups.push((
                 "context_entity",
@@ -3788,7 +3789,7 @@ fn visit_model_live_blocks(
                 }
             }
         }
-        visit_timestamped_series(&shard.features(), ModelKind::Feature, &accept, &mut emit);
+        visit_timestamped_series(shard.features(), ModelKind::Feature, &accept, &mut emit);
         for (key, record) in shard.control_state_blocks() {
             let address = record.address();
             if accept(key, &address) {
@@ -3807,7 +3808,7 @@ fn visit_model_live_blocks(
             &mut emit,
         );
         visit_timestamped_series(
-            &shard.context_indexes,
+            shard.context_indexes(),
             ModelKind::ContextIndex,
             &accept,
             &mut emit,
@@ -3836,8 +3837,8 @@ fn visit_model_live_blocks(
         // composed key to be interned, which is a footprint decision rather than a refactor and is
         // deliberately not taken here.
         let mut composed = String::new();
-        for (collection_key, series) in &shard.context_entities {
-            for (entity_hash, address) in series.iter() {
+        for (collection_key, series) in shard.context_entities() {
+            for (entity_hash, address) in series.points() {
                 // COMPOSED BEFORE ACCEPT, and only on this arm. The block is filed under this
                 // composed key, so it is the string a bucket filter has to hash; see the note on
                 // this function for what that costs.
@@ -7109,17 +7110,15 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     let mut control_state = HashMap::<super::state::ModelKey, BTreeMap<u64, i64>>::new();
     let mut control_state_blocks = HashMap::new();
-    let mut context_events =
-        HashMap::<std::sync::Arc<str>, super::timestamped_series::OwnedTimestampedSeries>::new();
+    // SLOTS, as every other context kind's accumulator is now.
+    let mut context_events = HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     let mut context_event_timeline = HashMap::<std::sync::Arc<str>, BTreeMap<u64, u64>>::new();
     // THE ACCUMULATOR MATCHES THE FIELD, as `features` and `context_events` above already do:
     // both helpers this map is handed to -- `insert_timestamped_secondary_view` and
     // `reconcile_timestamped_series_membership_in_place` -- are generic over the series type, so
     // this builds the array directly instead of building a B-tree to convert and throw away.
-    let mut context_indexes = HashMap::<
-        std::sync::Arc<str>,
-        super::timestamped_series::OwnedTimestampedSeries,
-    >::new();
+    // SLOTS, as every other context kind's accumulator is now.
+    let mut context_indexes = HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
     // above already do: both helpers this is handed to are generic over the series type, so it
     // builds the array directly rather than a B-tree to convert and throw away.
@@ -7129,8 +7128,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // so `insert_timestamped_secondary_view` fills it unchanged.
     let mut context_audits =
         HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
-    let mut context_entities =
-        HashMap::<std::sync::Arc<str>, BTreeMap<u64, ElementEntry>>::new();
+    // SLOTS. The ordered key this one carries is an ENTITY HASH, not an instant -- see the
+    // `context_entities` door -- but the pair is the same shape a slot stores.
+    let mut context_entities = HashMap::<std::sync::Arc<str>, super::object_record::ObjectSlot>::new();
     // The accumulator matches the field, as `features`, `context_events` and `context_indexes`
     // above already do: both helpers this is handed to are generic over the series type, so it
     // builds the array directly rather than a B-tree to convert and throw away.
@@ -7314,10 +7314,13 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
                 if let Some((collection_key, entity_hash)) =
                     split_context_entity_key(&entry.object_key)
                 {
+                    // A SLOT, AND `set` RATHER THAN `insert`. The accumulator holds slots now;
+                    // the ordered key is the ENTITY HASH for this kind, which is why the variable
+                    // keeps that name through the write.
                     context_entities
                         .entry(std::sync::Arc::from(&collection_key[..]))
-                        .or_insert_with(BTreeMap::new)
-                        .insert(entity_hash, entry.address);
+                        .or_default()
+                        .set(entity_hash, entry.address);
                 }
             }
             "context_child" => {
@@ -7530,7 +7533,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             match shard.context_events().get(object_key) {
                 None => false,
                 Some(series) => {
-                    index.retain(|_, event_id_hash| series.contains_key(event_id_hash));
+                    index.retain(|_, event_id_hash| series.get(*event_id_hash).is_some());
                     !index.is_empty()
                 }
             }
@@ -7539,7 +7542,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
     if saw_context_indexes {
         reconcile_timestamped_series_membership_in_place(
-            &mut shard.context_indexes,
+            shard.context_indexes_mut(),
             context_indexes,
         );
     }
@@ -7550,7 +7553,11 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         );
     }
     if saw_context_entities {
-        shard.context_entities = context_entities;
+        // THE LEFT-HAND SIDE OF AN ASSIGNMENT NEEDS THE WRITE DOOR, DEREFERENCED.
+        // E0615 reported this site the same way it reports a read, because an
+        // assignment target does "take the value of" the field -- so the door pass
+        // gave it the read accessor and rustc rejected the left-hand side.
+        *shard.context_entities_mut() = context_entities;
     }
     if saw_context_children {
         reconcile_timestamped_series_membership_in_place(
@@ -9121,14 +9128,14 @@ mod model_kind_registry_guards {
         shard.context_nodes.insert("ctx:node:t:n".into(), at.clone());
         shard.set_context_event_series("ctx:event:t:n", BTreeMap::from([(1u64, at.clone())]));
         shard
-            .context_indexes
+            .context_indexes_mut()
             .insert("ctx:index:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_audits_mut()
             .insert("ctx:audit:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
-            .context_entities
-            .insert("ctx:entity:t:n".into(), BTreeMap::from([(1u64, at.clone())]));
+            .context_entities_mut()
+            .insert("ctx:entity:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());
         shard
             .context_children_mut()
             .insert("ctx:child:t:n".into(), BTreeMap::from([(1u64, at.clone())]).into());

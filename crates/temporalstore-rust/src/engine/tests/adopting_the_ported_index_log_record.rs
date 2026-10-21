@@ -562,10 +562,25 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 19,
-        "costed against 19; if this is red the stamp moved and the adoption's cost has to be \
+        current, 20,
+        "costed against 20; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 19 -> 20, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 20 is the last three of the eight: `context_events`, `context_entities` and
+    // `context_indexes`. IT IS NOT THE SAME SHAPE AS 17, 18 AND 19, which is the thing worth
+    // reading here. Those removed a stored key and the stamp made an older index rebuild rather
+    // than load that map empty. `context_entities` is that case again -- but `context_events` and
+    // `context_indexes` were `#[serde(skip)]` with NO stored image at all, and `objects` IS
+    // serialized, so those two series become DURABLE for the first time. An older index carries
+    // nothing for them, so the load behaviour is the same rebuild; what is new is that every index
+    // written from here on carries more than any index before it.
+    //
+    // This module still costs the POSITIONAL index-log row, which carries no struct version, so
+    // `index_log::INDEX_ITEM_SLOTS` and the row's shape are untouched and the 550-against-595
+    // comparison for eight page items is where it was.
+    //
     // RE-READ AT 18 -> 19, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 19 was spent on the FEATURE series moving into the consolidated map: the largest of the eight
@@ -641,8 +656,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 18 && current != 20,
-        "bracketed, so 19 is exact and not an artefact of the comparison above"
+        current != 19 && current != 21,
+        "bracketed, so 20 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

@@ -25,6 +25,7 @@
 //!
 //! rust-internal: measures this crate's own resident structures, no product behaviour
 
+use crate::engine::timestamped_series::TimestampedSeries as _;
 use crate::types::{Command, ExecuteRequest};
 use crate::TemporalEngine;
 use std::sync::Arc;
@@ -441,7 +442,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_indexes",
             shard
-                .context_indexes
+                .context_indexes()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),
@@ -457,7 +458,7 @@ fn every_adopted_context_map_holds_the_page_index_own_key() {
         (
             "context_entities",
             shard
-                .context_entities
+                .context_entities()
                 .keys()
                 .map(|k| (&**k, k.as_ptr() as usize))
                 .collect(),

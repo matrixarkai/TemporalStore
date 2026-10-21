@@ -1027,13 +1027,13 @@ pub(super) fn timestamped_kv_series<'a>(
             .iter()
             .filter_map(|(timeline_key, event_id)| {
                 by_id
-                    .get(event_id)
+                    .get(*event_id)
                     .map(|address| (*timeline_key, address.clone()))
             })
             .collect();
         series.push(("context_event", &**key, Cow::Owned(timeline)));
     }
-    for (key, timeline) in &shard.context_indexes {
+    for (key, timeline) in shard.context_indexes() {
         // MATERIALISED, for the reason given over `features` above: this report is written against
         // the stored B-tree shape and the map holds the array. One allocation per series on a
         // reporting path, not a serving one.

@@ -757,7 +757,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
 
         // --- Footprint, structure by structure. ---
         let strings_bytes = deep_heap_bytes(&shard.strings);
-        let features_bytes = deep_heap_bytes(&shard.features());
+        let features_bytes = deep_heap_bytes(shard.features());
         let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
         let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
         let expiry_bytes =
@@ -782,12 +782,12 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             + deep_heap_bytes(shard.context_events())
             + deep_heap_bytes(&shard.clone_legacy_context_events_for_test())
             + deep_heap_bytes(&shard.context_event_timeline)
-            + deep_heap_bytes(&shard.context_indexes)
-            + deep_heap_bytes(&shard.context_audits())
-            + deep_heap_bytes(&shard.context_entities)
+            + deep_heap_bytes(shard.context_indexes())
+            + deep_heap_bytes(shard.context_audits())
+            + deep_heap_bytes(shard.context_entities())
             + deep_heap_bytes(shard.context_children())
-            + deep_heap_bytes(&shard.context_summaries())
-            + deep_heap_bytes(&shard.context_compressions());
+            + deep_heap_bytes(shard.context_summaries())
+            + deep_heap_bytes(shard.context_compressions());
         let whole_bytes = deep_heap_bytes(shard);
         let (arc_bytes, arc_count) = arc_payload_bytes(&shard.bucket_index);
         let (dirty_arc_bytes, dirty_arc_count, dirty_arc_shared) =
@@ -853,11 +853,11 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
 
         // --- Occupancy, which is what a container's cost per byte STORED turns on. ---
         println!("  occupancy across the per-kind maps:");
-        series_occupancy(&shard.features()).report("features");
+        series_occupancy(shard.features()).report("features");
         series_occupancy(shard.context_events()).report("context_events");
-        series_occupancy(&shard.context_indexes).report("context_indexes");
-        series_occupancy(&shard.context_audits()).report("context_audits");
-        series_occupancy(&shard.context_entities).report("context_entities");
+        series_occupancy(shard.context_indexes()).report("context_indexes");
+        series_occupancy(shard.context_audits()).report("context_audits");
+        series_occupancy(shard.context_entities()).report("context_entities");
 
         let mut pages_per_bucket = Occupancy::default();
         let mut objects_per_bucket = Occupancy::default();
@@ -1305,7 +1305,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
 
             // --- The same rows, computed by the same helpers, so the two ranges compare. ---
             let strings_bytes = deep_heap_bytes(&shard.strings);
-            let features_bytes = deep_heap_bytes(&shard.features());
+            let features_bytes = deep_heap_bytes(shard.features());
             let bucket_map_bytes = deep_heap_bytes(&shard.bucket_index.bucket_map);
             let lookup_bytes = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
             let core_rest_bytes = deep_heap_bytes(&shard.bucket_index)
@@ -2313,7 +2313,7 @@ fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, 
     let (dirty_arc_bytes, _, _) = dirty_arc_payload_bytes(shard);
     vec![
         ("strings", deep_heap_bytes(&shard.strings)),
-        ("features", deep_heap_bytes(&shard.features())),
+        ("features", deep_heap_bytes(shard.features())),
         ("hashes", deep_heap_bytes(&shard.hashes)),
         ("bucket_index.bucket_map", bucket_map),
         ("bucket_index.object_block_lookup", lookup),
@@ -3341,7 +3341,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     let holders: Vec<(&str, Vec<&str>)> = vec![
         ("context_events (Arc-keyed)", shard.context_events().keys().map(|k| &**k).collect()),
         ("context_event_timeline (Arc-keyed)", shard.context_event_timeline.keys().map(|k| &**k).collect()),
-        ("context_indexes", shard.context_indexes.keys().map(|k| &**k).collect()),
+        ("context_indexes", shard.context_indexes().keys().map(|k| &**k).collect()),
         ("context_audits", shard.context_audits().keys().map(|k| &**k).collect()),
         // NO KEY CHARACTERS AT ALL NOW, which is the point of this row rather than a gap in
         // it. This map was the family's largest character holder -- 800 keys and 14,000
@@ -3351,7 +3351,7 @@ fn how_many_times_a_context_keys_characters_exist() {
         // nothing on the heap. An empty text list is therefore the correct report, and the
         // assertion below pins it so a reversion shows up as characters reappearing.
         ("context_dirty_index (no key characters)", Vec::new()),
-        ("context_entities", shard.context_entities.keys().map(|k| &**k).collect()),
+        ("context_entities", shard.context_entities().keys().map(|k| &**k).collect()),
         ("context_children", shard.context_children().keys().map(|k| &**k).collect()),
         ("context_summaries", shard.context_summaries().keys().map(|k| &**k).collect()),
         ("context_compressions", shard.context_compressions().keys().map(|k| &**k).collect()),
@@ -4966,7 +4966,8 @@ fn what_the_composed_entity_key_costs_the_walk() {
                 ElementEntry::from_parts(1, (collection * 64 + entity) as u64, 48, None, None),
             );
         }
-        shard.context_entities.insert(collection_key, series);
+        // The map holds slots; the B-tree the loop above built converts.
+        shard.context_entities_mut().insert(collection_key, series.into());
     }
 
     let probe = Probe::start();
@@ -7020,12 +7021,12 @@ fn which_series_maps_the_grouped_shape_would_help() {
     println!();
     println!("  {EVENTS} extracted events, one unique entity and one shared per event");
     println!("    map                      keys    points       mean      shipped -> grouped      ratio");
-    let (index_occ, index_shipped, index_grouped) = weigh("context_indexes", &shard.context_indexes);
-    let _ = weigh("context_audits", &shard.context_audits());
-    let _ = weigh("context_entities", &shard.context_entities);
+    let (index_occ, index_shipped, index_grouped) = weigh("context_indexes", shard.context_indexes());
+    let _ = weigh("context_audits", shard.context_audits());
+    let _ = weigh("context_entities", shard.context_entities());
     let _ = weigh("context_children", shard.context_children());
-    let _ = weigh("context_summaries", &shard.context_summaries());
-    let _ = weigh("context_compressions", &shard.context_compressions());
+    let _ = weigh("context_summaries", shard.context_summaries());
+    let _ = weigh("context_compressions", shard.context_compressions());
 
     println!();
     println!("  context_indexes occupancy, which is the distribution that decides the answer:");
@@ -7168,13 +7169,13 @@ fn what_the_context_index_map_costs_now_it_holds_the_array() {
     // The container that ships, and the one it replaced, holding identical content.
     let mut occ = Occupancy::default();
     let mut as_btrees: HashMap<std::sync::Arc<str>, BTreeMap<u64, crate::block_store::ElementEntry>> =
-        HashMap::with_capacity(shard.context_indexes.len());
-    for (key, series) in shard.context_indexes.iter() {
+        HashMap::with_capacity(shard.context_indexes().len());
+    for (key, series) in shard.context_indexes().iter() {
         occ.observe(series.len());
         as_btrees.insert(key.clone(), series.to_btree());
     }
 
-    let array_bytes = deep_heap_bytes(&shard.context_indexes);
+    let array_bytes = deep_heap_bytes(shard.context_indexes());
     let btree_bytes = deep_heap_bytes(&as_btrees);
     let points = occ.entries.max(1);
     let keys = occ.containers.max(1);
@@ -7450,12 +7451,12 @@ fn what_the_four_converted_context_maps_cost() {
     println!("  {NODES} nodes x {POINTS} points, per kind");
     println!("    map                      keys     points      mean       B-tree -> array      ratio");
     let arms = [
-        ("context_audits", weigh("context_audits", &shard.context_audits())),
+        ("context_audits", weigh("context_audits", shard.context_audits())),
         ("context_children", weigh("context_children", shard.context_children())),
-        ("context_summaries", weigh("context_summaries", &shard.context_summaries())),
+        ("context_summaries", weigh("context_summaries", shard.context_summaries())),
         (
             "context_compressions",
-            weigh("context_compressions", &shard.context_compressions()),
+            weigh("context_compressions", shard.context_compressions()),
         ),
     ];
 
@@ -7977,5 +7978,142 @@ fn the_published_amplification_ratios_are_the_ratio_they_name() {
         store.writes > 0,
         "the block store recorded no appends, so the physical term above is not a measurement of \
          this fixture's writes"
+    );
+}
+
+/// WHAT PERSISTING THE EVENT AND INDEX SERIES COSTS THE STORED INDEX.
+///
+/// `context_events` and `context_indexes` were `#[serde(skip)]` -- no stored image at all -- until
+/// their series moved into the serialized `objects` at stamp 20. They are durable now, as every
+/// other context kind already was, and the cost of that is what this arm reports.
+///
+/// MEASURED BY DIFFERENCE ON ONE STORE, which is the whole method. The same shard is encoded with
+/// the two kinds present and again with them dropped, so the container header, the codec, zstd and
+/// every other map are byte-identical on both sides and cancel out. Encoding a second time costs
+/// nothing here, and a figure taken from two separate builds would have been confounded by any
+/// difference in what the fixture happened to write.
+#[test]
+fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
+    use crate::engine::storage_bucket_internals::StoredModelKind;
+    use crate::types::{Command, ContextEvent, ContextExtractedEventIndexes, ExecuteRequest};
+
+    const EVENTS: u64 = 2_000;
+    const T0: u64 = 1_787_270_070_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    // INLINED RATHER THAN BORROWED. `probe_engine_on` is gated on `alloc-probe` because its
+    // callers weigh allocations; this arm weighs encoded bytes and carries the assertion that
+    // these two kinds are persisted at all, so it must run in the default arm.
+    let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    ));
+    let loaded = engine.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "what-persisting-the-two-kinds-costs".to_string(),
+        shard_uri: "local://what-persisting-the-two-kinds-costs/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: crate::DEFAULT_END_ROUTING_BUCKET,
+        readonly: false,
+        load_version: 1,
+        local_node_id: Some(1),
+    });
+    assert!(loaded.status.ok, "the fixture could not load shard 1: {:?}", loaded.status);
+    for index in 0..EVENTS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::ContextWriteExtractedEvent {
+                tenant_hash: 7,
+                node_hash: 1_000 + (index % 50),
+                event: Box::new(ContextEvent {
+                    event_id_hash: 0xDEAD_0000_0000_0000 | index,
+                    event_time_ms: T0 + index,
+                    ingestion_time_ms: T0 + index,
+                    kind: 9,
+                    event_type: 2,
+                    actor_hash: 0,
+                    status: 0,
+                    valid_until_ms: 0,
+                    confidence: 0.9,
+                    importance: 0.7,
+                    text: "an extracted event".to_string(),
+                    source_ref: String::new(),
+                    related_node_hashes: Vec::new(),
+                    compact_attrs: Vec::new(),
+                    vector: Vec::new(),
+                }),
+                indexes: ContextExtractedEventIndexes {
+                    scope_hash: 3_001,
+                    entity_hashes: vec![500_000 + index, 1],
+                    status_hash: 600 + (index % 8),
+                    source_hash: 700 + (index % 8),
+                    event_time_bucket_ms: T0 + (index % 20) * 1_000_000,
+                    disabled_indexes: Vec::new(),
+                },
+                first_write_only: false,
+                cold_storage: false,
+            },
+        });
+        assert!(response.status.ok, "event {index}: {:?}", response.status);
+    }
+
+    let (with_bytes, without_bytes, event_points, index_points, event_keys, index_keys) = {
+        let mut shards = engine.shards.write().expect("engine lock poisoned");
+        let shard = shards.get_mut(&1).expect("shard is loaded");
+
+        let event_keys = shard.context_events().len();
+        let index_keys = shard.context_indexes().len();
+        let event_points: usize = shard
+            .context_events()
+            .values()
+            .map(|slot| slot.owned_element_count())
+            .sum();
+        let index_points: usize = shard
+            .context_indexes()
+            .values()
+            .map(|slot| slot.owned_element_count())
+            .sum();
+        assert!(
+            event_points > 0 && index_points > 0,
+            "the fixture wrote {event_points} event points and {index_points} index points; a              zero on either side makes the difference below a measurement of nothing"
+        );
+
+        let with_bytes = crate::engine::encode_index_bytes(shard).len();
+        shard.objects.remove(&StoredModelKind::ContextEvent);
+        shard.objects.remove(&StoredModelKind::ContextIndex);
+        let without_bytes = crate::engine::encode_index_bytes(shard).len();
+        (
+            with_bytes,
+            without_bytes,
+            event_points,
+            index_points,
+            event_keys,
+            index_keys,
+        )
+    };
+
+    let added = with_bytes.saturating_sub(without_bytes);
+    let points = (event_points + index_points).max(1);
+    println!();
+    println!("  AFTER {EVENTS} extracted events:");
+    println!("    context_events  {event_keys} keys, {event_points} points");
+    println!("    context_indexes {index_keys} keys, {index_points} points");
+    println!("    stored index WITH the two kinds    {with_bytes:>9} B");
+    println!("    stored index WITHOUT them          {without_bytes:>9} B");
+    println!(
+        "    what persisting them costs         {added:>9} B   {:>6.1} B/point   {:+.1}% of the index",
+        added as f64 / points as f64,
+        100.0 * added as f64 / without_bytes.max(1) as f64,
+    );
+
+    // THE DIRECTION IS THE CLAIM, and it is asserted rather than left to the printout: these series
+    // had no stored image, so the index MUST be larger with them than without. A zero or negative
+    // difference would mean they are still not being written, which is the failure this whole
+    // change would have shipped silently.
+    assert!(
+        added > 0,
+        "the stored index is no larger with the two kinds than without ({with_bytes} against          {without_bytes}), so they are not being persisted and the durability this change claims          does not exist"
     );
 }

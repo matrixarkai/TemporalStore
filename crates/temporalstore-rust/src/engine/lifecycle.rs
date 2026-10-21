@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
+use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
 use super::*;
 // FOR THE SLOT'S SERIES SURFACE: `ObjectSlot` implements these, and the names it keeps
 // (`len`, `get`, `is_empty`) already matched the call sites -- only the trait was out of
@@ -32,7 +33,7 @@ fn remove_timestamped_series(
 ) -> bool {
     match kind {
         "feature" => shard.features_mut().remove(object_key).is_some(),
-        "context_index" => shard.context_indexes.remove(object_key).is_some(),
+        "context_index" => shard.context_indexes_mut().remove(object_key).is_some(),
         "context_audit" => shard.context_audits_mut().remove(object_key).is_some(),
         "context_child" => shard.context_children_mut().remove(object_key).is_some(),
         "context_summary" => shard.context_summaries_mut().remove(object_key).is_some(),
@@ -59,7 +60,7 @@ fn apply_timestamped_point(
     use super::timestamped_series::set_point_for_owned_key as apply;
     Some(match kind {
         "feature" => apply(shard.features_mut(), object_key, at, address),
-        "context_index" => apply(&mut shard.context_indexes, object_key, at, address),
+        "context_index" => apply(shard.context_indexes_mut(), object_key, at, address),
         "context_audit" => apply(shard.context_audits_mut(), object_key, at, address),
         "context_child" => apply(shard.context_children_mut(), object_key, at, address),
         "context_summary" => apply(shard.context_summaries_mut(), object_key, at, address),
@@ -1415,10 +1416,12 @@ impl TemporalEngine {
         }
         // Every timestamped series renders the same way, so a kind that stops being installed
         // shows up as a missing line rather than as a map nobody compares.
-        let mut entities: Vec<_> = shard.context_entities.iter().collect();
+        let mut entities: Vec<_> = shard.context_entities().iter().collect();
         entities.sort_by(|left, right| left.0.cmp(right.0));
         for (key, members) in entities {
-            for (entity_hash, address) in members {
+            // `points()` on the slot, and the hash by VALUE: this kind's ordered key is an entity
+            // hash rather than an instant, which is why the loop variable keeps its name.
+            for (entity_hash, address) in members.points() {
                 out.push_str(&format!(
                     "context_entity {key} id={entity_hash} slab={} off={} len={}
 ",
@@ -1474,7 +1477,7 @@ impl TemporalEngine {
         let mut event_keys: Vec<_> = shard.context_events().iter().collect();
         event_keys.sort_by(|left, right| left.0.cmp(right.0));
         for (key, entries) in event_keys {
-            for (event_id_hash, address) in entries.iter() {
+            for (event_id_hash, address) in entries.points() {
                 out.push_str(&format!(
                     "context_event {key} id={event_id_hash} slab={} off={} len={}
 ",
@@ -1499,8 +1502,8 @@ impl TemporalEngine {
         // with the page index, while `features` keeps its `String` key -- that map holds 40 keys at
         // a 40,040-key corpus, so converting it would buy nothing and touch 87 call sites. An array
         // literal forces one type on every element; a generic call does not.
-        append_series_shape(&mut out, "feature", &shard.features());
-        append_series_shape(&mut out, "context_index", &shard.context_indexes);
+        append_series_shape(&mut out, "feature", shard.features());
+        append_series_shape(&mut out, "context_index", shard.context_indexes());
         append_series_shape(&mut out, "context_audit", shard.context_audits());
         append_series_shape(&mut out, "context_child", shard.context_children());
         append_series_shape(&mut out, "context_summary", shard.context_summaries());
@@ -2369,10 +2372,10 @@ impl TemporalEngine {
                     return false;
                 };
                 shard
-                    .context_entities
+                    .context_entities_mut()
                     .entry(std::sync::Arc::from(&item.object_key[..]))
                     .or_default()
-                    .insert(entity_hash, address);
+                    .set(entity_hash, address);
                 true
             }
             "context_node" => {

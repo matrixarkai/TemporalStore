@@ -8,7 +8,6 @@ use std::num::NonZeroU64;
 use serde::{Deserialize, Serialize};
 
 use crate::block_store::ElementEntry;
-use super::timestamped_series::OwnedTimestampedSeries;
 use crate::types::{CommandResponse, ControlStateSelectionType, FeaturePoint, ShardId};
 
 use super::control_rollup::RollupEntry;
@@ -535,8 +534,15 @@ pub(super) struct ShardState {
     /// filled from that one by [`ShardState::fold_legacy_context_events`] at decode, which DRAINS
     /// the other to empty -- so there is exactly one live copy of this data at every moment after
     /// the decode returns.
-    #[serde(skip)]
-    context_events_series: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // THE EVENT SERIES ARE IN `objects` NOW, under `StoredModelKind::ContextEvent`, which is
+    // where every other context kind already lives. The doors below kept their names and their
+    // signatures changed, so no call site moved -- the census those doors were created for had
+    // already been taken.
+    //
+    // AND THEY ARE DURABLE NOW, WHICH THIS FIELD'S `skip` MEANT THEY WERE NOT. `objects` is
+    // serialized, so a decode no longer has to rebuild them from the compat key and the fold
+    // below. That is the treatment the other context kinds have; the format stamp is what makes
+    // an older index rebuild rather than load empty.
     /// THE COMPATIBILITY KEY, AND ITS OWN REMOVAL CONDITION.
     ///
     /// The event series also live in `context_events_series` above, which is authoritative. This
@@ -617,8 +623,11 @@ pub(super) struct ShardState {
     // carries a test asserting that a bare `skip` is NOT reported, because `skip` is
     // `skip_serializing` plus a default and so cannot strand a reader. This moves out of that
     // audit's scope rather than into it.
-    #[serde(skip)]
-    pub(super) context_indexes: HashMap<ModelKey, OwnedTimestampedSeries>,
+    // IN `objects` NOW, under `StoredModelKind::ContextIndex`, behind `context_indexes()`
+    // and `context_indexes_mut()`. The `skip` above is gone with the field: these series are
+    // DURABLE now, as every other context kind's are, so the note that used to stand here --
+    // that the key was never written and no stamp was owed -- no longer holds. A stamp IS
+    // owed, and is spent.
     // ON THE OWNED SORTED ARRAY. Measured at 24.0 B a point against the B-tree's 49.1 over 40,040
     // keys (`what_the_feature_series_would_cost_as_an_owned_array`): 24 bytes is EXACTLY the
     // payload -- `(u64, ElementEntry)` with a 16-byte entry -- so the array carries no per-point
@@ -682,8 +691,10 @@ pub(super) struct ShardState {
     // context_entity_update_audit series) while making a node's entities enumerable, which the
     // per-entity key shape could not do: a HashMap cannot prefix-scan, so ContextQueryEntities
     // had to be handed every entity_hash by its caller.
-    #[serde(default)]
-    pub(super) context_entities: HashMap<ModelKey, BTreeMap<u64, ElementEntry>>,
+    // IN `objects` NOW, under `StoredModelKind::ContextEntity`, behind `context_entities()`
+    // and `context_entities_mut()`. It was already stored, so the stamp is owed for the key
+    // leaving the top level rather than for a new durability guarantee. The note above about
+    // the entity hash and the per-node collection key moved to the door.
     // No migration field is needed: the PERSISTED entry still carries the per-entity key
     // `ctx:entity:{tenant}:{node}:{entity_hash}`, which the load path splits back into
     // (collection key, entity hash). The on-disk shape is unchanged in both directions, so an
@@ -7581,8 +7592,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         control_state,
         control_state_changes,
         context_event_timeline,
-        context_indexes,
-        context_entities,
 
         // ----- Nothing to pack. Each for a stated reason, not by omission. -----
         //
@@ -7600,7 +7609,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // Not a B-tree at all: the owned sorted array map is `serde(skip)` and is filled by
         // `fold_legacy_context_events`. An array has no half-empty-leaf shape for this pass to
         // repair.
-        context_events_series: _,
         // DECODED, AND DELIBERATELY NOT PACKED. This one IS a B-tree that serde filled by
         // ascending insert, so it is exactly what this pass is for -- but the fold runs
         // immediately after this function and DRAINS it, so packing it is a pass over data that is
@@ -7685,9 +7693,8 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // repack either.
     repack_nested(control_state);
     repack_nested(context_event_timeline);
-    // `context_indexes` is an owned sorted array now, built by `collect` at decode exactly as
-    // `features` above is, so there is no half-empty B-tree node for this pass to repack.
-    let _ = &context_indexes;
+    // `context_indexes` has no field here any more: it is in `objects`, like every other
+    // context kind, so there is nothing in this destructure to repack for it.
     // FOUR OF THESE FIVE ARE OWNED SORTED ARRAYS NOW, built by `collect` at decode exactly as
     // `features` and `context_indexes` above are, so there is no half-empty B-tree node for this
     // pass to repack in any of them. `context_entities` is the one that remains: its inner key is
@@ -7696,8 +7703,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // the consolidated map, so there is nothing to acknowledge.
     // Only `context_indexes` is left to acknowledge: the other three moved into the
     // consolidated map and have no field in this destructure any more.
-    let _ = &context_indexes;
-    repack_nested(context_entities);
+    // `context_indexes` and `context_entities` have no fields here any more -- both
+    // are kinds in `objects` now, like every other context kind, so this pass owes
+    // them nothing.
     // Two levels: the series, and the member set each EXACT entry carries. A sketched bucket is
     // a fixed-size register array with nothing to repack, which is why this matches rather than
     // calling `repack_btree_set` on every bucket.
@@ -8016,8 +8024,43 @@ impl ShardState {
     /// compile at all because nothing can be assigned through a method call. That is what caught a
     /// write going through the read accessor in this very change. A name grep does not find a
     /// four-line delegating helper; the compiler does.
-    pub(super) fn context_events(&self) -> &HashMap<ModelKey, OwnedTimestampedSeries> {
-        &self.context_events_series
+    /// The per-object index series.
+    pub(super) fn context_indexes(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextIndex)
+    }
+
+    /// The index series, for writing. Creates the kind's inner table on first use.
+    pub(super) fn context_indexes_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextIndex)
+            .or_default()
+    }
+
+    /// The entities of every owning node.
+    ///
+    /// THE ORDERED KEY IS AN ENTITY HASH HERE, NOT AN INSTANT. Every other kind in `objects` holds
+    /// a time-keyed series; this one holds a node's entities, keyed by hash, under a per-node
+    /// collection key chosen so they stay enumerable -- a `HashMap` cannot prefix-scan. The pair
+    /// `(u64, ElementEntry)` is the same shape a slot already stores, so nothing about the
+    /// representation strains; what differs is what the `u64` MEANS, and a reader who takes the
+    /// `TimestampedSeries` vocabulary literally for this kind will read it wrong.
+    pub(super) fn context_entities(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextEntity)
+    }
+
+    /// A node's entities, for writing. Creates the kind's inner table on first use.
+    pub(super) fn context_entities_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextEntity)
+            .or_default()
+    }
+
+    pub(super) fn context_events(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::ContextEvent)
     }
 
     /// The event series, mutably.
@@ -8030,8 +8073,10 @@ impl ShardState {
     /// helpers over `TimestampedSeriesWrite` can be handed this map directly.
     pub(super) fn context_events_mut(
         &mut self,
-    ) -> &mut HashMap<ModelKey, OwnedTimestampedSeries> {
-        &mut self.context_events_series
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects
+            .entry(super::storage_bucket_internals::StoredModelKind::ContextEvent)
+            .or_default()
     }
 
     /// Install a whole series for one key.
@@ -8044,8 +8089,8 @@ impl ShardState {
         object_key: &str,
         series: BTreeMap<u64, ElementEntry>,
     ) {
-        self.context_events_series
-            .insert(ModelKey::from(object_key), OwnedTimestampedSeries::from(&series));
+        self.context_events_mut()
+            .insert(ModelKey::from(object_key), series.into());
     }
 
     /// Point every `ModelKey`-keyed per-kind map at the page index's OWN key allocation.
@@ -8072,14 +8117,14 @@ impl ShardState {
         let mut moved = false;
         // The event pair moves together or not at all: they are keyed by one handle by
         // construction, so moving one and not the other restores the second allocation.
-        moved |= adopt_key_in(&mut self.context_events_series, object_key, &canonical);
+        moved |= adopt_key_in(self.context_events_mut(), object_key, &canonical);
         moved |= adopt_key_in(&mut self.context_event_timeline, object_key, &canonical);
-        moved |= adopt_key_in(&mut self.context_indexes, object_key, &canonical);
+        moved |= adopt_key_in(self.context_indexes_mut(), object_key, &canonical);
         moved |= adopt_key_in(self.context_audits_mut(), object_key, &canonical);
         moved |= adopt_key_in(self.context_children_mut(), object_key, &canonical);
         moved |= adopt_key_in(self.context_summaries_mut(), object_key, &canonical);
         moved |= adopt_key_in(self.context_compressions_mut(), object_key, &canonical);
-        moved |= adopt_key_in(&mut self.context_entities, object_key, &canonical);
+        moved |= adopt_key_in(self.context_entities_mut(), object_key, &canonical);
         // `context_nodes` was ALREADY `ModelKey`-keyed before this change and was still
         // missing from this list, which is the failure the note above describes: a map that
         // CAN share and is not listed here keeps its own equal copy and nothing fails.
@@ -8172,16 +8217,16 @@ impl ShardState {
         // old image happened to carry. Counted and the live entry KEPT, which is the same choice
         // the mirror version made for the same reason: recovery behaviour must not depend on which
         // copy happens to differ.
-        let folding_over_live = !self.context_events_series.is_empty();
+        let folding_over_live = !self.context_events().is_empty();
         let legacy = std::mem::take(&mut self.context_events_compat);
         let mut kept_live = 0u64;
         for (key, points) in legacy {
-            if self.context_events_series.contains_key(&*key) {
+            if self.context_events().contains_key(&*key) {
                 kept_live += 1;
                 continue;
             }
-            self.context_events_series
-                .insert(ModelKey::from(&*key), OwnedTimestampedSeries::from(points));
+            self.context_events_mut()
+                .insert(ModelKey::from(&*key), points.into());
         }
         if folding_over_live && kept_live > 0 {
             LEGACY_CONTEXT_EVENT_FOLD_OVER_LIVE_MAP

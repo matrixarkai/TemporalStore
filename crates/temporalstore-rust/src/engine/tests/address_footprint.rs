@@ -339,7 +339,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     {
         let before = c.total;
         for series in shard.context_events().values() {
-            for address in series.values() {
+            for address in series.addresses() {
                 c.observe(address);
             }
         }
@@ -356,9 +356,9 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
             Box::new(shard.features().values().flat_map(|series| series.addresses()))
                 as Box<dyn Iterator<Item = &ElementEntry>>,
         ),
-        ("context_indexes", Box::new(shard.context_indexes.values().flat_map(|s| s.values()))),
+        ("context_indexes", Box::new(shard.context_indexes().values().flat_map(|s| s.addresses()))),
         ("context_audits", Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
-        ("context_entities", Box::new(shard.context_entities.values().flat_map(|s| s.values()))),
+        ("context_entities", Box::new(shard.context_entities().values().flat_map(|s| s.addresses()))),
         ("context_children", Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
         ("context_summaries", Box::new(shard.context_summaries().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a)))),
         (
@@ -1174,7 +1174,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
         }
     }
     for series in shard.context_events().values() {
-        for address in series.values() {
+        for address in series.addresses() {
             d.observe_model(address);
         }
     }
@@ -1182,9 +1182,9 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
     for addresses in [
         Box::new(shard.features().values().flat_map(|s| s.addresses()))
             as Box<dyn Iterator<Item = &ElementEntry>>,
-        Box::new(shard.context_indexes.values().flat_map(|s| s.values())),
+        Box::new(shard.context_indexes().values().flat_map(|s| s.addresses())),
         Box::new(shard.context_audits().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
-        Box::new(shard.context_entities.values().flat_map(|s| s.values())),
+        Box::new(shard.context_entities().values().flat_map(|s| s.addresses())),
         Box::new(shard.context_children().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
         Box::new(shard.context_summaries().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
         Box::new(shard.context_compressions().values().flat_map(|s| s.owned_elements().unwrap_or(&[]).iter().map(|(_, a)| a))),
@@ -1393,9 +1393,9 @@ fn series_lengths(engine: &TemporalEngine, shard_id: ShardId) -> SeriesLengthCen
     // ride in one literal: `features` holds the owned array and the context kinds hold B-trees.
     for lengths in [
         Box::new(shard.features().values().map(|s| s.len())) as Box<dyn Iterator<Item = usize>>,
-        Box::new(shard.context_indexes.values().map(|s| s.len())),
+        Box::new(shard.context_indexes().values().map(|s| s.len())),
         Box::new(shard.context_audits().values().map(|s| s.owned_element_count())),
-        Box::new(shard.context_entities.values().map(|s| s.len())),
+        Box::new(shard.context_entities().values().map(|s| s.len())),
         Box::new(shard.context_children().values().map(|s| s.owned_element_count())),
         Box::new(shard.context_summaries().values().map(|s| s.owned_element_count())),
         Box::new(shard.context_compressions().values().map(|s| s.owned_element_count())),
@@ -1793,12 +1793,12 @@ fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
         "context_summaries",
         "context_compressions",
     ];
-    one_container(&shard.features());
-    one_container(&shard.context_indexes);
-    one_container(&shard.context_audits());
+    one_container(shard.features());
+    one_container(shard.context_indexes());
+    one_container(shard.context_audits());
     one_container(shard.context_children());
-    one_container(&shard.context_summaries());
-    one_container(&shard.context_compressions());
+    one_container(shard.context_summaries());
+    one_container(shard.context_compressions());
     assert_eq!(
         6,
         six.len(),

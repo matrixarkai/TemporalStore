@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 19;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 20;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3662,12 +3662,12 @@ fn key_membership_size(shard: &ShardState, key: &str) -> usize {
         + usize::from(shard.control_state_selection.contains_key(key))
         + shard.context_nodes.get(key).map_or(0, |_| 1)
         + shard.context_events().get(key).map_or(0, |v| v.len())
-        + shard.context_indexes.get(key).map_or(0, |v| v.len())
+        + shard.context_indexes().get(key).map_or(0, |v| v.len())
         + shard.context_audits().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_children().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_summaries().get(key).map_or(0, |v| v.owned_element_count())
         + shard.context_compressions().get(key).map_or(0, |v| v.owned_element_count())
-        + shard.context_entities.get(key).map_or(0, |v| v.len())
+        + shard.context_entities().get(key).map_or(0, |v| v.len())
 }
 
 /// Did this write produce per-key state that reconstruction from physical blocks cannot redo?
@@ -3947,7 +3947,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
             put(
                 "context_indexes",
                 shard
-                    .context_indexes
+                    .context_indexes()
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
@@ -3987,7 +3987,7 @@ fn capture_key_states(shard: &ShardState, keys: &[String]) -> Vec<serde_json::Va
                     .get(&key[..])
                     .and_then(|series| serde_json::to_value(series.to_btree()).ok()),
             );
-            put("context_entities", shard.context_entities.get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
+            put("context_entities", shard.context_entities().get(&key[..]).and_then(|v| serde_json::to_value(v).ok()));
             serde_json::Value::Object(blob)
         })
         .collect()
@@ -4056,7 +4056,7 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
         // THE STORED B-TREE SHAPE, FOLDED INTO THE ARRAY, as for `context_events` just above. The
         // type parameter is named because this map implements `KeyedState` for two value types.
         apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
-            &mut shard.context_indexes,
+            shard.context_indexes_mut(),
             key,
             blob.get("context_indexes"),
         );
@@ -4080,7 +4080,13 @@ fn apply_key_states(shard: &mut ShardState, key_states: &[serde_json::Value]) {
             key,
             blob.get("context_compressions"),
         );
-        apply_key_state_field(&mut shard.context_entities, key, blob.get("context_entities"));
+        // The type parameter is named as for the kinds above: the blob carries the B-tree
+        // shape and the map holds a slot.
+        apply_key_state_field::<std::collections::BTreeMap<u64, ElementEntry>, _>(
+            shard.context_entities_mut(),
+            key,
+            blob.get("context_entities"),
+        );
         // THE FOUR CONTAINER MAPS ARE NOT APPLIED HERE, and the reason is the whole shape of
         // `fold_carried_container_elements`: an element may only be restored once the fold has
         // FINISHED, because a later record in the same fold can take its block away again. See
@@ -5601,9 +5607,9 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= shard.control_state_selection.remove(key).is_some();
     removed |= shard.context_nodes.remove(key).is_some();
     removed |= shard.context_events_mut().remove(key).is_some();
-    removed |= shard.context_indexes.remove(key).is_some();
+    removed |= shard.context_indexes_mut().remove(key).is_some();
     removed |= shard.context_audits_mut().remove(key).is_some();
-    removed |= shard.context_entities.remove(key).is_some();
+    removed |= shard.context_entities_mut().remove(key).is_some();
     removed |= shard.context_children_mut().remove(key).is_some();
     removed |= shard.context_summaries_mut().remove(key).is_some();
     removed |= shard.context_compressions_mut().remove(key).is_some();
@@ -6235,14 +6241,14 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            series.addresses().map(|address| address.block_slab_id()),
         );
     }
-    for series in shard.context_indexes.values() {
+    for series in shard.context_indexes().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            series.addresses().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_audits().values() {
@@ -6258,11 +6264,11 @@ fn collect_live_block_slab_ids(shard: &ShardState) -> BTreeSet<u64> {
                 .map(|(_, address)| address.block_slab_id()),
         );
     }
-    for series in shard.context_entities.values() {
+    for series in shard.context_entities().values() {
         absorb_live_block_slab_ids(
             &mut ids,
             &mut visited,
-            series.values().map(|address| address.block_slab_id()),
+            series.addresses().map(|address| address.block_slab_id()),
         );
     }
     for series in shard.context_children().values() {
@@ -6573,9 +6579,9 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.control_state_selection.contains_key(key)
         || shard.context_nodes.contains_key(key)
         || shard.context_events().contains_key(key)
-        || shard.context_indexes.contains_key(key)
+        || shard.context_indexes().contains_key(key)
         || shard.context_audits().contains_key(key)
-        || shard.context_entities.contains_key(key)
+        || shard.context_entities().contains_key(key)
         || shard.context_children().contains_key(key)
         || shard.context_summaries().contains_key(key)
         || shard.context_compressions().contains_key(key)
@@ -7468,9 +7474,12 @@ fn object_manager_stats(
             + shard.control_state_changes.len()
             + shard.context_nodes.len()
             + shard.context_events().len()
-            + shard.context_indexes.len()
+            + shard.context_indexes().len()
             + shard.context_audits().len()
-            + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
+            + shard.context_entities()
+            .values()
+            .map(|slot| slot.owned_element_count())
+            .sum::<usize>()
             + shard.context_children().len()
             + shard.context_summaries().len()
             + shard.context_compressions().len();
@@ -7486,19 +7495,22 @@ fn object_manager_stats(
             + shard
                 .context_events()
                 .values()
-                .map(timestamped_series::OwnedTimestampedSeries::len)
+                .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
             + shard
-                .context_indexes
+                .context_indexes()
                 .values()
-                .map(timestamped_series::OwnedTimestampedSeries::len)
+                .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
             + shard
                 .context_audits()
                 .values()
                 .map(|slot| slot.owned_element_count())
                 .sum::<usize>()
-            + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
+            + shard.context_entities()
+            .values()
+            .map(|slot| slot.owned_element_count())
+            .sum::<usize>()
             + shard
                 .context_children()
                 .values()
@@ -7608,9 +7620,12 @@ fn object_manager_stats(
         + shard.control_state.len()
         + shard.context_nodes.len()
         + shard.context_events().len()
-        + shard.context_indexes.len()
+        + shard.context_indexes().len()
         + shard.context_audits().len()
-        + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
+        + shard.context_entities()
+            .values()
+            .map(|slot| slot.owned_element_count())
+            .sum::<usize>()
         + shard.context_children().len()
         + shard.context_summaries().len()
         + shard.context_compressions().len();
@@ -7624,19 +7639,22 @@ fn object_manager_stats(
         + shard
             .context_events()
             .values()
-            .map(timestamped_series::OwnedTimestampedSeries::len)
+            .map(|slot| slot.owned_element_count())
             .sum::<usize>()
         + shard
-            .context_indexes
+            .context_indexes()
             .values()
-            .map(timestamped_series::OwnedTimestampedSeries::len)
+            .map(|slot| slot.owned_element_count())
             .sum::<usize>()
         + shard
             .context_audits()
             .values()
             .map(|slot| slot.owned_element_count())
             .sum::<usize>()
-        + shard.context_entities.values().map(BTreeMap::len).sum::<usize>()
+        + shard.context_entities()
+            .values()
+            .map(|slot| slot.owned_element_count())
+            .sum::<usize>()
         + shard
             .context_children()
             .values()

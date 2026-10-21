@@ -2,8 +2,8 @@
 // Copyright 2026 MatrixArkAI
 
 //! Standalone per-shard command execution extracted from engine.rs.
-use super::timestamped_series::TimestampedSeries as _;
-use super::timestamped_series::TimestampedSeriesWrite as _;
+use crate::engine::timestamped_series::TimestampedSeriesWrite as _;
+use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
@@ -3770,7 +3770,7 @@ pub(crate) fn execute_on_shard(
                 && shard
                     .context_events()
                     .get(&*object_key)
-                    .is_some_and(|series| series.contains_key(&event_id_hash));
+                    .is_some_and(|series| series.get(event_id_hash).is_some());
             // Idempotence now tests the EVENT ID, which is what first_write_only actually means:
             // the same event written twice. Testing the timeline key made two different events
             // that collided in the low FANOUT bits of one millisecond look like a rewrite.
@@ -3867,7 +3867,7 @@ pub(crate) fn execute_on_shard(
                 && shard
                     .context_events()
                     .get(&*event_object_key)
-                    .is_some_and(|series| series.contains_key(&event_id_hash));
+                    .is_some_and(|series| series.get(event_id_hash).is_some());
             // Same key discipline as ContextWriteEvent since the event rekey: the primary map
             // is keyed by EVENT ID (idempotence tests the id), the block stays timestamp-keyed,
             // and the time index maps the stored timeline key back to the id. This arm was
@@ -3963,11 +3963,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_index", &object_key),
             ) {
                         let series = shard
-                            .context_indexes
+                            .context_indexes_mut()
                             .entry(std::sync::Arc::from(object_key.as_str()))
                             .or_default();
                         for (timestamp_ms, address) in addresses {
-                            series.insert(timestamp_ms, address);
+                            series.set(timestamp_ms, address);
                             mutated = true;
                         }
                         invalidate_context_record(cache, shard_id, &object_key);
@@ -4102,11 +4102,11 @@ pub(crate) fn execute_on_shard(
                 crate::engine::state::next_block_index_for_object(&shard.bucket_index, routing_bucket, "context_index", &object_key),
             ) {
                 let series = shard
-                    .context_indexes
+                    .context_indexes_mut()
                     .entry(std::sync::Arc::from(object_key.as_str()))
                     .or_default();
                 for (timestamp_ms, address) in addresses {
-                    series.insert(timestamp_ms, address);
+                    series.set(timestamp_ms, address);
                     mutated = true;
                 }
             }
@@ -4126,7 +4126,7 @@ pub(crate) fn execute_on_shard(
                 context_index_key(tenant_hash, &index_name, index_value_hash, scope_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
             let refs = shard
-                .context_indexes
+                .context_indexes()
                 .get(&object_key[..])
                 .map(|series| {
                     series
@@ -4185,7 +4185,7 @@ pub(crate) fn execute_on_shard(
                     predicate.scope_hash,
                 );
                 let mut seen_for_predicate = HashMap::new();
-                if let Some(series) = shard.context_indexes.get(&object_key[..]) {
+                if let Some(series) = shard.context_indexes().get(&object_key[..]) {
                     let mut page_cache = HashMap::new();
                     for (timeline_key, address) in series.range(
                         context_timeline_start(predicate.start_time_ms)
@@ -4541,10 +4541,10 @@ pub(crate) fn execute_on_shard(
                     None,
                 );
                 shard
-                    .context_entities
+                    .context_entities_mut()
                     .entry(std::sync::Arc::from(&collection_key[..]))
                     .or_default()
-                    .insert(entity.entity_hash, address);
+                    .set(entity.entity_hash, address);
                 mutated = true;
             }
             invalidate_context_record(cache, shard_id, &object_key);
@@ -4567,9 +4567,9 @@ pub(crate) fn execute_on_shard(
             // the cache under a key nothing ever wrote. The index groups entities by node; the
             // BLOCK is still per entity, and that split is exactly what this line has to respect.
             let entity = shard
-                .context_entities
+                .context_entities()
                 .get(&collection_key[..])
-                .and_then(|series| series.get(&entity_hash))
+                .and_then(|series| series.get(entity_hash))
                 .and_then(|address| {
                     read_block_bytes(
                         cache,
@@ -4603,7 +4603,7 @@ pub(crate) fn execute_on_shard(
         } => {
             let object_key = context_entity_collection_key(tenant_hash, node_hash);
             mutated |= drop_if_expired(cache, shard_id, shard, &object_key);
-            let series = shard.context_entities.get(&object_key[..]);
+            let series = shard.context_entities().get(&object_key[..]);
             // TAKES THE ENTITY HASH, because the block's routing bucket comes from the per-entity
             // key and this map is keyed by the node's collection key. The "every entity" arm below
             // therefore iterates `iter()` rather than `values()`: the hash it was discarding is
@@ -4637,16 +4637,16 @@ pub(crate) fn execute_on_shard(
             let entities = match (series, entity_hashes.is_empty()) {
                 (None, _) => Vec::new(),
                 (Some(series), true) => series
-                    .iter()
+                    .points()
                     .take(context_limit(limit))
-                    .filter_map(|(entity_hash, address)| read_entity(*entity_hash, address))
+                    .filter_map(|(entity_hash, address)| read_entity(entity_hash, address))
                     .collect(),
                 (Some(series), false) => dedupe_nonzero_u64_preserve_order(entity_hashes)
                     .into_iter()
                     .take(context_limit(limit))
                     .filter_map(|entity_hash| {
                         series
-                            .get(&entity_hash)
+                            .get(entity_hash)
                             .and_then(|address| read_entity(entity_hash, address))
                     })
                     .collect(),

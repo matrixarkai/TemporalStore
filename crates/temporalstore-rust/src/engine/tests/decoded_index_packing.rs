@@ -325,8 +325,8 @@ fn what_a_decoded_series_costs_against_one_packed_in_one_go() {
              wrong number"
         );
 
-        let decoded_bytes = deep_heap_bytes(&decoded.features());
-        let control = packed_like(&decoded.features());
+        let decoded_bytes = deep_heap_bytes(decoded.features());
+        let control = packed_like(decoded.features());
         let control_points: usize = control.values().map(|s| s.len()).sum();
         assert_eq!(
             decoded_points, control_points,

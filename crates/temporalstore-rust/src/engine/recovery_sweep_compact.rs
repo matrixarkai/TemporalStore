@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Index install/recovery + expiry sweep + page compaction methods for TemporalEngine, split from engine.rs.
+use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
 /// OBSERVATION SEAM: was the shard-table write guard still held when a round PUBLISHED its
@@ -1717,7 +1718,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 routing_bucket,
             )?;
         }
-        for (key, series) in shard.context_indexes.iter_mut() {
+        for (key, series) in shard.context_indexes_mut().iter_mut() {
             let routing_bucket = bucket_of(key);
             compact_feature_block_addresses(
                 &self.block_store,
@@ -1792,8 +1793,8 @@ fn expiry_scan_budget(limit: usize) -> usize {
             &self.cache,
             shard_id,
             "context_entity",
-            shard.context_entities.iter_mut().flat_map(|(key, series)| {
-                series.iter_mut().map(move |(entity_hash, address)| {
+            shard.context_entities_mut().iter_mut().flat_map(|(key, series)| {
+                series.points_mut().map(move |(entity_hash, address)| {
                     // COMPOSED ONCE AND USED TWICE, which is the point of hoisting it into a
                     // binding: the bucket is derived from this string and the identity names it, and
                     // if the two ever came from different spellings the read would look for the page

@@ -353,7 +353,7 @@ pub(super) fn context_event_time_range<'a>(
         .flat_map(move |timeline| timeline.range(start..end))
         .filter_map(move |(timeline_key, event_id_hash)| {
             series
-                .and_then(|series| series.get(event_id_hash))
+                .and_then(|series| series.get(*event_id_hash))
                 .map(|address| (*timeline_key, address))
         })
 }

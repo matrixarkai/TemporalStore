@@ -27,6 +27,7 @@
 //! direction. The measurement below prices the two representations against each other directly,
 //! which is the honest form of that claim.
 
+use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::super::state::ShardState;
 use super::super::timestamped_series::OwnedTimestampedSeries;
 use crate::block_store::ElementEntry;
@@ -168,7 +169,7 @@ fn the_fold_drains_the_compatibility_field_and_no_write_refills_it() {
         shard
             .context_events()
             .get("ctx:event:t:a")
-            .and_then(|series| series.get(&2)),
+            .and_then(|series| series.get(2)),
         "and the points came with them"
     );
     assert_eq!(
@@ -256,7 +257,7 @@ fn a_fold_over_a_live_map_keeps_the_live_entry_and_counts_it() {
         Some(&address(1)),
         live.context_events()
             .get("ctx:event:t:a")
-            .and_then(|series| series.get(&1)),
+            .and_then(|series| series.get(1)),
         "THE LIVE ENTRY IS KEPT. An old image must not overwrite a series that is already serving"
     );
     assert!(
@@ -300,7 +301,7 @@ fn the_capture_path_writes_the_array_map_with_nothing_decoded() {
         shard
             .context_events()
             .get("ctx:event:t:a")
-            .map_or(0, OwnedTimestampedSeries::len),
+            .map_or(0, |slot| slot.owned_element_count()),
         "the key-state fold delivered the series into the array map with nothing decoded"
     );
     assert_eq!(
@@ -369,7 +370,7 @@ fn the_stored_image_still_omits_the_key_and_still_reads_one_that_carries_it() {
         decoded
             .context_events()
             .get("ctx:event:t:b")
-            .and_then(|series| series.get(&5)),
+            .and_then(|series| series.get(5)),
         "and the fold delivered it to the array map"
     );
     assert_eq!(

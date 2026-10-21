@@ -2,6 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 //! Compaction utility/policy/layout reporting helpers, split from engine.rs.
+use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
 /// How many bytes one compaction round may relocate.
@@ -151,9 +152,9 @@ pub(super) fn model_compaction_policy_reports(
         } else if split_context_entity_key(key)
             .map(|(collection_key, entity_hash)| {
                 shard
-                    .context_entities
+                    .context_entities()
                     .get(&collection_key[..])
-                    .is_some_and(|series| series.contains_key(&entity_hash))
+                    .is_some_and(|series| series.get(entity_hash).is_some())
             })
             .unwrap_or(false)
         {
@@ -507,7 +508,7 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "feature",
-        &shard.features(),
+        shard.features(),
         &slab_page_counts,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -524,7 +525,7 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_timestamped_layout(
         "context_index",
-        &shard.context_indexes,
+        shard.context_indexes(),
         &slab_page_counts,
     ));
     reports.push(compaction_timestamped_layout(
@@ -534,11 +535,15 @@ pub(super) fn compaction_model_layout_reports(
     ));
     reports.push(compaction_layout_from_addresses(
         "context_entity",
-        shard.context_entities.values().map(BTreeMap::len).sum(),
         shard
-            .context_entities
+            .context_entities()
             .values()
-            .flat_map(|series| series.values().cloned()),
+            .map(|slot| slot.owned_element_count())
+            .sum(),
+        shard
+            .context_entities()
+            .values()
+            .flat_map(|series| series.addresses().cloned()),
         &slab_page_counts,
         None,
     ));
