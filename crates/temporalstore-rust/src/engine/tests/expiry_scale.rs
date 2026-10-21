@@ -1953,7 +1953,7 @@ fn a_deadline_set_with_options_is_visible_to_the_sweep() {
     fn record_is_gone(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&shard_id).expect("shard is loaded");
-        !shard.control_state.contains_key(key) && !shard.expires_at_ms.contains_key(key)
+        !shard.control_state().contains_key(key) && !shard.expires_at_ms.contains_key(key)
     }
 
     let engine = TemporalEngine::default();

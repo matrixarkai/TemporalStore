@@ -131,7 +131,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     );
     record(
         "control_state",
-        shard.control_state.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        shard.control_state().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
     record(
         "control_state_uuid",
@@ -143,7 +143,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     );
     record(
         "feature_values",
-        shard.feature_values.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+        shard.feature_values().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
     );
     record(
         "feature_rollups",
@@ -466,7 +466,7 @@ fn distinct_addresses_per_raw_key(
     };
     note(shard.strings.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
-    note(shard.control_state.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    note(shard.control_state().keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.hashes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     note(shard.sets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     held.into_iter().map(|(text, addresses)| (text, addresses.len())).collect()

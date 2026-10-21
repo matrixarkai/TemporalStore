@@ -88,22 +88,16 @@ fn one_series_rows_as_json() -> serde_json::Value {
 /// Lifted out of a throwaway `ShardState`'s `features` map: `features` and the retired
 /// `sequences` map had IDENTICAL types, so this is byte-for-byte what a pre-fold binary wrote
 /// under the other name. It cannot be built by setting the field -- this binary has not got one.
-/// The value to file under one field, which can no longer be the same for both arms.
+/// ONE PAYLOAD AGAIN, because both arms plant the same retired key now.
 ///
-/// The refusal arm needs the LEGACY SERIES shape, because that is what a stored `sequences` map
-/// held. The control arm needs a payload its own field's type accepts -- and after the feature
-/// series moved into `objects` there is no surviving top-level map that takes an element-entry
-/// row, so the two arms cannot share one payload any more. What the pair isolates is the STAMP,
-/// which both arms still vary alone, so the control is intact; it is the payload that stopped
-/// being shareable, and this function is where that is visible rather than implied.
-fn payload_for(field: &str) -> serde_json::Value {
-    if field == "sequences" {
-        one_legacy_series_as_json()
-    } else {
-        // `control_state` rows are `i64`. Any live field would do for the control's purpose; this
-        // one is a plain map whose shape needs no helper.
-        serde_json::json!({ SERIES_KEY: { "1700000000000": 1i64 } })
-    }
+/// An earlier revision split this by field: the refusal arm planted the legacy series under
+/// `sequences` and the control planted something a LIVE field's type would accept. That shape kept
+/// breaking -- the control's field has to be "already on the wire", and consolidation took
+/// `features` off it and then `control_state`, failing the fixture's own guard each time. Both arms
+/// plant `sequences` now and vary only the STAMP, which is the one variable the pair exists to
+/// isolate, so there is nothing left for a second payload to do.
+fn payload_for(_field: &str) -> serde_json::Value {
+    one_legacy_series_as_json()
 }
 
 fn one_legacy_series_as_json() -> serde_json::Value {
@@ -208,7 +202,7 @@ fn door_one_the_base_index_refuses_a_stale_stamp_carrying_the_retired_map() {
 /// The control: the same image at the current stamp reaches the load path and is accepted.
 #[test]
 fn door_one_control_the_same_image_at_the_current_stamp_is_accepted() {
-    let image = index_image_carrying("control_state", SHARD_INDEX_FORMAT_VERSION);
+    let image = index_image_carrying("sequences", SHARD_INDEX_FORMAT_VERSION);
     let dir = tempfile::tempdir().expect("tempdir");
     let (engine, index_dir) = engine_over_dirs(dir.path(), "indexes");
     std::fs::write(index_dir.join(format!("shard-{SHARD}.index.json")), &image).expect("plant");
@@ -217,12 +211,15 @@ fn door_one_control_the_same_image_at_the_current_stamp_is_accepted() {
         .expect("the load must not error")
         .expect("a current-stamped image must be ACCEPTED, or the refusal arm beside this one is \
                  about a fixture the loader never opens");
+    // THE RETIRED KEY IS DROPPED, WHICH IS THIS MODULE'S CENTRAL CLAIM, now exercised here
+    // rather than stated beside the arms. `ShardState` carries no `deny_unknown_fields`, so an
+    // image holding `sequences` decodes cleanly at the current stamp and the key is simply gone --
+    // which is exactly why "nothing writes it" was never enough to make the field safe to delete,
+    // and why the stamp is what refuses a STALE one.
     assert!(
-        // The planted field, not `features()`: what this arm proves is that an image at the
-        // current stamp is accepted AND keeps the rows it carried. Which live field carries them
-        // is incidental -- see `payload_for` for why it can no longer be a series-shaped one.
-        state.control_state.contains_key(SERIES_KEY),
-        "the accepted image did not carry the planted rows, so this control is about nothing"
+        !state.context_events().contains_key(SERIES_KEY),
+        "the planted retired key landed in a live series map, so an image carrying `sequences` is \
+         not merely decoding cleanly and dropping it"
     );
 }
 
@@ -317,7 +314,7 @@ fn door_two_the_dump_manifest_refuses_a_stale_stamp_carrying_the_retired_map() {
 /// The control: the same manifest at the current stamp installs and its series survives.
 #[test]
 fn door_two_control_the_same_manifest_at_the_current_stamp_installs() {
-    let (dir, manifest) = a_manifest_carrying("control_state", SHARD_INDEX_FORMAT_VERSION);
+    let (dir, manifest) = a_manifest_carrying("sequences", SHARD_INDEX_FORMAT_VERSION);
     let (target, _index_dir) = engine_over_dirs(dir.path(), "restore-indexes");
     target
         .install_bucket_dump_manifest(&manifest)
@@ -326,11 +323,11 @@ fn door_two_control_the_same_manifest_at_the_current_stamp_installs() {
     target.load_shard(SHARD);
     let present = {
         let shards = target.shards.read().expect("engine lock poisoned");
-        shards
-            .get(&SHARD)
-            .expect("the shard is loaded")
-            .control_state
-            .contains_key(SERIES_KEY)
+        // THE INSTALL SUCCEEDED AND THE SHARD IS SERVED, which is what this arm needs: the
+        // refusal beside it has to be attributable to the stamp rather than to a manifest that
+        // could never have installed. The retired key itself is dropped by the decode, so there
+        // is nothing of it to find -- see the door-one arm.
+        shards.contains_key(&SHARD)
     };
     println!("\n=== DOOR 2 control, stamp {SHARD_INDEX_FORMAT_VERSION} ===\n  planted rows present after install+load: {present}");
     assert!(

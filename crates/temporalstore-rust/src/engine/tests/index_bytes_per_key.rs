@@ -4226,7 +4226,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
         ("features", shard.features().keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         (
             "control_state",
-            shard.control_state.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+            shard.control_state().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
         (
             "control_state_selection",
@@ -4242,15 +4242,15 @@ fn why_there_are_many_per_key_maps_and_not_one() {
         ),
         (
             "control_state_rollups",
-            shard.control_state_rollups().keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+            shard.control_state_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
         (
             "feature_values",
-            shard.feature_values.keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+            shard.feature_values().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
         (
             "feature_rollups",
-            shard.feature_rollups().keys().map(|k| (k.as_str(), k.as_ptr() as usize)).collect(),
+            shard.feature_rollups().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
         ),
         ("seen", shard.seen.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),
         ("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect()),

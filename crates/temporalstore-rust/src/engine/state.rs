@@ -371,7 +371,18 @@ pub(super) struct ShardState {
     /// drift into each other unnoticed.
     ///
     /// The stored image does not move: `Arc<str>` serializes as the same string a `String` did.
-    pub(super) control_state: HashMap<ModelKey, BTreeMap<u64, i64>>,
+    // ONE FIELD FOR BOTH COUNTER SERIES NOW, keyed by `CounterSeries`, behind
+    // `control_state()` / `_mut()` and `feature_values()` / `_mut()`. Both are
+    // `ModelKey`-keyed: `feature_values` was `String`-keyed and so held a key other maps
+    // already held as its own allocation.
+    // `default`, WHICH `control_state` DID NOT NEED AND THIS DOES. That field carried no
+    // serde attribute, so it was REQUIRED -- and an index written before this merge has
+    // `control_state` and no `counter_series`, so without a default it fails to DECODE.
+    // The refusal for such an index has to come from the STAMP one layer up; a decode
+    // error would hide the stamp check rather than exercise it, which is what
+    // `an_ungated_store_is_refused_before_it_is_served` asserts.
+    #[serde(default)]
+    pub(super) counter_series: HashMap<CounterSeries, HashMap<ModelKey, BTreeMap<u64, i64>>>,
     /// Counter-series blocks, one per control-state object key.
     ///
     /// THE VALUE IS A RECORD RATHER THAN A BARE ADDRESS, and this is the first map to hold one.
@@ -520,8 +531,6 @@ pub(super) struct ShardState {
     // aggregate) plus the shared rollup ladder over it. Serde-skipped; rebuilt lazily on the
     // FeatureAggQuery read path when stale. Gated by Config.control_rollup_enabled(); empty
     // and inert when off.
-    #[serde(skip)]
-    pub(super) feature_values: HashMap<String, BTreeMap<u64, i64>>,
     #[serde(default)]
     pub(super) context_nodes: HashMap<ModelKey, ElementEntry>,
     /// THE EVENT SERIES, ON THE OWNED SORTED ARRAY.
@@ -7594,7 +7603,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         seen,
         zsets,
         lists,
-        control_state,
+        counter_series,
         control_state_changes,
         context_event_timeline,
 
@@ -7633,7 +7642,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         rollups: _,
         control_coalesce_persist: _,
         control_distinct_sketch: _,
-        feature_values: _,
         dirty_objects: _,
         promote_scan_done: _,
         evict_sampler: _,
@@ -7675,7 +7683,14 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
             .or_default(),
         &bucket_index.object_block_lookup,
     ) + adopt_canonical_key_allocations_in_hashed(
-        control_state,
+        // THE CONTROL-STATE COUNTERS ARE IN `counter_series` NOW, so this pass reaches them
+        // through the domain's table rather than through a field. Dropping the term would
+        // have cost every control-state key its canonical handle with NOTHING failing: the
+        // keys compare equal and only the sharing is lost, which is the same silent
+        // regression the Feature kind's term above exists to prevent.
+        counter_series
+            .entry(CounterSeries::ControlState)
+            .or_default(),
         &bucket_index.object_block_lookup,
     );
     REPACK_ADOPTED_HASHED.fetch_add(_adopted_hashed, std::sync::atomic::Ordering::Relaxed);
@@ -7694,7 +7709,10 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // above is the one thing this pass owed them. `objects` itself holds owned sorted arrays
     // built by `collect` at decode, so there is no half-empty B-tree node for this pass to
     // repack either.
-    repack_nested(control_state);
+    // Both counter domains, since the field they shared is one map now.
+    for table in counter_series.values_mut() {
+        repack_nested(table);
+    }
     repack_nested(context_event_timeline);
     // `context_indexes` has no field here any more: it is in `objects`, like every other
     // context kind, so there is nothing in this destructure to repack for it.
@@ -7732,6 +7750,65 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 
 /// The empty map a kind with no objects answers with, so the reader below can hand out a borrow
 /// without the caller learning whether the kind has a bucket yet.
+/// WHICH COUNTER SERIES, so two independent key spaces cannot collide in one table.
+///
+/// `control_state` and `feature_values` are both an instant-keyed `BTreeMap<u64, i64>` per object
+/// key, and both are handed to the same rollup primitive -- `windowed_sum` over one,
+/// `feature_windowed_sum` over the other, and their two ladders are already one `rollups` field.
+/// So this merge is not count-driven the way the u64 ledgers' was: these two are the same kind of
+/// thing read by the same code.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Debug)]
+pub(super) enum CounterSeries {
+    /// The control-state counter series.
+    ControlState,
+    /// The feature series' numeric view, decoded so it is bit-identical to the raw aggregate.
+    Feature,
+}
+
+impl CounterSeries {
+    /// THE STORED SPELLING, and it is the old field name, for the reason `U64Ledger::as_str`
+    /// gives: this enum keys a serialized map, so the spelling is a durable name.
+    pub(super) const fn as_str(self) -> &'static str {
+        match self {
+            CounterSeries::ControlState => "control_state",
+            CounterSeries::Feature => "feature_values",
+        }
+    }
+
+    /// The series a stored spelling names, or `None` for one this binary does not declare.
+    pub(super) fn from_stored_name(spelling: &str) -> Option<Self> {
+        match spelling {
+            "control_state" => Some(CounterSeries::ControlState),
+            "feature_values" => Some(CounterSeries::Feature),
+            _ => None,
+        }
+    }
+}
+
+impl serde::Serialize for CounterSeries {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_str(self.as_str())
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for CounterSeries {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let spelling = String::deserialize(deserializer)?;
+        CounterSeries::from_stored_name(&spelling).ok_or_else(|| {
+            serde::de::Error::custom(format!(
+                "no counter series for {spelling:?}. A stored name this binary does not declare \
+                 is the store and the engine disagreeing about which series exist, and mapping it \
+                 onto one it does have would file counters under the wrong series."
+            ))
+        })
+    }
+}
+
+/// The empty series table a domain with nothing in it answers with.
+static NO_COUNTERS_IN_THIS_SERIES: std::sync::OnceLock<
+    HashMap<ModelKey, BTreeMap<u64, i64>>,
+> = std::sync::OnceLock::new();
+
 /// WHICH u64-PER-KEY LEDGER, so two independent key spaces cannot collide in one table.
 ///
 /// `control_state_uuid` held a dedup ledger's expiry instant and `context_compression_watermark`
@@ -7827,6 +7904,33 @@ impl ShardState {
     /// Answers an empty map for a kind that holds nothing, rather than an `Option`, because every
     /// caller of this wants to look a key up or iterate -- and "this kind has no bucket yet" is
     /// not a distinction any of them should have to carry.
+    /// The control-state counter series.
+    pub(super) fn control_state(&self) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
+        self.counters_of(CounterSeries::ControlState)
+    }
+
+    /// The control-state counters, for writing. Creates the domain's table on first use.
+    pub(super) fn control_state_mut(&mut self) -> &mut HashMap<ModelKey, BTreeMap<u64, i64>> {
+        self.counter_series.entry(CounterSeries::ControlState).or_default()
+    }
+
+    /// The feature numeric view.
+    pub(super) fn feature_values(&self) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
+        self.counters_of(CounterSeries::Feature)
+    }
+
+    /// The feature numeric view, for writing. Creates the domain's table on first use.
+    pub(super) fn feature_values_mut(&mut self) -> &mut HashMap<ModelKey, BTreeMap<u64, i64>> {
+        self.counter_series.entry(CounterSeries::Feature).or_default()
+    }
+
+    /// One domain's table, empty rather than absent, as `objects_of_kind` is.
+    fn counters_of(&self, series: CounterSeries) -> &HashMap<ModelKey, BTreeMap<u64, i64>> {
+        self.counter_series
+            .get(&series)
+            .unwrap_or_else(|| NO_COUNTERS_IN_THIS_SERIES.get_or_init(HashMap::new))
+    }
+
     /// The control-state dedup ledger's expiry instants.
     pub(super) fn control_state_uuid(&self) -> &HashMap<ModelKey, u64> {
         self.u64_ledger(U64Ledger::ControlStateUuid)
@@ -8305,7 +8409,7 @@ impl ShardState {
         // and TWO allocations, with this map owning the second. Its decorated half
         // (`control_state:<family>:<key>`) never matches `object_key`, so this line is a no-op
         // for those and the saving is per raw key rather than per entry.
-        moved |= adopt_key_in(&mut self.control_state, object_key, &canonical);
+        moved |= adopt_key_in(&mut self.control_state_mut(), object_key, &canonical);
         // THE FOUR RECORDED KINDS. Each was measured holding its OWN copy of this text while
         // the maps above agreed on one -- eight holders, FIVE allocations, 8 of 8 keys. They go
         // through a declared operation rather than `adopt_key_in` because `RecordedMap` keeps its

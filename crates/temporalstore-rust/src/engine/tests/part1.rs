@@ -1493,7 +1493,7 @@ fn live_block_slab_ids_scan_all_index_backed_data_models() {
             ElementEntry::from_parts(11, 0, 1, None, None),
         );
     shard
-        .control_state
+        .control_state_mut()
         .entry(std::sync::Arc::from("control_state"))
         .or_default()
         .insert(14, 1);
@@ -7558,9 +7558,9 @@ fn where_a_record_is_kept_everywhere() {
         ("buckets", shard.buckets.len()),
         ("expires_at_ms", shard.expires_at_ms.len()),
         ("features", shard.features().len()),
-        ("feature_values", shard.feature_values.len()),
+        ("feature_values", shard.feature_values().len()),
         ("feature_rollups", shard.feature_rollups().len()),
-        ("control_state", shard.control_state.len()),
+        ("control_state", shard.control_state().len()),
         ("control_state_pages", shard.control_state_blocks().len()),
         ("control_state_changes", shard.control_state_changes.len()),
         ("control_state_selection", shard.control_state_selection.len()),

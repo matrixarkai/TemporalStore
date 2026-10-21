@@ -1455,7 +1455,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         vec![
-            ("control_state (the i64 series)", deep_heap_bytes(&shard.control_state)),
+            ("control_state (the i64 series)", deep_heap_bytes(&shard.control_state())),
             ("control_state_blocks (THE RECORD)", deep_heap_bytes(shard.control_state_blocks())),
             ("bucket_index.bucket_map", deep_heap_bytes(&shard.bucket_index.bucket_map)),
             (

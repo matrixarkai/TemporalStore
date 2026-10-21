@@ -7490,10 +7490,14 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // persisted series where present and use the block-derived series only for keys the
         // persisted map does not have, so a transient block-read failure never drops a durable
         // control-state key.
-        let persisted = std::mem::take(&mut shard.control_state);
+        // THROUGH THE DOOR, AND DEREFERENCED ON THE LEFT. `take` wants the `&mut HashMap` the
+        // door already returns, not a `&mut` to it, and an assignment target needs the write door
+        // with a `*` -- E0615 reports an assignment target exactly like a read, so the door pass
+        // gave this site the read accessor.
+        let persisted = std::mem::take(shard.control_state_mut());
         let mut merged = control_state;
         merged.extend(persisted);
-        shard.control_state = merged;
+        *shard.control_state_mut() = merged;
         // CONVERTED AT THE BOUNDARY, so the walk that built this map keeps producing bare
         // addresses and no reconcile site moves. Each address becomes a record whose other slots
         // are default -- which is correct here: a reconcile re-derives addresses from the bucket

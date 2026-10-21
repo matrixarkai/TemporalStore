@@ -1052,7 +1052,7 @@ impl TemporalEngine {
             // served a non-zero here never existed.
             let sequence_records = 0usize;
             let control_state_records =
-                state.control_state.len() + state.control_state_changes.len();
+                state.control_state().len() + state.control_state_changes.len();
             let loaded = info.as_ref().map(|info| info.loaded).unwrap_or(true);
             let readonly = info.as_ref().map(|info| info.readonly).unwrap_or(false);
             let load_version = info

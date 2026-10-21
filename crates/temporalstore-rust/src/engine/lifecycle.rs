@@ -1439,7 +1439,7 @@ impl TemporalEngine {
                 address.block_slab_id(), address.offset(), address.length()
             ));
         }
-        let mut counters: Vec<_> = shard.control_state.iter().collect();
+        let mut counters: Vec<_> = shard.control_state().iter().collect();
         counters.sort_by(|left, right| left.0.cmp(right.0));
         for (key, series) in counters {
             for (bucket_ms, total) in series {
@@ -2421,7 +2421,7 @@ impl TemporalEngine {
                     return false;
                 };
                 shard
-                    .control_state
+                    .control_state_mut()
                     .entry(std::sync::Arc::from(&item.object_key[..]))
                     .or_default()
                     .insert(bucket_ms, total);

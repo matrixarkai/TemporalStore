@@ -212,7 +212,7 @@ fn a_decode_puts_back_exactly_the_series_that_were_encoded() {
             "{label}: the list series must come back entry for entry"
         );
         assert_eq!(
-            shard.control_state, decoded.control_state,
+            shard.control_state(), decoded.control_state(),
             "{label}: the control-state series must come back entry for entry"
         );
         assert_eq!(

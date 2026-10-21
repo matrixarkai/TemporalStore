@@ -168,7 +168,7 @@ fn a_key_held_by_several_maps_is_one_allocation() {
         (
             "control_state",
             shard
-                .control_state
+                .control_state()
                 .keys()
                 .filter(|k| !k.contains(':'))
                 .map(|k| (&**k, k.as_ptr() as usize))

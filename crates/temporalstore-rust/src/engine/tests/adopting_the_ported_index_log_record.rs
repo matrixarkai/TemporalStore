@@ -562,10 +562,28 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 21,
-        "costed against 21; if this is red the stamp moved and the adoption's cost has to be \
+        current, 22,
+        "costed against 22; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 21 -> 22, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 22 is `control_state` and `feature_values` becoming one domain-keyed `counter_series`.
+    // `control_state` was a STORED top-level key and is gone, which is 14's shape -- a named map
+    // drops an undeclared key in silence, so without the bump an index written at 21 loads with
+    // every control-state counter series EMPTY and a windowed aggregate answers zero over a store
+    // that holds the counts. `feature_values` was `#[serde(skip)]` and becomes stored by joining a
+    // stored map, as the watermark did at 21; its writer is gated off by default so it is empty in
+    // the shipped configuration.
+    //
+    // ALSO IN THIS BUMP: the decode's canonical-key adoption follows `control_state` onto the
+    // domain's table. That is not a stamp concern -- it would have been a silent loss of key
+    // SHARING, not of data -- but it is recorded here because it is the third map that pass covers
+    // and the second time a consolidation had to carry it along.
+    //
+    // This module costs the POSITIONAL index-log row, which carries no struct version, so the
+    // 550-against-595 comparison for eight page items is untouched.
+    //
     // RE-READ AT 20 -> 21, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 21 is `control_state_uuid` and `context_compression_watermark` becoming one domain-keyed
@@ -670,8 +688,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 20 && current != 22,
-        "bracketed, so 21 is exact and not an artefact of the comparison above"
+        current != 21 && current != 23,
+        "bracketed, so 22 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

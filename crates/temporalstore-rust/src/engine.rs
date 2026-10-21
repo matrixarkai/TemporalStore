@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 21;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 22;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -5598,7 +5598,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
         removed = true;
         control_rollup::feature_forget(shard, key);
     }
-    if shard.control_state.remove(key).is_some() {
+    if shard.control_state_mut().remove(key).is_some() {
         removed = true;
         control_rollup::forget(shard, key);
     }
@@ -6471,7 +6471,7 @@ fn persist_control_state_block(
     end_routing_bucket: u32,
     async_storage: bool,
 ) -> bool {
-    let Some(series) = shard.control_state.get(key) else {
+    let Some(series) = shard.control_state().get(key) else {
         shard.remove_control_state_block(key);
         return false;
     };
@@ -6573,7 +6573,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
         || shard.buckets.contains_key(key)
         || shard.seen.contains_key(key)
         || shard.features().contains_key(key)
-        || shard.control_state.contains_key(key)
+        || shard.control_state().contains_key(key)
         || shard.control_state_blocks().contains_key(key)
         || shard.control_state_changes.contains_key(key)
         || shard.control_state_selection.contains_key(key)
@@ -7470,7 +7470,7 @@ fn object_manager_stats(
             + shard.lists.len()
             + shard.zsets.len()
             + shard.features().len()
-            + shard.control_state.len()
+            + shard.control_state().len()
             + shard.control_state_changes.len()
             + shard.context_nodes.len()
             + shard.context_events().len()
@@ -7617,7 +7617,7 @@ fn object_manager_stats(
         + shard.lists.len()
         + shard.zsets.len()
         + shard.features().len()
-        + shard.control_state.len()
+        + shard.control_state().len()
         + shard.context_nodes.len()
         + shard.context_events().len()
         + shard.context_indexes().len()

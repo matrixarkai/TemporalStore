@@ -101,7 +101,7 @@ pub(crate) fn is_sum_family(aggregator: &str) -> bool {
 
 /// Called AFTER `shard.control_state[key]` has been updated with `amount` at `bucket_ms`.
 pub(crate) fn record_increment(shard: &mut ShardState, key: &str, bucket_ms: u64, amount: i64) {
-    let series_len = shard.control_state.get(key).map(|s| s.len()).unwrap_or(0);
+    let series_len = shard.control_state().get(key).map(|s| s.len()).unwrap_or(0);
     match shard.control_state_rollups_mut().get_mut(key) {
         Some(entry) => {
             fold_cells(&mut entry.cells, bucket_ms, amount);
@@ -109,7 +109,7 @@ pub(crate) fn record_increment(shard: &mut ShardState, key: &str, bucket_ms: u64
         }
         None => {
             // First touch this session: build from the full (already-updated) series.
-            let cells = shard.control_state.get(key).map(build).unwrap_or_default();
+            let cells = shard.control_state().get(key).map(build).unwrap_or_default();
             shard
                 .control_state_rollups_mut()
                 .insert(key.to_string(), RollupEntry { cells, built_len: series_len });
@@ -155,7 +155,15 @@ pub(crate) fn windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end
     // `rollups` and `control_state` are separate fields, so reaching them directly keeps the
     // disjointness the old pair of fields had. The alternative was cloning the series on a
     // read path, which is the wrong trade for a borrow problem.
-    let series = shard.control_state.get(key).unwrap_or(&empty_series);
+    // BOTH SIDES AS FIELDS NOW. The note above applied to the rollup table; the series is
+    // behind a door too since the counter maps merged, so the same disjointness argument has to
+    // cover it -- `counter_series` and `rollups` are separate fields, and a door call on either
+    // would borrow the whole shard and conflict with the other.
+    let series = shard
+        .counter_series
+        .get(&super::state::CounterSeries::ControlState)
+        .and_then(|table| table.get(key))
+        .unwrap_or(&empty_series);
     let table = shard
         .rollups
         .entry(super::state::RollupDomain::ControlState)
@@ -168,7 +176,11 @@ pub(crate) fn windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end
 pub(crate) fn feature_windowed_sum(shard: &mut ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
     let empty_series = BTreeMap::new();
     // Disjoint field borrows, as in `windowed_sum` above and for the same reason.
-    let series = shard.feature_values.get(key).unwrap_or(&empty_series);
+    let series = shard
+        .counter_series
+        .get(&super::state::CounterSeries::Feature)
+        .and_then(|table| table.get(key))
+        .unwrap_or(&empty_series);
     let table = shard
         .rollups
         .entry(super::state::RollupDomain::Feature)
@@ -179,13 +191,13 @@ pub(crate) fn feature_windowed_sum(shard: &mut ShardState, key: &str, start_ms: 
 /// Drop a feature key's numeric view + rollup (on delete/expire).
 pub(crate) fn feature_forget(shard: &mut ShardState, key: &str) {
     shard.feature_rollups_mut().remove(key);
-    shard.feature_values.remove(key);
+    shard.feature_values_mut().remove(key);
 }
 
 /// Clear all feature numeric views + rollups (on reconcile) so they rebuild lazily.
 pub(crate) fn feature_clear_all(shard: &mut ShardState) {
     shard.feature_rollups_mut().clear();
-    shard.feature_values.clear();
+    shard.feature_values_mut().clear();
 }
 
 /// Drop a key's rollup index (on delete/expire) so a later re-creation rebuilds cleanly.
