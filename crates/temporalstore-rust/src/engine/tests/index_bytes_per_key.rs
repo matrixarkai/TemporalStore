@@ -8038,13 +8038,33 @@ fn the_amplification_set_in_the_published_format() {
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
 
+    // READ EVERY KEY BACK BEFORE MEASURING THE MEMORY SIDE. The page cache populates on READS,
+    // not on writes, so a payload resident figure taken after a write-only workload is zero -- and
+    // a zero numerator makes the quadrant vacuous rather than small. The symmetry assertion below
+    // is what caught that: the first version of this arm reported 0 ppm for payload memory and
+    // said so.
+    //
+    // This also makes the memory figure the right KIND of number: cache residency is a function of
+    // what has been read, so the honest denominator pairing is "bytes held to serve the live set
+    // after the live set has been served".
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: format!("amp-{index:06}") },
+        });
+        assert!(response.status.ok, "read {index}: {:?}", response.status);
+    }
+
     let store = engine.block_store.stats();
     let slabs = engine.block_store.slab_summary();
     let log = engine.index_log_store.stats(1);
-    let published = engine
-        .shard_stats(1)
-        .expect("a loaded shard reports stats")
-        .storage;
+    let reported = engine.shard_stats(1).expect("a loaded shard reports stats");
+    let published = reported.storage.clone();
+    // THE PAYLOAD'S RESIDENT SIDE IS THE PAGE CACHE, and this is the figure the server itself
+    // reports for it -- the same term `ControlStats::load_memory_bytes` sums beside the index's.
+    // Taken from the report rather than re-measured here, so this arm and the server agree by
+    // construction instead of by coincidence.
+    let payload_resident = reported.cache.memory_bytes as u64;
 
     // The logical payload the workload asked for, which is the denominator the format uses for the
     // store's own spend. Taken from the counter rather than from KEYS * VALUE, so a change in what
@@ -8073,6 +8093,7 @@ fn the_amplification_set_in_the_published_format() {
     println!("    physical written  {physical_written:>12} B");
     println!("    physical resident {physical_resident:>12} B");
     println!("    live              {live:>12} B");
+    println!("    payload resident  {payload_resident:>12} B   (the page cache)");
     println!("    index image       {index_image:>12} B");
     println!("    index resident    {index_resident:>12} B");
     println!("    index log written {:>12} B", log.bytes_written);
@@ -8081,9 +8102,22 @@ fn the_amplification_set_in_the_published_format() {
     let payload_logical_write = ppm(logical_written, live);
     let payload_storage_write = ppm(physical_written, logical_written);
     let payload_space = ppm(physical_resident, live);
+    let payload_space_memory = ppm(payload_resident, live);
     println!("    logical_write_amplification_ppm  {payload_logical_write:>9}  ({:.3}x)   logical written / live", as_x(payload_logical_write));
     println!("    storage_write_amplification_ppm  {payload_storage_write:>9}  ({:.3}x)   physical written / logical written", as_x(payload_storage_write));
-    println!("    space_amplification_ppm          {payload_space:>9}  ({:.3}x)   physical resident / live", as_x(payload_space));
+    println!("    space_amplification_ppm (disk)   {payload_space:>9}  ({:.3}x)   slab bytes / live", as_x(payload_space));
+    println!("    space_amplification_ppm (memory) {payload_space_memory:>9}  ({:.3}x)   cache resident / live", as_x(payload_space_memory));
+    // AGAINST LOGICAL TOO, because the `live` denominator the format prescribes carries the same
+    // compression conflation the logical-write ratio does: `live` is counted on disk AFTER
+    // compression and the cache holds pages UNCOMPRESSED, so the headline figure multiplies the
+    // cache's own overhead by the compression factor. Both are printed; the first is the format's.
+    let payload_cache_over_logical = ppm(payload_resident, logical_written);
+    println!(
+        "      .. and {:>9} ppm ({:.3}x) against LOGICAL written, which is the cache's own",
+        payload_cache_over_logical,
+        as_x(payload_cache_over_logical)
+    );
+    println!("         overhead with the compression factor divided out");
     println!();
     println!("  INDEX LOG");
     let index_storage_write = ppm(log.bytes_written, index_image);
@@ -8118,6 +8152,25 @@ fn the_amplification_set_in_the_published_format() {
     assert!(logical_written > 0, "nothing logical was written, so every payload ratio is vacuous");
     assert!(live > 0, "nothing is live, so the two live-denominated ratios are vacuous");
     assert!(index_image > 0, "the index encoded to nothing, so both index ratios are vacuous");
+
+    // THE SET IS SYMMETRIC: both subsystems report both media. It was not -- the payload had one
+    // space figure and the index log had two -- and an asymmetric set invites the reader to assume
+    // the missing half is the same as the one that is shown. Asserted rather than left to the
+    // printout, because a figure can go missing again and a printout does not fail.
+    let quadrants = [
+        ("payload space (disk)", payload_space),
+        ("payload space (memory)", payload_space_memory),
+        ("index space (disk)", index_space_disk),
+        ("index space (memory)", index_space_memory),
+    ];
+    for (what, value) in quadrants {
+        assert!(
+            value > 0,
+            "{what} reports 0 ppm, so one quadrant of the set is missing or its denominator is \
+             zero -- the whole point of reporting four is that none of them is assumed from \
+             another"
+        );
+    }
 
     // --- THE MISMATCH, ASSERTED SO IT CANNOT BE FIXED WITHOUT THIS ARM NOTICING. The published
     // --- figure is the storage-write ratio wearing the logical-write ratio's name. When that is
