@@ -1201,6 +1201,20 @@ impl TemporalEngine {
                 block_writes: block_store.writes,
                 bytes_read: block_store.bytes_read,
                 bytes_written: block_store.bytes_written,
+                // THE DENOMINATORS OF THE RATIOS ABOVE, published so they can be checked. Both
+                // are already in hand here: the storage-write ratio divides by the first and the
+                // lifetime ratio divides by the second, so publishing them costs nothing beyond
+                // the field.
+                logical_bytes_written: block_store.logical_bytes_written,
+                live_block_bytes: if state.bucket_index.block_slab_live.is_ready() {
+                    state
+                        .bucket_index
+                        .block_slab_live
+                        .iter()
+                        .fold(0_u64, |total, (_, tally)| total.saturating_add(tally.bytes))
+                } else {
+                    0
+                },
                 append_watermark: block_store.writes,
                 compaction_watermark: block_store_slabs.reclaimable_physical_bytes,
             };

@@ -450,6 +450,35 @@ pub struct ShardCanonicalStorageStats {
     pub block_writes: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
+    /// User bytes offered to the store, cumulative: the DENOMINATOR of
+    /// [`Self::storage_write_amplification_ppm`].
+    ///
+    /// PUBLISHED SO THE RATIO CAN BE CHECKED. That ratio is `bytes_written /
+    /// logical_bytes_written`, and until now only the numerator was a field -- this quantity
+    /// appeared in this file exactly once, inside a doc comment. A consumer reading 136718 ppm
+    /// could neither re-derive it nor tell a compression change from an accounting change.
+    ///
+    /// It is counted before compression, which is what makes it the right denominator for that
+    /// ratio and the WRONG one for anything measuring bytes on disk. A block's length is what was
+    /// stored, after compression; dividing one by the other yields the compression factor
+    /// multiplied by whatever the ratio claimed to measure, which is how a payload write figure
+    /// came to read 7.314x where the rewrite pressure was 1.0x.
+    #[serde(default)]
+    pub logical_bytes_written: u64,
+    /// Stored bytes the index still points at: the DENOMINATOR of
+    /// [`Self::lifetime_write_amplification_ppm`].
+    ///
+    /// From the maintained per-slab tally, which retires a block when its index entry is replaced,
+    /// so an overwrite decrements it. Zero when that tally has not been derived yet -- the same
+    /// condition under which the ratio over it reports 0 ppm, so the two agree about when they are
+    /// unavailable rather than one of them reading as a real figure.
+    ///
+    /// NOT THE SAME AS [`Self::storage_slab_used_bytes`], which is slab-granular: that counts a
+    /// live slab's whole file however many of its blocks are dead, and therefore tracks bytes
+    /// written rather than bytes live. Both are published because they answer different questions
+    /// and neither derives the other.
+    #[serde(default)]
+    pub live_block_bytes: u64,
     pub append_watermark: u64,
     pub compaction_watermark: u64,
 }
