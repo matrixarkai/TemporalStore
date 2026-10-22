@@ -7991,21 +7991,36 @@ fn the_published_amplification_ratios_are_the_ratio_they_name() {
     // --- written once however well it compressed -- which is the property that distinguishes it
     // --- from the ratio above, and it is asserted rather than printed because the corpus here IS
     // --- written once.
-    if slabs.live_physical_bytes > 0 {
-        let expected_live = store
-            .bytes_written
-            .saturating_mul(1_000_000)
-            / slabs.live_physical_bytes;
+    // THE DENOMINATOR HERE IS THE INDEX'S OWN TALLY, NOT THE SLAB SUMMARY'S. On this write-once
+    // corpus the two are equal, so an identity written against `live_physical_bytes` would pass
+    // whichever one the field used -- and that is exactly the substitution that must not go
+    // unnoticed, because the slab-granular denominator cannot fall under rewrite.
+    // `the_live_denominator_must_fall_when_a_key_is_overwritten` separates the two; this pins the
+    // arithmetic against the right one so that arm is not the only thing holding it.
+    let index_live_bytes = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let live = &shard.bucket_index.block_slab_live;
+        assert!(
+            live.is_ready(),
+            "the per-slab live tally is not ready, so the published denominator is 0 by \
+             construction and the identity below would be vacuous"
+        );
+        live.iter().map(|(_, tally)| tally.bytes).sum::<u64>()
+    };
+    if index_live_bytes > 0 {
+        let expected_live = store.bytes_written.saturating_mul(1_000_000) / index_live_bytes;
         assert_eq!(
             after.storage.lifetime_write_amplification_ppm, expected_live,
-            "the published live-write amplification is not written/live: {} physical bytes written \
-             over {} live should be {expected_live} ppm, and {} was published",
+            "the published lifetime write amplification is not written over the INDEX's live \
+             bytes: {} physical written over {index_live_bytes} live should be {expected_live} \
+             ppm, and {} was published",
             store.bytes_written,
-            slabs.live_physical_bytes,
             after.storage.lifetime_write_amplification_ppm,
         );
         println!(
-            "  lifetime write amplification {:.4}x  ({} physical written / {} live physical bytes)",
+            "  lifetime write amplification {:.4}x  ({} physical written / {index_live_bytes} \
+             index-live bytes; the slab summary says {} live)",
             expected_live as f64 / 1_000_000.0,
             store.bytes_written,
             slabs.live_physical_bytes,
@@ -9298,5 +9313,143 @@ fn what_merging_the_key_sharing_maps_would_cost_as_a_record() {
         "a disjoint population was expected to COST bytes in the record shape -- four maps \
          {disjoint_maps} B, two records {disjoint_records} B. With both ends the same sign there \
          is no crossover to report and the arm's conclusion does not follow."
+    );
+}
+
+/// THE LIVE DENOMINATOR MUST FALL WHEN A KEY IS OVERWRITTEN, AND THE PUBLISHED ONE DOES NOT.
+///
+/// `lifetime_write_amplification_ppm` claims to say how many times over the store has written the
+/// data it is holding. That claim is only testable by REWRITING, and the obvious denominator fails
+/// it: `summarize_slabs` adds a slab's whole `physical_bytes` to `live_physical_bytes` for every
+/// Active or Sealed slab, so "live" means "in a slab not awaiting destruction" and a slab counts
+/// fully live however many of its blocks are dead.
+///
+/// So `live_physical_bytes` tracks `bytes_written` to the byte under rewrite, and every ratio over
+/// it is pinned at 1.000x. This arm measures both denominators side by side across five full
+/// rewrites and asserts the asymmetry: the slab-granular one must stay pinned, and the published
+/// field -- which uses the index's own block-granular tally -- must reach 5.0x.
+///
+/// WHY BOTH HALVES ARE ASSERTED. "The ratio moved" alone would pass if the coarse denominator had
+/// quietly started working; "the coarse one is pinned" alone would pass if the field were broken in
+/// the same way. Together they say the field is on the right denominator AND that the choice still
+/// matters. If this arm fails because the slab summary began falling under rewrite, the right fix
+/// is to re-read the summary rather than to loosen this.
+///
+/// VALUES ARE INCOMPRESSIBLE AND DIFFER EVERY ROUND, so nothing can be deduplicated and a round's
+/// physical cost cannot be absorbed by the codec -- the denominator has to move for structural
+/// reasons, not because the data got smaller.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib the_live_denominator_must_fall_when_a_key_is_overwritten -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "rewrites a corpus five times; run by name"]
+fn the_live_denominator_must_fall_when_a_key_is_overwritten() {
+    use crate::types::{Command, ExecuteRequest};
+    const KEYS: usize = 2_000;
+    const ROUNDS: u64 = 5;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), 1023);
+    let mut seed: u64 = 0x243F6A8885A308D3;
+    let mut next_value = move || -> Vec<u8> {
+        (0..256)
+            .map(|_| {
+                seed ^= seed << 13;
+                seed ^= seed >> 7;
+                seed ^= seed << 17;
+                (seed >> 24) as u8
+            })
+            .collect()
+    };
+
+    println!();
+    println!("  THE SAME CORPUS REWRITTEN, AGAINST TWO DENOMINATORS FOR 'LIVE'");
+    println!();
+    println!(
+        "  {:>5} {:>13} {:>13} {:>10} {:>13} {:>10} {:>11}",
+        "round", "written", "slab live", "slab x", "index live", "index x", "published x"
+    );
+
+    let mut first_index_live = 0u64;
+    let mut last = (0u64, 0u64, 0u64, 0u64);
+    for round in 1..=ROUNDS {
+        for index in 0..KEYS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("rw-{index:06}"),
+                    value: next_value(),
+                },
+            });
+            assert!(response.status.ok, "round {round} write {index}: {:?}", response.status);
+        }
+        let store = engine.block_store.stats();
+        let slabs = engine.block_store.slab_summary();
+        let (index_live, ready) = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            let live = &shard.bucket_index.block_slab_live;
+            (live.iter().map(|(_, tally)| tally.bytes).sum::<u64>(), live.is_ready())
+        };
+        assert!(ready, "round {round}: the per-slab live tally is not ready, so its column is 0 by \
+                        construction and the comparison below is vacuous");
+        let published = engine.shard_stats(1).expect("a loaded shard reports stats").storage.clone();
+        if round == 1 {
+            first_index_live = index_live;
+        }
+        println!(
+            "  {round:>5} {:>13} {:>13} {:>10.3} {:>13} {:>10.3} {:>11.3}",
+            store.bytes_written,
+            slabs.live_physical_bytes,
+            store.bytes_written as f64 / slabs.live_physical_bytes.max(1) as f64,
+            index_live,
+            store.bytes_written as f64 / index_live.max(1) as f64,
+            published.lifetime_write_amplification_ppm as f64 / 1_000_000.0,
+        );
+        last = (store.bytes_written, slabs.live_physical_bytes, index_live, published.lifetime_write_amplification_ppm);
+    }
+    println!();
+
+    let (written, slab_live, index_live, published_ppm) = last;
+    assert!(written > 0 && index_live > 0, "nothing was written or nothing is live; every ratio below is vacuous");
+
+    // --- THE LIVE SET DID NOT GROW. Every round overwrites the same keys, so the index's live
+    // --- tally must hold steady -- if it grew, the fixture wrote new keys and the rewrite this arm
+    // --- depends on did not happen.
+    assert_eq!(
+        first_index_live, index_live,
+        "the index's live bytes went {first_index_live} -> {index_live} across {ROUNDS} rounds that \
+         overwrite the SAME {KEYS} keys. The live set must not grow, or these are not rewrites and \
+         the amplification below is just more data."
+    );
+
+    // --- THE SLAB-GRANULAR DENOMINATOR IS PINNED. This is the defect, asserted so that the field
+    // --- above cannot be quietly re-pointed back onto it.
+    assert_eq!(
+        written, slab_live,
+        "`live_physical_bytes` was expected to track `bytes_written` to the byte under rewrite -- \
+         {written} written against {slab_live} live -- because a slab counts fully live however \
+         many of its blocks are dead. If these have diverged, the slab summary started seeing dead \
+         blocks and the caveat on `space_amplification_ppm` should be re-measured, not relaxed."
+    );
+
+    // --- AND THE PUBLISHED FIELD IS ON THE DENOMINATOR THAT MOVES. Five rounds of rewrite over an
+    // --- unchanging live set is exactly 5.0x.
+    let expected_ppm = written.saturating_mul(1_000_000) / index_live;
+    assert_eq!(
+        expected_ppm, published_ppm,
+        "the published lifetime write amplification is {published_ppm} ppm and the index's own \
+         tally gives {expected_ppm} ppm ({written} written over {index_live} live). If the field \
+         reports {} ppm instead, it is back on the slab-granular denominator and can no longer \
+         leave 1.0x.",
+        written.saturating_mul(1_000_000) / slab_live.max(1)
+    );
+    assert_eq!(
+        ROUNDS * 1_000_000,
+        published_ppm,
+        "{ROUNDS} rewrites of an unchanging live set must read exactly {ROUNDS}.000x and the field \
+         published {published_ppm} ppm"
     );
 }

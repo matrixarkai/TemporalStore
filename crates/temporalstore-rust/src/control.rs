@@ -337,8 +337,10 @@ pub struct ShardCanonicalStorageStats {
     /// Physical bytes written OVER THIS STORE'S LIFETIME per physical byte that is live NOW, in
     /// PARTS PER MILLION -- how many times over the store has written the data it is holding.
     ///
-    /// `bytes_written / live_physical_bytes`, both already to hand where this is computed, so it
-    /// costs no accounting on any write path and no walk. Zero when nothing is live.
+    /// `bytes_written` over the index's own live tally -- NOT over the slab summary's
+    /// `live_physical_bytes`, which is slab-granular and cannot fall under rewrite. See the
+    /// denominator note below; it is the whole reason this field is computable at all. Zero when
+    /// the tally is not ready. Costs O(slabs), not O(objects), and no write-path accounting.
     ///
     /// WHAT IT IS FOR: rewrite pressure. A corpus written once reads 1_000_000 ppm however well it
     /// compresses; writing every key a second time reads 2_000_000. That is the question
@@ -346,6 +348,23 @@ pub struct ShardCanonicalStorageStats {
     /// `storage_write_amplification_ppm` divides out by the compression factor, and
     /// `space_amplification_ppm` below has a numerator that is bytes RESIDENT rather than bytes
     /// written, so it cannot see a rewrite that reclaimed as it went.
+    ///
+    /// # THE DENOMINATOR IS BLOCK-GRANULAR, AND THE OBVIOUS ONE DOES NOT WORK
+    ///
+    /// `summarize_slabs` adds a slab's WHOLE `physical_bytes` to `live_physical_bytes` for every
+    /// Active or Sealed slab, so "live" there means "in a slab not awaiting destruction". A slab
+    /// counts fully live however many of its blocks are dead. That makes it track `bytes_written`
+    /// to the byte under rewrite, and any ratio over it is PINNED AT 1.0x: measured at 2,000 keys
+    /// overwritten five times, `bytes_written` and `live_physical_bytes` both read 2,680,000 B at
+    /// every round while four fifths of those bytes were dead.
+    ///
+    /// `bucket_index.block_slab_live` sums `BlockAddress::length` over the blocks the INDEX still
+    /// points at, and a block leaves the tally when its index entry does, so an overwrite retires
+    /// the block it displaced. On that same corpus it holds at 536,000 B -- the live set's true
+    /// size -- across all five rounds, and this ratio moves 1.000x -> 5.000x as it should.
+    ///
+    /// `the_live_denominator_must_fall_when_a_key_is_overwritten` holds both denominators side by
+    /// side and fails if this field is ever re-pointed at the slab-granular one.
     ///
     /// # THIS RATIO HAS NO CEILING AND MUST NOT CARRY A FIXED ALERT THRESHOLD
     ///
@@ -382,6 +401,26 @@ pub struct ShardCanonicalStorageStats {
     ///
     /// NOT THE SAME QUANTITY AS THE SLAB UTILISATION ALREADY ON A DESCRIPTOR, which is per slab and
     /// expressed in basis points; this is the whole store in ppm.
+    ///
+    /// # ITS DENOMINATOR IS SLAB-GRANULAR, SO IT CANNOT SEE A DEAD BLOCK INSIDE A LIVE SLAB
+    ///
+    /// This ratio computes what its name says, and its VALUE is nonetheless pinned near 1.0x for
+    /// the ordinary shape of space amplification. `live_physical_bytes` counts an Active or Sealed
+    /// slab's whole `physical_bytes`, so the figure can only move once an ENTIRE slab reaches
+    /// delayed-destroy. Measured at 2,000 keys overwritten five times: 1.000x at every round, with
+    /// `reclaimable_physical_bytes` never leaving zero, where the block-granular figure is 5.0x.
+    ///
+    /// IT CAN MOVE, BUT ONLY AFTER A COMPACTION, NOT AFTER THE REWRITE THAT CAUSED THE WASTE. The
+    /// one state that shifts it is a whole slab reaching `DelayedDestroy`, and only the compaction
+    /// phase produces that -- so the figure lags the condition it describes by however long it
+    /// takes a collector to quarantine a slab, and then by `DELAYED_DESTROY_MIN_AGE_MS` before the
+    /// space is actually returned.
+    ///
+    /// SO DO NOT PUT AN ALERT ON THIS EXPECTING IT TO CATCH RECLAIMABLE SPACE. It reports slab
+    /// states, not how much of the data is dead. The block-granular quantity is
+    /// `bucket_index.block_slab_live`, which `lifetime_write_amplification_ppm` above uses; moving
+    /// THIS field onto it would change a published value that consumers already read, so it is
+    /// recorded here rather than done silently.
     #[serde(default)]
     pub space_amplification_ppm: u64,
     #[serde(alias = "storage_zone_used_bytes")]

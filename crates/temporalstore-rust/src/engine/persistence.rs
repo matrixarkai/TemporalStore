@@ -1101,6 +1101,35 @@ impl TemporalEngine {
                 storage_bytes: block_store.bytes_written,
                 object_manager: object_manager.clone(),
             };
+            // THE BLOCK-GRANULAR LIVE BYTES, which is a different quantity from the slab summary's
+            // `live_physical_bytes` and the only one a write-amplification ratio can use.
+            //
+            // `summarize_slabs` adds a slab's WHOLE `physical_bytes` to `live_physical_bytes` when
+            // the slab is Active or Sealed, so "live" there means "in a slab that is not awaiting
+            // destruction". A slab counts fully live however many of its blocks are dead, which
+            // makes that figure track `bytes_written` to the byte under rewrite: measured at 2,000
+            // keys overwritten five times, both read 2,680,000 B and every ratio over them is
+            // pinned at 1.000x while four fifths of the stored bytes are dead.
+            //
+            // `block_slab_live` sums `BlockAddress::length` over the blocks the INDEX still points
+            // at, and a block leaves the tally when its index entry does -- so an overwrite retires
+            // the block it displaced. On the same corpus this stays at 536,000 B across all five
+            // rounds, which is the live set's true size, and the ratio moves 1.000x -> 5.000x as it
+            // should. O(slabs), not O(objects).
+            //
+            // ZERO WHEN NOT READY, which reports 0 ppm through `ppm_ratio` rather than a wrong
+            // number: the tally is seeded wherever the index is rebuilt wholesale, and until then
+            // `is_ready` is false and it holds nothing.
+            let index_live_bytes = if state.bucket_index.block_slab_live.is_ready() {
+                state
+                    .bucket_index
+                    .block_slab_live
+                    .iter()
+                    .map(|(_, tally)| tally.bytes)
+                    .fold(0u64, |total, bytes| total.saturating_add(bytes))
+            } else {
+                0
+            };
             let storage = crate::control::ShardCanonicalStorageStats {
                 page_index_entries: object_manager.block_ref_count as u64,
                 // Live refs, NOT `page_store.writes`: that counter only ever increases, so
@@ -1152,12 +1181,13 @@ impl TemporalEngine {
                     block_store.bytes_written,
                     block_store.logical_bytes_written,
                 ),
-                // UNIT-MATCHED: stored bytes on both sides, so the compression factor cancels
-                // rather than dividing in, and a corpus written once reads 1.0x however well it
-                // compressed. Both counters are already in hand here.
+                // UNIT-MATCHED AND BLOCK-GRANULAR: stored bytes on both sides, so the
+                // compression factor cancels rather than dividing in; and the denominator is the
+                // index's own live tally rather than the slab summary's, which cannot fall under
+                // rewrite. See `index_live_bytes` above for the measurement that decided it.
                 lifetime_write_amplification_ppm: Self::ppm_ratio(
                     block_store.bytes_written,
-                    block_store_slabs.live_physical_bytes,
+                    index_live_bytes,
                 ),
                 space_amplification_ppm: Self::ppm_ratio(
                     block_store_slabs.total_known_physical_bytes,
