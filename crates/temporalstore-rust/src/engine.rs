@@ -1533,7 +1533,7 @@ impl TemporalEngine {
                     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
                     FastPathRead::String {
                         key: key.as_str(),
-                        address: shard.strings().get(key.as_str()).cloned(),
+                        address: shard.string_address(key.as_str()),
                         routing_bucket: block_routing_bucket(
                             key,
                             start_routing_bucket,
@@ -2666,7 +2666,7 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 25;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 26;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3394,7 +3394,7 @@ fn collect_upsert_index_items(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings().get(object_key.as_str()).cloned(),
+            ("string", None) => shard.string_address(object_key.as_str()),
             // THE ARM #2232 ASSUMED WAS HERE. That change made `command_upsert_components` name a
             // component for `FeatureAppend` so an append takes the O(1) delta path instead of
             // snapshotting the whole series -- and this match, which turns a component back into

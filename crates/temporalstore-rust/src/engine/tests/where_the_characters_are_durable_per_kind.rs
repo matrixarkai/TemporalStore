@@ -159,8 +159,7 @@ fn shard_with_one_object_of_every_kind(suffix: &str) -> ShardState {
     let mut shard = ShardState::default();
 
     shard
-        .strings_mut()
-        .insert(key_for("string", suffix).as_str().into(), address());
+        .set_string_address(key_for("string", &suffix).as_str().into(), &address());
     shard
         .hashes
         .insert_element_for_test(

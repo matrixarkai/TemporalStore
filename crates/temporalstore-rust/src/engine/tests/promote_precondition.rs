@@ -115,7 +115,7 @@ fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BT
     let mut index = 0u64;
     while index < count {
         let address = address_at(index);
-        shard.strings_mut().insert(std::sync::Arc::from(key_of(index).as_str()), address.clone());
+        shard.set_string_address(std::sync::Arc::from(key_of(index).as_str()), &address.clone());
         if Some(index % u64::from(SPREAD)) == unfiled_group {
             unfiled_buckets.insert(bucket_of(index));
         } else {
@@ -279,7 +279,7 @@ fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
     let orphan = 64u64;
     let orphan_bucket = bucket_of(orphan);
     let orphan_address = address_at(orphan);
-    shard.strings_mut().insert(std::sync::Arc::from(key_of(orphan).as_str()), orphan_address.clone());
+    shard.set_string_address(std::sync::Arc::from(key_of(orphan).as_str()), &orphan_address.clone());
 
     assert!(
         !shard.bucket_index.bucket_map.is_empty(),

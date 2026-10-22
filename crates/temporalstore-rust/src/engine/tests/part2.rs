@@ -236,7 +236,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard should exist");
-        let address = shard.strings().get("target").expect("target address should exist");
+        let address = shard.string_address("target").expect("target address should exist");
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,

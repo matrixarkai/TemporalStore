@@ -166,14 +166,14 @@ fn round_trip_every_page_through_the_wire(
 ) -> usize {
     let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
     for key in &keys {
-        let before = shard.strings().get(key.as_str()).expect("key present").clone();
+        let before = shard.string_address(key.as_str()).expect("key present").clone();
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
             "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
-        shard.strings_mut().insert(key.as_str().into(), older);
+        shard.set_string_address(key.as_str().into(), &older);
     }
     keys.len()
 }

@@ -2842,12 +2842,10 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
         // same disagreement this test has always been about, reached through a mechanism that still
         // exists. Without this the install gate would be tested by planting a value nothing reads.
         let address = restored
-            .strings_mut()
-            .remove("lifecycle")
+            .take_string_address("lifecycle")
             .expect("manifest string address");
         restored
-            .strings_mut()
-            .insert("lifecycle-renamed-to-move-its-derived-id".into(), address);
+            .set_string_address("lifecycle-renamed-to-move-its-derived-id".into(), &address);
         reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
         reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
@@ -3617,7 +3615,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     let target_block_key = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).unwrap();
-        let address = shard.strings().get("target").unwrap().clone();
+        let address = shard.string_address("target").unwrap().clone();
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
             1,

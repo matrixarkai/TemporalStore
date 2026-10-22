@@ -874,9 +874,9 @@ impl TemporalEngine {
                 let mut publish_targets = shard
                     .strings()
                     .iter()
-                    .filter(|(_, address)| crate::wal_record::is_wal_resident(address.block_slab_id()))
-                    .map(|(key, address)| {
-                        (PublishTarget::String { key: key.to_string() }, address.clone())
+                    .filter(|(_, slot)| crate::wal_record::is_wal_resident(slot.block_slab_id()))
+                    .map(|(key, slot)| {
+                        (PublishTarget::String { key: key.to_string() }, slot.address())
                     })
                     .collect::<Vec<_>>();
                 publish_targets.extend(
@@ -902,11 +902,11 @@ impl TemporalEngine {
             } else {
                 let mut publish_targets = Vec::new();
                 for key in &selected_keys {
-                    if let Some(address) = shard.strings().get(key.as_str()) {
+                    if let Some(address) = shard.string_address(key.as_str()) {
                         if crate::wal_record::is_wal_resident(address.block_slab_id()) {
                             publish_targets.push((
                                 PublishTarget::String { key: key.clone() },
-                                address.clone(),
+                                address,
                             ));
                         }
                     }
@@ -992,7 +992,10 @@ impl TemporalEngine {
             {
                 match target {
                     PublishTarget::String { key } => {
-                        if shard.strings().get(key.as_str()) != Some(&original) {
+                        // COMPARED AS AN ADDRESS, which is what `original` is. The row holds
+                        // more than the address now, so comparing rows would make an unrelated
+                        // field's change look like a concurrent write and skip the publish.
+                        if shard.string_address(key.as_str()) != Some(original) {
                             continue;
                         }
                         let _ = self.cache.put(
@@ -1028,7 +1031,7 @@ impl TemporalEngine {
                             .object_block_lookup
                             .any_shared_object_key(&key);
                         let stored = shared.unwrap_or_else(|| std::sync::Arc::from(key));
-                        shard.strings_mut().insert(stored, published);
+                        shard.set_string_address(stored, &published);
                     }
                     PublishTarget::Hash { key, field } => {
                         let current = shard.hashes.get(&key).and_then(|fields| fields.get(&field));

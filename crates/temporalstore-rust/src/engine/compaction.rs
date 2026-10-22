@@ -462,7 +462,7 @@ pub(super) fn compaction_model_layout_reports(
     reports.push(compaction_layout_from_addresses(
         "string",
         shard.strings().len(),
-        shard.strings().values().cloned(),
+        shard.strings().values().map(|slot| slot.address()),
         &slab_page_counts,
         None,
     ));

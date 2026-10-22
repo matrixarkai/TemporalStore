@@ -264,7 +264,7 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     // while letting the values differ. The record map pays one `address()` per entry, in a test
     // probe, which is the right place for that cost.
     for (name, addresses) in [
-        ("strings", shard.strings().values().cloned().collect::<Vec<_>>()),
+        ("strings", shard.strings().values().map(|slot| slot.address()).collect::<Vec<_>>()),
         (
             "control_state_pages",
             shard
@@ -1145,9 +1145,12 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
         .values()
         .map(|record| record.address())
         .collect();
-    for address in shard
-        .strings()
-        .values()
+    // THE STRING MAP HOLDS A ROW NOW, so its addresses are materialised like the control-state
+    // ones already were. Three owned vectors chained, still one pass over all three.
+    let string_addresses: Vec<ElementEntry> =
+        shard.strings().values().map(|slot| slot.address()).collect();
+    for address in string_addresses
+        .iter()
         .chain(shard.context_nodes().values())
         .chain(control_state_addresses.iter())
     {
@@ -1986,8 +1989,8 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    let empty_in_model_map = shard.strings().get("empty_value").map(|a| a.length());
-    let big_in_model_map = shard.strings().get("big_value").map(|a| a.length());
+    let empty_in_model_map = shard.string_address("empty_value").map(|a| a.length());
+    let big_in_model_map = shard.string_address("big_value").map(|a| a.length());
     println!(
         "  MODEL MAP lengths -- empty_value: {empty_in_model_map:?}   big_value: {big_in_model_map:?}"
     );
@@ -2285,7 +2288,7 @@ fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let (start, end) = shard.routing_range();
-            (shard.strings().get(keys[0].as_str()).expect("indexed").clone(), start, end)
+            (shard.string_address(keys[0].as_str()).expect("indexed").clone(), start, end)
         };
         let derived = crate::engine::hashing::block_routing_bucket(&keys[0], start, end);
         let read_key = matrixcache::CacheKey::page_with_slot(

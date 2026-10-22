@@ -2191,7 +2191,7 @@ pub(super) fn model_map_block_address(
     component: Option<&str>,
 ) -> Option<ElementEntry> {
     match (model_id, component) {
-        ("string", None) => shard.strings().get(object_key).cloned(),
+        ("string", None) => shard.string_address(object_key),
         ("context_node", None) => shard.context_nodes().get(object_key).cloned(),
         _ => None,
     }
@@ -2915,7 +2915,7 @@ pub(super) fn sync_blocks_for_written_components(
                 .get(object_key)
                 .and_then(|fields| fields.get(field))
                 .cloned(),
-            ("string", None) => shard.strings().get(object_key.as_str()).cloned(),
+            ("string", None) => shard.string_address(object_key.as_str()),
             _ => None,
         };
         let Some(address) = address else {
@@ -3645,9 +3645,10 @@ fn visit_model_live_blocks(
         accept: impl Fn(&str, &ElementEntry) -> bool,
         mut emit: impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
     ) {
-        for (key, address) in shard.strings() {
-            if accept(key, address) {
-                emit(ModelKind::String, KeyRef::Shared(key), None, address);
+        for (key, slot) in shard.strings() {
+            let address = slot.address();
+            if accept(key, &address) {
+                emit(ModelKind::String, KeyRef::Shared(key), None, &address);
             }
         }
         // WHICH KINDS FILE A PAGE-NAMED ENTRY, ASKED ONCE FOR THE WHOLE WALK.
@@ -7403,9 +7404,17 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     }
 
     if saw_strings {
-        // THE WRITE DOOR, DEREFERENCED: an assignment target is reported by E0615 exactly
-        // like a read, so the door pass gave this site the read accessor.
-        *shard.strings_mut() = strings;
+        // THE DECODE BUILDS ROWS NOW, not bare addresses. One slot per key, each carrying its
+        // address and nothing else: a decoded index has no deadline or dirty bit to restore,
+        // because the stored image does not carry them yet.
+        *shard.strings_mut() = strings
+            .into_iter()
+            .map(|(key, address)| {
+                let mut slot = super::object_record::ObjectSlot::default();
+                slot.set_address(&address);
+                (key, slot)
+            })
+            .collect();
     }
     // MERGED, NOT ASSIGNED, for the three kinds whose element identity is spelled into a component
     // name. These three used to read `shard.zsets = zsets;` and so on, which throws a DURABLE map
@@ -8306,7 +8315,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings_mut().insert(key.as_str().into(), held.clone());
+        shard.set_string_address(key.as_str().into(), &held.clone());
         install_page(shard, routing_bucket, &key, block(&key, "string", None, held));
         key
     }
@@ -8324,7 +8333,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, u32::MAX);
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
-        shard.strings_mut().insert(std::sync::Arc::from(key), held.clone());
+        shard.set_string_address(std::sync::Arc::from(key), &held.clone());
         install_page(shard, routing_bucket, key, block(key, "string", None, held));
         routing_bucket
     }
@@ -8346,7 +8355,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.strings_mut().insert(key.as_str().into(), held.clone());
+        shard.set_string_address(key.as_str().into(), &held.clone());
         let dirty = BlockIndex {
             dirty: true,
             ..block(&key, "string", None, held)
@@ -8588,7 +8597,7 @@ mod release_refusal_guards {
     #[test]
     fn a_model_map_disagreement_is_refused_and_the_refusal_names_the_map_term() {
         let (mut shard, key) = releasable_shard(7, "disagreement-key");
-        shard.strings_mut().insert(std::sync::Arc::from(key.as_str()), address(7, 4_096));
+        shard.set_string_address(std::sync::Arc::from(key.as_str()), &address(7, 4_096));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -8626,7 +8635,7 @@ mod release_refusal_guards {
             .hashes
             .insert_element_for_test(&kind_key, std::sync::Arc::from("field"), held.clone());
         install_page(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
-        shard.strings_mut().insert(std::sync::Arc::from(disagreement_key.as_str()), address(5, 4_096));
+        shard.set_string_address(std::sync::Arc::from(disagreement_key.as_str()), &address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
         let outcome = release_bucket_blocks(&mut shard, &candidates);
@@ -9133,7 +9142,7 @@ mod model_kind_registry_guards {
     fn shard_holding_one_page_of_every_kind() -> ShardState {
         let mut shard = ShardState::default();
         let at = address(7);
-        shard.strings_mut().insert("s".into(), at.clone());
+        shard.set_string_address("s".into(), &at.clone());
         shard
             .hashes
             .insert_elements_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());

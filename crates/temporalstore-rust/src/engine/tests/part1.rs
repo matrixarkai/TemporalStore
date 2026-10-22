@@ -1462,9 +1462,8 @@ fn context_temporal_compression_and_raw_backfill_use_cold_storage_without_cache_
 #[test]
 fn live_block_slab_ids_scan_all_index_backed_data_models() {
     let mut shard = ShardState::default();
-    shard.strings_mut().insert(
-        "string".into(),
-        ElementEntry::from_parts(7, 0, 1, None, None),
+    shard.set_string_address(
+        "string".into(), &ElementEntry::from_parts(7, 0, 1, None, None),
     );
     shard.hashes.insert_element_for_test(
         "hash",
@@ -1574,7 +1573,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        let string_address = shard.strings().get("k").expect("string address");
+        let string_address = shard.string_address("k").expect("string address");
         let hash_address = shard
             .hashes
             .get("h")
@@ -2443,7 +2442,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
     let block_key = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        let address = shard.strings().get("cold-key").expect("indexed page address");
+        let address = shard.string_address("cold-key").expect("indexed page address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
         // THE SAME DERIVATION THE READ PATH USES: the page cache key's slot is the KEY's bucket
         // over the range the shard is stamped with, not a field on the address.
@@ -2665,7 +2664,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("loaded shard");
-    let string_address = shard.strings().get("k").expect("string address");
+    let string_address = shard.string_address("k").expect("string address");
     let hash_address = shard
         .hashes
         .get("h")
@@ -3537,9 +3536,8 @@ fn served_index_container_round_trips_and_still_reads_plain_json() {
     use crate::engine::{decode_index_bytes, encode_index_bytes, encode_index_bytes_as_plain_json};
 
     let mut shard = ShardState::default();
-    shard.strings_mut().insert(
-        "container-probe".into(),
-        ElementEntry::from_parts(7, 11, 13, None, None),
+    shard.set_string_address(
+        "container-probe".into(), &ElementEntry::from_parts(7, 11, 13, None, None),
     );
 
     // Raw JSON, which is what an older binary wrote. Nothing in production produces this any
@@ -3576,9 +3574,8 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     let mut shard = ShardState::default();
     shard.index_format_version = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     for i in 0..64u64 {
-        shard.strings_mut().insert(
-            std::sync::Arc::from(format!("object-{i}").as_str()),
-            ElementEntry::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
+        shard.set_string_address(
+            std::sync::Arc::from(format!("object-{i}").as_str()), &ElementEntry::from_parts(i, i * 7, i + 1, Some(i), Some(i * 3)),
         );
     }
     shard.hashes.insert_element_for_test(
@@ -3599,8 +3596,8 @@ fn binary_index_payload_round_trips_and_refuses_a_shape_it_cannot_read() {
     // plausible one -- so compare the maps, not just that it decoded.
     let decoded = decode_index_bytes(&binary).expect("binary index decodes");
     assert_eq!(decoded.strings().len(), shard.strings().len());
-    for (key, address) in shard.strings() {
-        assert_eq!(decoded.strings().get(key), Some(address), "address changed for {key}");
+    for (key, slot) in shard.strings() {
+        assert_eq!(decoded.string_address(key), Some(slot.address()), "address changed for {key}");
     }
     // `hashes` RIDES THE PAYLOAD NOW, and this assertion is back to the exact round-trip it
     // originally made. The history is the point: it asserted equality, was weakened to assert the
@@ -4884,7 +4881,7 @@ fn how_many_map_entries_is_one_record() {
     let address = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings().values().next().cloned().expect("a written page")
+        shard.strings().values().next().map(|slot| slot.address()).expect("a written page")
     };
 
     // The floor: the same key and the same address, in a map of their own.
@@ -5511,7 +5508,7 @@ fn where_a_block_read_miss_allocates() {
                 (
                     Some(super::hashing::block_routing_bucket(key, start, end)),
                     key.to_string(),
-                    address.clone(),
+                    address.address(),
                 )
             })
             .collect()
@@ -5633,7 +5630,7 @@ fn what_a_block_read_costs_hit_against_miss() {
 
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
-    let warm = super::read_block_shared(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "string", &object_key, None), routing_bucket)
+    let warm = super::read_block_shared(cache, block_store, 1, &address.address(), crate::engine::hashing::PageIdentity::of(1, "string", &object_key, None), routing_bucket)
         .expect("the page reads back");
     assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
 
@@ -5643,7 +5640,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     let mut hit_bytes = 0u64;
     for _ in 0..ROUNDS {
         let probe = crate::alloc_probe::Probe::start();
-        let got = super::read_block_shared(cache, block_store, 1, &address, crate::engine::hashing::PageIdentity::of(1, "string", &object_key, None), routing_bucket);
+        let got = super::read_block_shared(cache, block_store, 1, &address.address(), crate::engine::hashing::PageIdentity::of(1, "string", &object_key, None), routing_bucket);
         let counts = probe.stop();
         assert!(got.is_some(), "the page must read back on the hit path");
         hit_allocs += counts.allocs;
@@ -5674,7 +5671,7 @@ fn what_a_block_read_costs_hit_against_miss() {
                 (
                     Some(super::hashing::block_routing_bucket(key, start, end)),
                     key.to_string(),
-                    address.clone(),
+                    address.address(),
                 )
             })
             .collect()
@@ -7221,7 +7218,7 @@ fn what_resizing_a_shard_map_costs() {
     let address = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings().values().next().cloned().expect("a written page")
+        shard.strings().values().next().map(|slot| slot.address()).expect("a written page")
     };
 
     // Just past a 7/8 boundary, so the incremental build pays for a resize the pre-sized one skips.

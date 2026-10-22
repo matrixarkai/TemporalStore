@@ -2100,9 +2100,8 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     // survives the rebuild -- against the filing the rebuild actually performs.
     let mut shard = ShardState::default();
     let derived_bucket = crate::engine::hashing::bucket_for_object("k", 0, u32::MAX);
-    shard.strings_mut().insert(
-        "k".into(),
-        ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
+    shard.set_string_address(
+        "k".into(), &ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
     );
     shard.bucket_index.bucket_map.insert(
         derived_bucket,
@@ -2333,13 +2332,17 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
         // The slab id is half of one packed word now, so it is planted by rebuilding the address
         // through the checked constructor rather than by assigning a field. Every other part is
         // carried across unchanged, which is what makes this a STALE address and not a new one.
-        *stale = ElementEntry::from_parts(
+        // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the page words
+        // and leaves the deadline, the model id and the dirty bit alone, which is what makes this
+        // a stale ADDRESS rather than a replaced row.
+        let planted = ElementEntry::from_parts(
             stale.block_slab_id().wrapping_add(999),
             stale.offset(),
             stale.length(),
             stale.block_id(),
             None,
         );
+        stale.set_address(&planted);
     }
 
     let recovery = engine.storage_recovery_report(1);

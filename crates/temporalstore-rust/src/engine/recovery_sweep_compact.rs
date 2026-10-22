@@ -1541,17 +1541,37 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let bucket_of = |key: &str| {
             block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
         };
+        // THE STRING ARM STAGES ITS ADDRESSES, because the row is a slot and the address is
+        // DERIVED from the record's words rather than stored beside them -- so there is no
+        // `&mut ElementEntry` inside it to lend out. The addresses are materialised, rewritten by
+        // the same helper over the same iterator shape, and written back through `set_address`.
+        //
+        // THE WRITE-BACK MUST GO THROUGH THE SETTER AND NOT BUILD A FRESH ROW. `set_address`
+        // rewrites the page word, the page size and the two page flags and touches nothing else,
+        // so the deadline, the model id and the dirty bit survive a relocation. A fresh row would
+        // drop them, and would not fail today because those fields are still unfilled --
+        // `compacting_a_record_keeps_everything_that_is_not_the_address` is the arm that says so.
+        let mut staged: Vec<(crate::engine::state::ModelKey, crate::block_store::ElementEntry)> =
+            shard
+                .strings()
+                .iter()
+                .map(|(key, slot)| (std::sync::Arc::clone(key), slot.address()))
+                .collect();
         compact_block_addresses(
             &self.block_store,
             &self.cache,
             shard_id,
             "string",
-            shard
-                .strings_mut()
+            staged
                 .iter_mut()
                 .map(|(key, address)| (bucket_of(key), std::borrow::Cow::Borrowed(&**key), address)),
             &mut rewrite_stats,
         )?;
+        for (key, address) in &staged {
+            if let Some(slot) = shard.strings_mut().get_mut(&**key) {
+                slot.set_address(address);
+            }
+        }
         // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
         // its component: `container_pages::component_from_element_key` renders the component from
         // them, so the four inline renderings the write sites spell out are not copied here. That is

@@ -134,7 +134,7 @@ fn every_side_table_domain_round_trips_as_its_own_shape() {
 }
 
 #[test]
-fn the_seven_spellings_are_distinct_and_are_the_ones_the_old_fields_used() {
+fn the_six_spellings_are_distinct_and_are_the_ones_the_old_fields_used() {
     // DISTINCT, because the wire key is the only thing separating two domains. A collision would
     // not fail -- it would merge them, and the second written would win.
     let mut seen = std::collections::HashSet::new();
@@ -151,7 +151,6 @@ fn the_seven_spellings_are_distinct_and_are_the_ones_the_old_fields_used() {
     // change, and this merge deliberately did not make one -- the stamp it spent covers the two
     // top-level keys becoming one, nothing more.
     let expected = [
-        (SideTable::Strings, "strings"),
         (SideTable::ContextNodes, "context_nodes"),
         (SideTable::ControlStateCounters, "control_state"),
         (SideTable::FeatureCounters, "feature_values"),
@@ -181,11 +180,12 @@ fn an_undeclared_spelling_is_skipped_rather_than_refused() {
     // A newer binary's domain, arriving at this one. The division of labour is: this codec stays
     // forward-compatible, and the STAMP refuses an image this binary should not serve. A refusal
     // here would turn a readable image into a load failure.
-    let json = r#"{"side_tables":{"strings":{},"a_domain_from_the_future":{"anything":[1,2,3]}}}"#;
+    let json =
+        r#"{"side_tables":{"context_nodes":{},"a_domain_from_the_future":{"anything":[1,2,3]}}}"#;
     let back: Carrier =
         serde_json::from_str(json).expect("an unknown domain must not fail the decode");
     assert!(
-        back.side_tables.contains_key(&SideTable::Strings),
+        back.side_tables.contains_key(&SideTable::ContextNodes),
         "the declared domain beside the unknown one was lost, so the skip consumed too much"
     );
     assert_eq!(

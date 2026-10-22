@@ -1442,6 +1442,39 @@ impl ObjectSlot {
     /// carrying what it has always carried, and the validator's report, whose own type is the
     /// B-tree. `OwnedTimestampedSeries` has the same method for the same two callers. A serving
     /// read goes through `TimestampedSeries` and allocates nothing.
+    /// THE SINGLE ADDRESS'S PARTS, DELEGATED, so a caller that held a bare address keeps reading
+    /// the same words off the row that replaced it.
+    ///
+    /// These exist because the string map's value became a slot. Every one of its readers wanted a
+    /// part of the address rather than the address itself -- the slab, the offset, the length, the
+    /// page ordinal -- and making each of them write `.address().slab()` would put the same
+    /// projection at thirty-odd call sites. `address()` already delegates to the record; these
+    /// delegate one step further, and each panics through `address()` on a multi-page row for the
+    /// reason stated there.
+    pub(super) fn block_slab_id(&self) -> u64 {
+        self.address().block_slab_id()
+    }
+
+    /// The offset within the slab.
+    pub(super) fn offset(&self) -> u64 {
+        self.address().offset()
+    }
+
+    /// How many bytes the single page covers.
+    pub(super) fn length(&self) -> u64 {
+        self.address().length()
+    }
+
+    /// Which page of the object this is, or `None` while the block lives in the log.
+    pub(super) fn block_id(&self) -> Option<u64> {
+        self.address().block_id()
+    }
+
+    /// The generation, when the row carries one.
+    pub(super) fn generation(&self) -> Option<u64> {
+        self.address().generation()
+    }
+
     pub(super) fn to_btree(&self) -> std::collections::BTreeMap<u64, ElementEntry> {
         self.owned_elements()
             .unwrap_or(&[])

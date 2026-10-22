@@ -109,7 +109,7 @@ fn plant_in_base_index(dir: &std::path::Path, stamp: u32) {
         .get(WRITTEN)
         .expect("the written string is in the flushed index")
         .clone();
-    restored.context_nodes_mut().insert(PLANTED.into(), live);
+    restored.context_nodes_mut().insert(PLANTED.into(), live.address());
     restored.index_format_version = stamp;
     std::fs::write(&path, crate::engine::encode_index_bytes(&restored)).expect("write");
 }
@@ -218,7 +218,7 @@ fn the_dump_manifest_door_refuses_a_stale_stamped_index_image() {
             .get(WRITTEN)
             .expect("the written string is resident")
             .clone();
-        shard.context_nodes_mut().insert(PLANTED.into(), live);
+        shard.context_nodes_mut().insert(PLANTED.into(), live.address());
     }
     engine.flush_shard_index(7);
 

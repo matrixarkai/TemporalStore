@@ -2044,7 +2044,7 @@ impl TemporalEngine {
                     .object_block_lookup
                     .any_shared_object_key(item.object_key.as_str())
                     .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
-                shard.strings_mut().insert(stored_key, address);
+                shard.set_string_address(stored_key, &address);
                 true
             }
             // The component is what the map is keyed by, encoded. Each of these mirrors the
@@ -2477,7 +2477,7 @@ impl TemporalEngine {
             .read()
             .expect("engine lock poisoned")
             .get(&shard_id)
-            .and_then(|shard| shard.strings().get(key).cloned())
+            .and_then(|shard| shard.string_address(key))
     }
 
     /// Write every in-process-only block into the block store, so the index can travel.
@@ -2546,7 +2546,7 @@ impl TemporalEngine {
                     .filter(|(_, address)| {
                         crate::wal_record::is_wal_resident(address.block_slab_id())
                     })
-                    .map(|(key, address)| (key.to_string(), address.clone()))
+                    .map(|(key, slot)| (key.to_string(), slot.address()))
                     .collect(),
                 start_routing_bucket,
                 end_routing_bucket,
@@ -2598,7 +2598,7 @@ impl TemporalEngine {
                         .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
-                    shard.strings_mut().insert(stored_key, durable.clone());
+                    shard.set_string_address(stored_key, &durable);
                     super::upsert_bucket_index_block(
                         shard,
                         shard_id,
@@ -2650,8 +2650,8 @@ impl TemporalEngine {
                 count += 1;
             }
         };
-        for address in shard.strings().values() {
-            check(address);
+        for slot in shard.strings().values() {
+            check(&slot.address());
         }
         for fields in shard.hashes.values() {
             for address in fields.values() {

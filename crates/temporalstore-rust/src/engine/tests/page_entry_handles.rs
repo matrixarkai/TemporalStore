@@ -2112,8 +2112,8 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
             }
         }
     }
-    let empty_length = shard.strings().get("empty").map(|address| address.length());
-    let nonempty_length = shard.strings().get("nonempty").map(|address| address.length());
+    let empty_length = shard.string_address("empty").map(|address| address.length());
+    let nonempty_length = shard.string_address("nonempty").map(|address| address.length());
     println!(
         "\n=== is `deleted` derivable from a zero length? ===\n  live zero-length \
          {zero_length_live}, live non-zero {nonzero_length_live}, delete-marked {deleted_pages}\n  \

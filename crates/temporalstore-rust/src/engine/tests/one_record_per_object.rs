@@ -94,6 +94,117 @@ fn the_record_is_twenty_four_bytes_at_natural_alignment() {
     assert_eq!(1, width - field_sum, "the tail slack moved");
 }
 
+/// WHAT THE ATTRIBUTE-HOLDING RECORD SHAPE WOULD COST, against the twenty-four byte one.
+///
+/// This record follows a shape that tags two words and keeps everything else out of line. The other
+/// end of that design family is the obvious one: a per-object record that simply HOLDS its
+/// attributes -- names as owned strings, user metadata as maps, each timestamp a plain word, each
+/// flag a bool. It is what a reader reaches for first, so its width is worth having measured rather
+/// than assumed, and the gap turns out to be most of two orders of magnitude.
+///
+/// THREE DECISIONS THAT COME WITH THAT SHAPE, and this engine takes exactly one of them:
+///
+///   * TAKE: the timestamps live ON the record rather than in a per-key side table. That is the
+///     direction `what_moving_the_string_map_onto_the_record_would_cost` prices, and it crosses
+///     over at about 27% of keys carrying a deadline.
+///   * REFUSE: absence as a sentinel zero. A deadline of zero is a legal deadline, so zero cannot
+///     carry its own absence -- `a_zero_deadline_is_not_an_absent_deadline` is the arm that pins
+///     it, and the record spends `DEADLINE_PRESENT` instead. A default of `0` meaning "no
+///     retention" cannot tell that case from a retention at the epoch.
+///   * REFUSE: dropping the time-ORDERED index and letting a sweep scan. The ordered index is what
+///     makes the due set a prefix; without it, time-to-expire becomes a function of the keyspace
+///     rather than of how many keys are due. Measured at ten expired keys behind ten thousand live
+///     ones surviving more than sixty rounds.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_attribute_holding_record_shape_would_cost -- --nocapture
+#[test]
+fn what_the_attribute_holding_record_shape_would_cost() {
+    use std::collections::BTreeMap;
+
+    // The attribute-holding shape, modelled field for field at the same composition: the two names
+    // and three digests as owned strings, user metadata and tags as maps, the sizes and the four
+    // instants as words, the three flags as bools, a storage class as a string, an identity, an
+    // offset, an extent list, and a placement block that is itself three owned containers.
+    #[allow(dead_code)]
+    struct Placement {
+        primary: String,
+        data_replicas: Vec<String>,
+        metadata_voters: Vec<String>,
+        quorum: u64,
+        epoch: u64,
+    }
+    #[allow(dead_code)]
+    struct Extent {
+        volume: u64,
+        id: u32,
+        offset: u64,
+        length: u64,
+    }
+    #[allow(dead_code)]
+    struct AttributeHoldingRecord {
+        container: String,
+        key: String,
+        digest: String,
+        checksum: String,
+        content_type: String,
+        metadata: BTreeMap<String, String>,
+        tags: BTreeMap<String, String>,
+        size: u64,
+        version: u64,
+        updated_ms: u64,
+        // THE FOUR INSTANTS, inline on the record. This is the decision worth taking: a per-object
+        // time does not need a side table. What comes WITH it in this shape, and is refused here,
+        // is that each one defaults to zero and so cannot express its own absence.
+        deleted_ms: u64,
+        hold_updated_ms: u64,
+        retain_until_ms: u64,
+        restore_until_ms: u64,
+        delete_marker: bool,
+        hold: bool,
+        storage_class: String,
+        identity_volume: u64,
+        identity_id: u32,
+        offset: u64,
+        extents: Vec<Extent>,
+        placement: Placement,
+        // and the tombstone plus the version chain the outer record adds
+        deleted: bool,
+    }
+
+    let theirs = std::mem::size_of::<AttributeHoldingRecord>();
+    let ours = std::mem::size_of::<ObjectRecord>();
+    let slot = std::mem::size_of::<crate::engine::object_record::ObjectSlot>();
+
+    println!();
+    println!("  PER-OBJECT RECORD, two ends of one design family:");
+    println!("    attribute-holding shape   {theirs:>5} B   (before ANY heap: every string and");
+    println!("                                        map above allocates its contents too)");
+    println!("    this engine's record      {ours:>5} B   two tagged words, a size, flags, a model id");
+    println!("    .. inside its slot        {slot:>5} B   plus the owned element array when present");
+    println!("    ratio                     {:>5.1}x", theirs as f64 / ours as f64);
+    println!();
+    println!("  The heap side is not modelled and would widen the gap, not narrow it: five owned");
+    println!("  strings and two maps allocate per object, where this record allocates nothing.");
+
+    // THE CLAIM. Not "ours is smaller" -- that is arithmetic -- but that the gap is large enough
+    // that the attribute-holding shape is a different design rather than a tuning choice. If this
+    // ever falls under 8x, the record has grown into the other shape and the module doc's framing
+    // ("two tagged words ARE the design") needs re-reading.
+    assert!(
+        theirs >= ours * 8,
+        "the attribute-holding shape measured {theirs} B against this record's {ours} B, under 8x. \
+         These are supposed to be opposite ends of a design family; at this ratio they are the same \
+         design, which means this record has grown attributes it used to keep out of line."
+    );
+
+    // AND THE TWO REFUSALS ARE PINNED ELSEWHERE, named here so this arm is not the only record of
+    // them: `a_zero_deadline_is_not_an_absent_deadline` holds the sentinel-zero refusal, and
+    // `the_key_ordered_expiry_window_has_no_production_callers` holds the ordered-index one.
+    assert_eq!(ours, 24, "the record's width is pinned by its own arm; this arm only compares");
+}
+
 /// Twelve distinct named bits, four reserved, and the two sets disjoint.
 ///
 /// A duplicated mask is the failure this catches: two names for one bit compile, and then setting
@@ -703,7 +814,8 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     let mut needs_layout = 0usize;
     let mut with_generation = 0usize;
     let mut largest_ordinal = 0u64;
-    for address in shard.strings().values() {
+    for slot in shard.strings().values() {
+        let address = &slot.address();
         match address.block_id() {
             None => inline_ordinal_absent += 1,
             Some(0) => inline_ordinal_zero += 1,
@@ -736,7 +848,8 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     // drifts from the converter again fails here rather than printing a wrong percentage.
     let mut converted_inline = 0usize;
     let mut converted_layout = 0usize;
-    for address in shard.strings().values() {
+    for slot in shard.strings().values() {
+        let address = &slot.address();
         match address.block_id() {
             None | Some(0) => {
                 let record = ObjectRecord::from_object_rows(address, 1, None, true)

@@ -152,7 +152,7 @@ fn build_fixture(dir: &std::path::Path, flush_base: bool) {
             .get(KEY)
             .expect("the written string is resident")
             .clone();
-        shard.context_nodes_mut().insert(KEY.into(), live);
+        shard.context_nodes_mut().insert(KEY.into(), live.address());
     }
 
     let expired = engine.execute(ExecuteRequest {

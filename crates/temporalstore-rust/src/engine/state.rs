@@ -7577,10 +7577,14 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // so there is no format stamp owed and no reason to leave the duplication behind.
     REPACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let _adopted_hashed = adopt_canonical_key_allocations_in_hashed(
-        // THE STRING ADDRESSES ARE IN `address_maps` NOW, so this pass reaches them through
-        // the domain's table. Same argument as the Feature kind's term and the control-state
-        // one below: dropping it costs the keys their canonical handle with nothing failing.
-        addresses_in(side_tables, SideTable::Strings),
+        // THE STRING ROWS ARE IN `objects` NOW, under the String kind, so this pass reaches them
+        // exactly as the Feature term below does. Leaving it pointed at the retired side-table
+        // domain would have re-keyed an EMPTY table and cost every string key its canonical
+        // handle with nothing failing -- the keys compare equal and only the sharing is lost,
+        // which is the silent regression every term in this function exists to stop.
+        objects
+            .entry(super::storage_bucket_internals::StoredModelKind::String)
+            .or_default(),
         &bucket_index.object_block_lookup,
     ) + adopt_canonical_key_allocations_in_hashed(
         // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
@@ -7682,8 +7686,6 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
 /// module checks rather than leaving to inspection.
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 pub(super) enum SideTable {
-    /// Redis-style string values: one block address per key.
-    Strings,
     /// Context nodes. NO PRODUCTION WRITER -- a node is filed as a hash field -- but read on a
     /// dozen paths as a fallback, so it stays a domain rather than being deleted.
     ContextNodes,
@@ -7717,7 +7719,6 @@ pub(super) enum SideTableShape {
 impl SideTable {
     /// Every domain, for the serde round trip and for the guards that enumerate them.
     pub(super) const ALL: &'static [SideTable] = &[
-        SideTable::Strings,
         SideTable::ContextNodes,
         SideTable::ControlStateCounters,
         SideTable::FeatureCounters,
@@ -7730,7 +7731,6 @@ impl SideTable {
     /// key is a durable name, so these are as load-bearing as a format constant.
     pub(super) const fn as_str(self) -> &'static str {
         match self {
-            SideTable::Strings => "strings",
             SideTable::ContextNodes => "context_nodes",
             SideTable::ControlStateCounters => "control_state",
             SideTable::FeatureCounters => "feature_values",
@@ -7743,7 +7743,6 @@ impl SideTable {
     /// The domain a stored spelling names, or `None` for one this binary does not declare.
     pub(super) fn from_stored_name(spelling: &str) -> Option<Self> {
         match spelling {
-            "strings" => Some(SideTable::Strings),
             "context_nodes" => Some(SideTable::ContextNodes),
             "control_state" => Some(SideTable::ControlStateCounters),
             "feature_values" => Some(SideTable::FeatureCounters),
@@ -7758,7 +7757,7 @@ impl SideTable {
     /// which is the whole reason no variant tag has to reach the wire.
     pub(super) const fn shape(self) -> SideTableShape {
         match self {
-            SideTable::Strings | SideTable::ContextNodes => SideTableShape::Addresses,
+            SideTable::ContextNodes => SideTableShape::Addresses,
             SideTable::ControlStateCounters | SideTable::FeatureCounters => {
                 SideTableShape::Counters
             }
@@ -8159,13 +8158,63 @@ impl ShardState {
     /// not a distinction any of them should have to carry.
     /// The control-state counter series.
     /// Redis-style string values, one address per key.
-    pub(super) fn strings(&self) -> &HashMap<ModelKey, ElementEntry> {
-        self.addresses_of(SideTable::Strings)
+    pub(super) fn strings(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::String)
     }
 
-    /// The string addresses, for writing. Creates the domain's table on first use.
-    pub(super) fn strings_mut(&mut self) -> &mut HashMap<ModelKey, ElementEntry> {
-        self.addresses_of_mut(SideTable::Strings)
+    /// The string rows, for writing. Creates the kind's table on first use.
+    ///
+    /// THE VALUE IS A SLOT NOW, not a bare address, which is the move `control_state_blocks`
+    /// already made. A caller that wants the address calls `.address()` on the slot; a caller
+    /// installing one builds a slot and calls `.set_address()`. The point of the move is that the
+    /// row has somewhere to put a deadline and a dirty bit, which a bare address does not.
+    pub(super) fn strings_mut(
+        &mut self,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects_of_kind_mut(super::storage_bucket_internals::StoredModelKind::String)
+    }
+
+    /// One string key's address, or `None` when the key has no row.
+    ///
+    /// BY VALUE, because the address is derived from the row rather than stored beside it -- the
+    /// same reason the series trait hands back an instant by value. A caller that wants the row
+    /// itself, to read a deadline or a flag, goes through `strings()`.
+    pub(super) fn string_address(&self, key: &str) -> Option<ElementEntry> {
+        self.strings().get(key).map(|slot| slot.address())
+    }
+
+    /// Install one string key's address, returning the address it replaced.
+    ///
+    /// THE WRITE-BACK PRESERVES EVERYTHING THAT IS NOT THE ADDRESS. `ObjectSlot::set_address`
+    /// rewrites the page word, the page size and the two page flags and touches nothing else, so a
+    /// row's deadline, model id and dirty bit survive an address rewrite. Building a fresh slot
+    /// here instead would drop them -- and would not fail today, because those fields are still
+    /// unfilled, which is exactly why
+    /// `compacting_a_record_keeps_everything_that_is_not_the_address` exists.
+    pub(super) fn set_string_address(
+        &mut self,
+        key: ModelKey,
+        address: &ElementEntry,
+    ) -> Option<ElementEntry> {
+        let table = self.strings_mut();
+        match table.get_mut(&*key) {
+            Some(slot) => {
+                let previous = slot.address();
+                slot.set_address(address);
+                Some(previous)
+            }
+            None => {
+                let mut slot = super::object_record::ObjectSlot::default();
+                slot.set_address(address);
+                table.insert(key, slot);
+                None
+            }
+        }
+    }
+
+    /// Drop one string key's row, handing back the address it held.
+    pub(super) fn take_string_address(&mut self, key: &str) -> Option<ElementEntry> {
+        self.strings_mut().remove(key).map(|slot| slot.address())
     }
 
     /// Context-node addresses. Read as a fallback; nothing in production writes this.
@@ -8309,6 +8358,15 @@ impl ShardState {
         self.rollups
             .get(&domain)
             .unwrap_or_else(|| NO_ROLLUPS_IN_THIS_DOMAIN.get_or_init(HashMap::new))
+    }
+
+    /// One kind's table for writing, created on first use. The read door answers an empty map;
+    /// this one has to create, because a caller holding it is about to insert.
+    pub(super) fn objects_of_kind_mut(
+        &mut self,
+        kind: super::storage_bucket_internals::StoredModelKind,
+    ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
+        self.objects.entry(kind).or_default()
     }
 
     pub(super) fn objects_of_kind(
@@ -8803,7 +8861,7 @@ mod does_the_sharing_survive_a_decode {
 
         // The write path's end state: ONE allocation, every holder a refcount bump.
         let shared: Arc<str> = Arc::from(key);
-        shard.strings_mut().insert(Arc::clone(&shared), ElementEntry::default());
+        shard.set_string_address(Arc::clone(&shared), &ElementEntry::default());
         shard.expires_at_ms_mut().insert(Arc::clone(&shared), 1);
         shard.dirty_objects.insert_shared(Arc::clone(&shared), 0);
 
@@ -8834,7 +8892,7 @@ mod does_the_sharing_survive_a_decode {
             &shared,
             BlockLookupRef { routing_bucket: 0, block_ref_key: 1 },
         );
-        shard.strings_mut().insert(Arc::clone(&shared), ElementEntry::default());
+        shard.set_string_address(Arc::clone(&shared), &ElementEntry::default());
         shard.expires_at_ms_mut().insert(Arc::clone(&shared), 1);
         assert_eq!(distinct_key_allocations(&shard, key), 1, "the write path shares");
 

@@ -5045,8 +5045,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
         let mut shard = crate::engine::state::ShardState::default();
         for i in 0..KEYS {
             shard
-                .strings_mut()
-                .insert(std::sync::Arc::from(format!("s-{i:06}").as_str()), address(i));
+                .set_string_address(std::sync::Arc::from(format!("s-{i:06}").as_str()), &address(i));
         }
         let probe = Probe::start();
         let entries =
@@ -8346,7 +8345,7 @@ fn what_consolidating_into_a_fixed_node_would_cost() {
         "    ElementEntry {} B, ObjectRecord {} B, ObjectSlot {} B",
         std::mem::size_of::<ElementEntry>(),
         std::mem::size_of::<crate::engine::object_record::ObjectRecord>(),
-        std::mem::size_of::<ObjectSlot>()
+        std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
     );
     println!();
     println!("  FULL OVERLAP:");
@@ -8375,7 +8374,7 @@ fn what_consolidating_into_a_fixed_node_would_cost() {
     // many attributes the design can hold -- that independence is what separates it from the union
     // shape measured beside this. If a node ever grows an Option-shaped member, this stops holding.
     assert!(
-        std::mem::size_of::<ObjectSlot>() <= 32,
+        std::mem::size_of::<crate::engine::object_record::ObjectSlot>() <= 32,
         "the slot has grown past 32 bytes, so it is no longer the fixed-width node this \
          comparison is about and the crossover has to be re-derived"
     );
@@ -8464,7 +8463,7 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    let string_entries: Vec<&ElementEntry> = shard.strings().values().collect();
+    let string_entries: Vec<ElementEntry> = shard.strings().values().map(|slot| slot.address()).collect();
     let with_block_id = string_entries.iter().filter(|e| e.block_id().is_some()).count();
     let with_generation = string_entries.iter().filter(|e| e.generation().is_some()).count();
 
