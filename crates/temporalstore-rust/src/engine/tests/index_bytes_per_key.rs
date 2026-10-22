@@ -8268,6 +8268,41 @@ fn the_amplification_set_in_the_published_format() {
         let shard = shards.get(&1).expect("shard is loaded");
         crate::engine::encode_index_bytes(shard).len() as u64
     };
+    // WHAT THE INDEX OCCUPIES ON DISK, by stat rather than by model: the image file plus the
+    // index log that has accumulated since it was written. The log is not a copy of the image --
+    // it is the delta ahead of it -- and it is real occupancy. Measured the same way the payload's
+    // disk figure is, where `total_known_physical_bytes` is the slab files and not a sum of record
+    // widths.
+    // THE INDEX'S OWN BYTES, AND NOT THE DIRECTORY'S. The engine is handed one directory for its
+    // indexes and keeps the WAL under it, so summing the directory counts a different subsystem:
+    // the first version of this measured (index + WAL + index logs) and reported 5.084x, which is
+    // the numerator-over-the-wrong-population error these arms exist to catch. `wals/` has its own
+    // amplification and is reported separately rather than folded in.
+    let (index_physical_disk, wal_physical_disk, index_files) = {
+        fn walk(path: &std::path::Path, prefix: &str, out: &mut Vec<(String, u64)>) {
+            let Ok(entries) = std::fs::read_dir(path) else {
+                return;
+            };
+            for entry in entries.flatten() {
+                let name = entry.file_name().to_string_lossy().into_owned();
+                let rel = if prefix.is_empty() { name } else { format!("{prefix}/{name}") };
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => walk(&entry.path(), &rel, out),
+                    Ok(_) => {
+                        let len = entry.metadata().map(|meta| meta.len()).unwrap_or(0);
+                        out.push((rel, len));
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+        let mut files = Vec::new();
+        walk(&dir.path().join("indexes"), "", &mut files);
+        let is_wal = |rel: &str| rel == "wals" || rel.starts_with("wals/");
+        let index_bytes: u64 = files.iter().filter(|(r, _)| !is_wal(r)).map(|(_, l)| *l).sum();
+        let wal_bytes: u64 = files.iter().filter(|(r, _)| is_wal(r)).map(|(_, l)| *l).sum();
+        (index_bytes, wal_bytes, files)
+    };
     let index_resident = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
@@ -8284,6 +8319,22 @@ fn the_amplification_set_in_the_published_format() {
     println!("    index image       {index_image:>12} B");
     println!("    index resident    {index_resident:>12} B");
     println!("    index log written {:>12} B", log.bytes_written);
+    println!("    index on disk     {index_physical_disk:>12} B   (the index's own files)");
+    println!("    wal on disk       {wal_physical_disk:>12} B   (under the same directory, NOT the index)");
+    // EVERY FILE, RECURSIVELY, because the first version of this printed only the top level and
+    // showed three entries totalling 8,250 B against a 367,680 B figure -- the two subdirectories
+    // reported their inode size and their contents were invisible. A breakdown that does not
+    // account for the total it sits under is what let a WAL into an index numerator.
+    {
+        let mut rows = index_files.clone();
+        rows.sort_by(|a, b| b.1.cmp(&a.1));
+        for (name, len) in rows.iter().take(10) {
+            println!("        {len:>12} B  {name}");
+        }
+        if rows.len() > 10 {
+            println!("        .. and {} more file(s)", rows.len() - 10);
+        }
+    }
     println!();
     println!("  PAYLOAD");
     let payload_logical_write = ppm(logical_written, live);
@@ -8308,10 +8359,32 @@ fn the_amplification_set_in_the_published_format() {
     println!();
     println!("  INDEX LOG");
     let index_storage_write = ppm(log.bytes_written, index_image);
-    let index_space_disk = ppm(index_image, index_image);
+    // NOT `ppm(index_image, index_image)`, which this was: the image over itself is 1_000_000
+    // for every store, corpus and workload, and it satisfied the non-zero quadrant check the way a
+    // tautology satisfies anything. The index's occupancy is the directory; the image is what is
+    // live in it.
+    let index_space_disk = ppm(index_physical_disk, index_image);
     let index_space_memory = ppm(index_resident, index_image);
     println!("    storage_write_amplification_ppm  {index_storage_write:>9}  ({:.3}x)   log written / index image", as_x(index_storage_write));
-    println!("    space_amplification_ppm (disk)   {index_space_disk:>9}  ({:.3}x)   index image / index image", as_x(index_space_disk));
+    println!("    space_amplification_ppm (disk)   {index_space_disk:>9}  ({:.3}x)   index on disk / index image", as_x(index_space_disk));
+    // WHY THIS LANDS WITHIN A THOUSANDTH OF THE STORAGE_WRITE RATIO ABOVE, and why that is a
+    // cross-check rather than one being derived from the other. THERE IS NO INDEX IMAGE FILE ON
+    // DISK until a dump writes one: the breakdown above lists only index logs and a routing-range
+    // json. So the index's on-disk bytes ARE the log, and the two ratios approach the same number
+    // from independent sources -- the log's own `bytes_written` counter on one side, the
+    // filesystem on the other. They agreeing is evidence both are right; they would DIVERGE after
+    // a dump, when an image file exists and the log is reclaimed behind it.
+    //
+    // Said here because two figures agreeing to three decimals is exactly what invites a reader to
+    // assume one is a restatement of the other, which is the error the whole set guards against.
+    println!(
+        "      .. the two agree because the index has no image FILE yet: {} B of log files against",
+        index_physical_disk
+    );
+    println!(
+        "         {} B the log counter reports written. A dump would separate them.",
+        log.bytes_written
+    );
     println!("    space_amplification_ppm (memory) {index_space_memory:>9}  ({:.3}x)   index resident / index image", as_x(index_space_memory));
     println!();
     println!("  WHAT THIS ENGINE PUBLISHES, beside the same quantity computed the defined way:");
@@ -8359,6 +8432,29 @@ fn the_amplification_set_in_the_published_format() {
         ("index space (disk)", index_space_disk),
         ("index space (memory)", index_space_memory),
     ];
+    // THE DEFECT THIS ARM CARRIED FOR TWO MERGES, GUARDED. `index_space_disk` was
+    // `ppm(index_image, index_image)` -- a ratio whose two sides are the same expression. No range
+    // check catches that, no non-zero check catches it, and no self-consistency identity catches
+    // it: all three pass on a tautology. What catches it is requiring the two sides to be
+    // DIFFERENT quantities, and the index gives a reason they must be -- the directory holds the
+    // image AND the log that is ahead of it, so on disk must exceed the image.
+    assert!(
+        index_physical_disk > index_image,
+        "the index's own files are {index_physical_disk} B against a {index_image} B image. They \
+         hold the image AND the log ahead of it, so they must exceed it -- if these are equal, the \
+         disk figure has become the image under another name and the ratio is a constant again"
+    );
+    // AND THE WAL IS NOT IN THE NUMERATOR. The engine keeps `wals/` under the directory it is
+    // handed for indexes, so summing the directory counts a different subsystem. The first version
+    // of this arm did exactly that and reported 5.084x.
+    assert!(
+        index_files.iter().all(|(rel, _)| rel != "wals" && !rel.starts_with("wals/"))
+            || wal_physical_disk > 0,
+        "the file walk found no WAL bytes under the index directory. Either the layout moved, in \
+         which case the exclusion below is now filtering nothing, or the walk stopped recursing -- \
+         and a breakdown that cannot see the WAL is how it got into this numerator the first time"
+    );
+
     for (what, value) in quadrants {
         assert!(
             value > 0,
