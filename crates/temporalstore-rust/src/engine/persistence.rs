@@ -1137,13 +1137,27 @@ impl TemporalEngine {
                     .saturating_add(block_store_slabs.delayed_destroy_slabs)
                     .saturating_add(block_store_slabs.purged_slabs),
                 storage_slab_total_bytes: block_store_slabs.total_known_physical_bytes,
-                // THE TWO AMPLIFICATION RATIOS, in parts per million. Both divisions are guarded
+                // THE FOUR AMPLIFICATION RATIOS, in parts per million. Every division is guarded
                 // the way the slab descriptor's own ratio is -- zero denominator reports 0, not a
                 // panic and not a misleading 1.0 -- and both numerators and denominators are
-                // counters that already existed, so neither costs anything on a write path.
+                // counters that already existed, so none of them costs anything on a write path.
+                // THE SAME VALUE UNDER BOTH SPELLINGS, which is the point: the older name says
+                // "logical" and computes the storage-write ratio, and re-pointing it would move a
+                // serde key that travels to the meta server. See the field notes in `control.rs`.
                 logical_write_amplification_ppm: Self::ppm_ratio(
                     block_store.bytes_written,
                     block_store.logical_bytes_written,
+                ),
+                storage_write_amplification_ppm: Self::ppm_ratio(
+                    block_store.bytes_written,
+                    block_store.logical_bytes_written,
+                ),
+                // UNIT-MATCHED: stored bytes on both sides, so the compression factor cancels
+                // rather than dividing in, and a corpus written once reads 1.0x however well it
+                // compressed. Both counters are already in hand here.
+                lifetime_write_amplification_ppm: Self::ppm_ratio(
+                    block_store.bytes_written,
+                    block_store_slabs.live_physical_bytes,
                 ),
                 space_amplification_ppm: Self::ppm_ratio(
                     block_store_slabs.total_known_physical_bytes,

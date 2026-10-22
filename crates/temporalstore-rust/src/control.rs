@@ -291,18 +291,89 @@ pub struct ShardCanonicalStorageStats {
     pub stream_slab_count: u64,
     #[serde(alias = "storage_zone_total_bytes")]
     pub storage_slab_total_bytes: u64,
-    /// Physical bytes written per logical byte written, in PARTS PER MILLION (1.0x = 1_000_000).
+    /// Physical bytes written per LOGICAL byte written, in PARTS PER MILLION (1.0x = 1_000_000).
     ///
-    /// `bytes_written / logical_bytes_written`, both already counted by `BlockStoreStats`, so this
-    /// costs no accounting on any write path. Zero when nothing logical has been written yet --
-    /// the convention the slab descriptor's own ratio already uses ("or 0 when the slab has no
-    /// logical bytes"), so a fresh store reports 0 rather than a division or a misleading 1.0.
+    /// THE NAME ON THIS FIELD IS WRONG AND THE VALUE IS KEPT ANYWAY. `bytes_written /
+    /// logical_bytes_written` is physical over logical, which is the STORAGE-write ratio. The
+    /// logical-write ratio is logical bytes written over LIVE bytes -- a different numerator and a
+    /// different denominator, so this is not an approximation of it. Read
+    /// `storage_write_amplification_ppm` below, which carries the same value under the name that
+    /// describes it, and prefer it in anything new.
+    ///
+    /// WHY THE WRONG NAME SURVIVES. This struct is `pub`, re-exported from `lib.rs`, and travels
+    /// from a data node to the meta server inside `ShardStatInfo`. The field name is a serde key
+    /// on that wire, so re-pointing it at a different quantity would leave an older peer's images
+    /// decoding into the right shape with the wrong contents -- silently, which is the one failure
+    /// mode worth spending a duplicated field to avoid. A `serde(alias)` cannot help here either:
+    /// the old spelling and the correct quantity cannot both answer to this key.
+    ///
+    /// So the value here never changes. A reader that wants the ratio this name PROMISES wants
+    /// `lifetime_write_amplification_ppm`, and the note on that field says why it is not spelled
+    /// `logical_` anything.
+    ///
+    /// Zero when nothing logical has been written yet -- the convention the slab descriptor's own
+    /// ratio already uses ("or 0 when the slab has no logical bytes"), so a fresh store reports 0
+    /// rather than a division or a misleading 1.0.
     ///
     /// WHY IT IS PUBLISHED AT ALL. Amplification was measured in probes and described in prose and
     /// appeared in no report, so nothing watched it between measurements. A figure that is only
     /// ever produced by a probe is a figure nobody sees move.
     #[serde(default)]
     pub logical_write_amplification_ppm: u64,
+    /// Physical bytes written per logical byte written, in PARTS PER MILLION -- THE CORRECT NAME
+    /// for the quantity `logical_write_amplification_ppm` above has always carried.
+    ///
+    /// Byte-for-byte the same value as that field, deliberately: this is a renaming with the old
+    /// spelling retained, not a second measurement. Below 1_000_000 means the store writes FEWER
+    /// physical bytes than the workload handed it, which is what compression does -- a measured
+    /// 136_718 ppm (0.137x) on a 2,000-key corpus of 256 B values.
+    ///
+    /// SO THIS RATIO HAS NO 1.0x FLOOR, and a gate that assumes one will fire on a healthy store.
+    /// Its two halves are in different units on purpose: logical bytes are what a caller wrote and
+    /// physical bytes are what landed, and the whole point of the ratio is the factor between
+    /// them.
+    #[serde(default)]
+    pub storage_write_amplification_ppm: u64,
+    /// Physical bytes written OVER THIS STORE'S LIFETIME per physical byte that is live NOW, in
+    /// PARTS PER MILLION -- how many times over the store has written the data it is holding.
+    ///
+    /// `bytes_written / live_physical_bytes`, both already to hand where this is computed, so it
+    /// costs no accounting on any write path and no walk. Zero when nothing is live.
+    ///
+    /// WHAT IT IS FOR: rewrite pressure. A corpus written once reads 1_000_000 ppm however well it
+    /// compresses; writing every key a second time reads 2_000_000. That is the question
+    /// "amplification" is asked to answer, and neither write field above answers it --
+    /// `storage_write_amplification_ppm` divides out by the compression factor, and
+    /// `space_amplification_ppm` below has a numerator that is bytes RESIDENT rather than bytes
+    /// written, so it cannot see a rewrite that reclaimed as it went.
+    ///
+    /// # THIS RATIO HAS NO CEILING AND MUST NOT CARRY A FIXED ALERT THRESHOLD
+    ///
+    /// THE NUMERATOR IS A LIFETIME ACCUMULATOR AND THE DENOMINATOR IS A CURRENT READING. Nothing
+    /// resets `bytes_written`: the only assignments to zero in the crate are local accumulators in
+    /// `block_store/append.rs`, and no compaction, reclamation or dump path touches the counter. So
+    /// on a store whose live set is roughly flat, this figure RISES WITHOUT LIMIT as a function of
+    /// uptime, and a gate set at any multiple of 1.0x will eventually fire on a healthy store that
+    /// has simply been up a long time. `lifetime_` is in the name for that reason.
+    ///
+    /// To make it gateable the numerator would have to be WINDOWED -- reset where the live set is
+    /// rewritten wholesale, so the ratio means "written since the last compaction per byte live".
+    /// That is a change to the write path's accounting, not a change to this arithmetic, and it is
+    /// not made here. Read this field as a cumulative history, and compare it against ITSELF over
+    /// time rather than against a constant.
+    ///
+    /// WHY IT IS NOT CALLED `logical_write_amplification_ppm`, which is the spelling the ratio
+    /// logical-bytes-written over live-bytes would carry. That ratio needs both halves in the same
+    /// unit to mean anything, and the live half we can produce today is COMPRESSED: an object
+    /// record carries `address.length()`, the stored length, and no uncompressed size. Dividing
+    /// uncompressed bytes written by compressed bytes live multiplies the real figure by the
+    /// compression factor -- it reads 7.314x on a write-once corpus that has no write amplification
+    /// at all, where this field reads 1.000x. Matching the units the other way, by adding an
+    /// uncompressed size to the record, costs 4-8 B per object against a record the footprint
+    /// campaign cut to 16, so it is a decision with a price rather than an oversight. Both halves
+    /// here are stored bytes, so the compression factor cancels instead of dividing in.
+    #[serde(default)]
+    pub lifetime_write_amplification_ppm: u64,
     /// Physical bytes the store occupies per physical byte that is live, in PARTS PER MILLION.
     ///
     /// `total_known_physical_bytes / live_physical_bytes` from the slab summary. What pushes it
