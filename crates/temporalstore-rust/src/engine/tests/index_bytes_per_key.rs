@@ -9453,3 +9453,477 @@ fn the_live_denominator_must_fall_when_a_key_is_overwritten() {
          published {published_ppm} ppm"
     );
 }
+
+/// WHERE THE AMPLIFICATION ARM'S RESIDENT INDEX BYTES GO -- ON BOTH ROUTING RANGES.
+///
+/// `the_amplification_set_in_the_published_format` reports one headline, index space (memory), and
+/// one number cannot be acted on. This splits the same figure into the census rows, at TWO key
+/// counts per range so a constant can be told from a per-key cost: a constant divided by keys
+/// looks per-key and is not.
+///
+/// AND IT IS MEASURED ON BOTH RANGES BECAUSE THE PUBLISHED FIGURE IS ON ONE OF THEM. That arm
+/// calls `probe_engine`, which is `load_shard` -- the whole keyspace, where the routing modulus is
+/// 4.29 billion and EVERY KEY LANDS ALONE IN ITS OWN BUCKET BY CONSTRUCTION. `ShardState::
+/// load_shard`'s own note says not to measure anything per bucket on it. So every per-BUCKET term
+/// in that headline is divided by one key, and reads as per-key. The shipped range is 0..1023, and
+/// on it the same terms divide by as many keys as share a bucket.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib where_the_resident_index_bytes_go -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds four stores and weighs them; run by name"]
+fn where_the_resident_index_bytes_go_on_both_routing_ranges() {
+    use crate::types::{Command, ExecuteRequest};
+    const VALUE: usize = 256;
+    const SHIPPED_END: u32 = 1023;
+
+    struct Weighed {
+        census: Vec<(&'static str, u64)>,
+        image: u64,
+        resident: u64,
+        buckets: usize,
+        keys: usize,
+    }
+
+    let weigh = |keys: usize, end: Option<u32>| -> Weighed {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = match end {
+            Some(end) => probe_engine_on(dir.path(), end),
+            None => probe_engine(dir.path()),
+        };
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("amp-{index:06}"),
+                    value: vec![b'v'; VALUE],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: format!("amp-{index:06}") },
+            });
+            assert!(response.status.ok, "read {index}: {:?}", response.status);
+        }
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        assert_eq!(keys, shard.strings().len(), "denominator: the string map must hold every key");
+        Weighed {
+            census: census_bytes(shard),
+            image: crate::engine::encode_index_bytes(shard).len() as u64,
+            resident: deep_heap_bytes(shard),
+            buckets: shard.bucket_index.bucket_map.len(),
+            keys,
+        }
+    };
+
+    for (label, end, small_keys, large_keys) in [
+        ("LEGACY whole-u32 (what the published headline measures)", None, 1_000usize, 2_000usize),
+        ("SHIPPED 0..1023 (what a deployment runs)", Some(SHIPPED_END), 2_000usize, 8_000usize),
+    ] {
+        let small = weigh(small_keys, end);
+        let large = weigh(large_keys, end);
+        let span = (large.keys - small.keys) as f64;
+
+        println!();
+        println!("=== {label} ===");
+        println!(
+            "  {} keys in {} buckets ({:.2} keys/bucket) -> {} keys in {} buckets ({:.2})",
+            small.keys,
+            small.buckets,
+            small.keys as f64 / small.buckets as f64,
+            large.keys,
+            large.buckets,
+            large.keys as f64 / large.buckets as f64
+        );
+        println!();
+        println!(
+            "    {:<40} {:>9} {:>9} {:>9}",
+            "row",
+            format!("@{}", small.keys),
+            format!("@{}", large.keys),
+            "slope B/k"
+        );
+        for (index, (name, small_bytes)) in small.census.iter().enumerate() {
+            let (large_name, large_bytes) = large.census[index];
+            assert_eq!(*name, large_name, "the census rows must line up to be differenced");
+            let slope = (large_bytes as i64 - *small_bytes as i64) as f64 / span;
+            println!("    {:<40} {:>9} {:>9} {:>9.1}", name, small_bytes, large_bytes, slope);
+        }
+        println!();
+        println!("    index image      {:>9} {:>9}", small.image, large.image);
+        println!("    index resident   {:>9} {:>9}", small.resident, large.resident);
+        println!(
+            "    B/key resident   {:>9.1} {:>9.1}   (slope {:.1} B/key)",
+            small.resident as f64 / small.keys as f64,
+            large.resident as f64 / large.keys as f64,
+            (large.resident - small.resident) as f64 / span
+        );
+        println!(
+            "    memory amp       {:>9.3} {:>9.3}",
+            small.resident as f64 / small.image as f64,
+            large.resident as f64 / large.image as f64
+        );
+
+        assert!(small.resident > 0 && large.resident > 0, "{label}: nothing was weighed");
+        assert!(
+            large.resident > small.resident,
+            "{label}: doubling the corpus did not grow the resident index, so these rows are not \
+             per-key at all"
+        );
+    }
+    println!();
+}
+
+/// WHAT THE THREE PER-KEY MAPS PAY FOR TABLE SLACK, named rather than inferred.
+///
+/// On the shipped routing range the resident index's per-key slope is three hash tables and one
+/// B-tree arm. A hashbrown table's bucket count is a POWER OF TWO and it grows at 7/8 load, so a
+/// table holding n entries occupies between 1.14x and 2.29x the entries' own width -- and where in
+/// that band a given corpus sits is decided by how far past the last power of two it happens to
+/// be, not by anything about the workload. This prints len, capacity, the entry width and the
+/// measured bytes for each, so the slack is a number.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_per_key_maps_pay_for_table_slack -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds a store and weighs its tables; run by name"]
+fn what_the_per_key_maps_pay_for_table_slack() {
+    use crate::types::{Command, ExecuteRequest};
+    const VALUE: usize = 256;
+    const SHIPPED_END: u32 = 1023;
+
+    for keys in [2_000usize, 8_000usize] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), SHIPPED_END);
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("amp-{index:06}"),
+                    value: vec![b'v'; VALUE],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+
+        let strings = shard.strings();
+        let lookup = &shard.bucket_index.object_block_lookup;
+        println!();
+        println!("=== {keys} keys, shipped range ===");
+        println!(
+            "  ModelKey {} B, ObjectSlot {} B -> strings entry {} B",
+            std::mem::size_of::<crate::engine::state::ModelKey>(),
+            std::mem::size_of::<crate::engine::object_record::ObjectSlot>(),
+            std::mem::size_of::<crate::engine::state::ModelKey>()
+                + std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
+        );
+        let entry_width = (std::mem::size_of::<crate::engine::state::ModelKey>()
+            + std::mem::size_of::<crate::engine::object_record::ObjectSlot>())
+            as u64;
+        let measured = deep_heap_bytes(strings);
+        let len = strings.len() as u64;
+        let capacity = strings.capacity() as u64;
+        println!(
+            "  strings            len {len:>6}  capacity {capacity:>6}  load {:>4.0}%   {measured:>9} B  = {:>6.1} B/key  ({:.2}x the {} B entry)",
+            100.0 * len as f64 / capacity as f64,
+            measured as f64 / len as f64,
+            measured as f64 / (len * entry_width) as f64,
+            entry_width
+        );
+        println!(
+            "    the entries' own width is {} B; {} B is table slack and control bytes = {:.1} B/key",
+            len * entry_width,
+            measured.saturating_sub(len * entry_width),
+            measured.saturating_sub(len * entry_width) as f64 / len as f64
+        );
+        println!(
+            "  object_block_lookup len {:>6}            {:>19} B  = {:>6.1} B/key",
+            lookup.len(),
+            deep_heap_bytes(lookup),
+            deep_heap_bytes(lookup) as f64 / len as f64
+        );
+        println!(
+            "  dirty_objects       len {:>6}            {:>19} B  = {:>6.1} B/key",
+            shard.dirty_objects.len(),
+            deep_heap_bytes(&shard.dirty_objects),
+            deep_heap_bytes(&shard.dirty_objects) as f64 / len as f64
+        );
+
+        assert_eq!(keys as u64, len, "denominator: the string map must hold every key");
+        assert!(capacity >= len, "a table cannot hold more than it has room for");
+    }
+    println!();
+}
+
+/// THE PER-KEY RESIDENT INDEX FIGURE IS A SAWTOOTH, AND 2,000 KEYS SITS NEAR ITS WORST PHASE.
+///
+/// A hashbrown table's bucket count is a POWER OF TWO and it grows when it passes 7/8 load, so the
+/// table behind every per-key map costs `next_pow2(ceil(n / (7/8))) * (entry + 1)` bytes -- a
+/// STEP function of n. Divided by n that is a sawtooth: it falls as a corpus fills a table and
+/// doubles the moment the table does. The low teeth and the high teeth differ by 2x.
+///
+/// So "the index costs X B/key" is not a property of the index unless the phase is stated with it.
+/// The published amplification arm seeds 2,000 keys. 2,000 is just past 1,792 -- the most a
+/// 2,048-bucket table holds -- so its table has 4,096 buckets at 48.8% load, which is within one
+/// step of the worst phase there is. This sweep is what makes that a measurement rather than
+/// arithmetic about hashbrown.
+///
+/// WHY THIS IS IN THE SUITE RATHER THAN IN A COMMENT. The campaign's instruction is not to quote a
+/// per-key figure without checking it holds at two key counts. Two counts catch a constant
+/// masquerading as a per-key cost; they do NOT catch this, because two counts in the same phase
+/// agree and two counts in different phases differ by up to 2x with no constant term anywhere.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib the_per_key_index_figure_is_a_sawtooth -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds eight stores and weighs them; run by name"]
+fn the_per_key_index_figure_is_a_sawtooth() {
+    use crate::types::{Command, ExecuteRequest};
+    const VALUE: usize = 256;
+    const SHIPPED_END: u32 = 1023;
+
+    println!();
+    println!("  RESIDENT INDEX PER KEY ACROSS TWO TABLE DOUBLINGS (shipped range 0..1023)");
+    println!();
+    println!(
+        "    {:>6} {:>9} {:>6} {:>11} {:>9} {:>11} {:>9}",
+        "keys", "capacity", "load", "strings B", "B/key", "resident B", "B/key"
+    );
+
+    let mut teeth: Vec<(usize, f64, f64)> = Vec::new();
+    for keys in [1_700usize, 1_792, 1_800, 2_000, 3_500, 3_584, 3_600, 4_000] {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), SHIPPED_END);
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("amp-{index:06}"),
+                    value: vec![b'v'; VALUE],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let strings = shard.strings();
+        assert_eq!(keys, strings.len(), "denominator: the string map must hold every key");
+        let capacity = strings.capacity();
+        let string_bytes = deep_heap_bytes(strings);
+        let resident = deep_heap_bytes(shard);
+        let per_key = string_bytes as f64 / keys as f64;
+        println!(
+            "    {:>6} {:>9} {:>5.0}% {:>11} {:>9.1} {:>11} {:>9.1}",
+            keys,
+            capacity,
+            100.0 * keys as f64 / capacity as f64,
+            string_bytes,
+            per_key,
+            resident,
+            resident as f64 / keys as f64
+        );
+        teeth.push((keys, per_key, resident as f64 / keys as f64));
+    }
+    println!();
+
+    // --- THE SAWTOOTH, ASSERTED. A table that has just filled is at its CHEAPEST per key and the
+    // --- next key makes it the dearest, so the figure at 1,792 must be well below the figure at
+    // --- 1,800 even though the corpus grew. If this ever passes monotonically, the container
+    // --- stopped stepping and the whole caution above is obsolete.
+    let at = |keys: usize| -> f64 {
+        teeth.iter().find(|(k, _, _)| *k == keys).expect("that corpus was swept").1
+    };
+    let full = at(1_792);
+    let just_over = at(1_800);
+    println!(
+        "    the string table costs {full:.1} B/key at 1,792 keys and {just_over:.1} B/key at \
+         1,800 -- {:.2}x for 8 more keys",
+        just_over / full
+    );
+    assert!(
+        just_over > full * 1.5,
+        "1,800 keys cost {just_over:.1} B/key against {full:.1} at 1,792. The per-key figure was \
+         expected to JUMP across a table doubling -- if it no longer does, this container is not \
+         the step function this arm exists to warn about and the warning should be withdrawn \
+         rather than left standing."
+    );
+    // AND THE SAME STEP ONE DOUBLING UP, so the shape is a property of the container and not an
+    // accident of where 1,792 happens to fall.
+    let full_next = at(3_584);
+    let just_over_next = at(3_600);
+    assert!(
+        just_over_next > full_next * 1.5,
+        "the step at 3,584 -> 3,600 ({full_next:.1} -> {just_over_next:.1} B/key) did not \
+         reproduce the one at 1,792 -> 1,800, so the sawtooth is not periodic in the bucket count \
+         and this arm's account of it is wrong"
+    );
+    // AND IT REACHES THE HEADLINE. A step inside one map that the whole-shard figure absorbs would
+    // not matter; this is what says it does not absorb it.
+    let resident_at = |keys: usize| -> f64 {
+        teeth.iter().find(|(k, _, _)| *k == keys).expect("that corpus was swept").2
+    };
+    // THE THRESHOLD IS 1.05, AND IT WAS 1.20 WHEN THIS ARM WAS WRITTEN -- which failed, on a step
+    // that is real. The whole-shard figure moves 414.1 -> 460.7 B/key, 1.11x, because the string
+    // table is one row of the census and the per-BUCKET rows beside it do not step with it: they
+    // are capped at 1,024 buckets on this range and contribute the same bytes either side. So the
+    // dilution is structural, and a per-map step of 1.99x reaches the headline as 1.11x. Recorded
+    // here rather than silently widened, because "I picked a bound above the number" and "the
+    // effect is smaller than claimed" look identical in a test that passes.
+    let whole_step = resident_at(1_800) / resident_at(1_792);
+    println!(
+        "    and the WHOLE resident index steps {:.1} -> {:.1} B/key ({whole_step:.3}x) -- diluted",
+        resident_at(1_792),
+        resident_at(1_800)
+    );
+    println!("    from the string table's 1.99x by the per-bucket rows that do not move");
+    assert!(
+        whole_step > 1.05,
+        "the whole resident index went {:.1} -> {:.1} B/key ({whole_step:.3}x) across the \
+         doubling. Below 1.05 the step no longer reaches the published headline, so the caution \
+         this arm exists to raise would apply to one map and not to the figure anyone reads.",
+        resident_at(1_792),
+        resident_at(1_800)
+    );
+}
+
+/// WHAT A DUMP ROUND TAKES OUT OF THE RESIDENT INDEX -- i.e. how much of the headline is transient.
+///
+/// `dirty_objects` is the second largest census row on the amplification workload, and it is NOT
+/// structural: `drain_buckets` empties it as a dump clears each bucket, the encoded image does not
+/// carry it, and it starts empty on load. A probe that writes and never dumps holds every key
+/// dirty forever, which is a state no running store stays in -- so a write-only fixture charges a
+/// transient against a ratio whose whole claim is about steady-state residency.
+///
+/// MEASURED BY DIFFERENCE ON ONE STORE, across the PRODUCTION lifecycle call rather than by
+/// reaching into the map: `apply_storage_lifecycle` with every bucket selected is what clears the
+/// dirty flags that `drain_buckets` keys off, so what this reports is what a deployment's own dump
+/// recovers and not what a test could contrive by emptying a field.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_dump_round_takes_out_of_the_resident_index -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds a store, dumps it and weighs both sides; run by name"]
+fn what_a_dump_round_takes_out_of_the_resident_index() {
+    use crate::types::{Command, ExecuteRequest};
+    const VALUE: usize = 256;
+    const SHIPPED_END: u32 = 1023;
+    const KEYS: usize = 2_000;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("amp-{index:06}"),
+                value: vec![b'v'; VALUE],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet { key: format!("amp-{index:06}") },
+        });
+        assert!(response.status.ok, "read {index}: {:?}", response.status);
+    }
+
+    let (before, before_image, before_resident, dirty_before) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            census_bytes(shard),
+            crate::engine::encode_index_bytes(shard).len() as u64,
+            deep_heap_bytes(shard),
+            shard.dirty_objects.len(),
+        )
+    };
+    assert!(dirty_before > 0, "the fixture left nothing dirty, so a dump recovers nothing and this arm cannot say what is transient");
+
+    // THE PRODUCTION LIFECYCLE, every bucket selected, so the dirty flags are cleared the way a
+    // deployment clears them.
+    let candidates: Vec<u32> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.bucket_map.keys().copied().collect()
+    };
+    assert!(!candidates.is_empty(), "the fixture produced no bucket to dump");
+    let lifecycle = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: candidates.clone(),
+        max_dump_buckets_per_round: candidates.len(),
+        ..Default::default()
+    });
+    std::hint::black_box(&lifecycle);
+
+    let (after, after_image, after_resident, dirty_after) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        (
+            census_bytes(shard),
+            crate::engine::encode_index_bytes(shard).len() as u64,
+            deep_heap_bytes(shard),
+            shard.dirty_objects.len(),
+        )
+    };
+
+    println!();
+    println!("  {KEYS} keys x {VALUE} B, shipped range, ACROSS ONE FULL DUMP ROUND");
+    println!("  {} buckets dumped; dirty keys {dirty_before} -> {dirty_after}", candidates.len());
+    println!();
+    println!("    {:<40} {:>10} {:>10} {:>10}", "row", "dirty", "dumped", "recovered");
+    for (index, (name, dirty_bytes)) in before.iter().enumerate() {
+        let (after_name, after_bytes) = after[index];
+        assert_eq!(*name, after_name, "the census rows must line up to be differenced");
+        println!(
+            "    {:<40} {:>10} {:>10} {:>10}",
+            name,
+            dirty_bytes,
+            after_bytes,
+            *dirty_bytes as i64 - after_bytes as i64
+        );
+    }
+    println!();
+    println!("    index image      {before_image:>10} {after_image:>10}");
+    println!("    index resident   {before_resident:>10} {after_resident:>10}");
+    println!(
+        "    B/key resident   {:>10.1} {:>10.1}",
+        before_resident as f64 / KEYS as f64,
+        after_resident as f64 / KEYS as f64
+    );
+    println!(
+        "    memory amp       {:>10.3} {:>10.3}",
+        before_resident as f64 / before_image as f64,
+        after_resident as f64 / after_image as f64
+    );
+    println!();
+
+    // --- THE DUMP MUST ACTUALLY HAVE RUN. A lifecycle call that selected nothing, or refused
+    // --- every bucket, leaves the figures identical and would read as "the transient is zero".
+    assert_eq!(
+        0, dirty_after,
+        "the dump left {dirty_after} of {dirty_before} keys dirty, so the round did not clear the \
+         shard and the 'dumped' column is not a steady state"
+    );
+    assert!(
+        after_resident < before_resident,
+        "a full dump round recovered no resident bytes ({before_resident} -> {after_resident}). \
+         Either the drain stopped running or `dirty_objects` was never charged in the first place, \
+         and in both cases the transient share this arm reports is wrong."
+    );
+}
