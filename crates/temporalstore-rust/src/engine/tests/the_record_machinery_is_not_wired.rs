@@ -12,14 +12,21 @@
 //! inline. So the obvious question is why `expires_at_ms` and `dirty_objects` are still separate
 //! structures.
 //!
-//! The answer is not a design disagreement. **Nothing in production ever fills any of it.** The two
-//! constructors that set a deadline or a dirty bit have no production caller; the page-layout side
-//! table is touched only from `#[cfg(test)]` code; and the one production path that builds a slot
-//! uses `ObjectSlot::default()`, which has no deadline and no dirty bit. The representation changed
-//! and **the leg that fills it never moved**.
+//! The answer was not a design disagreement: nothing in production ever filled any of it. The
+//! constructors that would have set a deadline or a dirty bit had no production caller, the
+//! page-layout side table was touched only from `#[cfg(test)]` code, and the one production path
+//! that builds a slot uses `ObjectSlot::default()`. The representation changed and **the leg that
+//! fills it never moved**.
 //!
-//! So the duplication the record was built to remove is still being paid, and the record is
-//! carrying eight bytes of deadline plus two tag bits that are always zero.
+//! **THE DEADLINE AND THE DIRTY BIT ARE NOW GONE RATHER THAN UNWIRED.** Eight bytes of deadline and
+//! three flag bits that were always zero came off the record, taking it from twenty-four bytes to
+//! sixteen; the three bits retired into `RESERVED`, so a record carrying one is refused as a newer
+//! writer's rather than read with its meaning dropped. What this module still guards is the half
+//! that remains built and unfilled: the two row constructors and the page-layout side table.
+//!
+//! The duplication the record was going to remove is therefore still being paid by the structures
+//! that were always paying it -- the bucket-grouped dirty index and the per-key expiry table -- and
+//! neither is a duplicate of anything on the record any more.
 //!
 //! # WHY THIS IS A TEST AND NOT A COMMENT
 //!

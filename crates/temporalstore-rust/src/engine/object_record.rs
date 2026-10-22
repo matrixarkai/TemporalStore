@@ -109,9 +109,13 @@ impl RecordFlags {
     /// The address word is a handle naming a multi-page layout, not a page address.
     pub(super) const ADDRESS_IS_POINTER: u16 = 1 << 0;
     /// The deadline word is a handle naming a list of per-element deadlines, not one deadline.
-    pub(super) const DEADLINE_IS_POINTER: u16 = 1 << 1;
+    // BIT 1 IS RETIRED, into `RESERVED`. It tagged the deadline word, which this record no
+    // longer carries.
     /// The object has unflushed writes.
-    pub(super) const DIRTY: u16 = 1 << 2;
+    // BIT 2 IS RETIRED, into `RESERVED`. It marked the row dirty and nothing ever set it: the
+    // question the flush path asks is "which objects in THIS BUCKET are dirty", which a
+    // per-object bit cannot answer without visiting every object. The bucket-grouped index
+    // answers that, so this bit never had a second reader to justify its width.
     /// The object's INDEX-LOG state has unflushed writes, independently of its data.
     ///
     /// NAMED FOR THE SPLIT THIS ENGINE ALREADY MAKES, which is between the write-ahead log and
@@ -145,16 +149,21 @@ impl RecordFlags {
     // into `RESERVED` below -- so a writer that sets the retired bit is refused by name as a
     // newer writer, which is the correct answer for a bit this reader no longer understands.
     //
-    /// A deadline is present at all. See the type doc for why ten bits cannot say this.
-    pub(super) const DEADLINE_PRESENT: u16 = 1 << 10;
+    // BIT 10 IS RETIRED, into `RESERVED`. It said a deadline was present; the record carries no
+    // deadline now, and a per-key deadline lives in its own structure where a sweep can walk
+    // due keys in DEADLINE order rather than scanning every row to find them.
     /// The page carries a generation, independently of whether it carries an identity.
     pub(super) const PAGE_GENERATION: u16 = 1 << 11;
 
-    /// Bit 9 and bits 12..=15. Set in a decoded record, these mean a writer newer than this
-    /// reader -- bit 9 because it was retired as redundant, the rest because they were never
+    /// Bits 1, 2, 9, 10 and 12..=15. Set in a decoded record, these mean a writer newer than
+    /// this reader -- 1, 2, 9 and 10 because they were retired, the rest because they were never
     /// spent. A decoder REFUSES any of them rather than reading a record with their meaning
     /// dropped.
-    pub(super) const RESERVED: u16 = 0xF200;
+    ///
+    /// A RETIRED BIT JOINS THIS SET RATHER THAN BEING RENUMBERED AWAY, which is the convention bit
+    /// 9 already established and the whole reason retiring one is safe: a record carrying it is
+    /// refused by name instead of read as though the bit meant nothing. 0xF200 | 0x0406.
+    pub(super) const RESERVED: u16 = 0xF606;
 
     /// Every bit this reader understands.
     pub(super) const KNOWN: u16 = !Self::RESERVED;
@@ -185,28 +194,17 @@ impl RecordFlags {
     }
 }
 
-/// Ten named state bits, less one dropped as redundant, plus the two the conversion needs: eleven of sixteen.
-const _: () = assert!(RecordFlags::KNOWN.count_ones() == 11);
-const _: () = assert!(RecordFlags::RESERVED.count_ones() == 5);
+/// EIGHT NAMED BITS OF SIXTEEN, and eight refused. Three retired with the deadline word and the
+/// dirty bit, and a retired bit joins `RESERVED` rather than being renumbered away -- so the two
+/// counts move together, which the third assertion is here to state.
+const _: () = assert!(RecordFlags::KNOWN.count_ones() == 8);
+const _: () = assert!(RecordFlags::RESERVED.count_ones() == 8);
+const _: () = assert!(RecordFlags::KNOWN.count_ones() + RecordFlags::RESERVED.count_ones() == 16);
 const _: () = assert!(RecordFlags::KNOWN & RecordFlags::RESERVED == 0);
 
 // =================================================================================================
 // THE TWO TAGGED WORDS, AS NAMED ARMS
 // =================================================================================================
-
-/// A handle naming a list of per-element deadlines held outside the record.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
-#[serde(transparent)]
-pub(super) struct DeadlineListHandle(u64);
-
-impl DeadlineListHandle {
-    pub(super) const fn from_stored(value: u64) -> Self {
-        Self(value)
-    }
-    pub(super) const fn get(self) -> u64 {
-        self.0
-    }
-}
 
 /// A handle naming the pages of a multi-page object, held outside the record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -220,20 +218,6 @@ impl PageLayoutHandle {
     pub(super) const fn get(self) -> u64 {
         self.0
     }
-}
-
-/// What the deadline word means. THE TAG DECIDES, NEVER THE VALUE.
-///
-/// There is no arm for "zero means none": zero is a legal instant, and the module header says why
-/// a sentinel is refused here.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum Deadline {
-    /// No deadline. A BIT says so.
-    None,
-    /// One deadline, in milliseconds.
-    At(u64),
-    /// Several, one per element, in a side list this handle names.
-    PerElement(DeadlineListHandle),
 }
 
 /// What the address word means. THE TAG DECIDES, NEVER THE VALUE.
@@ -269,7 +253,6 @@ pub(super) enum PageAddress {
 #[serde(try_from = "ObjectRecordWire", into = "ObjectRecordWire")]
 pub(super) struct ObjectRecord {
     /// Value or handle. UNREADABLE except through [`ObjectRecord::deadline`].
-    deadline: u64,
     /// Value or handle. UNREADABLE except through [`ObjectRecord::page_address`].
     address: u64,
     page_size: u32,
@@ -284,25 +267,23 @@ pub(super) struct ObjectRecord {
 /// this is an equality, and the alignment is a SECOND equality rather than a clause of this one: a
 /// change that keeps the width and moves the alignment is a different change, and each should name
 /// itself.
-const _: () = assert!(std::mem::size_of::<ObjectRecord>() == 24);
+const _: () = assert!(std::mem::size_of::<ObjectRecord>() == 16);
 const _: () = assert!(std::mem::align_of::<ObjectRecord>() == 8);
 
 /// The field sum, so a field added inside the tail slack is visible as arithmetic rather than
 /// hiding behind a width that did not step.
 const _: () = assert!(
     std::mem::size_of::<u64>()
-        + std::mem::size_of::<u64>()
         + std::mem::size_of::<u32>()
         + std::mem::size_of::<RecordFlags>()
         + std::mem::size_of::<u8>()
-        == 23
+        == 15
 );
-const _: () = assert!(std::mem::size_of::<ObjectRecord>() - 23 == 1);
+const _: () = assert!(std::mem::size_of::<ObjectRecord>() - 15 == 1);
 
 impl Default for ObjectRecord {
     fn default() -> Self {
         Self {
-            deadline: 0,
             address: 0,
             page_size: 0,
             flags: RecordFlags::empty(),
@@ -314,37 +295,7 @@ impl Default for ObjectRecord {
 impl ObjectRecord {
     // --- The tagged words, as arms. ---
 
-    /// The deadline, decided by its tag bits and not by its value.
-    pub(super) fn deadline(&self) -> Deadline {
-        if !self.flags.get(RecordFlags::DEADLINE_PRESENT) {
-            return Deadline::None;
-        }
-        if self.flags.get(RecordFlags::DEADLINE_IS_POINTER) {
-            return Deadline::PerElement(DeadlineListHandle::from_stored(self.deadline));
-        }
-        Deadline::At(self.deadline)
-    }
 
-    /// Set the deadline and its tag bits TOGETHER, so the two cannot disagree.
-    pub(super) fn set_deadline(&mut self, deadline: Deadline) {
-        match deadline {
-            Deadline::None => {
-                self.deadline = 0;
-                self.flags.set(RecordFlags::DEADLINE_PRESENT, false);
-                self.flags.set(RecordFlags::DEADLINE_IS_POINTER, false);
-            }
-            Deadline::At(at) => {
-                self.deadline = at;
-                self.flags.set(RecordFlags::DEADLINE_PRESENT, true);
-                self.flags.set(RecordFlags::DEADLINE_IS_POINTER, false);
-            }
-            Deadline::PerElement(handle) => {
-                self.deadline = handle.get();
-                self.flags.set(RecordFlags::DEADLINE_PRESENT, true);
-                self.flags.set(RecordFlags::DEADLINE_IS_POINTER, true);
-            }
-        }
-    }
 
     /// The address, decided by its tag bit and not by its value.
     pub(super) fn page_address(&self) -> PageAddress {
@@ -400,9 +351,6 @@ impl ObjectRecord {
         self.flags.set(bit, on);
     }
 
-    pub(super) const fn dirty(&self) -> bool {
-        self.flags.get(RecordFlags::DIRTY)
-    }
 
     // --- THE SHIMS THE MODEL MAPS HOLD THIS THROUGH. ---
 
@@ -563,23 +511,17 @@ impl ObjectRecord {
             .map_err(|_| ObjectRecordRefusal::PageSizeDoesNotFit { length })?;
 
         let mut record = Self {
-            deadline: 0,
             address: 0,
             page_size,
             flags: RecordFlags::empty(),
             model_id,
         };
         record.set_page_address(PageAddress::One(address.address_word()));
-        record.set_deadline(match deadline {
-            None => Deadline::None,
-            Some(at) => Deadline::At(at),
-        });
         // `block_id()` is `None` exactly while the block lives in the log, which is the one
         // derivation this type keeps rather than restates: see `ElementEntry::log_resident`. So
         // this ONE BIT carries the ordinal's presence, and the inline arm's ordinal value is zero.
         record.flags.set(RecordFlags::PAGE_IN_LOG, block_id.is_none());
         record.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
-        record.flags.set(RecordFlags::DIRTY, dirty);
         Ok(record)
     }
 
@@ -615,20 +557,14 @@ impl ObjectRecord {
             }],
         };
         let mut record = Self {
-            deadline: 0,
             address: 0,
             page_size,
             flags: RecordFlags::empty(),
             model_id,
         };
         record.set_page_address(PageAddress::Many(handle));
-        record.set_deadline(match deadline {
-            None => Deadline::None,
-            Some(at) => Deadline::At(at),
-        });
         record.flags.set(RecordFlags::PAGE_IN_LOG, block_id.is_none());
         record.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
-        record.flags.set(RecordFlags::DIRTY, dirty);
         Ok((record, layout))
     }
 
@@ -639,7 +575,7 @@ impl ObjectRecord {
     pub(super) fn into_object_rows(
         &self,
         layout: Option<&PageLayout>,
-    ) -> Result<(ElementEntry, u8, Option<u64>, bool), ObjectRecordRefusal> {
+    ) -> Result<(ElementEntry, u8), ObjectRecordRefusal> {
         let (word, length, block_id, has_generation) = match self.page_address() {
             // THE INLINE ARM'S ORDINAL IS ZERO WHEN IT IS PRESENT AT ALL, and `PAGE_IN_LOG`
             // carries that presence: set means no ordinal, clear means ordinal zero. See
@@ -673,14 +609,7 @@ impl ObjectRecord {
             has_generation,
         )
         .map_err(|_| ObjectRecordRefusal::AddressWordOutOfRange { word })?;
-        let deadline = match self.deadline() {
-            Deadline::None => None,
-            Deadline::At(at) => Some(at),
-            Deadline::PerElement(handle) => {
-                return Err(ObjectRecordRefusal::PerElementDeadlineHasNoSingleValue { handle })
-            }
-        };
-        Ok((entry, self.model_id, deadline, self.flags.get(RecordFlags::DIRTY)))
+        Ok((entry, self.model_id))
     }
 }
 
@@ -896,10 +825,11 @@ pub(super) struct ObjectRecordWire {
     flags: u16,
     #[serde(rename = "m", default)]
     model_id: u8,
-    /// ABSENT RATHER THAN ZERO when there is no deadline, which is the wire half of the same
-    /// argument the tag bit makes in memory: a stored zero would be a legal instant.
-    #[serde(rename = "t", default, skip_serializing_if = "Option::is_none")]
-    deadline: Option<u64>,
+    // THE `t` KEY IS GONE WITH THE DEADLINE WORD, AND NO STORED BYTES MOVE WITH IT. It was
+    // `skip_serializing_if = "Option::is_none"` and nothing ever set a deadline, so no image this
+    // binary or any before it wrote carries a `t` at all -- there is nothing for a reader to drop,
+    // which is why this costs no format stamp. A record that did carry one is refused rather than
+    // misread, because bits 1, 2 and 10 retired into `RESERVED`.
 }
 
 impl From<ObjectRecord> for ObjectRecordWire {
@@ -909,10 +839,6 @@ impl From<ObjectRecord> for ObjectRecordWire {
             page_size: record.page_size,
             flags: record.flags.bits(),
             model_id: record.model_id,
-            deadline: record
-                .flags
-                .get(RecordFlags::DEADLINE_PRESENT)
-                .then_some(record.deadline),
         }
     }
 }
@@ -931,23 +857,11 @@ impl TryFrom<ObjectRecordWire> for ObjectRecord {
             return Err(ObjectRecordRefusal::ReservedFlagBitsSet { bits: reserved });
         }
         let flags = RecordFlags(wire.flags);
-        // THE TAG AND THE VALUE MUST AGREE, IN BOTH DIRECTIONS. A tag with no value would read
-        // whatever zero means, and a value with no tag would be invisible to every reader.
-        let tagged = flags.get(RecordFlags::DEADLINE_PRESENT);
-        match (tagged, wire.deadline) {
-            (true, None) => {
-                return Err(ObjectRecordRefusal::DeadlineTaggedButAbsentOnTheWire);
-            }
-            (false, Some(value)) => {
-                return Err(ObjectRecordRefusal::DeadlineOnTheWireButNotTagged { value });
-            }
-            _ => {}
-        }
-        if !tagged && flags.get(RecordFlags::DEADLINE_IS_POINTER) {
-            return Err(ObjectRecordRefusal::DeadlinePointerWithoutPresence);
-        }
+        // THE DEADLINE AGREEMENT CHECKS WENT WITH THE FIELD, and nothing replaces them: the two
+        // tag bits they reconciled are in `RESERVED` now, so the reserved-bit check above refuses a
+        // record carrying either of them before this point is reached. One refusal, earlier,
+        // instead of three.
         Ok(Self {
-            deadline: wire.deadline.unwrap_or_default(),
             address: wire.address,
             page_size: wire.page_size,
             flags,
@@ -961,12 +875,6 @@ impl TryFrom<ObjectRecordWire> for ObjectRecord {
 pub(super) enum ObjectRecordRefusal {
     /// A writer newer than this reader set a bit this reader does not understand.
     ReservedFlagBitsSet { bits: u16 },
-    /// The deadline tag is set and the wire carries no deadline.
-    DeadlineTaggedButAbsentOnTheWire,
-    /// The wire carries a deadline and the tag is clear, so no reader would consult it.
-    DeadlineOnTheWireButNotTagged { value: u64 },
-    /// The pointer tag is set while the presence bit is clear, which names no arm.
-    DeadlinePointerWithoutPresence,
     /// The inline arm carries a page ordinal's presence but not a nonzero value. Use the layout
     /// arm, which is where a multi-page object belongs regardless.
     NonZeroPageOrdinalDoesNotFitInline { block_id: u64 },
@@ -976,8 +884,6 @@ pub(super) enum ObjectRecordRefusal {
     PageSizeDoesNotFit { length: u64 },
     /// The address word is a handle and no layout was supplied for it.
     LayoutHandleWithNoLayout { handle: PageLayoutHandle },
-    /// A per-element deadline list has no single value to hand back.
-    PerElementDeadlineHasNoSingleValue { handle: DeadlineListHandle },
     /// The address word does not decode to an address this store can name.
     AddressWordOutOfRange { word: u64 },
 }
@@ -990,20 +896,6 @@ impl std::fmt::Display for ObjectRecordRefusal {
                 "ReservedFlagBitsSet: the stored record sets reserved flag bits {bits:#06x}, so it \
                  was written by a newer reader; refusing rather than reading it with those bits' \
                  meaning dropped"
-            ),
-            Self::DeadlineTaggedButAbsentOnTheWire => write!(
-                f,
-                "DeadlineTaggedButAbsentOnTheWire: the record claims a deadline and carries none"
-            ),
-            Self::DeadlineOnTheWireButNotTagged { value } => write!(
-                f,
-                "DeadlineOnTheWireButNotTagged: the record carries deadline {value} with its \
-                 presence bit clear, so no reader would consult it"
-            ),
-            Self::DeadlinePointerWithoutPresence => write!(
-                f,
-                "DeadlinePointerWithoutPresence: the deadline pointer tag is set while the presence \
-                 bit is clear, which names no arm"
             ),
             Self::NonZeroPageOrdinalDoesNotFitInline { block_id } => write!(
                 f,
@@ -1024,12 +916,6 @@ impl std::fmt::Display for ObjectRecordRefusal {
             Self::LayoutHandleWithNoLayout { handle } => write!(
                 f,
                 "LayoutHandleWithNoLayout: the address word is handle {} and no layout was supplied",
-                handle.get()
-            ),
-            Self::PerElementDeadlineHasNoSingleValue { handle } => write!(
-                f,
-                "PerElementDeadlineHasNoSingleValue: deadline list {} holds one deadline per \
-                 element, so there is no single value to hand back",
                 handle.get()
             ),
             Self::AddressWordOutOfRange { word } => write!(
@@ -1125,13 +1011,17 @@ pub(super) struct ObjectSlot {
 
 /// THE WIDTH, PINNED AS ITS OWN EQUALITY, for the same reason the record's is: an inequality
 /// against a neighbour passes at every width.
-const _: () = assert!(std::mem::size_of::<ObjectSlot>() == 32);
+///
+/// 24, NOT 32: the record lost its deadline word, so the slot that wraps it lost the same eight
+/// bytes. The arithmetic is the record's 16 plus the eight the optional owned array costs, which is
+/// the claim the assertion below this one makes at the site that makes it.
+const _: () = assert!(std::mem::size_of::<ObjectSlot>() == 24);
 const _: () = assert!(std::mem::align_of::<ObjectSlot>() == 8);
 
 /// THE RECORD IS UNCHANGED BY ITS OWN NEIGHBOUR. Restated here rather than left to the record's
 /// own asserts, because the whole argument for this shape is that wrapping the record did not cost
 /// the record anything -- so the claim is asserted at the site that makes it.
-const _: () = assert!(std::mem::size_of::<ObjectRecord>() == 24);
+const _: () = assert!(std::mem::size_of::<ObjectRecord>() == 16);
 const _: () = assert!(std::mem::align_of::<ObjectRecord>() == 8);
 
 /// THE SLOT IS THE RECORD PLUS ONE POINTER AND NOTHING ELSE -- no padding, no tag word. If a
@@ -1651,13 +1541,11 @@ mod the_handle_arm_now_has_something_to_point_into {
         let handle = store.insert(layout);
 
         let held = store.get(handle).expect("the filed layout should resolve");
-        let (back_address, back_model, back_deadline, back_dirty) = record
+        let (back_address, back_model) = record
             .into_object_rows(Some(held))
             .expect("unfolding a record through its layout refused");
         assert_eq!(address, back_address, "the address row changed");
         assert_eq!(9, back_model, "the model id changed");
-        assert_eq!(Some(1_700), back_deadline, "the deadline row changed");
-        assert!(back_dirty, "the dirty bit changed");
     }
 
     /// A stale handle stops resolving rather than naming the next layout in its slot.

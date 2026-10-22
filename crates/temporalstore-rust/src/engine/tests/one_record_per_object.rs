@@ -21,8 +21,7 @@ use super::*;
 
 use crate::block_store::ElementEntry;
 use crate::engine::object_record::{
-    Deadline, DeadlineListHandle, ObjectRecord, ObjectRecordRefusal, PageAddress, PageLayout,
-    PageLayoutHandle, RecordFlags,
+    ObjectRecord, ObjectRecordRefusal, PageAddress, PageLayout, PageLayoutHandle, RecordFlags,
 };
 
 // Imported as a NAME rather than called through its full path, for the reason the sibling census
@@ -53,17 +52,19 @@ fn deep_heap_bytes<T: Clone>(value: &T) -> u64 {
 }
 
 /// Every named bit, so a test can walk them rather than restating the list.
-const NAMED_BITS: [(&str, u16); 11] = [
+///
+/// EIGHT, NOT ELEVEN: `DEADLINE_IS_POINTER`, `DIRTY` and `DEADLINE_PRESENT` retired with the
+/// deadline word, and a retired bit joins `RESERVED` rather than being renumbered away. The flag
+/// census beside the type asserts the same count, and it is the one that gates -- this list exists
+/// so a test can walk the bits by name.
+const NAMED_BITS: [(&str, u16); 8] = [
     ("ADDRESS_IS_POINTER", RecordFlags::ADDRESS_IS_POINTER),
-    ("DEADLINE_IS_POINTER", RecordFlags::DEADLINE_IS_POINTER),
-    ("DIRTY", RecordFlags::DIRTY),
     ("INDEX_DIRTY", RecordFlags::INDEX_DIRTY),
     ("LOADING", RecordFlags::LOADING),
     ("IN_MEMORY", RecordFlags::IN_MEMORY),
     ("PAGE_DIRTY", RecordFlags::PAGE_DIRTY),
     ("PAGE_DELETED", RecordFlags::PAGE_DELETED),
     ("PAGE_IN_LOG", RecordFlags::PAGE_IN_LOG),
-    ("DEADLINE_PRESENT", RecordFlags::DEADLINE_PRESENT),
     ("PAGE_GENERATION", RecordFlags::PAGE_GENERATION),
 ];
 
@@ -77,24 +78,23 @@ const NAMED_BITS: [(&str, u16); 11] = [
 /// that can only ever fail inside a test nothing runs; this campaign shipped that error into three
 /// merged pull requests. The width is an equality and the alignment is a SEPARATE equality.
 #[test]
-fn the_record_is_twenty_four_bytes_at_natural_alignment() {
+fn the_record_is_sixteen_bytes_at_natural_alignment() {
     let width = std::mem::size_of::<ObjectRecord>();
     let align = std::mem::align_of::<ObjectRecord>();
     let field_sum = std::mem::size_of::<u64>()
-        + std::mem::size_of::<u64>()
         + std::mem::size_of::<u32>()
         + std::mem::size_of::<RecordFlags>()
         + std::mem::size_of::<u8>();
     println!("ObjectRecord: size_of = {width}, align_of = {align}");
     println!("  field sum = {field_sum}, tail slack = {}", width - field_sum);
     println!("  RecordFlags: size_of = {}", std::mem::size_of::<RecordFlags>());
-    assert_eq!(24, width, "the record's width moved");
+    assert_eq!(16, width, "the record's width moved");
     assert_eq!(8, align, "the record's alignment moved");
-    assert_eq!(23, field_sum, "the field set moved without the width stepping");
+    assert_eq!(15, field_sum, "the field set moved without the width stepping");
     assert_eq!(1, width - field_sum, "the tail slack moved");
 }
 
-/// WHAT THE ATTRIBUTE-HOLDING RECORD SHAPE WOULD COST, against the twenty-four byte one.
+/// WHAT THE ATTRIBUTE-HOLDING RECORD SHAPE WOULD COST, against the sixteen-byte one.
 ///
 /// This record follows a shape that tags two words and keeps everything else out of line. The other
 /// end of that design family is the obvious one: a per-object record that simply HOLDS its
@@ -104,13 +104,14 @@ fn the_record_is_twenty_four_bytes_at_natural_alignment() {
 ///
 /// THREE DECISIONS THAT COME WITH THAT SHAPE, and this engine takes exactly one of them:
 ///
-///   * TAKE: the timestamps live ON the record rather than in a per-key side table. That is the
-///     direction `what_moving_the_string_map_onto_the_record_would_cost` prices, and it crosses
-///     over at about 27% of keys carrying a deadline.
+///   * REFUSED, AND THIS ONE CHANGED: the timestamps living ON the record. It was priced at a 27%
+///     crossover by `what_moving_the_string_map_onto_the_record_would_cost` and then NOT taken --
+///     the record's deadline word was never filled and has been retired, so a per-key deadline
+///     stays in its own structure. The row is sixteen bytes rather than twenty-four as a result.
 ///   * REFUSE: absence as a sentinel zero. A deadline of zero is a legal deadline, so zero cannot
-///     carry its own absence -- `a_zero_deadline_is_not_an_absent_deadline` is the arm that pins
-///     it, and the record spends `DEADLINE_PRESENT` instead. A default of `0` meaning "no
-///     retention" cannot tell that case from a retention at the epoch.
+///     carry its own absence. The note beside `RESERVED` carries that reasoning now, which is where
+///     the retired tag bits are recorded -- a default of `0` meaning "no retention" cannot tell
+///     that case from a retention at the epoch.
 ///   * REFUSE: dropping the time-ORDERED index and letting a sweep scan. The ordered index is what
 ///     makes the due set a prefix; without it, time-to-expire becomes a function of the keyspace
 ///     rather than of how many keys are due. Measured at ten expired keys behind ten thousand live
@@ -199,13 +200,14 @@ fn what_the_attribute_holding_record_shape_would_cost() {
          design, which means this record has grown attributes it used to keep out of line."
     );
 
-    // AND THE TWO REFUSALS ARE PINNED ELSEWHERE, named here so this arm is not the only record of
-    // them: `a_zero_deadline_is_not_an_absent_deadline` holds the sentinel-zero refusal, and
-    // `the_key_ordered_expiry_window_has_no_production_callers` holds the ordered-index one.
-    assert_eq!(ours, 24, "the record's width is pinned by its own arm; this arm only compares");
+    // AND THE REFUSALS ARE RECORDED ELSEWHERE, named here so this arm is not their only record:
+    // the note beside `RESERVED` carries the sentinel-zero reasoning, now that the tag bits it
+    // justified have retired, and `the_key_ordered_expiry_window_has_no_production_callers` holds
+    // the ordered-index one.
+    assert_eq!(ours, 16, "the record's width is pinned by its own arm; this arm only compares");
 }
 
-/// Twelve distinct named bits, four reserved, and the two sets disjoint.
+/// Eight distinct named bits, eight reserved, and the two sets disjoint.
 ///
 /// A duplicated mask is the failure this catches: two names for one bit compile, and then setting
 /// one silently sets the other.
@@ -223,36 +225,13 @@ fn every_flag_bit_is_distinct_and_the_reserved_set_is_disjoint() {
         );
         seen |= bit;
     }
-    assert_eq!(11, seen.count_ones(), "eleven named bits");
+    assert_eq!(8, seen.count_ones(), "eight named bits");
     assert_eq!(RecordFlags::KNOWN, seen, "the KNOWN mask and the named list disagree");
-    assert_eq!(5, RecordFlags::RESERVED.count_ones(), "five reserved bits");
+    assert_eq!(8, RecordFlags::RESERVED.count_ones(), "eight reserved bits");
     assert_eq!(0, RecordFlags::KNOWN & RecordFlags::RESERVED, "the two sets overlap");
     assert_eq!(16, (RecordFlags::KNOWN | RecordFlags::RESERVED).count_ones(), "sixteen in all");
 }
 
-/// A ZERO DEADLINE IS NOT AN ABSENT DEADLINE, which is the whole reason the tag bit exists.
-///
-/// This is the test that would fail if someone replaced the presence bit with a sentinel. It is
-/// here because the same mistake has a written history on the neighbouring address type: zero is a
-/// legal block id, so "zero means none" would erase a real first page.
-#[test]
-fn a_zero_deadline_is_not_an_absent_deadline() {
-    let mut absent = ObjectRecord::default();
-    absent.set_deadline(Deadline::None);
-    let mut at_zero = ObjectRecord::default();
-    at_zero.set_deadline(Deadline::At(0));
-
-    assert_eq!(Deadline::None, absent.deadline(), "an absent deadline must read as absent");
-    assert_eq!(Deadline::At(0), at_zero.deadline(), "a zero deadline must read as a zero deadline");
-    assert_ne!(
-        absent.deadline(),
-        at_zero.deadline(),
-        "absent and zero read the same, so the record is using a sentinel and a legal instant of \
-         zero is being erased"
-    );
-    // And the two differ in the FLAGS, not in the word: the word is zero in both.
-    assert_ne!(absent.flags().bits(), at_zero.flags().bits(), "the tag bit is not carrying this");
-}
 
 /// BOTH TAGGED WORDS ARE UNREADABLE WITHOUT THEIR TAG, and the arms round-trip through the setter.
 ///
@@ -264,18 +243,9 @@ fn a_zero_deadline_is_not_an_absent_deadline() {
 fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
     let mut record = ObjectRecord::default();
 
-    for arm in [
-        Deadline::None,
-        Deadline::At(0),
-        Deadline::At(1_700_000_000_000),
-        Deadline::At(u64::MAX),
-        Deadline::PerElement(DeadlineListHandle::from_stored(0)),
-        Deadline::PerElement(DeadlineListHandle::from_stored(9_999)),
-    ] {
-        record.set_deadline(arm);
-        assert_eq!(arm, record.deadline(), "the deadline arm did not survive a set-then-get");
-    }
-
+    // ONE TAGGED WORD REMAINS. The deadline word retired, so the arm that walked its three
+    // meanings has nothing left to walk; the address word still has two and is walked below. The
+    // property is unchanged -- a tag decides which arm a word means, never the value.
     for arm in [
         PageAddress::One(0),
         PageAddress::One(crate::engine::object_record::address_word_from_parts(7, 4_096)),
@@ -298,36 +268,29 @@ fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
 /// THE RECORD SURVIVES ITS OWN CODEC INTACT, on every arm combination that is legal.
 #[test]
 fn the_record_survives_its_own_codec_intact() {
+    // TWO CASES, NOT EIGHT. The matrix was four deadline arms by two address arms; the deadline
+    // dimension retired with the word, leaving the address arms. The count stays asserted because
+    // its job was never the number: a matrix that silently builds fewer cases than its loops imply
+    // is exactly the failure it exists to catch.
     let mut cases: Vec<ObjectRecord> = Vec::new();
-    for deadline in [
-        Deadline::None,
-        Deadline::At(0),
-        Deadline::At(1_700_000_000_000),
-        Deadline::PerElement(DeadlineListHandle::from_stored(5)),
-    ] {
-        for address in
-            [PageAddress::One(crate::engine::object_record::address_word_from_parts(3, 64)),
-             PageAddress::Many(PageLayoutHandle::from_stored(11))]
-        {
-            let mut record = ObjectRecord::default();
-            record.set_deadline(deadline);
-            record.set_page_address(address);
-            record.set_page_size(4_096);
-            record.set_model_id(7);
-            for (_, bit) in NAMED_BITS {
-                // Do not disturb the two tag bits or the presence bit the setters just arranged.
-                if bit == RecordFlags::ADDRESS_IS_POINTER
-                    || bit == RecordFlags::DEADLINE_IS_POINTER
-                    || bit == RecordFlags::DEADLINE_PRESENT
-                {
-                    continue;
-                }
-                record.set_flag(bit, true);
+    for address in
+        [PageAddress::One(crate::engine::object_record::address_word_from_parts(3, 64)),
+         PageAddress::Many(PageLayoutHandle::from_stored(11))]
+    {
+        let mut record = ObjectRecord::default();
+        record.set_page_address(address);
+        record.set_page_size(4_096);
+        record.set_model_id(7);
+        for (_, bit) in NAMED_BITS {
+            // Do not disturb the one tag bit the setter just arranged.
+            if bit == RecordFlags::ADDRESS_IS_POINTER {
+                continue;
             }
-            cases.push(record);
+            record.set_flag(bit, true);
         }
+        cases.push(record);
     }
-    assert_eq!(8, cases.len(), "the case matrix did not build");
+    assert_eq!(2, cases.len(), "the case matrix did not build");
 
     for record in cases {
         let encoded = serde_json::to_string(&record).expect("a record must encode");
@@ -337,11 +300,6 @@ fn the_record_survives_its_own_codec_intact() {
             });
         assert_eq!(record, decoded, "the codec moved a field: {encoded}");
         assert_eq!(
-            record.deadline(),
-            decoded.deadline(),
-            "the deadline arm did not survive the codec: {encoded}"
-        );
-        assert_eq!(
             record.page_address(),
             decoded.page_address(),
             "the address arm did not survive the codec: {encoded}"
@@ -349,27 +307,6 @@ fn the_record_survives_its_own_codec_intact() {
     }
 }
 
-/// A RECORD WITH NO DEADLINE CARRIES NO DEADLINE KEY AT ALL, rather than a stored zero.
-#[test]
-fn an_absent_deadline_is_absent_on_the_wire_too() {
-    let mut absent = ObjectRecord::default();
-    absent.set_deadline(Deadline::None);
-    let encoded = serde_json::to_string(&absent).expect("encode");
-    assert!(
-        !encoded.contains("\"t\""),
-        "an absent deadline wrote a deadline key, so a stored zero is standing in for absence: \
-         {encoded}"
-    );
-
-    let mut present = ObjectRecord::default();
-    present.set_deadline(Deadline::At(0));
-    let encoded_zero = serde_json::to_string(&present).expect("encode");
-    assert!(
-        encoded_zero.contains("\"t\""),
-        "a zero deadline did not reach the wire, so it is indistinguishable from absence: \
-         {encoded_zero}"
-    );
-}
 
 /// THE DECODER REFUSES BY NAME, AS AN `Err`, AND NEVER PANICS.
 ///
@@ -380,27 +317,32 @@ fn an_absent_deadline_is_absent_on_the_wire_too() {
 #[test]
 fn the_decoder_refuses_by_name_rather_than_panicking() {
     // Built as raw wire text, because these are shapes this writer cannot produce.
-    let cases: [(&str, &str, &str); 4] = [
+    // THREE, NOT FOUR: the `t`-on-the-wire case left the decoder, for the reason stated beside
+    // the cases below.
+    let cases: [(&str, &str, &str); 3] = [
         (
             "a reserved bit set by a newer writer",
             r#"{"a":64,"n":8,"f":4096,"m":1}"#,
             "ReservedFlagBitsSet",
         ),
+        // THE TWO RETIRED DEADLINE BITS ARE STILL REFUSED, under a different name: bits 1 and 10
+        // joined `RESERVED`, so a record setting either is rejected as a newer writer's record
+        // rather than by a deadline-specific check. Same refusal, earlier, and by one rule.
         (
-            "the deadline tag set with no deadline stored",
+            "the retired deadline-presence bit, now reserved",
             r#"{"a":64,"n":8,"f":1024,"m":1}"#,
-            "DeadlineTaggedButAbsentOnTheWire",
+            "ReservedFlagBitsSet",
         ),
         (
-            "a deadline stored with its tag clear",
-            r#"{"a":64,"n":8,"f":0,"m":1,"t":1700000000000}"#,
-            "DeadlineOnTheWireButNotTagged",
-        ),
-        (
-            "the deadline pointer tag set with no presence bit",
+            "the retired deadline-pointer bit, now reserved",
             r#"{"a":64,"n":8,"f":2,"m":1}"#,
-            "DeadlinePointerWithoutPresence",
+            "ReservedFlagBitsSet",
         ),
+        // A `t` KEY ON THE WIRE IS NO LONGER THE DECODER'S BUSINESS, and that case is gone rather
+        // than rewritten. The wire struct does not declare `t`, so a record carrying one has the
+        // key DROPPED silently -- which is how every undeclared key behaves here and is exactly
+        // what the index format stamp exists to refuse. Asserting a decoder refusal for it would
+        // claim a protection this layer does not provide.
     ];
 
     let mut refused = 0usize;
@@ -423,15 +365,16 @@ fn the_decoder_refuses_by_name_rather_than_panicking() {
 
     // THE POSITIVE CONTROL. A decoder that refuses everything passes the four assertions above and
     // is useless, which is the failure mode worth catching here.
-    let legal = r#"{"a":64,"n":8,"f":1028,"m":1,"t":1700000000000}"#;
+    // THE CONTROL IS A LEGAL RECORD USING STILL-KNOWN BITS. It used to set bits 2 and 10 and
+    // carry a `t`, all three of which retired -- so the record it was built from would now be
+    // REFUSED as a newer writer's, and a control that gets refused proves nothing. Bit 3 is
+    // `INDEX_DIRTY`, which is still named.
+    let legal = r#"{"a":64,"n":8,"f":8,"m":7}"#;
     let decoded: ObjectRecord = serde_json::from_str(legal)
         .unwrap_or_else(|error| panic!("the decoder refused a LEGAL record: {error} from {legal}"));
-    assert_eq!(
-        Deadline::At(1_700_000_000_000),
-        decoded.deadline(),
-        "the control decoded but lost its deadline"
-    );
-    assert!(decoded.dirty(), "the control decoded but lost its dirty bit");
+    // THE CONTROL IS STILL A CONTROL, narrowed to what the record still carries: it decoded, so
+    // the refusals above fired on the malformed shapes and not on the decoder being broken.
+    assert_eq!(7, decoded.model_id(), "the control decoded but lost its model id");
 }
 
 /// THE PROOF THE MERGE IS REAL: an object's separate rows, folded into one record and unfolded.
@@ -464,13 +407,11 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
             matches!(record.page_address(), PageAddress::One(_)),
             "{what}: a log-resident page should take the inline arm"
         );
-        let (back_address, back_model, back_deadline, back_dirty) = record
+        let (back_address, back_model) = record
             .into_object_rows(None)
             .unwrap_or_else(|error| panic!("{what}: unfolding refused: {error}"));
         assert_eq!(address, back_address, "{what}: the address row changed");
         assert_eq!(model_id, back_model, "{what}: the model id changed");
-        assert_eq!(deadline, back_deadline, "{what}: the deadline row changed");
-        assert_eq!(dirty, back_dirty, "{what}: the dirty row changed");
         // The presence halves specifically, because they are the ones a value comparison can miss.
         assert_eq!(address.block_id(), back_address.block_id(), "{what}: page identity presence");
         assert_eq!(address.generation(), back_address.generation(), "{what}: generation presence");
@@ -498,13 +439,11 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
             "{what}: an identified page should take the layout arm"
         );
         assert_eq!(1, layout.len(), "{what}: one page should produce a one-page layout");
-        let (back_address, back_model, back_deadline, back_dirty) = record
+        let (back_address, back_model) = record
             .into_object_rows(Some(&layout))
             .unwrap_or_else(|error| panic!("{what}: unfolding refused: {error}"));
         assert_eq!(address, back_address, "{what}: the address row changed");
         assert_eq!(model_id, back_model, "{what}: the model id changed");
-        assert_eq!(deadline, back_deadline, "{what}: the deadline row changed");
-        assert_eq!(dirty, back_dirty, "{what}: the dirty row changed");
         assert_eq!(address.block_id(), back_address.block_id(), "{what}: page identity");
         assert_eq!(address.generation(), back_address.generation(), "{what}: generation presence");
         checked += 1;
@@ -1439,8 +1378,6 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
     record.set_flag(RecordFlags::PAGE_DELETED, true);
 
     // NON-VACUITY FIRST: the state this test is about has to be set, or "it survived" is empty.
-    assert_eq!(Deadline::At(1_700_000_000_000), record.deadline(), "fixture: deadline not set");
-    assert!(record.dirty(), "fixture: dirty not set");
     assert_eq!(7, record.model_id(), "fixture: model id not set");
     assert!(record.flags().get(RecordFlags::INDEX_DIRTY), "fixture: index-dirty not set");
 
@@ -1453,13 +1390,6 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
     record.set_address(&materialised);
 
     // --- GROUP ONE: what must SURVIVE, because it is not the address. ---
-    assert_eq!(
-        Deadline::At(1_700_000_000_000),
-        record.deadline(),
-        "the write-back dropped the DEADLINE -- a fresh record was built instead of the address \
-         being replaced in place"
-    );
-    assert!(record.dirty(), "the write-back dropped the DIRTY bit");
     assert!(record.flags().get(RecordFlags::INDEX_DIRTY), "the write-back dropped INDEX_DIRTY");
     assert!(record.flags().get(RecordFlags::IN_MEMORY), "the write-back dropped IN_MEMORY");
     assert!(record.flags().get(RecordFlags::PAGE_DIRTY), "the write-back dropped PAGE_DIRTY");
@@ -1482,13 +1412,6 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
         "control: the wrong write-back should still get the ADDRESS right -- that is why the \
          defect is invisible"
     );
-    assert_eq!(
-        Deadline::None,
-        wrong.deadline(),
-        "control: a freshly built record somehow kept a deadline, so this test cannot tell the \
-         two write-backs apart and proves nothing"
-    );
-    assert!(!wrong.dirty(), "control: a freshly built record somehow kept the dirty bit");
     assert_eq!(0, wrong.model_id(), "control: a freshly built record somehow kept the model id");
 }
 

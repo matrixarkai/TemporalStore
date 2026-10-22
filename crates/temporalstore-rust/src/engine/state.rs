@@ -8996,13 +8996,11 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
             .object_page_layouts
             .get(handle)
             .expect("a layout filed on the shard should resolve");
-        let (back_address, back_model, back_deadline, back_dirty) = record
+        let (back_address, back_model) = record
             .into_object_rows(Some(held))
             .expect("unfolding a record through its layout refused");
         assert_eq!(address, back_address, "the address row changed");
         assert_eq!(9, back_model, "the model id changed");
-        assert_eq!(Some(1_700), back_deadline, "the deadline row changed");
-        assert!(back_dirty, "the dirty bit changed");
     }
 
     /// A filed layout IS carried in the stored bytes, and comes back.
