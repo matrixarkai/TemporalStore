@@ -7981,6 +7981,164 @@ fn the_published_amplification_ratios_are_the_ratio_they_name() {
     );
 }
 
+/// THE AMPLIFICATION SET IN THE PUBLISHED FORMAT: three ppm ratios, two subsystems, two media.
+///
+/// The format this follows publishes three ratios in parts per million, and which numerator sits
+/// over which denominator IS the format:
+///
+/// ```text
+/// logical_write_amplification_ppm = ppm(logical bytes written, LIVE bytes)
+/// storage_write_amplification_ppm = ppm(physical bytes written, LOGICAL bytes written)
+/// space_amplification_ppm         = ppm(physical bytes resident, LIVE bytes)
+/// ```
+///
+/// The first asks how many times the workload rewrote what it kept; the second, how much the store
+/// spent recording what was asked of it; the third, how much it holds to serve what is live. All
+/// three land in the same order of magnitude, so a figure carrying one name while computing another
+/// is wrong in a way no range check catches.
+///
+/// THIS ENGINE PUBLISHES THE SECOND UNDER THE FIRST'S NAME.
+/// `ShardStats.storage.logical_write_amplification_ppm` computes `ppm(bytes_written,
+/// logical_bytes_written)` -- physical over logical -- which is `storage_write_amplification_ppm`.
+/// `the_published_amplification_ratios_are_the_ratio_they_name` asserts the implementation matches
+/// that name's own arithmetic and so passes: it pins self-consistency, not agreement with the
+/// definition the name was taken from. This arm computes all three the defined way and prints the
+/// published figure beside them, so the disagreement is a number rather than a reading of the code.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib the_amplification_set_in_the_published_format -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds a store and weighs it; run by name"]
+fn the_amplification_set_in_the_published_format() {
+    use crate::types::{Command, ExecuteRequest};
+    const KEYS: usize = 2_000;
+    const VALUE: usize = 256;
+
+    let ppm = |numerator: u64, denominator: u64| -> u64 {
+        if denominator == 0 {
+            0
+        } else {
+            numerator.saturating_mul(1_000_000) / denominator
+        }
+    };
+    let as_x = |parts: u64| parts as f64 / 1_000_000.0;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine(dir.path());
+
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("amp-{index:06}"),
+                value: vec![b'v'; VALUE],
+            },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+
+    let store = engine.block_store.stats();
+    let slabs = engine.block_store.slab_summary();
+    let log = engine.index_log_store.stats(1);
+    let published = engine
+        .shard_stats(1)
+        .expect("a loaded shard reports stats")
+        .storage;
+
+    // The logical payload the workload asked for, which is the denominator the format uses for the
+    // store's own spend. Taken from the counter rather than from KEYS * VALUE, so a change in what
+    // a write logically costs is visible here rather than hidden by arithmetic that assumes it.
+    let logical_written = store.logical_bytes_written;
+    let physical_written = store.bytes_written;
+    let physical_resident = slabs.total_known_physical_bytes;
+    let live = slabs.live_physical_bytes;
+
+    // THE INDEX'S LOGICAL SIZE is its encoded image: that is what the log exists to reproduce, so
+    // it is the denominator for both of the index's ratios.
+    let index_image = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        crate::engine::encode_index_bytes(shard).len() as u64
+    };
+    let index_resident = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        deep_heap_bytes(shard)
+    };
+
+    println!();
+    println!("  {KEYS} keys x {VALUE} B, one shard");
+    println!("    logical written   {logical_written:>12} B");
+    println!("    physical written  {physical_written:>12} B");
+    println!("    physical resident {physical_resident:>12} B");
+    println!("    live              {live:>12} B");
+    println!("    index image       {index_image:>12} B");
+    println!("    index resident    {index_resident:>12} B");
+    println!("    index log written {:>12} B", log.bytes_written);
+    println!();
+    println!("  PAYLOAD");
+    let payload_logical_write = ppm(logical_written, live);
+    let payload_storage_write = ppm(physical_written, logical_written);
+    let payload_space = ppm(physical_resident, live);
+    println!("    logical_write_amplification_ppm  {payload_logical_write:>9}  ({:.3}x)   logical written / live", as_x(payload_logical_write));
+    println!("    storage_write_amplification_ppm  {payload_storage_write:>9}  ({:.3}x)   physical written / logical written", as_x(payload_storage_write));
+    println!("    space_amplification_ppm          {payload_space:>9}  ({:.3}x)   physical resident / live", as_x(payload_space));
+    println!();
+    println!("  INDEX LOG");
+    let index_storage_write = ppm(log.bytes_written, index_image);
+    let index_space_disk = ppm(index_image, index_image);
+    let index_space_memory = ppm(index_resident, index_image);
+    println!("    storage_write_amplification_ppm  {index_storage_write:>9}  ({:.3}x)   log written / index image", as_x(index_storage_write));
+    println!("    space_amplification_ppm (disk)   {index_space_disk:>9}  ({:.3}x)   index image / index image", as_x(index_space_disk));
+    println!("    space_amplification_ppm (memory) {index_space_memory:>9}  ({:.3}x)   index resident / index image", as_x(index_space_memory));
+    println!();
+    println!("  WHAT THIS ENGINE PUBLISHES, beside the same quantity computed the defined way:");
+    println!(
+        "    published logical_write_amplification_ppm {:>9}  ({:.3}x)",
+        published.logical_write_amplification_ppm,
+        as_x(published.logical_write_amplification_ppm)
+    );
+    println!(
+        "      .. equals the DEFINED storage_write ratio: {}",
+        published.logical_write_amplification_ppm == payload_storage_write
+    );
+    println!(
+        "      .. equals the DEFINED logical_write ratio: {}",
+        published.logical_write_amplification_ppm == payload_logical_write
+    );
+    println!(
+        "    published space_amplification_ppm          {:>9}  ({:.3}x)   agrees: {}",
+        published.space_amplification_ppm,
+        as_x(published.space_amplification_ppm),
+        published.space_amplification_ppm == payload_space
+    );
+
+    // --- DENOMINATORS FIRST, so no identity below can be satisfied by 0 == 0.
+    assert!(logical_written > 0, "nothing logical was written, so every payload ratio is vacuous");
+    assert!(live > 0, "nothing is live, so the two live-denominated ratios are vacuous");
+    assert!(index_image > 0, "the index encoded to nothing, so both index ratios are vacuous");
+
+    // --- THE MISMATCH, ASSERTED SO IT CANNOT BE FIXED WITHOUT THIS ARM NOTICING. The published
+    // --- figure is the storage-write ratio wearing the logical-write ratio's name. When that is
+    // --- corrected, this arm fails and says so -- which is the point: it is a record of a known
+    // --- disagreement, not an endorsement of it.
+    assert_eq!(
+        published.space_amplification_ppm, payload_space,
+        "the published space ratio no longer matches the defined one (physical resident over \
+         live). That ratio DID agree, so this is a regression rather than the known mismatch."
+    );
+    assert_eq!(
+        published.logical_write_amplification_ppm, payload_storage_write,
+        "the published `logical_write_amplification_ppm` no longer equals the DEFINED \
+         storage-write ratio. If it now equals the defined logical-write ratio instead \
+         ({payload_logical_write} ppm), the mismatch this arm records has been FIXED -- update \
+         this assertion to require agreement with the ratio it names, and say so in the module \
+         note above."
+    );
+}
+
 /// WHAT PERSISTING THE EVENT AND INDEX SERIES COSTS THE STORED INDEX.
 ///
 /// `context_events` and `context_indexes` were `#[serde(skip)]` -- no stored image at all -- until
