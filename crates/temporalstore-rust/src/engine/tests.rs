@@ -447,5 +447,6 @@ mod the_record_machinery_is_not_wired;
 mod every_published_ratio_is_rederivable;
 mod what_the_collector_sees_after_a_rewrite;
 mod the_amplification_set_under_rewrite;
+mod whether_a_dead_slab_can_be_reclaimed;
 mod the_cached_payload_is_a_byte_string;
 mod the_payload_cache_per_user_byte;
