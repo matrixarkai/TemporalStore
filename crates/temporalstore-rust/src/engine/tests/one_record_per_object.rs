@@ -560,6 +560,124 @@ fn what_the_record_costs_inside_the_map_that_holds_it() {
     );
 }
 
+/// WHAT MOVING `strings` ONTO THE RECORD WOULD COST, at several deadline fractions.
+///
+/// The move is de-risked everywhere except its price. The inline arm takes 400 of 400 real string
+/// addresses, the key-ordered expiry walk has no production caller, the compaction write-back is
+/// guarded, and `control_state_blocks` has already made the same move. What is open is whether it
+/// pays: the record is measured at +16.4 B/object over a bare address and that is charged on EVERY
+/// string key, while the savings -- deleting the per-key expiry table and the by-key half of the
+/// dirty index -- land only on the keys that actually carry a deadline or are dirty.
+///
+/// That asymmetry is exactly the shape that made a union merge cost 144 B/key elsewhere in this
+/// campaign, so it is priced rather than assumed.
+///
+/// WHAT IS HELD CONSTANT: the keys. Every arm shares one set of `Arc<str>` allocations, so the
+/// figures are the ROWS and not the characters -- the same discipline the consolidation probes use.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_moving_the_string_map_onto_the_record_would_cost -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds several map shapes at 20,000 keys; run by name"]
+fn what_moving_the_string_map_onto_the_record_would_cost() {
+    use crate::engine::object_record::ObjectRecord;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+    const KEYS: usize = 20_000;
+
+    let shared: Vec<Arc<str>> = (0..KEYS)
+        .map(|i| Arc::from(format!("s{i:08}").as_str()))
+        .collect();
+    let address =
+        |i: usize| ElementEntry::from_parts(1, i as u64 * 64, 64, Some(0), Some(i as u64));
+
+    // One arm pair per deadline fraction. `dirty` tracks the deadline here deliberately: a key
+    // written with a TTL is the key that was just written, so it is the dirty one too. Separating
+    // them would price a population this store does not produce.
+    println!();
+    println!("  {KEYS} keys, key allocations SHARED in every arm, so the figures are the ROWS");
+    println!(
+        "    ElementEntry {} B, ObjectRecord {} B (inline arm, no owned array)",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<ObjectRecord>()
+    );
+    println!();
+    println!("  fraction    TODAY (addresses + expiry)        PROPOSED (records)        delta");
+
+    let mut crossover: Option<f64> = None;
+    let mut previous: Option<(f64, f64)> = None;
+    for percent in [0usize, 10, 25, 50, 75, 100] {
+        let with_deadline = KEYS * percent / 100;
+
+        // ---- TODAY: a bare-address map, plus a per-key expiry table for the TTL'd subset.
+        let mut addresses: HashMap<Arc<str>, ElementEntry> = HashMap::new();
+        let mut expiry: BTreeMap<Arc<str>, u64> = BTreeMap::new();
+        for (i, key) in shared.iter().enumerate() {
+            addresses.insert(Arc::clone(key), address(i));
+            if i < with_deadline {
+                expiry.insert(Arc::clone(key), 1_700_000_000_000 + i as u64);
+            }
+        }
+        let today = deep_heap_bytes(&addresses) + deep_heap_bytes(&expiry);
+
+        // ---- PROPOSED: one slot map, the deadline and the dirty bit inside the record, and NO
+        // separate expiry table. The deadline-ordered mirror is not modelled on either side: it
+        // survives the move unchanged, so it cancels.
+        // THE INLINE ARM, NOT THE SERIES PATH. A string holds ONE address, not a series, and
+        // `every_way_of_building_a_single_address_record_lands_in_the_inline_arm` is the arm that
+        // says so. Building these through `ObjectSlot::from(BTreeMap)` allocates a one-element
+        // owned array per key -- which is what a SERIES needs and a single address does not -- and
+        // priced the proposal at a flat 128.3 B/key, 2.4x the bare map, independent of the
+        // deadline fraction. That flatness was the tell: a cost that does not move with the thing
+        // being varied is not measuring it.
+        let mut records: HashMap<Arc<str>, ObjectRecord> = HashMap::new();
+        for (i, key) in shared.iter().enumerate() {
+            let deadline = (i < with_deadline).then_some(1_700_000_000_000 + i as u64);
+            let record = ObjectRecord::from_object_rows(&address(i), 1, deadline, i < with_deadline)
+                .expect("a single string address lands in the inline arm");
+            records.insert(Arc::clone(key), record);
+        }
+        let proposed = deep_heap_bytes(&records);
+
+        let today_per = today as f64 / KEYS as f64;
+        let proposed_per = proposed as f64 / KEYS as f64;
+        let delta = today_per - proposed_per;
+        println!(
+            "  {percent:>4}%      {today:>10} B  {today_per:>7.1} B/key     {proposed:>10} B  {proposed_per:>7.1} B/key   {delta:>+7.1}"
+        );
+
+        if let Some((previous_percent, previous_delta)) = previous {
+            if previous_delta < 0.0 && delta >= 0.0 {
+                crossover = Some(
+                    previous_percent
+                        + (percent as f64 - previous_percent) * (-previous_delta)
+                            / (delta - previous_delta),
+                );
+            }
+        }
+        previous = Some((percent as f64, delta));
+    }
+
+    println!();
+    match crossover {
+        Some(at) => {
+            println!("  CROSSOVER: the move starts paying at about {at:.0}% of string keys");
+            println!("  carrying a deadline, bracketed by the two measured points around it.");
+        }
+        None => println!("  NO CROSSOVER in the measured range: the sign does not change."),
+    }
+    println!();
+    println!("  It also deletes a TABLE -- the per-key expiry map -- taking the places a key can");
+    println!("  live from 13 to 12, which no per-key figure here captures.");
+
+    // THE CLAIM: the trade is asymmetric and the sign depends on the deadline fraction, which is
+    // what makes this a decision rather than a free move. If the sign stops changing, one side
+    // dominates and the move can be taken or refused without knowing the workload.
+    let _ = crossover;
+}
+
 /// WHICH HALF OF THE DIRTY INDEX A FLAG BIT ON THE RECORD WOULD ACTUALLY REMOVE.
 ///
 /// The dirty index is two trees -- one keyed by object key answering "is this object dirty", one
