@@ -1011,6 +1011,13 @@ struct CachedKind {
 
 #[derive(serde::Deserialize)]
 struct CachedBytes {
+    /// PAIRED WITH `CommandResponse::Bytes::value` AND NOT INDEPENDENT OF IT.
+    ///
+    /// The decoder reads the tag alone and then re-reads the payload through this narrow mirror, so
+    /// this field and the one on the enum are two declarations of a single wire field. If only one
+    /// carries the byte-string annotation, this path decodes a shape the encoder never wrote. The
+    /// pairing is derived from the codec, not from the field happening to share a name.
+    #[serde(with = "crate::types::cached_payload_bytes")]
     value: Option<Vec<u8>>,
 }
 

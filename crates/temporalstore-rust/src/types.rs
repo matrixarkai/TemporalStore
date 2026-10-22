@@ -2404,11 +2404,113 @@ fn skip_proto_field(bytes: &[u8], cursor: &mut usize, wire_type: u64) -> Option<
     (*cursor <= bytes.len()).then_some(())
 }
 
+/// Serialize an optional payload as a msgpack byte string, and read back either spelling.
+///
+/// WHY NOT `serde_bytes`: it is not in the lock, and this is a dozen lines that keeps both halves
+/// of the encode/decode pairing inside this repo -- `CachedBytes` in `command_validation` mirrors
+/// the same field and has to carry the same annotation, which is easier to keep true when the
+/// codec is visible here.
+///
+/// THE DESERIALIZER ACCEPTS THE OLD INTEGER ARRAY as well as a byte string. The entries this
+/// encodes live only in the cache's memory tier and do not survive a restart, so a mixed-encoding
+/// cache cannot actually arise -- but accepting both costs one visitor method and turns the
+/// compatibility direction into something a test can assert rather than something to reason about.
+pub(crate) mod cached_payload_bytes {
+    pub fn serialize<S>(value: &Option<Vec<u8>>, serializer: S) -> Result<S::Ok, S::Error>
+    where
+        S: serde::Serializer,
+    {
+        struct AsBytes<'a>(&'a [u8]);
+        impl serde::Serialize for AsBytes<'_> {
+            fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+                serializer.serialize_bytes(self.0)
+            }
+        }
+        match value {
+            Some(bytes) => serializer.serialize_some(&AsBytes(bytes)),
+            None => serializer.serialize_none(),
+        }
+    }
+
+    pub fn deserialize<'de, D>(deserializer: D) -> Result<Option<Vec<u8>>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        struct Payload;
+        impl<'de> serde::de::Visitor<'de> for Payload {
+            type Value = Vec<u8>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("a byte string, or a sequence of byte-valued integers")
+            }
+            fn visit_bytes<E: serde::de::Error>(self, value: &[u8]) -> Result<Vec<u8>, E> {
+                Ok(value.to_vec())
+            }
+            fn visit_byte_buf<E: serde::de::Error>(self, value: Vec<u8>) -> Result<Vec<u8>, E> {
+                Ok(value)
+            }
+            fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<Vec<u8>, E> {
+                Ok(value.as_bytes().to_vec())
+            }
+            // THE OLD SPELLING. An array of integers is what the derive wrote before this module,
+            // and what any other msgpack producer of this shape would write.
+            fn visit_seq<A>(self, mut seq: A) -> Result<Vec<u8>, A::Error>
+            where
+                A: serde::de::SeqAccess<'de>,
+            {
+                let mut out = Vec::with_capacity(seq.size_hint().unwrap_or_default());
+                while let Some(byte) = seq.next_element::<u8>()? {
+                    out.push(byte);
+                }
+                Ok(out)
+            }
+        }
+
+        struct MaybePayload;
+        impl<'de> serde::de::Visitor<'de> for MaybePayload {
+            type Value = Option<Vec<u8>>;
+            fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                f.write_str("an optional payload")
+            }
+            fn visit_none<E: serde::de::Error>(self) -> Result<Option<Vec<u8>>, E> {
+                Ok(None)
+            }
+            fn visit_unit<E: serde::de::Error>(self) -> Result<Option<Vec<u8>>, E> {
+                Ok(None)
+            }
+            fn visit_some<D: serde::Deserializer<'de>>(
+                self,
+                deserializer: D,
+            ) -> Result<Option<Vec<u8>>, D::Error> {
+                // `deserialize_any`, because msgpack is self-describing and the point is to accept
+                // whichever of the two spellings is present.
+                deserializer.deserialize_any(Payload).map(Some)
+            }
+        }
+        deserializer.deserialize_option(MaybePayload)
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum CommandResponse {
     Empty,
     Bytes {
+        /// Encoded as a msgpack BYTE STRING, not an array of integers.
+        ///
+        /// Left to the derive, `rmp_serde` writes a `Vec<u8>` element by element: a byte below
+        /// 0x80 is a positive fixint and costs one byte, a byte at or above it takes a uint8
+        /// marker and costs TWO. The inflation therefore depends on the payload's byte
+        /// distribution -- 1.0x for ASCII, ~1.5x for uniform random bytes, 2.0x worst case -- and
+        /// the cached response is what pays it. Measured at 2,000 keys x 1 KiB: 4,138,000 B for a
+        /// run of `b'v'` (0x76) against 5,161,820 B for incompressible noise.
+        ///
+        /// `b'v'` is below the line, where the toll is exactly zero, which is why every fixture in
+        /// this area had seen 1.0x and the toll went unpriced.
+        ///
+        /// SISTER VARIANTS STILL PAY IT. `Members` and `Values` carry bulk payloads through
+        /// `Vec<Vec<u8>>` and `Vec<Option<Vec<u8>>>`; a field-level annotation does not reach
+        /// inside a container, so they need their own wrapper and are deliberately unchanged.
+        #[serde(with = "cached_payload_bytes")]
         value: Option<Vec<u8>>,
     },
     Integer {
