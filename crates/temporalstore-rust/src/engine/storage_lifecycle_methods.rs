@@ -3220,16 +3220,51 @@ mod eviction_round_scale {
     /// populates the record caches, so writing alone would leave every namespace empty". So
     /// `engine_with` on its own is a COLD-cache fixture, and the one knob between the two arms
     /// below is this loop.
+    /// The corpus, with a cache warmed by entries the round's cache pass can actually step over.
+    ///
+    /// # WHY A STRING READ IS NOT ENOUGH ANY MORE
+    ///
+    /// This warmed with `StringGet` alone, and that stopped warming anything the pass can see. A
+    /// string read leaves exactly one entry now — the block frame — and `delete_record` removes
+    /// that itself, inside the round and *before* the batched pass lists the cache. So the pass
+    /// listed an empty cache and every `entries_listed` figure read 0.
+    ///
+    /// Before the payload cache was reduced to one copy, the string-namespace entry survived the
+    /// delete loop, because nothing but the pass knows that key — and those entries are what the
+    /// pass was measured stepping over.
+    ///
+    /// # SO IT WARMS A HASH ENTRY PER OBJECT
+    ///
+    /// A hash entry is reached only through `SWEPT_RECORD_NAMESPACES`, which is what the sweep
+    /// exists for, so it survives the delete loop and reaches the listing. One per object keeps the
+    /// warm cache proportional to the corpus, which is what the per-key claims below need: a fixed
+    /// number of entries would make "listed per dropped key" fall with the corpus and satisfy a
+    /// no-growth assertion without testing it.
+    ///
+    /// The string read is kept. It is still what makes the corpus warm in the sense the round's
+    /// other figures are about, and dropping it would change more than this fixture's one problem.
     fn engine_with_warm_cache(objects: usize) -> (tempfile::TempDir, TemporalEngine) {
         let (dir, engine) = engine_with(objects);
         for index in 0..objects {
-            let out = engine.execute(ExecuteRequest {
-                shard_id: 1,
-                command: Command::StringGet {
-                    key: format!("evict-scale-key-{index}"),
+            let key = format!("evict-scale-key-{index}");
+            for command in [
+                Command::HashSet {
+                    key: key.clone(),
+                    field: "warm-field".to_string(),
+                    value: b"warm-value".to_vec(),
                 },
-            });
-            assert!(out.status.ok, "a warming read failed: {:?}", out.status);
+                Command::HashGet {
+                    key: key.clone(),
+                    field: "warm-field".to_string(),
+                },
+                Command::StringGet { key: key.clone() },
+            ] {
+                let out = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command,
+                });
+                assert!(out.status.ok, "a warming command failed: {:?}", out.status);
+            }
         }
         (dir, engine)
     }
@@ -3978,8 +4013,30 @@ mod eviction_round_scale {
             occupied(&before, "set").len(),
         );
 
-        // THE POSITIVE CONTROL, per namespace.
+        // THE POSITIVE CONTROL, per namespace -- EXCEPT the one namespace that can no longer
+        // hold anything, which gets the opposite control instead.
+        //
+        // `named_record_keys` is `[CacheKey::string, CacheKey::set_members]`, and the payload cache
+        // was reduced to a single physically-keyed copy: a string read leaves the block frame and
+        // nothing under `CacheKey::string`. Requiring an entry there would be requiring a copy the
+        // store deliberately stopped making.
+        //
+        // It is not dropped from the list. Asserting it is EMPTY keeps a check on that namespace,
+        // so a logical copy coming back fails here instead of passing quietly -- which is the same
+        // reason the floor above refuses to let a namespace leave the derived list unnoticed.
         for namespace in swept.iter().chain(named.iter()) {
+            if namespace == "string" {
+                assert!(
+                    occupied(&before, namespace).is_empty(),
+                    "a `string` entry was cached for the marked keys. The payload cache holds one \
+                     physically-keyed copy and nothing under `CacheKey::string`, so this means a \
+                     logical response copy is being written again -- which doubles what a point \
+                     read costs the cache. The invalidation of that key in `named_record_keys` is \
+                     a guaranteed miss while this holds: {:?}",
+                    occupied(&before, namespace),
+                );
+                continue;
+            }
             assert!(
                 !occupied(&before, namespace).is_empty(),
                 "no `{namespace}` entry was cached for the marked keys, so the emptiness claim \
@@ -4422,10 +4479,31 @@ mod eviction_round_scale {
         // THE POSITIVE CONTROL, per namespace, per arm, BEFORE anything is claimed about
         // emptiness. Two empty listings are equal, and a fixture that cached nothing would make
         // every claim below hold whatever either arm did.
+        //
+        // `string` IS THE ONE NAMESPACE THAT TAKES THE OPPOSITE CONTROL. `named_record_keys` is
+        // `[CacheKey::string, CacheKey::set_members]`, and the payload cache was reduced to a
+        // single physically-keyed copy: a string read leaves the block frame and nothing under
+        // `CacheKey::string`. Requiring an entry there would be requiring a copy the store
+        // deliberately stopped making.
+        //
+        // Asserting it is EMPTY keeps a check on that namespace rather than dropping one, so a
+        // logical response copy coming back fails here instead of passing quietly.
         for (per_key, batched, marked, dropped, objects) in arms {
             for arm in [per_key, batched] {
                 for namespace in &namespaces {
                     let held = arm.occupied(&arm.before, namespace, &marked[0]);
+                    if namespace == "string" {
+                        assert_eq!(
+                            held, 0,
+                            "{objects} objects, {}: a `string` entry WAS cached for {}. The \
+                             payload cache holds one physically-keyed copy and nothing under \
+                             `CacheKey::string`, so this means a logical response copy is being \
+                             written again -- which doubles what a point read costs the cache",
+                            arm.arm,
+                            marked[0],
+                        );
+                        continue;
+                    }
                     assert!(
                         held > 0,
                         "{objects} objects, {}: no `{namespace}` entry was cached for {}, so the \
