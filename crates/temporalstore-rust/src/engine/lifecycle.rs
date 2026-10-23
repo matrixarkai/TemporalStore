@@ -695,6 +695,8 @@ impl TemporalEngine {
             // The same three terms `bucket_index_block_address` was just asked, above.
             PageIdentity::of(shard_id, model_id, object_key, component),
             Some(routing_bucket),
+            // THIS READER HAS NO SECOND LAYER, so the frame cache is the only one the block gets.
+            super::CacheFrame::Yes,
         )
     }
 
