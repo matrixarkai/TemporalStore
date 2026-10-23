@@ -7099,11 +7099,16 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
         if SWEPT_RECORD_NAMESPACES.contains(&entry.namespace.as_str())
             && dropped.contains(entry.record_key.as_str())
         {
+            // THE LISTING AND THE KEY NO LONGER HOLD THE SAME TYPES, and that is deliberate
+            // on the cache side: `CacheEntryInfo` is a snapshot handed out by value, where an
+            // owned `String` is the honest type, while a `CacheKey` is built on every get and
+            // put and so holds a shared `Arc<str>` and a `Cow` that borrows for the literal
+            // selectors. Converting here pays once per swept entry, not per read.
             batch.push(CacheKey {
                 shard_id,
-                record_key: entry.record_key,
+                record_key: std::sync::Arc::from(entry.record_key.as_str()),
                 namespace: std::borrow::Cow::Owned(entry.namespace),
-                selector: entry.selector,
+                selector: std::borrow::Cow::Owned(entry.selector),
             });
         }
     }

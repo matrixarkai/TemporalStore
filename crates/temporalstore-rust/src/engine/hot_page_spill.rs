@@ -89,7 +89,9 @@ fn spill_evicted_hot_block(
     hot_record_key: &str,
     record: CacheEvictionRecord,
 ) {
-    if record.key.namespace != "page" || record.key.record_key != hot_record_key {
+    // `record_key` is an `Arc<str>` on the cache side now, so this compares the str behind
+    // the pointer rather than the pointer itself.
+    if record.key.namespace != "page" || &*record.key.record_key != hot_record_key {
         return;
     }
     let Some((offset, routing_bucket)) = parse_hot_selector(&record.key.selector) else {

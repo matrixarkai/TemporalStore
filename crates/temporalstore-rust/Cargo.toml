@@ -20,8 +20,9 @@ serde = { version = "1", features = ["derive", "rc"] }
 serde_json = { version = "1", features = ["raw_value"] }
 base64 = "0.22"
 sha2 = "0.10"
-matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "bb3c9f1c514e0faa5bfa7a29a3cfd485df879fc7" }
-matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "81ba390dadf33d977fde6fc7be717bdc6fbcad63", features = ["rocksdb-ssd"] }
+matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "8fa64923fd819c4ed23635a75749c53d31702c03" }
+matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "5434cd2000251c5813209cd76171770aba1c1afd", features = ["rocksdb-ssd"] }
+matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "b89cb457ebdfa4f52da43163f493f504175a3d47", optional = true }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
@@ -47,12 +48,20 @@ open-source-surface = []
 # tool has no business perturbing the suite that is meant to be checking the change.
 #   cargo test --features alloc-probe --lib what_a_retrieve_allocates -- --ignored --nocapture
 alloc-probe = []
-# The matrixobject backend links the enterprise-only MatrixObjectStore crate,
-# which has no public source. It is intentionally left as an inert feature
-# stub in the open-source tree (off by default; the code is fully gated by
-# `#[cfg(feature = "matrixobject")]`). Enterprise builds re-add the private
-# `matrixobjectstore-rs` dependency and this feature's `dep:` entry.
-matrixobject = []
+# The object-store backend, used to put a shared store behind a set of
+# otherwise stateless nodes. The store crate is Apache-2.0 open source and is
+# pinned by revision above, exactly as the cache and consensus dependencies
+# are, so this feature builds from a clean checkout with nothing to re-add.
+#
+# It is OFF BY DEFAULT and the code is fully gated by
+# `#[cfg(feature = "matrixobject")]`, because the backend is a deployment
+# choice rather than a default: a single-node store needs nothing of it.
+#
+# It was an inert stub for as long as the crate had no public source, and
+# "inert" meant nobody compiled it -- the examples drifted out of step with
+# the store's API while the stub hid it. Enabling it in CI is what keeps that
+# from happening again.
+matrixobject = ["dep:matrixobjectstore-rs"]
 
 # This example links the optional MatrixObjectStore crate; gate it behind the
 # `matrixobject` feature so the default `cargo build --all-targets` does not try
@@ -63,6 +72,10 @@ required-features = ["matrixobject"]
 
 [[example]]
 name = "shared_store_append_blob_smoke"
+required-features = ["matrixobject"]
+
+[[example]]
+name = "three_node_shared_store_report"
 required-features = ["matrixobject"]
 
 [[bin]]

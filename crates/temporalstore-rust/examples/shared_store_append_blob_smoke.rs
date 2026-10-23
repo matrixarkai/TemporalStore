@@ -28,9 +28,12 @@ async fn main() {
         MatrixObjectObjectStore::new(
             "temporalstore-shared",
             StoreOptions {
-                slab_size: 16,
+                // A PAGE SITS BELOW A CHUNK, so `page_size` must be < `chunk_size`; the old
+                // `slab_size` was its own tier and carried no such relation. Kept tiny so the
+                // blob still spans several extents, which is what this example asserts.
+                page_size: 4,
                 max_extent_bytes: 4,
-                chunk_size: 4,
+                chunk_size: 16,
                 ..StoreOptions::default()
             },
         )
@@ -66,12 +69,16 @@ async fn main() {
     }
 
     let blob_key = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
+    let offset_index_key = "cluster-a/shards/1/shared/wal/wal.offset_index.protobuf.blob";
+    // THE APPEND PATH WRITES AN OFFSET INDEX BESIDE THE BLOB. This asserted the blob ALONE, which
+    // was true when it was written and has not been since -- another thing an uncompiled feature
+    // hid. Both are named rather than the assertion loosened, so a layer going missing still fails.
     assert_eq!(
         store
             .list("cluster-a/shards/1/shared/wal/")
             .await
             .unwrap(),
-        vec![blob_key.to_string()]
+        vec![offset_index_key.to_string(), blob_key.to_string()]
     );
     let matrixobject_blob = store
         .inner()
@@ -87,11 +94,18 @@ async fn main() {
     follower.load_shard(1);
     assert_eq!(
         restarted.replay_wal_strict(1, 0, &follower).await.unwrap(),
+        // THE REPLAY READS THE OFFSET INDEX NOW, where this expected it to read nothing. The
+        // third stale expectation in this one example, and all three have the same cause: the
+        // `matrixobject` feature was an inert stub, so nothing compiled or ran this, and each
+        // layer added since drifted past it unnoticed.
+        //
+        // Pinned exactly rather than loosened to `>= 0`: these two figures are what the indexed
+        // read path is FOR, and a range read that stopped happening should fail here.
         ReplayReport {
             applied: 2,
             last_wal_index: 2,
-            offset_index_reads: 0,
-            range_bytes_read: 0,
+            offset_index_reads: 2,
+            range_bytes_read: 192,
         }
     );
     for (key, value) in [("proto-a", b"one".to_vec()), ("proto-b", b"two".to_vec())] {

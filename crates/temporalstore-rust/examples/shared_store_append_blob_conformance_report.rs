@@ -471,11 +471,14 @@ fn replay_report_uses_offset_index(report: &ReplayReport, entry_count: u64) -> b
 
 fn matrixobject_options(persistent_journal_path: Option<&std::path::Path>) -> StoreOptions {
     StoreOptions {
-        // `segment_size` became `slab_size` -- see the note at the matching site in
+        // `segment_size` became `slab_size` and is now `page_size`, following the store
+        // dropping its slab tier -- see the note at the matching site in
         // `shared_store.rs`; the external name survives in the object-store crate's own bench.
-        slab_size: 4096,
+        // page_size must be < chunk_size -- see the note in the smoke example; the figures
+        // were a slab/chunk pair and had to be re-ordered rather than renamed.
+        page_size: 1024,
         max_extent_bytes: 1024,
-        chunk_size: 1024,
+        chunk_size: 4096,
         persistent_journal_path: persistent_journal_path
             .map(|path| path.to_string_lossy().to_string())
             .unwrap_or_default(),

@@ -5479,14 +5479,17 @@ mod tests {
             MatrixObjectObjectStore::new(
                 "temporalstore-shared",
                 StoreOptions {
-                    // `segment_size` BECAME `slab_size`. Not inferred from the field list:
-                    // the object-store crate's own bench prints `"segment_size={}", cfg.slab_size`,
-                    // so the external name was kept over the renamed field, and its validation
-                    // messages still read "segment_size must be positive" while checking
-                    // `slab_size`. Same unit, same meaning, new spelling.
-                    slab_size: 16,
+                    // `segment_size` BECAME `slab_size` AND IS NOW `page_size`, following the
+                    // store dropping its slab tier -- the tiers are chunk > page > fragment.
+                    //
+                    // AND THAT LAST STEP IS NOT A RENAME. A slab was its own tier and bore no
+                    // relation to the chunk size; a page sits BELOW a chunk, so the store enforces
+                    // `1 <= page_size < chunk_size`. Carrying `16` and `4` across the rename
+                    // inverted that and the constructor refused with "page_size must be
+                    // 1..chunk_size", which only running it revealed.
+                    page_size: 4,
                     max_extent_bytes: 4,
-                    chunk_size: 4,
+                    chunk_size: 16,
                     ..StoreOptions::default()
                 },
             )

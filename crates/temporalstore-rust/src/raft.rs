@@ -696,6 +696,15 @@ pub struct MatrixRaftPeerPipelineState {
     pub reorder_entries_accepted: u64,
     pub reorder_entries_released: u64,
     pub reorder_entries_rejected: u64,
+    /// Entries that left the reorder queue because the index they were waiting for arrived.
+    ///
+    /// Fed from `reorder_entries_released`, which is the same quantity derived differently: ours is
+    /// a depth delta (`depth_before + received - depth_after`), theirs is counted once per entry as
+    /// the drain removes it. A depth delta attributes EVERY departure to convergence, including a
+    /// timeout or a dropped package, so this is an upper bound rather than a measurement. Counting
+    /// it at the drain site is what would make the two agree.
+    #[serde(default)]
+    pub reorder_entries_converged: u64,
     #[serde(default)]
     pub reorder_entry_timeouts: u64,
     #[serde(default)]
@@ -774,6 +783,7 @@ impl MatrixRaftPeerPipelineState {
             reorder_queue_depth: self.reorder_queue_depth,
             out_of_order_append_rejections: self.out_of_order_append_rejections,
             reorder_entries_rejected: self.reorder_entries_rejected,
+            reorder_entries_converged: self.reorder_entries_converged,
             reorder_entry_timeouts: self.reorder_entry_timeouts,
             reorder_dropped_packages: self.reorder_dropped_packages,
             stale_term_rejections: self.stale_term_rejections,

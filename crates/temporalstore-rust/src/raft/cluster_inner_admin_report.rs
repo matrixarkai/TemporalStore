@@ -82,6 +82,9 @@ impl RaftClusterInner {
                     out_of_order_append_rejections: pipeline.out_of_order_append_rejections,
                     reorder_entries_accepted: pipeline.reorder_entries_accepted,
                     reorder_entries_released: pipeline.reorder_entries_released,
+                    // The same quantity under their name; see the field's doc for where the two
+                    // can disagree.
+                    reorder_entries_converged: pipeline.reorder_entries_released,
                     reorder_entries_rejected: pipeline.reorder_entries_rejected,
                     reorder_entry_timeouts: pipeline.reorder_entry_timeouts,
                     reorder_dropped_packages: pipeline.reorder_dropped_packages,
