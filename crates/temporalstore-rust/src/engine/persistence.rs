@@ -1227,6 +1227,16 @@ impl TemporalEngine {
                 // one tally that could drift apart silently, since nothing compares them.
                 live_block_bytes: index_live_bytes,
                 non_purged_physical_bytes,
+                // A PARTITION OF THE BYTES ON DISK, not two more ratios: both are over
+                // `non_purged_physical_bytes`, so they sum to 1_000_000 within floor rounding and a
+                // term computed over the wrong whole shows up in the published numbers alone. The
+                // stale side is DERIVED from the same two terms rather than counted, so it cannot
+                // disagree with them.
+                live_bytes_ppm: Self::ppm_ratio(index_live_bytes, non_purged_physical_bytes),
+                stale_bytes_ppm: Self::ppm_ratio(
+                    non_purged_physical_bytes.saturating_sub(index_live_bytes),
+                    non_purged_physical_bytes,
+                ),
                 append_watermark: block_store.writes,
                 compaction_watermark: block_store_slabs.reclaimable_physical_bytes,
             };

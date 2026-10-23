@@ -439,13 +439,25 @@ pub struct ShardCanonicalStorageStats {
     /// four rewrites of every key: **1.000x -> 5.000x**, where the pinned field held 1.000x at
     /// every round. See `a_space_ratio_whose_numerator_falls`.
     ///
-    /// # ITS FLOOR IS ABOVE 1.0x, AND THAT IS A PROPERTY RATHER THAN A DEFECT
+    /// # ITS FLOOR IS EXACTLY 1.0x, AND BOTH TERMS ARE STORED BYTES
     ///
-    /// The numerator is FILE bytes and the denominator is BLOCK PAYLOAD bytes, so slab headers,
-    /// block envelopes and record framing sit in one half only. A reader expecting exactly 1.0x at
-    /// zero garbage will misread it. This is the same structure the ratio is modelled on -- bytes
-    /// on disk per byte of live data -- so the caveat is stated rather than corrected by moving the
-    /// numerator onto a quantity that is not what the disk holds.
+    /// AN EARLIER VERSION OF THIS NOTE SAID THE FLOOR WAS ABOVE 1.0x, on the reasoning that the
+    /// numerator is file bytes and the denominator block payload bytes, so framing would sit in one
+    /// half only. **The arms that measure it say otherwise**, and they said so in output that was
+    /// already in front of the claim: `a_space_ratio_whose_numerator_falls` reports `after 1
+    /// write(s) 268000 268000 1.000x`, and `the_live_and_stale_shares_are_a_partition` reports a
+    /// stale share of exactly 0.00% on the same store.
+    ///
+    /// The terms agree because [`Self::live_block_bytes`] sums `BlockAddress::length` -- what was
+    /// STORED, after compression and including the block envelope -- and
+    /// `total_known_physical_bytes` is the file size of those same bytes. Both sides are stored
+    /// bytes, so this ratio is unit-matched and reads exactly 1.000x on a store with nothing dead
+    /// in it.
+    ///
+    /// FRAMING IS REAL BUT BELONGS TO A DIFFERENT DENOMINATOR: 536,000 B on disk for 512,000 B of
+    /// USER bytes, 1.047x, which appears when stored bytes are divided by PRE-COMPRESSION bytes.
+    /// That is the mixed-unit division these fields exist to avoid, and it does not arise between
+    /// two stored-byte terms.
     ///
     /// Zero when the live tally has not been derived yet, which is the same condition under which
     /// [`Self::lifetime_write_amplification_ppm`] reports 0 ppm, so the two agree about when they
@@ -520,6 +532,48 @@ pub struct ShardCanonicalStorageStats {
     /// exactly the space a purge has already returned.
     #[serde(default)]
     pub non_purged_physical_bytes: u64,
+    /// The LIVE share of the stored image, in PARTS PER MILLION.
+    ///
+    /// `live_block_bytes / non_purged_physical_bytes`. This and
+    /// [`Self::stale_bytes_ppm`] are a PARTITION of the bytes on disk, not two independent ratios:
+    /// they are computed over the same whole and **sum to 1,000,000** within integer floor
+    /// rounding.
+    ///
+    /// # WHY A PARTITION AND NOT A FIFTH AMPLIFICATION RATIO
+    ///
+    /// An amplification ratio divides one quantity by another and nothing constrains the answer, so
+    /// a term that measures the wrong thing is invisible in the published figure. A partition
+    /// constrains itself. Every one of this struct's four amplification ratios could carry a wrong
+    /// numerator without any identity over the set failing -- one of them did, for as long as it
+    /// did -- and these two cannot.
+    ///
+    /// Zero when the live tally has not been derived yet, on the same terms as
+    /// [`Self::live_block_bytes`].
+    #[serde(default)]
+    pub live_bytes_ppm: u64,
+    /// The STALE share of the stored image, in PARTS PER MILLION.
+    ///
+    /// `(non_purged_physical_bytes - live_block_bytes) / non_purged_physical_bytes`. Bytes still on
+    /// disk that the index no longer points at: the space a compaction could return.
+    ///
+    /// DERIVED FROM THE TWO PUBLISHED TERMS RATHER THAN COUNTED SEPARATELY, deliberately. A byte on
+    /// disk the index does not point at is dead, and deriving it this way means the partition cannot
+    /// disagree with the terms it is built from. The separately counted figure already exists as
+    /// [`Self::storage_slab_stale_bytes`] and reads zero for the ordinary shape of waste, because it
+    /// only moves once an ENTIRE slab is quarantined -- so the two answer different questions and
+    /// neither derives the other.
+    ///
+    /// # THE FLOOR IS EXACTLY ZERO, BECAUSE BOTH TERMS ARE STORED BYTES
+    ///
+    /// On a store with nothing dead in it this reads **0 ppm** and the live share reads 1,000,000:
+    /// [`Self::live_block_bytes`] sums `BlockAddress::length`, which is what was stored, and the
+    /// whole is the file size of those same bytes. Measured at exactly 0.00% stale on a freshly
+    /// written corpus by `the_live_and_stale_shares_are_a_partition`, which pins the equality.
+    ///
+    /// So a non-zero reading here is dead data and nothing else -- no framing term to subtract
+    /// first, which is what makes this the best-conditioned figure in the set.
+    #[serde(default)]
+    pub stale_bytes_ppm: u64,
     pub append_watermark: u64,
     pub compaction_watermark: u64,
 }
