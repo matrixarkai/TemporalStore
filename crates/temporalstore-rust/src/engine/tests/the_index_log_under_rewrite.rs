@@ -190,7 +190,7 @@ fn the_index_log_under_rewrite() {
         .stages
         .iter()
         .filter(|stage| stage.index_log_records_removed > 0)
-        .map(|stage| format!("{}={}", stage.name, stage.index_log_records_removed))
+        .map(|stage| format!("{}={}", stage.stage, stage.index_log_records_removed))
         .collect();
     let (_, log_after, image_after, disk_after, wal_after) = snapshot("after the cycle".into());
 
