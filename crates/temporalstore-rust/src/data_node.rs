@@ -499,6 +499,90 @@ fn apply_shard_storage_metrics(
             "stream_segment_count",
             storage.stream_slab_count,
         );
+        // THE SPACE AND STALENESS TERMS, which were on the RPC status and reachable by nothing
+        // that scrapes. Every one is a byte or a count, so `add`'s cross-shard sum is the right
+        // aggregation for it.
+        //
+        // AND DELIBERATELY NO RATIOS. `add` sums across shards, and a parts-per-million figure does
+        // not sum -- ten shards at 1.000x would export 10,000,000 ppm. The scar three lines above
+        // is the same shape: a per-shard constant summed into nonsense, and its note says "Nothing
+        // asserted it, which is why it stayed that way". So the terms go out and the consumer
+        // divides, which is also why the status publishes them:
+        //
+        //     block_space_amplification = non_purged_physical_bytes / live_block_bytes
+        //     live / stale shares       = live_block_bytes / non_purged_physical_bytes
+        //     discard backlog           = pending_discard_bytes / stale_bytes_recorded
+        //     recorded space            = (live + pending_discard) / live
+        //
+        // `a_ratio_is_never_exported_as_a_summed_metric` asserts the absence, because an absence is
+        // the one thing a reader of this list cannot check by looking.
+        add(metrics, "storage_live_block_bytes", storage.live_block_bytes);
+        add(
+            metrics,
+            "storage_non_purged_physical_bytes",
+            storage.non_purged_physical_bytes,
+        );
+        add(metrics, "storage_logical_bytes_written", storage.logical_bytes_written);
+        add(metrics, "storage_stale_bytes_recorded", storage.stale_bytes_recorded);
+        add(metrics, "storage_stale_bytes_discarded", storage.stale_bytes_discarded);
+        add(metrics, "storage_pending_discard_bytes", storage.pending_discard_bytes);
+        add(
+            metrics,
+            "storage_pending_discard_block_refs",
+            storage.pending_discard_block_refs,
+        );
+        // THE THREE CAUSES, which sum to the recorded total. Published separately because the same
+        // total means rewrite pressure or a shrinking live set depending on which it is, and a
+        // scrape that only has the total cannot tell those apart.
+        add(
+            metrics,
+            "storage_stale_bytes_by_overwrite",
+            storage.stale_bytes_by_overwrite,
+        );
+        add(metrics, "storage_stale_bytes_by_removal", storage.stale_bytes_by_removal);
+        add(metrics, "storage_stale_bytes_by_sweep", storage.stale_bytes_by_sweep);
+        add(
+            metrics,
+            "storage_discard_candidate_bytes",
+            storage.discard_candidate_bytes,
+        );
+        add(
+            metrics,
+            "storage_discard_candidate_zones",
+            storage.discard_candidate_slabs,
+        );
+        add(
+            metrics,
+            "storage_compaction_candidate_bytes",
+            storage.compaction_candidate_bytes,
+        );
+        add(
+            metrics,
+            "storage_compaction_candidate_zones",
+            storage.compaction_candidate_slabs,
+        );
+        add(
+            metrics,
+            "storage_compaction_candidate_range_count",
+            storage.compaction_candidate_range_count,
+        );
+        add(
+            metrics,
+            "storage_merged_discard_range_count",
+            storage.merged_discard_range_count,
+        );
+        add(metrics, "storage_fragmented_range_count", storage.fragmented_range_count);
+        // THE PLACEMENT CAVEAT, and the reason it belongs in a scrape rather than only in the RPC:
+        // non-zero means the per-slab cap truncated the range attribution, so every WHERE figure
+        // above is a lower bound. A dashboard built on the candidate counts needs to know that, and
+        // only this key can tell it.
+        add(
+            metrics,
+            "storage_dropped_discard_range_count",
+            storage.dropped_discard_range_count,
+        );
+        add(metrics, "storage_stale_zones_tracked", storage.stale_slabs_tracked);
+        add(metrics, "storage_stale_zones_pruned", storage.stale_slabs_pruned);
         add(
             metrics,
             "storage_zone_total_bytes",
