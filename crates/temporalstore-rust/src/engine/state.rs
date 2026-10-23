@@ -2795,6 +2795,19 @@ pub(super) struct SlabStaleSummary {
     pub(super) compaction_candidate_bytes: u64,
     pub(super) compaction_candidate_range_count: u64,
     pub(super) compaction_candidate_slabs: u64,
+    /// The single BEST compaction candidate: its recoverable bytes, and that as a share of
+    /// everything on its slab.
+    ///
+    /// The aggregates above cannot say whether compacting is worth it, because that depends on
+    /// CONCENTRATION: 600 KB spread over thirty slabs at 2% each returns almost nothing per
+    /// relocation, while the same 600 KB on one slab at 60% returns most of it, and both report
+    /// identical totals. This is the figure a minimum-ratio gate would read.
+    ///
+    /// `recoverable / (live bytes + pending dead bytes)` on the slab with the highest such share.
+    /// Zero when there is no compaction candidate at all, which is the same convention the rest of
+    /// this struct uses for "not established".
+    pub(super) best_compaction_candidate_bytes: u64,
+    pub(super) best_compaction_candidate_ratio_ppm: u64,
     /// Ranges the per-slab cap refused. Non-zero means the WHERE is incomplete; the bytes are not.
     pub(super) dropped_range_count: u64,
     pub(super) slabs_tracked: u64,
@@ -3115,6 +3128,25 @@ impl BlockSlabLiveIndex {
                     .saturating_add(fragmented_ranges);
                 summary.compaction_candidate_slabs =
                     summary.compaction_candidate_slabs.saturating_add(1);
+                // A RUNNING MAXIMUM, not a second pass: both terms are already in hand here.
+                //
+                // The denominator is this slab's WHOLE content -- the bytes the index still points
+                // at plus the bytes it has retired -- so the ratio reads as "how much of this slab
+                // comes back if it is compacted". Dividing by the dead bytes alone would report
+                // 1.0x for every candidate and rank nothing.
+                let live_bytes = self
+                    .by_slab
+                    .get(block_slab_id)
+                    .map(|tally| tally.bytes)
+                    .unwrap_or_default();
+                let slab_total = live_bytes.saturating_add(stale.bytes);
+                if slab_total > 0 {
+                    let ratio_ppm = fragmented_bytes.saturating_mul(1_000_000) / slab_total;
+                    if ratio_ppm > summary.best_compaction_candidate_ratio_ppm {
+                        summary.best_compaction_candidate_ratio_ppm = ratio_ppm;
+                        summary.best_compaction_candidate_bytes = fragmented_bytes;
+                    }
+                }
             }
         }
         summary.discard_backlog_ppm = if summary.stale_bytes == 0 {

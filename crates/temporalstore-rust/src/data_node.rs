@@ -566,6 +566,14 @@ fn apply_shard_storage_metrics(
             "storage_compaction_candidate_range_count",
             storage.compaction_candidate_range_count,
         );
+        // THE BEST CANDIDATE'S BYTES, AND NOT ITS RATIO. A byte figure sums across shards; the
+        // ratio beside it on the status does not, and this exporter sums -- so the ratio stays
+        // where it is per-shard and means something. Same rule as the amplification figures.
+        add(
+            metrics,
+            "storage_best_compaction_candidate_bytes",
+            storage.best_compaction_candidate_bytes,
+        );
         add(
             metrics,
             "storage_merged_discard_range_count",

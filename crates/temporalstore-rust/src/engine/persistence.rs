@@ -1255,6 +1255,8 @@ impl TemporalEngine {
                 stale_bytes_discarded: stale.discarded_bytes,
                 pending_discard_block_refs: stale.pending_discard_block_refs,
                 compaction_candidate_range_count: stale.compaction_candidate_range_count,
+                best_compaction_candidate_bytes: stale.best_compaction_candidate_bytes,
+                best_compaction_candidate_ratio_ppm: stale.best_compaction_candidate_ratio_ppm,
                 dropped_discard_range_count: stale.dropped_range_count,
                 stale_slabs_tracked: stale.slabs_tracked,
                 stale_slabs_pruned: stale.slabs_pruned,

@@ -633,6 +633,33 @@ pub struct ShardCanonicalStorageStats {
     /// whether recovering them is one relocation or many.
     #[serde(default)]
     pub compaction_candidate_range_count: u64,
+    /// The single BEST compaction candidate: recoverable bytes, and that as a share of its slab.
+    ///
+    /// # WHY AN AGGREGATE BACKLOG IS NOT ENOUGH TO DECIDE A COMPACTION
+    ///
+    /// [`Self::compaction_candidate_bytes`] says how much is recoverable and
+    /// [`Self::compaction_candidate_slabs`] over how many slabs, but neither says whether
+    /// compacting is WORTH it -- that depends on concentration. 600 KB spread over thirty slabs at
+    /// 2% each returns almost nothing per relocation; the same 600 KB on one slab at 60% returns
+    /// most of it. **Both report identical totals.** This is the figure a minimum-ratio gate reads.
+    ///
+    /// The ratio is `recoverable / (live bytes + pending dead bytes)` on the best slab, so it reads
+    /// as "how much of that slab comes back if it is compacted". Dividing by the dead bytes alone
+    /// would report 1.0x for every candidate and rank nothing.
+    ///
+    /// # A MAXIMUM, SO IT IS AT LEAST THE AVERAGE
+    ///
+    /// Being a max over the same population the aggregates cover, this ratio can never be below the
+    /// aggregate's own share, and these bytes can never exceed
+    /// [`Self::compaction_candidate_bytes`]. `the_best_candidate_is_at_least_the_average` holds both,
+    /// which is what catches a maximum taken over the wrong set.
+    ///
+    /// Zero when there is no compaction candidate, the same convention the rest of this group uses
+    /// for "not established".
+    #[serde(default)]
+    pub best_compaction_candidate_bytes: u64,
+    #[serde(default)]
+    pub best_compaction_candidate_ratio_ppm: u64,
     /// Ranges the per-slab cap refused. **Non-zero means the WHERE is incomplete; the bytes are
     /// not.**
     ///
