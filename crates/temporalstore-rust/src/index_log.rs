@@ -376,8 +376,15 @@ pub(crate) const INDEX_LOG_SHAPE_DELTA: u8 = 1;
 ///
 /// It used to be written as JSON, with the digest spelled out as 64 hex characters -- the only
 /// thing in this log that was not binary, and the reason the reader had to keep a JSON path at
-/// all. The row carries the digest as its 32 raw bytes, and its first two elements are the shard
-/// and the sequence, which is what the tail scan reads and all it reads.
+/// all. Its first two elements are the shard and the sequence, which is what the tail scan reads
+/// and all it reads.
+///
+/// AND THE DIGEST IS NOW ACTUALLY RAW BYTES, which this note claimed before it was true. It carried
+/// `bytes_serde` -- the JSON base64 codec -- on a msgpack path, so the 32 bytes were written as 46:
+/// 44 base64 characters and a length prefix, against 34 for a `bin` string. Measured by
+/// `what_the_durable_byte_encodings_cost` and corrected by pointing the field at
+/// `bytes_serde::binary`. An anchor written the old way still loads, because the decoder was always
+/// the same visitor and it accepts all three spellings.
 pub(crate) const INDEX_LOG_SHAPE_ANCHOR: u8 = 2;
 
 /// What an anchor says: the index it identifies, by digest and length.
@@ -385,7 +392,7 @@ pub(crate) const INDEX_LOG_SHAPE_ANCHOR: u8 = 2;
 pub struct IndexAnchorRecord {
     pub shard_id: ShardId,
     pub sequence: u64,
-    #[serde(with = "crate::bytes_serde")]
+    #[serde(with = "crate::bytes_serde::binary")]
     pub index_sha256: Vec<u8>,
     pub index_len: u64,
 }

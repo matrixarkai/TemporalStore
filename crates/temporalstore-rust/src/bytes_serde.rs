@@ -146,6 +146,38 @@ pub fn deserialize<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Vec<u8>
 }
 
 /// Accepts the encoded string, or the array of numbers written before it.
+/// The same payload, for a BINARY format rather than a JSON document.
+///
+/// The parent module exists because a JSON document has no byte type, so it base64s. A binary format
+/// has one, and base64 into it costs a flat third for nothing: a 32-byte digest becomes 44
+/// characters where a msgpack `bin` string is 34 bytes. Measured by
+/// `what_the_durable_byte_encodings_cost`.
+///
+/// BOTH CODECS LIVE HERE SO THE CHOICE IS VISIBLE. The index-log anchor reached for the base64 one
+/// on a msgpack path because it was the only one in sight, and paid twelve bytes an anchor for it.
+///
+/// # IT READS EVERY SPELLING THIS REPO HAS EVER WRITTEN
+///
+/// `deserialize` delegates to [`EitherShape`], the parent module's visitor, which already accepts
+/// `visit_bytes` (this spelling), `visit_str` (base64) and `visit_seq` (the oldest array-of-integers
+/// shape). So a payload already on disk still loads, and -- the direction that usually bites -- an
+/// OLDER build reads the new spelling too, through the same `visit_bytes` it has had since the
+/// parent module was introduced. A format change whose old reader cannot read the new bytes needs a
+/// version gate; this one does not.
+pub(crate) mod binary {
+    pub fn serialize<S: serde::Serializer>(bytes: &[u8], serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_bytes(bytes)
+    }
+
+    pub fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Vec<u8>, D::Error> {
+        // REUSED RATHER THAN REWRITTEN. The parent's visitor already takes all three spellings, so
+        // a second one here would be a second place for them to drift apart.
+        deserializer.deserialize_any(super::EitherShape)
+    }
+}
+
 pub(crate) struct EitherShape;
 
 impl<'de> Visitor<'de> for EitherShape {
