@@ -33,12 +33,24 @@
 //! It checks **source**, not behaviour. It cannot verify two quantities mean the same thing — that
 //! judgement is written beside each entry and is only as good as the reading behind it.
 //!
-//! # THE ONE THAT IS GENUINELY UNRESOLVED
+//! # THE THREE THAT ARE GENUINELY UNRESOLVED, EACH FOR A DIFFERENT REASON
 //!
-//! `retained_window_compacted_count` has no counterpart here, and is recorded as unresolved rather
-//! than rounded away. Their own name for it appears only as a string key in a flat `fields` map, so
-//! even its definition could not be read — which is its own useful fact: a name in a metric
-//! dictionary is not a schema field, and 14 of the names in this surface are that.
+//! Recorded rather than rounded away, because *why* a figure is absent is more useful than the fact:
+//!
+//!   * `retained_window_compacted_count` — `compaction_runs` is a **lifetime** count and
+//!     `compaction_watermark` a **position**, so a count *within* a retained window needs runs
+//!     tagged by position, which this store does not keep.
+//!   * `skipped_disabled_chunk_endpoints` — `enabled` comes from a **per-cycle parameter** the
+//!     caller passes, so there is no persistent per-shard setting to count.
+//!   * `reclaim_budget_limited_node_count` — `budget_exhausted` is a **transient round outcome**
+//!     nothing retains, so reporting it from the status would mean inventing retained state for it.
+//!
+//! The last two are *not reportable from the status*, which is different from missing: their right
+//! home is the cycle report path, where the outcome lives.
+//!
+//! All three of their names appear in that surface only as string keys in a flat `fields` map, so
+//! none of their definitions could be read either — which is its own useful fact: **a name in a
+//! metric dictionary is not a schema field**, and 14 of the names here are that.
 //!
 //! rust-internal: reads this crate's own source, no product behaviour
 
@@ -113,7 +125,23 @@ const COUNTERPARTS: &[(&str, &str, &str, &str)] = &[
 ];
 
 /// Named, and deliberately not mapped.
-const UNRESOLVED: &[(&str, &str)] = &[(
+const UNRESOLVED: &[(&str, &str)] = &[
+    (
+        "skipped_disabled_chunk_endpoints",
+        "a count of participants with reclaim disabled. `StorageIndexGcReport::enabled` is assigned \
+         from `request.enable_index_gc` -- a PER-CYCLE PARAMETER the caller passes -- so there is no \
+         persistent per-shard setting to count. Not reportable from the status, as opposed to \
+         missing",
+    ),
+    (
+        "reclaim_budget_limited_node_count",
+        "a count of participants whose reclaim was cut short. `budget_exhausted` is computed inside \
+         a round and carried out in that round's report; nothing retains it, since `index_gc_report` \
+         is RETURNED rather than stored. Reporting it from the status would mean inventing retained \
+         state for a transient outcome, which reads zero after a reload -- the staleness hazard the \
+         stale record already documents. Its right home is the cycle report path",
+    ),
+    (
     "retained_window_compacted_count",
     "`compaction_runs` is a LIFETIME count and `compaction_watermark` is a position, so a count of \
      compactions WITHIN a retained window needs runs tagged by position -- which this store does \
@@ -178,10 +206,14 @@ fn the_comparison_counterparts_still_exist() {
 
     // ---- AND THE UNRESOLVED LIST IS NOT A PLACE TO HIDE THINGS. One entry, named, with a reason.
     assert!(
-        UNRESOLVED.len() <= 2,
-        "{} entries are recorded unresolved. That list exists to name the genuine exceptions, not \
-         to absorb anything inconvenient -- if it is growing, the comparison is being abandoned \
-         rather than maintained",
+        UNRESOLVED.len() <= 3,
+        "{} entries are recorded unresolved. That list names the genuine exceptions and must not \
+         absorb anything inconvenient.\n\
+         \n\
+         THE BOUND WENT 2 -> 3 DELIBERATELY, for two fields whose values are not shard state at \
+         all: one is a caller's per-cycle parameter, the other a transient round outcome nothing \
+         retains. Those are reasons. The next entry owes its own -- a reason being a statement \
+         about WHERE the value lives or why it cannot exist, not that it has not been done yet",
         UNRESOLVED.len()
     );
 }
