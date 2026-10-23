@@ -1136,6 +1136,16 @@ impl TemporalEngine {
             let non_purged_physical_bytes = block_store_slabs
                 .total_known_physical_bytes
                 .saturating_sub(block_store_slabs.purged_physical_bytes);
+            // THE RETIRED SET BESIDE THE LIVE ONE, read from the same structure for the same
+            // reason: it is maintained on the index's own mutation path, so reading it here is a
+            // walk of the slabs this shard has retired a block from and not of its objects.
+            //
+            // READ UNCONDITIONALLY, unlike `index_live_bytes` above, and that is deliberate.
+            // `is_ready` says whether the LIVE half has been derived from the index it counts; the
+            // retired half is not derived from anything -- it is appended to as blocks retire -- so
+            // an unready live tally makes the ratio below report zero while the byte counts
+            // themselves stay exactly what was recorded.
+            let stale = state.bucket_index.block_slab_live.stale_summary();
             let storage = crate::control::ShardCanonicalStorageStats {
                 page_index_entries: object_manager.block_ref_count as u64,
                 // Live refs, NOT `page_store.writes`: that counter only ever increases, so
@@ -1209,6 +1219,33 @@ impl TemporalEngine {
                     non_purged_physical_bytes,
                     index_live_bytes,
                 ),
+                // THE RECORDED-STALENESS GROUP, from the record the write path keeps rather than
+                // from a derivation a cycle has to publish first. `control.rs` carries what the
+                // window is and how this group relates to the ratio just above.
+                //
+                // Taken under the shard lock the stats path already holds, and costing the number
+                // of slabs the shard has retired a block from -- bounded at 512 by the record
+                // itself -- so nothing here grows with the number of objects.
+                stale_bytes_recorded: stale.stale_bytes,
+                pending_discard_bytes: stale.pending_discard_bytes,
+                discard_backlog_ppm: stale.discard_backlog_ppm,
+                discard_candidate_bytes: stale.discard_candidate_bytes,
+                discard_candidate_slabs: stale.discard_candidate_slabs,
+                merged_discard_range_count: stale.merged_discard_range_count,
+                fragmented_range_count: stale.fragmented_range_count,
+                compaction_candidate_bytes: stale.compaction_candidate_bytes,
+                compaction_candidate_slabs: stale.compaction_candidate_slabs,
+                compaction_recommended: stale.compaction_recommended(),
+                stale_bytes_by_overwrite: stale.overwrite_bytes,
+                // UNIT-MATCHED ON BOTH SIDES AND BLOCK-GRANULAR ON BOTH SIDES. The numerator is the
+                // live set plus what the index has retired and not yet had collected; the
+                // denominator is the live set. Guarded by `ppm_ratio` the same way the three ratios
+                // above are, and zero when the tally is not ready, because `index_live_bytes` is
+                // then a provisional zero rather than a measurement.
+                recorded_space_amplification_ppm: Self::ppm_ratio(
+                    stale.logical_image_bytes(index_live_bytes),
+                    index_live_bytes,
+                ),
                 storage_slab_used_bytes: block_store_slabs.live_physical_bytes,
                 storage_slab_stale_bytes: block_store_slabs.reclaimable_physical_bytes,
                 page_reads: block_store.reads,
@@ -1222,9 +1259,14 @@ impl TemporalEngine {
                 // lifetime ratio divides by the second, so publishing them costs nothing beyond
                 // the field.
                 logical_bytes_written: block_store.logical_bytes_written,
-                // ONE QUANTITY, COMPUTED ONCE. This re-folded the sum `index_live_bytes` already
-                // holds, with the same guard and a different closure spelling -- two foldings of
-                // one tally that could drift apart silently, since nothing compares them.
+                // THE SAME VALUE `index_live_bytes` ALREADY HOLDS, taken from the variable rather
+                // than folded a second time. Two copies of one fold is two places a readiness check
+                // or a saturation can drift, and what the identity arm checks is that the ratio
+                // divides by the counter beside it -- which is true by construction here and was
+                // true by coincidence before.
+                //
+                // BOTH SIDES OF THIS REBASE REMOVED THE SAME DUPLICATED FOLD, independently, which
+                // is why the base section of that conflict held it and neither side kept it.
                 live_block_bytes: index_live_bytes,
                 non_purged_physical_bytes,
                 // A PARTITION OF THE BYTES ON DISK, not two more ratios: both are over

@@ -859,6 +859,62 @@ impl TemporalEngine {
         ready_shards
     }
 
+    /// FORGET THE RECORDED STALE RANGES FOR SLABS THE COLLECTOR HAS TAKEN. The prune.
+    ///
+    /// THIS IS WHAT BOUNDS THE RECORD BY SOMETHING REAL. The per-slab range list is capped and its
+    /// ranges merge, but a cap alone leaves the map holding detail for slabs that no longer exist --
+    /// so a range leaves when the space it describes does.
+    /// Called with the slabs a reclaim round removed outright or quarantined for destruction: their
+    /// bytes have stopped being PENDING a discard -- the discard happened, or is scheduled and
+    /// already counted as `reclaimable_physical_bytes` -- and leaving them would report the same
+    /// garbage twice in two fields of one report.
+    ///
+    /// EVERY LOADED SHARD, not just the one being cycled, and for the same reason the reclaim stage
+    /// retains across shards: slabs are shared through the engine's block store, so a slab the
+    /// collector destroyed may carry ranges recorded by a shard other than the one whose round
+    /// destroyed it. Pruning only the cycling shard would leave those behind permanently.
+    ///
+    /// Costs one map removal per (shard, slab) named. Returns how many range lists were dropped, so
+    /// a caller can tell a prune that found something from one that found nothing.
+    pub fn discard_recorded_stale_ranges(
+        &self,
+        block_slab_ids: impl IntoIterator<Item = u64>,
+    ) -> usize {
+        let block_slab_ids = block_slab_ids.into_iter().collect::<Vec<_>>();
+        if block_slab_ids.is_empty() {
+            return 0;
+        }
+        let mut shards = self.shards_write_marked();
+        let mut dropped = 0_usize;
+        for shard in shards.values_mut() {
+            let before = shard.bucket_index.block_slab_live.stale_slab_count();
+            shard
+                .bucket_index
+                .block_slab_live
+                .discard_stale_slabs(block_slab_ids.iter().copied());
+            dropped = dropped
+                .saturating_add(before.saturating_sub(
+                    shard.bucket_index.block_slab_live.stale_slab_count(),
+                ));
+        }
+        dropped
+    }
+
+    /// The recorded stale summary as one shard holds it, for the reports and the measurements.
+    ///
+    /// `None` when the shard is absent. NOT gated on `is_ready`: that flag describes the LIVE half,
+    /// which is derived from the index, and the retired half is appended to rather than derived --
+    /// so it is exactly as true before the first seed as after it.
+    pub(super) fn recorded_stale_summary(
+        &self,
+        shard_id: ShardId,
+    ) -> Option<crate::engine::state::SlabStaleSummary> {
+        let shards = self.shards.read().expect("engine lock poisoned");
+        shards
+            .get(&shard_id)
+            .map(|shard| shard.bucket_index.block_slab_live.stale_summary())
+    }
+
     /// Withhold this shard's maintained tally, so the next consumer takes its walk fallback.
     ///
     /// For the A arm of the measurement only. Nothing repairs it except a reconcile or a seed.

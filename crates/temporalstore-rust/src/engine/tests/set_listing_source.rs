@@ -264,7 +264,10 @@ fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize)
         let routing_bucket = bucket.routing_bucket;
         bucket
             .block_index
-            .retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
+            .retain(
+                &mut shard.bucket_index.block_slab_live,
+                crate::engine::state::StaleCause::Removed,
+                |handle, page| {
                 let mine = page.model_id.as_str() == "set"
                     && &**named.at(routing_bucket, *handle) == object_key
                     && !page.deleted;

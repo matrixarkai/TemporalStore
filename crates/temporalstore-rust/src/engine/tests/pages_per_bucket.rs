@@ -2006,7 +2006,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // at zero, asserted a few lines below and pinned as a ladder in `index_bytes_per_key.rs`.
     for handle in handles.iter().skip(1) {
         let removed = index
-            .remove(handle, &mut live)
+            .remove(handle, &mut live, crate::engine::state::StaleCause::Removed)
             .unwrap_or_else(|| panic!("removing page {handle} answered nothing"));
         std::hint::black_box(&removed);
     }
@@ -2045,7 +2045,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
 
     // --- And out the other end: removing the last block returns the index to Empty. ---
     let last = index
-        .remove(&first_handle, &mut live)
+        .remove(&first_handle, &mut live, crate::engine::state::StaleCause::Removed)
         .expect("the last page is gone before it was removed");
     assert_same_page("the last page removed", first_handle, &first, &last);
     assert!(
@@ -2067,7 +2067,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         "four pages are not in a map"
     );
     let keep = retained_handles[2];
-    retained.retain(&mut live, |handle, _page| *handle == keep);
+    retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _page| *handle == keep);
     assert_eq!(1, retained.len(), "retain should have left exactly one page");
     assert!(
         matches!(retained, BlockIndexMap::One(..)),
@@ -2079,7 +2079,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     assert_same_page("the page retain kept", keep, &page_for(12).1, survivor);
 
     // --- And retain the last block away, which is the collapse that DOES still happen. ---
-    retained.retain(&mut live, |_handle, _page| false);
+    retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _page| false);
     assert_eq!(0, retained.len(), "retain should have left nothing");
     assert!(
         matches!(retained, BlockIndexMap::Empty),
@@ -2104,7 +2104,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         matches!(emptied, BlockIndexMap::Many(_)),
         "four pages are not in a map, so the case below is not the case it is named for"
     );
-    emptied.retain(&mut live, |_handle, _page| false);
+    emptied.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _page| false);
     assert_eq!(0, emptied.len(), "retain should have left nothing");
     assert!(
         emptied.is_empty(),
@@ -2215,7 +2215,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     for handle in &extra {
         round_tripped
             .block_index
-            .remove(handle, &mut live)
+            .remove(handle, &mut live, crate::engine::state::StaleCause::Removed)
             .expect("removing a page answered nothing");
     }
     assert!(

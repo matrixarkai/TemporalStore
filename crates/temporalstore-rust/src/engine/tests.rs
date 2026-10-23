@@ -454,5 +454,6 @@ mod the_index_log_under_rewrite;
 mod what_the_collector_sees_after_a_rewrite;
 mod the_amplification_set_under_rewrite;
 mod whether_a_dead_slab_can_be_reclaimed;
+mod the_overwrite_records_what_it_retired;
 mod the_cached_payload_is_a_byte_string;
 mod the_payload_cache_per_user_byte;

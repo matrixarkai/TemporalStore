@@ -394,11 +394,10 @@ impl TemporalEngine {
         //
         // A FAILURE IS RECORDED AND DOES NOT STOP THE ROUND, matching the other driver: the
         // inline roll in `append` is still there, so the only consequence of a failure here is
-        // that the next append pays for the roll exactly as it does today. That is a weaker
-        // reaction than the design being followed, whose `Prepare` returns before any other
-        // stage runs -- but there the failure is a stream error that also invalidates the
-        // stages after it, and here it is not: nothing else in this round reads the active
-        // slab's identity.
+        // that the next append pays for the roll exactly as it does today. A stronger reaction --
+        // returning before any other stage runs -- would be right if this failure invalidated the
+        // stages after it, and it does not: nothing else in this round reads the active slab's
+        // identity, so stopping the round would cost the other stages for nothing.
         //
         // A no-op while the active slab is under target, so the ordinary round pays one lock
         // and one comparison.
@@ -537,6 +536,25 @@ impl TemporalEngine {
                             .cache
                             .invalidate_page_segment(request.shard_id, *block_slab_id);
                     }
+                    // AND THE RECORDED STALE RANGES FOR THOSE SLABS GO WITH THEM. The prune that
+                    // bounds the record by the collector's own progress rather than only by its
+                    // cap: a slab that has been removed, or quarantined for destruction, is no
+                    // longer carrying bytes PENDING a discard -- it is carrying bytes the collector
+                    // has taken, which `reclaimable_physical_bytes` already reports. Leaving the
+                    // ranges here would count the same garbage in two fields of one report and
+                    // would keep `compaction_recommended` true over slabs that no longer exist.
+                    //
+                    // The same iteration as the cache invalidation above, and for the same reason
+                    // it is written beside it: both are "this slab is gone, forget what you knew
+                    // about it", and splitting them invites one to be updated without the other.
+                    let _ = self.discard_recorded_stale_ranges(
+                        report
+                            .removed_block_slab_ids
+                            .iter()
+                            .chain(report.delayed_destroy_block_slab_ids.iter())
+                            .copied()
+                            .collect::<Vec<_>>(),
+                    );
                 }
                 Err(err) => errors.push(format!("reclaim_page: {err}")),
             }

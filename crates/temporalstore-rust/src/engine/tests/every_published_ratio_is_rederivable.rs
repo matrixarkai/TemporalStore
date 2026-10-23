@@ -86,11 +86,12 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
     println!("    storage_slab_total     {:>12}", published.storage_slab_total_bytes);
     println!("    storage_slab_used      {:>12}", published.storage_slab_used_bytes);
     println!("    non_purged_physical    {:>12}", published.non_purged_physical_bytes);
+    println!("    pending_discard_bytes  {:>12}", published.pending_discard_bytes);
     println!();
     println!("  PUBLISHED RATIOS, each beside the same figure recomputed from the counters above");
 
     // (name, published ppm, numerator, denominator)
-    let identities: [(&str, u64, u64, u64); 4] = [
+    let identities: [(&str, u64, u64, u64); 5] = [
         (
             "storage_write_amplification_ppm",
             published.storage_write_amplification_ppm,
@@ -117,6 +118,24 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
             "block_space_amplification_ppm",
             published.block_space_amplification_ppm,
             published.non_purged_physical_bytes,
+            published.live_block_bytes,
+        ),
+        // THE FIFTH, AND THE ONLY IDENTITY HERE WHOSE NUMERATOR ADDS. It is the reason the retired
+        // bytes are published as a counter beside the ratio instead of only inside it: without
+        // `pending_discard_bytes` on the status, this figure would be the one ratio a consumer
+        // could not check, which is precisely what the published denominators exist to prevent.
+        //
+        // IT IS NOT A SECOND SPELLING OF THE FOURTH. That one divides non-purged file bytes by the
+        // live tally and is reload-independent; this one divides the live set plus what the index
+        // has retired and not had collected, moves at the instant of the overwrite, and is derived
+        // state that reads zero after a reload. They agree in the steady state and diverge after a
+        // restart, which makes each the other's cross-check.
+        (
+            "recorded_space_amplification_ppm",
+            published.recorded_space_amplification_ppm,
+            published
+                .live_block_bytes
+                .saturating_add(published.pending_discard_bytes),
             published.live_block_bytes,
         ),
     ];
@@ -153,8 +172,16 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
     println!();
 
     // A PASS MUST NOT MEAN "every denominator was zero". At least the storage-write pair is
-    // reachable on any corpus that wrote anything, so requiring two of three leaves room for the
-    // live tally to be underived without letting a vacuous run report success.
+    // reachable on any corpus that wrote anything, so requiring two of four leaves room for the
+    // live tally to be underived without letting a vacuous run report success -- and TWO of the
+    // four now divide by it, so an underived tally costs two identities rather than one.
+    //
+    // AND THE FLOOR IS DELIBERATELY NOT RAISED TO THREE. Three would require the live tally to be
+    // DERIVED for this arm to pass, which is a different claim from the one this floor makes: the
+    // floor exists so that a run where every denominator happened to be zero cannot report success.
+    // Turning it into a readiness assertion would make this arm fail for a reason it does not name,
+    // and readiness belongs in an arm that says `is_ready` in its message. Two identities being
+    // skipped together is the cost, and the line above is where a reader is told to expect it.
     assert!(
         exercised >= 2,
         "only {exercised} of {} identities had a non-zero denominator, so this arm checked almost \

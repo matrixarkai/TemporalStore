@@ -464,6 +464,146 @@ pub struct ShardCanonicalStorageStats {
     /// are unavailable instead of one of them reading as a real figure.
     #[serde(default)]
     pub block_space_amplification_ppm: u64,
+    /// # THE RECORDED-STALENESS GROUP, AND WHY IT IS NOT THE FIELD ABOVE
+    ///
+    /// Everything from here to `recorded_space_amplification_ppm` comes from a record the write
+    /// path keeps: when an overwrite, a delete or an expiry sweep displaces a block's index entry,
+    /// the byte range it retired is appended to a per-slab list in the same call that discharges
+    /// the live tally. So these figures move at the moment the waste is created, where
+    /// `space_amplification_ppm` above cannot move until a whole slab reaches delayed-destroy and
+    /// `storage_slab_stale_bytes` below cannot move until a storage-manager cycle has published the
+    /// union tally.
+    ///
+    /// # TWO FIGURES CAN SEE A DEAD BLOCK INSIDE A LIVE SLAB, AND THEY ARE NOT THE SAME FIGURE
+    ///
+    /// `space_amplification_ppm` is deliberately left where it is: re-pointing its denominator
+    /// would change a serde key consumers already read. What sits beside it is TWO alternatives,
+    /// and which one to reach for depends on what the reader can tolerate:
+    ///
+    /// | | numerator / denominator | moves on | survives a reload |
+    /// |---|---|---|---|
+    /// | [`Self::block_space_amplification_ppm`] | non-purged file bytes / live tally | a purge, and an overwrite | **yes** |
+    /// | [`Self::recorded_space_amplification_ppm`] | (live + pending discard) / live | the **overwrite itself** | **no** |
+    ///
+    /// They agree in the steady state and diverge after a restart, so each is the other's
+    /// cross-check. Reach for the first when the figure must be trustworthy across a restart;
+    /// reach for this group when the question is what was retired and BY WHAT -- an overwrite
+    /// against a delete or a sweep -- which the first cannot answer at all.
+    ///
+    /// # THEY COVER A WINDOW, AND THE WINDOW OPENS WHERE THE INDEX WAS LAST BUILT
+    ///
+    /// The record is DERIVED STATE, held beside the live tally and not persisted. The live tally is
+    /// rederivable because a walk of the index defines it; the retired set is not, because the
+    /// index knows only what it still points at and a displaced extent is exactly what it stopped
+    /// holding. So after a restart, a manifest install or a compaction round these read ZERO
+    /// however much garbage the store is carrying, and climb again as it is created.
+    ///
+    /// WHAT THAT COSTS A READER: these UNDERSTATE and never overstate. Do not read a zero as "no
+    /// garbage" -- read it as "none recorded since the index was built", and fall back to
+    /// `slab_live_fractions()`, whose `logical_bytes - live_bytes` per slab is reload-independent
+    /// and is what GC candidate selection already reads. Nothing the collector does depends on
+    /// these fields; what depends on them is being able to report the figure without waiting for a
+    /// cycle.
+    ///
+    /// WHAT PERSISTING WOULD COST, priced rather than left open: the retired set would have to ride
+    /// the stored index, which is a `SHARD_INDEX_FORMAT_VERSION` bump and a sweep of every module
+    /// naming it -- including two tripwires that pin the literal. That buys a figure that survives
+    /// a restart, against a per-shard structure bounded at 512 slabs x 64 ranges. It is a decision
+    /// with a price and a format cost, so it is recorded here rather than taken on the way past.
+    ///
+    /// Every byte figure below sums `ElementEntry::length` -- the same stored-byte unit the live
+    /// tally is in. None of them is a file size, and none is derived from
+    /// `storage_slab_total_bytes`, which accumulates before the slab-state match and therefore does
+    /// not fall when a purge frees space.
+    ///
+    /// Total bytes recorded as retired over the window: still pending, plus already discarded.
+    #[serde(default)]
+    pub stale_bytes_recorded: u64,
+    /// Of those, the bytes still waiting on the collector. The term added to live bytes to get the
+    /// space figure below, and the quantity `storage_slab_stale_bytes` reports as zero until a
+    /// cycle publishes.
+    #[serde(default)]
+    pub pending_discard_bytes: u64,
+    /// How much of what was retired is still pending, in parts per million. Falls as the collector
+    /// catches up; 1_000_000 means nothing retired has been collected yet.
+    #[serde(default)]
+    pub discard_backlog_ppm: u64,
+    /// Pending bytes on slabs the index points at NO live block of -- wholly dead slabs, which the
+    /// collector can drop whole without relocating anything.
+    #[serde(default)]
+    pub discard_candidate_bytes: u64,
+    #[serde(default)]
+    pub discard_candidate_slabs: u64,
+    /// Retired ranges held, after adjacent ranges of the same cause were merged. Merging happens
+    /// where the range is recorded, so this is also the pending range count.
+    #[serde(default)]
+    pub merged_discard_range_count: u64,
+    /// Held ranges shorter than the smallest discard that can return space to the filesystem. A
+    /// hole that small is recoverable only by relocating what is around it.
+    #[serde(default)]
+    pub fragmented_range_count: u64,
+    /// The fragmented bytes on slabs that are still partly live: the slab cannot be dropped whole
+    /// and the holes cannot be punched, so only a compaction recovers them.
+    #[serde(default)]
+    pub compaction_candidate_bytes: u64,
+    #[serde(default)]
+    pub compaction_candidate_slabs: u64,
+    /// `compaction_candidate_slabs > 0`.
+    ///
+    /// NOT AN ALERT AND NOT A GATE, for the same reason `space_amplification_ppm` is not: it
+    /// reports a CONDITION rather than a threshold being crossed, and on a store that overwrites
+    /// anything it goes true early and stays true. What it is for is deciding whether a compaction
+    /// round has anything to do -- it is false exactly when every pending byte sits on a slab the
+    /// collector could drop whole, and then a compaction is wasted work.
+    #[serde(default)]
+    pub compaction_recommended: bool,
+    /// Of the retired bytes, the ones an OVERWRITE retired rather than a delete or an expiry sweep.
+    ///
+    /// The split is the point: the same pending total means opposite things depending on which it
+    /// is. Overwrite bytes are rewrite pressure against a live set that did not shrink, and say a
+    /// compaction would pay for itself; delete and sweep bytes are a live set that got smaller, and
+    /// say the space will come back on its own as slabs die.
+    #[serde(default)]
+    pub stale_bytes_by_overwrite: u64,
+    /// SPACE AMPLIFICATION THAT CAN SEE A DEAD BLOCK INSIDE A LIVE SLAB, in parts per million.
+    ///
+    /// `(live bytes + pending discard bytes) / live bytes`, both halves block-granular and both in
+    /// stored bytes, so the compression factor cancels instead of dividing in. It moves on the
+    /// overwrite rather than on the collector: 1_000_000 on a write-once corpus, 2_000_000 once
+    /// every key has been written twice and nothing has been collected.
+    ///
+    /// # IT IS STORED-BYTES OVER STORED-BYTES, NOT BYTES-ON-DISK OVER BYTES-LIVE
+    ///
+    /// SAID OUTRIGHT BECAUSE THE NAME PROMISES THE OTHER ONE. "Space amplification" is ordinarily
+    /// physical over live -- bytes occupying the device per byte of live data -- and this is not
+    /// that. Both halves here sum `ElementEntry::length`: what the store is LOGICALLY holding per
+    /// byte that is live. So it EXCLUDES block envelopes, record framing, a slab's own header, and
+    /// any whole-file overhead, and a reader who assumes the physical quantity will under-read it
+    /// by exactly those. The physical-numerator fields are `space_amplification_ppm` and
+    /// [`Self::block_space_amplification_ppm`] -- measured equal to the stored-byte sum on a store
+    /// with nothing dead in it, so the distinction costs nothing there and grows with framing.
+    ///
+    /// WHY THE LOGICAL RATIO IS THE ONE WORTH PUBLISHING HERE, rather than an approximation of the
+    /// physical one. A slab's `physical_bytes` is a file size, and dividing it by a sum of block
+    /// lengths puts a different unit on each side; the ratio would then report the framing and
+    /// compression factors multiplied by whatever it claimed to measure, which is the defect that
+    /// made two payload figures in this area read 7.314x and 15.229x on a corpus with no
+    /// amplification at all. And `storage_slab_total_bytes` is accumulated for every slab the store
+    /// knows, BEFORE the slab-state match -- including purged ones whose files are deleted -- so a
+    /// numerator built on it does not fall when space is genuinely reclaimed. Measured: a purge
+    /// freed 1,232,400 B, `storage_slab_stale_bytes` fell to 0, and that figure did not move.
+    ///
+    /// A NUMERATOR THAT FALLS IS NOW PUBLISHED, as
+    /// [`Self::block_space_amplification_ppm`] -- it excludes purged slabs, so a purge moves it.
+    /// What is still absent is the other half: a per-slab live PHYSICAL figure, which would make a
+    /// genuinely physical-over-physical ratio possible. That is a change to what the slab manifest
+    /// RECORDS rather than to any arithmetic here, and it is still unpaid.
+    ///
+    /// Zero when the live tally has not been derived, which is the same convention
+    /// `lifetime_write_amplification_ppm` uses: a provisional zero denominator must not be divided
+    /// by, and reporting 0 ppm is how this group says "not established" rather than "1.0x".
+    #[serde(default)]
+    pub recorded_space_amplification_ppm: u64,
     #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
     #[serde(alias = "storage_zone_stale_bytes")]

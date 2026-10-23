@@ -4728,7 +4728,11 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
                 continue;
             };
             let before = bucket.block_index.len();
-            bucket.block_index.remove(&handle, &mut *live);
+            bucket.block_index.remove(
+                &handle,
+                &mut *live,
+                crate::engine::state::StaleCause::Removed,
+            );
             if bucket.block_index.len() != before {
                 touched.push(routing_bucket);
                 classify_bucket_layout_in_place(bucket);
@@ -5218,7 +5222,11 @@ fn upsert_bucket_index_block_inner(
             // always was.
             let removed_object_id = bucket
                 .block_index
-                .remove(&block_ref.block_ref_key, &mut shard.bucket_index.block_slab_live)
+                .remove(
+                    &block_ref.block_ref_key,
+                    &mut shard.bucket_index.block_slab_live,
+                    crate::engine::state::StaleCause::Overwrite,
+                )
                 .map(|page| page.object_id(shard_id, &entry.object_key));
             if let Some(removed_object_id) = removed_object_id {
                 // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THE BUCKET, so
@@ -5304,7 +5312,10 @@ fn upsert_bucket_index_block_inner(
         if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             bucket
                 .block_index
-                .retain(&mut shard.bucket_index.block_slab_live, |_, page| {
+                .retain(
+                    &mut shard.bucket_index.block_slab_live,
+                    crate::engine::state::StaleCause::Swept,
+                    |_, page| {
                     // THE ONE PAGE THE ROW NAMED, and the deleted flag beside it so a live entry
                     // that happens to sit at that address is never taken: a page is reachable
                     // again once its bytes are reused.
@@ -5517,7 +5528,10 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             ),
         );
         let before = bucket.block_index.len();
-        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
+        bucket.block_index.retain(
+            &mut shard.bucket_index.block_slab_live,
+            crate::engine::state::StaleCause::Overwrite,
+            |handle, page| {
             // `object_key` IS THIS FUNCTION'S ARGUMENT, so the comparison is against the same
             // characters it always was -- read from beside the page rather than off it.
             let matches_object = page.model_id.as_str() == kind

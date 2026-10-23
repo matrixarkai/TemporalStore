@@ -169,7 +169,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut remaining = FILL as usize;
         while remaining > 0 {
             remaining -= 1;
-            map.remove(&handles[remaining], &mut live);
+            map.remove(&handles[remaining], &mut live, crate::engine::state::StaleCause::Removed);
             steps += 1;
             let want = expected_arm(remaining);
             let got = block_index_map_arm(&map);
@@ -195,7 +195,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         while remaining > 0 {
             remaining -= 1;
             let doomed = handles[remaining];
-            map.retain(&mut live, |handle, _page| *handle != doomed);
+            map.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _page| *handle != doomed);
             steps += 1;
             let want = expected_arm(remaining);
             let got = block_index_map_arm(&map);

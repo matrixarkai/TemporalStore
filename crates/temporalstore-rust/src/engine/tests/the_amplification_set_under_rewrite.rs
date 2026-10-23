@@ -19,6 +19,21 @@
 //!   2. does space amplification climb as dead blocks accumulate, and how far?
 //!   3. does a reclaim cycle bring it back, and back to what?
 //!
+//! # THERE ARE NOW THREE DENOMINATORS HERE, AND THE PINNED ASSERTION IS KEPT ON PURPOSE
+//!
+//! This arm was written with two: the slab-granular `live_physical_bytes` the published space ratio
+//! divides by, and the block-granular live tally. A third has since landed -- the RECORDED one,
+//! where an overwrite appends the byte range it retired to a per-slab list in the same call that
+//! discharges the live tally, and `recorded_space_amplification_ppm` is published from it.
+//!
+//! THE SLAB-GRANULAR ASSERTION BELOW STILL READS 1.000x AND IS NOT LOOSENED. It was written to fail
+//! and say what moved if the published denominator were ever re-pointed, and that has deliberately
+//! NOT been done: re-pointing `space_amplification_ppm` would change a serde key consumers already
+//! read, which the note on that field says must not happen silently. The correctly denominated
+//! figure is published BESIDE it instead. So the assertion is still true of the field it names, and
+//! what this arm gains is a third column that moves -- asserted, so that a record which stopped
+//! recording would fail here as well as in its own arm.
+//!
 //! # EVERY RATIO DIVIDES STORED BYTES BY STORED BYTES
 //!
 //! There are two quantities in this store called logical. `logical_bytes_written` counts the user's
@@ -87,6 +102,13 @@ struct Snapshot {
     live_block_granular: Option<u64>,
     physical: u64,
     reclaimable: u64,
+    /// RECORDED, not derived: the bytes an overwrite, a delete or an expiry sweep retired and that
+    /// nothing has collected yet, appended where the live tally is discharged. Needs no cycle to
+    /// have run, which is the whole difference from the two columns above.
+    pending_discard: u64,
+    /// `recorded_space_amplification_ppm` as the shard PUBLISHES it, so this arm and the report are
+    /// reading one number rather than two that agree by coincidence.
+    published_recorded_space_ppm: u64,
 }
 
 fn ratio(numerator: u64, denominator: u64) -> f64 {
@@ -109,6 +131,13 @@ impl Snapshot {
     /// Space against the blocks the index still points at.
     fn space_block(&self) -> f64 {
         ratio(self.physical, self.live_block_granular.unwrap_or(0))
+    }
+    /// Space from the RECORD: the live set plus what has been retired and not collected, over the
+    /// live set. Both halves are sums of `ElementEntry::length`, so unlike the two above this one
+    /// does not put a file size over a block-length total.
+    fn space_recorded(&self) -> f64 {
+        let live = self.live_block_granular.unwrap_or(0);
+        ratio(live.saturating_add(self.pending_discard), live)
     }
     /// Stored bytes per user byte offered: COMPRESSION, the one ratio that mixes the units on
     /// purpose because that relationship is its subject.
@@ -141,6 +170,16 @@ fn snapshot(engine: &crate::TemporalEngine, label: impl Into<String>) -> Snapsho
             None
         }
     };
+    // THE RECORDED COLUMN, from the shard's own retired-range record and from the field the shard
+    // publishes out of it. Read together so that a disagreement between them shows up here.
+    let pending_discard = engine
+        .recorded_stale_summary(1)
+        .map(|stale| stale.pending_discard_bytes)
+        .unwrap_or_default();
+    let published_recorded_space_ppm = engine
+        .shard_stats(1)
+        .map(|stats| stats.storage.recorded_space_amplification_ppm)
+        .unwrap_or_default();
     Snapshot {
         label: label.into(),
         stored_written: store.bytes_written,
@@ -149,6 +188,8 @@ fn snapshot(engine: &crate::TemporalEngine, label: impl Into<String>) -> Snapsho
         live_block_granular,
         physical: slabs.total_known_physical_bytes,
         reclaimable: slabs.reclaimable_physical_bytes,
+        pending_discard,
+        published_recorded_space_ppm,
     }
 }
 
@@ -258,20 +299,22 @@ fn the_amplification_set_under_rewrite() {
     println!("  THE AMPLIFICATION SET UNDER REWRITE -- {KEYS} keys x {VALUE} B, incompressible");
     println!();
     println!(
-        "    {:<22} {:>10} {:>10} {:>10} {:>10} {:>7} {:>7} {:>7} {:>7}",
+        "    {:<22} {:>10} {:>10} {:>10} {:>10} {:>11} {:>7} {:>7} {:>7} {:>7} {:>7}",
         "",
         "stored wr",
         "live SLAB",
         "live BLOCK",
         "physical",
+        "pending",
         "rw slab",
         "rw blk",
         "sp slab",
-        "sp blk"
+        "sp blk",
+        "sp REC"
     );
     for shot in &shots {
         println!(
-            "    {:<22} {:>10} {:>10} {:>10} {:>10} {:>6.3}x {:>6.3}x {:>6.3}x {:>6.3}x",
+            "    {:<22} {:>10} {:>10} {:>10} {:>10} {:>11} {:>6.3}x {:>6.3}x {:>6.3}x {:>6.3}x {:>6.3}x",
             shot.label,
             shot.stored_written,
             shot.live_slab_granular,
@@ -279,10 +322,12 @@ fn the_amplification_set_under_rewrite() {
                 .map(|bytes| bytes.to_string())
                 .unwrap_or_else(|| "not ready".to_string()),
             shot.physical,
+            shot.pending_discard,
             shot.rewrite_slab(),
             shot.rewrite_block(),
             shot.space_slab(),
             shot.space_block(),
+            shot.space_recorded(),
         );
     }
     println!();
@@ -312,9 +357,15 @@ fn the_amplification_set_under_rewrite() {
         last_write.space_block()
     );
     println!(
-        "    after {RECLAIM_ROUNDS} reclaim rounds: space {:.3}x slab, {:.3}x block",
+        "    RECORDED (the retired ranges): space {:.3}x -> {:.3}x, with no cycle run",
+        first.space_recorded(),
+        last_write.space_recorded()
+    );
+    println!(
+        "    after {RECLAIM_ROUNDS} reclaim rounds: space {:.3}x slab, {:.3}x block, {:.3}x recorded",
         after_reclaim.space_slab(),
-        after_reclaim.space_block()
+        after_reclaim.space_block(),
+        after_reclaim.space_recorded()
     );
     println!("    the ceilings these ratios are held against: 5.0x space, 3.0x write");
     println!();
@@ -420,6 +471,46 @@ fn the_amplification_set_under_rewrite() {
         last_write.live_slab_granular,
         ROUNDS + 1
     );
+    // ---- AND THE RECORDED FIGURE MOVES TOO, BY THE FACTOR THE WORKLOAD PUTS IN. Each round
+    // ---- retires exactly the previous round's copy of every key, so after N+1 writes the image is
+    // ---- N+1 live sets. This is the column that needs NO CYCLE to have run: it is a sum of ranges
+    // ---- the write path appended as it displaced them, where both columns above wait either on a
+    // ---- slab reaching delayed-destroy or on a published union tally.
+    //
+    // ASSERTED AGAINST THE PUBLISHED FIELD AS WELL AS THE LOCAL ARITHMETIC. The arm recomputes the
+    // ratio from the record and the shard publishes its own; a drift between the two is a wiring
+    // mistake that neither one alone can show.
+    assert_eq!(
+        first.published_recorded_space_ppm, 1_000_000,
+        "after one write of every key nothing has retired, so the recorded space figure must be \
+         exactly 1.000x and the shard published {} ppm",
+        first.published_recorded_space_ppm
+    );
+    let expected_recorded = (ROUNDS as u64 + 1) * 1_000_000;
+    assert!(
+        last_write.published_recorded_space_ppm.abs_diff(expected_recorded) < 300_000,
+        "after {} writes of every key the recorded space figure should be about \
+         {expected_recorded} ppm -- the live set plus {ROUNDS} retired copies of it, over the live \
+         set -- and the shard published {} ppm. Live {} B, pending discard {} B. The slab-granular \
+         field read {:.3}x over the same workload, which is the comparison this arm exists to make",
+        ROUNDS + 1,
+        last_write.published_recorded_space_ppm,
+        block_live,
+        last_write.pending_discard,
+        last_write.space_slab()
+    );
+    assert!(
+        (last_write.space_recorded()
+            - last_write.published_recorded_space_ppm as f64 / 1_000_000.0)
+            .abs()
+            < 0.01,
+        "this arm computes the recorded ratio at {:.3}x from the record and the shard publishes \
+         {:.3}x. They are the same arithmetic over the same two numbers, so a disagreement is a \
+         wiring mistake in one of them",
+        last_write.space_recorded(),
+        last_write.published_recorded_space_ppm as f64 / 1_000_000.0
+    );
+
     assert!(
         last_write.space_block() > first.space_block() * 1.5,
         "space against the live tally went {:.3}x -> {:.3}x across {} rewrites. A denominator \

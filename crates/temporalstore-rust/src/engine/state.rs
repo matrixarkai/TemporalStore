@@ -2552,6 +2552,284 @@ pub(super) struct SlabLiveTally {
     pub(super) bytes: u64,
 }
 
+/// WHY A BLOCK LEFT THE INDEX, which is the attribution an address cannot carry.
+///
+/// A FIELD OF THE RANGE AND NOT A TOTAL BESIDE IT. A range that knows why it became garbage is the
+/// difference between a discard backlog that can be attributed and one that can only be totalled,
+/// and the reason is known exactly where the entry is displaced -- so it is recorded there, with
+/// the range, rather than reconstructed later from something that cannot answer it.
+///
+/// ONE BYTE, so the range is twelve rather than eight. The alternative -- keeping the range at
+/// eight and aggregating the cause per index -- was written first and discarded: the aggregate
+/// cannot answer "is the garbage on THIS slab rewrite or deletion", which is the question that
+/// decides between compacting a slab and waiting for it to die.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[repr(u8)]
+pub(super) enum StaleCause {
+    /// An index entry was REPLACED by one naming different bytes. The displacing write is already
+    /// durable where it landed; these bytes are what the old entry named.
+    Overwrite,
+    /// An index entry was dropped outright -- a delete, or a block ref removed by name.
+    Removed,
+    /// An index entry was dropped by a predicate: an expiry pass, a tombstone sweep, a retain.
+    Swept,
+}
+
+impl StaleCause {
+    fn slot(self) -> usize {
+        match self {
+            StaleCause::Overwrite => 0,
+            StaleCause::Removed => 1,
+            StaleCause::Swept => 2,
+        }
+    }
+}
+
+/// ONE BYTE RANGE ON ONE SLAB THAT AN INDEX ENTRY STOPPED POINTING AT, AND WHY.
+///
+/// The offset and length are `u32` because both come out of the address: `BlockAddress` is one word
+/// with the slab in the high half and the offset in the low, and `ElementEntry::length` is already
+/// a `u32`. Widening either to `u64` would widen the bounded list below without being able to
+/// describe anything an address can name.
+///
+/// THE SLAB IS NOT A FIELD. These live in a map keyed by slab, so carrying it here would store one
+/// fact in two places -- the defect the `ElementEntry` notes above describe at length.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct StaleRange {
+    pub(super) offset: u32,
+    pub(super) length: u32,
+    pub(super) cause: StaleCause,
+}
+
+impl StaleRange {
+    /// One past the last byte. Saturating, so a range at the top of the word cannot wrap into
+    /// looking like a range at the bottom of it.
+    fn end(&self) -> u32 {
+        self.offset.saturating_add(self.length)
+    }
+
+    /// Too small to be worth discarding on its own, which is the FRAGMENTATION the counts below
+    /// report. See [`MIN_DISCARD_RANGE_BYTES`].
+    fn is_fragmented(&self) -> bool {
+        u64::from(self.length) < MIN_DISCARD_RANGE_BYTES
+    }
+}
+
+/// THE SMALLEST RANGE WORTH DISCARDING ON ITS OWN, and therefore what makes a range FRAGMENTED.
+///
+/// A range counts as fragmented when its `length` is below this. A CONSTANT rather than a setting,
+/// because a setting read by nothing is a shape this tree has shipped before: it becomes a dial the
+/// moment a caller wants a different one, and until then its value has to be defensible on its own.
+///
+/// FOUR KILOBYTES, which is the page the filesystem hands back. A hole smaller than that cannot
+/// return space to the filesystem however it is punched, so a range below it is space that only a
+/// COMPACTION -- relocating the live remainder of the slab -- can recover. That is exactly the
+/// distinction `compaction_candidate_*` is for, and it is why the threshold is a property of the
+/// storage layer and not of the workload.
+pub(super) const MIN_DISCARD_RANGE_BYTES: u64 = 4_096;
+
+/// HOW MANY MERGED RANGES ONE SLAB MAY HOLD.
+///
+/// THE BOUND IS PART OF THE FIRST VERSION AND NOT A FOLLOW-UP. An append-only list of every range
+/// an overwrite ever retired grows with the WRITE RATE and never with the data, which is the shape
+/// the changefeed in this tree already has; a list like that is worse than no list, because it
+/// turns a reporting improvement into a memory leak on the write path.
+///
+/// THREE THINGS KEEP IT SMALL, and the first is the one that matters. Adjacent and overlapping
+/// ranges of the same cause MERGE rather than accumulate, so the count grows with how FRAGMENTED a
+/// slab's garbage is and not with how much of it there is: a slab overwritten front to back
+/// collapses to one range however many blocks it held. Then the cap below. Then the prune, where a
+/// discarded slab's list leaves with it.
+///
+/// Sixty-four ranges is 768 B of range per slab plus the vector's own block. AT THE CAP THE NEW
+/// RANGE IS DROPPED AND COUNTED, NOT EVICTED OVER: every range held is then still exactly a range
+/// that retired, and `dropped_ranges` says the detail is incomplete. The alternative -- extending a
+/// neighbour to swallow the hole between them -- would claim LIVE bytes as stale, and a figure
+/// that over-reports garbage is the one direction a collector must never be given.
+pub(super) const STALE_RANGES_PER_SLAB: usize = 64;
+
+/// HOW MANY SLABS MAY CARRY A RANGE LIST AT ONCE.
+///
+/// The map is pruned where a slab is discarded (`discard_stale_slabs`, called from the reclaim
+/// round with the slabs the collector removed or quarantined) and emptied wholesale where the index
+/// it describes is rebuilt. This cap is the BACKSTOP for neither of those having happened: a
+/// process that never ran a reclaim round still cannot grow this map past 512 entries.
+///
+/// The victim is the lowest-numbered slab the live tally no longer points at -- the oldest slab
+/// this shard has finished with, which is the one a collector takes first and therefore the one
+/// whose detail is worth least. Its bytes leave `pending_discard_bytes` and are counted in
+/// `discarded_bytes`, so a pruned figure is visibly pruned rather than quietly short.
+pub(super) const STALE_SLABS_TRACKED: usize = 512;
+
+/// WHAT ONE SLAB HAS HAD RETIRED OUT OF IT, recorded when the index entry was displaced.
+///
+/// TWO HALVES WITH DIFFERENT GUARANTEES, DELIBERATELY. `block_refs` and `bytes` are EXACT: every
+/// discharge adds to them and nothing but a prune takes anything away, so a ratio standing on
+/// `bytes` is standing on recorded fact. `ranges` is BOUNDED detail: capped, merged and droppable,
+/// so a range list that overflowed still leaves the byte figure exact. Those are the two things a
+/// caller asks for -- how much is dead, and where -- and only the second one can be given up.
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub(super) struct SlabStaleTally {
+    /// Index entries retired off this slab. EXACT.
+    pub(super) block_refs: u64,
+    /// Bytes those entries named, summing `ElementEntry::length` exactly as the live tally does --
+    /// so live and stale are in ONE unit and a ratio between them means something. EXACT.
+    pub(super) bytes: u64,
+    /// The retired ranges, sorted by offset, with adjacent and overlapping ones of the same cause
+    /// merged. Bounded by [`STALE_RANGES_PER_SLAB`].
+    ranges: Vec<StaleRange>,
+    /// Ranges the cap refused. The bytes are still in `bytes` above; only the WHERE was lost.
+    dropped_ranges: u32,
+}
+
+impl SlabStaleTally {
+    /// Charge one retired block, and fold its range into the list.
+    ///
+    /// MERGING REQUIRES THE SAME CAUSE. Two touching ranges that retired for different reasons are
+    /// kept apart, because the cause is a field of the range and a merged range would have to pick
+    /// one and lie about the other. It costs ranges only where a slab is being both overwritten and
+    /// deleted in the same neighbourhood, and it keeps every range's attribution exact.
+    fn record(&mut self, range: StaleRange) {
+        self.block_refs = self.block_refs.saturating_add(1);
+        self.bytes = self.bytes.saturating_add(u64::from(range.length));
+        if range.length == 0 {
+            // A zero-length range covers nothing and would be a neighbour of every offset it sat
+            // next to, which would make every neighbouring range merge through it. The ref is
+            // still charged above, so a zero-length retirement is counted and not located.
+            return;
+        }
+        let at = self.ranges.partition_point(|held| held.offset <= range.offset);
+        if at > 0 {
+            let left = self.ranges[at - 1];
+            if left.cause == range.cause && left.end() >= range.offset {
+                let end = left.end().max(range.end());
+                self.ranges[at - 1].length = end.saturating_sub(left.offset);
+                self.coalesce_from(at - 1);
+                return;
+            }
+        }
+        if at < self.ranges.len() {
+            let right = self.ranges[at];
+            if right.cause == range.cause && range.end() >= right.offset {
+                let end = right.end().max(range.end());
+                self.ranges[at] = StaleRange {
+                    offset: range.offset,
+                    length: end.saturating_sub(range.offset),
+                    cause: range.cause,
+                };
+                self.coalesce_from(at);
+                return;
+            }
+        }
+        if self.ranges.len() >= STALE_RANGES_PER_SLAB {
+            self.dropped_ranges = self.dropped_ranges.saturating_add(1);
+            return;
+        }
+        self.ranges.insert(at, range);
+    }
+
+    /// Absorb every following range of the same cause that the one at `at` now reaches.
+    ///
+    /// A MERGE CAN CLOSE A HOLE. Retiring the block BETWEEN two recorded ranges makes all three one
+    /// range, and extending only the left neighbour would leave the right one covering bytes the
+    /// left one now also covers -- which would make `merged_discard_range_count` count the same
+    /// garbage twice and report fragmentation that had just been removed.
+    fn coalesce_from(&mut self, at: usize) {
+        while at + 1 < self.ranges.len() {
+            let next = self.ranges[at + 1];
+            if next.cause != self.ranges[at].cause || self.ranges[at].end() < next.offset {
+                break;
+            }
+            let end = self.ranges[at].end().max(next.end());
+            self.ranges[at].length = end.saturating_sub(self.ranges[at].offset);
+            self.ranges.remove(at + 1);
+        }
+    }
+
+    pub(super) fn range_count(&self) -> usize {
+        self.ranges.len()
+    }
+
+    pub(super) fn dropped_range_count(&self) -> u32 {
+        self.dropped_ranges
+    }
+
+    pub(super) fn ranges(&self) -> &[StaleRange] {
+        &self.ranges
+    }
+}
+
+/// THE RETIRED SET AS ONE READING, which is what the published counters are made of.
+///
+/// Every field is derived from the range list in ONE pass, and every byte figure sums
+/// `ElementEntry::length` -- the same unit the live tally is in. Nothing here is a file size, and
+/// nothing here is derived from `total_known_physical_bytes`, which accumulates before the
+/// slab-state match and therefore does not fall when a purge frees space.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SlabStaleSummary {
+    /// Every byte recorded as retired over the window: pending plus already discarded. The sum of
+    /// the three cause figures below.
+    pub(super) stale_bytes: u64,
+    /// Bytes recorded as retired and NOT yet discarded. EXACT, and the term the block-granular
+    /// space figure adds to live bytes.
+    pub(super) pending_discard_bytes: u64,
+    pub(super) pending_discard_block_refs: u64,
+    /// Bytes that left this record because their slab was discarded or their detail pruned. The
+    /// complement of `pending_discard_bytes` within `stale_bytes`.
+    pub(super) discarded_bytes: u64,
+    /// `pending_discard_bytes` over `stale_bytes`: how much of what has been retired is still
+    /// waiting on the collector. Falls as the collector catches up.
+    pub(super) discard_backlog_ppm: u64,
+    /// Pending bytes on slabs the live tally no longer points at AT ALL -- a slab wholly dead from
+    /// this shard's view, which is what a discard candidate is: the collector can drop it whole.
+    pub(super) discard_candidate_bytes: u64,
+    pub(super) discard_candidate_slabs: u64,
+    /// Merged ranges held, over every tracked slab. Merging happens where the range is RECORDED
+    /// rather than in a status pass, so this is also the pending range count.
+    pub(super) merged_discard_range_count: u64,
+    /// Ranges shorter than [`MIN_DISCARD_RANGE_BYTES`] -- holes too small for a discard to return
+    /// space, wherever they are.
+    pub(super) fragmented_range_count: u64,
+    /// The fragmented ranges on slabs that are still partly LIVE, which are the ones only a
+    /// compaction can recover: the slab cannot be dropped whole, and the holes cannot be punched.
+    pub(super) compaction_candidate_bytes: u64,
+    pub(super) compaction_candidate_range_count: u64,
+    pub(super) compaction_candidate_slabs: u64,
+    /// Ranges the per-slab cap refused. Non-zero means the WHERE is incomplete; the bytes are not.
+    pub(super) dropped_range_count: u64,
+    pub(super) slabs_tracked: u64,
+    pub(super) slabs_pruned: u64,
+    /// Bytes retired over the window, by cause. The split is what separates rewrite pressure from a
+    /// shrinking live set: the same total means opposite things depending on which it is.
+    pub(super) overwrite_bytes: u64,
+    pub(super) removed_bytes: u64,
+    pub(super) swept_bytes: u64,
+}
+
+impl SlabStaleSummary {
+    /// Bytes the index has ever pointed at on the slabs it is still tracking: live plus pending
+    /// discard. The denominator's companion, and the numerator the space figure wants -- NOT a file
+    /// size, so the two halves of the ratio are in one unit.
+    pub(super) fn logical_image_bytes(&self, live_bytes: u64) -> u64 {
+        live_bytes.saturating_add(self.pending_discard_bytes)
+    }
+
+    /// TRUE WHEN SPACE IS PENDING THAT ONLY A COMPACTION CAN RECOVER.
+    ///
+    /// `compaction_candidate_slabs > 0`. It says a slab is carrying holes too small to punch while
+    /// still holding live blocks, so the live remainder has to be relocated before the space comes
+    /// back.
+    ///
+    /// NOT A GATE, AND NOT AN ALERT. On a store that overwrites anything at all this goes true
+    /// early and stays true, for the same reason `space_amplification_ppm` cannot be alerted on:
+    /// it reports a CONDITION, not a threshold being crossed. What it is for is deciding whether a
+    /// compaction round has anything to do -- it is false exactly when every pending byte is on a
+    /// slab the collector could drop whole, and then a compaction is wasted work.
+    pub(super) fn compaction_recommended(&self) -> bool {
+        self.compaction_candidate_slabs > 0
+    }
+}
+
 /// Per-slab live-block tally, MAINTAINED on every index mutation rather than recomputed by a
 /// whole-shard walk.
 ///
@@ -2578,6 +2856,34 @@ pub(super) struct SlabLiveTally {
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub(super) struct BlockSlabLiveIndex {
     by_slab: BTreeMap<u64, SlabLiveTally>,
+    /// WHAT LEFT, beside what is still there.
+    ///
+    /// LIVE AND STALE ARE PEERS, WHICH IS THE STRUCTURAL POINT. Staleness is RECORDED beside
+    /// liveness rather than DERIVED from it. Derived is what it was, and `logical_ever - live` is
+    /// only available after a storage-manager cycle has published the union tally -- which is why
+    /// the space figure could not move at the moment of the overwrite that caused the waste. A
+    /// structure that holds what is live and what retired side by side can answer both at once.
+    ///
+    /// THE SAME FUNNEL RECORDS BOTH, AND THAT IS WHY THEY CANNOT DISAGREE. `remove_address` is the
+    /// one place a block leaves this tally, so a stale record written anywhere else could disagree
+    /// with the live figure about what retired; written here, there is nothing to disagree with.
+    /// The alternative shape -- a sibling field on `CoreIndex` -- would have put a third `&mut` on
+    /// `insert_with_handle`, `remove` and `retain` and on every call site that already threads two
+    /// disjoint field borrows, to buy nothing this does not have.
+    ///
+    /// EPHEMERAL, AND THE WINDOW IS PART OF THE READING. The live half is rederivable -- the walk
+    /// in `recompute_block_slab_live` IS its definition -- and this half is not: the index knows
+    /// only what it still points at, and a displaced extent is exactly what it stopped holding. So
+    /// this covers the discharges made SINCE THE INDEX WAS LAST BUILT, and after a reload it is
+    /// empty however much garbage the store is carrying. Persisting it would make it a format
+    /// change; `control.rs` carries what that costs and what reading it has to allow for.
+    stale: BTreeMap<u64, SlabStaleTally>,
+    /// Retired bytes by [`StaleCause`], indexed by `StaleCause::slot`. Kept beside the ranges
+    /// rather than summed out of them because it must survive a prune: the ranges leave when a slab
+    /// is discarded and the window total must not leave with them.
+    stale_bytes_by_cause: [u64; 3],
+    stale_slabs_pruned: u64,
+    stale_bytes_discarded: u64,
     /// False until something has derived this from the index it counts.
     ///
     /// A ShardState arrives from serde with this empty, and an empty tally is indistinguishable
@@ -2625,7 +2931,37 @@ impl BlockSlabLiveIndex {
         tally.bytes = tally.bytes.saturating_add(address.length());
     }
 
-    pub(super) fn remove_address(&mut self, address: &ElementEntry) {
+    /// Discharge a block from the live tally AND record the range it retired.
+    ///
+    /// THE TWO HALVES ARE ONE STATEMENT. A design where staleness is recorded at the call sites that
+    /// already decrement this tally has two places that must agree about what left; a design where
+    /// the decrement itself records it has one. `cause` is the only thing the call site knows that
+    /// this does not, which is why it is the only thing it passes.
+    ///
+    /// RECORDED EVEN WHEN THE LIVE SIDE FINDS NOTHING TO DISCHARGE. The early return below is for a
+    /// slab with no live tally -- an under-derived counter, or a double discharge -- and the block
+    /// retired either way. Dropping the stale record with it would make the two disagree in exactly
+    /// the case this funnel exists to prevent.
+    pub(super) fn remove_address(&mut self, address: &ElementEntry, cause: StaleCause) {
+        self.record_stale(address, cause);
+        self.remove_address_unrecorded(address);
+    }
+
+    /// DISCHARGE WITHOUT RECORDING ANY STALENESS, because nothing retired.
+    ///
+    /// ONE CALLER, AND THE DISTINCTION IS NOT COSMETIC. A replacement that lands on the SAME entry
+    /// -- same slab, same offset, same length -- gives up no bytes: the index still points at them.
+    /// The stale record only ever ADDS, so counting that as pending discard would claim live bytes
+    /// as garbage. The live tally is different: its charge below is unconditional, so a skipped
+    /// discharge leaves the block counted TWICE and the shard believes it holds twice the blocks it
+    /// does. The two halves want opposite things from the same event, which is why this is a
+    /// separate door rather than an early return in the one above.
+    ///
+    /// I SHIPPED THE OTHER ARRANGEMENT FIRST and skipped both halves.
+    /// `a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it` and
+    /// `replacing_a_page_discharges_the_address_it_displaced` both went red and named it exactly:
+    /// "a branch that reports none charges without discharging".
+    pub(super) fn remove_address_unrecorded(&mut self, address: &ElementEntry) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(tally) = self.by_slab.get_mut(&address.block_slab_id()) else {
             return;
@@ -2638,6 +2974,158 @@ impl BlockSlabLiveIndex {
             // a slab it can name gets one from `tally` regardless.
             self.by_slab.remove(&address.block_slab_id());
         }
+    }
+
+    /// Append the retired range, taking the slab cap into account first.
+    ///
+    /// BOTH HALVES OF THE ADDRESS ARE NARROWED THROUGH `try_from` AND NOT `as`. The address word
+    /// holds the slab in its high 32 bits and the offset in its low 32, so neither value can exceed
+    /// `u32::MAX` today and the fallback is unreachable -- which is why it saturates to the ceiling
+    /// rather than panicking, and why it is written at all: a later address with a wider offset
+    /// would otherwise WRAP here and record a range at the wrong end of a slab.
+    fn record_stale(&mut self, address: &ElementEntry, cause: StaleCause) {
+        let length = u32::try_from(address.length()).unwrap_or(u32::MAX);
+        self.stale_bytes_by_cause[cause.slot()] =
+            self.stale_bytes_by_cause[cause.slot()].saturating_add(u64::from(length));
+        let block_slab_id = address.block_slab_id();
+        if self.stale.len() >= STALE_SLABS_TRACKED && !self.stale.contains_key(&block_slab_id) {
+            self.prune_one_stale_slab();
+        }
+        let offset = u32::try_from(address.offset()).unwrap_or(u32::MAX);
+        self.stale
+            .entry(block_slab_id)
+            .or_default()
+            .record(StaleRange { offset, length, cause });
+    }
+
+    /// Drop the detail for the slab whose detail is worth least: the lowest-numbered one the live
+    /// tally no longer points at, or the lowest-numbered one at all if every tracked slab is still
+    /// partly live. The backstop for [`STALE_SLABS_TRACKED`], never the ordinary path.
+    fn prune_one_stale_slab(&mut self) {
+        let victim = self
+            .stale
+            .keys()
+            .copied()
+            .find(|block_slab_id| {
+                self.by_slab
+                    .get(block_slab_id)
+                    .is_none_or(|tally| tally.block_refs == 0)
+            })
+            .or_else(|| self.stale.keys().next().copied());
+        let Some(victim) = victim else {
+            return;
+        };
+        self.drop_stale_slab(victim);
+    }
+
+    fn drop_stale_slab(&mut self, block_slab_id: u64) {
+        if let Some(dropped) = self.stale.remove(&block_slab_id) {
+            self.stale_slabs_pruned = self.stale_slabs_pruned.saturating_add(1);
+            self.stale_bytes_discarded = self.stale_bytes_discarded.saturating_add(dropped.bytes);
+        }
+    }
+
+    /// FORGET THE RETIRED SET FOR SLABS THAT HAVE BEEN DISCARDED. The prune, and the reason this map
+    /// is bounded by something real rather than only by its cap.
+    ///
+    /// Called from the reclaim round with the slabs the collector removed or quarantined for
+    /// destruction. Those bytes are no longer PENDING a discard -- the discard happened, or is
+    /// scheduled and already counted as `reclaimable_physical_bytes` -- so leaving them in
+    /// `pending_discard_bytes` would report the same garbage twice in two different fields.
+    ///
+    /// Counted into `discarded_bytes` rather than silently dropped, so a reader can tell a figure
+    /// that fell because garbage was collected from one that fell because detail was discarded.
+    pub(super) fn discard_stale_slabs(&mut self, block_slab_ids: impl IntoIterator<Item = u64>) {
+        for block_slab_id in block_slab_ids {
+            self.drop_stale_slab(block_slab_id);
+        }
+    }
+
+    pub(super) fn stale_tally(&self, block_slab_id: u64) -> SlabStaleTally {
+        self.stale.get(&block_slab_id).cloned().unwrap_or_default()
+    }
+
+    pub(super) fn stale_slab_count(&self) -> usize {
+        self.stale.len()
+    }
+
+    /// The retired set as one reading. O(slabs tracked) and O(ranges held), the same cost class as
+    /// every other consumer of this type, and no write-path work at all.
+    pub(super) fn stale_summary(&self) -> SlabStaleSummary {
+        let overwrite_bytes = self.stale_bytes_by_cause[StaleCause::Overwrite.slot()];
+        let removed_bytes = self.stale_bytes_by_cause[StaleCause::Removed.slot()];
+        let swept_bytes = self.stale_bytes_by_cause[StaleCause::Swept.slot()];
+        let mut summary = SlabStaleSummary {
+            stale_bytes: overwrite_bytes
+                .saturating_add(removed_bytes)
+                .saturating_add(swept_bytes),
+            discarded_bytes: self.stale_bytes_discarded,
+            slabs_tracked: self.stale.len() as u64,
+            slabs_pruned: self.stale_slabs_pruned,
+            overwrite_bytes,
+            removed_bytes,
+            swept_bytes,
+            ..SlabStaleSummary::default()
+        };
+        for (block_slab_id, stale) in self.stale.iter() {
+            summary.pending_discard_bytes =
+                summary.pending_discard_bytes.saturating_add(stale.bytes);
+            summary.pending_discard_block_refs = summary
+                .pending_discard_block_refs
+                .saturating_add(stale.block_refs);
+            summary.merged_discard_range_count = summary
+                .merged_discard_range_count
+                .saturating_add(stale.range_count() as u64);
+            summary.dropped_range_count = summary
+                .dropped_range_count
+                .saturating_add(u64::from(stale.dropped_range_count()));
+            // A SLAB WITH NO LIVE REFS IS WHOLLY DEAD FROM THIS SHARD'S VIEW, which is what the
+            // live tally's own "absent, not zero" rule makes an absent entry mean. Live REFS and
+            // not live bytes: a delete-marked block is counted by the walk this tally is held to,
+            // so its byte figure is not a reliable zero.
+            let live_refs = self
+                .by_slab
+                .get(block_slab_id)
+                .map(|tally| tally.block_refs)
+                .unwrap_or_default();
+            let mut fragmented_bytes = 0_u64;
+            let mut fragmented_ranges = 0_u64;
+            for range in stale.ranges() {
+                if range.is_fragmented() {
+                    fragmented_bytes = fragmented_bytes.saturating_add(u64::from(range.length));
+                    fragmented_ranges = fragmented_ranges.saturating_add(1);
+                }
+            }
+            summary.fragmented_range_count = summary
+                .fragmented_range_count
+                .saturating_add(fragmented_ranges);
+            if live_refs == 0 {
+                summary.discard_candidate_bytes =
+                    summary.discard_candidate_bytes.saturating_add(stale.bytes);
+                summary.discard_candidate_slabs =
+                    summary.discard_candidate_slabs.saturating_add(1);
+            } else if fragmented_ranges > 0 {
+                // STILL PARTLY LIVE AND CARRYING HOLES TOO SMALL TO PUNCH. The collector cannot
+                // drop the slab, and a discard cannot return a sub-page hole, so the live remainder
+                // has to be relocated. That is a compaction, and this is its backlog.
+                summary.compaction_candidate_bytes =
+                    summary.compaction_candidate_bytes.saturating_add(fragmented_bytes);
+                summary.compaction_candidate_range_count = summary
+                    .compaction_candidate_range_count
+                    .saturating_add(fragmented_ranges);
+                summary.compaction_candidate_slabs =
+                    summary.compaction_candidate_slabs.saturating_add(1);
+            }
+        }
+        summary.discard_backlog_ppm = if summary.stale_bytes == 0 {
+            0
+        } else {
+            summary
+                .pending_discard_bytes
+                .saturating_mul(1_000_000)
+                / summary.stale_bytes
+        };
+        summary
     }
 
     pub(super) fn tally(&self, block_slab_id: u64) -> SlabLiveTally {
@@ -2669,8 +3157,24 @@ impl BlockSlabLiveIndex {
     }
 
     /// Empty the tally and un-derive it. Pairs with `mark_ready` around a rebuild.
+    ///
+    /// THE RETIRED SET GOES WITH IT, and the counts of what was pruned go with that. A wholesale
+    /// rebuild replaces the index this describes: the retired ranges name offsets in slabs the
+    /// rebuild is about to stop pointing at, and a compaction round -- which is what calls this --
+    /// has just relocated the live set and handed the old slabs to the collector, so those bytes
+    /// have been ACTED ON rather than are pending. Carrying them across would report the same
+    /// garbage twice, once here and once as `reclaimable_physical_bytes`.
+    ///
+    /// On the rebuild paths that are NOT a compaction, this UNDER-reports: real pending discard is
+    /// forgotten. That is the safe direction, for the same reason the `ready` flag above gives -- a
+    /// figure that understates garbage under-recommends a compaction, where one that overstates it
+    /// would recommend discarding bytes that are live.
     pub(super) fn clear(&mut self) {
         self.by_slab.clear();
+        self.stale.clear();
+        self.stale_bytes_by_cause = [0; 3];
+        self.stale_slabs_pruned = 0;
+        self.stale_bytes_discarded = 0;
         self.ready = false;
     }
 
@@ -2678,6 +3182,12 @@ impl BlockSlabLiveIndex {
     ///
     /// For the paths that rebuild the index this counts -- a load, a manifest install, a
     /// bucket-ownership rebuild -- and for the drift check correcting itself.
+    ///
+    /// THE RETIRED SET IS LEFT ALONE, which is not an oversight. The walk that produces `tallies`
+    /// reads the blocks the index STILL POINTS AT, so it has nothing to say about the ones it
+    /// stopped pointing at -- a recomputed stale set would be empty by construction, and resetting
+    /// to it would delete true records every time the drift check ran. `clear` is how the retired
+    /// set is emptied, and it is called where the index is actually replaced.
     pub(super) fn reset_from(&mut self, tallies: BTreeMap<u64, SlabLiveTally>) {
         self.by_slab = tallies;
         self.ready = true;
@@ -2706,15 +3216,23 @@ impl BlockIndexMap {
         }
     }
 
-    /// Drop a block and charge the removal to the live tally.
+    /// Drop a block, charge the removal to the live tally, and record the range it retired.
+    ///
+    /// THE CAUSE IS A PARAMETER BECAUSE THE MECHANISM DOES NOT DETERMINE IT, and that was measured
+    /// rather than assumed. This door is reached by `drop_live_object_entries`, where the block is
+    /// being DELETED, and by `upsert_bucket_index_block_inner`'s supersede, where it is being
+    /// OVERWRITTEN -- the same call, two different reasons. A first version labelled the cause from
+    /// the call it went through and attributed 2,144,000 B of pure rewrite to deletion;
+    /// `the_space_figure_moves_at_the_overwrite` is what said so.
     pub(super) fn remove(
         &mut self,
         key: &u64,
         live: &mut BlockSlabLiveIndex,
+        cause: StaleCause,
     ) -> Option<BlockIndex> {
         let removed = self.remove_unaccounted(key);
         if let Some(page) = removed.as_ref() {
-            live.remove_address(&page.address);
+            live.remove_address(&page.address, cause);
         }
         removed
     }
@@ -2759,7 +3277,20 @@ impl BlockIndexMap {
         let address = page.address.clone();
         let (handle, displaced) = self.insert_unaccounted(handle, page);
         if let Some(displaced) = displaced {
-            live.remove_address(&displaced);
+            // A REWRITE THAT LANDED ON THE SAME ENTRY RETIRED NOTHING, so it is discharged WITHOUT
+            // a stale record. Recording it would make the pending-discard figure count bytes the
+            // index still points at, because that record only ever adds; skipping the DISCHARGE as
+            // well would leave the block charged twice, because `add_address` below is
+            // unconditional. Two halves, opposite requirements, one event -- see
+            // `remove_address_unrecorded`, which two existing arms wrote the reason for.
+            //
+            // Compared on the whole entry rather than on the slab and offset alone, so a block
+            // rewritten in place at a DIFFERENT length still records the range it gave up.
+            if displaced == address {
+                live.remove_address_unrecorded(&displaced);
+            } else {
+                live.remove_address(&displaced, StaleCause::Overwrite);
+            }
         }
         live.add_address(&address);
         handle
@@ -3025,12 +3556,18 @@ impl BlockIndexMap {
         }
     }
 
-    /// Drop the blocks a predicate rejects, discharging each from the live tally as it goes.
+    /// Drop the blocks a predicate rejects, discharging each from the live tally as it goes and
+    /// recording the range each one retired.
     ///
-    /// `live` comes first so the predicate stays the trailing argument it was.
+    /// `live` comes first so the predicate stays the trailing argument it was, and `cause` follows
+    /// it for the same reason. The cause is the PREDICATE'S subject and not this call's: the four
+    /// engine-level `retain`s drop a supersede set, a delta's covered keys, an object being deleted
+    /// and a block being marked deleted, which are not one reason. See
+    /// [`BlockIndexMap::remove`] for the measurement that made the cause a parameter.
     pub(super) fn retain(
         &mut self,
         live: &mut BlockSlabLiveIndex,
+        cause: StaleCause,
         mut keep: impl FnMut(&u64, &mut BlockIndex) -> bool,
     ) {
         match self {
@@ -3038,7 +3575,7 @@ impl BlockIndexMap {
             BlockIndexMap::One(handle, page) => {
                 let handle = *handle;
                 if !keep(&handle, page) {
-                    live.remove_address(&page.address);
+                    live.remove_address(&page.address, cause);
                     *self = BlockIndexMap::Empty;
                 }
             }
@@ -3046,7 +3583,7 @@ impl BlockIndexMap {
                 pages.retain_mut(|(handle, page)| {
                     let kept = keep(&*handle, page);
                     if !kept {
-                        live.remove_address(&page.address);
+                        live.remove_address(&page.address, cause);
                     }
                     kept
                 });

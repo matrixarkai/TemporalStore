@@ -4581,7 +4581,10 @@ fn fold_delta_block_items(
                 ),
             );
             let routing_bucket = item.routing_bucket;
-            bucket.block_index.retain(&mut bucket_index.block_slab_live, |handle, page| {
+            bucket.block_index.retain(
+                &mut bucket_index.block_slab_live,
+                crate::engine::state::StaleCause::Overwrite,
+                |handle, page| {
                 let Some(beside) = names.get(handle) else {
                     // A PAGE NOTHING NAMES IS NOT SUPERSEDED BY THIS ITEM. It cannot match an
                     // object key it has none of, and dropping it on the kind alone would take
@@ -4623,7 +4626,10 @@ fn fold_delta_block_items(
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
             let names = crate::engine::state::page_identities_in(bucket, &identities);
-            bucket.block_index.retain(live, |handle, page| {
+            bucket.block_index.retain(
+                live,
+                crate::engine::state::StaleCause::Overwrite,
+                |handle, page| {
                 let Some(beside) = names.get(handle) else {
                     // NOT COVERED BY A KEY IT HAS NONE OF.
                     return true;
@@ -5660,7 +5666,10 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
                 &shard.bucket_index.object_block_lookup,
             ),
         );
-        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
+        bucket.block_index.retain(
+            &mut shard.bucket_index.block_slab_live,
+            crate::engine::state::StaleCause::Removed,
+            |handle, page| {
             let Some(beside) = names.get(handle) else {
                 return true;
             };
@@ -5945,7 +5954,10 @@ fn mark_bucket_index_block_deleted_recording(
                 &shard.bucket_index.object_block_lookup,
             ),
         );
-        bucket.block_index.retain(&mut shard.bucket_index.block_slab_live, |handle, page| {
+        bucket.block_index.retain(
+            &mut shard.bucket_index.block_slab_live,
+            crate::engine::state::StaleCause::Removed,
+            |handle, page| {
             // THE THIRD COMPONENT `retain` IN THE ENGINE, AND THE ONLY ONE THAT WAS NOT VACUOUS.
             //
             // This read `page.component.as_deref() == component`, and with every entry's name

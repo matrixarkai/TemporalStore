@@ -441,7 +441,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     let mut removed_any = false;
     for (object_key, entry) in pages.iter().step_by(3) {
         let handle = block_index_handle(object_key, entry);
-        if index.remove(&handle, &mut live).is_some() {
+        if index.remove(&handle, &mut live, crate::engine::state::StaleCause::Removed).is_some() {
             removed_any = true;
         }
     }
@@ -1682,7 +1682,7 @@ fn every_written_page_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
             .get_mut(&routing_bucket)
             .expect("the bucket named a moment ago is still there");
         assert!(
-            bucket.block_index.remove(&handle, &mut live).is_some(),
+            bucket.block_index.remove(&handle, &mut live, crate::engine::state::StaleCause::Removed).is_some(),
             "the planted removal took nothing out, so the count below cannot have moved"
         );
         key
