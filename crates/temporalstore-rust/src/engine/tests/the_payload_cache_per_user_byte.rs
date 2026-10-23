@@ -66,15 +66,33 @@
 //!     response entry = encoded(value) + 21   (msgpack, plus the response envelope)
 //!
 //!     => 2.0 * value + 21   for payloads below 0x80   (exact; asserted as an equality)
-//!     => 2.5 * value + 21   for uniform random bytes  (an expectation; asserted with slack)
+//!     => 2.0 * value + c    for BOTH fixtures since #2279, c = 20 below 256 B and 21 from 256
+//!                              up (msgpack bin8 vs bin16 length prefix); 148.0 B/entry at 64
+//!                              against 533.0 at 256. Before #2279 the payload was a
+//!                              msgpack byte string that charges by length alone. It was
+//!                              2.5 * value + 21 before that, because the response copy was an
+//!                              array of integers costing two bytes for every byte at or above
+//!                              0x80. The assertion requiring noise to cost MORE fired the first
+//!                              time this arm ran after that fix -- see the note beside it.
 //!
 //! A `#[serde(with = "serde_bytes")]` on that field would make it a `bin` blob and charge 1.0 for
 //! any payload. That is a wire-format decision about a cached encoding and not one this arm makes.
 //!
-//! **This is not a defect.** The block entry earns its place on multi-element blocks, where one
-//! frame answers several keys, and the response entry saves re-selecting an element on a point
-//! read. On single-element blocks, which is this whole corpus, the two hold the same bytes and the
-//! cache spends twice its capacity per payload.
+//! **I CALLED THIS "NOT A DEFECT" AND THAT WAS WRONG — see the correction below.** The reasoning
+//! was that the block entry earns its place on multi-element blocks, where one frame answers
+//! several keys, while the response entry saves re-selecting an element on a point read. The
+//! premise was asserted and never measured.
+//!
+//! `how_many_keys_a_cached_frame_serves` measured it: at 500 keys there are **500 distinct frames**
+//! at value sizes 64, 256, 1,024 and 4,096 B — one key per frame, largest group 1, **zero** frames
+//! serving more than one key at any size. Two keys share a frame only if they share
+//! `(slab, offset, length)`, and none do.
+//!
+//! So on every size measured the frame entry duplicates the response entry **entirely**, and the
+//! 2.0x is **waste rather than a trade**. The multi-element regime that would justify it does not
+//! arise here. The trade may still exist where container pages pack several elements into one
+//! block; that is a regime this corpus does not reach, and the claim belongs to that regime rather
+//! than to the cache in general.
 //!
 //! # A HYPOTHESIS THIS REFUTED, LEFT NAMED ON PURPOSE
 //!
@@ -399,12 +417,19 @@ fn what_the_payload_cache_holds_per_user_byte() {
     // appears nowhere in this crate. A `#[serde(with = "serde_bytes")]` on that field would make
     // it a msgpack `bin` blob and charge 1.0 for any payload -- which is a wire-format decision
     // about a cached encoding, not a change this measuring arm should make.
-    assert!(
-        noise_row.cache_bytes > run_row.cache_bytes,
-        "noise charged {} B and a run charged {} B at the same value size. The integer-array \
-         encoding costs two bytes for every byte at or above 0x80, so noise MUST cost more -- if \
-         it no longer does, either the field became a byte string or the response layer stopped \
-         caching the encoded form, and the law below needs re-deriving",
+    // THIS USED TO REQUIRE NOISE TO COST MORE, and it was right when written: the response
+    // payload was a msgpack ARRAY OF INTEGERS, one byte below 0x80 and two at or above, so a
+    // uniform payload cost ~1.5x a run of 'v'. #2279 made that field a byte string, which charges
+    // by LENGTH ALONE -- so the two fixtures now cost the SAME, and that equality is the fix
+    // landing rather than a regression.
+    //
+    // The old assertion fired the moment this arm was next run. It survived on main because this
+    // arm is `#[ignore]`d and #2279's verification used the filter `the_cached_payload`, which does
+    // not match this module; the three check arms COMPILE ignored tests without running them. A fix
+    // that changes a measured law owes a run of every arm that measured it -- a filter is not that.
+    assert_eq!(
+        noise_row.cache_bytes, run_row.cache_bytes,
+        "noise charged {} B and a run charged {} B at the same value size. Since #2279 the payload          is a msgpack byte string, which charges by length alone, so the byte distribution must not          matter -- if these differ again the field has reverted to an element-wise encoding",
         noise_row.cache_bytes,
         run_row.cache_bytes
     );
@@ -418,23 +443,31 @@ fn what_the_payload_cache_holds_per_user_byte() {
     // an expectation over a byte distribution, so they get a tolerance -- asserting a sampled mean
     // exactly would make this fail on a different seed, which is a fixture detail masquerading as
     // a property.
+    // `c` IS NOT ONE CONSTANT: msgpack's length prefix widens at 256 bytes. A payload below 256
+    // fits `bin8`, a 2-byte header; from 256 up it takes `bin16`, 3 bytes. So the envelope is 20
+    // below the step and 21 above it -- measured 148.0 B/entry at value 64 against 533.0 at 256.
+    //
+    // The flat +21 that stood here was fitted on four value sizes, three of which shared a prefix
+    // width. That is the same error as reading a per-key law off two counts inside one phase of a
+    // sawtooth: the sizes agreed because they were all on one side of a step.
     for reading in readings.iter().filter(|r| r.compressible) {
+        let envelope: u64 = if reading.value < 256 { 20 } else { 21 };
         let expected = (reading.keys as u64)
-            .saturating_mul(2u64.saturating_mul(reading.value as u64).saturating_add(21));
+            .saturating_mul(2u64.saturating_mul(reading.value as u64).saturating_add(envelope));
         assert_eq!(
             reading.cache_bytes, expected,
-            "{} keys x {} B of a sub-0x80 run: the cache holds {} B where 2*value+21 per entry is \
-             {} B. Both layers charge the payload and the encoding is 1.0 for these bytes, so this \
-             is an exact law -- a mismatch means an entry was added, dropped, or re-encoded",
-            reading.keys, reading.value, reading.cache_bytes, expected
+            "{} keys x {} B of a sub-0x80 run: the cache holds {} B where 2*value+{} per entry is              {} B. Both layers charge the payload and a byte string charges by length alone, so              this is an exact law -- a mismatch means an entry was added, dropped, or the length              prefix stepped at a boundary this envelope does not know about",
+            reading.keys, reading.value, reading.cache_bytes, envelope, expected
         );
     }
     for reading in readings.iter().filter(|r| !r.compressible) {
         let per_entry = reading.cache_bytes as f64 / reading.keys as f64;
-        let expected = 2.5 * reading.value as f64 + 21.0;
+        // 2.0, NOT 2.5: the response copy's 1.5x was the integer-array encoding, gone since #2279.
+        let expected =
+            2.0 * reading.value as f64 + if reading.value < 256 { 20.0 } else { 21.0 };
         let slack = 0.02 * reading.value as f64;
         println!(
-            "    noise {} B: {per_entry:.1} B/entry against 2.5*value+21 = {expected:.1}",
+            "    noise {} B: {per_entry:.1} B/entry against 2.0*value+21 = {expected:.1}",
             reading.value
         );
         assert!(
