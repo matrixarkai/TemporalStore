@@ -1891,9 +1891,11 @@ impl TemporalEngine {
     /// an eight-thousand-key shard's cache, and the cache term runs about 4.5x the index term at
     /// every size tried. So a constant threshold low enough to fire on a fat index also fires on an
     /// idle shard sharing the process, and one high enough to be safe has its trigger set by other
-    /// shards. That is why `enable_evict` defaults off, and
-    /// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory` says the remaining
-    /// decision is NARROWING THE SIGNAL rather than picking a number.
+    /// shards. That was the argument for `enable_evict` defaulting off, and it is unretired --
+    /// the flag now defaults ON by direction, with
+    /// `enable_evict_is_on_and_its_gate_still_reads_other_shards_memory` recording the trade and
+    /// measuring that a round takes victims once and then finds none. The remaining ENGINEERING
+    /// decision is unchanged: narrowing the signal rather than picking a number.
     ///
     /// This is that narrowing. It reads `bucket_index_resident_bytes` and nothing else: the term is
     /// per-shard, and it is also the ONLY term a release can actually reduce, so a bound on it is a
@@ -2399,10 +2401,12 @@ mod eviction_round_scale {
         );
     }
 
-    /// WHAT ONE EVICTION ROUND COSTS AS THE STORE GROWS, if eviction were turned on.
+    /// WHAT ONE EVICTION ROUND COSTS AS THE STORE GROWS, now that eviction is turned on.
     ///
-    /// Eviction is dark in production -- `enable_evict` defaults to false -- so this is
-    /// conditional by construction and says so. It measures allocation CALLS and BYTES across one round at two
+    /// Eviction is NO LONGER dark in production -- `enable_evict` defaults on now -- so this
+    /// stopped being a conditional measurement and became a measurement of what a shipped
+    /// round costs. The wording is updated rather than the test, because what it measures is
+    /// the same thing; what changed is that the cost is now paid rather than hypothetical. It measures allocation CALLS and BYTES across one round at two
     /// corpus sizes and prints the ratio beside the corpus ratio, so a cost that tracks the store
     /// and a cost that does not are told apart by a number rather than by reading the code.
     ///
@@ -2640,8 +2644,8 @@ mod eviction_round_scale {
             }
         };
         println!(
-            "\n  ONE SAMPLED EVICTION ROUND, at two corpus sizes (eviction defaults OFF; this is what \
-             it WOULD cost)\n\
+            "\n  ONE SAMPLED EVICTION ROUND, at two corpus sizes (eviction defaults ON; this is what a \
+             shipped round costs)\n\
              \n                                {SMALL:>10} objects {LARGE:>10} objects      ratio\n\
                buckets                     {small_buckets:>10} {large_buckets:>18}   {:>8.2}x\n\
                victims chosen              {small_victims:>10} {large_victims:>18}\n\

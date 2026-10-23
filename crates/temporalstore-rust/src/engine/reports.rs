@@ -3360,7 +3360,8 @@ pub struct StorageManagerCycleRequest {
     /// GATED ON ITSELF, NOT ON `enable_evict`, and that is the point of it. The eviction stage's
     /// own gate sums four PROCESS-WIDE cache terms with one per-shard index term, so a ten-key
     /// shard's gate reads a busy shard's cache -- measured at 99.95% of the signal -- which is why
-    /// `enable_evict` defaults off and should stay off. This bound reads
+    /// `enable_evict` carried that defect to its own default, which is on now by direction with
+    /// the objection unretired. This bound is the narrowed alternative and reads
     /// `bucket_index_resident_bytes` and nothing else: per-shard, and the only term a release can
     /// reduce. Making it inherit the wide gate's disabled state would hide a safe trigger behind an
     /// unsafe one.
@@ -3540,8 +3541,20 @@ fn default_storage_manager_stage_enabled() -> bool {
     true
 }
 
+/// The cache pressure a round needs before the eviction stage will act.
+///
+/// ONE BYTE, so the gate passes on any pressure at all. That is not a tuning choice left
+/// half-made: the gate's signal sums four PROCESS-WIDE cache terms with one per-shard index
+/// term, measured at 99.95% another shard's cache on a ten-key shard, so a number large enough
+/// to mean anything would have its trigger set by other shards. What bounds a round is
+/// therefore `eviction_batch_limit` and `eviction_count_limit`, not this.
+///
+/// A `pub const` because the periodic loop needs the same value and could not reach a private
+/// fn, so it held 0 -- an accidental number where a considered one already existed next door.
+pub const DEFAULT_STORAGE_MANAGER_EVICTION_THRESHOLD: u64 = 1;
+
 fn default_storage_manager_eviction_threshold() -> u64 {
-    1
+    DEFAULT_STORAGE_MANAGER_EVICTION_THRESHOLD
 }
 
 /// What one stage of a maintenance round walked, in this engine's own units.

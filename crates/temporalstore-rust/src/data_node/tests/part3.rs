@@ -4351,18 +4351,22 @@ time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
             );
         }
 
-        // `enable_evict` is the ONE stage flag that defaults to false (manual `Default` impl, with
-        // a comment saying so), so a subtract-one row for it would toggle nothing and report a
-        // false zero. Measure it the other way round: what turning it ON adds.
-        let (with_evict, evict_stages) = scan_once(
+        // INVERTED WITH THE DEFAULT, and it had to be. This read: `enable_evict` is the one
+        // stage flag that defaults to FALSE, so a subtract-one row would toggle nothing and
+        // report a false zero -- so measure what turning it ON adds instead. The flag defaults
+        // ON now, which inverts that reasoning exactly: `enable_evict: true,
+        // ..Default::default()` IS the default, the two scans would be identical, and the row
+        // would report the very false zero the old comment existed to avoid. So this is a
+        // subtract-one row like every other stage's: what turning it OFF takes away.
+        let (without_evict, evict_stages) = scan_once(
             objects,
-            StorageManagerOptions { enable_evict: true, ..Default::default() },
+            StorageManagerOptions { enable_evict: false, ..Default::default() },
         );
         eprintln!(
-            "  [stage-scan] {objects:>6}   evict is OFF by default; ON -> {with_evict:>9} \
-(adds {:>9} entries, {:>5.1}x the shard), stages {evict_stages:?}",
-            with_evict.saturating_sub(all_on),
-            with_evict.saturating_sub(all_on) as f64 / objects as f64,
+            "  [stage-scan] {objects:>6}   evict is ON by default; OFF -> {without_evict:>9} \
+(evict accounts for {:>9} entries, {:>5.1}x the shard), stages {evict_stages:?}",
+            all_on.saturating_sub(without_evict),
+            all_on.saturating_sub(without_evict) as f64 / objects as f64,
         );
     }
 }
@@ -8689,7 +8693,36 @@ fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
     );
 }
 
-/// THE DECISION ON THE DEFAULT: `enable_evict` stays OFF, and this is why, measured.
+/// THE DECISION ON THE DEFAULT: `enable_evict` is now ON, and the objection to it is still
+/// open. Both halves of that sentence are the point of this test.
+///
+/// # THE FLAG WAS TURNED ON BY DIRECTION, NOT BECAUSE THE OBJECTION WAS ANSWERED
+///
+/// Everything below was written while the flag was off and is kept verbatim, because none of
+/// it stopped being true. What changed is the decision, not the measurement. A reader who
+/// finds this test should be able to see exactly what was traded, so:
+///
+///   WHAT TURNING IT ON BUYS -- the ninth of nine stages stops being dark. With
+///   `eviction_dump_before_evict` on, a round dumps and then releases resident page lists,
+///   which is the only term a release can reduce, and the work is bounded per round by
+///   `eviction_batch_limit` (16 buckets) and `eviction_count_limit` (100 objects) rather than
+///   by the store.
+///
+///   WHAT IT COSTS -- measured in this very test, and milder than the gate's arithmetic reads.
+///   A sixty-four-key shard under no memory pressure anyone would act on DOES pass the gate
+///   every round, because `pressure_before < 1` closes only at exactly zero pressure. But an
+///   open gate with no candidates takes nothing: the first shipped round takes its victims and
+///   the second finds none, asserted below in both directions. So the cost is paid once per
+///   shard-worth of releasable pages, not once per tick, and the round's work is bounded by
+///   `eviction_batch_limit` and `eviction_count_limit` besides.
+///
+///   WHAT WOULD RETIRE THE OBJECTION -- unchanged, and stated at the bottom of this doc:
+///   narrowing the gate's signal so every term belongs to the shard being decided about.
+///   `apply_index_resident_bound` is that narrowed gate and it already exists, reading
+///   `bucket_index_resident_bytes` and nothing else. It is gated on ITSELF rather than on this
+///   flag, precisely so the safe trigger is not hidden behind the unsafe one.
+///
+/// # AND THE ORIGINAL ARGUMENT, KEPT BECAUSE IT IS STILL THE ARGUMENT
 ///
 /// RESTATED, NOT RE-GOLDENED. This test was
 /// `enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure`, and it
@@ -8732,21 +8765,31 @@ fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
 /// `the_declining_gate_pays_no_cache_listing` exists to keep out of the round. So the remaining
 /// decision is narrowing the gate's signal, not picking a number, and it is not made here.
 #[test]
-fn enable_evict_stays_off_because_its_gate_reads_other_shards_memory() {
+fn enable_evict_is_on_and_its_gate_still_reads_other_shards_memory() {
     let defaults = StorageManagerOptions::default();
 
     // The default is a DECISION, pinned here so a later edit to the `Default` impl has to come
-    // past this test and its reasoning rather than sliding through as a tidy-up.
+    // past this test and its reasoning rather than sliding through as a tidy-up. It now pins
+    // the OTHER answer, and the reasoning above says why that is a direction rather than a
+    // refutation.
     assert!(
-        !defaults.enable_evict,
-        "enable_evict now defaults on; the two defaults below must have changed with it"
+        defaults.enable_evict,
+        "enable_evict no longer defaults on. If that is a considered reversal, the doc above is \
+         the argument FOR turning it off and nothing in it needs rewriting -- restore the \
+         earlier assertions rather than deleting this one"
     );
+    // ONE, NOT ZERO, AND THE DIFFERENCE IS COSMETIC -- which is the honest way to pin it. The
+    // gate is `pressure_before < threshold`, so a threshold of 1 closes only for a shard whose
+    // pressure is exactly zero. Any shard with a byte of cache is past it. The value is the
+    // considered one from the cycle request rather than an accidental 0, and objection 2 below
+    // -- that no CONSTANT threshold can be both safe and effective off this signal -- is
+    // untouched by the change.
     assert_eq!(
-        defaults.eviction_memory_pressure_threshold, 0,
-        "the eviction threshold is no longer 0. That is objection 1 above retired, but objection 2 \
-         -- that the gate's cache terms are process-wide, so no constant threshold is both safe \
-         and effective -- is not retired by a number. Revisit the enable_evict decision against \
-         both, rather than deleting this assertion"
+        defaults.eviction_memory_pressure_threshold,
+        crate::engine::reports::DEFAULT_STORAGE_MANAGER_EVICTION_THRESHOLD,
+        "the eviction threshold is no longer the cycle request's considered value. A number here \
+         does not retire objection 2 -- that the gate's cache terms are process-wide, so no \
+         constant threshold is both safe and effective -- so revisit that rather than this"
     );
     // RESTATED. This asserted `!defaults.eviction_dump_before_evict` and told a future reader to
     // revisit the enable_evict default if it ever turned on. It has turned on, on the evidence the
@@ -8789,23 +8832,35 @@ fn enable_evict_stays_off_because_its_gate_reads_other_shards_memory() {
         },
     );
 
-    // CONTROL: the shipped default does not reach the stage at all.
+    // CONTROL, INVERTED WITH THE DEFAULT. This asserted the shipped default never reached the
+    // stage, which was the whole shape of the old finding: the harm was what WOULD happen if
+    // anyone flipped the flag. The flag is flipped, so the shipped default now reaches the
+    // stage and the control's job is to say so -- if this ever skips as `evict_disabled` again,
+    // the default moved back and the doc above is the argument to re-read.
     let shipped = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
     assert!(
-        shipped
+        !shipped
             .skipped_stages
             .iter()
             .any(|stage| stage == "evict_disabled"),
-        "the shipped default already evicts: skipped={:?} executed={:?}",
+        "the shipped default skips eviction as disabled, so the stage is dark again: \
+         skipped={:?} executed={:?}",
         shipped.skipped_stages,
         shipped.executed_stages
     );
 
-    // TREATMENT: flip ONLY `enable_evict`, exactly as a "default it on" change would.
+    // TREATMENT: the shipped default itself, which is what this arm used to CONSTRUCT by hand.
+    // Left as an explicit struct rather than collapsed to `default()`, so that the arm still
+    // says which flag it is about and still fails if that flag is no longer what it names.
     let would_be_default = StorageManagerOptions {
         enable_evict: true,
         ..StorageManagerOptions::default()
     };
+    assert!(
+        would_be_default.enable_evict == StorageManagerOptions::default().enable_evict,
+        "this arm no longer measures the SHIPPED round -- it sets a flag the default does not, \
+         so what it measures is a hypothetical again and the prose above must say so"
+    );
     let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &would_be_default);
     let report = runtime.run_storage_manager_once(1, would_be_default);
     let eviction = report
@@ -8820,28 +8875,58 @@ fn enable_evict_stays_off_because_its_gate_reads_other_shards_memory() {
         report.executed_stages
     );
     assert_eq!(
-        eviction.memory_pressure_threshold, 0,
-        "this round did not use the default threshold, so it is not the round a default-on change \
-         would produce"
+        eviction.memory_pressure_threshold,
+        crate::engine::reports::DEFAULT_STORAGE_MANAGER_EVICTION_THRESHOLD,
+        "this round did not use the default threshold, so it is not the shipped round"
     );
 
-    // AND THE FINDING. With a threshold of 0 the gate cannot close: the comparison is
-    // `pressure_before < 0`, which is false for every shard that has ever existed.
+    // AND THE FINDING, WHICH IS NOW A PROPERTY OF THE SHIPPED ROUND RATHER THAN OF A
+    // HYPOTHETICAL ONE. The comparison is `pressure_before < 1`, so the gate closes only for a
+    // shard at exactly zero pressure and opens for every other. This 64-key shard is under no
+    // memory pressure anyone would act on and the gate opens anyway: that is the cost named at
+    // the top, asserted rather than described.
     assert!(
         eviction.pressure_gate_open,
-        "the gate declined at threshold 0, which would make this objection moot -- recheck it"
+        "the gate declined at the shipped threshold, which would mean the cost named at the top \
+         of this test is no longer real -- recheck it before trusting the doc"
     );
     assert_eq!(
         eviction.skipped_reason, "",
         "the stage skipped for {:?} rather than evicting, so it did not act at zero pressure",
         eviction.skipped_reason
     );
+
+    // AND THE PART THE OLD ARM COULD NOT SEE, WHICH IS THE ANSWER TO ITS OWN WORRY.
+    //
+    // This asserted the round took victims, and it did -- because the control round above ran
+    // with the flag OFF and left them for it. With the flag on, the CONTROL round is the one
+    // that takes them, and this second round finds none: measured at pressure 6144 with the
+    // gate open and the stage running, zero victims.
+    //
+    // That distinction is the whole difference between a stage that costs a shard its pages
+    // every tick and one that costs them once. The gate's arithmetic says the gate opens every
+    // round, and that is true; what it does not say is that an open gate with no candidates
+    // takes nothing. So the honest measurement is round-over-round, and it is asserted in both
+    // directions: the first round acts, the second finds nothing left to act on.
+    let first_round_victims = shipped
+        .eviction
+        .as_ref()
+        .map(|report| report.selected_victims.len())
+        .unwrap_or(0);
     assert!(
-        !eviction.selected_victims.is_empty(),
-        "the round took no victims, so default-on would be harmless here and this objection needs \
-         a different fixture: pressure={} threshold={}",
-        eviction.pressure_before,
-        eviction.memory_pressure_threshold
+        first_round_victims > 0,
+        "the FIRST shipped round took no victims either, so this fixture no longer reaches the \
+         stage's actuator at all and nothing below is about eviction: skipped={:?} \
+         executed={:?}",
+        shipped.skipped_stages,
+        shipped.executed_stages
+    );
+    assert!(
+        eviction.selected_victims.is_empty(),
+        "the second round took {} more victims, so the stage does NOT converge on an idle shard \
+         -- it takes pages every round, which is the cost the doc at the top of this test says \
+         it does not pay. Re-read that doc before changing this assertion",
+        eviction.selected_victims.len()
     );
     // RESTATED, AND THE RESTATEMENT IS THE POINT. This used to assert `!eviction.dump_before_evict`
     // and an EMPTY manifest list, and its comment read "a dirty bucket evicted this way keeps
