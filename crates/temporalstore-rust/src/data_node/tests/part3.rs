@@ -2158,7 +2158,16 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
         panic!("expected gc output");
     };
     assert!(output.status.ok);
-    assert_eq!(output.cache_entries_removed, 2);
+    // ONE CACHE ENTRY PER READ KEY, where this was two. The single `StringGet` above used to
+    // populate BOTH cache layers for the block it read -- the command response under
+    // `CacheKey::string(shard, key)` and the block frame under `CacheKey::page_with_slot(...)` --
+    // and #2291 stopped writing the response copy, because it was memory-only with a single reader
+    // while the frame is the tiered, persistent copy. So an invalidating GC finds one entry for
+    // that block, not two.
+    //
+    // KEPT EXACT. The count is what this test is for; a `>=` here would stop noticing a layer
+    // appearing or the invalidation missing one.
+    assert_eq!(output.cache_entries_removed, 1);
     assert!(output.cache_disk_bytes_removed > 0);
     assert_eq!(output.wal_records_removed, 2);
     assert_eq!(output.index_log_records_removed, 1);
