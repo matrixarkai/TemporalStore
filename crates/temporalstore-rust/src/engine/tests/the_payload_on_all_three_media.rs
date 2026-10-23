@@ -27,15 +27,18 @@
 //!
 //! # THE SHAPE THIS PUTS IN ONE PLACE
 //!
-//! Memory is the dearest of the three media, and half of its cost is a second copy of the payload:
-//! a point read fills both the command response under `CacheKey::string` and the block frame under
-//! `CacheKey::page_with_slot`. Disk — the medium usually watched — is the cheapest.
+//! Memory used to be the dearest of the three media, at 2.082x, because a point read filled TWO
+//! cache layers that both held the payload: the command response under `CacheKey::string` and the
+//! block frame under `CacheKey::page_with_slot`. **The logical copy is gone**, so memory is now
+//! exactly 1.000x — one copy, charged by length — and disk is the only medium whose figure depends
+//! on the data.
 //!
-//! WHICH COPY COULD GO IS NOT SETTLED BY THE FRAME-SHARING COUNT, though an earlier reading of this
+//! WHICH COPY WENT WAS NOT SETTLED BY THE FRAME-SHARING COUNT, though an earlier reading of this
 //! arm said it was. `how_many_keys_a_cached_frame_serves` shows a frame never amortises across
-//! keys; it does not show the frame entry is unreachable. That key is read by 25 call paths and is
-//! the key of the persistent block cache, so the copy with one reader and no tier of its own is the
-//! LOGICAL one. `what_the_frame_layer_saves_under_eviction` prices the pair under pressure.
+//! keys; it does not show the frame entry is unreachable. The frame key is read by 25 call paths
+//! and is the key of the persistent block cache, while the response copy was memory-only with a
+//! single reader — so the response copy was the one to drop, and it was the larger of the two by the
+//! msgpack envelope. `what_the_frame_layer_saves_under_eviction` holds the before-and-after.
 //!
 //! rust-internal: measures this crate's own counters, no product behaviour
 //!
@@ -135,16 +138,16 @@ fn the_payload_on_all_three_media() {
     println!();
     println!("    the denominator is the SAME for every ratio: user bytes offered to the store.");
     println!(
-        "    memory is the dearest medium, and half of it is a SECOND COPY of the payload: the"
+        "    memory is now EXACTLY logical: one copy of the payload, charged by length. It was"
     );
     println!(
-        "    command response under the logical key, and the block frame under the physical one."
+        "    2.082x while the command response under the logical key held it as well as the block"
     );
     println!(
-        "    which copy could go is not settled by the frame-sharing count -- the frame key is the"
+        "    frame under the physical one. The response copy was memory-only, had one reader"
     );
     println!(
-        "    persistent block cache's key and has 25 call paths; the response copy has one reader."
+        "    against the frame key's 25 call paths, and was the larger by the msgpack envelope."
     );
     println!();
 
@@ -182,14 +185,16 @@ fn the_payload_on_all_three_media() {
          distribution must not matter -- if these differ, an element-wise encoding is back"
     );
 
-    // ---- AND MEMORY IS DEARER THAN LOGICAL, which is the headline. It is the two cache layers:
-    // ---- the command response under the logical key and the block frame under the physical
-    // ---- address, both holding the payload.
-    assert!(
-        noise_memory > noise_logical,
-        "the cache holds {noise_memory} B for {noise_logical} B of payload. Two layers hold it, so \
-         memory must exceed logical -- if it no longer does, one layer stopped caching and the \
-         duplication this figure prices is gone"
+    // ---- MEMORY NOW EQUALS LOGICAL EXACTLY, which is the headline and it moved. This asserted
+    // ---- that memory must EXCEED logical, because two cache layers held the payload: the command
+    // ---- response under the logical key and the block frame under the physical address. The
+    // ---- logical copy is gone -- it was memory-only, single-reader, and larger by the response
+    // ---- envelope -- so the cache now holds exactly one copy charged by length, and the figure
+    // ---- is 1.000x rather than 2.082x.
+    assert_eq!(
+        noise_memory, noise_logical,
+        "the cache holds {noise_memory} B for {noise_logical} B of payload, not exactly one copy. \
+         Above means a second copy or an envelope is back; below means entries are missing"
     );
 
     // ---- THE TWO FIXTURES OFFERED THE SAME LOGICAL BYTES, or the ratios are over different

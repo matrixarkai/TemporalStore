@@ -124,6 +124,36 @@
 //! doubles `puts` and more than doubles evictions. A second copy that changes no outcome and
 //! doubles the eviction rate is a cost; which copy to drop is settled by which one has readers.
 //!
+//! # RESOLVED: THE LOGICAL COPY WAS THE ONE THAT WENT, AND THE LAW IS NOW `value`
+//!
+//! Three facts picked the half, none of them the key-sharing count:
+//!
+//!   * `cached_response` stored with `put_memory_only`, so the response copy was MEMORY-ONLY,
+//!     while the frame goes through `cache.put` and is tiered and persistent.
+//!   * Six arms in `part2` assert a tiny memory cache refills from that persistent tier **without a
+//!     block-store read**.
+//!   * The frame key has 25 call paths; the string response key had exactly one reader.
+//!
+//! So the response copy was single-reader, untiered, non-persistent — and the LARGER of the two by
+//! the msgpack envelope. It is no longer written. `Command::StringGet` reads through
+//! `read_bucket_index_value` directly and the frame entry serves the repeat read.
+//!
+//! The whole history of the law, each step found by an assertion written against the one before:
+//!
+//!     2.5 * value + 21   response copy as a msgpack ARRAY OF INTEGERS (2 bytes per byte >= 0x80)
+//!     2.0 * value + c    after #2279 made it a byte string; c = 20 below 256 B, 21 from there up
+//!     1.0 * value        now — no second copy, so no response envelope at all
+//!
+//! Measured at `value + 0` exactly: 64.0, 256.0, 1,024.0 and 4,096.0 B an entry, over/entry 0.0,
+//! `cache/user` **1.000x** at every value size and corpus size, identical for a run and for noise.
+//! The payload cache holds exactly one copy of the payload and nothing else, and this arm now pins
+//! that — so a new layer, an envelope, or a re-encoding breaks it immediately, in bytes.
+//!
+//! What it cost is named too: a repeat read no longer short-circuits at the logical key, so it pays
+//! the resident-map lookup and the element selection again. `what_the_frame_layer_saves_under_eviction`
+//! confirms it pays **no** extra block-store read — 2,000 of 2,000 warm reads still served by the
+//! cache's disk tier, zero block-store reads — while evictions fall from 3,750 to 1,744.
+//!
 //! # A HYPOTHESIS THIS REFUTED, LEFT NAMED ON PURPOSE
 //!
 //! The first guess was that the WRITE path caches under a synthetic hot address
@@ -330,26 +360,28 @@ fn what_the_payload_cache_holds_per_user_byte() {
     }
     println!();
     println!(
-        "    TWO fills per key, no evictions: a point read populates BOTH cache layers -- the"
+        "    ONE fill per key, no evictions: the payload is resident ONCE, as the block frame"
     );
     println!(
-        "    command response under CacheKey::string(shard, key), and the block frame under"
+        "    under CacheKey::page_with_slot(address). It used to be resident twice -- the command"
     );
     println!(
-        "    CacheKey::page_with_slot(address). Both hold the payload, so a single-element block"
+        "    response under CacheKey::string(shard, key) held it as well, at 2.00 fills per key."
     );
-    println!("    is resident twice. That is the 2.0x; the +21 B is the response envelope.");
     println!();
     println!(
-        "    WHICH COPY IS THE DUPLICATE IS NOT WHAT THIS ARM MEASURES, and an earlier reading of"
+        "    THE LOGICAL COPY WAS THE ONE THAT WENT, on three counts: it was memory-only"
     );
     println!(
-        "    it got that wrong: the frame key is read by 25 call paths and is the key of the"
+        "    (put_memory_only), it had one reader where the frame key has 25 call paths, and the"
     );
     println!(
-        "    PERSISTENT block cache, so it is not the spare copy. The response copy has one reader"
+        "    frame is the key of the PERSISTENT block cache that part2 asserts refills a tiny"
     );
-    println!("    and no tier of its own. See the module doc.");
+    println!(
+        "    memory cache without a block-store read. It was also the larger, by the envelope."
+    );
+    println!("    So: 2.5*value+21, then 2.0*value+c, now exactly value. See the module doc.");
     println!();
 
     // NON-VACUITY BEFORE ANY READING IS QUOTED. A cache that filled with nothing would satisfy a
@@ -389,10 +421,27 @@ fn what_the_payload_cache_holds_per_user_byte() {
     );
     println!();
 
+    // THIS GUARD USED TO ASSERT THERE WAS OVERHEAD TO ATTRIBUTE, so that a vacuous reading could
+    // not pass as a finding. The overhead is now ZERO by design -- the second copy of the payload
+    // is gone -- so the guard is inverted into the stronger claim: the cache holds EXACTLY the user
+    // bytes, at both ends of the value sweep. Any new layer, envelope or re-encoding breaks this in
+    // bytes rather than quietly widening a tolerance.
     assert!(
-        (small_ratio - 1.0).abs() > f64::EPSILON || (large_ratio - 1.0).abs() > f64::EPSILON,
-        "the cache reports exactly the user bytes at both value sizes, so there is no overhead to \
-         attribute and this arm has nothing to measure"
+        (small_ratio - 1.0).abs() < 1e-9 && (large_ratio - 1.0).abs() < 1e-9,
+        "the cache holds {small_ratio:.6}x the user bytes at value {} and {large_ratio:.6}x at \
+         value {}. It must hold exactly 1.000x at both: one copy of the payload, charged by length, \
+         with no envelope. A figure above 1.0 means a second copy or an envelope is back; below \
+         1.0 means entries are missing",
+        smallest.value,
+        largest.value
+    );
+    assert!(
+        small_over.abs() < 1e-9 && large_over.abs() < 1e-9,
+        "the per-entry overhead is {small_over:.3} B at value {} and {large_over:.3} B at value \
+         {}, not zero. The response envelope went with the logical copy, so any non-zero constant \
+         here is a new one",
+        smallest.value,
+        largest.value
     );
 
     // WHICHEVER WORLD WE ARE IN, THE ARM SAYS SO. The read-back loop touches every key exactly
@@ -491,33 +540,35 @@ fn what_the_payload_cache_holds_per_user_byte() {
     // The flat +21 that stood here was fitted on four value sizes, three of which shared a prefix
     // width. That is the same error as reading a per-key law off two counts inside one phase of a
     // sawtooth: the sizes agreed because they were all on one side of a step.
-    for reading in readings.iter().filter(|r| r.compressible) {
-        let envelope: u64 = if reading.value < 256 { 20 } else { 21 };
-        let expected = (reading.keys as u64)
-            .saturating_mul(2u64.saturating_mul(reading.value as u64).saturating_add(envelope));
+    // ONE COPY, CHARGED BY LENGTH, NO ENVELOPE -- asserted for EVERY reading rather than only the
+    // compressible ones. The envelope went with the logical copy, and the frame charges the block's
+    // own bytes, so the law no longer has a term that depends on the byte distribution and the
+    // tolerance the noise rows used to need is gone. Asserting both fixtures exactly is what
+    // distinguishes "one copy charged by length" from "one copy charged by content".
+    for reading in &readings {
+        let expected = (reading.keys as u64).saturating_mul(reading.value as u64);
         assert_eq!(
             reading.cache_bytes, expected,
-            "{} keys x {} B of a sub-0x80 run: the cache holds {} B where 2*value+{} per entry is              {} B. Both layers charge the payload and a byte string charges by length alone, so              this is an exact law -- a mismatch means an entry was added, dropped, or the length              prefix stepped at a boundary this envelope does not know about",
-            reading.keys, reading.value, reading.cache_bytes, envelope, expected
+            "{} keys x {} B ({}): the cache holds {} B where one copy charged by length is {} B. \
+             This is exact -- a mismatch means a second copy is back, an envelope appeared, or an \
+             entry was added or dropped",
+            reading.keys,
+            reading.value,
+            if reading.compressible { "run" } else { "noise" },
+            reading.cache_bytes,
+            expected
         );
     }
+    // THE NOISE ROWS NEEDED A TOLERANCE AND NO LONGER DO, which is itself the finding worth
+    // printing. The slack existed because the response copy's size depended on the BYTE
+    // DISTRIBUTION -- 1.5 bytes per byte for uniform data under the old array-of-integers
+    // encoding, 1.0 for a run. With that copy gone the only term left is the block's own length,
+    // so the exact equality above covers these rows too and a sampled mean is no longer being
+    // asserted as a property.
     for reading in readings.iter().filter(|r| !r.compressible) {
         let per_entry = reading.cache_bytes as f64 / reading.keys as f64;
-        // 2.0, NOT 2.5: the response copy's 1.5x was the integer-array encoding, gone since #2279.
-        let expected =
-            2.0 * reading.value as f64 + if reading.value < 256 { 20.0 } else { 21.0 };
-        let slack = 0.02 * reading.value as f64;
         println!(
-            "    noise {} B: {per_entry:.1} B/entry against 2.0*value+21 = {expected:.1}",
-            reading.value
-        );
-        assert!(
-            (per_entry - expected).abs() < slack,
-            "{} keys x {} B of incompressible bytes: {per_entry:.1} B/entry against an expected \
-             {expected:.1} (frame = value, response = 1.5*value + 21 for a uniform byte \
-             distribution). Outside {slack:.1} B of slack, so either the encoding changed or the \
-             generator stopped producing a uniform distribution",
-            reading.keys,
+            "    noise {} B: {per_entry:.1} B/entry, exactly value -- no tolerance needed",
             reading.value
         );
     }
@@ -529,10 +580,11 @@ fn what_the_payload_cache_holds_per_user_byte() {
     for reading in &readings {
         assert_eq!(
             reading.memory_fills,
-            2 * reading.keys as u64,
-            "{} keys x {} B ({}) filled the cache {} times, not twice per key. The two-layer \
-             account below rests on exactly two fills per read: a third layer, or a layer that \
-             stopped filling, changes what every byte figure here means",
+            reading.keys as u64,
+            "{} keys x {} B ({}) filled the cache {} times, not ONCE per key. This was exactly \
+             twice per read while the payload was cached under both the logical and the physical \
+             key; the logical copy is gone, so one fill per key is the law. Two again means a \
+             second copy is back, and anything else means a layer stopped filling",
             reading.keys,
             reading.value,
             if reading.compressible { "run" } else { "noise" },

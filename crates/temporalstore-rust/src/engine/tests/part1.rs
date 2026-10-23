@@ -2469,13 +2469,27 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
         }
     );
     assert_eq!(engine.block_store().stats().reads, 1);
-    assert!(engine.cache().stats().misses >= 2);
-    assert!(engine.cache().stats().puts >= 2);
+    // ONE KEY PER POINT READ, NOT TWO. These were `>= 2` because a string get looked up and filled
+    // both the command response under `CacheKey::string` and the block frame under
+    // `CacheKey::page_with_slot`. The response copy is no longer cached -- it was memory-only with
+    // a single reader, while the frame is the tiered, persistent copy this test goes on to exercise
+    // -- so one miss and one put is the floor now.
+    //
+    // Every assertion below about that tier is unchanged and still passes, which is the point:
+    // `get_memory(&block_key)` holds the frame, and the read after `clear_memory_for_test` is
+    // served from disk with no block-store read.
+    assert!(engine.cache().stats().misses >= 1);
+    assert!(engine.cache().stats().puts >= 1);
     assert_eq!(
         engine.cache().get_memory(&block_key),
         Some(b"cold-value".to_vec())
     );
 
+    // THIS INVALIDATION IS NOW A NO-OP and is kept deliberately: nothing caches
+    // `CacheKey::string` for a string any more, so there is nothing under it to invalidate. The
+    // step that does the work here is `clear_memory_for_test` below. Removing it belongs to a sweep
+    // of every site that invalidates that key, not to this change, where dropping one by hand risks
+    // missing another.
     let _ = engine.cache().invalidate(&CacheKey::string(1, "cold-key"));
     engine.cache().clear_memory_for_test();
     assert_eq!(engine.cache().get_memory(&block_key), None);
@@ -2519,8 +2533,9 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
         }
     );
     assert_eq!(cold_restart.block_store().stats().reads, 1);
-    assert!(cold_restart.cache().stats().misses >= 2);
-    assert!(cold_restart.cache().stats().puts >= 2);
+    // One key per point read here too -- see the note on the first read above.
+    assert!(cold_restart.cache().stats().misses >= 1);
+    assert!(cold_restart.cache().stats().puts >= 1);
 }
 
 #[test]

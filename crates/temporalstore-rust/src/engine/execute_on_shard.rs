@@ -851,13 +851,30 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
-            cached_response(cache, CacheKey::string(shard_id, &key), || {
-                CommandResponse::Bytes {
-                    value: read_bucket_index_value(
-                        cache, block_store, shard_id, shard, "string", &key, None,
-                    ),
-                }
-            })
+            // THE PAYLOAD IS NOT CACHED A SECOND TIME UNDER THE LOGICAL KEY.
+            //
+            // A point read used to fill two cache layers that both hold the payload: this response
+            // under `CacheKey::string(shard, key)`, and the block frame under
+            // `CacheKey::page_with_slot(...)` inside the read below. That measured
+            // `2 * value + envelope` bytes an entry at exactly 2.00 fills per key.
+            //
+            // THE FRAME IS THE COPY WORTH KEEPING, on three counts. `cached_response` stores with
+            // `put_memory_only`, so this copy was memory-only, while the frame goes through
+            // `cache.put` and is tiered and persistent -- `part2` asserts a tiny memory cache
+            // refills from that tier without a block-store read. The frame key is read by the 23
+            // callers of `read_block_bytes` and the two of `read_block_frame_bytes`; this key, for
+            // a string, had exactly one reader. And this copy was the LARGER of the two, by the
+            // msgpack response envelope.
+            //
+            // WHAT IT COSTS: a repeat read no longer short-circuits here, so it pays the
+            // resident-map lookup and the element selection again. It must pay no extra
+            // block-store read -- the frame entry is what it finds -- and that is asserted rather
+            // than assumed by the cache arms that measure this path.
+            CommandResponse::Bytes {
+                value: read_bucket_index_value(
+                    cache, block_store, shard_id, shard, "string", &key, None,
+                ),
+            }
         }
         Command::StringDelete { key } => {
             mutated |= drop_if_expired(cache, shard_id, shard, &key);

@@ -106,7 +106,15 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
         }
     );
     assert_eq!(block_store.stats().reads, 1);
-    assert_eq!(cache.stats().puts, 2);
+    // ONE PUT PER POINT READ, where this was two. A string get used to cache the payload twice --
+    // the command response under `CacheKey::string` and the block frame under
+    // `CacheKey::page_with_slot` -- and the response copy was memory-only with a single reader,
+    // while the frame is the tiered, persistent copy this very test goes on to exercise. The
+    // response copy is no longer written.
+    //
+    // KEPT EXACT RATHER THAN WIDENED TO A RANGE. The count is the subject here, and a `>=` would
+    // stop noticing either a layer returning or one going away.
+    assert_eq!(cache.stats().puts, 1);
     assert!(cache.stats().memory_bytes > 0);
     assert!(cache.stats().disk_bytes > 0);
 
@@ -155,7 +163,16 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
         }
     );
     assert_eq!(block_store.stats().reads, 2);
-    assert!(cache.stats().puts >= 4);
+    // EXACTLY TWO PUTS ACROSS THE THREE TIERS, where this asserted `>= 4`. The payload is cached
+    // once per fill now, not twice, and the four reads above account for both puts: the cold read
+    // fills the frame, the second read is a memory hit, the read after `clear_memory_for_test` is a
+    // disk hit that does NOT promote, and the read after `invalidate_shard` fills it again from the
+    // local file.
+    //
+    // PINNED EXACTLY RATHER THAN LOWERED. Measured at 2 on three consecutive runs. A threshold
+    // walked down every time the number moves stops being a guard; an exact count with its
+    // derivation written out fails in both directions.
+    assert_eq!(cache.stats().puts, 2);
     assert!(cache.stats().memory_bytes > 0);
     assert!(cache.stats().disk_bytes > 0);
 
