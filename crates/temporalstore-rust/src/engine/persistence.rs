@@ -1246,6 +1246,20 @@ impl TemporalEngine {
                     stale.logical_image_bytes(index_live_bytes),
                     index_live_bytes,
                 ),
+                // THE REST OF WHAT THE RECORD ALREADY COMPUTED. These were derived in
+                // `stale_summary()` and not carried here, so two partitions that hold inside the
+                // engine -- pending + discarded, and the three causes -- could not be checked from
+                // the published status, each missing a term. `dropped_discard_range_count` is the
+                // one that is not merely detail: it says whether the placement figures beside it
+                // are exact or lower bounds, and an unpublished caveat is one nobody can act on.
+                stale_bytes_discarded: stale.discarded_bytes,
+                pending_discard_block_refs: stale.pending_discard_block_refs,
+                compaction_candidate_range_count: stale.compaction_candidate_range_count,
+                dropped_discard_range_count: stale.dropped_range_count,
+                stale_slabs_tracked: stale.slabs_tracked,
+                stale_slabs_pruned: stale.slabs_pruned,
+                stale_bytes_by_removal: stale.removed_bytes,
+                stale_bytes_by_sweep: stale.swept_bytes,
                 storage_slab_used_bytes: block_store_slabs.live_physical_bytes,
                 storage_slab_stale_bytes: block_store_slabs.reclaimable_physical_bytes,
                 page_reads: block_store.reads,

@@ -448,6 +448,7 @@ mod the_payload_on_all_three_media;
 mod how_many_keys_a_cached_frame_serves;
 mod what_the_frame_layer_saves_under_eviction;
 mod the_live_and_stale_shares_are_a_partition;
+mod the_published_stale_record_accounts_for_itself;
 mod a_space_ratio_whose_numerator_falls;
 mod every_published_ratio_is_rederivable;
 mod the_index_log_under_rewrite;

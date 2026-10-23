@@ -604,6 +604,80 @@ pub struct ShardCanonicalStorageStats {
     /// by, and reporting 0 ppm is how this group says "not established" rather than "1.0x".
     #[serde(default)]
     pub recorded_space_amplification_ppm: u64,
+    /// Of the retired bytes, the ones already gone from the record: their slab was discarded or
+    /// their detail pruned.
+    ///
+    /// THE OTHER HALF OF A PARTITION, and the reason it is published. With
+    /// [`Self::pending_discard_bytes`] it accounts for every recorded byte:
+    ///
+    /// ```text
+    /// pending_discard_bytes + stale_bytes_discarded == stale_bytes_recorded
+    /// ```
+    ///
+    /// That identity holds inside the engine and could not be checked from this status, because
+    /// this term was missing from it. A consumer who cannot re-derive a figure cannot tell a real
+    /// change from an accounting change.
+    #[serde(default)]
+    pub stale_bytes_discarded: u64,
+    /// Index entries behind [`Self::pending_discard_bytes`] -- the count beside the bytes.
+    ///
+    /// Bytes alone cannot say whether a pending total is a few large blocks or many small ones, and
+    /// that is the difference between a discard returning space and a compaction being required.
+    #[serde(default)]
+    pub pending_discard_block_refs: u64,
+    /// Retired ranges on slabs that are still partly live: the count beside
+    /// [`Self::compaction_candidate_bytes`].
+    ///
+    /// Computed by the record all along and simply not carried here until now. The bytes say how
+    /// much a compaction would recover; this says across how many holes, which is what decides
+    /// whether recovering them is one relocation or many.
+    #[serde(default)]
+    pub compaction_candidate_range_count: u64,
+    /// Ranges the per-slab cap refused. **Non-zero means the WHERE is incomplete; the bytes are
+    /// not.**
+    ///
+    /// PUBLISHED BECAUSE IT IS A CORRECTNESS CAVEAT ON THE FIELDS AROUND IT, not a detail. The
+    /// record holds a bounded number of ranges per slab; past that it keeps counting bytes but
+    /// stops recording where they are. So every byte total here stays exact while
+    /// [`Self::compaction_candidate_bytes`], [`Self::fragmented_range_count`] and
+    /// [`Self::compaction_candidate_range_count`] -- all of which are statements about WHERE --
+    /// become lower bounds.
+    ///
+    /// A reader who sees zero here can trust the placement figures completely. A reader who sees
+    /// non-zero knows the placement is partial, and a reader who cannot see the field at all has no
+    /// way to tell those apart, which is why leaving it unpublished was the wrong default.
+    #[serde(default)]
+    pub dropped_discard_range_count: u64,
+    /// Slabs this record is holding retired ranges for, and slabs whose detail it has pruned.
+    ///
+    /// The record's own extent. `pruned` is why [`Self::stale_bytes_discarded`] can rise without a
+    /// collector running: pruning moves a slab's bytes out of the pending half and into the
+    /// discarded one, which keeps the partition exact while losing the placement detail.
+    #[serde(default)]
+    pub stale_slabs_tracked: u64,
+    #[serde(default)]
+    pub stale_slabs_pruned: u64,
+    /// The other two causes, completing a three-way partition with
+    /// [`Self::stale_bytes_by_overwrite`]:
+    ///
+    /// ```text
+    /// by_overwrite + by_removal + by_sweep == stale_bytes_recorded
+    /// ```
+    ///
+    /// WHY ALL THREE RATHER THAN ONE AND A REMAINDER. The note on `stale_bytes_by_overwrite` says
+    /// the split is the point -- overwrite bytes are rewrite pressure against a live set that did
+    /// not shrink and say a compaction would pay for itself, while the other two are a live set
+    /// that got smaller and say the space returns on its own as slabs die. With only the overwrite
+    /// term published a consumer can subtract to get "the other two" but cannot separate a DELETE
+    /// from an EXPIRY SWEEP, and those have different operational meanings: one is a client
+    /// removing data, the other is a policy doing it on a schedule.
+    ///
+    /// `by_removal` is a delete or a block ref removed by name; `by_sweep` is a predicate pass --
+    /// an expiry, a tombstone sweep, a retain.
+    #[serde(default)]
+    pub stale_bytes_by_removal: u64,
+    #[serde(default)]
+    pub stale_bytes_by_sweep: u64,
     #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
     #[serde(alias = "storage_zone_stale_bytes")]
