@@ -56,9 +56,16 @@ fn shard_with(shard_id: crate::types::ShardId, scale: u64) -> crate::meta::Serve
             compaction_candidate_range_count: 11 * scale,
             merged_discard_range_count: 13 * scale,
             fragmented_range_count: 5 * scale,
-            dropped_discard_range_count: 1 * scale,
+            // SELECTIVE, so the node-level count below can tell "counts the qualifying
+            // shards" from "counts every shard". 4 and 0 also keeps the byte-sum
+            // assertion exact: 4 + 0 is the same 4 that 1 x scale summed to.
+            dropped_discard_range_count: if scale == 1 { 4 } else { 0 },
             stale_slabs_tracked: 4 * scale,
             stale_slabs_pruned: 1 * scale,
+            // THE NODE-LEVEL CONDITIONS, set so exactly ONE of the two shards qualifies on each.
+            // A fixture where both qualify cannot tell "counts the qualifying shards" from "counts
+            // every shard" -- the two agree at 2.
+            compaction_recommended: scale == 1,
             // The ratios are populated too, precisely so that exporting one would be POSSIBLE here
             // and the absence below is a choice this arm can observe rather than a vacuous pass.
             block_space_amplification_ppm: 5_000_000,
@@ -124,6 +131,47 @@ fn the_storage_terms_are_exported_and_sum_across_shards() {
         both.contains_key("storage_dropped_discard_range_count"),
         "the placement caveat is not exported, so a scrape cannot tell whether the candidate \
          figures beside it are exact"
+    );
+
+    // ---- THE NODE-LEVEL COUNTS COUNT SHARDS, and the fixture is built so exactly one of the two
+    // ---- qualifies on each condition. A count equal to 2 would mean every shard is being counted
+    // ---- rather than the qualifying ones, which a fixture where both qualified could not detect.
+    for (key, expected) in [
+        ("storage_shards_recommending_compaction", 1u64),
+        ("storage_shards_offering_a_compaction_candidate", 2),
+        ("storage_shards_with_truncated_placement", 1),
+    ] {
+        let got = both.get(key).copied().unwrap_or_default();
+        assert_eq!(
+            got, expected,
+            "{key} is {got}, expected {expected} over two shards. These count PARTICIPANTS -- a \
+             shard is this store's reclaim participant, where the surface being followed counts \
+             chunk servers -- so a value above the shard count means the condition is being counted \
+             per slab or per candidate instead, and the figure no longer means what its name says"
+        );
+        assert!(
+            got <= 2,
+            "{key} is {got} over 2 shards. A count of shards cannot exceed the number of shards"
+        );
+    }
+
+    // ---- AND NO IDENTITY IS EXPORTED. `best_reclaim_candidate_endpoint` names WHICH participant
+    // ---- holds the best candidate. A shard id has no sum, and neither does a cross-shard maximum,
+    // ---- so neither belongs in a dictionary aggregated with `saturating_add`.
+    let identities: Vec<&String> = both
+        .keys()
+        .filter(|key| {
+            key.contains("endpoint")
+                || key.contains("_id")
+                || key.ends_with("_shard")
+                || key.contains("best_candidate_shard")
+        })
+        .collect();
+    assert!(
+        identities.is_empty(),
+        "these exported metrics look like identities rather than quantities: {identities:?}. A \
+         shard id or an endpoint name has no meaningful sum across shards, which is what this \
+         exporter does to every value -- the same category error as exporting a ratio through it"
     );
 }
 

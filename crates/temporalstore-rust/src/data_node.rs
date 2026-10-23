@@ -574,6 +574,30 @@ fn apply_shard_storage_metrics(
             "storage_best_compaction_candidate_bytes",
             storage.best_compaction_candidate_bytes,
         );
+        // NODE-LEVEL RECLAIM COUNTS, WHERE THE PARTICIPANT IS A SHARD.
+        //
+        // The surface this follows counts participants under reclaim pressure, participants
+        // offering a candidate, and so on -- and its participant is a chunk server. OURS IS A
+        // SHARD: a node owns many, each with its own slabs, its own stale record and its own
+        // reclaim decision. So these are real counts here, not degenerate ones, and this loop is
+        // already walking the population they count over.
+        //
+        // Each is a count of shards, so `add`'s cross-shard sum is exactly right. What is NOT here
+        // is any notion of WHICH shard holds the best candidate: that is an identity, and an
+        // identity has no sum, so it would be the same category error as exporting a ppm ratio
+        // through a summing aggregator. `a_ratio_is_never_exported_as_a_summed_metric` covers both.
+        if storage.compaction_recommended {
+            add(metrics, "storage_shards_recommending_compaction", 1);
+        }
+        if storage.compaction_candidate_slabs > 0 {
+            add(metrics, "storage_shards_offering_a_compaction_candidate", 1);
+        }
+        // THE PLACEMENT CAVEAT, COUNTED. Per shard it says whether that shard's WHERE figures are
+        // exact; across a node what an operator needs is how many shards are affected, because a
+        // dashboard built on the candidate counts is wrong by an unknown amount on exactly those.
+        if storage.dropped_discard_range_count > 0 {
+            add(metrics, "storage_shards_with_truncated_placement", 1);
+        }
         add(
             metrics,
             "storage_merged_discard_range_count",
