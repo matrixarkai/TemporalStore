@@ -88,11 +88,41 @@
 //! serving more than one key at any size. Two keys share a frame only if they share
 //! `(slab, offset, length)`, and none do.
 //!
-//! So on every size measured the frame entry duplicates the response entry **entirely**, and the
-//! 2.0x is **waste rather than a trade**. The multi-element regime that would justify it does not
-//! arise here. The trade may still exist where container pages pack several elements into one
-//! block; that is a regime this corpus does not reach, and the claim belongs to that regime rather
-//! than to the cache in general.
+//! # AND THE CORRECTION ITSELF WAS WRONG, FOR THE SAME REASON TWICE OVER
+//!
+//! I then wrote that the frame entry "duplicates the response entry entirely" and that the 2.0x is
+//! "waste rather than a trade". **That does not follow from what was measured.** Grouping rows by
+//! `(slab, offset, length)` answers *do two KEYS share a frame*. I used it to answer *can anything
+//! else reach this frame*, which is a different question — the first correction replaced an
+//! unmeasured claim with a measured one about the wrong thing.
+//!
+//! The frame key is read by the 23 callers of `read_block_bytes` and the two of
+//! `read_block_frame_bytes`, so it is read by one KEY and by **25 call paths**. And it is the key
+//! of the PERSISTENT BLOCK CACHE: six arms in `part2` assert that a tiny memory cache refills from
+//! that tier without a block-store read —
+//! `memory_miss_reads_local_block_file_using_index_address`,
+//! `tiny_memory_cache_eviction_refills_from_persistence_then_block_cache`,
+//! `restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache`,
+//! `block_reads_fill_compressed_block_cache`, `cache_replacement_policy_soak` and
+//! `three_layer_cache_reads_memory_then_block_cache_then_local_file`. Removing the frame put on the
+//! string read path broke all six, which is how the error was found.
+//!
+//! `read_bucket_index_value` is the only door from a string command into `read_block_bytes`, so
+//! declining the frame there does not drop a duplicate — it removes that tier entirely for the
+//! commonest data kind.
+//!
+//! # WHICH HALF IS THE DUPLICATE, THEN
+//!
+//! The physically-keyed frame is the tier with readers and persistence. The LOGICAL copy — the
+//! encoded `CommandResponse` under `CacheKey::string(shard, key)` — is the one with a single reader
+//! and no tier of its own, and it is the larger of the two by the envelope. So the saving this arm
+//! prices is real and it is on the other side of the pair from where the earlier conclusion put it.
+//!
+//! `what_the_frame_layer_saves_under_eviction` measured what the second copy costs once the cache
+//! is under pressure: both layers deliver **identical service** — 2,000 of 2,000 warm reads from
+//! the disk tier, zero block-store reads with the frame put or without it — while the frame put
+//! doubles `puts` and more than doubles evictions. A second copy that changes no outcome and
+//! doubles the eviction rate is a cost; which copy to drop is settled by which one has readers.
 //!
 //! # A HYPOTHESIS THIS REFUTED, LEFT NAMED ON PURPOSE
 //!
@@ -309,6 +339,17 @@ fn what_the_payload_cache_holds_per_user_byte() {
         "    CacheKey::page_with_slot(address). Both hold the payload, so a single-element block"
     );
     println!("    is resident twice. That is the 2.0x; the +21 B is the response envelope.");
+    println!();
+    println!(
+        "    WHICH COPY IS THE DUPLICATE IS NOT WHAT THIS ARM MEASURES, and an earlier reading of"
+    );
+    println!(
+        "    it got that wrong: the frame key is read by 25 call paths and is the key of the"
+    );
+    println!(
+        "    PERSISTENT block cache, so it is not the spare copy. The response copy has one reader"
+    );
+    println!("    and no tier of its own. See the module doc.");
     println!();
 
     // NON-VACUITY BEFORE ANY READING IS QUOTED. A cache that filled with nothing would satisfy a

@@ -12,8 +12,24 @@
 //!
 //! Its doc then says the duplication "is not a defect" because "the frame entry earns its place on
 //! multi-element blocks, where one frame answers several keys". **That was asserted, not measured.**
-//! If blocks hold one element each in practice, the frame entry answers exactly one key, duplicates
-//! the response entry entirely, and the 2.0x is waste rather than a trade.
+//! If blocks hold one element each in practice, the frame entry answers exactly one key. The
+//! inference then drawn from that -- that it therefore duplicates the response entry entirely and
+//! the 2.0x is waste -- is the one the next section shows does NOT hold.
+//!
+//! # WHAT THIS ARM DOES NOT ANSWER, AND WHAT WAS WRONGLY READ OFF IT
+//!
+//! It answers *do two KEYS share a frame*. It does **not** answer *can anything else reach this
+//! frame*, and the conclusion drawn from it originally — that the frame entry duplicates the
+//! response entry entirely and the 2.0x is waste — used it for the second question.
+//!
+//! The frame key is read by the 23 callers of `read_block_bytes` and the two of
+//! `read_block_frame_bytes`, and it is the key of the persistent block cache that six `part2` arms
+//! assert refills a tiny memory cache without a block-store read. One key per frame, 25 call paths
+//! per key. Removing the frame put on the string read path broke all six of those arms, which is
+//! how the overreach was caught.
+//!
+//! So read the number below as what it is: a statement about packing, which bears on whether a
+//! frame can AMORTISE across keys — not on whether the entry has readers.
 //!
 //! # ANSWERABLE FROM THE INDEX ALONE
 //!
@@ -157,15 +173,21 @@ fn how_many_keys_a_cached_frame_serves() {
     println!();
     if all_single {
         println!(
-            "    SO THE FRAME ENTRY DUPLICATES THE RESPONSE ENTRY ENTIRELY on this workload, and"
+            "    SO A FRAME NEVER AMORTISES ACROSS KEYS on this workload: the claim that it 'earns"
         );
         println!(
-            "    the 2.0x measured in the payload cache is waste rather than a trade. The claim"
+            "    its place on multi-element blocks' does not apply at any value size measured here."
+        );
+        println!();
+        println!(
+            "    THIS DOES NOT MAKE THE FRAME ENTRY THE SPARE COPY, and reading it that way was an"
         );
         println!(
-            "    that it 'earns its place on multi-element blocks' does not apply to any value"
+            "    error: the frame key is read by 25 call paths and is the key of the persistent"
         );
-        println!("    size measured here.");
+        println!(
+            "    block cache. One key per frame is not the same as one reader per frame."
+        );
     } else {
         println!(
             "    SO THE FRAME ENTRY DOES EARN ITS PLACE in at least one regime, and the 2.0x is a"

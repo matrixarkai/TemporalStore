@@ -27,10 +27,15 @@
 //!
 //! # THE SHAPE THIS PUTS IN ONE PLACE
 //!
-//! Memory is the dearest of the three media and the one where half the cost is avoidable:
-//! `how_many_keys_a_cached_frame_serves` showed two cache layers hold the same payload and the
-//! frame layer serves exactly one key at every value size. Disk — the medium usually watched — is
-//! the cheapest.
+//! Memory is the dearest of the three media, and half of its cost is a second copy of the payload:
+//! a point read fills both the command response under `CacheKey::string` and the block frame under
+//! `CacheKey::page_with_slot`. Disk — the medium usually watched — is the cheapest.
+//!
+//! WHICH COPY COULD GO IS NOT SETTLED BY THE FRAME-SHARING COUNT, though an earlier reading of this
+//! arm said it was. `how_many_keys_a_cached_frame_serves` shows a frame never amortises across
+//! keys; it does not show the frame entry is unreachable. That key is read by 25 call paths and is
+//! the key of the persistent block cache, so the copy with one reader and no tier of its own is the
+//! LOGICAL one. `what_the_frame_layer_saves_under_eviction` prices the pair under pressure.
 //!
 //! rust-internal: measures this crate's own counters, no product behaviour
 //!
@@ -130,10 +135,16 @@ fn the_payload_on_all_three_media() {
     println!();
     println!("    the denominator is the SAME for every ratio: user bytes offered to the store.");
     println!(
-        "    memory is the dearest medium, and half of it is the two-layer duplication that"
+        "    memory is the dearest medium, and half of it is a SECOND COPY of the payload: the"
     );
     println!(
-        "    how_many_keys_a_cached_frame_serves showed is waste -- a frame serves ONE key."
+        "    command response under the logical key, and the block frame under the physical one."
+    );
+    println!(
+        "    which copy could go is not settled by the frame-sharing count -- the frame key is the"
+    );
+    println!(
+        "    persistent block cache's key and has 25 call paths; the response copy has one reader."
     );
     println!();
 
