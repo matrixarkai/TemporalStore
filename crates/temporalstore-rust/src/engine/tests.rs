@@ -445,6 +445,7 @@ mod the_object_keyed_field_count_is_checked;
 mod the_side_table_codec_resolves_shape_from_spelling;
 mod the_record_machinery_is_not_wired;
 mod every_published_ratio_is_rederivable;
+mod the_index_log_under_rewrite;
 mod what_the_collector_sees_after_a_rewrite;
 mod the_amplification_set_under_rewrite;
 mod whether_a_dead_slab_can_be_reclaimed;
