@@ -115,8 +115,10 @@ const COUNTERPARTS: &[(&str, &str, &str, &str)] = &[
 /// Named, and deliberately not mapped.
 const UNRESOLVED: &[(&str, &str)] = &[(
     "retained_window_compacted_count",
-    "no retention-window compaction count exists here, and the name appears there only as a key in \
-     a flat fields map, so its definition could not be read either",
+    "`compaction_runs` is a LIFETIME count and `compaction_watermark` is a position, so a count of \
+     compactions WITHIN a retained window needs runs tagged by position -- which this store does \
+     not keep. Their own name appears only as a key in a flat fields map, so its definition could \
+     not be read either. A specific absence rather than a missing field",
 )];
 
 fn source_of(relative: &str) -> &'static str {

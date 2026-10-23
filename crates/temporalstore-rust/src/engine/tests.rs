@@ -454,6 +454,7 @@ mod the_anchor_digest_shrinks_and_still_loads;
 mod a_point_read_fills_the_physical_tier;
 mod the_best_candidate_is_at_least_the_average;
 mod the_comparison_counterparts_still_exist;
+mod the_reclaim_path_has_one_participant;
 mod a_space_ratio_whose_numerator_falls;
 mod every_published_ratio_is_rederivable;
 mod the_index_log_under_rewrite;
