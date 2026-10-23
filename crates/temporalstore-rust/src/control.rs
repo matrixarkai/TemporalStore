@@ -423,6 +423,35 @@ pub struct ShardCanonicalStorageStats {
     /// recorded here rather than done silently.
     #[serde(default)]
     pub space_amplification_ppm: u64,
+    /// Bytes still on disk per stored byte the INDEX still points at, in PARTS PER MILLION.
+    ///
+    /// `non_purged_physical_bytes / live_block_bytes`. This is the figure
+    /// [`Self::space_amplification_ppm`] above cannot produce, published beside it rather than
+    /// replacing it: both of that field's halves are blind to reclamation, and re-pointing a serde
+    /// key that travels to the meta server would decode into the right shape with the wrong
+    /// contents on an older peer.
+    ///
+    /// # BOTH HALVES MOVE IN THE DIRECTION THE RATIO CLAIMS TO MEASURE
+    ///
+    /// The numerator drops when a purge deletes a slab's files, because it excludes purged slabs.
+    /// The denominator drops when an overwrite retires the block its index entry pointed at,
+    /// because it is the index's own per-slab tally rather than a slab-file size. Measured over
+    /// four rewrites of every key: **1.000x -> 5.000x**, where the pinned field held 1.000x at
+    /// every round. See `a_space_ratio_whose_numerator_falls`.
+    ///
+    /// # ITS FLOOR IS ABOVE 1.0x, AND THAT IS A PROPERTY RATHER THAN A DEFECT
+    ///
+    /// The numerator is FILE bytes and the denominator is BLOCK PAYLOAD bytes, so slab headers,
+    /// block envelopes and record framing sit in one half only. A reader expecting exactly 1.0x at
+    /// zero garbage will misread it. This is the same structure the ratio is modelled on -- bytes
+    /// on disk per byte of live data -- so the caveat is stated rather than corrected by moving the
+    /// numerator onto a quantity that is not what the disk holds.
+    ///
+    /// Zero when the live tally has not been derived yet, which is the same condition under which
+    /// [`Self::lifetime_write_amplification_ppm`] reports 0 ppm, so the two agree about when they
+    /// are unavailable instead of one of them reading as a real figure.
+    #[serde(default)]
+    pub block_space_amplification_ppm: u64,
     #[serde(alias = "storage_zone_used_bytes")]
     pub storage_slab_used_bytes: u64,
     #[serde(alias = "storage_zone_stale_bytes")]
@@ -479,6 +508,18 @@ pub struct ShardCanonicalStorageStats {
     /// and neither derives the other.
     #[serde(default)]
     pub live_block_bytes: u64,
+    /// Slab-file bytes that have NOT been purged: the NUMERATOR of
+    /// [`Self::block_space_amplification_ppm`].
+    ///
+    /// `total_known_physical_bytes - purged_physical_bytes`. Published for the same reason the two
+    /// denominators above it are: a consumer reading a ppm figure it cannot re-derive from
+    /// published counters cannot tell a real change from an accounting change.
+    ///
+    /// NOT THE SAME AS [`Self::storage_slab_total_bytes`], which is `total_known_physical_bytes`
+    /// and keeps counting a purged slab whose files are gone. The difference between the two is
+    /// exactly the space a purge has already returned.
+    #[serde(default)]
+    pub non_purged_physical_bytes: u64,
     pub append_watermark: u64,
     pub compaction_watermark: u64,
 }

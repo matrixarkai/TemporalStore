@@ -37,12 +37,18 @@
 //! 1.0x at zero garbage will misread it. This is the same structure the ratio is modelled on --
 //! bytes on disk per byte of live data -- so it is stated rather than corrected.
 //!
-//! # WHY THIS MEASURES RATHER THAN PUBLISHES
+//! # IT IS PUBLISHED NOW, AND THIS ARM CHECKS THE FIELD
 //!
-//! Publishing it means a field on `ShardCanonicalStorageStats`, an assignment in `persistence.rs`
-//! and a fifth identity in the re-derivability arm, and another lane is mid-flight in all three.
-//! The figure is established here so the publishing lands with a measured number rather than an
-//! estimated one.
+//! This used to say that publishing meant a field on `ShardCanonicalStorageStats`, an assignment in
+//! `persistence.rs` and another identity in the re-derivability arm, with another lane mid-flight in
+//! all three. That lane landed, and the three pieces exist: `block_space_amplification_ppm`, its
+//! numerator `non_purged_physical_bytes`, and the fourth identity in
+//! `every_published_ratio_is_rederivable`.
+//!
+//! So the final section no longer measures a proposal — it **restates both terms independently** (a
+//! local fold over the tally, a local subtraction over the slab summary) and asserts the published
+//! field equals them. An arm that computes a figure the engine also publishes and never compares
+//! the two is exactly how a ratio carried one name while computing another for as long as it did.
 //!
 //! rust-internal: measures this crate's own counters, no product behaviour
 //!
@@ -200,6 +206,52 @@ fn a_space_ratio_whose_numerator_falls() {
         as_x(ppm(first_np, first_lb)),
         as_x(ppm(last_np, last_lb)),
         ROUNDS
+    );
+
+    // ---- THE PUBLISHED FIELD IS THE FIGURE THIS ARM DEFINES. Both terms are restated from the
+    // ---- engine's own structures above and compared to what the status reports, so a drift
+    // ---- between the definition and the assignment fails here rather than being published.
+    let published = engine
+        .shard_stats(1)
+        .expect("a loaded shard reports stats")
+        .storage;
+    println!(
+        "    published block_space_amplification_ppm = {} ppm ({:.3}x), over {} / {}",
+        published.block_space_amplification_ppm,
+        as_x(published.block_space_amplification_ppm),
+        published.non_purged_physical_bytes,
+        published.live_block_bytes
+    );
+    println!();
+    assert_eq!(
+        published.non_purged_physical_bytes, last_np,
+        "the status publishes {} non-purged bytes where this arm computes {last_np} from the slab \
+         summary it reads directly. The numerator is `total_known - purged`; a disagreement means \
+         the assignment is over different terms than the definition",
+        published.non_purged_physical_bytes
+    );
+    assert_eq!(
+        published.live_block_bytes, last_lb,
+        "the status publishes {} live block bytes where this arm folds {last_lb} out of the \
+         index's own tally. A disagreement means the published denominator is not the tally",
+        published.live_block_bytes
+    );
+    assert_eq!(
+        published.block_space_amplification_ppm,
+        ppm(last_np, last_lb),
+        "the status publishes {} ppm where {last_np} over {last_lb} is {} ppm. The ratio must be \
+         exactly its two published terms, or a consumer cannot falsify it -- which is the reason \
+         both terms are fields at all",
+        published.block_space_amplification_ppm,
+        ppm(last_np, last_lb)
+    );
+    assert!(
+        published.block_space_amplification_ppm > published.space_amplification_ppm,
+        "the two space ratios read {} and {} ppm after {ROUNDS} rewrites of every key. The pinned \
+         one cannot see a dead block inside a live slab, so the block-granular figure must be \
+         strictly higher here -- if they agree, the new field is dividing slab-granular terms too",
+        published.block_space_amplification_ppm,
+        published.space_amplification_ppm
     );
 
     // ---- AND THE LIVE SET REALLY DID NOT GROW, or the rise above is just more data.

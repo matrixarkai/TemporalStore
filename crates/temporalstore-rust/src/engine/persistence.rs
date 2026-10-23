@@ -1130,6 +1130,12 @@ impl TemporalEngine {
             } else {
                 0
             };
+            // FILES STILL ON DISK: every slab the manifest knows about, less the ones whose
+            // files a purge has already deleted. `total_known_physical_bytes` alone keeps counting
+            // a purged slab, which is what makes the older space ratio unable to see a purge.
+            let non_purged_physical_bytes = block_store_slabs
+                .total_known_physical_bytes
+                .saturating_sub(block_store_slabs.purged_physical_bytes);
             let storage = crate::control::ShardCanonicalStorageStats {
                 page_index_entries: object_manager.block_ref_count as u64,
                 // Live refs, NOT `page_store.writes`: that counter only ever increases, so
@@ -1193,6 +1199,16 @@ impl TemporalEngine {
                     block_store_slabs.total_known_physical_bytes,
                     block_store_slabs.live_physical_bytes,
                 ),
+                // THE SAME QUESTION, ASKED OF TERMS THAT CAN FALL. The field above is pinned near
+                // 1.0x because a live slab contributes its whole file and a purged one keeps
+                // contributing after its files are gone; this divides non-purged file bytes by the
+                // index's own live tally, so a purge moves the numerator and an overwrite moves the
+                // denominator. Published beside rather than instead -- see the field notes in
+                // `control.rs` for why the older key is frozen.
+                block_space_amplification_ppm: Self::ppm_ratio(
+                    non_purged_physical_bytes,
+                    index_live_bytes,
+                ),
                 storage_slab_used_bytes: block_store_slabs.live_physical_bytes,
                 storage_slab_stale_bytes: block_store_slabs.reclaimable_physical_bytes,
                 page_reads: block_store.reads,
@@ -1206,15 +1222,11 @@ impl TemporalEngine {
                 // lifetime ratio divides by the second, so publishing them costs nothing beyond
                 // the field.
                 logical_bytes_written: block_store.logical_bytes_written,
-                live_block_bytes: if state.bucket_index.block_slab_live.is_ready() {
-                    state
-                        .bucket_index
-                        .block_slab_live
-                        .iter()
-                        .fold(0_u64, |total, (_, tally)| total.saturating_add(tally.bytes))
-                } else {
-                    0
-                },
+                // ONE QUANTITY, COMPUTED ONCE. This re-folded the sum `index_live_bytes` already
+                // holds, with the same guard and a different closure spelling -- two foldings of
+                // one tally that could drift apart silently, since nothing compares them.
+                live_block_bytes: index_live_bytes,
+                non_purged_physical_bytes,
                 append_watermark: block_store.writes,
                 compaction_watermark: block_store_slabs.reclaimable_physical_bytes,
             };

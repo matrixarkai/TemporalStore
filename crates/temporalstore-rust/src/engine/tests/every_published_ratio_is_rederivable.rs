@@ -85,11 +85,12 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
     println!("    live_block_bytes       {:>12}", published.live_block_bytes);
     println!("    storage_slab_total     {:>12}", published.storage_slab_total_bytes);
     println!("    storage_slab_used      {:>12}", published.storage_slab_used_bytes);
+    println!("    non_purged_physical    {:>12}", published.non_purged_physical_bytes);
     println!();
     println!("  PUBLISHED RATIOS, each beside the same figure recomputed from the counters above");
 
     // (name, published ppm, numerator, denominator)
-    let identities: [(&str, u64, u64, u64); 3] = [
+    let identities: [(&str, u64, u64, u64); 4] = [
         (
             "storage_write_amplification_ppm",
             published.storage_write_amplification_ppm,
@@ -107,6 +108,16 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
             published.space_amplification_ppm,
             published.storage_slab_total_bytes,
             published.storage_slab_used_bytes,
+        ),
+        // THE FOURTH: the space figure whose terms can actually fall. Both of its halves are
+        // published, which is the whole point of it being here -- the pinned one above divides
+        // terms that cannot see a purge or an overwrite, and a consumer could not tell that from
+        // the ppm figure alone.
+        (
+            "block_space_amplification_ppm",
+            published.block_space_amplification_ppm,
+            published.non_purged_physical_bytes,
+            published.live_block_bytes,
         ),
     ];
 
