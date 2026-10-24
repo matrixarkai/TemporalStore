@@ -49,3 +49,27 @@ jobs:
       # -- so wiring it would have broken the build and nobody did.
       - name: Refuse retired object-store naming
         run: python tools/validate_legacy_object_store_names.py
+
+      - name: Nothing claims the project is closed
+        run: |
+          set -euo pipefail
+          # A stale sentence is how an open repository starts reading as a shut one. These exact
+          # phrasings were live in three of this project's own deploy documents for as long as one
+          # crate had no public source, and stayed there after it was published Apache-2.0 -- while
+          # the readiness gate beside them was green, because nothing checked for them.
+          #
+          # `.github` IS EXCLUDED, and not for convenience. A pull-request template asking a
+          # contributor to confirm they are adding no enterprise-only code is an instruction TO
+          # them, not a claim ABOUT the project, and this check was written with a pattern that
+          # could not tell those apart. Claims about what the project is live in its documents.
+          if grep -rniE "enterprise[- ]only|no public source|not open source|closed source" \
+               --include=*.md --exclude-dir=.github . > /tmp/closed-claims.txt; then
+            echo "  Documents still describe part of this project as closed:"
+            sed 's/^/    /' /tmp/closed-claims.txt
+            echo
+            echo "  If that is no longer true, correct the sentence. If it is true of a dependency"
+            echo "  rather than of this repository, say which, so a reader is not told the wrong"
+            echo "  thing about what they are allowed to do with this code."
+            exit 1
+          fi
+          echo "  no document claims any part of this project is closed"
