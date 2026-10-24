@@ -889,6 +889,41 @@ where
         else {
             return Ok(None);
         };
+        let (entry, range_bytes_read) = self
+            .read_wal_entry_with_offset_metadata(shard_id, wal_index, &metadata)
+            .await?;
+        Ok(Some(SharedStoreWalIndexedRead {
+            metadata,
+            entry,
+            range_bytes_read,
+        }))
+    }
+
+    /// Read one entry given offset metadata the caller ALREADY HOLDS.
+    ///
+    /// # WHY THIS EXISTS SEPARATELY FROM THE FUNCTION ABOVE
+    ///
+    /// The offset index is one appendable blob for the whole shard, so looking one entry
+    /// up means reading and decoding all of it. [`Self::read_wal_entry_by_offset_metadata`]
+    /// does exactly that and then discards every record but one — correct for a single
+    /// lookup, and quadratic when a replay calls it once per entry, which is what replay
+    /// used to do while already holding the decoded map.
+    ///
+    /// MEASURED on a five-node shared-store sweep (one fenced writer, four replayers, 256
+    /// byte values): `load_wal_offset_metadata` was 42.50% of the program's instructions —
+    /// 35.56% reading the blob back through the object store and 6.93% decoding it — for
+    /// records the replay loop had in hand. Per-entry replay cost grew with the corpus for
+    /// that reason and no other: bytes read per entry were already flat, because the
+    /// *range* read is correctly indexed. It was the LOOKUP that walked the log.
+    ///
+    /// Every guard from the single-lookup path is here rather than there, so neither
+    /// caller can be the one without them.
+    async fn read_wal_entry_with_offset_metadata(
+        &self,
+        shard_id: ShardId,
+        wal_index: u64,
+        metadata: &SharedStoreWalOffsetMetadata,
+    ) -> Result<(SharedStoreWalEntry, u64), SharedStoreReplicationError> {
         let length = metadata
             .wal_blob_end_offset
             .checked_sub(metadata.wal_blob_start_offset)
@@ -937,11 +972,7 @@ where
                 format!("WAL offset metadata points to shard {} index {}, expected shard {shard_id} index {wal_index}", entry.shard_id, entry.wal_index),
             )));
         }
-        Ok(Some(SharedStoreWalIndexedRead {
-            metadata,
-            entry,
-            range_bytes_read: length,
-        }))
+        Ok((entry, length))
     }
 
     pub fn storage_writer(
@@ -1492,26 +1523,28 @@ where
             offset_index_reads: 0,
             range_bytes_read: 0,
         };
-        for (wal_index, _) in offset_metadata.range((after_wal_index + 1)..) {
+        // ---- THE INDEX IS READ ONCE FOR THE WHOLE REPLAY, not once per entry.
+        //
+        // The loop binding used to discard the metadata (`for (wal_index, _)`) and then
+        // ask `read_wal_entry_by_offset_metadata` for it, which re-read and re-decoded the
+        // ENTIRE offset-index blob to answer each one. That made replay quadratic in the
+        // log length while every per-entry BYTE figure stayed flat, because the bytes were
+        // being counted on the range read -- which was always correctly indexed -- and not
+        // on the lookup. Measured at 42.50% of the program's instructions before this, and
+        // asserted below by `offset_index_reads`, which now counts the entries it served
+        // from one load rather than the loads it performed.
+        for (wal_index, metadata) in offset_metadata.range((after_wal_index + 1)..) {
             if strict && *wal_index != expected {
                 return Err(SharedStoreReplicationError::ReplayGap {
                     expected,
                     actual: *wal_index,
                 });
             }
-            let read = self
-                .read_wal_entry_by_offset_metadata(shard_id, *wal_index)
-                .await?
-                .ok_or_else(|| {
-                    SharedStoreReplicationError::Io(std::io::Error::new(
-                        std::io::ErrorKind::NotFound,
-                        format!(
-                            "missing WAL offset metadata for shard {shard_id} index {wal_index}"
-                        ),
-                    ))
-                })?;
+            let (entry, range_bytes_read) = self
+                .read_wal_entry_with_offset_metadata(shard_id, *wal_index, metadata)
+                .await?;
             // Neither results nor an operation: refusing beats skipping a durable write.
-            let Some(command) = read.entry.command else {
+            let Some(command) = entry.command else {
                 return Err(SharedStoreReplicationError::ApplyFailed {
                     wal_index: *wal_index,
                     status: Status::error(
@@ -1533,7 +1566,7 @@ where
             report.applied += 1;
             report.last_wal_index = *wal_index;
             report.offset_index_reads += 1;
-            report.range_bytes_read += read.range_bytes_read;
+            report.range_bytes_read += range_bytes_read;
             expected += 1;
         }
         Ok(Some(report))
@@ -5720,6 +5753,13 @@ mod tests {
     struct CountingObjectStore {
         inner: FileObjectStore,
         append_blobs: std::sync::atomic::AtomicUsize,
+        /// Every key a whole-object `get` was asked for, in order.
+        ///
+        /// Counted PER KEY rather than in total because a replay reads several different
+        /// objects, and the figure under test is how many times it reads ONE of them: the
+        /// per-shard offset index. A total would be satisfied by reading the index once
+        /// and something else N times, which is the opposite of what is being asserted.
+        gets: std::sync::Mutex<Vec<String>>,
     }
 
     impl CountingObjectStore {
@@ -5727,10 +5767,25 @@ mod tests {
             Self {
                 inner,
                 append_blobs: std::sync::atomic::AtomicUsize::new(0),
+                gets: std::sync::Mutex::new(Vec::new()),
             }
         }
         fn append_blob_count(&self) -> usize {
             self.append_blobs.load(std::sync::atomic::Ordering::SeqCst)
+        }
+        fn get_count_for(&self, key: &str) -> usize {
+            self.gets
+                .lock()
+                .expect("counting store get log poisoned")
+                .iter()
+                .filter(|seen| seen.as_str() == key)
+                .count()
+        }
+        fn reset_get_log(&self) {
+            self.gets
+                .lock()
+                .expect("counting store get log poisoned")
+                .clear();
         }
     }
 
@@ -5749,6 +5804,10 @@ mod tests {
             self.inner.append_blob(key, bytes).await
         }
         async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+            self.gets
+                .lock()
+                .expect("counting store get log poisoned")
+                .push(key.to_string());
             self.inner.get(key).await
         }
         async fn get_range(
@@ -5767,6 +5826,76 @@ mod tests {
         }
         fn uri(&self, key: &str) -> String {
             self.inner.uri(key)
+        }
+    }
+
+    /// A replay reads the per-shard offset index ONCE, whatever the log's length.
+    ///
+    /// # WHAT THIS CATCHES, AND WHY A BYTE FIGURE COULD NOT
+    ///
+    /// The offset index is one appendable blob per shard, so a single lookup in it costs a
+    /// whole-object read plus a full decode. Replay held the decoded map already and then
+    /// asked for each record individually, paying that cost once per entry: O(n) per entry,
+    /// O(n-squared) for the replay. It was invisible to every per-entry byte figure the
+    /// shared-store report prints, because those count the RANGE read of the WAL blob --
+    /// which was correctly indexed all along -- and nothing counted the lookup.
+    ///
+    /// # TWO SIZES, BECAUSE ONE CANNOT TELL A CONSTANT FROM A LINE
+    ///
+    /// The count is asserted at two corpus sizes an order of magnitude apart. At one size
+    /// the regressed code would read the index `entries` times and this test would be
+    /// satisfied by any constant that happened to match; across two it can only pass if the
+    /// figure does not track the corpus. The assertion is an exact `1`, not a bound: a
+    /// threshold would keep passing if the per-entry load came back in a batched form.
+    #[tokio::test]
+    async fn a_replay_reads_the_offset_index_once_however_long_the_log_is() {
+        let mut counts = Vec::new();
+        for entries in [8u64, 80] {
+            let dir = tempfile::tempdir().unwrap();
+            let store = Arc::new(CountingObjectStore::new(FileObjectStore::new(
+                dir.path().join("objects"),
+            )));
+            let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+                .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+            for wal_index in 1..=entries {
+                replicator
+                    .publish_wal_entry(SharedStoreWalEntry {
+                        shard_id: 1,
+                        wal_index,
+                        command: Some(Command::StringSet {
+                            key: format!("key-{wal_index}"),
+                            value: b"value".to_vec(),
+                        }),
+                        staged_blocks: Vec::new(),
+                        outcomes: Vec::new(),
+                    })
+                    .await
+                    .unwrap();
+            }
+
+            // Only the replay's reads are counted; publishing does its own.
+            store.reset_get_log();
+            let follower = test_engine(dir.path(), "follower");
+            follower.load_shard(1);
+            let report = replicator
+                .replay_wal_strict(1, 0, &follower)
+                .await
+                .unwrap();
+            assert_eq!(
+                report.applied, entries as usize,
+                "the replay has to reach the regime this test is about"
+            );
+            assert_eq!(report.offset_index_reads, entries as usize);
+
+            let index_key = replicator.wal_offset_index_blob_key(1);
+            counts.push((entries, store.get_count_for(&index_key)));
+        }
+        for (entries, index_gets) in &counts {
+            assert_eq!(
+                *index_gets, 1,
+                "replaying {entries} entries read the offset index {index_gets} times; it is \
+                 loaded once and the decoded records are what the loop iterates",
+            );
         }
     }
 

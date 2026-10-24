@@ -22,7 +22,7 @@ base64 = "0.22"
 sha2 = "0.10"
 matrixraft = { package = "matrixraft", git = "https://github.com/matrixarkai/MatrixRaft.git", rev = "8fa64923fd819c4ed23635a75749c53d31702c03" }
 matrixcache = { git = "https://github.com/matrixarkai/MatrixCache.git", rev = "5434cd2000251c5813209cd76171770aba1c1afd", features = ["rocksdb-ssd"] }
-matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "b89cb457ebdfa4f52da43163f493f504175a3d47", optional = true }
+matrixobjectstore-rs = { git = "https://github.com/matrixarkai/MatrixObject.git", rev = "70bef0aecb649d2128a67c34c2082c4e7ea4f39b", optional = true }
 temporalstore-snapshot = { path = "../temporalstore-snapshot" }
 thiserror = "1"
 tokio = { version = "1", features = ["fs", "macros", "rt-multi-thread", "sync"] }
@@ -76,6 +76,10 @@ required-features = ["matrixobject"]
 
 [[example]]
 name = "three_node_shared_store_report"
+required-features = ["matrixobject"]
+
+[[example]]
+name = "scale_shared_store_report"
 required-features = ["matrixobject"]
 
 [[bin]]
