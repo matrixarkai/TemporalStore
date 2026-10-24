@@ -8137,47 +8137,60 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // THE EXPIRY TABLE IS A DOMAIN OF `u64_ledgers` NOW, so this pass reaches it through the
     // domain rather than a field binding. Same argument as every other term in this function:
     // dropping it would cost the expiry keys their canonical handle with nothing failing.
-    let _adopted = adopt_canonical_key_allocations(
-        u64s_in(side_tables, SideTable::Expiry),
-        &bucket_index.object_block_lookup,
-    );
-    // AND THE HASHED MAPS, which this pass used to leave with their decoded allocations. See
-    // `adopt_canonical_key_allocations_in_hashed`: an in-place re-key is byte-neutral, measured,
-    // so there is no format stamp owed and no reason to leave the duplication behind.
+    // THIS PASS MAY NOT BRING A TABLE INTO BEING. Every reach below is to a table that already
+    // exists, and each one used to go through an accessor that CREATES on first use -- `u64s_in`,
+    // `counters_in`, and `objects.entry(kind).or_default()`. An absent domain or kind is a table
+    // that is not in the stored map, and an EMPTY one is a table that is, so inventing one moved
+    // the stored bytes with no contents moving.
+    //
+    // Measured on a shard holding no expiry deadlines: `side_tables` carried four entries at the
+    // encode before this function and five at the encode after it, and the decoded payload grew by
+    // fifteen bytes, those bytes being an empty `expiry` entry. That is what
+    // `a_decode_puts_back_exactly_the_series_that_were_encoded` was failing on, and
+    // `the_repack_brings_no_table_into_being` now states the rule directly, so the next accessor
+    // that creates is caught where it is written rather than three maps later.
+    //
+    // THE RE-KEY ITSELF IS STILL BYTE-NEUTRAL, as `adopt_canonical_key_allocations_in_hashed`
+    // says: with the non-creating accessors below, the two encodes agree byte for byte. It was
+    // never the re-key -- it was how the pass reached the table.
+    let _adopted = u64s_mut(side_tables, SideTable::Expiry)
+        .map(|table| adopt_canonical_key_allocations(table, &bucket_index.object_block_lookup))
+        .unwrap_or(0);
     REPACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let _adopted_hashed = adopt_canonical_key_allocations_in_hashed(
-        // THE STRING ROWS ARE IN `objects` NOW, under the String kind, so this pass reaches them
-        // exactly as the Feature term below does. Leaving it pointed at the retired side-table
-        // domain would have re-keyed an EMPTY table and cost every string key its canonical
-        // handle with nothing failing -- the keys compare equal and only the sharing is lost,
-        // which is the silent regression every term in this function exists to stop.
-        objects
-            .entry(super::storage_bucket_internals::StoredModelKind::String)
-            .or_default(),
-        &bucket_index.object_block_lookup,
-    ) + adopt_canonical_key_allocations_in_hashed(
-        // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
-        // inner table rather than through a field. Dropping this term instead would have cost
-        // feature keys their canonical handle with NOTHING failing: the keys compare equal and
-        // only the sharing is lost.
-        //
-        // IT COVERS THE FEATURE KIND ONLY, deliberately. `strings`, `features` and
-        // `control_state` are the three maps this pass has ever covered; the four context kinds
-        // that moved into `objects` before this were never in it, and adopting every kind here
-        // would be a behaviour change nothing has measured.
-        objects
-            .entry(super::storage_bucket_internals::StoredModelKind::Feature)
-            .or_default(),
-        &bucket_index.object_block_lookup,
-    ) + adopt_canonical_key_allocations_in_hashed(
-        // THE CONTROL-STATE COUNTERS ARE IN `counter_series` NOW, so this pass reaches them
-        // through the domain's table rather than through a field. Dropping the term would
-        // have cost every control-state key its canonical handle with NOTHING failing: the
-        // keys compare equal and only the sharing is lost, which is the same silent
-        // regression the Feature kind's term above exists to prevent.
-        counters_in(side_tables, SideTable::ControlStateCounters),
-        &bucket_index.object_block_lookup,
-    );
+    let mut _adopted_hashed = 0usize;
+    // THE STRING ROWS ARE IN `objects` NOW, under the String kind, so this pass reaches them
+    // exactly as the Feature term below does. Leaving it pointed at the retired side-table
+    // domain would have re-keyed an EMPTY table and cost every string key its canonical
+    // handle with nothing failing -- the keys compare equal and only the sharing is lost,
+    // which is the silent regression every term in this function exists to stop.
+    if let Some(table) = objects.get_mut(&super::storage_bucket_internals::StoredModelKind::String)
+    {
+        _adopted_hashed +=
+            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+    }
+    // THE FEATURE SERIES ARE IN `objects` NOW, so the pass reaches them through the kind's
+    // inner table rather than through a field. Dropping this term instead would have cost
+    // feature keys their canonical handle with NOTHING failing: the keys compare equal and
+    // only the sharing is lost.
+    //
+    // IT COVERS THE FEATURE KIND ONLY, deliberately. `strings`, `features` and
+    // `control_state` are the three maps this pass has ever covered; the four context kinds
+    // that moved into `objects` before this were never in it, and adopting every kind here
+    // would be a behaviour change nothing has measured.
+    if let Some(table) = objects.get_mut(&super::storage_bucket_internals::StoredModelKind::Feature)
+    {
+        _adopted_hashed +=
+            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+    }
+    // THE CONTROL-STATE COUNTERS ARE IN `counter_series` NOW, so this pass reaches them
+    // through the domain's table rather than through a field. Dropping the term would
+    // have cost every control-state key its canonical handle with NOTHING failing: the
+    // keys compare equal and only the sharing is lost, which is the same silent
+    // regression the Feature kind's term above exists to prevent.
+    if let Some(table) = counters_mut(side_tables, SideTable::ControlStateCounters) {
+        _adopted_hashed +=
+            adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
+    }
     REPACK_ADOPTED_HASHED.fetch_add(_adopted_hashed, std::sync::atomic::Ordering::Relaxed);
     // AND THE HASH FIELD NAMES. The wire shape is a map of owned names, so the decode minted a
     // handle per field with the pool taking no part; without this a reloaded shard holds the
@@ -8410,6 +8423,26 @@ pub(super) fn u64s_ref(
     }
 }
 
+/// One domain's `u64` ledger FOR IN-PLACE WORK, or `None` when the domain is absent.
+///
+/// NOT `u64s_in`, and the difference is durable rather than stylistic: `u64s_in` creates the domain
+/// on first use, an empty domain IS SERIALIZED, and so a pass that only rewrites the keys of tables
+/// that already exist moved the stored bytes with no contents moving. Measured on a shard with no
+/// expiry deadlines: `side_tables` went from four entries to five across `repack_decoded_btrees`
+/// and the decoded payload grew by fifteen bytes, which is an empty `expiry` entry.
+///
+/// So a caller that is only REWRITING uses this one and does nothing when it answers `None`. A
+/// caller that is about to WRITE A VALUE wants `u64s_in` and should keep it.
+pub(super) fn u64s_mut(
+    tables: &mut HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> Option<&mut BTreeMap<ModelKey, u64>> {
+    match tables.get_mut(&domain) {
+        Some(SideTableData::U64s(table)) => Some(table),
+        _ => None,
+    }
+}
+
 /// One domain's COUNTER table, created on first use. Same argument as `addresses_in`.
 pub(super) fn counters_in(
     tables: &mut HashMap<SideTable, SideTableData>,
@@ -8436,6 +8469,19 @@ pub(super) fn counters_ref(
     domain: SideTable,
 ) -> Option<&HashMap<ModelKey, BTreeMap<u64, i64>>> {
     match tables.get(&domain) {
+        Some(SideTableData::Counters(table)) => Some(table),
+        _ => None,
+    }
+}
+
+/// One domain's counter table FOR IN-PLACE WORK, or `None` when the domain is absent. The same
+/// distinction `u64s_mut` carries, for the same reason: `counters_in` would create the domain, and
+/// an empty domain is serialized.
+pub(super) fn counters_mut(
+    tables: &mut HashMap<SideTable, SideTableData>,
+    domain: SideTable,
+) -> Option<&mut HashMap<ModelKey, BTreeMap<u64, i64>>> {
+    match tables.get_mut(&domain) {
         Some(SideTableData::Counters(table)) => Some(table),
         _ => None,
     }
