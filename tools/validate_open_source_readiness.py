@@ -15,10 +15,28 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 
+# THE ROOT COPIES ARE REQUIRED TOO, and that is not tidiness.
+#
+# This list named only the `docs/` pair, so the gate reported success on a tree with no
+# `CONTRIBUTING.md` at the root -- the copy GitHub surfaces to someone arriving at the
+# project. It was found by planting that deletion, not by reading the list, which is the
+# only way a passing check is ever shown to work.
+#
+# The two pairs are not the same documents. The root `CONTRIBUTING.md` is 105 lines and
+# says pull requests are welcome "from anyone"; `docs/CONTRIBUTING.md` is 67 lines. The
+# root `CODE_OF_CONDUCT.md` adopts the Contributor Covenant 2.1 by name and link in 42
+# lines; the `docs/` one is 13. So the fuller pair was the unchecked pair, and either copy
+# could have been deleted or left to rot behind a green gate.
+#
+# Which copy should be canonical -- and whether one should become a pointer to the other --
+# is a content decision and is NOT made here. Requiring both makes the gate cover what it
+# already claimed to cover, and that does not need the question settled.
 REQUIRED_FILES = [
     "README.md",
     "LICENSE",
     "NOTICE",
+    "CONTRIBUTING.md",
+    "CODE_OF_CONDUCT.md",
     "docs/CONTRIBUTING.md",
     "docs/SECURITY.md",
     "docs/CODE_OF_CONDUCT.md",
