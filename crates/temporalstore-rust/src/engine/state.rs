@@ -693,6 +693,35 @@ pub(super) struct ShardState {
     /// than asserting it.
     #[serde(skip)]
     pub(super) index_flush_countdown: u64,
+    /// Published keys still owed before this shard's next whole-index served checkpoint, counted
+    /// DOWN: zero means the next visibility publish is DUE.
+    ///
+    /// `publish_shard_index_snapshot_for_keys` republished the pages of the keys it was named and
+    /// then re-encoded and rewrote the whole base index, at a cost set by the size of the STORE
+    /// rather than the size of the publish
+    /// (`what_one_visibility_publish_writes_grows_with_the_store_not_the_publish`: holding the
+    /// named set at one key and widening the store multiplies the encode, while widening the named
+    /// set 256-fold on a fixed store does not). Each publish now subtracts the keys it published
+    /// from this countdown and only encodes when it reaches zero, then reloads it with the
+    /// engine's `visibility_publish_index_flush_interval`.
+    ///
+    /// SEPARATE FROM `index_flush_countdown` ABOVE, which is the logged-deletion interval. Two
+    /// operations sharing one countdown would make either one's measurement a reading of both,
+    /// and a store that only publishes would spend a budget that only deletions reload.
+    ///
+    /// EPHEMERAL, AND COUNTED DOWN RATHER THAN UP SO THAT THE POST-RELOAD VALUE IS THE SAFE ONE.
+    /// `#[serde(skip)]`, so a reload leaves it at the `u64` default of 0 -- which reads as DUE, so
+    /// the first publish after any reload checkpoints. Counting UP would have made the same
+    /// default read as "nothing is owed", which is the direction that defers on a fresh process
+    /// that has checkpointed nothing.
+    ///
+    /// A LATE, STALE OR MISSING CHECKPOINT IS NOT A LOST PUBLISH. The publish neither retires the
+    /// relocated blocks' registrations nor clears any bucket's `first_dirty_wal_sequence`, so both
+    /// WAL retention floors still sit below the records it rewrote and replay re-derives every row
+    /// this countdown defers -- `a_deferred_publish_checkpoint_still_reloads_with_the_published_values`
+    /// drives that rather than asserting it.
+    #[serde(skip)]
+    pub(super) publish_index_flush_countdown: u64,
     /// Phase-1 flat-append fast-skip flag for the per-execute
     /// `promote_model_maps_to_bucket_index_authority` reconciliation. The live write path already
     /// keeps `bucket_index` authoritative in step with the model maps (each mutating command
@@ -8145,6 +8174,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // this pass would want anyway: it means the first logged-deletion round after a load is
         // DUE, so a decoded image carries no claim to have checkpointed anything.
         index_flush_countdown: _,
+        // Same as the line above, for the visibility-publish interval: `#[serde(skip)]`, so a
+        // decoded image carries no claim to have checkpointed anything and 0 means DUE.
+        publish_index_flush_countdown: _,
         promote_scan_done: _,
         evict_sampler: _,
         routing_range_start: _,

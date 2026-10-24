@@ -267,6 +267,15 @@ pub struct TemporalEngine {
     /// directly, so a test that sets it can read the same value the round will. Shared across
     /// clones, because a clone is the same engine.
     logged_deletion_index_flush_interval: Arc<std::sync::atomic::AtomicU64>,
+    /// How many published keys a shard may accumulate before its next served-index
+    /// checkpoint re-encodes the whole base index.
+    ///
+    /// See [`VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL_DEFAULT`] for what the number is and why
+    /// it is what it is. Read through
+    /// [`TemporalEngine::visibility_publish_index_flush_interval`], never directly, so a test
+    /// that sets it can read the same value the publish will. Shared across clones, because a
+    /// clone is the same engine.
+    visibility_publish_index_flush_interval: Arc<std::sync::atomic::AtomicU64>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
     /// `flat_append()` this fires once per command (O(writes)); with it on the
@@ -2465,6 +2474,55 @@ pub(crate) fn logged_deletion_index_flush_interval_from_env() -> u64 {
     let configured: u64 = crate::env_flag::env_number(
         "TS_LOGGED_DELETION_INDEX_FLUSH_INTERVAL",
         LOGGED_DELETION_INDEX_FLUSH_INTERVAL_DEFAULT,
+    );
+    configured.max(1)
+}
+
+/// How many published keys a shard may accumulate before its next served-index checkpoint
+/// re-encodes the whole base index.
+///
+/// WHY THERE IS AN INTERVAL AT ALL. `publish_shard_index_snapshot_for_keys` republishes the pages
+/// of the keys it was NAMED and then encodes and rewrites the ENTIRE served index, however few
+/// keys that was -- its own comment calls that "the O(n^2) rewrite".
+/// `what_one_visibility_publish_writes_grows_with_the_store_not_the_publish` prices it from both
+/// sides: holding the named set at one key and widening the store multiplies the encode, while
+/// holding the store and widening the named set 256-fold does not. So the page half of a publish
+/// is already O(published) and the index half was O(store).
+///
+/// WHY DEFERRING IT IS SOUND, in the words the write path already uses for the same decision
+/// (`atomic_write_bytes_synced`): "the WAL (durably synced before ack) is the recovery source of
+/// truth and replay rebuilds the served index from it, so a stale-on-crash index just replays a
+/// longer WAL suffix -- no acked write is lost". A publish relocates log-resident blocks into the
+/// block store and repoints the index rows at them; it does NOT retire the blocks' registrations
+/// and it does NOT clear any bucket's `first_dirty_wal_sequence`, which is written to zero at
+/// exactly one site and only by a durable dump. Both of the WAL retention floors therefore still
+/// sit below the records the publish rewrote: `min_registered_sequence` (the registry) and the
+/// per-bucket first-dirty sequence (the reclaim plan). A checkpoint that lands late, lands stale
+/// or never lands is re-derived by replaying those records, which is what
+/// `a_deferred_publish_checkpoint_still_reloads_with_the_published_values` drives rather than
+/// argues.
+///
+/// WHY 64. The interval is counted in PUBLISHED KEYS rather than in calls, which makes it a bound
+/// on the index bytes a single published key can be charged, and makes a large publish pay
+/// promptly -- a call publishing 4,000 keys is due immediately, which is right, because its
+/// encode is already amortized over 4,000 keys. The price is the replay suffix: at most 63
+/// un-checkpointed keys' records, against the whole-store encode each of those keys cost before.
+///
+/// Must be greater than 1: at 1 every publish is due and the behaviour is exactly what it was, so
+/// a default of 1 would land this inert.
+/// `the_visibility_publish_flush_interval_is_a_real_setting_whose_default_is_not_one` holds that.
+pub(crate) const VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL_DEFAULT: u64 = 64;
+
+/// The configured interval, read through the crate's one numeric-flag vocabulary.
+///
+/// Zero is not a request for zero: an interval of zero has no meaning for a countdown and would
+/// read as "already due" on every publish, so it is clamped to 1. One IS meaningful and is left
+/// reachable -- it is the per-publish encode this change replaces, and the measurement needs an
+/// arm that still pays it.
+pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
+    let configured: u64 = crate::env_flag::env_number(
+        "TS_VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL",
+        VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL_DEFAULT,
     );
     configured.max(1)
 }

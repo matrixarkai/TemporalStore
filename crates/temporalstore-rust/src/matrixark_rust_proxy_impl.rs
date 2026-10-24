@@ -4056,6 +4056,17 @@ fn execute_record_log_request(
                 "matrixark_visibility_index_bytes".to_string(),
                 json!(index_bytes),
             );
+            // WHETHER THIS CALL WROTE A SERVED-INDEX CHECKPOINT, stated rather than inferred from
+            // the byte count above. The checkpoint now runs per published key rather than per
+            // call (see `VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL_DEFAULT`), so a deferred call
+            // reports zero index bytes -- and so does a call that found nothing log-resident.
+            // Reading "published nothing" out of a zero would be wrong in both cases, because the
+            // pages are republished before the call returns either way; this names what the zero
+            // is about.
+            output.extra.insert(
+                "matrixark_visibility_index_checkpointed".to_string(),
+                json!(index_bytes > 0),
+            );
             output.extra.insert(
                 "matrixark_visibility_key_count".to_string(),
                 json!(visibility_key_count),

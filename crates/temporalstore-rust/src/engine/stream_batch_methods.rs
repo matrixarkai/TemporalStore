@@ -810,6 +810,16 @@ impl TemporalEngine {
         self.publish_shard_index_snapshot_for_keys(shard_id, Vec::<String>::new())
     }
 
+    /// Republish the named keys' log-resident pages into the block store, and checkpoint the
+    /// served index when one is due.
+    ///
+    /// ANSWERS WITH THE SERVED-INDEX BYTES THIS CALL WROTE, which is what it always answered --
+    /// and that is now sometimes ZERO, because the checkpoint runs per published key rather than
+    /// per call. See [`crate::engine::VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL_DEFAULT`] for the
+    /// interval and for why deferring the checkpoint loses nothing. Zero therefore means "this
+    /// call wrote no index", which covers both the publish that found nothing log-resident and
+    /// the publish whose checkpoint was deferred; it has never meant "nothing was published", and
+    /// the pages are republished either way before this returns.
     pub fn publish_shard_index_snapshot_for_keys(
         &self,
         shard_id: ShardId,
@@ -1066,11 +1076,55 @@ impl TemporalEngine {
                     }
                 }
             }
+            // COUNTED BEFORE THE SET IS CONSUMED BY THE LOOP BELOW. These are the keys whose
+            // pages this call actually relocated -- the ones that passed the concurrent-write
+            // check above -- which is the unit the interval is counted in.
+            let published_key_count = published_object_keys.len() as u64;
             for object_key in published_object_keys {
                 clear_published_object_dirty_state(shard, &object_key);
             }
             refresh_bucket_runtime_flags(shard);
-            serialize_index(shard)
+            // THE CHECKPOINT IS DUE PER PUBLISHED KEY, NOT PER PUBLISH.
+            //
+            // Re-encoding the whole served index costs about 47 bytes per RESIDENT key -- 376,012
+            // encoded bytes to publish ONE key at 8,000 keys, measured by
+            // `what_one_visibility_publish_writes_grows_with_the_store_not_the_publish`, against a
+            // figure that does not move when the named set widens 256-fold on a fixed store -- so
+            // a checkpoint per call charges the whole store to whatever the call happened to
+            // name. `publish_index_flush_countdown` spends this call's published keys against the
+            // engine's interval and only encodes when they run it out, which bounds the index
+            // bytes ONE published key can be charged instead of bounding nothing.
+            //
+            // SAFE BECAUSE THE RELOCATED ROWS ARE ALREADY DURABLE BY REPLAY, which is the same
+            // ground the write path's deferred index sync stands on. This publish does not retire
+            // the relocated blocks' registrations and does not clear any bucket's
+            // `first_dirty_wal_sequence` -- that is written to zero at exactly one site, and only
+            // by a durable dump -- so both WAL retention floors still sit below the records it
+            // rewrote, and a checkpoint that lands late, lands stale or never lands is re-derived
+            // by replaying them.
+            // `a_deferred_publish_checkpoint_still_reloads_with_the_published_values` drives that
+            // rather than asserting it.
+            //
+            // THE COUNTDOWN IS SPENT WHETHER OR NOT THE CALL IS DUE, and reloaded only on a
+            // checkpoint, so the calls between two checkpoints sum to the interval rather than
+            // resetting whenever a call happens to name one key.
+            shard.publish_index_flush_countdown = shard
+                .publish_index_flush_countdown
+                .saturating_sub(published_key_count);
+            if shard.publish_index_flush_countdown == 0 {
+                shard.publish_index_flush_countdown =
+                    self.visibility_publish_index_flush_interval();
+                Some(serialize_index(shard))
+            } else {
+                None
+            }
+        };
+        // `None` when this call's published keys did not run the countdown out -- see the
+        // countdown above. The index-log anchor goes with the index and not without it: an anchor
+        // record carries the digest and length of the index file it names, so there is nothing for
+        // it to name on a call that wrote no index.
+        let Some(index_bytes) = index_bytes else {
+            return Ok(0);
         };
         if !bulk_ingest_mode() {
             // Bulk backfill defers per-record index persistence to an explicit
