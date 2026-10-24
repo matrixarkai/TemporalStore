@@ -474,3 +474,4 @@ mod what_one_eviction_round_writes;
 mod the_two_eviction_arms_disagree_on_the_dirty_count;
 mod a_deferred_checkpoint_still_reloads_with_the_keys_dropped;
 mod whether_a_bucket_can_count_its_own_dirty_objects;
+mod the_index_log_retain_floor;

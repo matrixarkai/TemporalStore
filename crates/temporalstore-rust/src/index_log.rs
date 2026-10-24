@@ -2735,12 +2735,26 @@ impl LocalIndexLogStore {
     /// which is what turns the per-write served-index persist cost from O(store) into
     /// O(delta). Returns the assigned monotonic sequence.
     ///
-    /// `durable` controls the fsync: the normal (single-node / shared-store) path passes
-    /// `true` (the record is fsync'd before returning). The raft apply path passes `false` --
-    /// the record is written + flushed to the OS but NOT fsync'd, because there the raft log
-    /// is the durability + reconstruction source and a lost non-fsync'd tail is rebuilt by
-    /// raft-log replay on restart. The consumer-aware GC never truncates such a tail (it
-    /// retains from the durable dump/cursor/snapshot frontier).
+    /// `durable` controls the fsync, and **under the shipped default no production caller passes
+    /// `true`**. Both callers compute
+    /// `!raft_applying() && !wal_single_barrier()`, and `wal_single_barrier()` is
+    /// `!wal_legacy_recovery()` -- which reads `TS_WAL_LEGACY_RECOVERY`, off by default. So the
+    /// raft apply path defers because the raft log is the durability and reconstruction source,
+    /// and the single-node path defers too because the WAL barrier has already committed before
+    /// this is reached. A synchronous barrier here is restored only by the
+    /// `TS_WAL_LEGACY_RECOVERY` escape hatch, which switches recovery to the delta fold that does
+    /// trust a durable delta.
+    ///
+    /// THIS DOC SAID THE OPPOSITE, and the distinction is not cosmetic: it claimed the normal path
+    /// fsync'd the record and only raft deferred. A reader taking that at face value would believe
+    /// the delta tail is durable on every single-node write, and would then read the sentence below
+    /// as covering an edge case. It covers the DEFAULT.
+    ///
+    /// Either way the record is written and flushed to the OS, so the served-index stream is
+    /// unchanged and a lost tail is rebuilt by replay. The consumer-aware GC never truncates such
+    /// a tail: its retain floor is `min(durable frontier, slowest cursor) + 1`, which
+    /// `the_index_log_retain_floor_never_passes_the_durable_frontier` asserts rather than leaving
+    /// to this sentence.
     pub fn append_delta(
         &self,
         shard_id: ShardId,
