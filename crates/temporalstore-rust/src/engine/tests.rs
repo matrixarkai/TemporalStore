@@ -478,4 +478,5 @@ mod a_deferred_publish_checkpoint_still_reloads_with_the_published_values;
 mod what_one_shard_load_writes;
 mod whether_a_bucket_can_count_its_own_dirty_objects;
 mod which_record_the_dirty_bucket_consumers_read;
+mod whether_the_reclaim_checks_can_read_the_bucket_node;
 mod the_index_log_retain_floor;

@@ -1066,26 +1066,37 @@ impl TemporalEngine {
         // the plan could give for it was "retain everything" -- floor 0. These two claims say
         // where the bucket's oldest undumped write actually sits, so it can hold the logs from
         // there instead of from the beginning.
-        let bucket_claims = self
+        //
+        // AND WHICH BUCKETS ARE DIRTY, off their own nodes, in the SAME lock acquisition and the
+        // same walk that is already being made over `bucket_map`. The two checks below ask this
+        // instead of `dirty_object_count`, which answered a question about the BUCKET by counting
+        // OBJECTS in a side index -- see `dirty_bucket_nodes`. It is read here rather than added to
+        // `BucketStorageSummary` for the reason the dump ordering's claim is: a summary is stored
+        // in the dump manifest and compared field-by-field when a manifest is validated, so a new
+        // field there is a durability contract, not a report field.
+        let (bucket_claims, dirty_bucket_nodes) = self
             .shards
             .read()
             .expect("shards lock poisoned")
             .get(&shard_id)
             .map(|shard| {
-                shard
-                    .bucket_index
-                    .bucket_map
-                    .iter()
-                    .map(|(routing_bucket, bucket)| {
-                        (
-                            *routing_bucket,
+                (
+                    shard
+                        .bucket_index
+                        .bucket_map
+                        .iter()
+                        .map(|(routing_bucket, bucket)| {
                             (
-                                bucket.first_dirty_wal_sequence,
-                                bucket.first_dirty_index_log_sequence,
-                            ),
-                        )
-                    })
-                    .collect::<std::collections::HashMap<u32, (u64, u64)>>()
+                                *routing_bucket,
+                                (
+                                    bucket.first_dirty_wal_sequence,
+                                    bucket.first_dirty_index_log_sequence,
+                                ),
+                            )
+                        })
+                        .collect::<std::collections::HashMap<u32, (u64, u64)>>(),
+                    crate::engine::storage_reporting::dirty_bucket_nodes(shard),
+                )
             })
             .unwrap_or_default();
         let manifests =
@@ -1253,7 +1264,15 @@ impl TemporalEngine {
                 //
                 // Counted as covered and contributing no floor, exactly as the manifest branch
                 // treats a clean bucket it does have a manifest for.
-                if summary.dirty_object_count == 0 {
+                //
+                // ASKED OF THE BUCKET'S OWN FLAG. "Holds no undumped write" is a fact the bucket
+                // records, and the error direction that matters here is a node reading dirty where
+                // the set holds nothing -- that bucket skips this arm, names no claim, and blocks
+                // the plan. `whether_the_reclaim_checks_can_read_the_bucket_node` measures that
+                // direction EMPTY at every state a dump cycle passes through, including nine
+                // partial-dump rounds, which is the case a full dump cannot produce because
+                // `clear_dumped_bucket_dirty_state` walks `manifest.bucket_ids` and nothing else.
+                if !dirty_bucket_nodes.contains(&summary.routing_bucket) {
                     covered_bucket_count = covered_bucket_count.saturating_add(1);
                     continue;
                 }
@@ -1276,7 +1295,10 @@ impl TemporalEngine {
             covered_bucket_count = covered_bucket_count.saturating_add(1);
             // EXPERIMENT: a bucket that is CLEAN has no undumped write, so it needs nothing
             // retained on its behalf and must not hold the floor.
-            if summary.dirty_object_count > 0 {
+            //
+            // Asked of the bucket's own flag, the same record the covered arm above reads, so the
+            // two arms of this plan cannot disagree about which buckets are dirty.
+            if dirty_bucket_nodes.contains(&summary.routing_bucket) {
                 durable_wal_frontier = durable_wal_frontier.min(manifest.wal_sequence);
                 durable_index_log_frontier =
                     durable_index_log_frontier.min(manifest.index_log_sequence);
