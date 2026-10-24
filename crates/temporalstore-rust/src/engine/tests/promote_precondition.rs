@@ -62,19 +62,33 @@ const END: u32 = SPREAD - 1;
 
 /// A page address shaped like one the block store handed back.
 ///
-/// The object id is EXPLICIT. `rebuild_bucket_block_ownership` reads
-/// `address.object_id().unwrap_or_else(|| stable_block_object_id(..))` and files the result, so an
-/// address carrying none comes back from a rebuild carrying one -- and `same_block_address`
-/// compares object ids exactly. Supplying it keeps "the same page" the same page on both sides of
-/// a rebuild, which is what the positive arm has to assert.
+/// # THE PAGE ORDINAL IS ZERO, AND ZERO IS THE ONLY VALUE THIS FIXTURE MAY FILE
+///
+/// Every page here is filed into the string map through `set_string_address`, whose row is an
+/// `ObjectSlot`: the inline arm keeps the ordinal's PRESENCE and has no room for its VALUE, so a
+/// row filed with ordinal `n != 0` hands back 0. `same_block_address` compares the ordinal and
+/// `block_ref_key_from_parts` puts it in the index key, so an address filed through the ROW and the
+/// same `ElementEntry` filed into the BUCKET INDEX were a different page to every reader -- which
+/// is what made four of the five arms below answer the opposite of what they assert, in four
+/// different places, none of which names an address.
+///
+/// The ordinal names WHICH page of an object an address is, and every page here belongs to a
+/// single-page object, so zero is not a convenience: it is the only value the store can keep.
+/// `ObjectRecord::from_object_rows` refuses a nonzero one by name as
+/// `NonZeroPageOrdinalDoesNotFitInline`, `set_address` coerces it and counts the coercion
+/// (`the_write_back_door_and_the_page_ordinal`), and #2322 corrected the identical datum in
+/// `model_kind_registry_guards`. So this changes what the fixture says, not what it tests.
+///
+/// IT IS NOT LEFT TO A LITERAL TO STAY RIGHT. `shard_with_unfiled` reads every row back as it
+/// files it, and `the_model_maps_hand_back_the_addresses_the_index_was_filed_with` compares the two
+/// columns directly, so a fixture that files an unkeepable ordinal again fails at the filing rather
+/// than four assertions away.
+///
+/// The fifth argument is INERT -- `ElementEntry::try_from_parts` consumes only its presence, and
+/// `generation()` is derived from the ordinal -- so the pages here are told apart by their OFFSET,
+/// which is distinct per index.
 fn address_at(index: u64) -> ElementEntry {
-    ElementEntry::from_parts(
-        7,
-        index * 128,
-        128,
-        Some(1_000 + index),
-        Some(9_000 + index),
-    )
+    ElementEntry::from_parts(7, index * 128, 128, Some(0), Some(9_000 + index))
 }
 
 fn key_of(index: u64) -> String {
@@ -116,6 +130,17 @@ fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BT
     while index < count {
         let address = address_at(index);
         shard.set_string_address(std::sync::Arc::from(key_of(index).as_str()), &address.clone());
+        // READ THE ROW BACK, following #2322. A string row narrows a page ordinal, so a fixture
+        // that files an address the row cannot keep presents one address to the model-map walk and
+        // a different one to the bucket index below -- and every arm in this file compares the two.
+        // Asserting it here fails at the filing instead of four assertions away.
+        assert_eq!(
+            shard.string_address(&key_of(index)).as_ref(),
+            Some(&address),
+            "the string map did not hand back the address this fixture filed for `{}`: the row \
+             narrowed it, so the walk and the index are being compared on different pages",
+            key_of(index),
+        );
         if Some(index % u64::from(SPREAD)) == unfiled_group {
             unfiled_buckets.insert(bucket_of(index));
         } else {
@@ -132,6 +157,119 @@ fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BT
         index += 1;
     }
     (shard, unfiled_buckets)
+}
+
+/// WHAT THE MODEL MAPS HOLD versus WHAT A READER OF THEM SEES, SIDE BY SIDE.
+///
+/// Every arm below turns on ONE question -- is the address the model-map walk hands out the same
+/// address the bucket index was filed with -- and when the answer is no they fail in four separate
+/// places, none of which names an address. `an_empty_bucket_index_under_live_model_pages_is_rebuilt_whole`
+/// read `left: 0, right: 32`: thirty-two rows in the maps and not one of them named by an index
+/// rebuilt from those same rows. That reads like a broken rebuild and was a one-field narrowing.
+///
+/// So this asks the question directly and prints both columns. A string row is an `ObjectSlot`
+/// whose inline arm keeps a page ordinal's PRESENCE and drops its VALUE; `same_block_address`
+/// compares the ordinal and `block_ref_key_from_parts` puts it in the index key, so a row filed
+/// with a nonzero ordinal is a DIFFERENT page to every reader than the index entry filed from the
+/// same `ElementEntry`. The nonzero case is measured beside the fixture's own, rather than argued.
+///
+/// rust-internal: guards this crate's own fixture against the row width, no product behaviour
+#[test]
+fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
+    const PAGES: u64 = 32;
+    let shard = shard_with(PAGES, None);
+
+    let mut held = 0u64;
+    let mut round_tripped = 0u64;
+    let mut named_by_index = 0u64;
+    let mut index = 0u64;
+    while index < PAGES {
+        let filed = address_at(index);
+        if let Some(read_back) = shard.string_address(&key_of(index)) {
+            held += 1;
+            if read_back == filed {
+                round_tripped += 1;
+            }
+            if shard.bucket_index.contains_object_block_address(
+                "string",
+                &key_of(index),
+                None,
+                &read_back,
+            ) {
+                named_by_index += 1;
+            }
+        }
+        index += 1;
+    }
+
+    // THE NARROWING ITSELF, on its own shard, so the two columns are comparable rather than
+    // described. The same `ElementEntry` goes into the row and into the index; what comes back out
+    // of the row is then looked up in that index.
+    let mut narrowing = ShardState::default();
+    narrowing.set_routing_range(0, END);
+    let unkeepable = ElementEntry::from_parts(7, 0, 128, Some(11), Some(22));
+    narrowing.set_string_address(std::sync::Arc::from("probe"), &unkeepable.clone());
+    upsert_bucket_index_block(
+        &mut narrowing,
+        SHARD,
+        "string",
+        "probe",
+        None,
+        unkeepable.clone(),
+        false,
+    );
+    let narrowed = narrowing.string_address("probe").expect("the row was filed");
+    let index_names_what_was_filed = narrowing
+        .bucket_index
+        .contains_object_block_address("string", "probe", None, &unkeepable);
+    let index_names_what_the_row_returns = narrowing
+        .bucket_index
+        .contains_object_block_address("string", "probe", None, &narrowed);
+
+    println!(
+        "\n  WHAT THE MAPS HOLD vs WHAT A READER OF THEM SEES, at {PAGES} string pages\n\
+         \n    model-map rows                                      {held}\n\
+           .. handing back the address the fixture filed        {round_tripped}\n\
+           .. named by the bucket index at THAT address         {named_by_index}\n\
+         \n    ONE ROW, ONE INDEX ENTRY, ONE `ElementEntry`: page ordinal filed -> read back\n\
+           {:?} -> {:?}   the fixture's own value\n\
+           {:?} -> {:?}   nonzero: the row has room for the PRESENCE, not the VALUE\n\
+           index names the address that was FILED         {index_names_what_was_filed}\n\
+           index names the address the ROW HANDS BACK     {index_names_what_the_row_returns}\n",
+        address_at(0).block_id(),
+        shard.string_address(&key_of(0)).and_then(|at| at.block_id()),
+        unkeepable.block_id(),
+        narrowed.block_id(),
+    );
+
+    assert_eq!(held, PAGES, "VACUITY: the fixture filed no string row, so nothing here is compared");
+    assert_eq!(
+        round_tripped, PAGES,
+        "{} of {PAGES} model-map rows hand back an address other than the one the fixture filed, \
+         so the walk and the index in every arm below are being compared on different pages",
+        PAGES - round_tripped,
+    );
+    assert_eq!(
+        named_by_index, PAGES,
+        "the bucket index names {named_by_index} of {PAGES} pages at the address the model map \
+         hands out, so the promotion check is offered missing pages that are not missing",
+    );
+
+    // THE TRIPWIRE, and the condition for deleting all of this. While the row narrows, the fixture
+    // above must file zero. The day the inline arm round-trips a nonzero ordinal -- the owned array
+    // lands and the write-back door routes to it -- this fails, and that is the prompt to say so
+    // here rather than to leave a literal pinned for a reason that has expired.
+    assert_ne!(
+        narrowed, unkeepable,
+        "the string row now round-trips a nonzero page ordinal. If that is deliberate, this \
+         assertion and the zero pinned in `address_at` are what should be deleted, in that change"
+    );
+    assert!(
+        index_names_what_was_filed && !index_names_what_the_row_returns,
+        "the row and the index no longer disagree about an unkeepable ordinal (filed: \
+         {index_names_what_was_filed}, read back: {index_names_what_the_row_returns}), so the \
+         reason the fixture files zero has changed and this file should say what it is now"
+    );
 }
 
 /// ARM 1 OF 5: no live model-map page at all -> `false`, having established nothing.
