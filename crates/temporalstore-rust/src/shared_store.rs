@@ -142,6 +142,11 @@ pub struct SharedStoreWalOffsetMetadata {
     pub shard_id: ShardId,
     #[serde(rename = "wal_index")]
     pub wal_index: u64,
+    /// WHICH blob the entry's frame is in.
+    ///
+    /// Always populated for a reader. It is not always WRITTEN: a sidecar frame whose key is the
+    /// one its own shard derives omits it, and the decoder puts it back. See
+    /// [`encode_wal_offset_metadata_frame`].
     pub wal_blob_key: String,
     pub wal_blob_start_offset: u64,
     pub wal_blob_end_offset: u64,
@@ -151,7 +156,6 @@ pub struct SharedStoreWalOffsetMetadata {
     pub wal_blob_physical_slab_count: u64,
     pub wal_blob_first_physical_offset: Option<u64>,
     pub command_byte_size: u64,
-    pub command_sha256: String,
     pub command_encoding: u32,
 }
 
@@ -447,6 +451,8 @@ struct SharedStoreWalOffsetMetadataProto {
     shard_id: u64,
     #[prost(uint64, tag = "2")]
     wal_index: u64,
+    /// Empty when it is the key the shard derives. Tag 3 stays a plain `string`, so a sidecar
+    /// written before this field could be omitted still decodes with its key intact.
     #[prost(string, tag = "3")]
     wal_blob_key: String,
     #[prost(uint64, tag = "4")]
@@ -459,8 +465,9 @@ struct SharedStoreWalOffsetMetadataProto {
     wal_blob_object_length: u64,
     #[prost(uint64, tag = "8")]
     command_byte_size: u64,
-    #[prost(string, tag = "9")]
-    command_sha256: String,
+    // Tag 9 WAS `command_sha256`, a second hex copy of the digest the frame already carries.
+    // Retired: see `encode_wal_offset_metadata_frame`. A sidecar written before the retirement
+    // still carries tag 9, and prost skips it as an unknown field, so old sidecars keep decoding.
     #[prost(uint32, tag = "10")]
     command_encoding: u32,
     #[prost(uint64, tag = "11")]
@@ -746,10 +753,9 @@ where
             wal_blob_physical_slab_count: receipt.physical_slab_count as u64,
             wal_blob_first_physical_offset: receipt.first_physical_offset,
             command_byte_size: command_metadata.byte_size,
-            command_sha256: command_metadata.sha256,
             command_encoding: command_metadata.encoding,
         };
-        let frame = encode_wal_offset_metadata_frame(&metadata);
+        let frame = encode_wal_offset_metadata_frame(&metadata, wal_blob_key);
         self.append_blob_with_retry(
             &self.wal_offset_index_blob_key(entry.shard_id),
             Bytes::from(frame),
@@ -845,10 +851,12 @@ where
                 wal_blob_physical_slab_count: receipt.physical_slab_count as u64,
                 wal_blob_first_physical_offset: receipt.first_physical_offset,
                 command_byte_size: metadata.byte_size,
-                command_sha256: metadata.sha256,
                 command_encoding: metadata.encoding,
             };
-            offset_payload.extend_from_slice(&encode_wal_offset_metadata_frame(&offset_metadata));
+            offset_payload.extend_from_slice(&encode_wal_offset_metadata_frame(
+                &offset_metadata,
+                &wal_blob_key,
+            ));
             reports.push(SharedStoreWriteReport {
                 wal_index: entry.wal_index,
                 published: true,
@@ -1818,7 +1826,9 @@ where
             .get(&self.wal_offset_index_blob_key(shard_id))
             .await
         {
-            Ok(bytes) => decode_wal_offset_metadata_blob(&bytes),
+            Ok(bytes) => {
+                decode_wal_offset_metadata_blob(&bytes, &self.wal_blob_key(shard_id))
+            }
             Err(ObjectStoreError::NotFound(_)) => Ok(BTreeMap::new()),
             Err(err) => Err(err.into()),
         }
@@ -2713,17 +2723,46 @@ fn encode_wal_proto_frame(
     Ok(out)
 }
 
-fn encode_wal_offset_metadata_frame(metadata: &SharedStoreWalOffsetMetadata) -> Vec<u8> {
+/// One sidecar frame: WHERE in the log an entry is, so a reader can range-read it without
+/// walking the log.
+///
+/// # WHAT THIS FRAME DELIBERATELY DOES NOT CARRY
+///
+/// Two of its fields used to be the whole cost of it. Measured on this encoder, a sidecar frame
+/// for a 47-byte log key was 137 B: `command_sha256` 66 B, `wal_blob_key` 49 B, and 22 B for the
+/// eleven other fields TOGETHER. Neither of the two was carrying information.
+///
+/// `command_sha256` was a second hex copy of the digest the log frame already carries. The frame's
+/// copy is the one the read path verifies (`decode_wal_proto_frame_exact` -> `verify_checksum`);
+/// the sidecar's was decoded into a struct field and never compared against anything. A 32-byte
+/// digest written as 64 hex characters, twice per append, to be read once.
+///
+/// `wal_blob_key` is `derived_blob_key` for every entry of a shard, and the frame states its own
+/// `shard_id`, so the key was the same string repeated in every frame of an append-only index. It
+/// is written ONLY when it differs from the derived key, and
+/// [`decode_wal_offset_metadata_blob`] puts the derived key back when the field is empty. A
+/// reader therefore always sees a populated key, and a sidecar written before this change keeps
+/// its explicit key and decodes unchanged.
+///
+/// What is left is offsets, and offsets are what a sidecar is for.
+fn encode_wal_offset_metadata_frame(
+    metadata: &SharedStoreWalOffsetMetadata,
+    derived_blob_key: &str,
+) -> Vec<u8> {
     let proto = SharedStoreWalOffsetMetadataProto {
         shard_id: metadata.shard_id,
         wal_index: metadata.wal_index,
-        wal_blob_key: metadata.wal_blob_key.clone(),
+        // The common case: the shard's own log. Omitted, and put back on decode.
+        wal_blob_key: if metadata.wal_blob_key == derived_blob_key {
+            String::new()
+        } else {
+            metadata.wal_blob_key.clone()
+        },
         wal_blob_start_offset: metadata.wal_blob_start_offset,
         wal_blob_end_offset: metadata.wal_blob_end_offset,
         wal_blob_bytes_written: metadata.wal_blob_bytes_written,
         wal_blob_object_length: metadata.wal_blob_object_length,
         command_byte_size: metadata.command_byte_size,
-        command_sha256: metadata.command_sha256.clone(),
         command_encoding: metadata.command_encoding,
         wal_blob_physical_slab_count: metadata.wal_blob_physical_slab_count,
         wal_blob_first_physical_offset: metadata.wal_blob_first_physical_offset,
@@ -2852,8 +2891,12 @@ fn decode_wal_proto_blob(
     Ok(entries)
 }
 
+/// Decode a whole sidecar blob, putting the derived log key back into every frame that omitted
+/// it. `derived_blob_key` is the key the shard's log lives at; a frame carrying an explicit key
+/// keeps it, which is what makes an older sidecar decode unchanged.
 fn decode_wal_offset_metadata_blob(
     bytes: &[u8],
+    derived_blob_key: &str,
 ) -> Result<BTreeMap<u64, SharedStoreWalOffsetMetadata>, SharedStoreReplicationError> {
     let mut cursor = 0usize;
     let mut entries = BTreeMap::new();
@@ -2883,7 +2926,11 @@ fn decode_wal_offset_metadata_blob(
             SharedStoreWalOffsetMetadata {
                 shard_id: frame.shard_id,
                 wal_index: frame.wal_index,
-                wal_blob_key: frame.wal_blob_key,
+                wal_blob_key: if frame.wal_blob_key.is_empty() {
+                    derived_blob_key.to_string()
+                } else {
+                    frame.wal_blob_key
+                },
                 wal_blob_start_offset: frame.wal_blob_start_offset,
                 wal_blob_end_offset: frame.wal_blob_end_offset,
                 wal_blob_bytes_written: frame.wal_blob_bytes_written,
@@ -2891,7 +2938,6 @@ fn decode_wal_offset_metadata_blob(
                 wal_blob_physical_slab_count: frame.wal_blob_physical_slab_count,
                 wal_blob_first_physical_offset: frame.wal_blob_first_physical_offset,
                 command_byte_size: frame.command_byte_size,
-                command_sha256: frame.command_sha256,
                 command_encoding: frame.command_encoding,
             },
         );
@@ -3077,6 +3123,350 @@ mod tests {
 
     use super::*;
     use crate::types::CommandResponse;
+
+
+    /// WHERE ONE APPEND'S FIXED ENVELOPE GOES, TERM BY TERM.
+    ///
+    /// A swept fit over the value size says one append in `ProtobufAppendBlob` mode costs
+    /// `1.0007 * payload + 242 B`. The slope is the payload written once and is at its floor. The
+    /// 242 B was not: it was a sum of named fields, and two of them carried no information.
+    ///
+    /// # WHY A DELTA NAMES A FIELD HERE
+    ///
+    /// Both frames are plain protobuf with a 4-byte big-endian length prefix and NO compression,
+    /// so re-encoding with one field cleared and subtracting attributes the difference to that
+    /// field. On the served index -- `TSIDX\x01` + header + a ZSTD frame -- the same subtraction
+    /// would name nothing, because a compressed delta is a fact about the compressor.
+    ///
+    /// # THE TERMS ARE ASSERTED TO SUM TO THE WHOLE
+    ///
+    /// Each term is measured independently and the residue is asserted to be what is left.
+    /// Without that identity a term could be dropped from the table and the table would still
+    /// look complete.
+    mod one_append_envelope_terms {
+        use super::*;
+
+        const TERM_SHARD: u64 = 1;
+        const TERM_INDEX: u64 = 1;
+
+        /// The real production key, not a short stand-in: its LENGTH is the cost being priced, so
+        /// a made-up short key would under-report the very term under test.
+        const TERM_BLOB_KEY: &str = "cluster-a/shards/1/shared/wal/wal.protobuf.blob";
+
+        fn offset_metadata(key: &str) -> SharedStoreWalOffsetMetadata {
+            SharedStoreWalOffsetMetadata {
+                shard_id: TERM_SHARD,
+                wal_index: TERM_INDEX,
+                wal_blob_key: key.to_string(),
+                wal_blob_start_offset: 0,
+                wal_blob_end_offset: 101,
+                wal_blob_bytes_written: 101,
+                wal_blob_object_length: 101,
+                wal_blob_physical_slab_count: 1,
+                wal_blob_first_physical_offset: Some(0),
+                command_byte_size: 15,
+                command_encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
+            }
+        }
+
+        /// The sidecar frame as it stands: offsets, and almost nothing else.
+        ///
+        /// Before the two retirements this frame was 137 B for this key -- `command_sha256` 66 B,
+        /// `wal_blob_key` 49 B, and 22 B for the eleven other fields TOGETHER. Both of the big
+        /// terms are now absent in the common case, and this asserts what is left.
+        #[test]
+        fn the_sidecar_frame_is_offsets_and_little_else() {
+            let key = TERM_BLOB_KEY;
+            // The common case: the key the shard derives, so the frame omits it.
+            let derived = encode_wal_offset_metadata_frame(&offset_metadata(key), key).len();
+            // The uncommon case: some OTHER blob, so the frame has to say which.
+            let explicit =
+                encode_wal_offset_metadata_frame(&offset_metadata(key), "somewhere/else").len();
+            let key_term = explicit - derived;
+
+            println!(
+                "sidecar frame: {derived} B when the key is derived, {explicit} B when it is \
+                 written out -- the key itself is {key_term} B"
+            );
+
+            assert_eq!(
+                key_term,
+                key.len() + 2,
+                "writing the key out costs {key_term} B for a {} byte key, so the omission in \
+                 the derived case is worth exactly that",
+                key.len()
+            );
+
+            // THE HEADLINE. 22 B of offsets was the residue under the two strings; the frame is
+            // now that residue. An exact figure, because a tolerance here would admit the very
+            // regrowth this guard exists to catch.
+            assert_eq!(
+                derived, 22,
+                "the sidecar frame is {derived} B, not 22. Something was added to it, or one of \
+                 the two retired string terms came back. Re-price it field by field before \
+                 changing this number"
+            );
+
+            // And the frame must still be big enough to be the offsets it claims to carry: a
+            // frame that had collapsed to nothing would also satisfy the assertion above if the
+            // number were edited, so the fields are checked by round-trip below rather than only
+            // by size.
+            let decoded = decode_wal_offset_metadata_blob(
+                &encode_wal_offset_metadata_frame(&offset_metadata(key), key),
+                key,
+            )
+            .expect("the frame decodes");
+            assert_eq!(decoded.len(), 1, "one frame in, one frame out");
+            assert_eq!(decoded[&TERM_INDEX], offset_metadata(key));
+        }
+
+        /// The derived key is OMITTED on the wire and PUT BACK on decode.
+        ///
+        /// Both halves matter. Omitting it without putting it back would hand the read path an
+        /// empty key and it would range-read nothing; putting it back without omitting it would
+        /// save no bytes. So the wire is checked for the absence and the decode for the presence.
+        #[test]
+        fn the_derived_key_is_omitted_on_the_wire_and_restored_on_decode() {
+            let key = TERM_BLOB_KEY;
+            let frame = encode_wal_offset_metadata_frame(&offset_metadata(key), key);
+
+            // THE ABSENCE, asserted on the bytes rather than inferred from the length.
+            assert!(
+                !frame.windows(key.len()).any(|window| window == key.as_bytes()),
+                "the derived key is still on the wire, so it was not omitted"
+            );
+
+            // THE PRESENCE, after decode.
+            let decoded =
+                decode_wal_offset_metadata_blob(&frame, key).expect("the frame decodes");
+            assert_eq!(
+                decoded[&TERM_INDEX].wal_blob_key, key,
+                "the decoder did not put the derived key back, so a reader would range-read an \
+                 empty key"
+            );
+
+            // A key that is NOT the derived one is written out and comes back as itself -- the
+            // field still works when it has something to say.
+            let other = "cluster-a/shards/1/shared/wal/wal.protobuf.blob.rotated";
+            let rotated = encode_wal_offset_metadata_frame(&offset_metadata(other), key);
+            assert!(
+                rotated.windows(other.len()).any(|window| window == other.as_bytes()),
+                "a key that differs from the derived one must be written out"
+            );
+            let decoded =
+                decode_wal_offset_metadata_blob(&rotated, key).expect("the frame decodes");
+            assert_eq!(
+                decoded[&TERM_INDEX].wal_blob_key, other,
+                "an explicit key must survive decode rather than being overwritten by the \
+                 derived one"
+            );
+        }
+
+        /// A SIDECAR WRITTEN BEFORE THE RETIREMENTS STILL DECODES.
+        ///
+        /// Retiring tag 9 and omitting tag 3 are both changes to a DURABLE format, so the only
+        /// evidence that matters is an old frame going through the current decoder. This builds
+        /// one in the retired shape -- explicit key in tag 3, hex digest in tag 9 -- and decodes
+        /// it, rather than asserting from the comment that prost skips unknown fields.
+        #[test]
+        fn a_sidecar_written_before_the_retirements_still_decodes() {
+            /// The sidecar as it was: tag 3 always written, tag 9 a hex digest.
+            #[derive(Clone, PartialEq, Message)]
+            struct RetiredSidecarProto {
+                #[prost(uint64, tag = "1")]
+                shard_id: u64,
+                #[prost(uint64, tag = "2")]
+                wal_index: u64,
+                #[prost(string, tag = "3")]
+                wal_blob_key: String,
+                #[prost(uint64, tag = "4")]
+                wal_blob_start_offset: u64,
+                #[prost(uint64, tag = "5")]
+                wal_blob_end_offset: u64,
+                #[prost(uint64, tag = "6")]
+                wal_blob_bytes_written: u64,
+                #[prost(uint64, tag = "7")]
+                wal_blob_object_length: u64,
+                #[prost(uint64, tag = "8")]
+                command_byte_size: u64,
+                #[prost(string, tag = "9")]
+                command_sha256: String,
+                #[prost(uint32, tag = "10")]
+                command_encoding: u32,
+                #[prost(uint64, tag = "11")]
+                wal_blob_physical_slab_count: u64,
+                #[prost(uint64, optional, tag = "12")]
+                wal_blob_first_physical_offset: Option<u64>,
+            }
+
+            let old = RetiredSidecarProto {
+                shard_id: TERM_SHARD,
+                wal_index: TERM_INDEX,
+                wal_blob_key: TERM_BLOB_KEY.to_string(),
+                wal_blob_start_offset: 0,
+                wal_blob_end_offset: 101,
+                wal_blob_bytes_written: 101,
+                wal_blob_object_length: 101,
+                command_byte_size: 15,
+                command_sha256: sha256_hex(b"a command payload"),
+                command_encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
+                wal_blob_physical_slab_count: 1,
+                wal_blob_first_physical_offset: Some(0),
+            };
+            let encoded = old.encode_to_vec();
+            let mut blob = Vec::with_capacity(4 + encoded.len());
+            blob.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            blob.extend_from_slice(&encoded);
+
+            // The old frame carried both retired terms, so it is MEASURABLY bigger. If this ever
+            // stopped holding, the comparison below would be against a frame that is not the old
+            // shape at all.
+            let now = encode_wal_offset_metadata_frame(&offset_metadata(TERM_BLOB_KEY), TERM_BLOB_KEY);
+            assert_eq!(
+                blob.len(),
+                137,
+                "the retired shape should encode to 137 B for this key; it is {} B, so this \
+                 fixture is not the shape that was retired",
+                blob.len()
+            );
+            assert!(
+                blob.len() > now.len(),
+                "the retired frame ({} B) is not bigger than the current one ({} B)",
+                blob.len(),
+                now.len()
+            );
+
+            // AND IT STILL DECODES, with its explicit key intact and every offset where it was.
+            let decoded = decode_wal_offset_metadata_blob(&blob, "a/different/derived/key")
+                .expect("a sidecar written before the retirements must still decode");
+            let entry = &decoded[&TERM_INDEX];
+            assert_eq!(
+                entry.wal_blob_key, TERM_BLOB_KEY,
+                "the old frame's explicit key was lost; a replay would range-read the wrong blob"
+            );
+            assert_eq!(entry.wal_blob_start_offset, 0);
+            assert_eq!(entry.wal_blob_end_offset, 101);
+            assert_eq!(entry.wal_blob_bytes_written, 101);
+            assert_eq!(entry.wal_blob_object_length, 101);
+            assert_eq!(entry.command_byte_size, 15);
+            assert_eq!(entry.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO);
+            assert_eq!(entry.wal_blob_physical_slab_count, 1);
+            assert_eq!(entry.wal_blob_first_physical_offset, Some(0));
+        }
+
+        /// THE LOG FRAME LEG, term by term, so the whole envelope is accounted and not just the
+        /// sidecar's half of it.
+        ///
+        /// The frame's envelope over the user's bytes is what is left after the payload: a 4-byte
+        /// length prefix, four small scalars, the protobuf wrapper around the payload, and the
+        /// digest. The digest is the overwhelming majority of it, and unlike the sidecar's copy it
+        /// is READ -- so it is priced here and left alone, rather than removed.
+        #[test]
+        fn the_log_frame_leg_is_mostly_its_digest() {
+            let entry = SharedStoreWalEntry {
+                shard_id: TERM_SHARD,
+                wal_index: TERM_INDEX,
+                command: Some(Command::StringSet {
+                    key: "amp-key".to_string(),
+                    value: vec![b'v'; 512],
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            };
+            let frame = encode_wal_proto_frame(&entry).expect("the frame encodes");
+            let metadata = wal_command_metadata(entry.command.as_ref()).expect("metadata");
+
+            // The payload is INSIDE the envelope, not beside it: the frame's own
+            // `command_byte_size` is the encoded command, and the envelope is what the frame
+            // costs on top of it.
+            let payload = metadata.byte_size as usize;
+            let envelope = frame.len() - payload;
+            // 64 hex characters, a tag and a length byte.
+            let digest_term = metadata.sha256.len() + 2;
+            let residue = envelope - digest_term;
+
+            println!(
+                "log frame {} B = payload {payload} B + digest {digest_term} B + framing and \
+                 scalars {residue} B",
+                frame.len()
+            );
+
+            assert_eq!(
+                digest_term, 66,
+                "the frame's digest costs {digest_term} B, not 66"
+            );
+
+            // THE ACCOUNTING IDENTITY, same rule as the sidecar: the named terms and the residue
+            // must be the whole frame, or this is not a decomposition of it.
+            assert_eq!(
+                payload + digest_term + residue,
+                frame.len(),
+                "payload {payload} + digest {digest_term} + residue {residue} is not the frame \
+                 ({} B)",
+                frame.len()
+            );
+
+            // The residue is the 4-byte length prefix, the payload's own tag and length, and four
+            // small scalars. Exact, because this is the part nobody is proposing to change and a
+            // tolerance would hide a new field landing in it.
+            assert_eq!(
+                residue, 16,
+                "the frame's framing and scalars cost {residue} B, not 16. A field was added to \
+                 the frame, or one of the scalars widened"
+            );
+
+            // AND THE HEADLINE: the digest is more of the frame's envelope than everything else
+            // in it put together.
+            assert!(
+                digest_term > residue,
+                "the digest is {digest_term} B against {residue} B of framing and scalars; the \
+                 claim that this leg is mostly its digest no longer holds"
+            );
+        }
+
+        /// The digest the read path actually verifies is the FRAME's, and there is now one of it.
+        ///
+        /// It is still a 64-character hex transcription of a 32-byte digest. That is 32 B of the
+        /// remaining envelope and it is NOT retired here: unlike the sidecar's copy it is read,
+        /// and narrowing it is a change to what a reader must understand rather than a deletion
+        /// of something nothing read.
+        #[test]
+        fn the_frame_carries_the_one_digest_the_read_path_verifies() {
+            let entry = SharedStoreWalEntry {
+                shard_id: TERM_SHARD,
+                wal_index: TERM_INDEX,
+                command: Some(Command::StringSet {
+                    key: "amp-key".to_string(),
+                    value: b"a value".to_vec(),
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            };
+            let frame = encode_wal_proto_frame(&entry).expect("the frame encodes");
+            let decoded = decode_wal_proto_frame_exact(&frame, "test").expect("it decodes");
+            assert_eq!(decoded.wal_index, TERM_INDEX);
+
+            let metadata = wal_command_metadata(entry.command.as_ref()).expect("metadata");
+            assert_eq!(
+                metadata.sha256.len(),
+                64,
+                "the frame's digest is {} characters, not 64 hex",
+                metadata.sha256.len()
+            );
+
+            // And the sidecar no longer has a digest field to disagree with it. Asserted on the
+            // WIRE: the hex string must not appear in the sidecar frame at all.
+            let sidecar =
+                encode_wal_offset_metadata_frame(&offset_metadata(TERM_BLOB_KEY), TERM_BLOB_KEY);
+            assert!(
+                !sidecar
+                    .windows(metadata.sha256.len())
+                    .any(|window| window == metadata.sha256.as_bytes()),
+                "the sidecar is carrying a copy of the frame's digest again"
+            );
+        }
+    }
+
 
     const TEST_CLUSTER_ID: &str = "cluster-a";
     const TEST_CACHE_BYTES: usize = 1024;
