@@ -8237,14 +8237,63 @@ mod release_refusal_guards {
         panic!("no key with prefix {prefix} routes to bucket {routing_bucket} in 100,000 tries");
     }
 
+    /// THE PAGE ORDINAL IS ZERO, AND THAT IS WHAT MAKES THIS FIXTURE BUILDABLE.
+    ///
+    /// It was 11, and no object in this store can carry that. The ordinal names WHICH PAGE of an
+    /// object an address is, so a single-page object -- which every `string` is -- has page zero
+    /// by construction. `ObjectRecord::from_object_rows` refuses a nonzero one by name as
+    /// `NonZeroPageOrdinalDoesNotFitInline`, and the measurement behind that refusal found
+    /// ordinal 0 on 400 of 400 live string addresses, the largest seen being 0.
+    ///
+    /// # WHY THE ELEVEN COST NINE GUARDS, AND WHY NOT ONE OF THEM SAID SO
+    ///
+    /// The string map holds an `ObjectSlot` rather than a bare address. The inline arm of its
+    /// record keeps the ordinal's PRESENCE -- the one bit it spends as `PAGE_IN_LOG` -- and not
+    /// its VALUE, so `set_string_address` was handed 11 and `string_address` gave back 0. The
+    /// bucket index still holds a whole `ElementEntry`, and kept the 11.
+    ///
+    /// `release_bucket_blocks`' map-agreement term reads the same page out of both of those and
+    /// compares the two identities. Six of their eight fields matched; the last two -- the ordinal
+    /// and the generation derived from it -- read `Some(11)` resident against `Some(0)` derived.
+    /// So every release in this module and in three others was refused as `ModelMapDisagreement`:
+    /// nine guards red at once, each naming a term it was not about, over one datum the store
+    /// cannot hold.
+    ///
+    /// `Some(0)` RATHER THAN `None`, because this fixture's page is slab-resident and an ABSENT
+    /// ordinal is exactly what log-residence means -- see `ElementEntry::log_resident`. Both
+    /// round-trip the row faithfully; only this one leaves both presence bits set, which is the
+    /// shape a releasable page actually has.
     fn address(routing_bucket: u32, length: u64) -> ElementEntry {
         ElementEntry::from_parts(
             3,
             128,
             length,
-            Some(11),
+            Some(0),
             Some(OBJECT_ID),
         )
+    }
+
+    /// FILE ONE STRING ROW, AND ASSERT THE MAP KEPT WHAT IT WAS HANDED.
+    ///
+    /// Every fixture here files ONE address into TWO places -- the string map and the bucket index
+    /// -- and the map-agreement term then compares what each of them gives back. The bucket index
+    /// returns the `ElementEntry` it was given; this side returns one rebuilt from a row that
+    /// keeps part of an address and derives the rest. So the two can agree only while the row is
+    /// faithful, and a fixture that files an address the row narrows does not fail where it filed
+    /// it. It fails nine layers up, in four modules, on a term none of those guards is about.
+    ///
+    /// That is not hypothetical; it is what this door was added for. So the row is read back and
+    /// compared on the spot, and the next narrowing of it fails at the line that narrows it, with
+    /// a message that names the row rather than the release.
+    fn file_string_row(shard: &mut ShardState, key: &str, held: &ElementEntry) {
+        shard.set_string_address(std::sync::Arc::from(key), held);
+        assert_eq!(
+            shard.string_address(key).as_ref(),
+            Some(held),
+            "the string map did not hand back the address this fixture filed under {key}: a row \
+             that narrows an address makes every release here refuse with ModelMapDisagreement \
+             rather than on the term it is written to pin",
+        );
     }
 
     fn block(key: &str, model_id: &str, component: Option<&str>, address: ElementEntry) -> BlockIndex {
@@ -8341,7 +8390,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.set_string_address(key.as_str().into(), &held.clone());
+        file_string_row(shard, &key, &held);
         install_page(shard, routing_bucket, &key, block(&key, "string", None, held));
         key
     }
@@ -8359,7 +8408,7 @@ mod release_refusal_guards {
         shard.set_routing_range(0, u32::MAX);
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
-        shard.set_string_address(std::sync::Arc::from(key), &held.clone());
+        file_string_row(shard, key, &held);
         install_page(shard, routing_bucket, key, block(key, "string", None, held));
         routing_bucket
     }
@@ -8381,13 +8430,51 @@ mod release_refusal_guards {
         shard.set_routing_range(0, RELEASE_RANGE_END);
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
-        shard.set_string_address(key.as_str().into(), &held.clone());
+        file_string_row(shard, &key, &held);
         let dirty = BlockIndex {
             dirty: true,
             ..block(&key, "string", None, held)
         };
         install_page(shard, routing_bucket, &key, dirty);
         key
+    }
+
+    /// THE AGREEMENT THE MAP-AGREEMENT TERM RESTS ON, PINNED AT ONE CALL.
+    ///
+    /// `release_bucket_blocks` refuses a release when the model maps would not rebuild what is
+    /// resident. For a `string` the model map is an `ObjectSlot`, and this module files its row
+    /// and its bucket-index page out of ONE `ElementEntry` -- so that term can be satisfied only
+    /// while the row hands the whole address back.
+    ///
+    /// Asserted here standing alone, because the symptom is useless as a diagnosis: nine guards
+    /// across four modules went red on exactly this and every one of them reported
+    /// `model_map_disagreement`, which is true of the symptom and silent about the cause.
+    ///
+    /// TWO CLAUSES, AND THE ORDER IS LOAD-BEARING, so each can be planted on its own. An address
+    /// with a nonzero ordinal fails BOTH -- the row cannot hold it, so the equality would fire too
+    /// and report the row where the fault is the datum. Asking about the datum FIRST means each
+    /// plant is named by the clause it broke: the ordinal put back to 11 fires the first, and a
+    /// `set_address` that stops recording the generation fires the second.
+    #[test]
+    fn the_string_row_hands_back_the_whole_address_the_fixture_filed() {
+        let mut shard = ShardState::default();
+        let held = address(7, 64);
+
+        shard.set_string_address("whole-address-key".into(), &held);
+
+        assert_eq!(
+            held.block_id(),
+            Some(0),
+            "this module's page ordinal must be the zero a single-page object has by \
+             construction: `ObjectRecord::from_object_rows` refuses a nonzero one by name as \
+             NonZeroPageOrdinalDoesNotFitInline, and the write-back door drops its value",
+        );
+        assert_eq!(
+            shard.string_address("whole-address-key"),
+            Some(held.clone()),
+            "the string row narrowed the address it was given, so no release in this module can \
+             satisfy the map-agreement term",
+        );
     }
 
     /// THE DENOMINATOR. Without this every guard below could pass because the fixture never
