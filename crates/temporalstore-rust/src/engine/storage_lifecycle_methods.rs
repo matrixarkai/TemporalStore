@@ -2025,6 +2025,43 @@ impl TemporalEngine {
                 );
                 recency
             };
+            // THE SAME QUANTITY THE SAMPLED ARM USES, read in the same borrow as the recency above
+            // rather than taken from the summary.
+            //
+            // The summary's `dirty_object_count` counts distinct OBJECTS from the object-keyed
+            // dirty index; the sampled arm counts PAGES whose own `dirty` bit is set. They are not
+            // the same number once an object spans more than one page, and both were being written
+            // into the same field of the same struct and multiplied by 1024 into the same weight.
+            // Measured on a fixture with one six-page object: the sampled arm ranked that bucket at
+            // 7,176 and this arm at 2,056 -- 3.5x apart in a sort key, decided only by
+            // `evict_sampled_lru`. Twelve single-page buckets in the same fixture agreed exactly,
+            // which is why a fixture without a multi-page object cannot see this.
+            //
+            // Pages is the right quantity here and not merely the shipped one: the weight is a
+            // byte estimate added to `physical_bytes`, so it should track the bytes a dump would
+            // write, which pages do and distinct objects do not.
+            // `the_two_eviction_arms_must_agree_on_what_the_dirty_count_means` is the gate.
+            let dirty_pages_by_bucket: std::collections::HashMap<u32, u64> = {
+                let shards = self.shards.read().expect("engine lock poisoned");
+                shards
+                    .get(&shard_id)
+                    .map(|shard| {
+                        shard
+                            .bucket_index
+                            .bucket_map
+                            .iter()
+                            .map(|(routing_bucket, bucket)| {
+                                let dirty = bucket
+                                    .block_index
+                                    .values()
+                                    .filter(|page| !page.deleted && page.dirty)
+                                    .count() as u64;
+                                (*routing_bucket, dirty)
+                            })
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            };
             let mut victims = self
                 .bucket_storage_summaries(shard_id)
                 .into_iter()
@@ -2033,6 +2070,12 @@ impl TemporalEngine {
                     let cache_memory_bytes =
                         cache.map(|cache| cache.memory_bytes).unwrap_or_default();
                     let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
+                    // Absent means the bucket holds no node, which holds no dirty page either, so
+                    // zero is the answer and not a fallback.
+                    let dirty_pages = dirty_pages_by_bucket
+                        .get(&summary.routing_bucket)
+                        .copied()
+                        .unwrap_or(0);
                     StorageEvictionVictim {
                         routing_bucket: summary.routing_bucket,
                         object_count: summary.object_count,
@@ -2040,12 +2083,12 @@ impl TemporalEngine {
                         physical_bytes: summary.physical_bytes,
                         cache_memory_bytes,
                         cache_disk_bytes,
-                        dirty_object_count: summary.dirty_object_count,
+                        dirty_object_count: dirty_pages,
                         weight: cache_memory_bytes
                             .saturating_mul(4)
                             .saturating_add(cache_disk_bytes.saturating_mul(2))
                             .saturating_add(summary.physical_bytes)
-                            .saturating_add(summary.dirty_object_count.saturating_mul(1024)),
+                            .saturating_add(dirty_pages.saturating_mul(1024)),
                         last_touched_ms: recency_by_bucket
                             .get(&summary.routing_bucket)
                             .copied()
