@@ -356,7 +356,24 @@ fn control_api_reads_and_scans_index_log_stream() {
         0,
         "the high half of the address word is the slab id"
     );
-    assert!(served["strings"].get("k1").is_some());
+    // THE STRING ROW, UNDER THE CONSOLIDATED MAP'S OWN SPELLING.
+    //
+    // This read `served["strings"]`, and there has been no `strings` field on a `ShardState` since
+    // the string map became one KIND of the consolidated `objects` map, keyed kind then object
+    // key. So the index answered a JSON null, `get("k1")` answered `None`, and the assertion failed
+    // for a row that is present and correct. The same test already reads `served["slot_index"]`
+    // above for exactly this reason; this spelling was the one left behind.
+    //
+    // THE KIND'S SPELLING IS ASKED FOR RATHER THAN WRITTEN OUT. `StoredModelKind` IS what
+    // serializes as the outer key -- through its own `Serialize` impl, which writes `as_str()` --
+    // so taking it from there cannot go stale the way a literal just did.
+    let string_kind = crate::engine::storage_bucket_internals::StoredModelKind::String.as_str();
+    assert!(
+        served["objects"][string_kind].get("k1").is_some(),
+        "the served index carries no string row for `k1` under `objects.{string_kind}`; the \
+         consolidated map holds {}",
+        served["objects"],
+    );
 }
 
 #[test]
