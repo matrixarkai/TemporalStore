@@ -86,6 +86,10 @@ required-features = ["matrixobject"]
 name = "one_append_amplification_report"
 required-features = ["matrixobject"]
 
+[[example]]
+name = "batched_append_amplification_report"
+required-features = ["matrixobject"]
+
 [[bin]]
 # Needs the counting allocator to say anything; it refuses to run without it rather than printing
 # a table of zeros.
