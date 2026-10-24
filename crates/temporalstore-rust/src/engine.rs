@@ -7299,6 +7299,7 @@ fn read_block_frame_bytes(
     address: &ElementEntry,
     identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
+    cache_frame: CacheFrame,
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
         shard_id,
@@ -7324,7 +7325,9 @@ fn read_block_frame_bytes(
     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
         if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset()) {
             if let Ok(bytes) = block_store.read(&real_address) {
-                let _ = cache.put(cache_key, bytes.clone());
+                if cache_frame == CacheFrame::Yes {
+                    let _ = cache.put(cache_key, bytes.clone());
+                }
                 return Some(bytes);
             }
         }
@@ -7338,12 +7341,16 @@ fn read_block_frame_bytes(
             identity.object_id(),
             identity.component(),
         ) {
-            let _ = cache.put(cache_key, bytes.clone());
+            if cache_frame == CacheFrame::Yes {
+                let _ = cache.put(cache_key, bytes.clone());
+            }
             return Some(bytes);
         }
     }
     if let Ok(bytes) = block_store.read(address) {
-        let _ = cache.put(cache_key, bytes.clone());
+        if cache_frame == CacheFrame::Yes {
+            let _ = cache.put(cache_key, bytes.clone());
+        }
         return Some(bytes);
     }
     // The block store could not answer, so try the record that carries this block.
@@ -7367,10 +7374,31 @@ fn read_block_frame_bytes(
         identity.object_id(),
         identity.component(),
     ) {
-        let _ = cache.put(cache_key, bytes.clone());
+        if cache_frame == CacheFrame::Yes {
+            let _ = cache.put(cache_key, bytes.clone());
+        }
         return Some(bytes);
     }
     None
+}
+
+/// Whether a read should leave the block's frame in the cache.
+///
+/// A NAMED ENUM RATHER THAN A BOOL, because `CacheFrame::No` says at the call site what it does
+/// while `false` would send the reader off to find the parameter. A parameter rather than a scoped
+/// mode for the same reason: an implicit mode is invisible exactly where someone has to reason
+/// about it.
+#[derive(Copy, Clone, PartialEq, Eq, Debug)]
+pub(crate) enum CacheFrame {
+    /// Cache it. For every reader with no second layer of its own -- compaction, the lifecycle
+    /// walks, the reports -- this is the only cache the block gets, which is why it is the default
+    /// `read_block_bytes` passes and why 23 call sites did not have to move.
+    Yes,
+    /// Do not. Only for a reader that caches the VALUE it extracts, where the frame copy is a
+    /// second copy of the same bytes that nothing else can reach: a frame serves exactly one key
+    /// (#2288 -- 500 keys, 500 frames, zero sharing at four value sizes), so no other read of
+    /// another key can hit it.
+    No,
 }
 
 /// One element's value out of the block an address names.
@@ -7407,6 +7435,31 @@ fn read_block_bytes(
     identity: PageIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
+    // THE WRAPPER EXISTS SO 23 CALL SITES DO NOT MOVE. Every reader with no second cache layer
+    // keeps exactly the behaviour it had; only a caller that caches the extracted value opts out,
+    // through `read_block_bytes_with_frame_policy` below.
+    read_block_bytes_with_frame_policy(
+        cache,
+        block_store,
+        shard_id,
+        address,
+        identity,
+        routing_bucket,
+        CacheFrame::Yes,
+    )
+}
+
+/// [`read_block_bytes`], with the frame-cache policy named by the caller. See [`CacheFrame`].
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn read_block_bytes_with_frame_policy(
+    cache: &MultiLayerCache,
+    block_store: &BlockStore,
+    shard_id: ShardId,
+    address: &ElementEntry,
+    identity: PageIdentity<'_>,
+    routing_bucket: Option<u32>,
+    cache_frame: CacheFrame,
+) -> Option<Vec<u8>> {
     let bytes = read_block_frame_bytes(
         cache,
         block_store,
@@ -7414,6 +7467,7 @@ fn read_block_bytes(
         address,
         identity,
         routing_bucket,
+        cache_frame,
     )?;
     let Some(component) = identity.component() else {
         return Some(bytes);

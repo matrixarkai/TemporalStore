@@ -10,7 +10,7 @@ use crate::types::ShardId;
 use matrixcache::MultiLayerCache;
 
 use super::hashing::PageIdentity;
-use super::read_block_bytes;
+use super::{read_block_bytes_with_frame_policy, CacheFrame};
 use super::state::{
     object_component_lookup_key, object_block_lookup_key, ShardState, BucketLayoutState,
 };
@@ -371,7 +371,17 @@ pub(super) fn read_bucket_index_value(
 ) -> Option<Vec<u8>> {
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     bucket_index_block_address(shard, model_id, object_key, component).and_then(|address| {
-        read_block_bytes(
+        // THE FRAME COPY IS NOT CACHED HERE. This function has exactly ONE call site -- `StringGet`
+        // behind `cached_response`, a count `element_ordinal_reuse` asserts -- and that caller
+        // caches the VALUE this returns. A frame serves exactly one key (#2288: 500 keys, 500
+        // frames, zero sharing at 64/256/1,024/4,096 B), so the frame copy on this path is a second
+        // copy of the same bytes that no other read can reach. #2276 priced the pair at
+        // `2 * value + c` bytes an entry; this is the other half of it.
+        //
+        // Every other reader of a block -- compaction, the lifecycle walks, the reports -- goes
+        // through `read_block_bytes` and still caches, because for them the frame cache is the only
+        // one there is.
+        read_block_bytes_with_frame_policy(
             cache,
             block_store,
             shard_id,
@@ -385,6 +395,7 @@ pub(super) fn read_bucket_index_value(
                 start_routing_bucket,
                 end_routing_bucket,
             )),
+            CacheFrame::No,
         )
     })
 }
