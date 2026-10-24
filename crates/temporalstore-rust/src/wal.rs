@@ -6223,6 +6223,269 @@ mod tests {
             .collect()
     }
 
+    /// WHAT ONE LOCAL WAL RECORD COSTS, as a line rather than a point.
+    ///
+    /// # WHY THIS EXISTS SEPARATELY FROM THE SHARED STORE'S FIGURE
+    ///
+    /// The per-append envelope measured by `one_append_amplification_report` is the SHARED STORE's
+    /// (`SharedStoreWalAppendMode::ProtobufAppendBlob`, summed over objects under the shard's
+    /// shared WAL prefix). This log is a different encoder on a different path, so none of that
+    /// figure carries over and neither does its direction.
+    ///
+    /// # COMPRESSION IS WHY THE PAYLOADS HERE ARE RANDOM
+    ///
+    /// Records are zstd-compressed by default (`wal_proto::compress_records_enabled`). A sweep
+    /// over repeated bytes would therefore fit a line through the COMPRESSOR, not through this
+    /// log: `vec![b'v'; 8192]` leaves almost nothing on disk and the slope collapses towards
+    /// zero. The second half of this test measures exactly that, so the reason for the first half
+    /// is evidence rather than a warning in a comment.
+    ///
+    /// Random payloads also put the measurement where a field-level decomposition is MEANINGFUL.
+    /// `compress_payload` returns `None` when compression does not help, so an incompressible
+    /// record travels uncompressed -- which the test ASSERTS by its marker rather than assuming --
+    /// and clearing a field then changes the bytes by that field's own size. On the compressed
+    /// branch the same subtraction would name nothing.
+    mod one_record_envelope_terms {
+        use super::*;
+
+        /// The same sweep the shared-store report uses, so the two lines are over like shapes even
+        /// though they are not over the same path.
+        const SWEEP: [usize; 7] = [0, 8, 32, 128, 512, 2048, 8192];
+        const KEY: &str = "amp-key";
+
+        fn record_of(value: Vec<u8>) -> WriteAheadLogRecord {
+            WriteAheadLogRecord {
+                shard_id: 1,
+                sequence: 1,
+                command: Some(Command::StringSet {
+                    key: KEY.to_string(),
+                    value,
+                }),
+                metadata: Some(WriteAheadLogRecordMetadata {
+                    version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                    timestamp_ms: 1_787_270_070_192,
+                    items: Vec::new(),
+                    batch_id: None,
+                    batch_size: None,
+                    batch_index: None,
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            }
+        }
+
+        /// The payload as it is written, and the record's bytes AS FRAMED -- what reaches the file.
+        fn encoded(record: &WriteAheadLogRecord) -> (Vec<u8>, usize) {
+            let payload = encode_wal_payload(record).expect("the record encodes");
+            let framed = crate::log_framing::encode_record(&payload).len();
+            (payload, framed)
+        }
+
+        fn fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
+            let n = points.len() as f64;
+            let sx: f64 = points.iter().map(|p| p.0).sum();
+            let sy: f64 = points.iter().map(|p| p.1).sum();
+            let sxx: f64 = points.iter().map(|p| p.0 * p.0).sum();
+            let sxy: f64 = points.iter().map(|p| p.0 * p.1).sum();
+            let denom = n * sxx - sx * sx;
+            let rate = if denom == 0.0 {
+                0.0
+            } else {
+                (n * sxy - sx * sy) / denom
+            };
+            let envelope = (sy - rate * sx) / n;
+            let worst = points
+                .iter()
+                .map(|p| (p.1 - (rate * p.0 + envelope)).abs())
+                .fold(0.0f64, f64::max);
+            (rate, envelope, worst)
+        }
+
+        /// THE LINE, over incompressible payloads, with the regime asserted at every point.
+        #[test]
+        fn what_one_local_wal_record_costs() {
+            let mut points: Vec<(f64, f64)> = Vec::new();
+            println!("    payload   user B   record B   framed B   framed/user");
+            for size in SWEEP {
+                let value = incompressible_seeded(size, size as u64);
+                let record = record_of(value);
+                let (payload, framed) = encoded(&record);
+                let user = KEY.len() + size;
+
+                // THE REGIME, ASSERTED. If the compressor took this payload, the number below is
+                // a fact about zstd and the fit is not a fact about this log at all.
+                assert_eq!(
+                    payload.first().copied(),
+                    Some(crate::wal_proto::RAW_PAYLOAD_MARKER),
+                    "a {size}-byte incompressible payload was encoded as marker {:?}, not the raw \
+                     one -- this point is on the compressed branch and cannot be decomposed",
+                    payload.first()
+                );
+                assert!(
+                    framed > user || size == 0,
+                    "a record of {framed} B cannot hold {user} B of user data"
+                );
+
+                println!(
+                    "    {:>7}   {:>6}   {:>8}   {:>8}   {:>11.2}",
+                    size,
+                    user,
+                    payload.len(),
+                    framed,
+                    framed as f64 / user as f64
+                );
+                points.push((size as f64, framed as f64));
+            }
+
+            let (rate, envelope, resid) = fit(&points);
+            println!();
+            println!("  one local WAL record = {rate:.4} * payload + {envelope:.1}      worst residual {resid:.1} B");
+
+            // THE FIT HAS TO BE A FIT, same rule as the shared-store report: a line quoted over
+            // points that do not lie on one is a summary of nothing.
+            assert!(
+                resid < envelope.abs().max(1.0),
+                "the fit leaves a residual of {resid:.1} B against an envelope of {envelope:.1} B, \
+                 so `rate * payload + envelope` is not the shape of this cost"
+            );
+            assert!(
+                rate >= 1.0,
+                "the marginal rate is {rate:.4}, under 1.0 -- an uncompressed record cannot store \
+                 less than it was given"
+            );
+
+            // The envelope is small enough that this log is NOT the one to attack, and that is
+            // the headline. Bounded so a regression in it fails here.
+            assert!(
+                envelope < 80.0,
+                "the per-record envelope is {envelope:.1} B, over the 80 B bound this log has \
+                 held; re-price it term by term before raising this"
+            );
+        }
+
+        /// THE ENVELOPE, TERM BY TERM, by clearing and re-encoding -- valid only because the
+        /// regime above is uncompressed.
+        #[test]
+        fn where_one_local_wal_records_envelope_goes() {
+            let size = 512usize;
+            let value = incompressible_seeded(size, size as u64);
+            let record = record_of(value);
+            let (payload, framed) = encoded(&record);
+            let user = KEY.len() + size;
+
+            assert_eq!(
+                payload.first().copied(),
+                Some(crate::wal_proto::RAW_PAYLOAD_MARKER),
+                "this decomposition is only meaningful on an uncompressed record"
+            );
+
+            // The framing log_framing adds: a marker, a varint length, and four CRC bytes.
+            let framing_term = framed - payload.len();
+            // What the record costs on top of the user's bytes, inside the payload.
+            let record_term = payload.len() - user;
+
+            // CLEAR AND RE-ENCODE, per field.
+            let metadata_term = {
+                let mut without = record.clone();
+                without.metadata = None;
+                payload.len() - encode_wal_payload(&without).expect("encodes").len()
+            };
+
+            println!(
+                "local WAL record {framed} B = user {user} B + record fields {record_term} B + \
+                 framing {framing_term} B   (of the record fields, metadata is {metadata_term} B)"
+            );
+
+            // EACH TERM NON-ZERO. A decomposition whose terms sum to the whole can still be wrong
+            // in every term -- that happened on the shared-store frame, where a probe cleared a
+            // field the frame did not populate, reported zero, and the residue silently absorbed
+            // it. So each term is asserted to be a term.
+            assert!(
+                framing_term > 0,
+                "the framing term is {framing_term} B, so this is not measuring the frame"
+            );
+            assert!(
+                record_term > 0,
+                "the record term is {record_term} B, so the record costs nothing over the user's \
+                 bytes, which cannot be true of an encoding that carries a sequence and a shard"
+            );
+            assert!(
+                metadata_term > 0,
+                "clearing the metadata changed nothing, so this probe is clearing a field the \
+                 record does not populate"
+            );
+
+            // THE ACCOUNTING IDENTITY.
+            assert_eq!(
+                user + record_term + framing_term,
+                framed,
+                "user {user} + record {record_term} + framing {framing_term} is not the framed \
+                 record ({framed} B)"
+            );
+
+            // THE FRAMING TERM IS NOT A CONSTANT, which is why it is derived here rather than
+            // pinned. The binary frame is a marker, a VARINT length, and four CRC bytes, so it
+            // costs 6 B for a payload under 128 bytes and 7 B from there to 16 KiB.
+            // `log_framing`'s own test pins 6 -- at a 100-byte payload. Copying that 6 to this
+            // 512-byte record is how this assertion was first written, and it was wrong: the same
+            // "a figure at one size is not a line" that applies to the envelope applies to the
+            // terms inside it.
+            let varint_len = match payload.len() {
+                0..=127 => 1,
+                128..=16_383 => 2,
+                _ => 3,
+            };
+            assert_eq!(
+                framing_term,
+                1 + varint_len + 4,
+                "the binary frame costs {framing_term} B over a {}-byte payload; a marker, a \
+                 {varint_len}-byte varint and four CRC bytes is {}",
+                payload.len(),
+                1 + varint_len + 4
+            );
+        }
+
+        /// WHY THE SWEEP ABOVE USES RANDOM BYTES: the same sweep over repeated ones fits a line
+        /// through the compressor instead.
+        ///
+        /// Not a warning in a comment -- the two slopes are measured and compared, so the reason
+        /// the first test looks the way it does is evidence.
+        #[test]
+        fn a_sweep_over_compressible_payloads_measures_the_compressor_not_the_log() {
+            let mut random: Vec<(f64, f64)> = Vec::new();
+            let mut repeated: Vec<(f64, f64)> = Vec::new();
+            for size in SWEEP {
+                let (_, framed_random) = encoded(&record_of(incompressible_seeded(size, size as u64)));
+                let (payload_repeated, framed_repeated) = encoded(&record_of(vec![b'v'; size]));
+                random.push((size as f64, framed_random as f64));
+                repeated.push((size as f64, framed_repeated as f64));
+                if size >= 512 {
+                    // The regime for THIS arm: the compressor must actually have taken it.
+                    assert_eq!(
+                        payload_repeated.first().copied(),
+                        Some(crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER),
+                        "a {size}-byte run of one byte was not compressed, so this arm is not \
+                         contrasting anything"
+                    );
+                }
+            }
+
+            let (random_rate, _, _) = fit(&random);
+            let (repeated_rate, _, _) = fit(&repeated);
+            println!(
+                "slope over random payloads {random_rate:.4}; over repeated payloads \
+                 {repeated_rate:.4}"
+            );
+
+            assert!(
+                repeated_rate < random_rate / 2.0,
+                "the two slopes are {repeated_rate:.4} and {random_rate:.4}. They are supposed to \
+                 differ by a lot: if a run of one byte costs nearly as much as random bytes, \
+                 compression is not running and the first test's payload choice is unnecessary"
+            );
+        }
+    }
+
     /// A record that ENDS inside a block's footer slot, in a log written without footers.
     ///
     /// Reading is documented to tolerate such a log -- "records occupying what would be the
