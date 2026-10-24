@@ -485,6 +485,25 @@ struct SharedStoreWalOffsetMetadataProto {
     wal_blob_start_offset: u64,
     #[prost(uint64, tag = "5")]
     wal_blob_end_offset: u64,
+    /// How many bytes this entry's frame occupies. DERIVABLE AND DELIBERATELY KEPT.
+    ///
+    /// It is `wal_blob_end_offset - wal_blob_start_offset` in every receipt every object store in
+    /// this crate produces, so dropping it and deriving it would round-trip exactly. It stays
+    /// because `read_wal_entry_from_offset_metadata` compares the two, and that comparison is the
+    /// ONLY INTEGRITY CHECK THIS RECORD HAS.
+    ///
+    /// It became the only one in #2319. That change retired the sidecar's `command_sha256` as an
+    /// unread duplicate of the digest the log frame carries, which it was -- but the log frame's
+    /// digest covers the log frame's PAYLOAD, not this message. So after #2319 nothing checksums
+    /// the sidecar at all, and the agreement between this field and the offsets beside it is what
+    /// is left: a bit-flip in one of those varints that still parses is caught here and nowhere
+    /// else.
+    ///
+    /// That makes this field's redundancy load-bearing as a CONSEQUENCE of an earlier saving in
+    /// the same effort, which is not a thing a reader could infer from either change alone. The
+    /// guard is also uncovered by the default test gate -- see the comment on the check itself --
+    /// so deleting this field would have cost the sidecar its last integrity check with nothing
+    /// failing.
     #[prost(uint64, tag = "6")]
     wal_blob_bytes_written: u64,
     #[prost(uint64, tag = "7")]
@@ -2680,6 +2699,34 @@ fn parse_wal_index(key: &str) -> Option<u64> {
         .ok()
 }
 
+/// Verify a CRC32C frame, optionally against a payload length the frame declared.
+///
+/// `declared_size` is `None` for the format that does not carry one. That is not a weaker check
+/// by much: the comparison it skips is between a field and the length protobuf already decoded
+/// from the same message, so it only ever caught a bit-flip in that field itself. The CRC is what
+/// catches a damaged PAYLOAD, in both formats.
+///
+/// The algorithm is NAMED in both halves of the error, because more than one checksum shape can
+/// reach this message and `expected 9e0126c4, actual 1a2b3c4d` with no algorithm beside it is a
+/// line nobody can act on.
+fn verify_crc32c(
+    key: &str,
+    bytes: &[u8],
+    declared_size: Option<u64>,
+    expected: u32,
+) -> Result<(), SharedStoreReplicationError> {
+    let actual = crate::checksum::crc32c(bytes);
+    let size_disagrees = declared_size.is_some_and(|size| bytes.len() as u64 != size);
+    if size_disagrees || actual != expected {
+        return Err(SharedStoreReplicationError::ChecksumMismatch {
+            path: key.to_string(),
+            expected: format!("crc32c:{expected:08x}"),
+            actual: format!("crc32c:{actual:08x}"),
+        });
+    }
+    Ok(())
+}
+
 fn verify_checksum(
     key: &str,
     bytes: &[u8],
@@ -2752,6 +2799,37 @@ const WAL_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
 /// not the byte count.
 const WAL_FRAME_FORMAT_CRC32C: u32 = 3;
 
+/// The same CRC32C frame, without the payload length it was restating.
+///
+/// # WHY THIS FIELD AND NOT THE OTHER FOUR THAT LOOK LIKE IT
+///
+/// Four other fields in this path restate something a reader could derive, and all four STAY.
+/// They are not redundant, they are the only thing CHECKING what they restate:
+///
+/// * the frame's `shard_id` is cross-checked against the shard the caller asked for, and the
+///   comment on that check in `read_wal_entry_from_offset_metadata` says it "is what stops replay
+///   applying an entry that belongs to another shard";
+/// * the sidecar's `wal_blob_bytes_written` is cross-checked against its own start/end range, and
+///   the SIDECAR HAS NO CHECKSUM OF ITS OWN -- so that one comparison is the whole of its
+///   integrity checking (see the field's own doc for how it got that way);
+/// * the sidecar's `shard_id` cannot use zero as an "absent, derive it" marker because shard zero
+///   is a legitimate shard, so omitting it needs a format field the sidecar does not have, which
+///   would cost the two bytes it saves;
+/// * the 4-byte length prefix is OUTSIDE the protobuf, so `frame_format` -- which lives inside the
+///   message that prefix delimits -- cannot negotiate it. It would need a second, out-of-band
+///   marker byte, which costs back most of what a varint saves at these frame sizes.
+///
+/// `command_byte_size` is the one that really is redundant, and the test for that is what it
+/// CATCHES. The CRC covers `command_payload`, so a payload cut short fails the checksum; a frame
+/// cut short fails the outer length-prefix check before the protobuf is even parsed. The only
+/// corruption `command_byte_size` detected on its own was a bit-flip in ITS OWN varint -- a field
+/// nothing else reads, so the damage it was guarding against had no other effect.
+///
+/// Removing it does make the size comparison in the decoder tautological, which is why
+/// `a_truncated_payload_is_still_refused_without_the_declared_size` exists and is proven by a
+/// plant rather than by this paragraph.
+const WAL_FRAME_FORMAT_NO_SIZE: u32 = 4;
+
 /// WHICH FORMAT A WRITER EMITS BY DEFAULT. The narrowest this build can write.
 ///
 /// # WHAT THE DEPLOY REQUIREMENT IS
@@ -2778,7 +2856,7 @@ const WAL_FRAME_FORMAT_CRC32C: u32 = 3;
 ///   existed -- a way back has to produce the old bytes, not merely something acceptable.
 /// * Frames already written are unaffected: the format travels in the record, and every format
 ///   this crate has ever written is still decoded. A log spanning all three replays end to end.
-const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_CRC32C;
+const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_NO_SIZE;
 
 /// A lowercase hex digest as its own bytes, or `None` when the text is not one.
 ///
@@ -2871,6 +2949,12 @@ fn encode_wal_proto_frame(
     // The CRC format computes no SHA-256 at all. The other two need one, and only one: this is
     // the single place the payload is hashed on the append path.
     let (command_sha256, command_digest, command_crc32c, frame_format) = match frame_format {
+        WAL_FRAME_FORMAT_NO_SIZE => (
+            String::new(),
+            Vec::new(),
+            crate::checksum::crc32c(&command_payload),
+            WAL_FRAME_FORMAT_NO_SIZE,
+        ),
         WAL_FRAME_FORMAT_CRC32C => (
             String::new(),
             Vec::new(),
@@ -2893,10 +2977,18 @@ fn encode_wal_proto_frame(
             WAL_FRAME_FORMAT_HEX_DIGEST,
         ),
     };
+    // The payload's length is already on the wire as the `bytes` field's own length delimiter,
+    // and the CRC covers the payload. Format 4 therefore does not restate it; every other format
+    // does, because a reader of those formats compares against it.
+    let command_byte_size = if frame_format == WAL_FRAME_FORMAT_NO_SIZE {
+        0
+    } else {
+        command_payload.len() as u64
+    };
     let frame = SharedStoreWalFrameProto {
         shard_id: entry.shard_id,
         wal_index: entry.wal_index,
-        command_byte_size: command_payload.len() as u64,
+        command_byte_size,
         command_sha256,
         command_digest,
         command_crc32c,
@@ -3020,21 +3112,20 @@ fn decode_wal_proto_frame_exact(
             frame.command_byte_size,
             &hex::encode(&frame.command_digest),
         )?,
-        WAL_FRAME_FORMAT_CRC32C => {
-            let actual = crate::checksum::crc32c(&frame.command_payload);
-            if frame.command_payload.len() as u64 != frame.command_byte_size
-                || actual != frame.command_crc32c
-            {
-                // The algorithm is NAMED in both halves of the error. Two digest shapes can now
-                // reach this message, and `expected 9e0126c4, actual 1a2b3c4d` with no algorithm
-                // beside it is a line nobody can act on.
-                return Err(SharedStoreReplicationError::ChecksumMismatch {
-                    path: checksum_source.to_string(),
-                    expected: format!("crc32c:{:08x}", frame.command_crc32c),
-                    actual: format!("crc32c:{actual:08x}"),
-                });
-            }
-        }
+        // Format 3 declares the payload length and is checked against it; format 4 does not
+        // declare it, and the CRC is the whole of the check. Nothing else differs between them.
+        WAL_FRAME_FORMAT_CRC32C => verify_crc32c(
+            checksum_source,
+            &frame.command_payload,
+            Some(frame.command_byte_size),
+            frame.command_crc32c,
+        )?,
+        WAL_FRAME_FORMAT_NO_SIZE => verify_crc32c(
+            checksum_source,
+            &frame.command_payload,
+            None,
+            frame.command_crc32c,
+        )?,
         // REFUSED, not guessed. A format this build does not know carries its digest somewhere
         // this build cannot see, and verifying the field that happens to be empty would report a
         // checksum mismatch -- blaming the data for a version skew. Naming the format is the
@@ -3045,7 +3136,8 @@ fn decode_wal_proto_frame_exact(
                 format!(
                     "unsupported shared-store WAL frame format {other} at {checksum_source}: \
                      this build understands {WAL_FRAME_FORMAT_HEX_DIGEST}, \
-                     {WAL_FRAME_FORMAT_RAW_DIGEST} and {WAL_FRAME_FORMAT_CRC32C}"
+                     {WAL_FRAME_FORMAT_RAW_DIGEST}, {WAL_FRAME_FORMAT_CRC32C} and \
+                     {WAL_FRAME_FORMAT_NO_SIZE}"
                 ),
             )));
         }
@@ -3385,11 +3477,20 @@ mod tests {
     ///   118 B   both retired: the digest was unread, the key was derivable
     ///    88 B   the log frame's digest carried as 32 bytes instead of 64 hex characters
     ///    59 B   that digest replaced by a CRC32C, which is what the check is FOR
+    ///    56 B   the frame stops restating a payload length protobuf already carries
     /// ```
     ///
-    /// Three of the four steps were the same term: the log frame's checksum, which began as 66 B
-    /// of hex and is now 5 B. It is no longer the largest term in its leg -- the framing and
-    /// scalars are, at 16 B -- so the next move on this envelope is not another checksum change.
+    /// Three of the five steps were the same term: the log frame's checksum, which began as 66 B
+    /// of hex and is now 5 B.
+    ///
+    /// # WHAT IS LEFT, AND WHY IT IS STAYING
+    ///
+    /// Four more fields in these two frames restate something a reader could derive, and all four
+    /// are KEPT -- not because deriving them is hard, but because each is the only thing checking
+    /// what it restates. [`WAL_FRAME_FORMAT_NO_SIZE`] lists them with the guard behind each. The
+    /// sidecar's case is the instructive one: its redundancy became load-bearing because #2319
+    /// retired its checksum, so an earlier saving in this same effort is what made a later one
+    /// unsafe.
     ///
     /// The figures are fitted by `one_append_amplification_report`, which is the only thing that
     /// can state them: a term measured here is a term of one frame, and the envelope is two
@@ -3653,7 +3754,7 @@ mod tests {
             // default cannot quietly re-label them: every number in this test belongs to the
             // format named here, and if the default moves the numbers have to move with it.
             assert_eq!(
-                decoded.frame_format, WAL_FRAME_FORMAT_CRC32C,
+                decoded.frame_format, WAL_FRAME_FORMAT_NO_SIZE,
                 "this test prices the default frame, and the default is now format {}, so the \
                  term figures below are for a different frame than the one being written",
                 decoded.frame_format
@@ -3678,7 +3779,9 @@ mod tests {
                 match without.frame_format {
                     WAL_FRAME_FORMAT_HEX_DIGEST => without.command_sha256 = String::new(),
                     WAL_FRAME_FORMAT_RAW_DIGEST => without.command_digest = Vec::new(),
-                    WAL_FRAME_FORMAT_CRC32C => without.command_crc32c = 0,
+                    WAL_FRAME_FORMAT_CRC32C | WAL_FRAME_FORMAT_NO_SIZE => {
+                        without.command_crc32c = 0
+                    }
                     other => panic!(
                         "this probe does not know which field format {other} keeps its checksum \
                          in, so it cannot price it"
@@ -3728,12 +3831,13 @@ mod tests {
                 frame.len()
             );
 
-            // The residue is the 4-byte length prefix, the payload's own tag and length, and four
-            // small scalars. UNCHANGED through all three narrowings, which is the point: the
-            // digest moved three times and nothing else moved at all.
+            // The residue is the 4-byte length prefix, the payload's own tag and length, and the
+            // small scalars. It was 16 B through all three checksum narrowings -- the checksum
+            // moved three times and nothing else moved at all -- and is 13 now that the frame no
+            // longer restates the payload length it already carries.
             assert_eq!(
-                residue, 16,
-                "the frame's framing and scalars cost {residue} B, not 16. A field was added to \
+                residue, 13,
+                "the frame's framing and scalars cost {residue} B, not 13. A field was added to \
                  the frame, or one of the scalars widened"
             );
 
@@ -3769,8 +3873,8 @@ mod tests {
 
             let decoded = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
             assert_eq!(
-                decoded.frame_format, WAL_FRAME_FORMAT_CRC32C,
-                "the default frame declares format {}, not the crc one",
+                decoded.frame_format, WAL_FRAME_FORMAT_NO_SIZE,
+                "the default frame declares format {}, not the narrowest one",
                 decoded.frame_format
             );
 
@@ -3981,16 +4085,18 @@ mod tests {
         /// saw would pass a file that only ever changes shape once.
         #[test]
         fn one_log_holding_both_frame_shapes_replays_in_either_order() {
-            // ALL THREE SHAPES, interleaved. A log can hold every format that has ever been
-            // written to it, and two successive upgrades leave three.
+            // EVERY SHAPE, interleaved. A log can hold every format that has ever been written to
+            // it, and three successive narrowings leave four.
             let formats = [
                 WAL_FRAME_FORMAT_HEX_DIGEST,
                 WAL_FRAME_FORMAT_RAW_DIGEST,
                 WAL_FRAME_FORMAT_CRC32C,
+                WAL_FRAME_FORMAT_NO_SIZE,
                 WAL_FRAME_FORMAT_HEX_DIGEST,
+                WAL_FRAME_FORMAT_NO_SIZE,
                 WAL_FRAME_FORMAT_CRC32C,
                 WAL_FRAME_FORMAT_RAW_DIGEST,
-                WAL_FRAME_FORMAT_CRC32C,
+                WAL_FRAME_FORMAT_NO_SIZE,
                 WAL_FRAME_FORMAT_HEX_DIGEST,
             ];
             let mut blob = Vec::new();
@@ -4018,6 +4124,7 @@ mod tests {
                 WAL_FRAME_FORMAT_HEX_DIGEST,
                 WAL_FRAME_FORMAT_RAW_DIGEST,
                 WAL_FRAME_FORMAT_CRC32C,
+                WAL_FRAME_FORMAT_NO_SIZE,
             ] {
                 assert!(
                     formats.contains(&format),
@@ -4185,6 +4292,151 @@ mod tests {
             );
         }
 
+        /// WHAT DROPPING THE DECLARED PAYLOAD LENGTH SAVES.
+        #[test]
+        fn the_frame_without_a_declared_size_is_narrower_still() {
+            let entry = term_entry(&[b'v'; 512]);
+            let with_size = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_CRC32C)
+                .expect("the crc frame encodes");
+            let without = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_NO_SIZE)
+                .expect("the sizeless frame encodes");
+            let saved = with_size.len() - without.len();
+
+            println!(
+                "log frame {} B declaring its payload length -> {} B without it, saving {saved} B",
+                with_size.len(),
+                without.len()
+            );
+
+            // A tag and a two-byte varint for a 527-byte payload.
+            assert_eq!(
+                saved, 3,
+                "dropping the declared payload length saves {saved} B, not 3"
+            );
+
+            // THE FIELD IS ABSENT, not merely zero-by-accident: a reader must see nothing there.
+            let decoded = SharedStoreWalFrameProto::decode(&without[4..]).expect("decodes");
+            assert_eq!(decoded.frame_format, WAL_FRAME_FORMAT_NO_SIZE);
+            assert_eq!(
+                decoded.command_byte_size, 0,
+                "the sizeless frame still declares a payload length of {}",
+                decoded.command_byte_size
+            );
+            // And the payload still arrives whole, which is the thing the length was describing.
+            let replayed = decode_wal_proto_frame_exact(&without, "test").expect("it decodes");
+            assert_eq!(replayed.command, entry.command);
+        }
+
+        /// A TRUNCATED PAYLOAD IS STILL REFUSED WITHOUT THE DECLARED SIZE.
+        ///
+        /// This is the condition on dropping `command_byte_size` rather than a nicety. Removing it
+        /// makes the decoder's size comparison `payload.len()` against itself, so something else
+        /// has to catch a payload that is not all there. Two things do, and both are exercised
+        /// here on frames that declare NO size:
+        ///
+        /// 1. a single flipped byte inside the payload, which the command still parses, fails the
+        ///    CRC and nothing else;
+        /// 2. a payload cut short with its delimiters rewritten consistently -- a frame that is
+        ///    structurally perfect and simply holds less than it was given -- fails the CRC;
+        /// 3. a frame cut short at the tail fails the outer length-prefix check before the
+        ///    protobuf is parsed at all.
+        ///
+        /// ARM 1 IS FIRST ON PURPOSE. It is the only arm with no second line of defence, so a
+        /// plant that disables the checksum fails there. Arm 2 is doubled -- the payload is an
+        /// encoded command, so halving it breaks the inner protobuf as well, and with the CRC
+        /// disabled arm 2 fails as a buffer underflow rather than as a checksum mismatch. That
+        /// makes arm 2 a test of ORDERING (the checksum is consulted before the command is
+        /// parsed), which is worth having, and arm 1 a test of the checksum itself. Ordered the
+        /// other way round the plant would stop at arm 2 and never reach the arm that isolates.
+        ///
+        /// The CONTROL matters as much: an untouched sizeless frame must still decode, or a
+        /// decoder that refused everything would satisfy every arm above.
+        #[test]
+        fn a_truncated_payload_is_still_refused_without_the_declared_size() {
+            let entry = term_entry(&[b'v'; 512]);
+            let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_NO_SIZE)
+                .expect("the sizeless frame encodes");
+
+            // THE CONTROL, first.
+            assert!(
+                decode_wal_proto_frame_exact(&frame, "test").is_ok(),
+                "an untouched sizeless frame must decode, or the refusals below prove nothing"
+            );
+
+            // (1) THE ARM WITH NO SECOND LINE OF DEFENCE, FIRST, so that a plant disabling the
+            // checksum fails HERE -- on the case only the checksum can catch -- rather than on
+            // one of the arms below that another layer would also have caught.
+            //
+            // A single flipped byte inside the value. The command still decodes, into a DIFFERENT
+            // value, so nothing downstream has any reason to object: the checksum is the only
+            // thing between this frame and a replay that applies the wrong bytes and calls them
+            // durable.
+            let mut flipped = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
+            let at = flipped.command_payload.len() - 1;
+            flipped.command_payload[at] ^= 0x01;
+            let flipped_frame = {
+                let body = flipped.encode_to_vec();
+                let mut out = Vec::with_capacity(4 + body.len());
+                out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                out.extend_from_slice(&body);
+                out
+            };
+
+            // The flip must leave a payload that still DECODES, or this arm is arm (2) again.
+            assert!(
+                v1::Command::decode(flipped.command_payload.as_slice()).is_ok(),
+                "the flipped payload no longer decodes, so this arm is testing the protobuf \
+                 parser rather than the checksum -- move the flip to a byte inside the value"
+            );
+
+            let err = decode_wal_proto_frame_exact(&flipped_frame, "a-log-key").expect_err(
+                "a single flipped byte in the payload must be refused: the command still parses, \
+                 so nothing but the checksum can catch it",
+            );
+            assert!(
+                matches!(err, SharedStoreReplicationError::ChecksumMismatch { .. }),
+                "a value-preserving flip must fail the CHECKSUM; it failed as: {err}"
+            );
+
+            // (2) STRUCTURALLY PERFECT, PAYLOAD SHORT. Re-encode with a payload cut in half and
+            // the ORIGINAL checksum left in place: every length on the wire agrees with every
+            // other, and the only thing wrong is that bytes are missing.
+            let mut shortened = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
+            let full_len = shortened.command_payload.len();
+            shortened.command_payload.truncate(full_len / 2);
+            assert_eq!(
+                shortened.command_byte_size, 0,
+                "this arm must run on a frame that declares no size, or it is testing the old \
+                 check rather than what replaced it"
+            );
+            let reframed = {
+                let body = shortened.encode_to_vec();
+                let mut out = Vec::with_capacity(4 + body.len());
+                out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                out.extend_from_slice(&body);
+                out
+            };
+            let err = decode_wal_proto_frame_exact(&reframed, "a-log-key").expect_err(
+                "a payload cut short must be refused even though nothing on the wire declares \
+                 how long it should have been",
+            );
+            assert!(
+                matches!(err, SharedStoreReplicationError::ChecksumMismatch { .. }),
+                "a short payload must fail the CHECKSUM, which is what now stands in for the \
+                 declared length; it failed as: {err}"
+            );
+
+            // (3) CUT AT THE TAIL. The outer length prefix still claims the whole frame.
+            for cut in [1usize, 17, full_len / 2, frame.len() - 4] {
+                let torn = &frame[..frame.len() - cut];
+                assert!(
+                    decode_wal_proto_frame_exact(torn, "a-log-key").is_err(),
+                    "a frame cut {cut} bytes short of what its length prefix declares must be \
+                     refused"
+                );
+            }
+        }
+
         /// A READER THAT KNOWS THE RAW-DIGEST FORMAT BUT NOT THE CRC ONE REFUSES A CRC FRAME.
         ///
         /// This is why the CRC format cannot ship as a default in the same release that teaches
@@ -4238,14 +4490,9 @@ mod tests {
                  this control is testing a broken reader rather than a format boundary"
             );
 
-            // THE PROPERTY: it refuses what this build now writes BY DEFAULT. This is the deploy
-            // requirement in test form -- the release that writes format 3 must be the release
-            // that reads it, because the build before it does not.
-            assert_eq!(
-                WAL_FRAME_FORMAT_DEFAULT, WAL_FRAME_FORMAT_CRC32C,
-                "this test documents the boundary the DEFAULT crosses; if the default is no \
-                 longer the crc format, the sentence above is about the wrong format"
-            );
+            // THE PROPERTY: it refuses the crc frame, AND it refuses what this build now writes by
+            // default. This is the deploy requirement in test form -- the release that writes a
+            // format must be the release that reads it, because the build before it does not.
             let err = reader_before_crc(&crc)
                 .expect_err("a reader without the crc format must refuse a crc frame");
             assert!(
@@ -4253,11 +4500,23 @@ mod tests {
                 "the refusal must name the format rather than blame the data; it said: {err}"
             );
 
-            // And this build reads all three, which is what makes reader-first ordering work.
+            let default_frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+                .expect("encodes");
+            let err = reader_before_crc(&default_frame).expect_err(
+                "a reader from before these formats must refuse what this build writes by default",
+            );
+            assert!(
+                err.contains(&format!("unsupported frame format {WAL_FRAME_FORMAT_DEFAULT}")),
+                "the refusal must name the default format; it said: {err}"
+            );
+
+            // And this build reads every one of them, which is what makes reader-first ordering
+            // work at all.
             for (label, frame) in [
                 ("hex", encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_HEX_DIGEST).unwrap()),
                 ("raw", raw),
                 ("crc", crc),
+                ("sizeless", default_frame),
             ] {
                 assert!(
                     decode_wal_proto_frame_exact(&frame, "test").is_ok(),
@@ -4333,12 +4592,12 @@ mod tests {
             );
 
             assert_eq!(
-                default_format, WAL_FRAME_FORMAT_CRC32C,
+                default_format, WAL_FRAME_FORMAT_NO_SIZE,
                 "a published frame declares format {default_format}, so the flipped default is \
                  not reaching the append path"
             );
             assert_eq!(
-                narrow_format, WAL_FRAME_FORMAT_CRC32C,
+                narrow_format, WAL_FRAME_FORMAT_NO_SIZE,
                 "asking for narrow frames did not produce the narrowest this build writes"
             );
             assert_eq!(
@@ -4348,13 +4607,13 @@ mod tests {
             );
 
             // AND THE SAVING IS IN THE BYTES THAT REACHED THE STORE, not only in the encoder.
-            // 66 B of hex digest against 5 B of CRC and 2 B of declared format: 59.
+            // 66 B of hex digest and 3 B of restated payload length, against 5 B of CRC and 2 B
+            // of declared format: 62.
             assert_eq!(default_bytes, narrow_bytes);
             assert_eq!(
                 wide_bytes - narrow_bytes,
-                59,
-                "the published objects differ by {} B, not the 59 B the two narrowings save \
-                 together",
+                62,
+                "the published objects differ by {} B, not the 62 B the narrowings save together",
                 wide_bytes - narrow_bytes
             );
         }

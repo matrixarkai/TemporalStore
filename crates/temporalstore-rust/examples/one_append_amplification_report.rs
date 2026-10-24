@@ -287,11 +287,12 @@ async fn main() {
     // ---- is 29 B, and back to 64 hex characters is 59 -- trips it, as does re-adding either
     // ---- term retired from the sidecar.
     assert!(
-        blob_env < 70.0,
-        "the per-append envelope is {blob_env:.1} B, over the 70 B ceiling. Four named terms were \
+        blob_env < 60.0,
+        "the per-append envelope is {blob_env:.1} B, over the 60 B ceiling. Five named terms were \
          removed or narrowed to get it here -- a duplicate hex digest the read path never \
          consulted, the log's object key in every frame, the transcription of the frame's own \
-         digest, and then that digest replaced by the CRC32C the check was always for. Re-price \
-         the two legs field by field before raising this bound"
+         digest, that digest replaced by the CRC32C the check was always for, and a payload \
+         length the frame was restating. Re-price the two legs field by field before raising \
+         this bound"
     );
 }

@@ -84,6 +84,7 @@ struct ReportWalFrameProto {
 const REPORT_FRAME_FORMAT_HEX_DIGEST: u32 = 0;
 const REPORT_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
 const REPORT_FRAME_FORMAT_CRC32C: u32 = 3;
+const REPORT_FRAME_FORMAT_NO_SIZE: u32 = 4;
 
 /// The crate's CRC32C, not a second copy of it.
 ///
@@ -1145,14 +1146,20 @@ fn validate_offset_frames(
         let digest_matches = match frame.frame_format {
             REPORT_FRAME_FORMAT_HEX_DIGEST => frame.command_sha256 == command_sha256,
             REPORT_FRAME_FORMAT_RAW_DIGEST => hex_lower(&frame.command_digest) == command_sha256,
-            REPORT_FRAME_FORMAT_CRC32C => {
+            REPORT_FRAME_FORMAT_CRC32C | REPORT_FRAME_FORMAT_NO_SIZE => {
                 frame.command_crc32c == crc32c_of(&frame.command_payload)
             }
             _ => false,
         };
+        // The narrowest format does not restate the payload length, so this check derives it the
+        // way the decoder does rather than demanding a field that frame deliberately omits.
+        let size_matches = match frame.frame_format {
+            REPORT_FRAME_FORMAT_NO_SIZE => frame.command_byte_size == 0,
+            _ => frame.command_byte_size == frame.command_payload.len() as u64,
+        };
         if frame.shard_id == shard_id
             && frame.wal_index == expected_index as u64 + 1
-            && frame.command_byte_size == frame.command_payload.len() as u64
+            && size_matches
             && digest_matches
         {
             matched_frames += 1;
