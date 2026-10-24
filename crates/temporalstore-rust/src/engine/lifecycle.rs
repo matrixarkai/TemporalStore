@@ -527,6 +527,9 @@ impl TemporalEngine {
                 crate::engine::eager_cache_warm_on_load(),
             )),
             raft_apply_coalesce: Arc::new(std::sync::atomic::AtomicBool::new(true)),
+            logged_deletion_index_flush_interval: Arc::new(std::sync::atomic::AtomicU64::new(
+                crate::engine::logged_deletion_index_flush_interval_from_env(),
+            )),
         }
     }
 
@@ -606,6 +609,28 @@ impl TemporalEngine {
     pub(crate) fn warm_cache_under_shard_guard_for_test(&self) {
         self.warm_cache_under_shard_guard
             .store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// How many logically deleted keys this engine lets a shard accumulate before its next
+    /// served-index checkpoint re-encodes the whole base index.
+    ///
+    /// THE ONE READER OF THE SETTING. A test that sets the interval reads it back through this
+    /// same accessor and asserts what it got, because a knob a round consults by a different name
+    /// than the test sets leaves the arm silently not running.
+    pub(crate) fn logged_deletion_index_flush_interval(&self) -> u64 {
+        self.logged_deletion_index_flush_interval
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    /// Set this engine's logged-deletion checkpoint interval. Scoped to this engine.
+    ///
+    /// `1` is the per-round flush this interval replaced, kept reachable for the same reason the
+    /// whole-index expiry checkpoint below is: a claim that a cost is gone is only falsifiable
+    /// against an engine that still pays it, measured in the same process on the same fixture.
+    #[cfg(test)]
+    pub(crate) fn set_logged_deletion_index_flush_interval_for_test(&self, keys: u64) {
+        self.logged_deletion_index_flush_interval
+            .store(keys.max(1), std::sync::atomic::Ordering::Relaxed);
     }
 
     /// Make the expiry sweep checkpoint the WHOLE served index, the way it did before the

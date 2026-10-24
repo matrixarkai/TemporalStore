@@ -2297,13 +2297,50 @@ impl TemporalEngine {
                     // Stamp here so the clone carries the current on-disk shape, then hand
                     // the snapshot out; the encode and both writes happen below, unlocked.
                     shard.index_format_version = super::SHARD_INDEX_FORMAT_VERSION;
-                    let phase = std::time::Instant::now();
-                    pending_index_flush = Some(shard.clone());
-                    DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.snapshot, phase);
+                    // THE CHECKPOINT IS DUE PER DELETED KEY, NOT PER ROUND.
+                    //
+                    // Re-encoding the whole served index costs about 76 bytes per RESIDENT key --
+                    // 609,692 encoded bytes to drop 2 objects at 8,000 keys, measured by
+                    // `what_one_eviction_round_writes_grows_with_the_store_not_the_round` -- so a
+                    // flush per round charges the whole store to whatever the round happened to
+                    // drop. `index_flush_countdown` spends this round's deletions against the
+                    // engine's interval and only encodes when they run it out, which bounds the
+                    // index bytes ONE deletion can be charged instead of bounding nothing.
+                    //
+                    // SAFE BECAUSE THE DELETIONS ARE ALREADY DURABLE BY REPLAY, which is the same
+                    // ground the write path's deferred index sync stands on and the same sentence
+                    // the compaction flush beside this one states: "An expiry sweep and a
+                    // delete_drop eviction both write a WAL tombstone per key before they flush,
+                    // so a flush that lands late, lands stale, or never lands is re-derived by
+                    // replay." The `CommonDelete` tombstones went in above, under this guard, and
+                    // `applied_wal_sequence` is anchored past them, so a skipped checkpoint costs
+                    // a longer replayed WAL suffix and nothing else.
+                    //
+                    // THE COUNTDOWN IS SPENT WHETHER OR NOT THE ROUND IS DUE, and reloaded only on
+                    // a flush, so the rounds between two checkpoints sum to the interval rather
+                    // than resetting whenever a round happens to be small.
+                    shard.index_flush_countdown = shard
+                        .index_flush_countdown
+                        .saturating_sub(dropped_object_count as u64);
+                    if shard.index_flush_countdown == 0 {
+                        shard.index_flush_countdown = self.logged_deletion_index_flush_interval();
+                        let phase = std::time::Instant::now();
+                        // THE CLONE ONLY EXISTS FOR THE ENCODE. It is here so the encode and both
+                        // writes can happen after the guard drops, so a round that is not going
+                        // to encode has nothing to clone -- which is most of the saving on a
+                        // large shard, not an incidental extra.
+                        pending_index_flush = Some(shard.clone());
+                        DELETE_DROP_GUARD_NANOS
+                            .add_since(&DELETE_DROP_GUARD_NANOS.snapshot, phase);
+                    }
                 }
             }
             drop(shards);
             DELETE_DROP_GUARD_NANOS.add_since(&DELETE_DROP_GUARD_NANOS.total, guard_held);
+            // `None` when this round's deletions did not run the countdown out -- see the
+            // countdown above. The index-log anchor goes with the index and not without it: an
+            // anchor record carries the digest and length of the index file it names, so there is
+            // nothing for it to name on a round that wrote no index.
             if let Some(snapshot) = pending_index_flush {
                 let index_bytes = super::serialize_index(&snapshot);
                 let _ = self.persist_index_bytes(shard_id, &index_bytes);

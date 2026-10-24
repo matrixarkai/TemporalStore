@@ -670,6 +670,29 @@ pub(super) struct ShardState {
     pub(super) bucket_recency: HashMap<u32, u64>,
     #[serde(skip)]
     pub(super) dirty_objects: DirtyObjectIndex,
+    /// Deleted keys still owed before this shard's next whole-index served checkpoint, counted
+    /// DOWN: zero means the next logged-deletion round is DUE.
+    ///
+    /// A delete_drop eviction round re-encoded and rewrote the whole base index every time it
+    /// dropped anything, at a cost set by the size of the STORE rather than the size of the round
+    /// (`what_one_eviction_round_writes_grows_with_the_store_not_the_round`: 609,692 encoded bytes
+    /// to drop 2 objects at 8,000 resident keys). Each round now subtracts what it deleted from
+    /// this countdown and only encodes when it reaches zero, then reloads it with the engine's
+    /// `logged_deletion_index_flush_interval`.
+    ///
+    /// EPHEMERAL, AND COUNTED DOWN RATHER THAN UP SO THAT THE POST-RELOAD VALUE IS THE SAFE ONE.
+    /// `#[serde(skip)]` like `bucket_recency` and `dirty_objects`, so a reload leaves it at the
+    /// `u64` default of 0 -- which reads as DUE, so the first logged-deletion round after any
+    /// reload checkpoints. Counting UP would have made the same default read as "nothing is owed",
+    /// which is the direction that defers on a fresh process that has checkpointed nothing.
+    ///
+    /// A LATE, STALE OR MISSING CHECKPOINT IS NOT A LOST DELETION. The round appends a
+    /// `CommonDelete` WAL tombstone per dropped key before it flushes and anchors
+    /// `applied_wal_sequence` past them, so replay re-derives every deletion this countdown
+    /// defers -- `a_deferred_checkpoint_still_reloads_with_the_keys_dropped` drives that rather
+    /// than asserting it.
+    #[serde(skip)]
+    pub(super) index_flush_countdown: u64,
     /// Phase-1 flat-append fast-skip flag for the per-execute
     /// `promote_model_maps_to_bucket_index_authority` reconciliation. The live write path already
     /// keeps `bucket_index` authoritative in step with the model maps (each mutating command
@@ -8118,6 +8141,10 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         control_coalesce_persist: _,
         control_distinct_sketch: _,
         dirty_objects: _,
+        // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
+        // this pass would want anyway: it means the first logged-deletion round after a load is
+        // DUE, so a decoded image carries no claim to have checkpointed anything.
+        index_flush_countdown: _,
         promote_scan_done: _,
         evict_sampler: _,
         routing_range_start: _,

@@ -259,6 +259,14 @@ pub struct TemporalEngine {
     /// decide it for every engine at once. Shared across clones, because a clone is the same
     /// engine.
     raft_apply_coalesce: Arc<std::sync::atomic::AtomicBool>,
+    /// How many logically deleted keys a shard may accumulate before its next served-index
+    /// checkpoint re-encodes the whole base index.
+    ///
+    /// See [`LOGGED_DELETION_INDEX_FLUSH_INTERVAL_DEFAULT`] for what the number is and why it is
+    /// what it is. Read through [`TemporalEngine::logged_deletion_index_flush_interval`], never
+    /// directly, so a test that sets it can read the same value the round will. Shared across
+    /// clones, because a clone is the same engine.
+    logged_deletion_index_flush_interval: Arc<std::sync::atomic::AtomicU64>,
     /// Diagnostics: number of per-execute `promote_model_maps_to_bucket_index_authority` full
     /// O(store) reconcile scans this engine has run at the hot-path call site. Without
     /// `flat_append()` this fires once per command (O(writes)); with it on the
@@ -2413,6 +2421,52 @@ pub(crate) fn eager_cache_warm_on_load() -> bool {
             .as_str(),
         "0" | "false" | "no" | "off"
     )
+}
+
+/// How many logically deleted keys a shard may accumulate before its next served-index
+/// checkpoint re-encodes the whole base index.
+///
+/// WHY THERE IS AN INTERVAL AT ALL. `apply_storage_eviction`'s delete_drop round re-encodes and
+/// rewrites the ENTIRE served index once per round, however few objects the round dropped.
+/// `what_one_eviction_round_writes_grows_with_the_store_not_the_round` prices that: a round that
+/// dropped 2 objects wrote 36,097 encoded bytes at 500 resident keys, 155,793 at 2,000 and
+/// 609,692 at 8,000 -- about 76 bytes per RESIDENT key, so the cost of a round is set by the size
+/// of the store and not by the size of the round.
+///
+/// WHY DEFERRING IT IS SOUND, in the words the write path already uses for the same decision
+/// (`atomic_write_bytes_synced`): "the WAL (durably synced before ack) is the recovery source of
+/// truth and replay rebuilds the served index from it, so a stale-on-crash index just replays a
+/// longer WAL suffix -- no acked write is lost". A delete_drop round emits a `CommonDelete`
+/// tombstone per dropped key BEFORE it flushes and anchors `applied_wal_sequence` past them, so a
+/// checkpoint that lands late, lands stale or never lands is re-derived by replay. The flush is
+/// bounding REPLAY LENGTH, not carrying durability, and a count of deletions bounds replay length
+/// just as well per interval as per round.
+///
+/// WHY 64. The interval is counted in DELETED KEYS rather than in rounds, which makes it a bound
+/// on the index bytes a single deletion can be charged: at 8,000 resident keys one flush is
+/// 309,398 bytes, so one flush per 64 deletions charges 4.8 kB per deletion instead of 154,699.
+/// It also makes a large round pay promptly -- a round dropping 4,000 keys is due immediately,
+/// which is right, because its flush is already amortized over 4,000 deletions. The price is the
+/// replay suffix: at most 63 un-checkpointed `CommonDelete` records, tens of bytes each, against
+/// the ~9.9 MB of whole-index encoding those same 64 deletions cost before.
+///
+/// Must be greater than 1: at 1 every round is due and the behaviour is exactly what it was, so a
+/// default of 1 would land this inert. `the_logged_deletion_flush_interval_is_a_real_setting`
+/// holds that.
+pub(crate) const LOGGED_DELETION_INDEX_FLUSH_INTERVAL_DEFAULT: u64 = 64;
+
+/// The configured interval, read through the crate's one numeric-flag vocabulary.
+///
+/// Zero is not a request for zero: an interval of zero has no meaning for a countdown and would
+/// read as "already due" on every round, so it is clamped to 1. One IS meaningful and is left
+/// reachable -- it is the per-round flush this change replaces, and the measurement needs an arm
+/// that still pays it.
+pub(crate) fn logged_deletion_index_flush_interval_from_env() -> u64 {
+    let configured: u64 = crate::env_flag::env_number(
+        "TS_LOGGED_DELETION_INDEX_FLUSH_INTERVAL",
+        LOGGED_DELETION_INDEX_FLUSH_INTERVAL_DEFAULT,
+    );
+    configured.max(1)
 }
 
 /// Current on-disk shape of a shard index.
