@@ -463,6 +463,12 @@ struct SharedStoreWalFrameProto {
     /// follows when it picks a checksum by the record's own leading bytes.
     #[prost(uint32, tag = "10")]
     frame_format: u32,
+    /// A CRC32C of the payload. Populated only by [`WAL_FRAME_FORMAT_CRC32C`] frames.
+    ///
+    /// `fixed32`, not `uint32`: a CRC's value is spread across all 32 bits, so a varint carrying
+    /// one costs five bytes far more often than it costs one. Fixed is four, always.
+    #[prost(fixed32, tag = "11")]
+    command_crc32c: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -621,6 +627,20 @@ where
         } else {
             WAL_FRAME_FORMAT_HEX_DIGEST
         };
+        self
+    }
+
+    /// Emit the log frame format `format`, for a caller that needs a specific one.
+    ///
+    /// The same rule as [`Self::with_narrow_wal_frames`] and for the same reason: a format is
+    /// safe to WRITE only once every reader understands it, so this is not a knob to reach for
+    /// without knowing what the rest of the cluster is running.
+    ///
+    /// An unknown format here is NOT rejected at the builder: the encoder falls back to the wide
+    /// format rather than writing a frame no reader can verify. A frame is always one of the
+    /// shapes this build can read back.
+    pub fn with_wal_frame_format(mut self, format: u32) -> Self {
+        self.wal_frame_format = format;
         self
     }
 
@@ -2686,6 +2706,43 @@ const WAL_FRAME_FORMAT_HEX_DIGEST: u32 = 0;
 /// `a_hex_digest_is_stored_as_bytes_not_text` is the test that keeps it honest there.
 const WAL_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
 
+/// The narrowest log frame: a CRC32C of the payload, four bytes, in tag 11.
+///
+/// # THIS ONE CHANGES THE CHECK, SO IT OWES AN ARGUMENT ABOUT WHAT THE CHECK IS FOR
+///
+/// Formats 0 and 2 carry the same SHA-256 and differ only in how it is written, so neither
+/// weakens anything. This one swaps the algorithm, and that is only defensible if the digest is
+/// an INTEGRITY check rather than a content IDENTITY. It is, and here is the whole of the
+/// evidence rather than a claim:
+///
+/// * There is exactly ONE production reader of it -- [`decode_wal_proto_frame_exact`], reached
+///   from a single-entry range read and from the blob walk. Everything else that names the field
+///   is this encoder, a test, or the conformance report's own copy of the message.
+/// * That reader compares it against a digest RECOMPUTED FROM THE BYTES IT JUST READ. It never
+///   compares one entry's digest against another's, never uses it as a map key, and nothing
+///   keys replay or deduplication on it -- entries are addressed by `wal_index`, and the
+///   idempotency this store relies on elsewhere keys on committed offsets, not on payload
+///   digests.
+/// * A mismatch propagates with `?` and refuses the read. It is never downgraded to a warning
+///   and never used to choose between two candidate payloads.
+///
+/// So the question it answers is "did these bytes survive the trip", which is the question a CRC
+/// answers. It is NOT a signature and nothing treats it as one: it is written by the same process
+/// that writes the payload, before the durability barrier, so it cannot defend against a forged
+/// record and never could.
+///
+/// `log_framing` reached this conclusion for this store's own local log at the same durability
+/// tier, and wrote the reasoning down: a cryptographic digest is "simply the wrong tool here: it
+/// is computed per record, synchronously, before the durability barrier." Its binary frame
+/// carries a raw four-byte CRC32C for exactly this reason. This is that decision, applied to the
+/// shared log.
+///
+/// IF THAT EVER STOPS BEING TRUE -- if some reader starts treating this field as an identity, for
+/// deduplication or equality or an idempotency key -- then this format is wrong at any width and
+/// should be retired rather than defaulted. The argument above is the thing to re-check first,
+/// not the byte count.
+const WAL_FRAME_FORMAT_CRC32C: u32 = 3;
+
 /// WHICH FORMAT A WRITER EMITS BY DEFAULT. Now the narrow one.
 ///
 /// # THE ORDERING THIS DEFAULT USED TO ENFORCE, AND WHY IT IS DONE
@@ -2696,15 +2753,30 @@ const WAL_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
 /// so the two formats could never be deployed in either order: every reader has to understand the
 /// narrow frame BEFORE any writer emits one.
 ///
-/// That ordering was enforced by this constant rather than by a runbook. It named the wide format,
-/// so the release that taught every node to READ both shapes still WROTE the shape every older
-/// node could read. That release has landed, and this is the flip it exists to make safe.
+/// That ordering was enforced by this constant rather than by a runbook: while it named the wide
+/// format, a build could learn to READ both shapes while still WRITING the shape every older node
+/// could read.
 ///
-/// A deployment that has not taken the reading release yet must not take this one. There is no
-/// way to make that automatic from inside one node -- a writer cannot see which formats the rest
-/// of the cluster understands -- so the guard is the release order itself, and
-/// [`SharedStoreReplicator::with_narrow_wal_frames`] is the way back to the wide format without a
-/// rebuild for a cluster that needs one.
+/// # THE OUTSTANDING CONSTRAINT, STATED PLAINLY
+///
+/// The reading support and this flip are SEPARATE COMMITS BUT NOT SEPARATE RELEASES. At the time
+/// of writing nothing is tagged between them, so a deployment that jumps from a revision before
+/// the reading support straight to one at or after this flip has nodes writing the narrow format
+/// to peers that cannot read it, and those peers REFUSE the frames.
+///
+/// There is no way to close that from inside one node: a writer cannot see which formats the rest
+/// of the cluster understands. What exists instead is:
+///
+/// * the refusal is loud and names the format, so a mis-ordered rollout fails visibly rather than
+///   replaying unverified commands -- see
+///   `an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it`;
+/// * [`SharedStoreReplicator::with_narrow_wal_frames`] turns the narrow format off without a
+///   rebuild, and the wide frame it produces is asserted byte-identical to the pre-format one;
+/// * frames already written are unaffected, because the format travels in the record.
+///
+/// So the requirement on whoever rolls this out is REAL and not yet discharged by anything in the
+/// tree: the reading support must reach every node before a writer here emits a narrow frame. Do
+/// not read the default as evidence that it has.
 ///
 /// Nothing about a frame already on disk changes either way: the format is a property of the
 /// record, so a log written before this flip keeps reading exactly as it did.
@@ -2798,13 +2870,30 @@ fn encode_wal_proto_frame(
     // ONE digest, written in whichever shape this frame declares. The narrow shape falls back to
     // the wide one when the digest is not hex that round-trips, so the field that carries it is
     // never the field the format says is empty.
-    let digest_hex = sha256_hex(&command_payload);
-    let (command_sha256, command_digest, frame_format) = match frame_format {
-        WAL_FRAME_FORMAT_RAW_DIGEST => match digest_text_to_bytes(&digest_hex) {
-            Some(raw) => (String::new(), raw, WAL_FRAME_FORMAT_RAW_DIGEST),
-            None => (digest_hex, Vec::new(), WAL_FRAME_FORMAT_HEX_DIGEST),
+    // The CRC format computes no SHA-256 at all. The other two need one, and only one: this is
+    // the single place the payload is hashed on the append path.
+    let (command_sha256, command_digest, command_crc32c, frame_format) = match frame_format {
+        WAL_FRAME_FORMAT_CRC32C => (
+            String::new(),
+            Vec::new(),
+            crate::checksum::crc32c(&command_payload),
+            WAL_FRAME_FORMAT_CRC32C,
+        ),
+        WAL_FRAME_FORMAT_RAW_DIGEST => match digest_text_to_bytes(&sha256_hex(&command_payload)) {
+            Some(raw) => (String::new(), raw, 0, WAL_FRAME_FORMAT_RAW_DIGEST),
+            None => (
+                sha256_hex(&command_payload),
+                Vec::new(),
+                0,
+                WAL_FRAME_FORMAT_HEX_DIGEST,
+            ),
         },
-        _ => (digest_hex, Vec::new(), WAL_FRAME_FORMAT_HEX_DIGEST),
+        _ => (
+            sha256_hex(&command_payload),
+            Vec::new(),
+            0,
+            WAL_FRAME_FORMAT_HEX_DIGEST,
+        ),
     };
     let frame = SharedStoreWalFrameProto {
         shard_id: entry.shard_id,
@@ -2812,6 +2901,7 @@ fn encode_wal_proto_frame(
         command_byte_size: command_payload.len() as u64,
         command_sha256,
         command_digest,
+        command_crc32c,
         frame_format,
         command_payload,
         command_encoding,
@@ -2932,6 +3022,21 @@ fn decode_wal_proto_frame_exact(
             frame.command_byte_size,
             &hex::encode(&frame.command_digest),
         )?,
+        WAL_FRAME_FORMAT_CRC32C => {
+            let actual = crate::checksum::crc32c(&frame.command_payload);
+            if frame.command_payload.len() as u64 != frame.command_byte_size
+                || actual != frame.command_crc32c
+            {
+                // The algorithm is NAMED in both halves of the error. Two digest shapes can now
+                // reach this message, and `expected 9e0126c4, actual 1a2b3c4d` with no algorithm
+                // beside it is a line nobody can act on.
+                return Err(SharedStoreReplicationError::ChecksumMismatch {
+                    path: checksum_source.to_string(),
+                    expected: format!("crc32c:{:08x}", frame.command_crc32c),
+                    actual: format!("crc32c:{actual:08x}"),
+                });
+            }
+        }
         // REFUSED, not guessed. A format this build does not know carries its digest somewhere
         // this build cannot see, and verifying the field that happens to be empty would report a
         // checksum mismatch -- blaming the data for a version skew. Naming the format is the
@@ -2941,8 +3046,8 @@ fn decode_wal_proto_frame_exact(
                 std::io::ErrorKind::InvalidData,
                 format!(
                     "unsupported shared-store WAL frame format {other} at {checksum_source}: \
-                     this build understands {WAL_FRAME_FORMAT_HEX_DIGEST} and \
-                     {WAL_FRAME_FORMAT_RAW_DIGEST}"
+                     this build understands {WAL_FRAME_FORMAT_HEX_DIGEST}, \
+                     {WAL_FRAME_FORMAT_RAW_DIGEST} and {WAL_FRAME_FORMAT_CRC32C}"
                 ),
             )));
         }
@@ -3834,12 +3939,16 @@ mod tests {
         /// saw would pass a file that only ever changes shape once.
         #[test]
         fn one_log_holding_both_frame_shapes_replays_in_either_order() {
+            // ALL THREE SHAPES, interleaved. A log can hold every format that has ever been
+            // written to it, and two successive upgrades leave three.
             let formats = [
                 WAL_FRAME_FORMAT_HEX_DIGEST,
                 WAL_FRAME_FORMAT_RAW_DIGEST,
+                WAL_FRAME_FORMAT_CRC32C,
                 WAL_FRAME_FORMAT_HEX_DIGEST,
+                WAL_FRAME_FORMAT_CRC32C,
                 WAL_FRAME_FORMAT_RAW_DIGEST,
-                WAL_FRAME_FORMAT_RAW_DIGEST,
+                WAL_FRAME_FORMAT_CRC32C,
                 WAL_FRAME_FORMAT_HEX_DIGEST,
             ];
             let mut blob = Vec::new();
@@ -3861,13 +3970,19 @@ mod tests {
                 expected.push(entry);
             }
 
-            // ASSERT THE MIXTURE IS REALLY A MIXTURE. A fixture that wrote one shape twice would
-            // satisfy everything below while testing nothing.
-            assert!(
-                formats.contains(&WAL_FRAME_FORMAT_HEX_DIGEST)
-                    && formats.contains(&WAL_FRAME_FORMAT_RAW_DIGEST),
-                "this fixture must hold both shapes or it is not the mixed case"
-            );
+            // ASSERT THE MIXTURE IS REALLY A MIXTURE, and that it holds EVERY shape. A fixture
+            // missing one would satisfy everything below while testing nothing about it.
+            for format in [
+                WAL_FRAME_FORMAT_HEX_DIGEST,
+                WAL_FRAME_FORMAT_RAW_DIGEST,
+                WAL_FRAME_FORMAT_CRC32C,
+            ] {
+                assert!(
+                    formats.contains(&format),
+                    "this fixture does not hold format {format}, so it is not the mixed case for \
+                     it"
+                );
+            }
 
             let replayed = decode_wal_proto_blob(&blob).expect("a mixed log must replay whole");
             assert_eq!(
@@ -3966,6 +4081,138 @@ mod tests {
                 "an unknown format was reported as a checksum mismatch, which blames the data \
                  for a version skew"
             );
+        }
+
+        /// WHAT THE CRC FORMAT SAVES, and that it is still a check.
+        ///
+        /// The digest term goes from 34 B (32 bytes, a tag and a length) to 5 B (four bytes and a
+        /// tag), so the frame loses 29 B more. The saving is the point, but the check surviving is
+        /// the condition: a corrupted payload must still be refused, so that is asserted here
+        /// rather than left to the format's reputation.
+        #[test]
+        fn the_crc_frame_is_narrower_still_and_still_refuses_a_corrupted_payload() {
+            let entry = term_entry(&[b'v'; 512]);
+            let raw = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_RAW_DIGEST)
+                .expect("the raw-digest frame encodes");
+            let crc = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_CRC32C)
+                .expect("the crc frame encodes");
+            let saved = raw.len() - crc.len();
+
+            println!(
+                "log frame {} B with a 32-byte digest -> {} B with a CRC32C, saving {saved} B \
+                 more per append",
+                raw.len(),
+                crc.len()
+            );
+
+            assert_eq!(
+                saved, 29,
+                "the crc frame saves {saved} B against the raw-digest one, not 29. The digest \
+                 term is 34 B against 5 B; re-price it before changing this number"
+            );
+
+            // IT IS STILL A CHECK. The frame round-trips, and a payload altered underneath a
+            // frame that still declares the old checksum is REFUSED -- which is the only property
+            // that makes a narrower checksum a saving rather than a removal.
+            let replayed = decode_wal_proto_frame_exact(&crc, "test").expect("the crc frame decodes");
+            assert_eq!(replayed.command, entry.command);
+
+            let mut decoded = SharedStoreWalFrameProto::decode(&crc[4..]).expect("decodes");
+            assert_eq!(decoded.frame_format, WAL_FRAME_FORMAT_CRC32C);
+            assert!(
+                decoded.command_sha256.is_empty() && decoded.command_digest.is_empty(),
+                "the crc frame is also carrying a SHA-256, so it is paying for both"
+            );
+            // Flip one byte of the payload, leaving the declared length and checksum alone.
+            let flip_at = decoded.command_payload.len() / 2;
+            decoded.command_payload[flip_at] ^= 0x01;
+            let tampered = {
+                let body = decoded.encode_to_vec();
+                let mut out = Vec::with_capacity(4 + body.len());
+                out.extend_from_slice(&(body.len() as u32).to_be_bytes());
+                out.extend_from_slice(&body);
+                out
+            };
+            let err = decode_wal_proto_frame_exact(&tampered, "a-log-key")
+                .expect_err("a payload that no longer matches its checksum must be refused");
+            let message = err.to_string();
+            assert!(
+                message.contains("crc32c:"),
+                "the mismatch must name the algorithm it checked, or the error is ambiguous now \
+                 that more than one shape can reach it; it said: {message}"
+            );
+        }
+
+        /// A READER THAT KNOWS THE RAW-DIGEST FORMAT BUT NOT THE CRC ONE REFUSES A CRC FRAME.
+        ///
+        /// This is why the CRC format cannot ship as a default in the same release that teaches
+        /// readers about it: the reader built one release ago understands formats 0 and 2, and a
+        /// format 3 frame is unreadable to it. Same shape as the hazard formats 0 and 2 had, and
+        /// it is tested the same way -- including the control, so a reader that refused
+        /// everything could not pass for one that refuses the right thing.
+        ///
+        /// It refuses BY NAMING THE FORMAT, not as a checksum mismatch, which is the difference
+        /// between an operator reading "this node is too old for this log" and "this log is
+        /// corrupt".
+        #[test]
+        fn a_reader_without_the_crc_format_refuses_a_crc_frame_by_name() {
+            /// The decoder as it stood before format 3: formats 0 and 2 understood, anything else
+            /// refused by name.
+            fn reader_before_crc(frame: &[u8]) -> Result<(), String> {
+                let decoded = SharedStoreWalFrameProto::decode(&frame[4..])
+                    .map_err(|err| err.to_string())?;
+                match decoded.frame_format {
+                    WAL_FRAME_FORMAT_HEX_DIGEST => {
+                        if decoded.command_sha256 == sha256_hex(&decoded.command_payload) {
+                            Ok(())
+                        } else {
+                            Err("checksum mismatch".to_string())
+                        }
+                    }
+                    WAL_FRAME_FORMAT_RAW_DIGEST => {
+                        if hex::encode(&decoded.command_digest)
+                            == sha256_hex(&decoded.command_payload)
+                        {
+                            Ok(())
+                        } else {
+                            Err("checksum mismatch".to_string())
+                        }
+                    }
+                    other => Err(format!("unsupported frame format {other}")),
+                }
+            }
+
+            let entry = term_entry(b"a value");
+            let raw = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_RAW_DIGEST)
+                .expect("encodes");
+            let crc = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_CRC32C).expect("encodes");
+
+            // THE CONTROL: that reader still accepts what this build writes BY DEFAULT.
+            assert!(
+                reader_before_crc(&raw).is_ok(),
+                "a reader from before the crc format must still accept the default frame, or the \
+                 default is not backward compatible"
+            );
+
+            // THE PROPERTY, and the SHAPE of the refusal.
+            let err = reader_before_crc(&crc)
+                .expect_err("a reader without the crc format must refuse a crc frame");
+            assert!(
+                err.contains("unsupported frame format 3"),
+                "the refusal must name the format rather than blame the data; it said: {err}"
+            );
+
+            // And this build reads all three, which is what makes reader-first ordering work.
+            for (label, frame) in [
+                ("hex", encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_HEX_DIGEST).unwrap()),
+                ("raw", raw),
+                ("crc", crc),
+            ] {
+                assert!(
+                    decode_wal_proto_frame_exact(&frame, "test").is_ok(),
+                    "this build must read the {label} frame"
+                );
+            }
         }
 
         /// THE DEFAULT REACHES THE OBJECT STORE, and the way back does too.

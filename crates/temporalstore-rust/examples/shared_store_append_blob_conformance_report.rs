@@ -70,11 +70,30 @@ struct ReportWalFrameProto {
     /// before the field existed reads correctly without a special case.
     #[prost(uint32, tag = "10")]
     frame_format: u32,
+    /// A CRC32C of the payload, which is what the narrowest frame carries instead of either.
+    #[prost(fixed32, tag = "11")]
+    command_crc32c: u32,
 }
 
 /// The digest shapes this reader understands, by the value the frame declares.
+///
+/// Every format the ENCODER can produce is listed here, including ones it does not yet write by
+/// default. That is deliberate: the last time this reader knew fewer formats than the writer could
+/// emit, it matched 0 of 8 frames and said so in a field nobody was asserting. Teaching it a
+/// format early costs one match arm; learning about one late costs a silent report.
 const REPORT_FRAME_FORMAT_HEX_DIGEST: u32 = 0;
 const REPORT_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
+const REPORT_FRAME_FORMAT_CRC32C: u32 = 3;
+
+/// The crate's CRC32C, not a second copy of it.
+///
+/// This reader is independent of the writer about the FRAME LAYOUT, which is what it exists to
+/// check. It is deliberately not independent about the checksum algorithm: a second
+/// implementation of CRC32C here could drift from the one the store actually uses, and then this
+/// report would be checking frames against a checksum nothing writes.
+fn crc32c_of(bytes: &[u8]) -> u32 {
+    temporalstore_rust::checksum::crc32c(bytes)
+}
 
 fn hex_lower(bytes: &[u8]) -> String {
     use std::fmt::Write as _;
@@ -1126,6 +1145,9 @@ fn validate_offset_frames(
         let digest_matches = match frame.frame_format {
             REPORT_FRAME_FORMAT_HEX_DIGEST => frame.command_sha256 == command_sha256,
             REPORT_FRAME_FORMAT_RAW_DIGEST => hex_lower(&frame.command_digest) == command_sha256,
+            REPORT_FRAME_FORMAT_CRC32C => {
+                frame.command_crc32c == crc32c_of(&frame.command_payload)
+            }
             _ => false,
         };
         if frame.shard_id == shard_id
