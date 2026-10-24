@@ -9242,8 +9242,16 @@ mod model_kind_registry_guards {
     use crate::engine::state::ShardState;
     use std::collections::{BTreeMap, BTreeSet};
 
+    /// PAGE ORDINAL ZERO, which is the only one a single-page object can hold.
+    ///
+    /// The ordinal names WHICH page of an object an address is, and every kind this fixture files
+    /// holds one page, so zero is not a convenience here -- it is the only value the store can
+    /// keep. `ObjectRecord::from_object_rows` refuses a nonzero one by name
+    /// (`NonZeroPageOrdinalDoesNotFitInline`) and `set_string_address` silently coerces it, which
+    /// is how this fixture carried an 11 that the string map turned into a 0 without anything
+    /// failing. The read-back in `shard_holding_one_page_of_every_kind` is what now says so.
     fn address(_routing_bucket: u32) -> ElementEntry {
-        ElementEntry::from_parts(3, 128, 64, Some(11), Some(22))
+        ElementEntry::from_parts(3, 128, 64, Some(0), Some(22))
     }
 
     /// ONE BLOCK IN EVERY MAP THE WALK READS.
@@ -9256,6 +9264,17 @@ mod model_kind_registry_guards {
         let mut shard = ShardState::default();
         let at = address(7);
         shard.set_string_address("s".into(), &at.clone());
+        // READ BACK WHAT WAS FILED, for the reason `file_string_row` gives in
+        // `release_refusal_guards`: a string row keeps a page ordinal's PRESENCE and drops its
+        // VALUE, so a fixture that files a nonzero ordinal here holds one address in the bucket
+        // index and a different one in the string map. This fixture only ever asserted that the
+        // walk REACHES every map, so a narrowed address was invisible to it -- and the same datum
+        // in the sibling module surfaced as nine `model_map_disagreement` failures.
+        assert_eq!(
+            shard.string_address("s").as_ref(),
+            Some(&at),
+            "the string map did not hand back the address this fixture filed: the row narrowed it,              so every kind below is being compared against an address the store does not hold",
+        );
         shard
             .hashes
             .insert_elements_for_test("h", [("f".to_string(), at.clone())].into_iter().collect());
