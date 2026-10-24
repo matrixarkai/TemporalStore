@@ -333,6 +333,10 @@ pub struct SharedStoreReplicator<O> {
     object_store: Arc<O>,
     retry_policy: SharedStoreRetryPolicy,
     wal_append_mode: SharedStoreWalAppendMode,
+    /// Which log frame format this writer emits. See [`WAL_FRAME_FORMAT_DEFAULT`] for why the
+    /// default is the wide one. Reading is unaffected: a reader understands every format it
+    /// knows regardless of what it writes.
+    wal_frame_format: u32,
     /// Durable single-writer fence, configured by `with_fence` and applying whenever it is.
     /// Every WAL append and checkpoint publish then re-validates that this writer's
     /// `load_version` still owns the shard lease in the object store, aborting a superseded
@@ -389,6 +393,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             object_store: Arc::clone(&self.object_store),
             retry_policy: self.retry_policy,
             wal_append_mode: self.wal_append_mode,
+            wal_frame_format: self.wal_frame_format,
             fence: self.fence.clone(),
         }
     }
@@ -443,6 +448,21 @@ struct SharedStoreWalFrameProto {
     /// would re-execute and look correct.
     #[prost(message, repeated, tag = "8")]
     items: Vec<crate::sdk::v1::EngineWalItem>,
+    /// The command digest as its own bytes rather than as hex text. Populated only by
+    /// [`WAL_FRAME_FORMAT_RAW_DIGEST`] frames; empty in a hex frame.
+    ///
+    /// Tag 9 has never been used by this message, so a frame carrying it is unambiguous.
+    #[prost(bytes = "vec", tag = "9")]
+    command_digest: Vec<u8>,
+    /// WHICH DIGEST SHAPE THIS FRAME CARRIES. The frame is self-describing.
+    ///
+    /// Absent is zero is [`WAL_FRAME_FORMAT_HEX_DIGEST`], so every frame written before this
+    /// field existed reads as the original shape with no conversion and no migration. A reader
+    /// dispatches on it per frame, which is what lets one blob hold both shapes -- exactly the
+    /// mixture a rolling restart leaves behind, and the same rule `log_framing::next_frame`
+    /// follows when it picks a checksum by the record's own leading bytes.
+    #[prost(uint32, tag = "10")]
+    frame_format: u32,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -560,6 +580,7 @@ where
             object_store,
             retry_policy: SharedStoreRetryPolicy::default(),
             wal_append_mode: SharedStoreWalAppendMode::default(),
+            wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
             fence: None,
         }
     }
@@ -577,12 +598,29 @@ where
                 backoff_ms: retry_policy.backoff_ms,
             },
             wal_append_mode: SharedStoreWalAppendMode::default(),
+            wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
             fence: None,
         }
     }
 
     pub fn with_wal_append_mode(mut self, mode: SharedStoreWalAppendMode) -> Self {
         self.wal_append_mode = mode;
+        self
+    }
+
+    /// Emit the narrow log frame, whose digest is 32 bytes rather than 64 hex characters.
+    ///
+    /// SAFE ONLY ONCE EVERY READER UNDERSTANDS IT. A reader that predates the format verifies the
+    /// hex field unconditionally and so refuses a narrow frame; the refusal is loud, but it is a
+    /// refusal. See [`WAL_FRAME_FORMAT_DEFAULT`].
+    ///
+    /// Frames already written are untouched and stay readable: the format travels in the frame.
+    pub fn with_narrow_wal_frames(mut self, narrow: bool) -> Self {
+        self.wal_frame_format = if narrow {
+            WAL_FRAME_FORMAT_RAW_DIGEST
+        } else {
+            WAL_FRAME_FORMAT_HEX_DIGEST
+        };
         self
     }
 
@@ -725,7 +763,7 @@ where
     ) -> Result<Option<AppendBlobReceipt>, SharedStoreReplicationError> {
         let key = self.wal_blob_key(entry.shard_id);
         let command_metadata = wal_command_metadata(entry.command.as_ref())?;
-        let frame = encode_wal_proto_frame(&entry)?;
+        let frame = encode_wal_proto_frame(&entry, self.wal_frame_format)?;
         let receipt = self
             .append_blob_with_retry(&key, Bytes::from(frame))
             .await?
@@ -817,7 +855,7 @@ where
         let mut frame_lengths: Vec<u64> = Vec::with_capacity(entries.len());
         let mut command_metadata: Vec<WalCommandMetadata> = Vec::with_capacity(entries.len());
         for entry in entries {
-            let frame = encode_wal_proto_frame(entry)?;
+            let frame = encode_wal_proto_frame(entry, self.wal_frame_format)?;
             frame_lengths.push(frame.len() as u64);
             command_metadata.push(wal_command_metadata(entry.command.as_ref())?);
             wal_payload.extend_from_slice(&frame);
@@ -2633,6 +2671,53 @@ fn verify_checksum(
 const WAL_COMMAND_ENCODING_JSON_SERDE: u32 = 0;
 const WAL_COMMAND_ENCODING_SDK_PROTO: u32 = 1;
 
+/// The original log frame: the command digest written as 64 hex characters in tag 5.
+///
+/// Zero on purpose. A frame written before `frame_format` existed omits the field, prost reads
+/// the omission as zero, and the frame therefore declares itself to be exactly what it is. No
+/// migration, no conversion, and no need for a reader to know when the field was added.
+const WAL_FRAME_FORMAT_HEX_DIGEST: u32 = 0;
+
+/// The narrow log frame: the SAME SHA-256, carried as its own 32 bytes in tag 9.
+///
+/// Not a weaker check -- byte for byte the same digest over the same payload. What goes away is
+/// the transcription: 64 hex characters plus a tag and a length for a 32-byte value. The
+/// `raft::wal_proto` encoder already stores this store's digests this way, and
+/// `a_hex_digest_is_stored_as_bytes_not_text` is the test that keeps it honest there.
+const WAL_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
+
+/// WHICH FORMAT A WRITER EMITS BY DEFAULT, and why it is the wide one.
+///
+/// A reader that predates [`WAL_FRAME_FORMAT_RAW_DIGEST`] verifies tag 5 unconditionally, so a
+/// narrow frame fails its checksum. That is a LOUD failure rather than a silent mis-read -- see
+/// `an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it` -- but it is still a failure,
+/// and it means the two formats cannot be deployed in either order: every reader must understand
+/// the narrow frame BEFORE any writer emits one.
+///
+/// Defaulting to the wide format is what makes that ordering structural instead of a note in a
+/// runbook. A release carrying this default teaches every node to READ both shapes while still
+/// writing the shape every older node can read; only once that release is everywhere does
+/// flipping this default start saving bytes. Nothing about a frame already on disk changes
+/// either way -- the format is a property of the record, not of the log.
+const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_HEX_DIGEST;
+
+/// A lowercase hex digest as its own bytes, or `None` when the text is not one.
+///
+/// The round trip is CHECKED rather than assumed: a digest only becomes bytes when re-encoding
+/// those bytes reproduces the original text exactly. Anything else -- an empty digest, uppercase
+/// hex, a non-digest string some other path put here -- is left alone and travels as text in the
+/// wide field. Same rule, and for the same reason, as `raft::wal_proto::checksum_to_bytes`.
+fn digest_text_to_bytes(digest: &str) -> Option<Vec<u8>> {
+    if digest.is_empty() || digest.len() % 2 != 0 {
+        return None;
+    }
+    let bytes: Option<Vec<u8>> = (0..digest.len())
+        .step_by(2)
+        .map(|at| u8::from_str_radix(&digest[at..at + 2], 16).ok())
+        .collect();
+    bytes.filter(|bytes| hex::encode(bytes) == digest)
+}
+
 struct WalCommandMetadata {
     byte_size: u64,
     sha256: String,
@@ -2669,6 +2754,7 @@ fn wal_command_metadata(
 
 fn encode_wal_proto_frame(
     entry: &SharedStoreWalEntry,
+    frame_format: u32,
 ) -> Result<Vec<u8>, SharedStoreReplicationError> {
     let (command_payload, command_encoding) = match entry.command.as_ref() {
         // No operation to carry: the entry states results instead.
@@ -2687,11 +2773,24 @@ fn encode_wal_proto_frame(
     } else {
         None
     };
+    // ONE digest, written in whichever shape this frame declares. The narrow shape falls back to
+    // the wide one when the digest is not hex that round-trips, so the field that carries it is
+    // never the field the format says is empty.
+    let digest_hex = sha256_hex(&command_payload);
+    let (command_sha256, command_digest, frame_format) = match frame_format {
+        WAL_FRAME_FORMAT_RAW_DIGEST => match digest_text_to_bytes(&digest_hex) {
+            Some(raw) => (String::new(), raw, WAL_FRAME_FORMAT_RAW_DIGEST),
+            None => (digest_hex, Vec::new(), WAL_FRAME_FORMAT_HEX_DIGEST),
+        },
+        _ => (digest_hex, Vec::new(), WAL_FRAME_FORMAT_HEX_DIGEST),
+    };
     let frame = SharedStoreWalFrameProto {
         shard_id: entry.shard_id,
         wal_index: entry.wal_index,
         command_byte_size: command_payload.len() as u64,
-        command_sha256: sha256_hex(&command_payload),
+        command_sha256,
+        command_digest,
+        frame_format,
         command_payload,
         command_encoding,
         staged_blocks: entry
@@ -2796,12 +2895,36 @@ fn decode_wal_proto_frame_exact(
         )));
     }
     let frame = SharedStoreWalFrameProto::decode(&bytes[4..])?;
-    verify_checksum(
-        checksum_source,
-        &frame.command_payload,
-        frame.command_byte_size,
-        &frame.command_sha256,
-    )?;
+    // DISPATCH PER FRAME, not per log. Which shape a frame carries is a property of the frame, so
+    // a blob holding both -- what a rolling restart leaves -- walks end to end either way.
+    match frame.frame_format {
+        WAL_FRAME_FORMAT_HEX_DIGEST => verify_checksum(
+            checksum_source,
+            &frame.command_payload,
+            frame.command_byte_size,
+            &frame.command_sha256,
+        )?,
+        WAL_FRAME_FORMAT_RAW_DIGEST => verify_checksum(
+            checksum_source,
+            &frame.command_payload,
+            frame.command_byte_size,
+            &hex::encode(&frame.command_digest),
+        )?,
+        // REFUSED, not guessed. A format this build does not know carries its digest somewhere
+        // this build cannot see, and verifying the field that happens to be empty would report a
+        // checksum mismatch -- blaming the data for a version skew. Naming the format is the
+        // difference between "this log is corrupt" and "this node is too old for this log".
+        other => {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "unsupported shared-store WAL frame format {other} at {checksum_source}: \
+                     this build understands {WAL_FRAME_FORMAT_HEX_DIGEST} and \
+                     {WAL_FRAME_FORMAT_RAW_DIGEST}"
+                ),
+            )));
+        }
+    }
     let command = match frame.command_encoding {
         WAL_COMMAND_ENCODING_SDK_PROTO => {
             let command = v1::Command::decode(frame.command_payload.as_slice())?;
@@ -3373,7 +3496,8 @@ mod tests {
                 staged_blocks: Vec::new(),
                 outcomes: Vec::new(),
             };
-            let frame = encode_wal_proto_frame(&entry).expect("the frame encodes");
+            let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+                .expect("the frame encodes");
             let metadata = wal_command_metadata(entry.command.as_ref()).expect("metadata");
 
             // The payload is INSIDE the envelope, not beside it: the frame's own
@@ -3426,10 +3550,13 @@ mod tests {
 
         /// The digest the read path actually verifies is the FRAME's, and there is now one of it.
         ///
-        /// It is still a 64-character hex transcription of a 32-byte digest. That is 32 B of the
-        /// remaining envelope and it is NOT retired here: unlike the sidecar's copy it is read,
-        /// and narrowing it is a change to what a reader must understand rather than a deletion
-        /// of something nothing read.
+        /// By default it is still a 64-character hex transcription of a 32-byte digest, which is
+        /// 32 B of the remaining envelope. Unlike the sidecar's retired copy this one is READ, so
+        /// narrowing it changes what a reader must understand rather than deleting something
+        /// nothing read -- which is why it is a FORMAT the frame declares
+        /// ([`WAL_FRAME_FORMAT_RAW_DIGEST`]) and not an edit to this one, and why the default is
+        /// still the wide shape. This test pins the default; the narrow shape is priced in
+        /// `the_narrow_frame_saves_the_transcription_and_nothing_else`.
         #[test]
         fn the_frame_carries_the_one_digest_the_read_path_verifies() {
             let entry = SharedStoreWalEntry {
@@ -3442,7 +3569,8 @@ mod tests {
                 staged_blocks: Vec::new(),
                 outcomes: Vec::new(),
             };
-            let frame = encode_wal_proto_frame(&entry).expect("the frame encodes");
+            let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+                .expect("the frame encodes");
             let decoded = decode_wal_proto_frame_exact(&frame, "test").expect("it decodes");
             assert_eq!(decoded.wal_index, TERM_INDEX);
 
@@ -3463,6 +3591,295 @@ mod tests {
                     .windows(metadata.sha256.len())
                     .any(|window| window == metadata.sha256.as_bytes()),
                 "the sidecar is carrying a copy of the frame's digest again"
+            );
+        }
+
+        /// THE LOG FRAME AS IT WAS, for the two questions only an old shape can answer: whether
+        /// the wide frame still weighs what it weighed, and whether a reader that predates the
+        /// narrow format accepts one.
+        ///
+        /// Tags 1 through 8, and NOT tags 9 or 10 -- this is the message as it stood before the
+        /// format field existed. Asserting from a comment that "prost omits a default" would be
+        /// asserting the thing under test.
+        #[derive(Clone, PartialEq, Message)]
+        struct FrameBeforeTheFormatField {
+            #[prost(uint64, tag = "1")]
+            shard_id: u64,
+            #[prost(uint64, tag = "2")]
+            wal_index: u64,
+            #[prost(bytes = "vec", tag = "3")]
+            command_payload: Vec<u8>,
+            #[prost(uint64, tag = "4")]
+            command_byte_size: u64,
+            #[prost(string, tag = "5")]
+            command_sha256: String,
+            #[prost(uint32, tag = "6")]
+            command_encoding: u32,
+            #[prost(message, repeated, tag = "7")]
+            staged_blocks: Vec<SharedStoreStagedBlockProto>,
+            #[prost(message, repeated, tag = "8")]
+            items: Vec<crate::sdk::v1::EngineWalItem>,
+        }
+
+        fn term_entry(value: &[u8]) -> SharedStoreWalEntry {
+            SharedStoreWalEntry {
+                shard_id: TERM_SHARD,
+                wal_index: TERM_INDEX,
+                command: Some(Command::StringSet {
+                    key: "amp-key".to_string(),
+                    value: value.to_vec(),
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            }
+        }
+
+        /// ADDING THE TWO FIELDS MOVED NO BYTES. Asserted against the old message, not inferred.
+        ///
+        /// The narrow format is reachable only by asking for it, so the default frame has to be
+        /// the frame that was there before -- byte for byte, not merely the same length. If this
+        /// ever fails, every node in a cluster is paying for a field it is not using.
+        #[test]
+        fn a_wide_frame_is_byte_identical_to_one_written_before_the_format_field_existed() {
+            let entry = term_entry(&[b'v'; 512]);
+            let now = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+                .expect("the frame encodes");
+
+            // The same content through the message as it stood before tags 9 and 10.
+            let payload = match entry.command.as_ref() {
+                Some(command) => command_to_sdk_proto(command)
+                    .expect("a string set encodes as an sdk command")
+                    .encode_to_vec(),
+                None => Vec::new(),
+            };
+            let before = FrameBeforeTheFormatField {
+                shard_id: TERM_SHARD,
+                wal_index: TERM_INDEX,
+                command_byte_size: payload.len() as u64,
+                command_sha256: sha256_hex(&payload),
+                command_payload: payload,
+                command_encoding: WAL_COMMAND_ENCODING_SDK_PROTO,
+                staged_blocks: Vec::new(),
+                items: Vec::new(),
+            };
+            let encoded = before.encode_to_vec();
+            let mut old = Vec::with_capacity(4 + encoded.len());
+            old.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            old.extend_from_slice(&encoded);
+
+            assert_eq!(
+                now, old,
+                "the default frame is no longer byte-identical to the frame written before the \
+                 format field existed, so the two new tags are costing bytes on a path that is \
+                 not using them"
+            );
+        }
+
+        /// WHAT THE NARROW FRAME SAVES, measured on this encoder rather than counted by hand.
+        ///
+        /// The digest is the same SHA-256 over the same payload; only its transcription changes.
+        /// Both figures are printed so the saving is a subtraction anyone can check, and the
+        /// payload is held constant so the delta cannot be anything else.
+        #[test]
+        fn the_narrow_frame_saves_the_transcription_and_nothing_else() {
+            let entry = term_entry(&[b'v'; 512]);
+            let wide = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_HEX_DIGEST)
+                .expect("the wide frame encodes");
+            let narrow = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_RAW_DIGEST)
+                .expect("the narrow frame encodes");
+            let saved = wide.len() - narrow.len();
+
+            println!(
+                "log frame {} B wide -> {} B narrow, saving {saved} B per append",
+                wide.len(),
+                narrow.len()
+            );
+
+            // 64 hex characters with a tag and a length byte, against 32 raw bytes with a tag and
+            // a length byte, less the two bytes the format field costs: 66 - 34 - 2.
+            assert_eq!(
+                saved, 30,
+                "the narrow frame saves {saved} B, not 30. Re-price the digest term field by \
+                 field before changing this number"
+            );
+
+            // AND IT IS THE SAME DIGEST. Not a weaker check -- the bytes in the narrow frame must
+            // be exactly the hex the wide frame spells out.
+            let decoded_narrow = SharedStoreWalFrameProto::decode(&narrow[4..]).expect("decodes");
+            let decoded_wide = SharedStoreWalFrameProto::decode(&wide[4..]).expect("decodes");
+            assert_eq!(decoded_narrow.frame_format, WAL_FRAME_FORMAT_RAW_DIGEST);
+            assert_eq!(decoded_wide.frame_format, WAL_FRAME_FORMAT_HEX_DIGEST);
+            assert_eq!(
+                hex::encode(&decoded_narrow.command_digest),
+                decoded_wide.command_sha256,
+                "the narrow frame's digest is not the same digest the wide frame carries"
+            );
+            assert_eq!(
+                decoded_narrow.command_digest.len(),
+                32,
+                "a SHA-256 is 32 bytes; the narrow frame carries {}",
+                decoded_narrow.command_digest.len()
+            );
+            // The hex text must be ABSENT from the narrow frame's bytes, not merely unused.
+            assert!(
+                !narrow
+                    .windows(decoded_wide.command_sha256.len())
+                    .any(|window| window == decoded_wide.command_sha256.as_bytes()),
+                "the narrow frame still has the hex transcription on the wire"
+            );
+
+            // And both verify through the real reader.
+            for (label, frame) in [("wide", &wide), ("narrow", &narrow)] {
+                let decoded = decode_wal_proto_frame_exact(frame, "test")
+                    .unwrap_or_else(|err| panic!("the {label} frame must decode: {err}"));
+                assert_eq!(decoded.wal_index, TERM_INDEX);
+                assert_eq!(decoded.command, entry.command);
+            }
+        }
+
+        /// ONE BLOB HOLDING BOTH SHAPES READS END TO END -- THE ROLLING RESTART.
+        ///
+        /// This is the case that makes the change risky, so it is the case that is tested. A
+        /// cluster part-way through an upgrade has writers on both formats appending to the same
+        /// per-shard log, which leaves the two interleaved in one object. A reader that could only
+        /// handle a log written entirely in one format would be fine in every test where both
+        /// sides are new and would fail exactly here.
+        ///
+        /// Interleaved in BOTH orders, because a reader that resynchronised on the first format it
+        /// saw would pass a file that only ever changes shape once.
+        #[test]
+        fn one_log_holding_both_frame_shapes_replays_in_either_order() {
+            let formats = [
+                WAL_FRAME_FORMAT_HEX_DIGEST,
+                WAL_FRAME_FORMAT_RAW_DIGEST,
+                WAL_FRAME_FORMAT_HEX_DIGEST,
+                WAL_FRAME_FORMAT_RAW_DIGEST,
+                WAL_FRAME_FORMAT_RAW_DIGEST,
+                WAL_FRAME_FORMAT_HEX_DIGEST,
+            ];
+            let mut blob = Vec::new();
+            let mut expected = Vec::new();
+            for (at, format) in formats.iter().copied().enumerate() {
+                let entry = SharedStoreWalEntry {
+                    shard_id: TERM_SHARD,
+                    wal_index: at as u64 + 1,
+                    command: Some(Command::StringSet {
+                        key: format!("mixed-{at}"),
+                        value: vec![b'm'; at * 37],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                };
+                blob.extend_from_slice(
+                    &encode_wal_proto_frame(&entry, format).expect("the frame encodes"),
+                );
+                expected.push(entry);
+            }
+
+            // ASSERT THE MIXTURE IS REALLY A MIXTURE. A fixture that wrote one shape twice would
+            // satisfy everything below while testing nothing.
+            assert!(
+                formats.contains(&WAL_FRAME_FORMAT_HEX_DIGEST)
+                    && formats.contains(&WAL_FRAME_FORMAT_RAW_DIGEST),
+                "this fixture must hold both shapes or it is not the mixed case"
+            );
+
+            let replayed = decode_wal_proto_blob(&blob).expect("a mixed log must replay whole");
+            assert_eq!(
+                replayed.len(),
+                expected.len(),
+                "a mixed log replayed {} of {} frames",
+                replayed.len(),
+                expected.len()
+            );
+            for (got, want) in replayed.iter().zip(expected.iter()) {
+                assert_eq!(got.wal_index, want.wal_index);
+                assert_eq!(got.command, want.command, "frame {} came back wrong", got.wal_index);
+            }
+        }
+
+        /// AN OLD READER REFUSES A NARROW FRAME RATHER THAN ACCEPTING IT.
+        ///
+        /// This is the property that decides the deploy order, and it is the one a test where both
+        /// sides are new cannot see. A reader built before the narrow format verifies tag 5
+        /// unconditionally; handed a narrow frame it finds an EMPTY digest where it expects
+        /// sixty-four characters.
+        ///
+        /// What matters is that it REFUSES. An old reader that accepted the frame -- by reading an
+        /// absent digest as "nothing to check" -- would replay an unverified command and call it
+        /// durable, and the skew would be invisible. So the refusal is asserted, and the wide
+        /// frame is run through the same old reader as the control: without it, a reader that
+        /// refused everything would pass.
+        #[test]
+        fn an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it() {
+            /// Exactly what the old read path did: decode, then compare tag 5 against the hex
+            /// digest of the payload.
+            fn old_reader_accepts(frame: &[u8]) -> bool {
+                let Ok(decoded) = FrameBeforeTheFormatField::decode(&frame[4..]) else {
+                    return false;
+                };
+                decoded.command_byte_size == decoded.command_payload.len() as u64
+                    && decoded.command_sha256 == sha256_hex(&decoded.command_payload)
+            }
+
+            let entry = term_entry(b"a value");
+            let wide = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_HEX_DIGEST)
+                .expect("the wide frame encodes");
+            let narrow = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_RAW_DIGEST)
+                .expect("the narrow frame encodes");
+
+            // THE CONTROL, first: the old reader still accepts what this build writes by default.
+            // If this failed, the test below would be measuring a broken reader.
+            assert!(
+                old_reader_accepts(&wide),
+                "a reader that predates the format field must still accept the frame this build \
+                 writes by default, or the default is not backward compatible"
+            );
+
+            // THE PROPERTY: it refuses the narrow one.
+            assert!(
+                !old_reader_accepts(&narrow),
+                "a reader that predates the narrow format ACCEPTED one. It therefore replayed a \
+                 command whose digest it never checked, and a mis-ordered deploy would be silent \
+                 rather than loud"
+            );
+
+            // And the current reader accepts both, which is what makes reader-first ordering work.
+            assert!(decode_wal_proto_frame_exact(&wide, "test").is_ok());
+            assert!(decode_wal_proto_frame_exact(&narrow, "test").is_ok());
+        }
+
+        /// A FORMAT THIS BUILD DOES NOT KNOW IS REFUSED BY NAME, not reported as corruption.
+        ///
+        /// The failure mode this prevents: a future format carries its digest in a field this
+        /// build cannot see, so verifying the field that happens to be empty yields a checksum
+        /// mismatch -- which blames the data for a version skew and sends whoever reads the error
+        /// looking for a damaged log. The error must say the FORMAT is unsupported.
+        #[test]
+        fn a_frame_from_a_future_format_is_refused_by_name() {
+            let entry = term_entry(b"a value");
+            let mut frame = SharedStoreWalFrameProto::decode(
+                &encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_RAW_DIGEST)
+                    .expect("the frame encodes")[4..],
+            )
+            .expect("decodes");
+            frame.frame_format = 77;
+            let encoded = frame.encode_to_vec();
+            let mut blob = Vec::with_capacity(4 + encoded.len());
+            blob.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+            blob.extend_from_slice(&encoded);
+
+            let err = decode_wal_proto_frame_exact(&blob, "a-log-key")
+                .expect_err("an unknown format must be refused");
+            let message = err.to_string();
+            assert!(
+                message.contains("77") && message.contains("frame format"),
+                "the error must name the unsupported format; it said: {message}"
+            );
+            assert!(
+                !matches!(err, SharedStoreReplicationError::ChecksumMismatch { .. }),
+                "an unknown format was reported as a checksum mismatch, which blames the data \
+                 for a version skew"
             );
         }
     }
