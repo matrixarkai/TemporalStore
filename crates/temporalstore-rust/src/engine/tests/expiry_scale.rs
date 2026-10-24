@@ -4497,6 +4497,12 @@ fn expiry_cache_pass_arms(objects: usize) -> (ExpiryCachePassArm, ExpiryCachePas
 /// `SWEPT_RECORD_NAMESPACES`, so the enumeration is one list read twice rather than two lists that
 /// happen to agree today.
 ///
+/// THE FIRST OF THOSE FOUR MATCHES NOTHING NOW, and that is stated here rather than discovered in
+/// the control below. The payload cache holds one physically-keyed copy, so a string read leaves
+/// the block frame and nothing under `CacheKey::string`: both arms still ASK for that key and both
+/// find it empty, which is still a match and is no longer an entry. The control gives that one
+/// namespace the opposite assertion for exactly this reason.
+///
 /// KEYS THE ROUND DID NOT EXPIRE KEEP THEIR ENTRIES. `expiry-cache-key-{objects - 1}` is marked,
 /// so it is cached in every namespace, and its deadline is NOT back-dated. Both arms must leave
 /// every one of its entries alone, and the count is asserted EQUAL to what it was before the arm
@@ -4587,6 +4593,38 @@ fn one_expiry_pass_walks_the_cache_once_instead_of_twice_per_expired_key() {
                 arm.arm,
             );
             for namespace in &namespaces {
+                // EXCEPT THE ONE NAMESPACE THAT CAN NO LONGER HOLD ANYTHING, which takes the
+                // OPPOSITE control instead of being dropped from the list.
+                //
+                // `named_record_keys` is `[CacheKey::string, CacheKey::set_members]`, and the
+                // payload cache was reduced to a single physically-keyed copy: `Command::StringGet`
+                // returns `read_bucket_index_value(..)` and leaves the block frame alone under
+                // `CacheKey::page_with_slot(..)`, with nothing under `CacheKey::string`. So the
+                // warming read in `cache_pass_fixture` cannot produce the entry this control used
+                // to demand, and demanding it is demanding a copy the store deliberately stopped
+                // making. `the_drop_rounds_cache_pass` in `storage_lifecycle_methods.rs` carries the
+                // same derived list and took exactly this correction; this is the module that was
+                // missed.
+                //
+                // ASSERTING IT IS EMPTY IS WHY IT STAYS IN THE LIST. The floor above refuses to let
+                // a namespace leave the derived list unnoticed, and this is the same argument from
+                // the other side: a logical response copy coming back fails here instead of passing
+                // quietly, and the invalidation of that key in `named_record_keys` is a guaranteed
+                // miss for as long as this holds.
+                if namespace == "string" {
+                    for key in expired_marked.iter().chain(std::iter::once(&kept)) {
+                        assert_eq!(
+                            cache_pass_occupied(&arm.before, namespace, key),
+                            0,
+                            "{} at {objects} objects: a `string` entry WAS cached for `{key}`. The \
+                             payload cache holds one physically-keyed copy and nothing under \
+                             `CacheKey::string`, so this means a logical response copy is being \
+                             written again -- which doubles what a point read costs the cache",
+                            arm.arm,
+                        );
+                    }
+                    continue;
+                }
                 for key in expired_marked.iter().chain(std::iter::once(&kept)) {
                     assert!(
                         cache_pass_occupied(&arm.before, namespace, key) > 0,
