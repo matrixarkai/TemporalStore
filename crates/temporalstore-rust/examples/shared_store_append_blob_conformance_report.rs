@@ -36,6 +36,18 @@ struct Report {
     summary: Summary,
 }
 
+/// This report's OWN reader of the log frame, independent of the one in the crate.
+///
+/// Being independent is the point: it checks that a frame on the wire says what the writer meant,
+/// without borrowing the writer's own decoder to do it. The cost of that independence is that it
+/// has to be kept in step with the frame by hand, and nothing makes it fail when it is not --
+/// `all_offsets_decode_expected_frame` is a REPORTED FIELD, so a reader that understands none of
+/// the frames prints `false` and exits zero.
+///
+/// That is not hypothetical. When the log frame's digest moved from tag 5 to tag 9, this reader
+/// still looked only at tag 5: it matched 0 of 8 frames, reported `false`, and the program exited
+/// successfully. Hence the digest dispatch below AND the assertion in `main` -- the dispatch keeps
+/// it correct, the assertion is what makes it fail next time instead of whispering.
 #[derive(Clone, PartialEq, Message)]
 struct ReportWalFrameProto {
     #[prost(uint64, tag = "1")]
@@ -46,10 +58,30 @@ struct ReportWalFrameProto {
     command_payload: Vec<u8>,
     #[prost(uint64, tag = "4")]
     command_byte_size: u64,
+    /// The digest as hex. Populated by frames declaring the hex format; empty in a narrow frame.
     #[prost(string, tag = "5")]
     command_sha256: String,
     #[prost(uint32, tag = "6")]
     command_encoding: u32,
+    /// The digest as its own 32 bytes, which is what a narrow frame carries instead of tag 5.
+    #[prost(bytes = "vec", tag = "9")]
+    command_digest: Vec<u8>,
+    /// Which digest shape this frame carries. Absent is zero is the hex shape, so a frame written
+    /// before the field existed reads correctly without a special case.
+    #[prost(uint32, tag = "10")]
+    frame_format: u32,
+}
+
+/// The digest shapes this reader understands, by the value the frame declares.
+const REPORT_FRAME_FORMAT_HEX_DIGEST: u32 = 0;
+const REPORT_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
+
+fn hex_lower(bytes: &[u8]) -> String {
+    use std::fmt::Write as _;
+    bytes.iter().fold(String::with_capacity(bytes.len() * 2), |mut out, byte| {
+        let _ = write!(out, "{byte:02x}");
+        out
+    })
 }
 
 #[derive(Debug, Serialize)]
@@ -443,6 +475,33 @@ async fn main() {
             + async_writer.replay.replay_latency_us,
         retrieval_latency_avg_us: avg(&retrieval_latencies),
     };
+
+    // ---- TEETH FOR THE ONE CLAIM THAT CHECKS THIS REPORT'S OWN READER.
+    // ----
+    // ---- Every field in the summary above is REPORTED, and a reported `false` still exits zero.
+    // ---- For most of them that is a choice about what this program is for. For this one it is a
+    // ---- hole: `direct_offset_slices_decode_expected_frames` is the result of decoding the log
+    // ---- frame with THIS FILE's own copy of the frame message, so it goes false precisely when
+    // ---- that copy has fallen behind the frame -- the one condition under which every other
+    // ---- offset claim in this report is being checked against a frame nobody parsed.
+    // ----
+    // ---- It has already happened once. When the frame's digest moved from tag 5 to tag 9 this
+    // ---- reader matched 0 of 8 frames, printed `false`, and the program exited successfully.
+    // ---- An assertion is the difference between that and a failure.
+    // ----
+    // ---- Deliberately only this field. The rest are pre-existing claims, and turning them all
+    // ---- into assertions in the same change would mix a guard with the question of what they
+    // ---- currently say -- which is its own investigation, not a side effect of this one.
+    assert!(
+        summary.direct_offset_slices_decode_expected_frames,
+        "this report's own reader decoded {} of {} log frames. It is a SECOND implementation of \
+         the frame reader, kept in step by hand, so the first thing to check is \
+         `ReportWalFrameProto` against `SharedStoreWalFrameProto` -- a field the frame has moved \
+         to and this reader does not know makes every frame read as unmatched. Fix the reader \
+         before trusting any other offset figure in this report",
+        direct_publish.offset_frame_validation.matched_frames,
+        direct_publish.offset_frame_validation.checked_frames,
+    );
 
     let report = Report {
         schema: "temporalstore_shared_store_append_blob_conformance_report_v1",
@@ -1061,10 +1120,18 @@ fn validate_offset_frames(
             continue;
         };
         let command_sha256 = sha256_hex(&frame.command_payload);
+        // Verify the digest in WHICHEVER SHAPE the frame declares. A format this reader does not
+        // know is NOT treated as a pass: it falls through to false, the frame counts as unmatched,
+        // and the assertion in `main` turns that into a failure instead of a printed `false`.
+        let digest_matches = match frame.frame_format {
+            REPORT_FRAME_FORMAT_HEX_DIGEST => frame.command_sha256 == command_sha256,
+            REPORT_FRAME_FORMAT_RAW_DIGEST => hex_lower(&frame.command_digest) == command_sha256,
+            _ => false,
+        };
         if frame.shard_id == shard_id
             && frame.wal_index == expected_index as u64 + 1
             && frame.command_byte_size == frame.command_payload.len() as u64
-            && frame.command_sha256 == command_sha256
+            && digest_matches
         {
             matched_frames += 1;
             contiguous_coverage_bytes = receipt.end_offset;

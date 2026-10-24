@@ -276,16 +276,20 @@ async fn main() {
          given unless something is compressing or dropping it, and neither is expected on this path"
     );
 
-    // ---- THE ENVELOPE HAS A CEILING. The slope is at its floor and cannot improve; the envelope
-    // ---- is the only part of this cost anyone can still move, so a regression in it should fail
-    // ---- here rather than be discovered in a later report. The bound is deliberately loose
-    // ---- enough to survive a protobuf varint widening and tight enough that re-adding either of
-    // ---- the two retired string terms (66 B and the key's length) trips it.
+    // ---- THE ENVELOPE HAS A CEILING, AND THE CEILING FOLLOWS THE ENVELOPE DOWN. The slope is at
+    // ---- its floor and cannot improve; the envelope is the only part of this cost anyone can
+    // ---- still move, so a regression in it should fail here rather than be discovered in a later
+    // ---- report. A ceiling left where it was after the envelope dropped is a guard that has
+    // ---- stopped guarding: it would admit the whole of the saving being handed back.
+    // ----
+    // ---- The bound is loose enough to survive a protobuf varint widening and tight enough that
+    // ---- undoing the narrowing of the log frame's digest -- 32 bytes back to 64 hex characters,
+    // ---- 30 B -- trips it, as does re-adding either term retired from the sidecar.
     assert!(
-        blob_env < 160.0,
-        "the per-append envelope is {blob_env:.1} B, over the 160 B ceiling. Two string terms \
-         were removed from the sidecar to get it here -- a duplicate hex digest the read path \
-         never consulted, and the log's object key in every frame. Re-price the two legs field \
-         by field before raising this bound"
+        blob_env < 100.0,
+        "the per-append envelope is {blob_env:.1} B, over the 100 B ceiling. Three named terms \
+         were removed or narrowed to get it here -- a duplicate hex digest the read path never \
+         consulted, the log's object key in every frame, and the transcription of the frame's own \
+         digest. Re-price the two legs field by field before raising this bound"
     );
 }

@@ -2686,20 +2686,29 @@ const WAL_FRAME_FORMAT_HEX_DIGEST: u32 = 0;
 /// `a_hex_digest_is_stored_as_bytes_not_text` is the test that keeps it honest there.
 const WAL_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
 
-/// WHICH FORMAT A WRITER EMITS BY DEFAULT, and why it is the wide one.
+/// WHICH FORMAT A WRITER EMITS BY DEFAULT. Now the narrow one.
+///
+/// # THE ORDERING THIS DEFAULT USED TO ENFORCE, AND WHY IT IS DONE
 ///
 /// A reader that predates [`WAL_FRAME_FORMAT_RAW_DIGEST`] verifies tag 5 unconditionally, so a
-/// narrow frame fails its checksum. That is a LOUD failure rather than a silent mis-read -- see
+/// narrow frame fails its checksum. The failure is LOUD rather than a silent mis-read -- see
 /// `an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it` -- but it is still a failure,
-/// and it means the two formats cannot be deployed in either order: every reader must understand
-/// the narrow frame BEFORE any writer emits one.
+/// so the two formats could never be deployed in either order: every reader has to understand the
+/// narrow frame BEFORE any writer emits one.
 ///
-/// Defaulting to the wide format is what makes that ordering structural instead of a note in a
-/// runbook. A release carrying this default teaches every node to READ both shapes while still
-/// writing the shape every older node can read; only once that release is everywhere does
-/// flipping this default start saving bytes. Nothing about a frame already on disk changes
-/// either way -- the format is a property of the record, not of the log.
-const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_HEX_DIGEST;
+/// That ordering was enforced by this constant rather than by a runbook. It named the wide format,
+/// so the release that taught every node to READ both shapes still WROTE the shape every older
+/// node could read. That release has landed, and this is the flip it exists to make safe.
+///
+/// A deployment that has not taken the reading release yet must not take this one. There is no
+/// way to make that automatic from inside one node -- a writer cannot see which formats the rest
+/// of the cluster understands -- so the guard is the release order itself, and
+/// [`SharedStoreReplicator::with_narrow_wal_frames`] is the way back to the wide format without a
+/// rebuild for a cluster that needs one.
+///
+/// Nothing about a frame already on disk changes either way: the format is a property of the
+/// record, so a log written before this flip keeps reading exactly as it did.
+const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_RAW_DIGEST;
 
 /// A lowercase hex digest as its own bytes, or `None` when the text is not one.
 ///
@@ -2720,7 +2729,6 @@ fn digest_text_to_bytes(digest: &str) -> Option<Vec<u8>> {
 
 struct WalCommandMetadata {
     byte_size: u64,
-    sha256: String,
     encoding: u32,
 }
 
@@ -2728,13 +2736,28 @@ struct WalCommandMetadata {
 ///
 /// An entry carrying results has no operation to describe, and this sidecar exists to say how the
 /// operation was encoded. Empty is the honest answer rather than a fabricated one.
+///
+/// # THE DIGEST THIS NO LONGER COMPUTES
+///
+/// This struct carried a `sha256` field, and it was a full SHA-256 of the payload computed on
+/// every append and thrown away. It became unread when the sidecar's duplicate digest was retired
+/// (#2319): before that the two sidecar encoders read it, afterwards nothing in the crate did, and
+/// the hash kept being computed because removing the writer is not the same as removing the field.
+///
+/// The frame's own encoder hashes the same payload for the digest it actually carries, so every
+/// append hashed its payload TWICE and used one result. On the batch path that was once per entry.
+///
+/// It survived because of WHERE it was read: the only remaining readers were the tests that
+/// measured it, and those compile under `cfg(test)`, where the field is live. `cargo test --lib`
+/// -- the gate this path is normally held to -- therefore could not see it. `cargo check
+/// --all-targets` compiles the plain lib as well and reports it as never read, which is how it
+/// was found. A field kept alive by the tests that measure it is not a field anything uses.
 fn wal_command_metadata(
     command: Option<&Command>,
 ) -> Result<WalCommandMetadata, SharedStoreReplicationError> {
     let Some(command) = command else {
         return Ok(WalCommandMetadata {
             byte_size: 0,
-            sha256: sha256_hex(&[]),
             encoding: WAL_COMMAND_ENCODING_JSON_SERDE,
         });
     };
@@ -2747,7 +2770,6 @@ fn wal_command_metadata(
     };
     Ok(WalCommandMetadata {
         byte_size: command_payload.len() as u64,
-        sha256: sha256_hex(&command_payload),
         encoding: command_encoding,
     })
 }
@@ -3251,8 +3273,20 @@ mod tests {
     /// WHERE ONE APPEND'S FIXED ENVELOPE GOES, TERM BY TERM.
     ///
     /// A swept fit over the value size says one append in `ProtobufAppendBlob` mode costs
-    /// `1.0007 * payload + 242 B`. The slope is the payload written once and is at its floor. The
-    /// 242 B was not: it was a sum of named fields, and two of them carried no information.
+    /// `rate * payload + envelope`, where the rate is the payload written once and is at its
+    /// floor. The envelope is not, and it is what these terms account for. It has come down in
+    /// three steps, each by removing or narrowing a NAMED term rather than by tuning anything:
+    ///
+    /// ```text
+    ///   242 B   the sidecar carried a duplicate hex digest and the log's object key
+    ///   118 B   both retired: the digest was unread, the key was derivable
+    ///    88 B   the log frame's digest carried as 32 bytes instead of 64 hex characters
+    /// ```
+    ///
+    /// The figures are fitted by `one_append_amplification_report`, which is the only thing that
+    /// can state them: a term measured here is a term of one frame, and the envelope is two
+    /// frames plus what the object store does with them. These terms must SUM toward that figure,
+    /// and the report's own ceiling is what fails if they stop doing so.
     ///
     /// # WHY A DELTA NAMES A FIELD HERE
     ///
@@ -3481,116 +3515,161 @@ mod tests {
         /// sidecar's half of it.
         ///
         /// The frame's envelope over the user's bytes is what is left after the payload: a 4-byte
-        /// length prefix, four small scalars, the protobuf wrapper around the payload, and the
-        /// digest. The digest is the overwhelming majority of it, and unlike the sidecar's copy it
-        /// is READ -- so it is priced here and left alone, rather than removed.
+        /// length prefix, four small scalars, the protobuf wrapper around the payload, the format
+        /// the frame declares, and the digest. The digest is still the largest of them, and it is
+        /// still READ -- what changed is that it is now carried as 32 bytes rather than as 64 hex
+        /// characters.
+        ///
+        /// # THE TERMS ARE MEASURED, NOT COUNTED
+        ///
+        /// Each term is obtained by clearing its field and re-encoding, so the figure comes from
+        /// the encoder rather than from arithmetic in a comment that can drift from it. That
+        /// subtraction is only meaningful because both frames are plain protobuf behind a 4-byte
+        /// length prefix with NO compression -- the module doc above says why the same move would
+        /// name nothing on the zstd-framed served index.
         #[test]
         fn the_log_frame_leg_is_mostly_its_digest() {
-            let entry = SharedStoreWalEntry {
-                shard_id: TERM_SHARD,
-                wal_index: TERM_INDEX,
-                command: Some(Command::StringSet {
-                    key: "amp-key".to_string(),
-                    value: vec![b'v'; 512],
-                }),
-                staged_blocks: Vec::new(),
-                outcomes: Vec::new(),
-            };
+            let entry = term_entry(&[b'v'; 512]);
             let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
                 .expect("the frame encodes");
             let metadata = wal_command_metadata(entry.command.as_ref()).expect("metadata");
+            let decoded = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
 
-            // The payload is INSIDE the envelope, not beside it: the frame's own
-            // `command_byte_size` is the encoded command, and the envelope is what the frame
-            // costs on top of it.
+            // The default is the narrow format, and the terms below are that frame's terms. Said
+            // out loud so a flip of the default cannot quietly re-label them.
+            assert_eq!(
+                decoded.frame_format, WAL_FRAME_FORMAT_RAW_DIGEST,
+                "this test prices the default frame and the default is no longer the narrow one"
+            );
+
+            // The payload is INSIDE the envelope, not beside it.
             let payload = metadata.byte_size as usize;
             let envelope = frame.len() - payload;
-            // 64 hex characters, a tag and a length byte.
-            let digest_term = metadata.sha256.len() + 2;
-            let residue = envelope - digest_term;
+
+            // CLEAR AND RE-ENCODE: the difference IS the field.
+            let digest_term = {
+                let mut without = decoded.clone();
+                without.command_digest = Vec::new();
+                (frame.len() - 4) - without.encoded_len()
+            };
+            let format_term = {
+                let mut without = decoded.clone();
+                without.frame_format = 0;
+                (frame.len() - 4) - without.encoded_len()
+            };
+            let residue = envelope - digest_term - format_term;
 
             println!(
-                "log frame {} B = payload {payload} B + digest {digest_term} B + framing and \
-                 scalars {residue} B",
+                "log frame {} B = payload {payload} B + digest {digest_term} B + format \
+                 {format_term} B + framing and scalars {residue} B",
                 frame.len()
             );
 
+            // 32 raw bytes, a tag and a length byte. Exact: a tolerance here would admit the
+            // regrowth this guard exists to catch.
             assert_eq!(
-                digest_term, 66,
-                "the frame's digest costs {digest_term} B, not 66"
+                digest_term, 34,
+                "the frame's digest costs {digest_term} B, not 34. It is 32 bytes plus a tag and \
+                 a length; re-price it before changing this number"
+            );
+            assert_eq!(
+                format_term, 2,
+                "the format the frame declares costs {format_term} B, not 2 -- a tag and a \
+                 single-byte value"
             );
 
-            // THE ACCOUNTING IDENTITY, same rule as the sidecar: the named terms and the residue
-            // must be the whole frame, or this is not a decomposition of it.
+            // THE ACCOUNTING IDENTITY: the named terms and the residue must be the whole frame,
+            // or this is not a decomposition of it.
             assert_eq!(
-                payload + digest_term + residue,
+                payload + digest_term + format_term + residue,
                 frame.len(),
-                "payload {payload} + digest {digest_term} + residue {residue} is not the frame \
-                 ({} B)",
+                "payload {payload} + digest {digest_term} + format {format_term} + residue \
+                 {residue} is not the frame ({} B)",
                 frame.len()
             );
 
             // The residue is the 4-byte length prefix, the payload's own tag and length, and four
-            // small scalars. Exact, because this is the part nobody is proposing to change and a
-            // tolerance would hide a new field landing in it.
+            // small scalars. UNCHANGED by the narrowing, which is the point: the digest moved and
+            // nothing else did.
             assert_eq!(
                 residue, 16,
                 "the frame's framing and scalars cost {residue} B, not 16. A field was added to \
                  the frame, or one of the scalars widened"
             );
 
-            // AND THE HEADLINE: the digest is more of the frame's envelope than everything else
-            // in it put together.
+            // AND THE HEADLINE, which still holds after the narrowing: the digest is more of the
+            // frame's envelope than everything else in it put together.
             assert!(
-                digest_term > residue,
-                "the digest is {digest_term} B against {residue} B of framing and scalars; the \
-                 claim that this leg is mostly its digest no longer holds"
+                digest_term > residue + format_term,
+                "the digest is {digest_term} B against {} B of everything else; the claim that \
+                 this leg is mostly its digest no longer holds",
+                residue + format_term
             );
         }
 
-        /// The digest the read path actually verifies is the FRAME's, and there is now one of it.
+        /// The digest the read path verifies is the FRAME's, there is one of it, and by default it
+        /// is now 32 bytes rather than 64 hex characters.
         ///
-        /// By default it is still a 64-character hex transcription of a 32-byte digest, which is
-        /// 32 B of the remaining envelope. Unlike the sidecar's retired copy this one is READ, so
-        /// narrowing it changes what a reader must understand rather than deleting something
-        /// nothing read -- which is why it is a FORMAT the frame declares
-        /// ([`WAL_FRAME_FORMAT_RAW_DIGEST`]) and not an edit to this one, and why the default is
-        /// still the wide shape. This test pins the default; the narrow shape is priced in
-        /// `the_narrow_frame_saves_the_transcription_and_nothing_else`.
+        /// Still the same SHA-256 over the same payload: the narrowing retired a transcription,
+        /// not a check. The strength is asserted here by recomputing the digest independently and
+        /// requiring the frame's bytes to equal it, so "the same digest" is evidence rather than a
+        /// claim in a comment.
         #[test]
         fn the_frame_carries_the_one_digest_the_read_path_verifies() {
-            let entry = SharedStoreWalEntry {
-                shard_id: TERM_SHARD,
-                wal_index: TERM_INDEX,
-                command: Some(Command::StringSet {
-                    key: "amp-key".to_string(),
-                    value: b"a value".to_vec(),
-                }),
-                staged_blocks: Vec::new(),
-                outcomes: Vec::new(),
-            };
+            let entry = term_entry(b"a value");
             let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
                 .expect("the frame encodes");
-            let decoded = decode_wal_proto_frame_exact(&frame, "test").expect("it decodes");
-            assert_eq!(decoded.wal_index, TERM_INDEX);
+            let replayed = decode_wal_proto_frame_exact(&frame, "test").expect("it decodes");
+            assert_eq!(replayed.wal_index, TERM_INDEX);
 
-            let metadata = wal_command_metadata(entry.command.as_ref()).expect("metadata");
+            let decoded = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
             assert_eq!(
-                metadata.sha256.len(),
-                64,
-                "the frame's digest is {} characters, not 64 hex",
-                metadata.sha256.len()
+                decoded.frame_format, WAL_FRAME_FORMAT_RAW_DIGEST,
+                "the default frame no longer declares the narrow format"
             );
 
-            // And the sidecar no longer has a digest field to disagree with it. Asserted on the
-            // WIRE: the hex string must not appear in the sidecar frame at all.
+            // THE DIGEST IS 32 BYTES, AND IT IS THE RIGHT 32 BYTES. Recomputed here rather than
+            // taken from the encoder, so an encoder that wrote the wrong digest would fail.
+            let expected = sha256_hex(&decoded.command_payload);
+            assert_eq!(expected.len(), 64, "a SHA-256 is 64 hex characters");
+            assert_eq!(
+                decoded.command_digest.len(),
+                32,
+                "the frame's digest is {} bytes, not 32",
+                decoded.command_digest.len()
+            );
+            assert_eq!(
+                hex::encode(&decoded.command_digest),
+                expected,
+                "the frame carries a digest that is not the SHA-256 of its own payload"
+            );
+
+            // AND THE HEX TRANSCRIPTION IS GONE FROM THE WIRE, not merely unused.
+            assert!(
+                decoded.command_sha256.is_empty(),
+                "the narrow frame still populates the hex field as well, so it is paying for both"
+            );
+            assert!(
+                !frame
+                    .windows(expected.len())
+                    .any(|window| window == expected.as_bytes()),
+                "the hex transcription is still on the wire in the default frame"
+            );
+
+            // And the sidecar still has no digest field to disagree with it.
             let sidecar =
                 encode_wal_offset_metadata_frame(&offset_metadata(TERM_BLOB_KEY), TERM_BLOB_KEY);
             assert!(
                 !sidecar
-                    .windows(metadata.sha256.len())
-                    .any(|window| window == metadata.sha256.as_bytes()),
+                    .windows(expected.len())
+                    .any(|window| window == expected.as_bytes()),
                 "the sidecar is carrying a copy of the frame's digest again"
+            );
+            assert!(
+                !sidecar
+                    .windows(decoded.command_digest.len())
+                    .any(|window| window == decoded.command_digest.as_slice()),
+                "the sidecar is carrying the frame's digest again, now as raw bytes"
             );
         }
 
@@ -3634,15 +3713,21 @@ mod tests {
             }
         }
 
-        /// ADDING THE TWO FIELDS MOVED NO BYTES. Asserted against the old message, not inferred.
+        /// THE WIDE FORMAT IS STILL BYTE-IDENTICAL TO THE FRAME THAT PREDATES `frame_format`.
         ///
-        /// The narrow format is reachable only by asking for it, so the default frame has to be
-        /// the frame that was there before -- byte for byte, not merely the same length. If this
-        /// ever fails, every node in a cluster is paying for a field it is not using.
+        /// This is what makes the wide format a way BACK. The default is now the narrow shape, so
+        /// a cluster that cannot take the narrow format has to be able to ask for the old frame
+        /// and get the old frame -- byte for byte, not merely something the same length that an
+        /// older reader happens to accept. `with_narrow_wal_frames(false)` is that request and
+        /// this is the assertion that it is honoured exactly.
+        ///
+        /// Pinned to [`WAL_FRAME_FORMAT_HEX_DIGEST`] explicitly rather than to the default: this
+        /// test is about the wide shape, and following the default would have made it silently
+        /// stop testing anything the moment the default moved.
         #[test]
         fn a_wide_frame_is_byte_identical_to_one_written_before_the_format_field_existed() {
             let entry = term_entry(&[b'v'; 512]);
-            let now = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            let now = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_HEX_DIGEST)
                 .expect("the frame encodes");
 
             // The same content through the message as it stood before tags 9 and 10.
@@ -3880,6 +3965,97 @@ mod tests {
                 !matches!(err, SharedStoreReplicationError::ChecksumMismatch { .. }),
                 "an unknown format was reported as a checksum mismatch, which blames the data \
                  for a version skew"
+            );
+        }
+
+        /// THE DEFAULT REACHES THE OBJECT STORE, and the way back does too.
+        ///
+        /// Every other test here calls the encoder directly, which prices a frame but cannot say
+        /// what a WRITER emits: the default constant could be flipped while the append path kept
+        /// passing something else, and the whole saving would be a number in a test. So this one
+        /// publishes through the replicator and reads the format out of the bytes that reached the
+        /// store.
+        ///
+        /// Both directions, because the opt-out is what a cluster that cannot take the narrow
+        /// format depends on. A test of the default alone would pass just as well if
+        /// `with_narrow_wal_frames(false)` did nothing at all.
+        #[tokio::test]
+        async fn the_published_frame_carries_the_default_format_and_the_opt_out_reverses_it() {
+            async fn published_format(dir: &Path, narrow: Option<bool>) -> (u32, usize) {
+                let store = Arc::new(FileObjectStore::new(dir.join("objects")));
+                let mut replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+                    .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+                if let Some(narrow) = narrow {
+                    replicator = replicator.with_narrow_wal_frames(narrow);
+                }
+                replicator
+                    .publish_wal_entry(SharedStoreWalEntry {
+                        shard_id: TERM_SHARD,
+                        wal_index: TERM_INDEX,
+                        command: Some(Command::StringSet {
+                            key: "amp-key".to_string(),
+                            value: vec![b'v'; 512],
+                        }),
+                        staged_blocks: Vec::new(),
+                        outcomes: Vec::new(),
+                    })
+                    .await
+                    .expect("the append reaches the store");
+
+                let key = format!(
+                    "{TEST_CLUSTER_ID}/shards/{TERM_SHARD}/shared/wal/wal.protobuf.blob"
+                );
+                let bytes = store.get(&key).await.expect("the log object is there");
+                // The object holds one length-prefixed frame.
+                let len = u32::from_be_bytes(
+                    bytes[0..4].try_into().expect("a 4-byte length prefix"),
+                ) as usize;
+                assert_eq!(
+                    len + 4,
+                    bytes.len(),
+                    "the log object is not exactly one frame, so the format read below may not \
+                     be the frame's"
+                );
+                let frame = SharedStoreWalFrameProto::decode(&bytes[4..]).expect("decodes");
+                (frame.frame_format, bytes.len())
+            }
+
+            let dir = tempfile::tempdir().unwrap();
+            let (default_format, default_bytes) =
+                published_format(&dir.path().join("default"), None).await;
+            let (narrow_format, narrow_bytes) =
+                published_format(&dir.path().join("narrow"), Some(true)).await;
+            let (wide_format, wide_bytes) =
+                published_format(&dir.path().join("wide"), Some(false)).await;
+
+            println!(
+                "published log object: default {default_bytes} B (format {default_format}), \
+                 narrow {narrow_bytes} B (format {narrow_format}), wide {wide_bytes} B (format \
+                 {wide_format})"
+            );
+
+            assert_eq!(
+                default_format, WAL_FRAME_FORMAT_RAW_DIGEST,
+                "a published frame declares format {default_format}, so the flipped default is \
+                 not reaching the append path"
+            );
+            assert_eq!(
+                narrow_format, WAL_FRAME_FORMAT_RAW_DIGEST,
+                "asking for narrow frames did not produce one"
+            );
+            assert_eq!(
+                wide_format, WAL_FRAME_FORMAT_HEX_DIGEST,
+                "the opt-out did not produce the wide frame, so a cluster that needs the old \
+                 shape has no way back"
+            );
+
+            // AND THE SAVING IS IN THE BYTES THAT REACHED THE STORE, not only in the encoder.
+            assert_eq!(default_bytes, narrow_bytes);
+            assert_eq!(
+                wide_bytes - narrow_bytes,
+                30,
+                "the published objects differ by {} B, not the 30 B the narrowing saves",
+                wide_bytes - narrow_bytes
             );
         }
     }
