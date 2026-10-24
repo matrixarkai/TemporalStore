@@ -689,10 +689,21 @@ impl TemporalEngine {
             .last()
             .map(|manifest| manifest.bucket_ids.iter().copied().collect::<BTreeSet<_>>())
             .unwrap_or_default();
+        // WHICH BUCKETS THE NEWEST DUMP DOES NOT COVER: a dirty-BUCKET question, so it is asked of
+        // the bucket's own flag rather than derived from a count of dirty OBJECTS. See
+        // `dirty_bucket_nodes`. A bucket with no node reads the same either way, because the set
+        // loop contributes no count to one.
+        let dirty_nodes = self
+            .shards
+            .read()
+            .expect("shards lock poisoned")
+            .get(&shard_id)
+            .map(super::storage_reporting::dirty_bucket_nodes)
+            .unwrap_or_default();
         let missing_dump_bucket_ids = self
             .bucket_storage_summaries(shard_id)
             .into_iter()
-            .filter(|summary| summary.dirty_object_count > 0)
+            .filter(|summary| dirty_nodes.contains(&summary.routing_bucket))
             .map(|summary| summary.routing_bucket)
             .filter(|bucket| !latest_dump_buckets.contains(bucket))
             .collect::<Vec<_>>();

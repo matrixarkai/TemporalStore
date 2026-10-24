@@ -210,6 +210,39 @@ pub(super) fn bucket_dump_entries_by_key(
 pub(crate) static DIRTY_SUMMARY_VISITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// WHICH ROUTING BUCKETS RECORD DIRT ON THEIR OWN NODE -- the dirty-BUCKET question, answered
+/// without the object-keyed set.
+///
+/// `BucketStorageSummary::dirty_object_count` is populated from one place, the
+/// `dirty_objects.bucket_counts()` loop at the foot of [`bucket_storage_summaries`], and several
+/// consumers only ever asked it `> 0`. That is a question about the BUCKET, and the bucket already
+/// records the answer: `mark_object_dirty` CREATES the routing bucket's node when the key has none
+/// and sets `dirty` on it, so even a key with no page at all leaves a node reading dirty.
+///
+/// The two records are independent, not one cached from the other, and that is measured rather
+/// than argued: `whether_a_bucket_can_count_its_own_dirty_objects` neutralises each of the three
+/// sites that maintain this flag in turn, and the arm with BOTH set-derived OR terms gone and the
+/// mark kept still agrees with the set on every bucket -- including the ones carrying dirt no page
+/// walk can see. So a consumer reading this survives the set being retired.
+///
+/// THE COUNT IS A DIFFERENT QUESTION AND IS NOT ANSWERED HERE. It is not derivable from the
+/// bucket: the same measurement finds a page walk reporting 3 of 11 marks and reading 5 of 8 dirty
+/// buckets as clean, at 17x the producer's work. `bucket_storage_summaries` goes on reading the
+/// set for the count, and that pin is asserted there.
+///
+/// A bucket this set does not name reads the same either way: a summary can exist for a bucket
+/// `bucket_map` does not hold, and such a bucket has no node to mark, so the set loop contributes
+/// nothing to its count and `dirty_object_count > 0` was already false for it.
+pub(super) fn dirty_bucket_nodes(shard: &ShardState) -> BTreeSet<u32> {
+    shard
+        .bucket_index
+        .bucket_map
+        .iter()
+        .filter(|(_routing_bucket, bucket)| bucket.dirty())
+        .map(|(routing_bucket, _bucket)| *routing_bucket)
+        .collect()
+}
+
 pub(super) fn bucket_storage_summaries(
     shard: &ShardState,
     start_routing_bucket: u32,
@@ -400,7 +433,16 @@ pub(super) fn storage_physical_index_report(
                 StoragePhysicalBucketNode {
                     routing_bucket: *routing_bucket,
                     layout: "empty".to_string(),
-                    dirty: summary.dirty_object_count > 0,
+                    // THE BUCKET'S OWN FLAG, not `dirty_object_count > 0`. This report field is a
+                    // dirty-BUCKET flag, and it was deriving one from a count of objects. The node
+                    // records it directly -- see `dirty_bucket_nodes` for why the two are
+                    // independent records of the same fact rather than one read off the other.
+                    dirty: shard
+                        .bucket_index
+                        .bucket_map
+                        .get(routing_bucket)
+                        .map(|bucket| bucket.dirty())
+                        .unwrap_or(false),
                     meta_loaded: true,
                     loading: false,
                     in_memory: summary.block_ref_count > 0,

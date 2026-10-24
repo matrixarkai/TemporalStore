@@ -196,13 +196,25 @@ impl TemporalEngine {
         // `dump_refreshes_a_vacated_slab` selects a dump with no bucket dirty, and needs the full
         // bucket list to do it. That branch takes the walk itself, so skipping here cannot starve
         // it -- see the `get_or_insert_with` at its site.
-        let shard_has_dirty_objects = self
+        //
+        // WHICH BUCKETS ARE DIRTY is read off their own nodes in the same lock acquisition, and the
+        // filter below asks that instead of `dirty_object_count > 0`. See `dirty_bucket_nodes`: the
+        // node's flag and the object-keyed set are two independent records of the same fact, so a
+        // dirty-BUCKET question can be asked of the bucket. The short-circuit above is unchanged
+        // and still gates on the SET, because it is the thing that decides whether the summaries
+        // were materialised at all -- with no summaries the filter selects nothing either way.
+        let (shard_has_dirty_objects, dirty_bucket_nodes) = self
             .shards
             .read()
             .expect("engine lock poisoned")
             .get(&request.shard_id)
-            .map(|shard| !shard.dirty_objects.is_empty())
-            .unwrap_or(false);
+            .map(|shard| {
+                (
+                    !shard.dirty_objects.is_empty(),
+                    crate::engine::storage_reporting::dirty_bucket_nodes(shard),
+                )
+            })
+            .unwrap_or_default();
         let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = shard_has_dirty_objects
             .then(|| self.bucket_storage_summaries(request.shard_id));
         // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
@@ -238,9 +250,12 @@ impl TemporalEngine {
         // above -- so this selects the same buckets it always did, without a fallback that could
         // mistake "did not look" for "looked and found none".
         let dirty_bucket_source: &[BucketStorageSummary] = bucket_summaries.as_deref().unwrap_or(&[]);
+        // THE BUCKET'S OWN FLAG DECIDES WHETHER IT IS DUMPED. The error this can make is the SAFE
+        // one: a bucket reading dirty that holds nothing is a bucket dumped for no reason, where
+        // the opposite -- a dirty bucket read as clean -- is undumped state no round would pick up.
         let mut dirty_bucket_summaries = dirty_bucket_source
             .iter()
-            .filter(|summary| summary.dirty_object_count > 0)
+            .filter(|summary| dirty_bucket_nodes.contains(&summary.routing_bucket))
             .collect::<Vec<_>>();
         // Oldest undumped write first: the bucket that has held the log longest is dumped first.
         //
