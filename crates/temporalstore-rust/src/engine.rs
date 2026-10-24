@@ -1589,26 +1589,73 @@ impl TemporalEngine {
                 key,
                 address,
                 routing_bucket,
-            } => Some(ExecuteResponse {
-                status: Status::ok(),
-                response: cached_response(
-                    &self.cache,
-                    CacheKey::string(request.shard_id, key),
-                    || CommandResponse::Bytes {
-                        value: address.as_ref().and_then(|address| {
-                            read_block_bytes(
+            } => {
+                // THE SHARD HAS ALREADY SAID NO, SO NOTHING BELOW IT IS ASKED.
+                //
+                // `address` is `shard.string_address(key)` -- one map get against `shard.strings`,
+                // taken under the shard lock in the block above -- and it is the ONLY thing the
+                // source closure below consults. `None` from it is the answer this arm returns
+                // whatever any cache tier holds. Letting the cache be asked first therefore paid
+                // for a question the authority that owns it had already answered.
+                //
+                // WHAT THAT COST, MEASURED. `cached_response` is cache-first, so an absent key
+                // descended every tier: the memory tier, the persistent-memory tier, the SSD
+                // tier's store, and then `fs::read` on the entry's own disk path -- a failing
+                // `openat` for a key that was never written. One descent per distinct absent key,
+                // and then one cache WRITE, because the negative answer was admitted to the memory
+                // tier. `what_an_absent_key_costs` measured 1.000 descents and 1.000 writes per
+                // lookup, flat across 500, 2,000 and 8,000-key stores, in all three bucket
+                // residencies -- resident, released, and no bucket at all. That is the shape a
+                // retry burst after a cold start or a failover multiplies: a set of answers that
+                // are all "no", each one paying a tier descent and admitting an entry that evicts
+                // a live one to hold it.
+                //
+                // AND THE BLOCK STORE WAS NEVER IN IT, WHICH IS THE OTHER HALF OF THE READING.
+                // The same measurement reads 0 block-store reads per absent lookup in every arm,
+                // so an absent key never forced a bucket reload or a page read, and releasing a
+                // bucket never made absence cost more. A release drops a bucket's `block_index`
+                // and its object-lookup entries and leaves the model maps alone -- they are what
+                // `reload_released_bucket` rebuilds FROM -- so `string_address` answers a released
+                // bucket's keys exactly as it answers a resident one's. This path can tell
+                // "absent" from "not resident" because it never has to ask.
+                //
+                // IT IS ALSO THE SAFER ORDER, NOT MERELY THE CHEAPER ONE. #1907 refused to defer
+                // the delete_drop cache invalidation past its guard on the grounds that
+                // `cached_response` is cache-first and a record `CacheKey` carries no generation,
+                // sequence or version stamp -- so a reader inside that window is answered a value
+                // the shard has already deleted, 8 of 533 reads as measured there. For a key the
+                // shard no longer holds, this arm now consults the shard's verdict first and the
+                // cache cannot answer at all.
+                //
+                // THE SIBLING ARM ALREADY DOES THIS, which is why it is not a new rule. The
+                // `FastPathRead::Hash` arm below takes its fields from `shard.hashes` and
+                // `filter_map`s over them, so an absent hash makes no cache call whatever. This is
+                // the string arm being brought level with the one beside it.
+                let Some(address) = address else {
+                    return Some(ExecuteResponse {
+                        status: Status::ok(),
+                        response: CommandResponse::Bytes { value: None },
+                    });
+                };
+                Some(ExecuteResponse {
+                    status: Status::ok(),
+                    response: cached_response(
+                        &self.cache,
+                        CacheKey::string(request.shard_id, key),
+                        || CommandResponse::Bytes {
+                            value: read_block_bytes(
                                 &self.cache,
                                 &self.block_store,
                                 request.shard_id,
-                                address,
+                                &address,
                                 // A string block IS its whole object, so the element is `None`.
                                 PageIdentity::of(request.shard_id, "string", key, None),
                                 Some(routing_bucket),
-                            )
-                        }),
-                    },
-                ),
-            }),
+                            ),
+                        },
+                    ),
+                })
+            }
             FastPathRead::Hash {
                 key,
                 fields,

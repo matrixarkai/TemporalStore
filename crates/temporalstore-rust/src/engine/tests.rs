@@ -471,6 +471,7 @@ mod the_cached_payload_is_a_byte_string;
 mod the_payload_cache_per_user_byte;
 mod the_repack_brings_no_table_into_being;
 mod what_one_eviction_round_writes;
+mod what_an_absent_key_costs;
 mod the_two_eviction_arms_disagree_on_the_dirty_count;
 mod a_deferred_checkpoint_still_reloads_with_the_keys_dropped;
 mod what_one_visibility_publish_writes;
