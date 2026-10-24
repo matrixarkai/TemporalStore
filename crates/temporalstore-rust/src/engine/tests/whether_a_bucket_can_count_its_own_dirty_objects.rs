@@ -420,39 +420,8 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     );
     println!();
 
-    // ---- PRESENCE IS A DIFFERENT QUESTION FROM THE COUNT, AND THE NODE ANSWERS IT.
-    //
-    // `mark_object_dirty` creates the routing bucket's node when the key has none and sets `dirty`
-    // on it, so a key with NO PAGE AT ALL still leaves a node reading dirty. That is why the five
-    // buckets a page walk cannot see are nonetheless visible here, and it is the whole reason the
-    // three `> 0` consumers can move while the count cannot.
-    //
-    // ASSERTED IN BOTH DIRECTIONS, because one direction holding is not agreement and the two
-    // failures are not interchangeable. A node reading dirty where the set holds nothing refuses a
-    // release and keeps a bucket pinning the logs; the set holding a mark the node cannot see is a
-    // bucket that stops being dumped.
-    assert!(
-        set_says_dirty_node_does_not.is_empty(),
-        "bucket(s) {set_says_dirty_node_does_not:?} hold a mark in the object-keyed set while the \
-         node reads CLEAN, so `bucket.dirty()` is NOT a safe stand-in for \
-         `dirty_object_count > 0`: a bucket missing from the node view is a bucket that stops \
-         being dumped while it holds undumped writes. Check that every site marking an object \
-         dirty still sets the flag on the routing bucket's node"
-    );
-    assert!(
-        node_says_dirty_set_does_not.is_empty(),
-        "bucket(s) {node_says_dirty_set_does_not:?} read dirty on the node while the set holds \
-         nothing for them. That is the SAFE direction for the dump filter -- an extra bucket is \
-         dumped -- and the UNSAFE one for the two reclaim checks, where `dirty_object_count == 0` \
-         is the arm that counts a bucket as covered and contributing no WAL floor. A bucket \
-         wrongly reading dirty skips that arm, cannot name a claim because its \
-         `first_dirty_wal_sequence` was cleared alongside `dirty = false`, and blocks the whole \
-         reclaim plan. So this clause is what licenses moving the RECLAIM consumers, not just the \
-         dump filter"
-    );
-
-    // AND IT AGREES WHERE A PAGE WALK CANNOT, which is the case that makes the agreement worth
-    // something. Without this the two columns could be agreeing only on page-backed buckets.
+    // The buckets the node reports with no dirty page of their own -- computed here, beside the
+    // table it belongs with, and ASSERTED much further down. See the ordering note below.
     let node_carries_what_no_page_does: Vec<u32> = by_set
         .keys()
         .copied()
@@ -461,43 +430,36 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
                 && by_node.get(bucket).map(|(dirty, _)| *dirty).unwrap_or(false)
         })
         .collect();
-    assert!(
-        !node_carries_what_no_page_does.is_empty(),
-        "every dirty bucket here has a dirty page, so the node flag and the page walk cannot be \
-         told apart on this fixture and the agreement above says nothing about the case that \
-         matters. The fixture's removals are what produce a dirty bucket holding no page"
-    );
     println!(
         "    dirty bucket(s) with NO dirty page that the node still reports: {:?}",
         node_carries_what_no_page_does
     );
-
-    // ---- AND WHAT THE MANIFEST-VALIDATED GENERATION ACTUALLY IS: an accounting identity, not a
-    // ---- figure that happens to agree. `bucket_storage_summaries` seeds the summary from the
-    // ---- node's own `dirty_generation` and then adds the dirty COUNT onto it, so the value
-    // ---- `bucket_dump_summary_matches_current_generation` compares EXACTLY is a composite of a
-    // ---- monotonic per-mark counter and a live population count. Stated as the identity rather
-    // ---- than as "they differ on these buckets", which a threshold could pass by accident.
-    for bucket in &every_bucket {
-        if !produced_summaries.contains_key(bucket) {
-            continue;
-        }
-        let node_gen = by_node.get(bucket).map(|(_, gen)| *gen).unwrap_or(0);
-        let set_count = by_set.get(bucket).copied().unwrap_or(0);
-        let summary_gen = produced_summaries.get(bucket).map(|(_, gen)| *gen).unwrap_or(0);
-        assert_eq!(
-            summary_gen,
-            node_gen.saturating_add(set_count),
-            "bucket {bucket}: the summary's dirty_generation is {summary_gen} where the node holds \
-             {node_gen} and the set holds {set_count} marks, so it is no longer \
-             `node + count`. That sum is what a stored dump manifest is validated against, so this \
-             identity is a durability contract: if the count term has been dropped, every manifest \
-             written before the change stops matching the generation computed after it"
-        );
-    }
     println!();
 
-    // ---- THE FIXTURE HAS TO REACH THE REGIME, and each clause is asserted on its own so a
+    // ---- THE ORDER OF THE ASSERTIONS BELOW IS LOAD-BEARING, NOT STYLISTIC.
+    //
+    // A plant stops at the FIRST assertion it trips, so an assertion placed above another one
+    // SHADOWS it: the plant written for the lower clause never reaches it, and the lower clause
+    // ends up guarded by its neighbour rather than proven. That is not a theory -- these clauses
+    // were once ordered with the node block first, and three plants landed on the wrong clause:
+    // the two fixture-regime plants both stopped on `node_carries_what_no_page_does`, and the
+    // plant that switches the producer stopped on the generation identity instead of the pin,
+    // which is the one clause whose whole purpose is to catch that switch.
+    //
+    // So the blocks run in this order, and a new assertion goes in the block it belongs to rather
+    // than at the end:
+    //
+    //   1. THE FIXTURE REACHED ITS REGIME -- every clause that stops this test passing for the
+    //      wrong reason. These come first because a plant that breaks the fixture should say so
+    //      rather than failing somewhere downstream.
+    //   2. THE COUNT IS NOT DERIVABLE -- the conclusion about the page walk.
+    //   3. PRESENCE IS, FROM THE NODE -- the conclusion about the flag.
+    //   4. THE PRODUCER IS PINNED -- before the identity, because switching the producer breaks
+    //      both and this is the clause that names the re-attempt.
+    //   5. THE GENERATION IDENTITY -- last, so dropping the count term from the summary reaches
+    //      it with the pin still passing.
+    //
+    // ---- 1. THE FIXTURE HAS TO REACH THE REGIME, and each clause is asserted on its own so a
     // ---- failure says which one did not hold.
     assert!(
         bucket_total < KEYS,
@@ -528,11 +490,10 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          holds {widest_object} pages"
     );
 
-    // ---- AND THE CONCLUSION, ONE CLAUSE AT A TIME so a failure says which part moved rather
-    // ---- than that "the conclusion changed". Each of the four is independently load-bearing.
-
-    // The term that makes a page walk unsound at all. Without it the rest would be resting on
-    // bucket attribution alone, which is a weaker claim than this module states.
+    // STILL BLOCK 1: the term that makes a page walk unsound at all, and a property of the
+    // FIXTURE rather than a conclusion -- which is why it belongs here, above the node clause that
+    // used to shadow it. Without it the conclusions below would rest on bucket attribution alone,
+    // which is a weaker claim than this module states.
     assert!(
         set_members_with_no_page > 0,
         "every dirty object has a live page on this fixture, so the term that decides the question \
@@ -540,6 +501,9 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          `control_state:cpc:*` record in the set -- check that they still do before reading the \
          clauses below as the general case"
     );
+
+    // ---- 2. THE COUNT IS NOT DERIVABLE, one clause at a time so a failure says which part moved
+    // ---- rather than that "the conclusion changed".
 
     // The shortfall itself.
     assert!(
@@ -596,7 +560,46 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     );
     println!();
 
-    // ---- AND THE PRODUCER IS PINNED TO THE AUTHORITY, which is what makes the decline above
+    // ---- 3. PRESENCE IS A DIFFERENT QUESTION FROM THE COUNT, AND THE NODE ANSWERS IT.
+    //
+    // `mark_object_dirty` creates the routing bucket's node when the key has none and sets `dirty`
+    // on it, so a key with NO PAGE AT ALL still leaves a node reading dirty. That is why the five
+    // buckets a page walk cannot see are nonetheless visible here, and it is the whole reason the
+    // three `> 0` consumers can move while the count cannot.
+    //
+    // ASSERTED IN BOTH DIRECTIONS, because one direction holding is not agreement and the two
+    // failures are not interchangeable. A node reading dirty where the set holds nothing refuses a
+    // release and keeps a bucket pinning the logs; the set holding a mark the node cannot see is a
+    // bucket that stops being dumped.
+    assert!(
+        set_says_dirty_node_does_not.is_empty(),
+        "bucket(s) {set_says_dirty_node_does_not:?} hold a mark in the object-keyed set while the \
+         node reads CLEAN, so `bucket.dirty()` is NOT a safe stand-in for \
+         `dirty_object_count > 0`: a bucket missing from the node view is a bucket that stops \
+         being dumped while it holds undumped writes. Check that every site marking an object \
+         dirty still sets the flag on the routing bucket's node"
+    );
+    assert!(
+        node_says_dirty_set_does_not.is_empty(),
+        "bucket(s) {node_says_dirty_set_does_not:?} read dirty on the node while the set holds \
+         nothing for them. That is the SAFE direction for the dump filter -- an extra bucket is \
+         dumped -- and the UNSAFE one for the two reclaim checks, where `dirty_object_count == 0` \
+         is the arm that counts a bucket as covered and contributing no WAL floor. A bucket \
+         wrongly reading dirty skips that arm, cannot name a claim because its \
+         `first_dirty_wal_sequence` was cleared alongside `dirty = false`, and blocks the whole \
+         reclaim plan. So this clause is what licenses moving the RECLAIM consumers, not just the \
+         dump filter"
+    );
+    // AND IT AGREES WHERE A PAGE WALK CANNOT, which is the case that makes the agreement worth
+    // something: without it the two columns could be agreeing only on page-backed buckets.
+    assert!(
+        !node_carries_what_no_page_does.is_empty(),
+        "every dirty bucket here has a dirty page, so the node flag and the page walk cannot be \
+         told apart on this fixture and the agreement above says nothing about the case that \
+         matters. The fixture's removals are what produce a dirty bucket holding no page"
+    );
+
+    // ---- 4. AND THE PRODUCER IS PINNED TO THE AUTHORITY, which is what makes the decline above
     // ---- DURABLE. Everything before this compares two derivations and would go on passing while
     // ---- someone switched `bucket_storage_summaries` to the losing one; a comment saying "do not"
     // ---- cannot fail. This asserts the producer's own output, bucket for bucket, so the
@@ -617,6 +620,34 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
             produced.get(bucket).copied().unwrap_or(0),
             invisible_buckets.len(),
             by_set.len(),
+        );
+    }
+
+    // ---- 5. AND WHAT THE MANIFEST-VALIDATED GENERATION ACTUALLY IS: an accounting identity, not
+    // ---- a figure that happens to agree. `bucket_storage_summaries` seeds the summary from the
+    // ---- node's own `dirty_generation` and then adds the dirty COUNT onto it, so the value
+    // ---- `bucket_dump_summary_matches_current_generation` compares EXACTLY is a composite of a
+    // ---- monotonic per-mark counter and a live population count. Stated as the identity rather
+    // ---- than as "they differ on these buckets", which a threshold could pass by accident.
+    //
+    // LAST, AND DELIBERATELY BELOW THE PIN. Switching the producer breaks this identity too, so
+    // with this above the pin, the plant that re-attempts the switch stopped here and the pin --
+    // the clause written for exactly that re-attempt -- was never reached.
+    for bucket in &every_bucket {
+        if !produced_summaries.contains_key(bucket) {
+            continue;
+        }
+        let node_gen = by_node.get(bucket).map(|(_, gen)| *gen).unwrap_or(0);
+        let set_count = by_set.get(bucket).copied().unwrap_or(0);
+        let summary_gen = produced_summaries.get(bucket).map(|(_, gen)| *gen).unwrap_or(0);
+        assert_eq!(
+            summary_gen,
+            node_gen.saturating_add(set_count),
+            "bucket {bucket}: the summary's dirty_generation is {summary_gen} where the node holds \
+             {node_gen} and the set holds {set_count} marks, so it is no longer \
+             `node + count`. That sum is what a stored dump manifest is validated against, so this \
+             identity is a durability contract: if the count term has been dropped, every manifest \
+             written before the change stops matching the generation computed after it"
         );
     }
 }
