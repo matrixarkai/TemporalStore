@@ -49,7 +49,7 @@ use std::sync::Arc;
 use crate::engine::hashing::block_routing_bucket;
 use crate::engine::state::{BlockIndex, BlockSlabLiveIndex, BucketNode, ShardState};
 use crate::engine::storage_bucket_internals::{
-    mark_async_dirty_object, refresh_bucket_runtime_flags,
+    mark_object_dirty, refresh_bucket_runtime_flags,
 };
 
 const WHOLE_RANGE_END: u32 = u32::MAX;
@@ -143,7 +143,7 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_pages_it_already_has() {
         "the fixture page must start clean"
     );
 
-    mark_async_dirty_object(&mut shard, "pushed-object", 0, WHOLE_RANGE_END);
+    mark_object_dirty(&mut shard, "pushed-object", 0, WHOLE_RANGE_END);
 
     assert!(
         any_page_dirty(&shard, routing_bucket),
@@ -174,7 +174,7 @@ fn an_unmarked_object_leaves_its_pages_clean() {
     // or it controls for nothing the arm above does.
     let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_page("untouched-object");
 
-    mark_async_dirty_object(&mut shard, "a-different-object", 0, WHOLE_RANGE_END);
+    mark_object_dirty(&mut shard, "a-different-object", 0, WHOLE_RANGE_END);
 
     assert!(
         !any_page_dirty(&shard, routing_bucket),
@@ -221,7 +221,7 @@ fn a_mark_on_a_live_page_nothing_has_filed_is_refused() {
         "and it must hold a bucket, or there would be nothing for the push to miss"
     );
 
-    mark_async_dirty_object(&mut shard, "unbuilt-lookup-object", 0, WHOLE_RANGE_END);
+    mark_object_dirty(&mut shard, "unbuilt-lookup-object", 0, WHOLE_RANGE_END);
 
     assert!(
         !shard.bucket_index.object_block_lookup.is_empty(),

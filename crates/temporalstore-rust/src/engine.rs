@@ -988,47 +988,31 @@ impl TemporalEngine {
                         .as_ref()
                         .map(|info| info.end_routing_bucket)
                         .unwrap_or(u32::MAX);
-                    // Recorded with its routing bucket. The synchronous branch below does not go
-                    // through `mark_async_dirty_object`, so this is the other of the two sites
-                    // that mark an object dirty and the bucket has to be supplied here too.
-                    let routing_bucket = block_routing_bucket(
+                    // ONE MARKING PATH, CALLED ONCE.
+                    //
+                    // This site used to do four things -- compute the routing bucket, fetch the
+                    // shared key handle, insert into the dirty index, push dirtiness onto the
+                    // object's pages -- and then call `mark_object_dirty`, which does all four
+                    // again before doing the bucket-node work only it does. Every object on every
+                    // write paid two routing hashes, two lookup probes, two inserts and two page
+                    // pushes for one marking.
+                    //
+                    // The CALL is what survived, not the block: it alone marks the bucket dirty,
+                    // bumps `dirty_generation` and notes the flags stale, so keeping the block
+                    // instead would have dropped those three silently.
+                    //
+                    // AND THE BRANCH AROUND IT WAS DEAD. It read
+                    // `if config.async_storage { mark(..) } else { mark(..) }` -- the same call in
+                    // both arms. The synchronous branch was evidently meant to differ and never
+                    // did, which is why a synchronous write leaves as much pending as an async one
+                    // (measured: 64 of 64 either way). Writing through is still to be built; this
+                    // removes the branch that suggested it already had been.
+                    mark_object_dirty(
+                        shard,
                         &object_key,
                         start_routing_bucket,
                         end_routing_bucket,
                     );
-                    // ONE COPY OF THE CHARACTERS, SHARED WITH THE PAGE INDEX. The lookup already
-                    // holds an `Arc<str>` for any object that has blocks; the dirty index used to
-                    // allocate its own equal copy for every object it had not seen since the last
-                    // dump. Read the handle out first so the borrow ends before the mutable one.
-                    let shared = shard
-                        .bucket_index
-                        .object_block_lookup
-                        .any_shared_object_key(&object_key);
-                    match shared {
-                        Some(shared) => {
-                            shard.dirty_objects.insert_shared(shared, routing_bucket)
-                        }
-                        None => shard.dirty_objects.insert(&object_key, routing_bucket),
-                    }
-                    // PUSHED, NOT PULLED. The bucket predicate no longer asks a page which object
-                    // it belongs to, so the dirtiness has to reach the pages here, where the shard
-                    // is in scope. Idempotent, so the async branch below marking again is free.
-                    push_object_dirty_onto_its_existing_pages(shard, &object_key);
-                    if config.async_storage {
-                        mark_async_dirty_object(
-                            shard,
-                            &object_key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        );
-                    } else {
-                        mark_async_dirty_object(
-                            shard,
-                            &object_key,
-                            start_routing_bucket,
-                            end_routing_bucket,
-                        );
-                    }
                 }
             }
             // Rebuild the first-index only outside the deferred-reconstruct windows
@@ -7573,7 +7557,7 @@ fn object_manager_stats(
             // cannot exceed the bucket count, so if every bucket is already flagged the union IS
             // the bucket count; and with no dirty objects the loop iterates nothing. The comment
             // below already says the first of those is the normal case during ingest, because
-            // `mark_async_dirty_object` flags an object's routing bucket as it records it.
+            // `mark_object_dirty` flags an object's routing bucket as it records it.
             let bucket_total = shard.bucket_index.bucket_map.len();
             let flagged_dirty = shard
                 .bucket_index
@@ -7590,24 +7574,37 @@ fn object_manager_stats(
                 .iter()
                 .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
                 .collect::<BTreeSet<_>>();
-            // The loop below asks, per dirty object, which buckets hold its blocks -- building a
-            // composite lookup key each time. `dirty_objects` grows with the ingest, and this
-            // runs on the heartbeat timer under the shard read lock, so it was the shard-sized
-            // work that made writes cost more as the store grew: profiling a running ingest
-            // showed `bucket_index_target_buckets_for_object_key` and `push_lookup_part` rising
-            // together with `RwLock::write_contended`.
+            // THE REMAINING BUCKETS ARE FOUND BY THEIR PAGES, NOT BY THE OBJECT SET.
             //
-            // The answer is a set of bucket ids, so it cannot exceed the number of buckets. Once
-            // every bucket is already in it the loop cannot change the result, and during ingest
-            // that is the normal case -- `mark_async_dirty_object` marks an object's routing
-            // bucket dirty as it records the object, so the collect above already has them.
-            // Stopping there is exact, not an approximation.
+            // The collect above has every bucket that is dirty in its own right. What it can miss
+            // is a bucket holding a page of some OTHER bucket's object, and that bucket's pages
+            // carry the answer: `push_object_dirty_onto_its_existing_pages` runs at both sites
+            // that mark an object dirty, so every page of a dirty object has `page.dirty`. The
+            // invariant is pinned elsewhere in these words -- "a mark that does not reach its
+            // pages leaves the bucket reading clean" -- and
+            // `the_page_bit_answers_the_dirty_bucket_question` measures the two methods agreeing
+            // with that case isolated, rather than while every bucket happens to be dirty.
+            //
+            // THIS IS WHY THE OBJECT LOOP IS GONE. Its own comment recorded the cost: it asked,
+            // per dirty object, which buckets hold its blocks, "building a composite lookup key
+            // each time", over a set that "grows with the ingest", on the heartbeat timer under
+            // the shard read lock -- profiling showed `bucket_index_target_buckets_for_object_key`
+            // and `push_lookup_part` rising with `RwLock::write_contended`. Asking each bucket
+            // about its own pages builds no key and allocates nothing.
+            //
+            // The early exit is kept for the same reason it was there: the answer is a set of
+            // bucket ids and cannot exceed the number of buckets, so once every bucket is in it
+            // no further work can change the result.
             if dirty_buckets.len() < bucket_total {
-                for object_key in shard.dirty_objects.iter() {
-                    dirty_buckets
-                        .extend(bucket_index_target_buckets_for_object_key(shard, object_key));
-                    if dirty_buckets.len() >= bucket_total {
-                        break;
+                for (bucket_id, bucket) in shard.bucket_index.bucket_map.iter() {
+                    if dirty_buckets.contains(bucket_id) {
+                        continue;
+                    }
+                    if bucket.block_index.values().any(|page| page.dirty) {
+                        dirty_buckets.insert(*bucket_id);
+                        if dirty_buckets.len() >= bucket_total {
+                            break;
+                        }
                     }
                 }
             }

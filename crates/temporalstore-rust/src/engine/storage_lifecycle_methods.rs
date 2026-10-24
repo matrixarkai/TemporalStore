@@ -798,7 +798,7 @@ impl TemporalEngine {
         //
         // The retain used to sit inside this loop, so every qualifying bucket walked every dirty
         // object and re-hashed its key to recompute a routing bucket -- a bucket the caller
-        // already knew, and one that `mark_async_dirty_object` had computed on the line above the
+        // already knew, and one that `mark_object_dirty` had computed on the line above the
         // insert and thrown away. The work was |dirty objects| x |buckets|, to remove at most
         // |dirty objects| entries: measured at 4 040 000 closure calls to clear 4 000 objects
         // across 1 010 buckets, a 1010x amplification.

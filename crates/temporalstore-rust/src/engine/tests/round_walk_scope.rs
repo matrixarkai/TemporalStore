@@ -348,7 +348,7 @@ fn summarised_under(entry: &crate::engine::storage_bucket_internals::LiveBlockEn
 }
 
 /// Where the dirty set files an object: always the shard's own range, never the address.
-/// This mirrors `mark_async_dirty_object` and the synchronous mark in `engine.rs`.
+/// This mirrors `mark_object_dirty` and the synchronous mark in `engine.rs`.
 fn dirty_set_would_file(object_key: &str, start: u32, end: u32) -> u32 {
     block_routing_bucket(object_key, start, end)
 }

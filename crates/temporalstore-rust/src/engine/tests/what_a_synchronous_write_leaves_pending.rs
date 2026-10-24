@@ -11,7 +11,7 @@
 //! path.
 //!
 //! **One name is enough to doubt that.** The only two sites that mark an object dirty are reached
-//! through `mark_async_dirty_object`. If dirtying is a property of the ASYNC path, then
+//! through `mark_object_dirty`. If dirtying is a property of the ASYNC path, then
 //! `dirty_objects` is the cost of an option they do not offer rather than the cost of our default,
 //! and a synchronous write already does what theirs does.
 //!
@@ -109,7 +109,7 @@ fn what_a_synchronous_write_leaves_pending() {
     println!("    async storage   {async_objects:>13}   {async_buckets:>13}");
     println!();
 
-    println!("  NEITHER PATH WRITES THROUGH. `mark_async_dirty_object` is named for the caller it");
+    println!("  NEITHER PATH WRITES THROUGH. `mark_object_dirty` is named for the caller it");
     println!("  was first written for, not for a condition, so a synchronous write leaves just as");
     println!("  much pending as an async one. Write-through has to be BUILT, not selected.");
     println!();
@@ -131,7 +131,7 @@ fn what_a_synchronous_write_leaves_pending() {
         sync_objects, async_objects,
         "the two paths now differ: synchronous left {sync_objects} pending and async \
          {async_objects}. That would mean dirtying has become conditional after all, which is the \
-         shape `mark_async_dirty_object`'s name has always suggested and has never had"
+         shape `mark_object_dirty`'s name has always suggested and has never had"
     );
 
     // ---- AND THE BATCH IS ONE. Asserted on the BUCKET count rather than inferred from the

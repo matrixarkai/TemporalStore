@@ -4952,7 +4952,7 @@ impl DirtyObjectIndex {
     /// indexes are updated together, so neither can hold a key the other does not.
     pub(super) fn insert(&mut self, object_key: &str, routing_bucket: u32) {
         // Below both entry paths: the engine's write path calls this index directly and also goes
-        // through `mark_async_dirty_object`, so a charge on either wrapper would see one of the
+        // through `mark_object_dirty`, so a charge on either wrapper would see one of the
         // two. The same reason the walk counters in `storage_bucket_internals` moved inward.
         crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::DirtyObjects, || {
             self.insert_inner(object_key, routing_bucket, None)

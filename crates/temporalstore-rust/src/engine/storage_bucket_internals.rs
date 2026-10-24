@@ -1402,7 +1402,19 @@ pub(super) fn collect_live_block_entries(shard: &ShardState) -> Vec<LiveBlockEnt
     }
 }
 
-pub(super) fn mark_async_dirty_object(
+/// Mark one object, and its bucket, dirty.
+///
+/// # IT IS NOT ASYNC-SPECIFIC, WHATEVER ITS OLD NAME SAID
+///
+/// This was `mark_async_dirty_object`, and the name cost a wrong conclusion: reading it, the
+/// synchronous write path looked as though it already wrote through. It does not.
+/// `what_a_synchronous_write_leaves_pending` measures both paths leaving the whole corpus pending,
+/// 64 of 64, and the synchronous site called straight into here.
+///
+/// So the name described the caller it was first written for rather than a condition, and dirtying
+/// is unconditional. Removing the write-back set needs the write path to become write-through,
+/// which is a build and not a setting.
+pub(super) fn mark_object_dirty(
     shard: &mut ShardState,
     object_key: &str,
     start_routing_bucket: u32,
@@ -5389,7 +5401,7 @@ fn upsert_bucket_index_block_inner(
             &block_index,
         );
     // THE HANDLE EXISTS NOW, WHICH IT DID NOT WHEN THIS OBJECT WAS MARKED DIRTY.
-    // `mark_async_dirty_object` asks the lookup for a shared key BEFORE the first page is filed,
+    // `mark_object_dirty` asks the lookup for a shared key BEFORE the first page is filed,
     // so the first write to an object always takes the allocating arm. Adopting here, once the
     // lookup holds the handle, turns that second copy of the characters into a refcount bump.
     shard.dirty_objects.adopt_shared_key(&filed_object_key);

@@ -456,6 +456,7 @@ mod the_payload_is_cached_under_one_key;
 mod what_the_two_cache_keys_are;
 mod what_a_cache_key_costs;
 mod what_a_synchronous_write_leaves_pending;
+mod the_page_bit_answers_the_dirty_bucket_question;
 mod the_best_candidate_is_at_least_the_average;
 mod the_comparison_counterparts_still_exist;
 mod the_reclaim_path_has_one_participant;

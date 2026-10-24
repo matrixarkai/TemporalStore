@@ -32,7 +32,7 @@
 //! THE THREE, AND THEY ARE NOT THREE OF A KIND:
 //!
 //!   * `dirty_generation` -- a per-bucket COUNT, not a log position. WRITTEN by
-//!     `saturating_add(1)` at six sites (`mark_async_dirty_object` and five delete/expire paths)
+//!     `saturating_add(1)` at six sites (`mark_object_dirty` and five delete/expire paths)
 //!     and held at a captured value by a dump; never reset. STORED, as the `dirty_generation`
 //!     key, and carried across `rebuild_bucket_block_ownership` deliberately. READ by
 //!     `bucket_dump_summary_matches_current_generation`, which compares it for EQUALITY against

@@ -110,7 +110,7 @@ fn wal_record_count(engine: &TemporalEngine) -> usize {
 ///
 /// The single-command path stamps both halves of the claim (engine.rs, after the WAL append and
 /// after the index-log delta). The batch path marks the same buckets dirty through the same
-/// `mark_async_dirty_object` and appends to both logs, and stamped neither -- so every bucket it
+/// `mark_object_dirty` and appends to both logs, and stamped neither -- so every bucket it
 /// dirtied reported "no claim recorded", which the reclaim plan reads as unknown and refuses on.
 ///
 /// The single-command arm is the CONTROL: it proves the fixture can produce claims at all, so a

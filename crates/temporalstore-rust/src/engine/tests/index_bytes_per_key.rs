@@ -964,7 +964,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // source, because the size of every saving claimed for dropping a key depends on it.
         assert_eq!(
             dirty_arc_count, dirty_arc_shared,
-            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the same allocation the bucket index holds at {label}, and EVERY ONE OF THEM SHOULD BE. This assertion read `0 == dirty_arc_shared` and pinned the opposite, because `mark_async_dirty_object` asks the lookup for a handle BEFORE the object's first page is filed, so the allocating arm always won and `insert_inner`'s early return never reconsidered. `DirtyObjectIndex::adopt_shared_key`, called once the page IS filed, closes that. A shortfall here means the adoption stopped running and a second copy of every key is back."
+            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the same allocation the bucket index holds at {label}, and EVERY ONE OF THEM SHOULD BE. This assertion read `0 == dirty_arc_shared` and pinned the opposite, because `mark_object_dirty` asks the lookup for a handle BEFORE the object's first page is filed, so the allocating arm always won and `insert_inner`'s early return never reconsidered. `DirtyObjectIndex::adopt_shared_key`, called once the page IS filed, closes that. A shortfall here means the adoption stopped running and a second copy of every key is back."
         );
 
         // THE ONE FIGURE HERE THAT IS ASSERTED RATHER THAN REPORTED.

@@ -42,7 +42,7 @@
 //! the two sets are equal at five points in a write sequence, with no bucket in either one alone,
 //! and the two differences are asserted separately because only one of them loses data. No cost
 //! moves onto the write path because there is nothing new to maintain: mx#1709 already put the
-//! bucket id into the dirty index at `mark_async_dirty_object`.
+//! bucket id into the dirty index at `mark_object_dirty`.
 //!
 //! SO WHAT IS THE DEFECT? THE ROUND'S COST NEVER CONSULTS ANY OF IT. With the dump firing and the
 //! dirty set drained to EMPTY -- no pending work of any kind, nothing to dump, nothing to retire

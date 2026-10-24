@@ -476,11 +476,11 @@ impl TemporalEngine {
                 } else {
                     for object_key in object_keys {
                         object_keys_for_maintenance.push(object_key.clone());
-                        // `mark_async_dirty_object` records the key together with the
+                        // `mark_object_dirty` records the key together with the
                         // routing bucket it computes on the next line. Inserting it here as well
                         // was redundant when the set was flat and is wrong now: this site does
                         // not know the bucket, and a key filed without one belongs to no bucket.
-                        mark_async_dirty_object(
+                        mark_object_dirty(
                             shard,
                             &object_key,
                             start_routing_bucket,
