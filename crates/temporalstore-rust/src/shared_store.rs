@@ -614,16 +614,25 @@ where
         self
     }
 
-    /// Emit the narrow log frame, whose digest is 32 bytes rather than 64 hex characters.
+    /// Choose between the narrowest log frame this build writes and the original wide one.
     ///
-    /// SAFE ONLY ONCE EVERY READER UNDERSTANDS IT. A reader that predates the format verifies the
-    /// hex field unconditionally and so refuses a narrow frame; the refusal is loud, but it is a
-    /// refusal. See [`WAL_FRAME_FORMAT_DEFAULT`].
+    /// `true` tracks [`WAL_FRAME_FORMAT_DEFAULT`] -- "as narrow as this build goes" rather than
+    /// one named format, so a caller asking for narrow frames keeps getting them as the default
+    /// moves. A caller that needs a SPECIFIC format wants [`Self::with_wal_frame_format`].
+    ///
+    /// `false` is the way back, and it is the reason this method is the backstop rather than a
+    /// convenience: it returns the frame as it was before `frame_format` existed, byte for byte,
+    /// with no rebuild. Asserted by
+    /// `a_wide_frame_is_byte_identical_to_one_written_before_the_format_field_existed`.
+    ///
+    /// SAFE ONLY ONCE EVERY READER UNDERSTANDS WHAT IS WRITTEN. A reader that does not know a
+    /// format refuses it -- loudly, and by name, but it refuses. See
+    /// [`WAL_FRAME_FORMAT_DEFAULT`].
     ///
     /// Frames already written are untouched and stay readable: the format travels in the frame.
     pub fn with_narrow_wal_frames(mut self, narrow: bool) -> Self {
         self.wal_frame_format = if narrow {
-            WAL_FRAME_FORMAT_RAW_DIGEST
+            WAL_FRAME_FORMAT_DEFAULT
         } else {
             WAL_FRAME_FORMAT_HEX_DIGEST
         };
@@ -2743,44 +2752,33 @@ const WAL_FRAME_FORMAT_RAW_DIGEST: u32 = 2;
 /// not the byte count.
 const WAL_FRAME_FORMAT_CRC32C: u32 = 3;
 
-/// WHICH FORMAT A WRITER EMITS BY DEFAULT. Now the narrow one.
+/// WHICH FORMAT A WRITER EMITS BY DEFAULT. The narrowest this build can write.
 ///
-/// # THE ORDERING THIS DEFAULT USED TO ENFORCE, AND WHY IT IS DONE
+/// # WHAT THE DEPLOY REQUIREMENT IS
 ///
-/// A reader that predates [`WAL_FRAME_FORMAT_RAW_DIGEST`] verifies tag 5 unconditionally, so a
-/// narrow frame fails its checksum. The failure is LOUD rather than a silent mis-read -- see
-/// `an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it` -- but it is still a failure,
-/// so the two formats could never be deployed in either order: every reader has to understand the
-/// narrow frame BEFORE any writer emits one.
+/// A reader understands the formats its own build knows and REFUSES the rest by name, so a writer
+/// may only emit a format every reader already understands. That is a property of the RELEASE and
+/// not of this constant: the release carrying this default must also carry the decoder arm for it.
+/// It does -- both are in this tree, with no build in between for a peer to be stranded on.
 ///
-/// That ordering was enforced by this constant rather than by a runbook: while it named the wide
-/// format, a build could learn to READ both shapes while still WRITING the shape every older node
-/// could read.
+/// Said the other way round, because the distinction matters: this line does not make the ordering
+/// safe and cannot. It records which format is written. A LATER change of it owes the same check
+/// again, against whatever is deployed at that time, and the thing to examine then is the release
+/// contents rather than this constant, which cannot know them.
 ///
-/// # THE OUTSTANDING CONSTRAINT, STATED PLAINLY
+/// # THE BACKSTOPS, WHICH ARE WHAT MAKE A DEFAULT ACCEPTABLE
 ///
-/// The reading support and this flip are SEPARATE COMMITS BUT NOT SEPARATE RELEASES. At the time
-/// of writing nothing is tagged between them, so a deployment that jumps from a revision before
-/// the reading support straight to one at or after this flip has nodes writing the narrow format
-/// to peers that cannot read it, and those peers REFUSE the frames.
-///
-/// There is no way to close that from inside one node: a writer cannot see which formats the rest
-/// of the cluster understands. What exists instead is:
-///
-/// * the refusal is loud and names the format, so a mis-ordered rollout fails visibly rather than
-///   replaying unverified commands -- see
-///   `an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it`;
-/// * [`SharedStoreReplicator::with_narrow_wal_frames`] turns the narrow format off without a
-///   rebuild, and the wide frame it produces is asserted byte-identical to the pre-format one;
-/// * frames already written are unaffected, because the format travels in the record.
-///
-/// So the requirement on whoever rolls this out is REAL and not yet discharged by anything in the
-/// tree: the reading support must reach every node before a writer here emits a narrow frame. Do
-/// not read the default as evidence that it has.
-///
-/// Nothing about a frame already on disk changes either way: the format is a property of the
-/// record, so a log written before this flip keeps reading exactly as it did.
-const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_RAW_DIGEST;
+/// * A reader that does not know a format REFUSES it and NAMES it, so a mis-ordered rollout fails
+///   visibly instead of replaying unverified commands. Both directions are tested:
+///   `an_old_reader_refuses_a_narrow_frame_rather_than_accepting_it` and
+///   `a_reader_without_the_crc_format_refuses_a_crc_frame_by_name`, each with the frame that
+///   reader DOES accept as its control.
+/// * [`SharedStoreReplicator::with_narrow_wal_frames`] reverts to the original wide frame with no
+///   rebuild, and that frame is asserted BYTE-IDENTICAL to the one written before `frame_format`
+///   existed -- a way back has to produce the old bytes, not merely something acceptable.
+/// * Frames already written are unaffected: the format travels in the record, and every format
+///   this crate has ever written is still decoded. A log spanning all three replays end to end.
+const WAL_FRAME_FORMAT_DEFAULT: u32 = WAL_FRAME_FORMAT_CRC32C;
 
 /// A lowercase hex digest as its own bytes, or `None` when the text is not one.
 ///
@@ -3386,7 +3384,12 @@ mod tests {
     ///   242 B   the sidecar carried a duplicate hex digest and the log's object key
     ///   118 B   both retired: the digest was unread, the key was derivable
     ///    88 B   the log frame's digest carried as 32 bytes instead of 64 hex characters
+    ///    59 B   that digest replaced by a CRC32C, which is what the check is FOR
     /// ```
+    ///
+    /// Three of the four steps were the same term: the log frame's checksum, which began as 66 B
+    /// of hex and is now 5 B. It is no longer the largest term in its leg -- the framing and
+    /// scalars are, at 16 B -- so the next move on this envelope is not another checksum change.
     ///
     /// The figures are fitted by `one_append_amplification_report`, which is the only thing that
     /// can state them: a term measured here is a term of one frame, and the envelope is two
@@ -3621,9 +3624,15 @@ mod tests {
         ///
         /// The frame's envelope over the user's bytes is what is left after the payload: a 4-byte
         /// length prefix, four small scalars, the protobuf wrapper around the payload, the format
-        /// the frame declares, and the digest. The digest is still the largest of them, and it is
-        /// still READ -- what changed is that it is now carried as 32 bytes rather than as 64 hex
-        /// characters.
+        /// the frame declares, and the digest.
+        ///
+        /// # THE DIGEST IS NO LONGER THE LARGEST TERM, AND THAT IS THE RESULT
+        ///
+        /// It was 66 B of this leg when it was 64 hex characters, then 34 as its own 32 bytes, and
+        /// it is 5 as a CRC32C. The framing and scalars have been 16 B throughout. So the leg that
+        /// was "mostly its digest" is now mostly its FRAMING, and the assertion at the end of this
+        /// test says so in that direction -- it is the honest statement of where the remaining
+        /// bytes are, and the first thing anyone attacking this leg next should read.
         ///
         /// # THE TERMS ARE MEASURED, NOT COUNTED
         ///
@@ -3640,23 +3649,49 @@ mod tests {
             let metadata = wal_command_metadata(entry.command.as_ref()).expect("metadata");
             let decoded = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
 
-            // The default is the narrow format, and the terms below are that frame's terms. Said
-            // out loud so a flip of the default cannot quietly re-label them.
+            // The terms below are the DEFAULT frame's terms. Said out loud so a flip of the
+            // default cannot quietly re-label them: every number in this test belongs to the
+            // format named here, and if the default moves the numbers have to move with it.
             assert_eq!(
-                decoded.frame_format, WAL_FRAME_FORMAT_RAW_DIGEST,
-                "this test prices the default frame and the default is no longer the narrow one"
+                decoded.frame_format, WAL_FRAME_FORMAT_CRC32C,
+                "this test prices the default frame, and the default is now format {}, so the \
+                 term figures below are for a different frame than the one being written",
+                decoded.frame_format
             );
 
             // The payload is INSIDE the envelope, not beside it.
             let payload = metadata.byte_size as usize;
             let envelope = frame.len() - payload;
 
-            // CLEAR AND RE-ENCODE: the difference IS the field.
+            // CLEAR AND RE-ENCODE: the difference IS the field. WHICH field holds the checksum
+            // depends on the format the frame declares, so this asks the frame instead of
+            // assuming.
+            //
+            // It assumed once. While the default moved to the CRC format this probe was still
+            // clearing the 32-byte digest field, which that frame does not populate -- so it
+            // reported a checksum term of 0 B and the five real bytes were absorbed into the
+            // residue, which then read 21 instead of 16. The accounting identity still held,
+            // because the terms still summed to the frame; a decomposition can be wrong in every
+            // term and still add up. Hence the non-zero assertion below.
             let digest_term = {
                 let mut without = decoded.clone();
-                without.command_digest = Vec::new();
+                match without.frame_format {
+                    WAL_FRAME_FORMAT_HEX_DIGEST => without.command_sha256 = String::new(),
+                    WAL_FRAME_FORMAT_RAW_DIGEST => without.command_digest = Vec::new(),
+                    WAL_FRAME_FORMAT_CRC32C => without.command_crc32c = 0,
+                    other => panic!(
+                        "this probe does not know which field format {other} keeps its checksum \
+                         in, so it cannot price it"
+                    ),
+                }
                 (frame.len() - 4) - without.encoded_len()
             };
+            assert!(
+                digest_term > 0,
+                "clearing the checksum field changed nothing, so this probe cleared a field this \
+                 frame does not populate. The term it reports is not the checksum's, and the \
+                 bytes are hiding in the residue"
+            );
             let format_term = {
                 let mut without = decoded.clone();
                 without.frame_format = 0;
@@ -3670,12 +3705,12 @@ mod tests {
                 frame.len()
             );
 
-            // 32 raw bytes, a tag and a length byte. Exact: a tolerance here would admit the
-            // regrowth this guard exists to catch.
+            // Four CRC bytes and a tag -- `fixed32`, so no length byte and no varint. Exact: a
+            // tolerance here would admit the regrowth this guard exists to catch.
             assert_eq!(
-                digest_term, 34,
-                "the frame's digest costs {digest_term} B, not 34. It is 32 bytes plus a tag and \
-                 a length; re-price it before changing this number"
+                digest_term, 5,
+                "the frame's digest costs {digest_term} B, not 5. It is four bytes plus a tag; \
+                 re-price it before changing this number"
             );
             assert_eq!(
                 format_term, 2,
@@ -3694,31 +3729,36 @@ mod tests {
             );
 
             // The residue is the 4-byte length prefix, the payload's own tag and length, and four
-            // small scalars. UNCHANGED by the narrowing, which is the point: the digest moved and
-            // nothing else did.
+            // small scalars. UNCHANGED through all three narrowings, which is the point: the
+            // digest moved three times and nothing else moved at all.
             assert_eq!(
                 residue, 16,
                 "the frame's framing and scalars cost {residue} B, not 16. A field was added to \
                  the frame, or one of the scalars widened"
             );
 
-            // AND THE HEADLINE, which still holds after the narrowing: the digest is more of the
-            // frame's envelope than everything else in it put together.
+            // AND THE HEADLINE HAS INVERTED, which is the result of the three narrowings rather
+            // than a problem with them. The digest began as 66 B against 16 B of framing; it is
+            // now 5 B against 16, so the LARGEST term in this leg is the framing and the scalars.
+            //
+            // Asserted in the new direction rather than deleted: it is the statement of where the
+            // bytes now are, and the thing anyone attacking this leg next needs to know. The old
+            // direction is kept as the historical claim in the sentence above it, not as a guard.
             assert!(
-                digest_term > residue + format_term,
-                "the digest is {digest_term} B against {} B of everything else; the claim that \
-                 this leg is mostly its digest no longer holds",
-                residue + format_term
+                residue > digest_term,
+                "the digest is {digest_term} B against {residue} B of framing and scalars. The \
+                 digest is the largest term again, which means a narrowing was undone -- check \
+                 the default format before anything else"
             );
         }
 
-        /// The digest the read path verifies is the FRAME's, there is one of it, and by default it
-        /// is now 32 bytes rather than 64 hex characters.
+        /// The frame carries ONE checksum, the read path verifies it, and by default it is now a
+        /// four-byte CRC32C rather than a digest of any width.
         ///
-        /// Still the same SHA-256 over the same payload: the narrowing retired a transcription,
-        /// not a check. The strength is asserted here by recomputing the digest independently and
-        /// requiring the frame's bytes to equal it, so "the same digest" is evidence rather than a
-        /// claim in a comment.
+        /// What the default frame carries has changed three times, so this test pins all of it on
+        /// the WIRE: the CRC is the right CRC, and neither of the two retired digest spellings is
+        /// anywhere in the bytes. An unused field left populated would cost its bytes just the
+        /// same, so "retired" is asserted as absence rather than as disuse.
         #[test]
         fn the_frame_carries_the_one_digest_the_read_path_verifies() {
             let entry = term_entry(b"a value");
@@ -3729,52 +3769,54 @@ mod tests {
 
             let decoded = SharedStoreWalFrameProto::decode(&frame[4..]).expect("decodes");
             assert_eq!(
-                decoded.frame_format, WAL_FRAME_FORMAT_RAW_DIGEST,
-                "the default frame no longer declares the narrow format"
+                decoded.frame_format, WAL_FRAME_FORMAT_CRC32C,
+                "the default frame declares format {}, not the crc one",
+                decoded.frame_format
             );
 
-            // THE DIGEST IS 32 BYTES, AND IT IS THE RIGHT 32 BYTES. Recomputed here rather than
-            // taken from the encoder, so an encoder that wrote the wrong digest would fail.
-            let expected = sha256_hex(&decoded.command_payload);
-            assert_eq!(expected.len(), 64, "a SHA-256 is 64 hex characters");
+            // THE CRC IS THE RIGHT CRC. Recomputed here rather than taken from the encoder, so an
+            // encoder that wrote the wrong checksum would fail this.
             assert_eq!(
-                decoded.command_digest.len(),
-                32,
-                "the frame's digest is {} bytes, not 32",
-                decoded.command_digest.len()
-            );
-            assert_eq!(
-                hex::encode(&decoded.command_digest),
-                expected,
-                "the frame carries a digest that is not the SHA-256 of its own payload"
+                decoded.command_crc32c,
+                crate::checksum::crc32c(&decoded.command_payload),
+                "the frame carries a checksum that is not the CRC32C of its own payload"
             );
 
-            // AND THE HEX TRANSCRIPTION IS GONE FROM THE WIRE, not merely unused.
+            // AND NEITHER RETIRED SPELLING IS ON THE WIRE. Both are checked, because the frame
+            // has carried each of them in turn and either one left populated would cost its bytes
+            // while nothing read it.
+            let as_hex = sha256_hex(&decoded.command_payload);
+            let as_bytes = digest_text_to_bytes(&as_hex).expect("a sha256 hex is hex");
             assert!(
-                decoded.command_sha256.is_empty(),
-                "the narrow frame still populates the hex field as well, so it is paying for both"
+                decoded.command_sha256.is_empty() && decoded.command_digest.is_empty(),
+                "the crc frame is also populating a digest field, so it is paying for both"
             );
             assert!(
-                !frame
-                    .windows(expected.len())
-                    .any(|window| window == expected.as_bytes()),
+                !frame.windows(as_hex.len()).any(|w| w == as_hex.as_bytes()),
                 "the hex transcription is still on the wire in the default frame"
             );
+            assert!(
+                !frame.windows(as_bytes.len()).any(|w| w == as_bytes.as_slice()),
+                "the 32-byte digest is still on the wire in the default frame"
+            );
 
-            // And the sidecar still has no digest field to disagree with it.
+            // And the sidecar still carries no checksum of its own to disagree with this one, in
+            // any of the three spellings.
             let sidecar =
                 encode_wal_offset_metadata_frame(&offset_metadata(TERM_BLOB_KEY), TERM_BLOB_KEY);
             assert!(
-                !sidecar
-                    .windows(expected.len())
-                    .any(|window| window == expected.as_bytes()),
-                "the sidecar is carrying a copy of the frame's digest again"
+                !sidecar.windows(as_hex.len()).any(|w| w == as_hex.as_bytes()),
+                "the sidecar is carrying a copy of the frame's digest again, as hex"
+            );
+            assert!(
+                !sidecar.windows(as_bytes.len()).any(|w| w == as_bytes.as_slice()),
+                "the sidecar is carrying a copy of the frame's digest again, as raw bytes"
             );
             assert!(
                 !sidecar
-                    .windows(decoded.command_digest.len())
-                    .any(|window| window == decoded.command_digest.as_slice()),
-                "the sidecar is carrying the frame's digest again, now as raw bytes"
+                    .windows(4)
+                    .any(|w| w == decoded.command_crc32c.to_le_bytes()),
+                "the sidecar is carrying a copy of the frame's checksum again, as a crc"
             );
         }
 
@@ -4187,14 +4229,23 @@ mod tests {
                 .expect("encodes");
             let crc = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_CRC32C).expect("encodes");
 
-            // THE CONTROL: that reader still accepts what this build writes BY DEFAULT.
+            // THE CONTROL: that reader accepts the formats it DOES know, so a reader that refused
+            // everything could not pass for one that refuses the right thing. Note that the
+            // default is no longer among them -- which is the point of the property below.
             assert!(
                 reader_before_crc(&raw).is_ok(),
-                "a reader from before the crc format must still accept the default frame, or the \
-                 default is not backward compatible"
+                "a reader from before the crc format must still accept a raw-digest frame, or \
+                 this control is testing a broken reader rather than a format boundary"
             );
 
-            // THE PROPERTY, and the SHAPE of the refusal.
+            // THE PROPERTY: it refuses what this build now writes BY DEFAULT. This is the deploy
+            // requirement in test form -- the release that writes format 3 must be the release
+            // that reads it, because the build before it does not.
+            assert_eq!(
+                WAL_FRAME_FORMAT_DEFAULT, WAL_FRAME_FORMAT_CRC32C,
+                "this test documents the boundary the DEFAULT crosses; if the default is no \
+                 longer the crc format, the sentence above is about the wrong format"
+            );
             let err = reader_before_crc(&crc)
                 .expect_err("a reader without the crc format must refuse a crc frame");
             assert!(
@@ -4282,13 +4333,13 @@ mod tests {
             );
 
             assert_eq!(
-                default_format, WAL_FRAME_FORMAT_RAW_DIGEST,
+                default_format, WAL_FRAME_FORMAT_CRC32C,
                 "a published frame declares format {default_format}, so the flipped default is \
                  not reaching the append path"
             );
             assert_eq!(
-                narrow_format, WAL_FRAME_FORMAT_RAW_DIGEST,
-                "asking for narrow frames did not produce one"
+                narrow_format, WAL_FRAME_FORMAT_CRC32C,
+                "asking for narrow frames did not produce the narrowest this build writes"
             );
             assert_eq!(
                 wide_format, WAL_FRAME_FORMAT_HEX_DIGEST,
@@ -4297,11 +4348,13 @@ mod tests {
             );
 
             // AND THE SAVING IS IN THE BYTES THAT REACHED THE STORE, not only in the encoder.
+            // 66 B of hex digest against 5 B of CRC and 2 B of declared format: 59.
             assert_eq!(default_bytes, narrow_bytes);
             assert_eq!(
                 wide_bytes - narrow_bytes,
-                30,
-                "the published objects differ by {} B, not the 30 B the narrowing saves",
+                59,
+                "the published objects differ by {} B, not the 59 B the two narrowings save \
+                 together",
                 wide_bytes - narrow_bytes
             );
         }

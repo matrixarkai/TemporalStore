@@ -283,13 +283,15 @@ async fn main() {
     // ---- stopped guarding: it would admit the whole of the saving being handed back.
     // ----
     // ---- The bound is loose enough to survive a protobuf varint widening and tight enough that
-    // ---- undoing the narrowing of the log frame's digest -- 32 bytes back to 64 hex characters,
-    // ---- 30 B -- trips it, as does re-adding either term retired from the sidecar.
+    // ---- undoing the narrowing of the log frame's checksum -- a CRC32C back to a 32-byte digest
+    // ---- is 29 B, and back to 64 hex characters is 59 -- trips it, as does re-adding either
+    // ---- term retired from the sidecar.
     assert!(
-        blob_env < 100.0,
-        "the per-append envelope is {blob_env:.1} B, over the 100 B ceiling. Three named terms \
-         were removed or narrowed to get it here -- a duplicate hex digest the read path never \
-         consulted, the log's object key in every frame, and the transcription of the frame's own \
-         digest. Re-price the two legs field by field before raising this bound"
+        blob_env < 70.0,
+        "the per-append envelope is {blob_env:.1} B, over the 70 B ceiling. Four named terms were \
+         removed or narrowed to get it here -- a duplicate hex digest the read path never \
+         consulted, the log's object key in every frame, the transcription of the frame's own \
+         digest, and then that digest replaced by the CRC32C the check was always for. Re-price \
+         the two legs field by field before raising this bound"
     );
 }

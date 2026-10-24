@@ -15,20 +15,26 @@
 //! there are. Each entry still gets its own log frame and its own sidecar frame, so the per-entry
 //! byte cost of a batch of two hundred and fifty-six is the per-entry byte cost of a batch of one.
 //!
-//! Measured, at an 8-byte value: 93.0 B per entry at `N = 1` and 100.2 B at `N = 256`. Flat, and
+//! Measured, at an 8-byte value: 64.0 B per entry at `N = 1` and 70.0 B at `N = 256`. Flat, and
 //! what movement there is goes the WRONG WAY -- see below.
 //!
-//! # IT IS SLIGHTLY WORSE, AND THE TERM HAS A NAME
+//! # IT IS NOT QUITE IDENTICAL EITHER, AND THE DIFFERENCE HAS NO STABLE SIGN
 //!
-//! A batch does not merely fail to save bytes, it costs a few. Every entry's sidecar records
-//! `wal_blob_object_length` as the length AFTER THE WHOLE BATCH, where separate appends each
-//! record the length as it stood at their own append. The batched number is larger, and the start
-//! and end offsets it sits beside grow with the batch too, so their varints widen. Fitted over the
-//! payload sweep the per-entry envelope is 92.7 B on this path against 88.1 B for a single append
-//! -- the same denominator, the same sweep, about 4.6 B dearer.
+//! The two paths write slightly different bytes for the same entries, because they fill the
+//! sidecar's offset-shaped fields with different NUMBERS: a batch records the object length after
+//! the whole batch where separate appends record it as it stood at their own append, and several
+//! of those fields are varints whose width follows the value.
 //!
-//! That is the honest shape of the trade: batching buys appends and barriers and pays for them in
-//! a handful of bytes per entry. It is still worth doing. It is just not an answer to the envelope.
+//! The difference is a fraction of a percent and its SIGN IS NOT A PROPERTY OF BATCHING. Measured
+//! at a 256-entry batch of 8-byte values it was +0.40% when the log frame carried a 32-byte digest
+//! and -0.70% once that digest became a CRC32C. An earlier version of this program asserted the
+//! sign from a single measurement and named the object-length field as the cause; narrowing the
+//! frame flipped it. Several fields move together and this program does not separate them, so the
+//! cause is NOT established here and the assertion is on magnitude rather than direction.
+//!
+//! That is the honest shape of the trade: batching buys appends and barriers, costs or saves a
+//! handful of bytes per entry depending on the frame size, and does nothing whatsoever to the
+//! envelope. It is still worth doing. It is just not an answer to the envelope.
 //!
 //! # WHAT BATCHING DOES AMORTISE, AND WHY THIS DENOMINATOR CANNOT SEE IT
 //!
@@ -46,10 +52,11 @@
 //! the payload is swept at a fixed `N` to fit `per_entry = rate * payload + envelope`. Quoting a
 //! single ratio would hide whichever of the two was moving.
 //!
-//! The fitted line is `1.0010 * payload + 92.7` with a worst residual of 4.8 B, which puts the
-//! per-entry ratio at 1.10x around a 930-byte value and 1.01x around a 10,300-byte one. Below
-//! that the envelope is most of what is written: 6.72x at an 8-byte value, 2.21x at 64 B, 1.17x
-//! at 512 B. Those crossings are properties of the ENVELOPE, so they do not move with `N` either.
+//! The fitted line is `1.0010 * payload + 63.7` with a worst residual of 4.8 B, which puts the
+//! per-entry ratio at 1.10x around a 637-byte value and 1.01x around a 7,100-byte one. Those
+//! crossings are properties of the ENVELOPE, so they do not move with `N` either -- and they move
+//! whenever the envelope does, which is why the program prints them rather than this comment
+//! being the place they are quoted from.
 //!
 //! rust-internal: measures the shared store's own layout, no product behaviour
 
@@ -257,31 +264,34 @@ async fn main() {
             control.extents,
         );
 
-        // ---- THE BYTES MUST NOT FALL WITH N. That is the whole claim, and it is asserted
-        // ---- against the control rather than eyeballed from the table.
+        // ---- THE BYTES MUST NOT FALL WITH N. That is the claim. It is NOT a claim that the two
+        // ---- paths write identical bytes, and it is NOT a claim about which of them is larger.
         // ----
-        // ---- The two paths are not quite byte-identical, and the difference is NAMED rather
-        // ---- than tolerated blindly: a batch records the object length AFTER THE WHOLE BATCH in
-        // ---- every entry's sidecar, where separate appends each record the length as it stood
-        // ---- at their own append. The batched number is the larger one, so its varint can be a
-        // ---- byte wider -- which makes the batched total slightly BIGGER, never smaller.
+        // ---- They do differ a little, because the two paths fill the sidecar's offset-shaped
+        // ---- fields with different NUMBERS -- a batch records the object length after the whole
+        // ---- batch where separate appends record it as it stood at their own append -- and
+        // ---- several of those fields are varints whose width follows the value.
         // ----
-        // ---- So the assertion is on the SIGN. Amortisation would show up as the opposite one.
+        // ---- THE SIGN OF THAT DIFFERENCE IS NOT A PROPERTY OF BATCHING. Measured at a
+        // ---- 256-entry batch it was +0.40% when a frame carried a 32-byte digest and -0.70%
+        // ---- once the digest became a CRC32C. An earlier version of this program asserted the
+        // ---- sign, from one measurement, with the object-length field named as the cause; the
+        // ---- narrowing flipped it and the assertion caught that. The cause is NOT established
+        // ---- here -- several fields move together and this program does not separate them.
+        // ----
+        // ---- What is asserted is that the difference stays SMALL, which is all the claim needs.
+        // ---- Amortisation would not be small: it would divide the batched total by nearly N.
+        let difference = batched.blob_bytes as i64 - control.blob_bytes as i64;
+        let tolerance = 8 * count as i64;
         assert!(
-            batched.blob_bytes >= control.blob_bytes,
-            "a batch of {count} stored {} B where {count} separate appends stored {} B. FEWER \
-             bytes batched would mean the per-entry envelope does amortise after all, which is \
-             the claim this program exists to test -- re-derive it before quoting anything here",
+            difference.abs() <= tolerance,
+            "a batch of {count} stored {} B where {count} separate appends stored {} B, a \
+             difference of {difference} B against a tolerance of {tolerance} B (eight per entry). \
+             That is more than varint widths in the sidecar's offset fields can account for, so \
+             some other term differs between the two paths -- find it before calling the \
+             per-entry cost path-independent",
             batched.blob_bytes,
             control.blob_bytes
-        );
-        let widening = batched.blob_bytes - control.blob_bytes;
-        assert!(
-            widening <= 4 * count as u64,
-            "the batched total is {widening} B over the unbatched one across {count} entries, \
-             which is more than a few varint widenings per sidecar can account for. Something \
-             other than the object-length field differs between the two paths; find it before \
-             calling the per-entry cost path-independent"
         );
 
         // ---- AND THE REGIME MUST HAVE BEEN REACHED. For N > 1 the batch has to have used fewer
@@ -422,18 +432,15 @@ async fn main() {
     println!("  and leaves every frame's own envelope exactly where it was. The envelope moves");
     println!("  only by making a FRAME smaller.");
 
-    // ---- THE CLAIM ABOVE, ASSERTED. Bytes do not fall; extents do.
+    // ---- THE CLAIM ABOVE, ASSERTED. The bytes are within a fraction of a percent either way;
+    // ---- the extents are an order of magnitude apart. Magnitude, not sign -- see the loop above.
     assert!(
-        batched.blob_bytes >= control.blob_bytes,
-        "256 entries cost {} B batched and {} B unbatched -- batching saved bytes, which \
-         contradicts the summary above",
+        (batched.blob_bytes as i64 - control.blob_bytes as i64).abs() <= 8 * 256,
+        "256 entries cost {} B batched and {} B unbatched, a difference of {} B. Either figure \
+         moving that far from the other is not varint widths in the sidecar",
         batched.blob_bytes,
-        control.blob_bytes
-    );
-    assert!(
-        batched.blob_bytes - control.blob_bytes <= 4 * 256,
-        "the batched total is {} B over the unbatched one, more than varint widening explains",
-        batched.blob_bytes - control.blob_bytes
+        control.blob_bytes,
+        batched.blob_bytes as i64 - control.blob_bytes as i64
     );
     assert!(
         control.extents > batched.extents * 8,
