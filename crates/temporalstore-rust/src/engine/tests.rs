@@ -485,3 +485,4 @@ mod the_index_log_retain_floor;
 mod where_an_object_keys_characters_are_written;
 mod what_the_slot_index_is_made_of;
 mod the_key_a_page_is_filed_under_inverts_exactly;
+mod what_the_slot_index_floor_is;
