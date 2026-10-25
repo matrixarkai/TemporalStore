@@ -2,6 +2,12 @@
 name = "temporalstore"
 version = "0.1.0"
 edition = "2021"
+license = "Apache-2.0"
+description = "Rust client SDK for TemporalStore, with an in-process native transport and a TCP proxy transport."
+repository = "https://github.com/matrixarkai/TemporalStore"
+homepage = "https://github.com/matrixarkai/TemporalStore"
+keywords = ["temporalstore", "client", "sdk", "storage", "database"]
+categories = ["api-bindings", "database"]
 
 [lib]
 name = "temporalstore"

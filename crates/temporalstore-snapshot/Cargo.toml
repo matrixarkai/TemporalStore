@@ -3,6 +3,11 @@ name = "temporalstore-snapshot"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+description = "S3-compatible Raft snapshot storage for TemporalStore: object store, manifests, retention, and metrics."
+repository = "https://github.com/matrixarkai/TemporalStore"
+homepage = "https://github.com/matrixarkai/TemporalStore"
+keywords = ["temporalstore", "raft", "snapshot", "s3", "storage"]
+categories = ["database-implementations", "data-structures"]
 
 [dependencies]
 async-trait = "0.1"
