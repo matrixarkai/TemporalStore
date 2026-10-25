@@ -268,6 +268,7 @@ mod restore_large_scale;
 mod promote_precondition;
 mod alloc_class_scale;
 mod evict_scale;
+mod reclaiming_space_is_its_own_pass;
 mod cache_invalidation_cost;
 mod cache_read_cost;
 mod warm_read_decomposition;
