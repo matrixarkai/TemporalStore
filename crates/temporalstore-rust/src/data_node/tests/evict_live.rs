@@ -2483,3 +2483,322 @@ fn the_default_bound_is_far_above_any_fixture_and_reached_at_a_known_scale() {
         projected_at_ceiling / limit as f64 * 100.0,
     );
 }
+
+/// WHAT THE SELECTOR ORDERS BY, on a fixture whose band in use is WIDER than one sampled window.
+///
+/// `the_round_takes_the_coldest_buckets_it_scanned_not_the_first_ones` above puts the band at the
+/// head of the scan order and proves the ranking is recency rather than scan position. It holds
+/// that band deliberately NARROWER than the sampler's minimum scan of `samples * batch_limit`, so
+/// the pass that ranks it has met cold buckets too. This fixture is the other side of that line,
+/// and it is the side a serving shard sits on: a run of buckets in active use that is wider than
+/// one window.
+///
+/// WHAT A SCAN-ORDERED WINDOW DOES HERE. The scan starts at the lowest routing bucket and the
+/// band IS the lowest routing buckets, so every candidate such a window holds has just been read.
+/// A pass that stopped as soon as it held `batch_limit` CANDIDATES ranked exactly that set and
+/// returned the coldest of the buckets being read, while colder buckets sat a few scan steps past
+/// where it stopped. Measured before the stop condition was changed: 16 of 16 victims inside the
+/// band.
+///
+/// WHAT MAKES THIS FAIL RATHER THAN BE VACUOUS, all asserted:
+///   * the band is wider than `samples * batch_limit`, so a size-keyed stop lands inside it;
+///   * the band plus a full batch of cold buckets fits inside
+///     `samples * batch_limit * scan_turns`, so the right answer is reachable within the bound
+///     and this is not a test of the ceiling;
+///   * every key in the band was actually read, after a clock interval, so the band really
+///     is warmer;
+///   * the gate opened and a FULL batch was taken, so the selector had to leave buckets out.
+#[test]
+fn a_band_in_use_wider_than_one_sampled_window_is_still_not_evicted() {
+    const KEYS: usize = 4_000;
+    const BATCH: usize = 16;
+
+    let sampler = crate::engine::evict_sampler_config();
+    let min_scan = sampler.samples * BATCH;
+    let ceiling = min_scan * sampler.scan_turns;
+    // The band: wider than one minimum scan, and narrow enough that a full batch of cold buckets
+    // is still inside the ceiling.
+    let band = min_scan * 2;
+    assert!(
+        band > min_scan && band + BATCH < ceiling,
+        "a band of {band} buckets does not sit between the {min_scan}-bucket minimum scan and the \
+         {ceiling}-bucket ceiling, so this fixture tests one of those rather than the ordering"
+    );
+
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+
+    let mut occupied: Vec<u32> = (0..KEYS)
+        .map(|index| engine.routing_bucket_for_key(1, &key_of(index)))
+        .collect();
+    occupied.sort_unstable();
+    occupied.dedup();
+    assert!(
+        occupied.len() > band + BATCH,
+        "{KEYS} keys occupy only {} buckets, so a {band}-bucket band leaves fewer than {BATCH} \
+         cold buckets for the selector to prefer",
+        occupied.len()
+    );
+    let in_use: std::collections::BTreeSet<u32> = occupied[..band].iter().copied().collect();
+
+    // The clock is milliseconds, so without an interval between them the re-reads below could
+    // stamp the same value the seed writes did and the band would not be warmer than anything.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let mut touched = 0usize;
+    for index in 0..KEYS {
+        let key = key_of(index);
+        if in_use.contains(&engine.routing_bucket_for_key(1, &key)) {
+            let answer = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(answer.status.ok, "warming {key}: {:?}", answer.status);
+            touched += 1;
+        }
+    }
+    assert!(
+        touched >= band,
+        "only {touched} reads landed in the {band}-bucket band, so part of it was never used"
+    );
+
+    let report = engine.apply_storage_eviction(1, 0, BATCH, true, false);
+    assert_eq!(
+        report.skipped_reason, "",
+        "the gate declined at threshold 0, so there is no selection to read: {report:?}"
+    );
+    assert_eq!(
+        report.selected_victims.len(),
+        BATCH,
+        "the round took {} victims against a batch limit of {BATCH}, so it did not have to choose \
+         between the buckets it scanned",
+        report.selected_victims.len()
+    );
+
+    let taken_in_use: Vec<u32> = report
+        .selected_victims
+        .iter()
+        .map(|victim| victim.routing_bucket)
+        .filter(|bucket| in_use.contains(bucket))
+        .collect();
+    assert!(
+        taken_in_use.is_empty(),
+        "{} of {BATCH} victims are buckets read {touched} times just before the round: \
+         {taken_in_use:?}. The band is {band} buckets wide against a {min_scan}-bucket minimum \
+         scan, so the pass stopped inside it and ranked only buckets that were in use",
+        taken_in_use.len()
+    );
+    eprintln!(
+        "  [victim-choice-wide] {KEYS} keys over {} buckets; the {band} lowest-numbered read \
+{touched} times (minimum scan {min_scan}, ceiling {ceiling}), then one round of {BATCH}: victims \
+{:?} -- none in the band",
+        occupied.len(),
+        report
+            .selected_victims
+            .iter()
+            .map(|victim| victim.routing_bucket)
+            .collect::<Vec<_>>(),
+    );
+}
+
+/// NOTHING ACKNOWLEDGED IS LOST BY A ROUND THAT SKIPS A BAND IN USE, in both directions.
+///
+/// The ordering fixture above reads the SELECTION. This one runs the rounds for their effect and
+/// checks the corpus, because a selector change is a change to which buckets get released and a
+/// release is the operation that has to not lose a record.
+///
+/// FIVE CLAUSES, each of which can fail on its own:
+///   1. the rounds acted -- `bucket_index_buckets_released > 0`, which is the releasing arm's own
+///      signal. NOT `dropped_object_count > 0`: that counter is incremented only in the retired
+///      branch that deletes records, so asserting it positive would demand the one arm this store
+///      must never take to relieve memory.
+///   2. and dropped nothing -- `dropped_object_count == 0`.
+///   3. every acknowledged key reads back byte-identical, COLD, with the cache invalidated.
+///   4. and again on a fresh engine over the same directories.
+///   5. a key never written reads ABSENT on the same build at the same moment, so clause 3 is a
+///      store that answers rather than a read path that says yes to everything.
+#[test]
+fn a_round_that_skips_a_band_in_use_keeps_every_acknowledged_record() {
+    const KEYS: usize = 4_000;
+    const BATCH: usize = 16;
+    const ROUNDS: usize = 8;
+    const ABSENT: &str = "evictlive-never-written";
+
+    let sampler = crate::engine::evict_sampler_config();
+    let band = sampler.samples * BATCH * 2;
+
+    let dir = tempdir().unwrap();
+    let (released_total, dropped_total, resident_before, resident_after) = {
+        let runtime = seeded_runtime(dir.path(), KEYS);
+        let engine = runtime.engine();
+
+        let mut occupied: Vec<u32> = (0..KEYS)
+            .map(|index| engine.routing_bucket_for_key(1, &key_of(index)))
+            .collect();
+        occupied.sort_unstable();
+        occupied.dedup();
+        assert!(
+            occupied.len() > band + BATCH,
+            "{KEYS} keys occupy only {} buckets, which is too few for a {band}-bucket band",
+            occupied.len()
+        );
+        let in_use: std::collections::BTreeSet<u32> = occupied[..band].iter().copied().collect();
+        std::thread::sleep(std::time::Duration::from_millis(5));
+        for index in 0..KEYS {
+            let key = key_of(index);
+            if in_use.contains(&engine.routing_bucket_for_key(1, &key)) {
+                let answer = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: key.clone() },
+                });
+                assert!(answer.status.ok, "warming {key}: {:?}", answer.status);
+            }
+        }
+
+        let resident_before = engine.bucket_index_resident_bytes(1);
+        assert!(
+            resident_before > 0,
+            "the fixture left no resident index, so a round has nothing to release"
+        );
+
+        let mut released_total = 0usize;
+        let mut dropped_total = 0usize;
+        for _ in 0..ROUNDS {
+            let report = engine.apply_storage_eviction(1, 0, BATCH, true, false);
+            released_total += report.bucket_index_buckets_released;
+            dropped_total += report.dropped_object_count;
+        }
+        let resident_after = engine.bucket_index_resident_bytes(1);
+
+        // --- 1. THE ROUNDS ACTED. ---
+        assert!(
+            released_total > 0,
+            "{ROUNDS} rounds of {BATCH} over a {resident_before} B index released no bucket, so \
+             nothing below is a statement about eviction"
+        );
+        assert!(
+            resident_after < resident_before,
+            "{released_total} buckets were released and the resident index did not fall \
+             ({resident_before} -> {resident_after})"
+        );
+        // --- 2. AND DROPPED NOTHING. ---
+        assert_eq!(
+            dropped_total, 0,
+            "the rounds deleted {dropped_total} records. Relieving memory releases pages; only \
+             the retired `delete_drop` branch deletes, and this arm does not take it"
+        );
+
+        // --- 3. EVERY KEY READS BACK WHOLE, COLD. ---
+        let _ = engine.cache().invalidate_shard(1);
+        let mut verified = 0usize;
+        let mut wrong: Vec<String> = Vec::new();
+        for index in 0..KEYS {
+            match reads_back_whole(&engine, index) {
+                Ok(()) => verified += 1,
+                Err(problem) => {
+                    if wrong.len() < 64 {
+                        wrong.push(problem);
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {KEYS} acknowledged keys did not read back after {released_total} buckets were \
+             released: first few {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+        assert_eq!(
+            verified, KEYS,
+            "only {verified} of {KEYS} keys were verified, so the empty mismatch list above is a \
+             loop that did not run"
+        );
+
+        // --- 5. THE NEGATIVE CONTROL, same build and same moment. ---
+        let absent = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: ABSENT.to_string(),
+            },
+        });
+        assert!(
+            matches!(absent.response, CommandResponse::Bytes { value: None }),
+            "a key that was never written answered {:?}, so the {verified} reads above are not \
+             evidence that the store knows what it holds",
+            absent.response
+        );
+
+        engine.flush_shard_index(1);
+        (released_total, dropped_total, resident_before, resident_after)
+    };
+
+    // --- 4. AND AGAIN AFTER A RELOAD, on a fresh engine over the same directories. ---
+    let reloaded = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let response = reloaded.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "evict-live".to_string(),
+        shard_uri: "local://evict-live/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: SHIPPED_END_BUCKET,
+        readonly: false,
+        load_version: 2,
+        local_node_id: Some(1),
+    });
+    assert!(
+        response.status.ok,
+        "the shard did not come back after {released_total} buckets were released: {:?}",
+        response.status
+    );
+    let reloaded_resident = reloaded.bucket_index_resident_bytes(1);
+    assert!(
+        reloaded_resident > 0,
+        "the reloaded shard rebuilt no resident index, so its reads do not go through one"
+    );
+    let mut verified = 0usize;
+    let mut wrong: Vec<String> = Vec::new();
+    for index in 0..KEYS {
+        match reads_back_whole(&reloaded, index) {
+            Ok(()) => verified += 1,
+            Err(problem) => {
+                if wrong.len() < 64 {
+                    wrong.push(problem);
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {KEYS} acknowledged keys did not survive a reload taken after {released_total} \
+         buckets were released: first few {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+    assert_eq!(
+        verified, KEYS,
+        "only {verified} of {KEYS} keys were verified after the reload, so the empty mismatch \
+         list above is a loop that did not run"
+    );
+    let absent = reloaded.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet {
+            key: ABSENT.to_string(),
+        },
+    });
+    assert!(
+        matches!(absent.response, CommandResponse::Bytes { value: None }),
+        "after the reload a key that was never written answered {:?}",
+        absent.response
+    );
+    eprintln!(
+        "  [band-correctness] {KEYS} acknowledged keys, a {band}-bucket band in use, \
+{released_total} buckets released, {dropped_total} records dropped, resident index \
+{resident_before} -> {resident_after}; all {KEYS} read back cold and all {KEYS} again after a \
+reload into a {reloaded_resident} B index, with {ABSENT} absent in both"
+    );
+}

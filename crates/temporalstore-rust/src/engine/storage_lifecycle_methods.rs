@@ -1858,6 +1858,10 @@ impl TemporalEngine {
         }
 
         let config = super::evict_sampler_config();
+        // Read BEFORE the guard, because it is a clock and not shard state. The sampler compares
+        // it with the recency stamps `bucket_recency` carries, which are taken from the same
+        // `now_ms()` on the write and read paths, so the two are the same scale by construction.
+        let now = now_ms();
         let mut shards = self.shards.write().expect("shards lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Vec::new();
@@ -1869,7 +1873,11 @@ impl TemporalEngine {
                 buckets: &shard.bucket_index.bucket_map,
                 recency: &shard.bucket_recency,
             };
-            select_victims(&mut sampler, config, batch_limit, source).victims
+            // THE CLOCK IS AN ARGUMENT, not a call inside the sampler. The sampler decides
+            // whether a candidate has been used since the previous pass, which is a comparison
+            // against a stamp this engine produced; passing the stamp in is what lets the
+            // module's own fixtures state a recency history instead of racing a wall clock.
+            select_victims(&mut sampler, config, batch_limit, source, now).victims
         };
         shard.evict_sampler = sampler;
 
