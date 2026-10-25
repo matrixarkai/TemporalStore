@@ -90,7 +90,7 @@ struct Shape {
     upsert: bool,
 }
 
-const SHAPES: [Shape; 8] = [
+const SHAPES: &[Shape] = &[
     Shape { label: "sync  / separate / upsert ", synchronous: true,  batched: false, upsert: true  },
     Shape { label: "sync  / batched  / upsert ", synchronous: true,  batched: true,  upsert: true  },
     Shape { label: "async / separate / upsert ", synchronous: false, batched: false, upsert: true  },
@@ -450,15 +450,12 @@ fn an_upsert_carries_its_page_inside_the_record() {
 #[test]
 fn an_upsert_records_results_that_name_only_an_address() {
     let measured = walk();
-    // Regime: four upsert cells.
+    // The cell count is asserted by `an_upsert_carries_its_page_inside_the_record` and is not
+    // repeated here. Two clauses asserting one fact cannot be planted apart, and the plant that
+    // moves the upsert count moves the removal count with it -- the two are complementary over
+    // one partition, so neither can fail alone.
     let upserts: Vec<&(Shape, Carried)> =
         measured.iter().filter(|(shape, _)| shape.upsert).collect();
-    assert_eq!(
-        upserts.len(),
-        4,
-        "there are four upsert cells, found {}",
-        upserts.len()
-    );
     // What makes the carried page LOAD-BEARING rather than spare. A build whose results all
     // carried their own bytes would satisfy `an_upsert_carries_its_page_inside_the_record` without
     // any page mattering, so that test would stop being about anything.
@@ -502,15 +499,10 @@ fn a_removal_carries_no_page() {
 #[test]
 fn an_operation_or_a_statement_covers_every_record() {
     let measured = walk();
-    // Regime: four removal cells.
+    // The cell count is asserted by `a_removal_carries_no_page` and is not repeated here, for the
+    // reason given there.
     let removals: Vec<&(Shape, Carried)> =
         measured.iter().filter(|(shape, _)| !shape.upsert).collect();
-    assert_eq!(
-        removals.len(),
-        4,
-        "there are four removal cells, found {}",
-        removals.len()
-    );
     // AN ACCOUNTING IDENTITY, not a threshold. With no page to carry, a removal cell is
     // recoverable one of exactly two ways: EVERY result states itself, or EVERY record kept its
     // operation. "At least one result states itself" would be a maximum over one member, and a
