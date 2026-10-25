@@ -47,11 +47,30 @@
 //!     container         38.26 B/object        compressed -- names no field
 //! ```
 //!
-//! SO THE KEY IS NOT THE DOMINANT TERM, and the byte partition says what is: `slot_index` is
-//! **441.02 B/object, 88.19%** of the stream, against `objects` at 59.03 B/object. Two of the three
-//! key instances live inside that 441, and they are 28 of it. A route that replaced the key with a
-//! fixed-width stand-in would move tens of bytes per object out of five hundred; it cannot reach a
-//! per-entry figure in the tens, because the bytes are not in the key.
+//! AND THE ROUTING RANGE DECIDES THE SHARE, SO BOTH ARE MEASURED. The table above is the range
+//! `load_shard` leaves behind, `0..u32::MAX`, on which buckets came out EQUAL to objects at every
+//! size -- so every per-bucket cost divided by one object. On the shipped `0..1023`, where 7,999
+//! objects share 1,024 buckets at 7.81 per bucket, the bucket terms amortise and the same 42 B is a
+//! share of a smaller total:
+//!
+//! ```text
+//!     range          json_stream       msgpack_stream     key share (json / msgpack)
+//!     0..u32::MAX    500.35 B/object   350.09 B/object      8.39%  /  12.00%
+//!     0..1023        274.75 B/object   190.82 B/object     15.29%  /  22.01%
+//! ```
+//!
+//! The COUNT is three on both ranges; only the total it is a share of moves. `objects` does not
+//! amortise at all -- 59.03 B/object on either -- while `slot_index` falls 441.02 -> 226.35, and
+//! that fall is the whole of the difference. Quoting either range without naming it is how this
+//! figure would travel wrong.
+//!
+//! SO THE KEY IS NOT THE DOMINANT TERM ON EITHER RANGE, though it is twice the share on the one a
+//! deployment runs. The byte partition says what the dominant term is: `slot_index` is **88.19%** of
+//! the stream unbounded and **79.30%** on the shipped range, against `objects` at 11.80% and 20.68%.
+//! Two of the three key instances live inside that `slot_index` and are 28 B of its 226 to 441. A
+//! route that replaced the key with a fixed-width stand-in would move tens of bytes per object out
+//! of two to five hundred; it cannot reach a per-entry figure in the tens, because the bytes are not
+//! in the key.
 //!
 //! AND THE DUPLICATION IS ALREADY FREE WHERE IT IS PAID. One key byte costs 3.000 B of msgpack
 //! payload -- the three copies, exactly -- and **0.651 B of shipped container** with keys that share
@@ -137,6 +156,17 @@ const WIDTHS: [usize; 5] = [32, 40, 48, 56, 64];
 /// The store sizes the per-object cost is swept over. A per-key figure taken at one point over a
 /// hash table is a sawtooth, so the slope is fitted over a range and the range is published with it.
 const SIZES: [usize; 3] = [500, 2_000, 8_000];
+/// The shipped routing range's end bucket -- the default an operator is told to set.
+///
+/// WHY THIS IS A SEPARATE ARM AND NOT A DIFFERENT CONSTANT. `load_shard` leaves the range at
+/// `0..u32::MAX`, on which a key's routing bucket is effectively unique: the store sweep measures
+/// buckets EQUAL to objects at every size, so every per-bucket cost divides by one object. That is
+/// the regime the published per-object figures were taken in, which is why this module reproduces
+/// them there -- and it is NOT the regime a meta-server-managed shard runs on. On `0..1023` the
+/// bucket-level terms amortise over the objects sharing a bucket, so the same key characters are a
+/// LARGER share of a SMALLER total. Quoting either range without naming it is how this figure would
+/// travel wrong, so both are measured and both are named.
+const SHIPPED_END_BUCKET: u32 = 1023;
 /// The key width the published per-key index figures were taken at: `"made-of-{item:06}"`.
 const PUBLISHED_WIDTH: usize = 14;
 /// The byte a [`KeyShape::Padded`] key's run is made of.
@@ -305,6 +335,16 @@ struct Reading {
 /// The withheld ordinal is skipped here, which is the one place the negative control is created --
 /// so the control is a property of the fixture rather than of the matcher.
 fn reading_at(keys: usize, width: usize, shape: KeyShape) -> Reading {
+    reading_on(keys, width, shape, None)
+}
+
+/// As above, on a named routing range. `None` is the range `load_shard` leaves behind.
+fn reading_on(
+    keys: usize,
+    width: usize,
+    shape: KeyShape,
+    end_routing_bucket: Option<u32>,
+) -> Reading {
     assert!(
         WITHHELD_ORDINAL < keys,
         "a {keys}-key corpus does not reach the withheld ordinal {WITHHELD_ORDINAL}, so this \
@@ -317,7 +357,26 @@ fn reading_at(keys: usize, width: usize, shape: KeyShape) -> Reading {
         dir.path().join("pages"),
         dir.path().join("indexes"),
     );
-    engine.load_shard(SHARD);
+    match end_routing_bucket {
+        None => engine.load_shard(SHARD),
+        Some(end) => {
+            let response = engine.load_shard_with(crate::control::LoadShardRequest {
+                shard_id: SHARD,
+                table_name: "where-an-object-keys-characters-are-written".to_string(),
+                shard_uri: "local://where-an-object-keys-characters-are-written/41".to_string(),
+                start_routing_bucket: 0,
+                end_routing_bucket: end,
+                readonly: false,
+                load_version: 1,
+                local_node_id: Some(1),
+            });
+            assert!(
+                response.status.ok,
+                "[CLAUSE seed-landed] the fixture could not load shard {SHARD} on 0..{end}: {:?}",
+                response.status
+            );
+        }
+    }
 
     let mut written = 0usize;
     for ordinal in 0..keys {
@@ -997,6 +1056,168 @@ fn the_per_object_index_cost_and_the_keys_share_of_it() {
     println!(
         "  {} top-level part(s) partition {} B exactly; the rows below are those holding a key \
          instance or more than 64 B",
+        parts.len(),
+        large.json.len()
+    );
+    println!(
+        "  {:<34} {:>14} {:>12} {:>12} {:>14}",
+        "part", "bytes", "B/object", "% stream", "key instances"
+    );
+    for (name, bytes, found) in parts.iter() {
+        if *bytes <= 64 && *found == 0 {
+            continue;
+        }
+        println!(
+            "  {name:<34} {bytes:>14} {:>12.2} {:>11.2}% {found:>14}",
+            *bytes as f64 / large.keys as f64,
+            100.0 * *bytes as f64 / large.json.len() as f64
+        );
+    }
+    println!();
+}
+
+
+// =================================================================================================
+
+/// THE SAME QUESTION ON THE SHIPPED ROUTING RANGE, WHERE THE BUCKET TERMS AMORTISE.
+///
+/// One conclusion: the key's share of the per-object cost on `0..1023`, beside the same share on the
+/// range `load_shard` leaves behind -- because the two differ by enough that a figure quoted without
+/// its range is not a figure.
+///
+/// THE REGIME IS ASSERTED, NOT ASSUMED. An arm that exists to measure amortisation and silently
+/// fails to produce any is a probe that never entered the regime it is arguing about, and its number
+/// would read as a result. So the first clause here refuses a fixture in which no bucket holds more
+/// than one object.
+#[test]
+fn the_keys_share_of_the_per_object_cost_on_the_shipped_routing_range() {
+    let shape = KeyShape::Padded;
+    let readings: Vec<Reading> = SIZES
+        .into_iter()
+        .map(|keys| reading_on(keys, PUBLISHED_WIDTH, shape, Some(SHIPPED_END_BUCKET)))
+        .collect();
+
+    println!();
+    println!(
+        "================ THE STORE SWEEP ON 0..{SHIPPED_END_BUCKET}, {PUBLISHED_WIDTH}-BYTE \
+         {} KEYS ================",
+        shape.label()
+    );
+    println!(
+        "  {:>8} {:>10} {:>12} {:>14} {:>16} {:>14} {:>11}",
+        "objects", "buckets", "obj/bucket", "json_stream", "msgpack_stream", "container",
+        "instances"
+    );
+    let mut counts: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
+    for reading in readings.iter() {
+        let copies = reading.copies();
+        counts.entry(copies).or_default().push(reading.keys);
+        println!(
+            "  {:>8} {:>10} {:>12.2} {:>14} {:>16} {:>14} {:>11}",
+            reading.keys,
+            reading.buckets,
+            reading.keys as f64 / reading.buckets as f64,
+            reading.json.len(),
+            reading.msgpack.len(),
+            reading.container,
+            copies
+        );
+    }
+
+    // ---- THE REGIME CLAUSE FIRST: this arm exists for amortisation, so it must have some ----
+    let large = &readings[readings.len() - 1];
+    assert!(
+        large.buckets < large.keys,
+        "[CLAUSE amortised-regime] the shipped-range fixture put {} object(s) in {} bucket(s), so \
+         no bucket holds more than one and this arm is measuring the same regime as the unbounded \
+         one -- the amortisation it exists to price never happened",
+        large.keys,
+        large.buckets
+    );
+    assert_eq!(
+        counts.len(),
+        1,
+        "[CLAUSE size-count-stable] the per-object instance count moves with the store size \
+         ({counts:?}) on the shipped range, so it is not a per-object property here either"
+    );
+    let copies = *counts.keys().next().expect("one count");
+
+    let small = &readings[0];
+    let span = (large.keys - small.keys) as f64;
+    let fit = |small_bytes: usize, large_bytes: usize| -> (f64, f64) {
+        let slope = (large_bytes as f64 - small_bytes as f64) / span;
+        (slope, small_bytes as f64 - slope * small.keys as f64)
+    };
+    let (json_slope, json_constant) = fit(small.json.len(), large.json.len());
+    let (msgpack_slope, msgpack_constant) = fit(small.msgpack.len(), large.msgpack.len());
+    let (container_slope, container_constant) = fit(small.container, large.container);
+
+    println!();
+    println!("================ THE SLOPE AND THE CONSTANT ON THE SHIPPED RANGE ================");
+    println!(
+        "  json_stream      slope={json_slope:>8.2} B/object  constant={json_constant:>10.0} B"
+    );
+    println!(
+        "  msgpack_stream   slope={msgpack_slope:>8.2} B/object  \
+         constant={msgpack_constant:>10.0} B"
+    );
+    println!(
+        "  container        slope={container_slope:>8.2} B/object  \
+         constant={container_constant:>10.0} B   (COMPRESSED -- names no field)"
+    );
+    assert!(
+        json_slope > 0.0 && msgpack_slope > 0.0,
+        "[CLAUSE slope-positive] a content total that does not grow with the store contradicts \
+         the per-object cost this arm decomposes: json {json_slope:.2}, msgpack {msgpack_slope:.2}"
+    );
+
+    let key_bytes = (copies * PUBLISHED_WIDTH) as f64;
+    println!();
+    println!("================ THE KEY'S SHARE, BY RANGE ================");
+    println!(
+        "  {copies} instance(s) x {PUBLISHED_WIDTH} B = {key_bytes:.0} B/object of key characters, \
+         on either range -- the COUNT does not depend on the range, only the TOTAL it is a share of"
+    );
+    println!(
+        "  on 0..{SHIPPED_END_BUCKET}: json_stream {json_slope:.2} B/object = {:.2}%, \
+         msgpack_stream {msgpack_slope:.2} B/object = {:.2}%",
+        100.0 * key_bytes / json_slope,
+        100.0 * key_bytes / msgpack_slope
+    );
+    println!(
+        "  the unbounded range is measured by \
+         `the_per_object_index_cost_and_the_keys_share_of_it`; read the two together or neither."
+    );
+
+    // ---- AND THE BYTE PARTITION, SO THE SMALLER TOTAL'S TERMS ARE NAMED TOO ----
+    let object = large.object();
+    let entry_bytes = |name: &str, value: &serde_json::Value| -> usize {
+        serde_json::to_vec(name).expect("a name serializes").len()
+            + 1
+            + serde_json::to_vec(value).expect("a value serializes").len()
+    };
+    let mut parts: Vec<(String, usize, usize)> = object
+        .iter()
+        .map(|(name, value)| (name.clone(), entry_bytes(name, value), large.instances_in(value)))
+        .collect();
+    let named: usize = parts.iter().map(|(_, bytes, _)| *bytes).sum();
+    let punctuation = 2 + object.len().saturating_sub(1);
+    assert_eq!(
+        large.json.len(),
+        named + punctuation,
+        "[CLAUSE part-sum] the per-part byte partition sums to {named} + {punctuation} \
+         punctuation against a {}-byte stream on the shipped range",
+        large.json.len()
+    );
+    parts.sort_by(|left, right| right.1.cmp(&left.1));
+    println!();
+    println!(
+        "================ WHERE THE BYTES ARE AT {} OBJECTS ON 0..{SHIPPED_END_BUCKET} \
+         ================",
+        large.keys
+    );
+    println!(
+        "  {} top-level part(s) partition {} B exactly",
         parts.len(),
         large.json.len()
     );
