@@ -50,6 +50,23 @@ fn unified_corpus_proxy_contract() {
         .expect("cases must be an array");
     assert!(!cases.is_empty(), "unified corpus must have cases");
 
+    // `coverage.required_case_names` is the corpus's own declaration of which cases
+    // must exist. A declared case is allowed to carry no steps: the corpus ships one
+    // such case and the engine-side runner executes it as a no-op. An UNDECLARED
+    // step-less case is still a mistake, so the clause narrows rather than goes away.
+    let declared_cases: BTreeSet<String> = corpus
+        .get("coverage")
+        .and_then(|coverage| coverage.get("required_case_names"))
+        .and_then(Value::as_array)
+        .map(|names| {
+            names
+                .iter()
+                .filter_map(Value::as_str)
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default();
+
     let mut case_names = BTreeSet::new();
     let mut command_kinds = BTreeSet::new();
     let mut context_case_count = 0usize;
@@ -69,7 +86,10 @@ fn unified_corpus_proxy_contract() {
             .get("steps")
             .and_then(Value::as_array)
             .unwrap_or_else(|| panic!("{case_name} steps must be an array"));
-        assert!(!steps.is_empty(), "{case_name} must have steps");
+        assert!(
+            !steps.is_empty() || declared_cases.contains(case_name),
+            "{case_name} has no steps and is not declared in coverage.required_case_names"
+        );
         let mut has_context = false;
         for step in steps {
             let command = step.get("command").expect("step needs command");
@@ -204,10 +224,21 @@ fn validate_context_command(case_name: &str, kind: &str, command: &Value) {
                 "{case_name}:{kind} needs record or node"
             );
         }
-        "context_upsert_child_ref" | "context_upsert_entity" => {
+        "context_upsert_child_ref" => {
             assert!(
-                command.get("record").and_then(Value::as_object).is_some(),
-                "{case_name}:{kind} needs record"
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command
+                        .get("child_ref")
+                        .and_then(Value::as_object)
+                        .is_some(),
+                "{case_name}:{kind} needs record or child_ref"
+            );
+        }
+        "context_upsert_entity" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command.get("entity").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record or entity"
             );
         }
         "context_write_event" => {
@@ -227,12 +258,18 @@ fn validate_context_command(case_name: &str, kind: &str, command: &Value) {
                 "{case_name}:{kind} needs record or index_ref"
             );
         }
+        // This command carries five scalars and no nested object: see
+        // `TemporalStoreTable::context_mark_summary_dirty`, whose arguments are
+        // exactly these. Asserting each of them by name is what makes this arm a
+        // check; an earlier version demanded a `record` or `marker` object that the
+        // command has never had, and nothing noticed because this crate did not
+        // compile.
         "context_mark_summary_dirty" => {
-            assert!(
-                command.get("record").and_then(Value::as_object).is_some()
-                    || command.get("marker").and_then(Value::as_object).is_some(),
-                "{case_name}:{kind} needs record or marker"
-            );
+            int_field(command, "tenant_hash");
+            int_field(command, "node_hash");
+            int_field(command, "event_time_ms");
+            int_field(command, "reason");
+            int_field(command, "propagate_depth");
         }
         "context_write_pack_audit" => {
             assert!(
@@ -241,7 +278,17 @@ fn validate_context_command(case_name: &str, kind: &str, command: &Value) {
                 "{case_name}:{kind} needs record or audit"
             );
         }
-        "context_upsert_summary" | "context_write_compression" => {
+        "context_upsert_summary" => {
+            assert!(
+                command.get("record").and_then(Value::as_object).is_some()
+                    || command.get("summary").and_then(Value::as_object).is_some(),
+                "{case_name}:{kind} needs record or summary"
+            );
+        }
+        // Kept record-only on purpose: the corpus's compression steps carry a
+        // `record`, so widening this with the arm above would have loosened a
+        // clause that was already correct.
+        "context_write_compression" => {
             assert!(
                 command.get("record").and_then(Value::as_object).is_some(),
                 "{case_name}:{kind} needs record"

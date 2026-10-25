@@ -13,6 +13,7 @@ on:
     # doc/tool/website-only commits.
     paths:
       - 'crates/**'
+      - 'sdk/rust/**'
       - 'Cargo.toml'
       - 'Cargo.lock'
       - '.github/workflows/rust-ci.yml'
@@ -133,3 +134,69 @@ jobs:
       - name: cargo test (matrixark_rust_proxy bin, single-threaded, release)
         timeout-minutes: 20
         run: cargo test --release -p temporalstore-rust --bin matrixark_rust_proxy -- --test-threads=1
+
+  # The published client SDK is `exclude`d from the root workspace and has its own
+  # lock file, so every `-p temporalstore-rust` command above is structurally blind
+  # to it. It sat un-compilable on main for months because of exactly that: nothing
+  # here built it. This job does, and it is cheap -- serde and serde_json only, no
+  # RocksDB, no bindgen, so it runs on push as well.
+  sdk-rust:
+    name: cargo build / test / package (client SDK)
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: sdk/rust/temporalstore
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
+
+      - name: Cache cargo registry
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+          key: cargo-sdk-${{ runner.os }}-${{ hashFiles('sdk/rust/temporalstore/Cargo.lock') }}
+          restore-keys: cargo-sdk-${{ runner.os }}-
+
+      # Default features. This is the command a downloader runs, and the one that
+      # failed on main with a page of undefined `temporalstore_*` symbols.
+      - name: cargo build (default features)
+        run: cargo build --locked
+
+      - name: cargo test (default features)
+        run: cargo test --locked
+
+      - name: cargo build (no default features)
+        run: cargo build --locked --no-default-features
+
+      # The `direct` feature binds a native C ABI this repository does not build.
+      # It must fail, and it must fail by SAYING so in build.rs rather than by
+      # emitting undefined symbols at link time -- otherwise that message is a
+      # value nothing reads. Assert both the failure and the sentence.
+      - name: cargo build --features direct fails with an actionable message
+        run: |
+          set -o pipefail
+          if cargo build --locked --no-default-features --features direct > direct.log 2>&1; then
+            echo "FAIL: --features direct built, but no native library was supplied"
+            exit 1
+          fi
+          grep -q 'TEMPORALSTORE_LIB_DIR' direct.log || {
+            echo "FAIL: --features direct failed without naming TEMPORALSTORE_LIB_DIR"
+            sed -n '1,40p' direct.log
+            exit 1
+          }
+          grep -q 'undefined symbol' direct.log && {
+            echo "FAIL: --features direct still reaches the linker"
+            exit 1
+          }
+          echo "OK: build.rs refused --features direct with the documented message"
+          rm -f direct.log
+
+      # Builds the crate from its own packaged tarball, exactly as someone who
+      # downloads it would. This is the same verification `cargo publish
+      # --dry-run` performs, without needing a registry token.
+      - name: cargo package (verify the published tarball builds)
+        run: cargo package --locked

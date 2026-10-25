@@ -8,6 +8,11 @@ repository = "https://github.com/matrixarkai/TemporalStore"
 homepage = "https://github.com/matrixarkai/TemporalStore"
 keywords = ["temporalstore", "client", "sdk", "storage", "database"]
 categories = ["api-bindings", "database"]
+# `src/bin/matrixark_rust_proxy.rs` include!s `matrixark_rust_proxy_impl.rs`.
+# Auto-discovery would also compile that implementation file as a bin target of
+# its own, with no `required-features`, so it would be built in every feature
+# combination -- including ones where the items it uses are configured out.
+autobins = false
 
 [lib]
 name = "temporalstore"
@@ -15,7 +20,7 @@ path = "src/lib.rs"
 crate-type = ["rlib", "cdylib"]
 
 [features]
-default = ["direct"]
+default = ["proxy"]
 direct = []
 proxy = []
 
