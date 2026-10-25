@@ -263,6 +263,7 @@ mod model_number_agreement;
 mod model_slot_is_a_position;
 mod dump_scale;
 mod dump_release_scale;
+mod index_write_amplification;
 mod restore_scale;
 mod restore_large_scale;
 mod promote_precondition;
