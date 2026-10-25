@@ -706,7 +706,16 @@ impl DataNodeRuntime {
                         options.eviction_memory_pressure_threshold,
                         budget,
                         options.eviction_dump_before_evict,
-                        options.eviction_delete_drop,
+                        // NEVER, AND THERE IS NO LONGER A SETTING THAT COULD MAKE IT TRUE. This
+                        // took `options.eviction_delete_drop`, and `delete_drop` calls
+                        // `delete_record` on every live object in its victim buckets and then
+                        // writes a `CommonDelete` tombstone per key -- so it does not drop a
+                        // resident copy, it removes the model-map entry that is the only thing
+                        // pointing at the payload block, and makes the removal survive replay.
+                        // Measured on 600 acknowledged keys: 18 deleted, 18 missing cold, still
+                        // missing after a reload. Relieving memory pressure must never destroy the
+                        // only reachable copy of live data. The literal is the route's absence.
+                        false,
                     )
                 }
             };

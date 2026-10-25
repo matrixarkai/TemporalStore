@@ -12,3 +12,4 @@ mod part2;
 mod part3;
 mod exported_storage_terms;
 mod evict_live;
+mod evict_dump_drop;

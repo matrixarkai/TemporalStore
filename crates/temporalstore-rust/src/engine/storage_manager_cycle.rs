@@ -609,12 +609,11 @@ impl TemporalEngine {
             Some(if request.dry_run {
                 StorageEvictionReport {
                     shard_id: request.shard_id,
-                    mode: if request.eviction_delete_drop {
-                        "delete_drop"
-                    } else {
-                        "evict_cache"
-                    }
-                    .to_string(),
+                    // ONE MODE, because there is one arm. The dry run used to echo the request's
+                    // flag and name `delete_drop`, which is now a mode this stage cannot reach --
+                    // a dry run that predicts an arm the real round will not take is worse than no
+                    // prediction.
+                    mode: "evict_cache".to_string(),
                     pressure_before: pressure_signals
                         .memory_cache_pressure_score
                         .saturating_add(pressure_signals.disk_cache_bytes),
@@ -633,7 +632,13 @@ impl TemporalEngine {
                     request.eviction_memory_pressure_threshold,
                     request.eviction_batch_limit,
                     request.eviction_dump_before_evict,
-                    request.eviction_delete_drop,
+                    // NEVER, and the request no longer carries a field that could make it true --
+                    // the same reading as the periodic loop's (`data_node/runtime_storage.rs`).
+                    // `delete_drop` deletes the model-map entry that is the only thing pointing at
+                    // a record's payload block, and writes a tombstone so the deletion survives
+                    // replay. No memory-pressure stage may reach it. The literal is the route's
+                    // absence.
+                    false,
                 )
             })
         } else if request.index_resident_limit_bytes > 0 && !request.dry_run {

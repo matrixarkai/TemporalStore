@@ -3370,8 +3370,10 @@ pub struct StorageManagerCycleRequest {
     /// a deployment sizing this picks the resident index it is willing to hold per shard.
     #[serde(default)]
     pub index_resident_limit_bytes: u64,
-    #[serde(default)]
-    pub eviction_delete_drop: bool,
+    // `eviction_delete_drop` WAS HERE AND IS RETIRED. A stored request that still carries it parses
+    // and is ignored. The arm it selected deleted acknowledged records to reclaim memory; see the
+    // retirement note on `StorageManagerOptions` for the measurement, and
+    // `data_node::tests::evict_dump_drop` for both halves of it.
     #[serde(default)]
     pub max_expire_hot_buckets_per_round: usize,
     #[serde(default)]
@@ -3523,7 +3525,6 @@ impl Default for StorageManagerCycleRequest {
             eviction_memory_pressure_threshold: default_storage_manager_eviction_threshold(),
             eviction_batch_limit: DEFAULT_EVICTION_BATCH_LIMIT,
             eviction_dump_before_evict: false,
-            eviction_delete_drop: false,
             max_expire_hot_buckets_per_round: DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND,
             max_expire_cold_buckets_per_round: DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND,
             expire_hot_cursor: None,

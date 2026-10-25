@@ -5980,8 +5980,8 @@ fn what_a_block_gc_round_walks() {
 ///   - selection: `evict_sampler` lives on `ShardState`, so the sampler's cursor and pool persist
 ///     across calls. That is the same persistent-iterator shape their `PolicyLru` uses.
 ///
-/// The ceiling WAS the MODE, and it has moved. With `eviction_delete_drop` false -- the shipped
-/// default, mode `evict_cache` -- a victim used to be handled by
+/// The ceiling WAS the MODE, and it has moved. In mode `evict_cache` -- which is the only mode a
+/// memory-pressure round takes -- a victim used to be handled by
 /// `cache.invalidate_slot(shard_id, routing_bucket)` and nothing else, so eviction could free
 /// exactly what was CACHED. Once the cached pages of the eligible buckets were gone another batch
 /// freed nothing, `cooldown` was set, and the loop correctly stopped -- below the cached set, with

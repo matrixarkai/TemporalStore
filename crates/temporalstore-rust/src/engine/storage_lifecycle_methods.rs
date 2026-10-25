@@ -2207,6 +2207,31 @@ impl TemporalEngine {
             }
         }
         let mut dropped_object_count = 0usize;
+        // NO MEMORY-PRESSURE STAGE REACHES THIS BRANCH ANY MORE, and that is a property of the
+        // callers rather than of a default. Both stage entry points -- the periodic loop
+        // (`data_node/runtime_storage.rs`) and the on-demand cycle (`storage_manager_cycle.rs`) --
+        // now pass `delete_drop` as a literal `false`, and the `eviction_delete_drop` option that
+        // used to be threaded through is retired from both the options and the cycle request.
+        //
+        // WHY, in one sentence: what follows is a LOGICAL DELETE, not the drop of a resident copy.
+        // It removes the model-map entry that is the only thing pointing at a record's payload
+        // block, and then writes a `CommonDelete` tombstone per key and anchors
+        // `applied_wal_sequence` past them so replay agrees. Measured on 600 acknowledged keys with
+        // the dump on -- this arm's most favourable setting -- 18 records were deleted, those keys
+        // read MISSING cold, and they were still missing after a reload on a fresh engine over the
+        // same directories.
+        //
+        // AND IT BOUGHT NOTHING ON THE GATE'S OWN QUANTITY. `pressure_before` and `pressure_after`
+        // here are both `bucket_index_resident_bytes`, and on one matched corpus the releasing round
+        // and this one each took it from 70,672 to 70,080 B -- the same 592 B. Whatever else this
+        // branch frees is invisible to the signal that would have invoked it, so it could not even
+        // close the gate it was reached through. `data_node::tests::evict_dump_drop` holds both
+        // measurements and the guard that fails if a route is wired back.
+        //
+        // LEFT STANDING, NOT DELETED, because it is a logical-delete primitive with its own
+        // tombstone and index-checkpoint discipline and its own fixtures, and a caller that wants a
+        // deletion should keep getting one. What it must never again be is the actuator for memory
+        // pressure.
         if delete_drop && !victims.is_empty() {
             let victim_buckets = victims
                 .iter()

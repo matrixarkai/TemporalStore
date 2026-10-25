@@ -19662,7 +19662,7 @@ fn a_delete_against_a_released_bucket_leaves_its_bucket_mates() {
 /// Eviction releases the index it used to leave resident.
 ///
 /// This is the rewrite of the characterization that described the ceiling: with
-/// `eviction_delete_drop` false a victim was handled by `invalidate_slot` and nothing else, so
+/// the deleting arm not taken a victim was handled by `invalidate_slot` and nothing else, so
 /// `cache_entries_removed` could move and the bucket index never could. The stage now dumps its
 /// dirty victims, clears them, and releases their block lists -- so the assertion is the opposite
 /// one, and it is about the INDEX rather than the cache.

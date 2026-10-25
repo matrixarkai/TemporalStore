@@ -1038,9 +1038,43 @@ pub struct StorageManagerOptions {
     /// makes the round pay its whole-store release walk and give nothing back.
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
-    /// Drop rather than dump. Off by default: this is the arm that can lose unflushed state.
-    #[serde(default)]
-    pub eviction_delete_drop: bool,
+    // `eviction_delete_drop` WAS HERE, AND IT IS RETIRED RATHER THAN DEFAULTED AWAY. An operator
+    // config that still sets it parses and is ignored, which is the right answer, because the
+    // behaviour it selected is gone.
+    //
+    // WHAT IT SELECTED. It was passed straight into `apply_storage_eviction`'s `delete_drop`
+    // parameter, and that arm calls `delete_record` on every live object in its victim buckets --
+    // dirty or clean, dumped or not. That removes the key from every model map, from the bucket
+    // index and from the expiry and seen maps (`engine.rs`, `delete_record_exact`), and the
+    // model-map entry is the ONLY thing pointing at the payload block the read path resolves
+    // through (`engine.rs`, the `FastPathRead::String` arm: `shard.string_address(key)` and then
+    // `read_block_bytes`). The arm then writes a `CommonDelete` tombstone per dropped key and
+    // anchors `applied_wal_sequence` past them, so replay observes the deletion rather than the
+    // earlier write. Both of those are durability work: it did not drop a resident copy, it
+    // destroyed the only reachable copy and then made the removal stick.
+    //
+    // ITS DOCUMENTED RISK WAS AN UNDERSTATEMENT. It said "the arm that can lose unflushed state".
+    // Measured on 600 ACKNOWLEDGED keys with the dump ON -- the arm's most favourable setting, so
+    // nothing it touched was unflushed -- every object in its 16 victim buckets was deleted, those
+    // keys read MISSING cold, and they were still missing after a reload on a fresh engine over the
+    // same directories, while keys that were never written read absent in both halves.
+    //
+    // AND IT HAD NO SAFE MEANING TO BE GIVEN INSTEAD, which is why it is gone rather than
+    // reinterpreted. A record's resident cost splits in two. The DERIVED half -- a bucket's
+    // `block_index` and object-block lookup entries -- is droppable, because
+    // `reload_released_bucket` rebuilds it FROM the model maps, so a read after the drop loads it
+    // back. The AUTHORITATIVE half is the model-map entry itself, and nothing can rebuild one on
+    // demand: there is no per-bucket durable address map to fault in, because the persisted index
+    // is written whole from a clone of the entire shard. Reclaiming the first is dump-then-drop and
+    // is what `eviction_dump_before_evict` above already asks for; reclaiming the second is a
+    // deletion however it is spelled. ON THE GATE'S OWN QUANTITY the deletion buys nothing either:
+    // measured on one matched corpus, the releasing round and the deleting round each took the
+    // resident index from 70,672 to 70,080 B -- the same 592 B -- and the deleting one also made 18
+    // acknowledged keys unreachable.
+    //
+    // `data_node::tests::evict_dump_drop` holds both measurements, and
+    // `the_memory_pressure_stage_cannot_route_into_the_arm_that_deletes` is what FAILS if a route
+    // to that arm is wired back. A retired default is a value; a missing route is a property.
     /// How many victims one evict STAGE may take in total, across repeated batches.
     ///
     /// The stage took a single batch of `eviction_batch_limit` and returned, however far the
@@ -1071,10 +1105,10 @@ pub struct StorageManagerOptions {
     /// `run_storage_manager_cycle` already uses for the same reason.
     ///
     /// WHAT IT GIVES UP WHEN IT IS THE GATE: `apply_index_resident_bound` releases with the dump on
-    /// and the drop off unconditionally, so `eviction_dump_before_evict` and
-    /// `eviction_delete_drop` do not reach it. Both match their own defaults, so this only matters
-    /// to an operator who changed them -- and the drop arm is the one that can lose unflushed
-    /// state, which a bound on resident memory has no business taking.
+    /// unconditionally, so `eviction_dump_before_evict` does not reach it. It matches its own
+    /// default, so this only matters to an operator who changed it. Neither arm can delete: both
+    /// stage entry points pass `delete_drop` false, so the two now differ only in which gate
+    /// opened.
     ///
     /// DEFAULTS TO `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`, the same value the cycle request has
     /// always shipped, and in the same change as `enable_evict`. That pairing is the whole point:
@@ -1266,11 +1300,9 @@ impl Default for StorageManagerOptions {
             // defaults, so the shipped round behaves the same either way; this matters to an
             // operator who lowers the bound below the threshold and lands on the wide arm.
             eviction_dump_before_evict: true,
-            // STAYS OFF, and this is the one default the enablement makes load-bearing rather than
-            // academic: the drop arm DELETES records to reclaim memory. `apply_index_resident_bound`
-            // never takes it, so the shipped round cannot reach it, but a stage that ships on must
-            // not ship pointing at it either.
-            eviction_delete_drop: false,
+            // `eviction_delete_drop: false` WAS HERE. The field is retired, so there is no longer a
+            // default to get right: the arm it selected DELETED acknowledged records to reclaim
+            // memory, and no setting reaches it now. See the retirement note on the struct.
             eviction_count_limit: DEFAULT_EVICTION_COUNT_LIMIT,
             // THE CYCLE REQUEST'S VALUE, not 0, and the other half of the `enable_evict` decision
             // above. 0 meant DISABLED, and with the stage now on, disabled would leave the wide
