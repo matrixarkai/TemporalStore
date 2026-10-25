@@ -483,3 +483,4 @@ mod which_record_the_dirty_bucket_consumers_read;
 mod whether_the_reclaim_checks_can_read_the_bucket_node;
 mod the_index_log_retain_floor;
 mod where_an_object_keys_characters_are_written;
+mod what_the_slot_index_is_made_of;
