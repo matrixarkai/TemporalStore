@@ -994,22 +994,21 @@ pub struct StorageManagerOptions {
     pub enable_evict: bool,
     /// Bytes above which the evict stage acts. 0 evicts whenever it runs.
     ///
-    /// NOT "cache bytes (memory + disk)", which is what this said and has not been true since the
-    /// index term joined the gate. The quantity is cache memory + cache disk + the async writeback
-    /// queue's bytes and depth + `bucket_index_resident_bytes` -- see
-    /// `StorageManagerPressureSnapshot::eviction_memory_pressure_bytes`, which publishes exactly it.
+    /// THE QUANTITY IS `bucket_index_resident_bytes(shard_id)`, and nothing else. One term, and it
+    /// belongs to the shard this setting is gating. `StorageManagerPressureSnapshot::\
+    /// eviction_memory_pressure_bytes` publishes exactly it, so the reported signal and the real
+    /// decision are the same number.
     ///
-    /// AND THE THREE CACHE TERMS ARE PROCESS-WIDE, not this shard's: they come from
-    /// `MultiLayerCache::stats()`, which folds every cache partition and takes no shard argument.
-    /// Only `bucket_index_resident_bytes` is per-shard -- and it is also the only term the evict
-    /// stage can reduce. `data_node::tests::evict_live::the_evict_gates_cache_terms_are_process_wide\
-    /// _not_per_shard` measures a ten-key shard whose gate reads 2,685,344 B of which 2,683,904 B is
-    /// another shard's cache, and `what_a_default_eviction_threshold_has_to_clear` measures the cache
-    /// term at about 4.5x the index term at every corpus size it tried. So a value set here is not a
-    /// property of the shard it gates: raising it to stop an idle shard evicting also stops a fat one,
-    /// and lowering it to catch a fat one makes idle shards evict whenever the node's cache is warm.
-    /// That is why the default is still 0 with the stage off rather than a chosen number -- see
-    /// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory`.
+    /// IT USED TO BE A NODE-WIDE NUMBER WEARING A PER-SHARD NAME: cache memory + cache disk + the
+    /// async writeback queue's bytes and depth + the index term, with the four cache terms taken
+    /// from `MultiLayerCache::stats()`, which folds every cache partition and takes no shard
+    /// argument. `data_node::tests::evict_live::the_evict_gates_cache_terms_are_process_wide\
+    /// _not_per_shard` measures a ten-key shard whose gate read 1,745,200 B of which 1,744,000 B --
+    /// 99.93% -- was an eight-thousand-key shard's cache, against 1,200 B of its own index. So a
+    /// value set here was not a property of the shard it gated: raising it to stop an idle shard
+    /// evicting also stopped a fat one, and lowering it to catch a fat one made idle shards evict
+    /// whenever the node's cache was warm. `the_evict_gate_reads_only_this_shards_own_bytes` is the
+    /// gate that keeps the node-wide terms out.
     #[serde(default)]
     pub eviction_memory_pressure_threshold: u64,
     /// How many buckets one evict stage may take. 0 means no limit.
@@ -1338,14 +1337,27 @@ pub struct StorageManagerPressureSnapshot {
     #[serde(default)]
     pub bucket_index_resident_bytes: u64,
     /// Exactly the quantity `apply_storage_eviction` compares against
-    /// `eviction_memory_pressure_threshold`: cache memory + cache disk + the async writeback
-    /// queue's bytes and depth + `bucket_index_resident_bytes`.
+    /// `eviction_memory_pressure_threshold`, which is now ONE term:
+    /// `bucket_index_resident_bytes` above, for THIS shard.
+    ///
+    /// It used to be that term plus cache memory, cache disk and the async writeback queue's bytes
+    /// and depth. Those four come from `MultiLayerCache::stats()`, which takes no shard argument,
+    /// so this field published a node-wide number under a per-shard name and the gate decided on
+    /// it. See the field doc on `StorageManagerOptions::eviction_memory_pressure_threshold`.
     ///
     /// Published so an operator reading a skipped evict stage can see the number that skipped it.
     /// Before this the evict decision reported its own THRESHOLD as the observed value, so the
     /// signal read `over_threshold` on every round whatever the shard was doing.
     #[serde(default)]
     pub eviction_memory_pressure_bytes: u64,
+    /// The node's memory occupancy as the cache reports it, plus this shard's resident index:
+    /// cache memory + cache disk + the async writeback queue's bytes and depth +
+    /// `bucket_index_resident_bytes`.
+    ///
+    /// NOT the evict gate's input, and no longer an alias of `eviction_memory_pressure_bytes`
+    /// above. The two were the same field while the gate read the wide number; they separated when
+    /// the gate narrowed. This one stays wide because what it describes is `reclaim_memory`, the
+    /// stage that invalidates cached pages -- the cache terms are the ones that stage can move.
     #[serde(default)]
     pub memory_cache_pressure_score: u64,
     /// See `engine::reports::StorageManagerPressureSnapshot::live_page_summaries_measured`:

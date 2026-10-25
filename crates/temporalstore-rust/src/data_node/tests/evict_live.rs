@@ -720,10 +720,12 @@ const SHIPPED_CACHE_MEMORY_BUDGET: u64 = 16 * 1024 * 1024;
 /// terms were per-shard, shard 2's pressure would be its own ten keys' worth. If they are
 /// process-wide, shard 2's pressure carries shard 1's cache.
 ///
-/// WHY IT MATTERS FOR A DEFAULT. A constant threshold below the process-wide cache budget opens the
-/// gate on EVERY loaded shard as soon as the process cache is warm, however small the shard -- which
-/// is `enable_evict_stays_off_...`'s own objection ("the gate opens at pressure the operator never
-/// asked to relieve") arriving by a different route than the zero threshold.
+/// WHY THIS IS STILL MEASURED NOW THAT THE GATE HAS BEEN NARROWED. The defect it found is fixed in
+/// the gate, not in the cache: `MultiLayerCache::stats()` is still one node-wide number and still
+/// the only aggregate the cache offers. This test is what keeps that fact measured, so that folding
+/// any of it back into a per-shard decision is a change somebody has to argue against a figure.
+/// `the_evict_gate_reads_only_this_shards_own_bytes` is the other half -- it asserts the gate's own
+/// input carries none of this.
 #[test]
 fn the_evict_gates_cache_terms_are_process_wide_not_per_shard() {
     const BIG_KEYS: usize = 8_000;
@@ -837,15 +839,32 @@ fn the_evict_gates_cache_terms_are_process_wide_not_per_shard() {
         small_index,
     );
     eprintln!(
-        "    => the ten-key shard's gate reads {} B, of which {} B is the EIGHT-THOUSAND-key \
-shard's cache. A constant threshold below the process cache occupancy opens the gate on a shard \
-holding ten records.",
-        small.eviction_memory_pressure_bytes,
+        "    => the ten-key shard sits beside {} B of cache that is not its own, against {} B of \
+its own resident index. A gate that read the node-wide cache would therefore open on a shard \
+holding ten records; the gate reads {} B, which is this shard's index alone.",
         small.cache_memory_bytes.saturating_add(small.cache_disk_bytes),
+        small_index,
+        small.eviction_memory_pressure_bytes,
+    );
+    // AND THAT LAST NUMBER IS THE SHARD'S OWN, asserted here so this test fails if the node-wide
+    // terms are folded back into the published signal. The gate's own input is asserted in
+    // `the_evict_gate_reads_only_this_shards_own_bytes`; this is the published mirror of it.
+    assert_eq!(
+        small.eviction_memory_pressure_bytes, small_index,
+        "the published eviction signal for a ten-key shard is {} B while its own resident index is \
+         {} B, so the signal has picked the node-wide cache terms back up",
+        small.eviction_memory_pressure_bytes, small_index,
     );
 }
 
 /// WHAT A DEFAULT THRESHOLD HAS TO CLEAR, measured warm AND cold at four corpus sizes.
+///
+/// READ THE `cold_index` COLUMN; IT IS THE ONLY ONE THE GATE SEES. The gate's input is
+/// `bucket_index_resident_bytes` alone, so the cache columns here are no longer terms of the number
+/// a threshold is compared against -- they are kept because the asymmetry they show is why the
+/// narrowing was needed: the cache is capped by its own budget and evicts to stay there, the index
+/// is capped by nothing. A threshold set against a warm cache would have been set against a term
+/// that cannot grow; set against the index it is set against the term that can.
 ///
 /// `what_pressure_a_shard_carries_at_three_corpus_sizes` above drops the cache first, so every byte
 /// it reports is index. That is the right way to see the index slope and the wrong way to pick a
@@ -935,12 +954,12 @@ fn what_a_default_eviction_threshold_has_to_clear() {
     }
     let biggest = rows.last().expect("three sizes");
     eprintln!(
-        "    => at {} keys the whole shard's pressure is {} B, which is {:.3}x the cache budget \
-alone. A constant default threshold set above the budget does not fire here; one set below it \
-fires on a shard holding nothing.",
+        "    => at {} keys THIS SHARD's gate input is {} B of resident index, which is {:.4}x the \
+node's whole cache budget. The gate no longer reads that budget, so the comparison is published \
+for scale rather than as the threshold argument: the index is the term that grows with the shard.",
         biggest.keys,
-        biggest.warm_total,
-        biggest.warm_total as f64 / SHIPPED_CACHE_MEMORY_BUDGET as f64,
+        biggest.cold_index,
+        biggest.cold_index as f64 / SHIPPED_CACHE_MEMORY_BUDGET as f64,
     );
 
     // THE SHAPE, asserted on the index term, which is the only one eviction can reduce.
@@ -1207,5 +1226,160 @@ reason={reason}"
     eprintln!(
         "    => settled at round {settled_at}: pressure fell {start_pressure} -> {final_pressure}, \
 below the threshold {threshold}"
+    );
+}
+
+/// THE GATE'S OWN INPUT IS THIS SHARD'S BYTES, and the node-wide cache is not in it.
+///
+/// `the_evict_gates_cache_terms_are_process_wide_not_per_shard` above measures the contamination
+/// that was: a ten-key shard beside an eight-thousand-key one sits next to 1,744,000 B of cache
+/// that is not its own, against 1,200 B of its own resident index. While the gate summed
+/// `MultiLayerCache::stats()` with the index term, that is what it decided on -- 99.93% of its
+/// input belonged to another shard.
+///
+/// THIS READS THE NUMBER THE DECISION USES, not the published snapshot:
+/// `StorageEvictionReport::pressure_before` straight off `apply_storage_eviction`. A snapshot that
+/// had drifted from the gate could otherwise make this pass while the gate stayed wide. The
+/// snapshot is checked too, at the end, against the gate's own figure.
+///
+/// THE FIXTURE HAS TO BE ABLE TO SEE THE DEFECT, and three clauses say so before anything is
+/// concluded from it: the node's cache is warm, so the contaminating term is not zero; that cache
+/// is several times the small shard's own index, so excluding it changes the answer; and the two
+/// shards' indexes are lopsided, so a per-shard reading is distinguishable from a node-wide one
+/// rather than equal to it by accident.
+///
+/// THE GATE IS READ ON ITS DECLINING PATH -- threshold `u64::MAX`, asserted to have declined -- so
+/// the figure is a pure read and nothing is released while it is taken.
+#[test]
+fn the_evict_gate_reads_only_this_shards_own_bytes() {
+    const BIG_KEYS: usize = 8_000;
+    const SMALL_KEYS: usize = 10;
+
+    let dir = tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        SHIPPED_CACHE_MEMORY_BUDGET as usize,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    for shard_id in [1u32, 2u32] {
+        let response = engine.load_shard_with(crate::control::LoadShardRequest {
+            shard_id: shard_id as ShardId,
+            table_name: format!("evict-gate-{shard_id}"),
+            shard_uri: format!("local://evict-gate/{shard_id}"),
+            start_routing_bucket: 0,
+            end_routing_bucket: SHIPPED_END_BUCKET,
+            readonly: false,
+            load_version: 1,
+            local_node_id: Some(1),
+        });
+        assert!(
+            response.status.ok,
+            "load shard {shard_id}: {:?}",
+            response.status
+        );
+    }
+    for (shard_id, keys) in [(1u32, BIG_KEYS), (2u32, SMALL_KEYS)] {
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: shard_id as ShardId,
+                command: Command::StringSet {
+                    key: format!("g{shard_id}-{index:06}"),
+                    value: keyed_value(index),
+                },
+            });
+            assert!(
+                response.status.ok,
+                "write {shard_id}/{index}: {:?}",
+                response.status
+            );
+        }
+    }
+    // Warm from the BIG shard only, so the cache bytes have an owner and the comparison below can
+    // say whose they are. Writes leave the record cache empty; reads are what fill it.
+    warm_cache_by_reading(&engine, 1, "g1-", BIG_KEYS);
+
+    let cache = engine.cache().stats();
+    let node_cache_bytes = cache.memory_bytes.saturating_add(cache.disk_bytes);
+    let big_index = engine.bucket_index_resident_bytes(1);
+    let small_index = engine.bucket_index_resident_bytes(2);
+
+    // REGIME 1: the contaminating term exists at all. Without this the exclusion below holds
+    // trivially at zero.
+    assert!(
+        cache.memory_bytes > 0,
+        "the node cache holds no memory bytes after warming {BIG_KEYS} reads on shard 1, so there \
+         is nothing here for the gate to be shown excluding"
+    );
+    // REGIME 2: and it is large enough that excluding it changes the number.
+    assert!(
+        node_cache_bytes > small_index.saturating_mul(4),
+        "the node cache ({node_cache_bytes} B) is not several times the ten-key shard's own index \
+         ({small_index} B), so a gate reading both and a gate reading one report nearly the same \
+         figure and this fixture cannot tell them apart"
+    );
+    // REGIME 3: the two shards are lopsided, so a per-shard reading is distinguishable.
+    assert!(
+        big_index > small_index.saturating_mul(4),
+        "the two shards' indexes are not lopsided ({big_index} B vs {small_index} B), so a \
+         per-shard gate input and a node-wide one could agree by accident"
+    );
+
+    let small_gate = engine.apply_storage_eviction(2, u64::MAX, 16, true, false);
+    let big_gate = engine.apply_storage_eviction(1, u64::MAX, 16, true, false);
+    // REGIME 4: both gates really declined, so `pressure_before` is a reading and not the state
+    // left behind by a round that acted.
+    assert_eq!(
+        small_gate.skipped_reason, "memory_pressure_below_threshold",
+        "the ten-key shard's gate did not decline at u64::MAX, so the figure below is not a pure \
+         read: {small_gate:?}"
+    );
+    assert_eq!(
+        big_gate.skipped_reason, "memory_pressure_below_threshold",
+        "the eight-thousand-key shard's gate did not decline at u64::MAX: {big_gate:?}"
+    );
+
+    eprintln!(
+        "  [evict-gate-narrow] node cache = {node_cache_bytes} B  |  shard 1 ({BIG_KEYS} keys): \
+gate_input={} own_index={}  |  shard 2 ({SMALL_KEYS} keys): gate_input={} own_index={}",
+        big_gate.pressure_before, big_index, small_gate.pressure_before, small_index,
+    );
+
+    // THE FINDING, on the shard the defect was measured on: its gate input is its own index, to the
+    // byte, and the share attributable to anything else is zero.
+    assert_eq!(
+        small_gate.pressure_before, small_index,
+        "the ten-key shard's gate reads {} B against {} B of its own resident index, so {} B of \
+         its gate input belongs to something that is not this shard",
+        small_gate.pressure_before,
+        small_index,
+        small_gate.pressure_before.saturating_sub(small_index),
+    );
+    // AND ON THE BIG SHARD, so the equality above is not an artefact of a shard small enough that
+    // every number in sight rounds to the same place.
+    assert_eq!(
+        big_gate.pressure_before, big_index,
+        "the eight-thousand-key shard's gate reads {} B against {} B of its own resident index",
+        big_gate.pressure_before, big_index,
+    );
+
+    // AND THE PUBLISHED SIGNAL IS THE DECIDED ONE. These are built in different files -- the gate
+    // in `storage_lifecycle_methods.rs`, the snapshot in `runtime_storage.rs` -- so nothing but
+    // this makes them stay the same number.
+    let runtime = DataNodeRuntime::new_without_workers_with_options(
+        engine,
+        DataNodeRuntimeOptions {
+            worker_threads: 0,
+            max_queue_depth: 64,
+            max_background_queue_depth: 8,
+        },
+    );
+    let options = proposed_options();
+    let (small_snapshot, _) = runtime.storage_manager_pressure_snapshot(2, &options);
+    assert_eq!(
+        small_snapshot.eviction_memory_pressure_bytes, small_gate.pressure_before,
+        "the published eviction signal ({} B) and the gate's own input ({} B) are different \
+         numbers, so an operator reads one and the shard is decided on the other",
+        small_snapshot.eviction_memory_pressure_bytes, small_gate.pressure_before,
     );
 }

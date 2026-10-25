@@ -255,8 +255,19 @@ impl DataNodeRuntime {
         // evict stage acts on it, which is what makes it a gate and not a klaxon.
         let bucket_index_resident_bytes = self.inner.engine.bucket_index_resident_bytes(shard_id);
         // Mirrors `apply_storage_eviction`'s own gate term for term, so the reported signal and
-        // the real decision cannot drift apart.
-        let eviction_memory_pressure_bytes = cache
+        // the real decision cannot drift apart. ONE TERM, because that gate now reads one term:
+        // this shard's resident index. The four cache terms it used to carry came from
+        // `MultiLayerCache::stats()`, which is not filtered by shard, so what this field published
+        // as "the shard's eviction pressure" was mostly other shards' cache -- 99.93% of it on a
+        // ten-key shard beside an eight-thousand-key one, measured in
+        // `the_evict_gates_cache_terms_are_process_wide_not_per_shard`.
+        let eviction_memory_pressure_bytes = bucket_index_resident_bytes;
+        // THE NODE MEMORY SCORE KEEPS THE WIDE COMPOSITION, and is now a different number from the
+        // evict gate's input rather than an alias of it. It is published for an operator watching
+        // the node, and `reclaim_memory` -- the stage that invalidates cached pages -- is the thing
+        // it describes; narrowing it to the index would make it report a debt that stage cannot pay.
+        // The two were one field only because the gate used to read the wide number.
+        let memory_cache_pressure_score = cache
             .memory_bytes
             .saturating_add(cache.disk_bytes)
             .saturating_add(cache.async_writeback_queue_bytes)
@@ -284,7 +295,7 @@ impl DataNodeRuntime {
                 cache_disk_bytes: cache.disk_bytes,
                 bucket_index_resident_bytes,
                 eviction_memory_pressure_bytes,
-                memory_cache_pressure_score: eviction_memory_pressure_bytes,
+                memory_cache_pressure_score,
                 live_block_summaries_measured: plan.bucket_summaries.is_some(),
                 // 0 when the round did not walk. The flag above is what says which 0 this is.
                 expired_bucket_object_scan_debt: plan

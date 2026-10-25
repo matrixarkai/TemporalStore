@@ -3527,15 +3527,18 @@ fn how_many_times_a_context_keys_characters_exist() {
 ///
 /// `what_a_dump_then_release_recovers_on_the_shipped_routing_range` proves a dump-then-release
 /// recovers the bulk of the derived index. It drives that sequence by hand, with
-/// `memory_pressure_threshold = 0`, which is not a trigger an operator can deploy: the gate it
-/// passes through sums four PROCESS-WIDE cache terms with one per-shard index term, so a constant
-/// threshold fires on an idle shard whenever a busy one shares the process. That is measured in
-/// `the_evict_gates_cache_terms_are_process_wide_not_shard` and is why `enable_evict` defaults off.
+/// `memory_pressure_threshold = 0`, which is not a trigger an operator can deploy.
 ///
-/// `apply_index_resident_bound` narrows the signal to `bucket_index_resident_bytes`, which is
-/// per-shard and is the only term a release can reduce. This measures what that bound recovers AND
-/// pins that it read the narrow signal -- `pressure_before` must equal this shard's own index
-/// bytes, not a process-wide sum.
+/// WHEN THIS WAS WRITTEN the gate it passes through summed four NODE-WIDE cache terms with one
+/// per-shard index term, so a constant threshold fired on an idle shard whenever a busy one shared
+/// the process -- measured in `the_evict_gates_cache_terms_are_process_wide_not_per_shard`, which
+/// is still the standing measurement of the cache aggregate being node-wide. The gate itself has
+/// since been narrowed to `bucket_index_resident_bytes` alone
+/// (`the_evict_gate_reads_only_this_shards_own_bytes`), so both gates now read this shard's own
+/// bytes.
+///
+/// `apply_index_resident_bound` is the narrow bound. This measures what it recovers AND pins that
+/// it read the narrow signal -- `pressure_before` must equal this shard's own index bytes.
 ///
 /// THE GUARD IS BIDIRECTIONAL, because "it fired" alone is satisfied by a gate that always fires:
 /// a bound of 0 must report disabled, a bound ABOVE this shard's bytes must refuse, and only a

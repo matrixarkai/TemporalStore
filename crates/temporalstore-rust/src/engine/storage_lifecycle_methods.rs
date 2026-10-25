@@ -1897,28 +1897,28 @@ impl TemporalEngine {
 
     /// Dump and release a shard's resident page lists when THAT SHARD'S OWN index exceeds a bound.
     ///
-    /// # WHY THIS EXISTS BESIDE `apply_storage_eviction`
+    /// # WHY THIS EXISTS BESIDE `apply_storage_eviction`, AND WHAT MOVED
     ///
-    /// That gate cannot express a per-shard bound, and the reason is measured rather than
-    /// suspected. Its signal is four PROCESS-WIDE cache terms -- memory, disk, writeback bytes and
-    /// writeback depth -- plus one per-shard index term. `the_evict_gates_cache_terms_are_process_wide_not_shard`
-    /// runs two shards and measures a TEN-KEY shard whose gate reads 2,685,344 B of which 99.95% is
-    /// an eight-thousand-key shard's cache, and the cache term runs about 4.5x the index term at
-    /// every size tried. So a constant threshold low enough to fire on a fat index also fires on an
-    /// idle shard sharing the process, and one high enough to be safe has its trigger set by other
-    /// shards. That is why `enable_evict` defaults off, and
-    /// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory` says the remaining
-    /// decision is NARROWING THE SIGNAL rather than picking a number.
+    /// It exists because that gate could not express a per-shard bound. Its signal was four
+    /// PROCESS-WIDE cache terms -- memory, disk, writeback bytes and writeback depth, all off
+    /// `MultiLayerCache::stats()` -- plus one per-shard index term, so a ten-key shard's gate read
+    /// 1,745,200 B of which 1,744,000 B was an eight-thousand-key shard's cache
+    /// (`the_evict_gates_cache_terms_are_process_wide_not_per_shard`). This call was the narrowing,
+    /// reached only from `run_storage_manager_cycle`.
     ///
-    /// This is that narrowing. It reads `bucket_index_resident_bytes` and nothing else: the term is
-    /// per-shard, and it is also the ONLY term a release can actually reduce, so a bound on it is a
-    /// bound on a quantity this call can do something about.
+    /// THAT PREMISE IS RETIRED: `apply_storage_eviction`'s own gate now reads
+    /// `bucket_index_resident_bytes(shard_id)` and nothing else, so the wide stage is a per-shard
+    /// bound too and `the_evict_gate_reads_only_this_shards_own_bytes` is the gate on it. The two
+    /// gates read the SAME quantity.
+    ///
+    /// WHAT THIS STILL ADDS, and it is only this: a separate knob and a distinct `mode` string,
+    /// gated on itself rather than on `enable_evict`, for the on-demand cycle.
     ///
     /// # IT DOES NOT DECIDE TWICE
     ///
     /// Once the per-shard bound is exceeded the handoff passes `memory_pressure_threshold = 0`, so
-    /// the process-wide gate cannot refuse what this shard's own bytes already accepted. Passing the
-    /// bound through would reinstate exactly the contamination this exists to avoid.
+    /// the inner gate cannot refuse what this shard's own bytes already accepted. Passing the bound
+    /// through would make the same comparison twice and report the second one.
     ///
     /// A limit of 0 means DISABLED and returns without walking anything, so this is free to call on
     /// a deployment that has not set a bound.
@@ -1967,32 +1967,40 @@ impl TemporalEngine {
         dump_before_evict: bool,
         delete_drop: bool,
     ) -> StorageEvictionReport {
-        // THE SIGNAL. Every memory number this gate used to read was the CACHE's, and the bucket
-        // index is in none of them: at 8,000 records the gate saw ~600 KB of cache while the index
-        // held 8,000 entries it could not see, was never evicted, and cost ~760 B a record. A gate
-        // that cannot see a cost cannot relieve it, so the resident index is part of the pressure
-        // now -- and it is part of it only because the release path above can actually reduce it.
+        // THE SIGNAL, AND IT IS THIS SHARD'S. One term, `bucket_index_resident_bytes(shard_id)`,
+        // and that is the whole input.
         //
-        // READ FROM `cache.stats()` DIRECTLY, NOT FROM THE INSPECTION REPORT. The two are the same
-        // bytes -- `storage_cache_inspection_report` fills its `stats` field with exactly this call
-        // -- but the report also builds `entries` and `bucket_summaries`, and NEITHER is gate input.
-        // That listing is `MultiLayerCache::entries_for_shard`: it materialises and SORTS one entry
-        // per cached record for the shard and falls through to a filesystem `metadata()` for every
-        // entry the disk index does not hold. Taking the report here made every round that reached
-        // this stage pay a per-cache-entry walk to compute a number the gate below might decline on
-        // immediately -- which is the per-round cost of having the stage enabled at all, paid on
-        // every loaded shard whether or not anything is ever evicted. The report is taken AFTER the
-        // gate, where the summaries are actually used. `the_declining_gate_pays_no_cache_listing`
-        // is the gate on that, and it fails on the previous arrangement rather than merely
-        // describing it.
-        let cache_stats = self.cache.stats();
+        // WHAT IT USED TO BE AND WHY THAT COULD NOT BE GATED ON. The input was four cache terms --
+        // memory, disk, writeback bytes, writeback depth, all off `MultiLayerCache::stats()`, which
+        // folds every cache partition and takes no shard argument -- plus this one per-shard index
+        // term. So a shard's gate read mostly OTHER shards' bytes. Measured on two shards, one
+        // holding 8,000 keys and one holding ten, with the cache warmed from the big shard only:
+        // the ten-key shard's gate read 1,745,200 B of which 1,744,000 B -- 99.93% -- was the other
+        // shard's cache, against 1,200 B of its own index. A threshold low enough to fire on a fat
+        // index therefore also fired on an idle shard sharing the process, and one high enough to
+        // spare the idle shard had its trigger point set by shards it was not deciding about.
+        // `the_evict_gates_cache_terms_are_process_wide_not_per_shard` is where that is measured;
+        // `the_evict_gate_reads_only_this_shards_own_bytes` is the gate on the narrowing.
+        //
+        // WHY THE INDEX TERM IS THE RIGHT ONE TO KEEP, rather than the cheapest to keep: it is the
+        // only term the release below can actually reduce. A gate whose input the actuator cannot
+        // move is a klaxon, not a gate -- `cooldown` (`pressure_after >= pressure_before`) is
+        // derived from this number and feeds the loop's `made_progress`, so with the cache terms in
+        // it a round could read "no progress" because an unrelated shard's cache grew while this
+        // shard's index fell.
+        //
+        // AND THE PER-SHARD CACHE BYTES ARE NOT AVAILABLE TO PUT HERE INSTEAD. `matrixcache` keeps
+        // `memory_bytes` per cache partition; its only per-shard view is `entries_for_shard`, whose
+        // cost is precisely what `the_declining_gate_pays_no_cache_listing` exists to keep out of a
+        // declining round. So the choice is this term or a contaminated one, not this term or a
+        // narrower cache term.
+        //
+        // NO `cache.stats()` CALL HERE AT ALL NOW, which it had even before it stopped taking the
+        // whole inspection report: the aggregate counters are not gate input any more, so the
+        // declining round does not read them. The cache summaries are still built AFTER the gate
+        // opens, where they are actually used.
         let bucket_index_bytes_before = self.bucket_index_resident_bytes(shard_id);
-        let pressure_before = cache_stats
-            .memory_bytes
-            .saturating_add(cache_stats.disk_bytes)
-            .saturating_add(cache_stats.async_writeback_queue_bytes)
-            .saturating_add(cache_stats.async_writeback_queue_depth)
-            .saturating_add(bucket_index_bytes_before);
+        let pressure_before = bucket_index_bytes_before;
         if pressure_before < memory_pressure_threshold {
             return StorageEvictionReport {
                 shard_id,
@@ -2362,20 +2370,11 @@ impl TemporalEngine {
                 let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
             }
         }
-        // `cache.stats()`, for the same reason as the BEFORE reading above and more plainly here:
-        // every field this arithmetic touches is on `.stats`, so taking the whole inspection report
-        // built the per-entry `entries` and `bucket_summaries` and then dropped them -- a second
-        // per-cache-entry listing, with its own filesystem `metadata()` fallthrough, for nothing.
-        // The round now makes exactly one cache listing when the gate opens and none when it does
-        // not, against two and one before.
-        let after_cache_stats = self.cache.stats();
+        // THE SAME TERM AS THE BEFORE READING, which is what makes the pair subtractable. With the
+        // process-wide cache terms in both, `pressure_after - pressure_before` was partly another
+        // shard's cache moving under us, and `cooldown` below is exactly that comparison.
         let bucket_index_bytes_after = self.bucket_index_resident_bytes(shard_id);
-        let pressure_after = after_cache_stats
-            .memory_bytes
-            .saturating_add(after_cache_stats.disk_bytes)
-            .saturating_add(after_cache_stats.async_writeback_queue_bytes)
-            .saturating_add(after_cache_stats.async_writeback_queue_depth)
-            .saturating_add(bucket_index_bytes_after);
+        let pressure_after = bucket_index_bytes_after;
         StorageEvictionReport {
             shard_id,
             mode: if delete_drop {
