@@ -5055,12 +5055,32 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
         load_version: 0,
         local_node_id: None,
         shard_uri: String::new(),
-        // The named default rather than a literal whole keyspace, for the reason
-        // `drive_reassignments` in the metaserver states: two production sites that default the
-        // range differently file the same key's pages in two different bucket groups, and an
-        // existing store is honoured on the range it was built on either way.
-        start_routing_bucket: temporalstore_rust::DEFAULT_START_ROUTING_BUCKET,
-        end_routing_bucket: temporalstore_rust::DEFAULT_END_ROUTING_BUCKET,
+        // THE RANGE COMES FROM THE ENVIRONMENT, AND THE DEFAULT IS THE SHIPPED ONE.
+        //
+        // These were the two named defaults as literals, for the reason `drive_reassignments` in
+        // the metaserver states: two sites that default the range differently file the same key's
+        // pages in two different bucket groups. That reason is about the DEFAULT and the comment
+        // went on to claim "an existing store is honoured on the range it was built on either
+        // way", which is not what happens. `engine::routing_range_stamp::decide_routing_range`
+        // REFUSES a store whose stamp names a range the request does not, and its message tells
+        // the operator to "set TS_SHARD_START_ROUTING_BUCKET and TS_SHARD_END_ROUTING_BUCKET" --
+        // a remedy a literal here makes impossible, so the proxy could open no store built on any
+        // range but the current shipped one. Measured on a 13 GB store built on the whole
+        // keyspace: `routing_range_mismatch: shard 1 was built on routing buckets 0..4294967295
+        // and is being loaded on 0..1023`, with both variables set.
+        //
+        // The same two names and the same helper as
+        // `bin/server/raft_route.rs::startup_load_shard_request`, including the older `_SLOT`
+        // spellings it reads "because a shard whose range silently widened back to the whole
+        // keyspace looks healthy and serves the wrong keys". One reader for one setting.
+        start_routing_bucket: temporalstore_rust::env_flag::env_number_first(
+            temporalstore_rust::START_ROUTING_BUCKET_ENV_NAMES,
+            temporalstore_rust::DEFAULT_START_ROUTING_BUCKET,
+        ),
+        end_routing_bucket: temporalstore_rust::env_flag::env_number_first(
+            temporalstore_rust::END_ROUTING_BUCKET_ENV_NAMES,
+            temporalstore_rust::DEFAULT_END_ROUTING_BUCKET,
+        ),
         readonly: false,
         table_name: String::new(),
     });

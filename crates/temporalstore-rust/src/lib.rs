@@ -219,6 +219,26 @@ pub const DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 /// an operator was told to change before the first ingest. The range such a store was built on is
 /// not recorded anywhere and cannot be inferred reliably, so it is refused rather than guessed at.
 pub const DEFAULT_END_ROUTING_BUCKET: u32 = 1023;
+
+/// THE NAMES THE FIRST ROUTING BUCKET IS SET BY, CURRENT SPELLING FIRST.
+///
+/// Beside the default it falls back to, and shared by every reader, because the setting has two
+/// spellings and a reader that retypes them can carry one and not the other. The `_SLOT` name is
+/// the previous one and is still read, for the reason `bin/server/raft_route.rs` gives: "a shard
+/// whose range silently widened back to the whole keyspace looks healthy and serves the wrong
+/// keys". Two readers existed and only one of them read the environment at all, which is what
+/// made a store built on another range unopenable through the proxy.
+pub const START_ROUTING_BUCKET_ENV_NAMES: &[&str] =
+    &["TS_SHARD_START_ROUTING_BUCKET", "TS_SHARD_START_ROUTING_SLOT"];
+
+/// THE NAMES THE LAST ROUTING BUCKET IS SET BY, CURRENT SPELLING FIRST.
+///
+/// See [`START_ROUTING_BUCKET_ENV_NAMES`]. This is the one that sets the MODULUS, so a reader
+/// that misses it does not narrow the range a little -- it files every later write in buckets the
+/// existing blocks are not in.
+pub const END_ROUTING_BUCKET_ENV_NAMES: &[&str] =
+    &["TS_SHARD_END_ROUTING_BUCKET", "TS_SHARD_END_ROUTING_SLOT"];
+
 pub use index_log::{IndexLogRecord, IndexLogStats, LocalIndexLogStore};
 pub use ingestion::{
     dead_letter_export_report, flink_production_checkpoint_handshake_report,

@@ -603,8 +603,8 @@ fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
         // spellings are the previous names and are still read, because a shard whose range
         // silently widened back to the whole keyspace looks healthy and serves the wrong keys.
         start_routing_bucket: temporalstore_rust::env_flag::env_number_first(
-            &["TS_SHARD_START_ROUTING_BUCKET", "TS_SHARD_START_ROUTING_SLOT"],
-            0,
+            temporalstore_rust::START_ROUTING_BUCKET_ENV_NAMES,
+            temporalstore_rust::DEFAULT_START_ROUTING_BUCKET,
         ),
         // THE SHIPPED DEFAULT, MOVED FROM THE WHOLE KEYSPACE BY MEASUREMENT.
         //
@@ -621,7 +621,7 @@ fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
         // see `engine/routing_range_stamp.rs` -- because reopening a populated store on a different
         // range leaves every page filed outside the range the shard holds.
         end_routing_bucket: temporalstore_rust::env_flag::env_number_first(
-            &["TS_SHARD_END_ROUTING_BUCKET", "TS_SHARD_END_ROUTING_SLOT"],
+            temporalstore_rust::END_ROUTING_BUCKET_ENV_NAMES,
             temporalstore_rust::DEFAULT_END_ROUTING_BUCKET,
         ),
         readonly: env_bool("TS_SHARD_READONLY", env_bool("TS_SERVER_READONLY", false)),
