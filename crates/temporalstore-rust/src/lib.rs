@@ -216,8 +216,12 @@ pub const DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 /// A STORE CARRYING NO STAMP AT ALL IS ALSO REFUSED, with `routing_range_unstamped`. It used to be
 /// adopted onto the whole keyspace on the reasoning that this was the only range it could have been
 /// built on -- true of the default, false of the configuration, since this setting is exactly what
-/// an operator was told to change before the first ingest. The range such a store was built on is
-/// not recorded anywhere and cannot be inferred reliably, so it is refused rather than guessed at.
+/// an operator was told to change before the first ingest. So it is refused rather than guessed at.
+///
+/// REFUSED IS NOT THE SAME AS UNRECOVERABLE, and this paragraph used to say the range "is not
+/// recorded anywhere". It was: a pre-stamp address carried the bucket it was filed under, so the
+/// width can be SOLVED from such a store and then checked against every address in it. See
+/// `engine/routing_range_stamp.rs` for the arithmetic, and for why the engine still does not do it.
 pub const DEFAULT_END_ROUTING_BUCKET: u32 = 1023;
 
 /// THE NAMES THE FIRST ROUTING BUCKET IS SET BY, CURRENT SPELLING FIRST.

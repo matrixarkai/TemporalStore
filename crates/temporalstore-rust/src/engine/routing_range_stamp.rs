@@ -33,13 +33,39 @@
 //!    refusal is the only honest answer -- the engine cannot re-file the pages and must not
 //!    pretend the range is a filter.
 //! 3. NO STAMP AT ALL, over a store that already has on-disk state: **REFUSE**, naming the absent
-//!    file. The range such a store was built on is NOT RECOVERABLE. It cannot be read, because
-//!    nothing recorded it; and it cannot be inferred, because the evidence does not separate the
-//!    candidates -- a store built on the whole keyspace whose keys all happen to fall below 1024
-//!    is indistinguishable from one built on `0..1023`, at a probability of about 2.4e-7 for a
+//!    file. This engine cannot establish the range, and GUESSING it is refused: a store built on
+//!    the whole keyspace whose keys all happen to fall below 1024 is indistinguishable from one
+//!    built on `0..1023` by the SPREAD of its buckets, at a probability of about 2.4e-7 for a
 //!    single key. An inference that is usually right is a smaller version of the defect this file
 //!    exists to remove: it can be wrong SILENTLY, and a store on the wrong range reads perfectly
 //!    while sitting outside every per-bucket sweep the shard runs.
+//!
+//!    THE WIDTH IS NOT NECESSARILY LOST, THOUGH, AND THIS ARM USED TO SAY IT WAS -- "NOT
+//!    RECOVERABLE", because "nothing recorded it". Something did: a pre-stamp address CARRIED the
+//!    bucket it was filed under, in the `rs` field retired from `BlockAddressWire` later, beside
+//!    the object key the bucket was derived from. That makes the width a SOLVE rather than a
+//!    guess, and one that carries its own check:
+//!
+//!    ```text
+//!      bucket = start + FNV-1a-64(object_key) % width
+//!      => width divides (FNV-1a-64(object_key) - bucket) for EVERY stored address
+//!      => take the gcd of those differences, keep its divisors above the largest bucket seen,
+//!         and accept a candidate only if it reproduces EVERY recorded bucket.
+//!    ```
+//!
+//!    A wrong candidate fails that last step on very nearly every address, so unlike the spread
+//!    inference above this cannot be quietly wrong: it either reproduces the buckets or it does
+//!    not. Carried out on a 13 GB pre-stamp store: the gcd over 12,125 addresses is 4,294,967,295,
+//!    exactly one of its divisors exceeds the largest recorded bucket (4,294,914,071), and that
+//!    width reproduces 12,125 of 12,125. `width = (end - start).saturating_add(1)`, so a width of
+//!    `u32::MAX` means `0..u32::MAX` -- the pre-stamp fallback -- while `0..u32::MAX - 1` computes
+//!    the same buckets: the solve fixes the WIDTH, and those two ends are the same modulus.
+//!
+//!    THE ENGINE DOES NOT DO THIS, deliberately. Those addresses are in the SERVED INDEX, and an
+//!    index old enough to carry no stamp is old enough that `decode_index_bytes` refuses its
+//!    format version before a byte of it is read. Solving the width belongs to a tool that reads
+//!    the old index. What belongs here is not telling an operator the answer is unrecoverable
+//!    while it is sitting in their store.
 //!
 //!    THIS ARM USED TO ADOPT THE WHOLE KEYSPACE rather than refuse, reasoning that it "was the
 //!    ONLY default a store could have been built on". That is true of the DEFAULT and false of the
@@ -204,7 +230,11 @@ pub(super) fn decide_routing_range(
                  was built on is KNOWN, record it by writing {} containing \
                  {{\"start_routing_bucket\":<start>,\"end_routing_bucket\":<end>}} and load \
                  again; a store built on the shipped default used \
-                 0..{}. If it is not known, ingest into a new store.",
+                 0..{}. If it is not known, it may still be RECOVERABLE from the store \
+                 itself: a pre-stamp address carried the bucket it was filed under beside \
+                 its object key, so the width is the one divisor of gcd(hash(key) - bucket) \
+                 that reproduces every recorded bucket -- see \
+                 engine/routing_range_stamp.rs. Otherwise ingest into a new store.",
                 routing_range_stamp_path(index_dir, shard_id).display(),
                 crate::DEFAULT_END_ROUTING_BUCKET,
             ),

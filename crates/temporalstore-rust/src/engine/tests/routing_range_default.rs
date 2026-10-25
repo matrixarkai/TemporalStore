@@ -1582,8 +1582,8 @@ fn a_store_that_predates_the_stamp_is_refused_rather_than_adopted_onto_a_guessed
     );
     assert!(
         !status.ok,
-        "an unstamped store with {RECORDS} records on disk loaded successfully. The range its \
-         blocks are filed under is not recorded anywhere, so the load cannot know it and must not \
+        "an unstamped store with {RECORDS} records on disk loaded successfully. The load has \
+         nothing on hand that establishes the range its blocks are filed under, so it must not \
          adopt one"
     );
     assert_eq!(

@@ -206,8 +206,8 @@ range.
 **A store written before the engine recorded the range carries no such file, and it
 will not load.** The load is refused with `routing_range_unstamped` — a different code
 from the mismatch above, because the remedies differ: a mismatch means the range is
-known and the configuration disagrees with it, while an absent stamp means the range
-is **not recorded anywhere and cannot be recovered from the store**.
+known and the configuration disagrees with it, while an absent stamp means **the engine
+cannot establish the range, so it will not choose one for you**.
 
 This arm used to adopt the whole `u32` keyspace instead, reasoning that it was the only
 default such a store could have been built on. That is true of the *default* and false
@@ -218,6 +218,35 @@ at 600 of 600 blocks filed in buckets the adopted range never computes, every re
 still readable and every block outside every per-bucket sweep. A store cannot tell you
 which of the two it is, and when two cases are indistinguishable and one of them loses
 data silently, the load asks instead of guessing.
+
+#### If you do not know it, the store may still be able to tell you
+
+Not from the *spread* of its buckets — a whole-keyspace store whose keys all happen to
+fall below 1024 looks exactly like a store built on `0..1023`, and a guess that is
+usually right is the failure this stamp exists to prevent. But from the buckets
+themselves: as the section above says, **a page's bucket was written onto its address**,
+beside the object key the bucket was derived from. A bucket is
+`start + FNV-1a-64(object_key) % width`, so for every stored address
+
+```
+width  divides  ( FNV-1a-64(object_key) - bucket )
+```
+
+Take the gcd of that difference over as many addresses as the index holds, keep the
+divisors of the gcd that exceed the largest bucket the store actually uses, and accept a
+candidate only when it reproduces **every** recorded bucket. A wrong width misses on
+very nearly every address, so this either answers or tells you it cannot — it does not
+answer wrongly in silence, which is the whole difference from guessing.
+
+Worked on a 13 GB store built before the stamp existed: the gcd over 12,125 addresses is
+4,294,967,295, exactly one divisor of it exceeds the largest recorded bucket
+(4,294,914,071), and that width reproduces 12,125 of 12,125 buckets. The width is
+`end - start + 1` saturating at `u32::MAX`, so that is `0..4294967295` — the whole
+keyspace, which is what this engine fell back to before it recorded anything.
+
+The engine does not do this for you, and will not: the addresses live in the served
+index, and an index old enough to carry no stamp is old enough that its format stamp is
+refused before it is decoded. Reading one is a job for a tool, not for a load.
 
 #### If you know the range the store was built on
 
