@@ -1978,6 +1978,162 @@ pub fn block_ref_key_from_parts(
     key
 }
 
+/// The eight slots [`block_ref_key_from_parts`] composed, read back out of the key it built.
+///
+/// BORROWED, NOT OWNED. The text slots are slices of the key, so reading a page's identity back
+/// out of the name it is filed under allocates nothing until a caller asks for an owned copy. The
+/// served index's decode asks for exactly one -- the object key, as the `Arc<str>` the entry used
+/// to carry -- so the parse costs what the removed field cost and no more.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct BlockRefKeyParts<'a> {
+    pub kind: &'a str,
+    pub object_key: &'a str,
+    pub component: &'a str,
+    pub block_slab_id: u64,
+    pub offset: u64,
+    pub length: u64,
+    pub block_id: u64,
+    pub generation: u64,
+}
+
+/// WHY A KEY THAT WILL NOT PARSE IS AN `Err` AND NEVER A PANIC.
+///
+/// Every caller of the parse is a LOAD PATH. `ObjectRecord::try_from` and
+/// `StoredModelKind::deserialize` both state the trade in as many words and this follows them: a
+/// panic on the load path makes a store UNOPENABLE, while an `Err` becomes a decode failure that
+/// `load_index` turns into a replay of the write-ahead log -- slower and correct.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BlockRefKeyUnparsable {
+    pub key: String,
+    pub because: &'static str,
+}
+
+impl std::fmt::Display for BlockRefKeyUnparsable {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "the stored page key {:?} is not a block-ref key: {}. A page's identity is read back \
+             out of the name it is filed under, so a key this cannot invert is an index that \
+             names no object -- refused here so the caller replays its log rather than serving a \
+             page filed under a guess",
+            self.key, self.because
+        )
+    }
+}
+
+/// A decimal slot is accepted only in the spelling [`block_ref_key_from_parts`] would WRITE.
+///
+/// `u64::from_str` takes a leading `+` and takes leading zeros, and both of those re-render as
+/// something else -- so accepting them would make the parse something other than the renderer's
+/// inverse, on keys that round-trip to a DIFFERENT string. Rejecting them is what lets the
+/// recomposition be exact by construction rather than by a rebuilt string compared per page.
+fn canonical_decimal(text: &str) -> Option<u64> {
+    if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
+        return None;
+    }
+    if text.len() > 1 && text.as_bytes()[0] == b'0' {
+        return None;
+    }
+    text.parse::<u64>().ok()
+}
+
+/// THE INVERSE OF [`block_ref_key_from_parts`], AND IT IS EXACT.
+///
+/// # THE SPLIT IS POSITIONAL FROM THE RIGHT, WHICH IS THE WHOLE DESIGN
+///
+/// An OBJECT KEY arrives from a caller and may hold a colon; the kind may not (every spelling in
+/// `model_kind_registry` is a lowercase identifier, which
+/// `the_key_a_page_is_filed_under_inverts_exactly::no_stored_model_spelling_holds_the_separator`
+/// asserts rather than assumes) and a rendered `u64` may not. So the six right-hand fields are cut
+/// from the RIGHT, the kind from the LEFT, and whatever is between them is the object key --
+/// colons included. An object key that itself spells a plausible tail, `x:0:0:1:2:3`, therefore
+/// comes back whole: the cuts are counted from the end, not searched for.
+///
+/// # WHERE IT IS NOT EXACT, AND WHY NOTHING THIS TREE WRITES CAN REACH THERE
+///
+/// A NON-EMPTY COMPONENT CONTAINING A COLON MAKES THE COMPONENT/OBJECT-KEY BOUNDARY
+/// UNRECOVERABLE, and that is a property of the format rather than of this parse:
+/// `block_ref_key_from_parts("string", "a:b", None, ..)` and
+/// `block_ref_key_from_parts("string", "a", Some("b:"), ..)` compose the IDENTICAL key.
+/// `what_the_core_index_puts_on_the_wire::the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it`
+/// is the proof and it still stands. This parse resolves the ambiguity one way -- positionally,
+/// reading that key as the object `a:b` with no component.
+///
+/// NO PAGE KEY THIS TREE WRITES CAN BE AMBIGUOUS, and that is structural rather than measured:
+/// [`crate::engine::state::block_index_written_key`] takes no component parameter and passes a
+/// literal `None`, so the slot is always empty. It is also MEASURED, on 8,000 pages of two key
+/// shapes, by
+/// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus`,
+/// which asserts the component slot empty page by page. An index carrying the ambiguous shape
+/// predates `SHARD_INDEX_FORMAT_VERSION` 27 and is refused by `persistence`'s `<` comparison at
+/// every one of `decode_index_bytes`'s production callers before anything acts on it.
+///
+/// # EXACT BY CONSTRUCTION RATHER THAN BY A REBUILT STRING
+///
+/// The eight slots are SLICES of the key taken at the separator offsets, so concatenating them
+/// with the seven separators reproduces the input byte for byte without anything having to check
+/// it -- provided each decimal slot is in the one spelling the renderer writes, which
+/// [`canonical_decimal`] is what enforces. A verification string built per page would cost an
+/// allocation per page on every load to re-establish what the index arithmetic already gives.
+/// `the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus` drives the
+/// property on 8,000 real pages and
+/// `a_key_that_does_not_round_trip_is_refused_rather_than_guessed` drives the refusals.
+pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKeyUnparsable> {
+    let refuse = |because: &'static str| BlockRefKeyUnparsable { key: key.to_string(), because };
+    // Six fields from the right -- the five numbers and the component slot -- so six separators.
+    let mut cut = key.len();
+    let mut at = [0usize; 6];
+    for slot in 0..6 {
+        match key[..cut].rfind(':') {
+            Some(found) => {
+                at[slot] = found;
+                cut = found;
+            }
+            None => {
+                return Err(refuse(
+                    "it holds fewer than seven separators, so it cannot be the eight-slot \
+                     composite the page index is keyed by",
+                ))
+            }
+        }
+    }
+    let head = &key[..at[5]];
+    let (kind, object_key) = head.split_once(':').ok_or_else(|| {
+        refuse(
+            "its head holds no separator, so there is no slot in it for a kind and an object key \
+             both",
+        )
+    })?;
+    let numeric = |text: &str, which: &'static str| {
+        canonical_decimal(text).ok_or(BlockRefKeyUnparsable { key: key.to_string(), because: which })
+    };
+    Ok(BlockRefKeyParts {
+        kind,
+        object_key,
+        component: &key[at[5] + 1..at[4]],
+        block_slab_id: numeric(
+            &key[at[4] + 1..at[3]],
+            "its slab id slot is not a decimal in the spelling the renderer writes",
+        )?,
+        offset: numeric(
+            &key[at[3] + 1..at[2]],
+            "its offset slot is not a decimal in the spelling the renderer writes",
+        )?,
+        length: numeric(
+            &key[at[2] + 1..at[1]],
+            "its length slot is not a decimal in the spelling the renderer writes",
+        )?,
+        block_id: numeric(
+            &key[at[1] + 1..at[0]],
+            "its block id slot is not a decimal in the spelling the renderer writes",
+        )?,
+        generation: numeric(
+            &key[at[0] + 1..],
+            "its generation slot is not a decimal in the spelling the renderer writes",
+        )?,
+    })
+}
+
 // ---------------------------------------------------------------------------------------------
 // WHAT THIS STORE READS OFF DISK, COUNTED WHERE THE READING HAPPENS.
 //

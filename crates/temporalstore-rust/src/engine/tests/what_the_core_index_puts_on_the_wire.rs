@@ -276,10 +276,50 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 // a temporary it uses for the handle and the lookup rebuild without storing it. Nothing on disk
 // moves and no stamp is owed -- and the cost is that both directions become hand-written, not just
 // the encoder.
+//
+// # AND A FOURTH ROUTE WAS TAKEN INSTEAD: THE MEMBER LEAVES AND THE STAMP PAYS FOR IT
+//
+// Everything above is unchanged as analysis and one of its conclusions no longer describes the
+// tree. #2350 measured the member at 30.0 B/object of stream and 2.34 to 2.96 B/object of the
+// shipped container -- so "that IS a byte change" stopped being a reason not to do it and became a
+// price. `SHARD_INDEX_FORMAT_VERSION` moved 26 -> 27 and the entry writes three members, not five:
+// `model_id` went with `object_key`, for the same reason and at a further 20.0 B/object.
+//
+// THE RIGHT-ANCHORED PARSE IS WHAT THE DECODER DOES NOW, and the property it is held against is no
+// longer held at a distance. `index_log::block_ref_key_parts` cuts the six right-hand fields from
+// the RIGHT and the kind from the LEFT, so an object key keeps every colon it arrived with --
+// `{collection_key}:{entity_hash}` included -- and
+// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus`
+// asserts the component slot EMPTY and the parse exact on all 8,000 pages of two key shapes, rather
+// than relying on it.
+//
+// THE COLLISION BELOW IS STILL REAL AND IS STILL THE LIMIT, which is why that test keeps its name
+// and its claim. A non-empty component containing a colon makes the component/object-key boundary
+// unrecoverable, and a positional parse resolves it one way: the key the test builds reads back as
+// the object `a:b` with no component, which is one of its two identities and not the other. No
+// writer in this tree composes a page key with a component -- `block_index_written_key` passes a
+// literal `None` -- so no index this binary writes can contain the ambiguous shape; an index that
+// DOES carry one predates the stamp and is refused by `persistence`'s `<` comparison on every one
+// of `decode_index_bytes`'s six production callers before anything acts on it. That is the
+// narrowness this block warned about, now written down as the boundary of a shipped decision
+// rather than as a reason not to make one.
 // =================================================================================================
 
+/// THE OBJECT KEY IS NO LONGER A MEMBER OF THE ENTRY, AND THIS TEST'S CLAIM INVERTED WITH IT.
+///
+/// It was `a_page_entry_carries_its_object_key_as_a_member_on_the_wire` and it asserted exactly
+/// that -- the ground for "removing the field removes a member from every stored entry, which IS a
+/// byte change". The byte change has been made and paid for with `SHARD_INDEX_FORMAT_VERSION` 27,
+/// so the member is gone and the test is RENAMED rather than re-goldened: a name that asserts the
+/// opposite of what the body checks is worse than a stale golden.
+///
+/// WHAT IT ASSERTS NOW IS THE EXACT MEMBER SET, which is more than the old `contains` did. Three
+/// members and no more, with the two historically skipped terms still absent -- so a member
+/// arriving back, or a fourth arriving for the first time, fails here. And the stored key is
+/// asserted to carry the characters, which is the half that has to stay true for the decoder's
+/// parse to have a source at all.
 #[test]
-fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
+fn a_page_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     use crate::engine::state::{BlockIndex, BlockSlabLiveIndex};
 
     let mut bucket = BucketNode::default();
@@ -315,20 +355,30 @@ fn a_page_entry_carries_its_object_key_as_a_member_on_the_wire() {
     println!("a page entry writes these members: {members:?}");
     println!("under this stored key: {stored_key}");
 
-    // THE CLAIM. The object key is a MEMBER, so taking the field off the entry takes a member off
-    // the wire unless the encoder supplies it from elsewhere. The two skipped terms are absent
-    // from this list, which is the control showing the list distinguishes skipped from written.
-    assert!(
-        members.contains(&"object_key"),
-        "the object key is written as a member of the entry: {members:?}"
+    // THE CLAIM, AS AN EXACT SET. The object key and the kind are the composite key's second and
+    // first slots and the decoder reads them back out of it, so neither is a member any more --
+    // and the member count is part of the encoding, because the served index is msgpack
+    // `with_struct_map` and `serialize_struct` writes a map header of exactly this length.
+    assert_eq!(
+        vec!["address", "deleted", "dirty"],
+        members,
+        "the stored member set of a page entry moved; it is three at \
+         `SHARD_INDEX_FORMAT_VERSION` 27 and the arity is part of the encoding, so a member \
+         arriving or leaving owes another stamp step"
     );
+    // AND THE TWO HISTORICALLY SKIPPED TERMS ARE STILL ABSENT, which is the control showing the
+    // list distinguishes skipped from written rather than being empty of everything.
     assert!(
         !members.contains(&"kind"),
-        "`kind` is skipped, so its absence is what makes the assertion above informative"
+        "`kind` is skipped, so its absence is what makes the set above informative"
     );
     assert!(
         !members.contains(&"routing_bucket") && !members.contains(&"routing_slot"),
         "the routing bucket is skipped and injected by the node, so it is absent too"
+    );
+    assert!(
+        !members.contains(&"object_key") && !members.contains(&"model_id"),
+        "the entry writes its own copy of an identity the key already spells: {members:?}"
     );
 
     // AND THE STORED KEY CARRIES THE CHARACTERS TOO, which is the half the hopeful story rested on.

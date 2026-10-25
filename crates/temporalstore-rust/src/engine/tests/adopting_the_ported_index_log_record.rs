@@ -562,10 +562,18 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 26,
+        current, 27,
         "costed against 24; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
+    // RE-READ AT 26 -> 27, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
+    //
+    // 27 is a PAGE ENTRY dropping the `object_key` and `model_id` it restated from the key it is
+    // filed under. This module costs the POSITIONAL index-log row, and the row is untouched: the
+    // entry's two retired keys are the SERVED index's named map, while `IndexItemRow` carries its
+    // own `block_ref_key` slot and `block_ref_key_from_parts` is unchanged -- the new
+    // `block_ref_key_parts` beside it is an addition with no slot of its own. So the
+    // 550-against-595 comparison for eight page items is untouched.
     // RE-READ AT 23 -> 24, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 24 is `expires_at_ms` joining `u64_ledgers` as a third domain. It was a STORED top-level key
@@ -721,8 +729,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 25 && current != 27,
-        "bracketed, so 26 is exact and not an artefact of the comparison above"
+        current != 26 && current != 28,
+        "bracketed, so 27 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

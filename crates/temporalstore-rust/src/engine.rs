@@ -2816,7 +2816,37 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// FIFTEEN IS FREE, MEASURED THE WAY FOURTEEN'S NOTE PRESCRIBES -- by reading this constant out
 /// of every `matrixark` remote ref rather than by grepping history. The maximum any tip holds is
 /// 14 (on seventeen refs); no tip holds 15.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 26;
+/// MOVED 26 -> 27 WHEN A PAGE ENTRY STOPPED RESTATING THE KEY IT IS FILED UNDER.
+///
+/// `object_key` and `model_id` are the second and first slots of the composite key the page index
+/// is keyed by, and the entry wrote both again as named fields. #2350 measured that the key's
+/// characters were NOT READ BACK -- every page key in a 2,000-key index replaced by the decimal of
+/// its handle, fed to the production decoder and re-encoded, produced a byte-identical `slot_index`
+/// -- so each fact was stored twice and read once, from the copy that costs 4.4x more. The decoder
+/// parses the key now (`index_log::block_ref_key_parts`) and the entry writes three keys instead of
+/// five.
+///
+/// THIS BUMP HAS BOTH OF THE TWO SHAPES THIS CONSTANT'S HISTORY DISTINGUISHES, one per direction,
+/// and the direction that needs it is NOT the one a reader expects.
+///
+///   * A NEW BINARY READING OLD BYTES IS 13'S SHAPE AND NEEDS NO STAMP AT ALL. The stored entry's
+///     two extra keys are dropped by the named decoder, silently, and the reconstruction reads the
+///     SAME two values out of the key beside them -- so an old index decodes to exactly the index
+///     it decoded to before. That is not assumed: `page_entry_names`'s `OLD_STORE_INDEX` is bytes a
+///     pre-change binary wrote, and `an_index_written_before_this_change_loads_page_for_page`
+///     compares every page of it field by field against a committed table.
+///   * AN OLD BINARY READING NEW BYTES IS WHAT THE STAMP IS SPENT ON, and the msgpack container
+///     refuses on EQUALITY in its header before decoding anything -- so 27 makes that refusal
+///     clean, where without a bump the old binary would reach `StoredPageEntry` and fail on a
+///     missing required field, reporting corruption for a format step.
+///
+/// So the trade is unusual for this constant: the bump costs every existing store a replay it did
+/// not strictly need, and buys a rollback that refuses rather than one that looks corrupt. It is
+/// spent that way deliberately, and the half that would have been silent is the half that is driven
+/// against committed bytes instead.
+///
+/// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 27;
 
 /// Serialize a shard index, stamping the current format version.
 ///

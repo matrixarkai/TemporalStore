@@ -1417,16 +1417,27 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
     // reason alone -- while its twin below, which calls `stored_model_kind` directly and so
     // reaches the expectation unescaped, passed the whole time. Reading the error here
     // removes the question: the assertion is against the `Display` text a caller sees.
-    // PLANTED ON A REAL ENTRY. Encoding a hand-written map would make this test assert about an
-    // address wire shape it has no business knowing; mutating one field of a genuine encoding
-    // plants exactly the defect and nothing else.
-    let mut json = serde_json::to_value(&crate::engine::state::PageEntryAt {
-        page: &sample_entry(),
-        object_key: SAMPLE_ENTRY_OBJECT_KEY,
-    })
-    .expect("encode");
-    json["model_id"] = serde_json::Value::String("not_a_model_kind".to_string());
-    let error = serde_json::from_value::<crate::engine::state::StoredPageEntry>(json)
+    // PLANTED ON A REAL ENTRY AND A REAL KEY, AND THE PLANT MOVED ONTO THE KEY.
+    //
+    // It used to overwrite the entry's own `model_id`. The entry has no such field: the spelling
+    // is the composite key's LEFTMOST SLOT and the decode reads it back out of there, so a stored
+    // spelling with no row now arrives in the key -- and a plant on a field that no longer exists
+    // is not a weaker control, it is none. The key is rendered by the production renderer and only
+    // its kind slot is replaced, so this plants exactly the defect and nothing else.
+    let page = sample_entry();
+    let real_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &page);
+    let planted = real_key.replacen(page.model_id.as_str(), "not_a_model_kind", 1);
+    assert_ne!(
+        real_key, planted,
+        "the plant matched nothing in {real_key:?}, so the refusal below would be about the real \
+         spelling"
+    );
+    let stored = serde_json::from_value::<crate::engine::state::StoredPageEntry>(
+        serde_json::to_value(&crate::engine::state::PageEntryAt { page: &page }).expect("encode"),
+    )
+    .expect("a real entry decodes");
+    let error = stored
+        .into_parts_from_key(&planted)
         .err()
         .expect("a spelling with no row must be refused, not decoded")
         .to_string();
@@ -1547,14 +1558,31 @@ fn the_two_derivations_of_the_report_byte_agree() {
 fn a_retired_spelling_still_decodes_into_a_page_entry() {
     let mut seen = 0usize;
     for spelling in ["sequence", "context_embedding"] {
-        let mut json = serde_json::to_value(&crate::engine::state::PageEntryAt {
-            page: &sample_entry(),
-            object_key: SAMPLE_ENTRY_OBJECT_KEY,
-        })
-        .expect("encode");
-        json["model_id"] = serde_json::Value::String(spelling.to_string());
-        let page = serde_json::from_value::<crate::engine::state::StoredPageEntry>(json)
+        // THE SPELLING IS NAMED IN THE KEY, which is where a stored index carries it now. The
+        // entry has no `model_id` field, so a retired row arriving on an entry is not a state a
+        // store can be in; a retired row arriving in a page's KEY is.
+        let sample = sample_entry();
+        let real_key =
+            crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &sample);
+        let key = real_key.replacen(sample.model_id.as_str(), spelling, 1);
+        assert_ne!(
+            real_key, key,
+            "the retired spelling was not planted into {real_key:?}, so this arm is about the \
+             live kind instead"
+        );
+        let stored = serde_json::from_value::<crate::engine::state::StoredPageEntry>(
+            serde_json::to_value(&crate::engine::state::PageEntryAt { page: &sample })
+                .expect("encode"),
+        )
+        .expect("a real entry decodes");
+        let (object_key, page) = stored
+            .into_parts_from_key(&key)
             .unwrap_or_else(|err| panic!("a store carrying {spelling:?} must still load: {err}"));
+        assert_eq!(
+            SAMPLE_ENTRY_OBJECT_KEY,
+            &*object_key,
+            "the object key came back as something else beside the retired kind"
+        );
         assert_eq!(
             spelling,
             page.model_id.as_str(),
@@ -1606,7 +1634,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // THROUGH THE WRAPPER IN ALL THREE ENCODINGS, and the msgpack pair is why the wrapper counts
     // its fields rather than hard-coding one: `to_vec` writes the entry POSITIONALLY, so a field
     // count or an order that moved would move these bytes and not just the named form's.
-    let at = crate::engine::state::PageEntryAt { page: &page, object_key: SAMPLE_ENTRY_OBJECT_KEY };
+    let at = crate::engine::state::PageEntryAt { page: &page };
     let named = rmp_serde::to_vec_named(&at).expect("named encode");
     let positional = rmp_serde::to_vec(&at).expect("positional encode");
     let json = serde_json::to_value(&at).expect("json encode");
@@ -1618,14 +1646,29 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         json
     );
 
-    // THE MODEL SPELLING IS STILL A STRING ON THE WIRE. This is the control's whole content: a
-    // number here would mean the format moved.
-    assert_eq!(
-        serde_json::Value::String("string".to_string()),
-        json["model_id"],
-        "the model spelling is supposed to be written as the string it always was; it is written \
-         as {:?}",
-        json["model_id"]
+    // THE MODEL SPELLING IS STILL A STRING ON THE WIRE -- AND IT HAS MOVED OFF THE ENTRY ONTO THE
+    // KEY, WHICH IS A CHANGE TO THIS CONTROL'S SUBJECT AND IS WRITTEN UP RATHER THAN RELAXED.
+    //
+    // The claim was "the spelling is written as the string it always was, on the entry". Half of
+    // that is unchanged: it is still a STRING and not a number, so the migration hazard this
+    // control exists for -- hex parsed as a length, a handle parsed as a string -- still does not
+    // exist. What moved is WHERE: it is the composite key's leftmost slot now, and the entry
+    // writes no copy. Asserting the old location would be asserting the change away.
+    assert!(
+        json.get("model_id").is_none(),
+        "the entry still writes its own copy of the model spelling, which the composite key \
+         already spells: {json}"
+    );
+    assert!(
+        json.get("object_key").is_none(),
+        "the entry still writes its own copy of the object key, which the composite key already \
+         spells: {json}"
+    );
+    let stored_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &page);
+    assert!(
+        stored_key.starts_with("string:"),
+        "the model spelling is supposed to be written as the string it always was, in the key's \
+         leftmost slot; the key reads {stored_key:?}"
     );
 
     // And it round-trips through both encoders, positionally included -- which is the encoder a
@@ -1633,14 +1676,21 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // DECODED INTO THE STORED SHAPE, which is what the wire holds: the entry itself has no
     // `Deserialize`, and the positional encode is exactly why that matters -- a field count or an
     // order that moved between the two wrappers would land here and nowhere else.
+    //
+    // AND THE IDENTITY COMES FROM THE KEY, NOT FROM THE ROW. That is what makes the POSITIONAL arm
+    // worth keeping: the row is three slots now, and a field count or an order that moved would
+    // land here and nowhere else, while the object key and the kind are supplied from the one
+    // place that still has them.
     let (named_key, from_named) =
         rmp_serde::from_slice::<crate::engine::state::StoredPageEntry>(&named)
             .expect("named decode")
-            .into_parts();
+            .into_parts_from_key(&stored_key)
+            .expect("the key the production renderer wrote must invert");
     let (positional_key, from_positional) =
         rmp_serde::from_slice::<crate::engine::state::StoredPageEntry>(&positional)
             .expect("positional decode")
-            .into_parts();
+            .into_parts_from_key(&stored_key)
+            .expect("the key the production renderer wrote must invert");
     for (label, key, decoded) in [
         ("named", &named_key, &from_named),
         ("positional", &positional_key, &from_positional),

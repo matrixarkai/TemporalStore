@@ -27,16 +27,25 @@
 //!
 //! # WHAT IT MEASURED
 //!
-//! THE COUNT IS THREE, uniform over every object in the corpus and identical on the JSON stream and
-//! on the msgpack payload the default codec writes. The three homes:
+//! THE COUNT IS TWO, uniform over every object in the corpus and identical on the JSON stream and
+//! on the msgpack payload the default codec writes. The two homes:
 //!
 //! ```text
 //!     objects/string                                     the model map's key          1.000
 //!     slot_index/bucket_map/*/page_index                 the page entry's map key     1.000
-//!     slot_index/bucket_map/*/page_index/*/object_key    the page entry's field       1.000
 //!                                                                                     -----
-//!                                                                                     3.000
+//!                                                                                     2.000
 //! ```
+//!
+//! AND IT WAS THREE UNTIL THE THIRD HOME WAS CLOSED, WHICH IS THIS MODULE'S OWN PROPOSAL CLOSING.
+//! The third row was `slot_index/bucket_map/*/page_index/*/object_key`, the page entry's own field,
+//! at 1.000 per object. The entry stopped writing it at `SHARD_INDEX_FORMAT_VERSION` 27, when the
+//! decoder began parsing the composite key the page is filed under -- and this module is where the
+//! removal was CONFIRMED to have landed in the place it said the copy lived: the clause asserting
+//! that term non-zero failed on the first suite run after the change, and it is inverted now, to
+//! assert the entry holds no copy at all. Every surface figure below was taken at three copies and
+//! is 14 B/object of key characters higher than the module now prints at the published width; the
+//! arms compute the live ones, the header does not.
 //!
 //! THE SURFACE, at the 14-byte key the published per-object figures were taken on, fitted over 499
 //! -> 1,999 -> 7,999 objects:
@@ -72,23 +81,30 @@
 //! of two to five hundred; it cannot reach a per-entry figure in the tens, because the bytes are not
 //! in the key.
 //!
-//! AND THE DUPLICATION IS ALREADY FREE WHERE IT IS PAID. One key byte costs 3.000 B of msgpack
+//! AND THE DUPLICATION IS ALREADY FREE WHERE IT IS PAID. One key byte cost 3.000 B of msgpack
 //! payload -- the three copies, exactly -- and **0.651 B of shipped container** with keys that share
-//! no structure. The frame collapses the three copies to under two thirds of ONE, a 4.6x collapse,
+//! no structure. The frame collapsed the three copies to under two thirds of ONE, a 4.6x collapse,
 //! so "stored three times" is a statement about the payload the encoder builds and not about the
-//! artefact that lands. Removing copies two and three would save almost nothing on disk; only
-//! shortening the key itself moves the shipped figure, and at the published width there is nothing
-//! to shorten it to.
+//! artefact that lands. That is the finding this module is for, and it survives the third copy
+//! leaving: the per-byte payload cost is the COPY COUNT, so it is 2.000 now, while the shipped
+//! figure barely moves. Only shortening the key itself moves the artefact, and at the published
+//! width there is nothing to shorten it to.
 //!
 //! # THE COUNT IS MEASURED, NOT READ OFF THE STRUCTURE
 //!
-//! A count derived by reading the serde attributes would be a document that rots, and it would be
-//! wrong in the case that matters: the page entry does NOT hold the key -- `BlockIndex` is
-//! `model_id`, `address`, `dirty`, `deleted` and nothing else -- and yet the page entry's WRITTEN
-//! form carries `object_key`, injected from beside it by `impl Serialize for CoreIndex`. A reader
-//! auditing the struct would conclude the characters are not there; they are, twice over inside the
-//! core index alone. So nothing here is classified by name. Each instance is found by scanning the
-//! encoded bytes for the key's own characters and attributed to the part it was found in.
+//! A count derived by reading the serde attributes would be a document that rots, and it would
+//! have been wrong in the case that mattered: the page entry does NOT hold the key -- `BlockIndex`
+//! is `model_id`, `address`, `dirty`, `deleted` and nothing else -- and yet the page entry's
+//! WRITTEN form carried `object_key`, injected from beside it by `impl Serialize for CoreIndex`. A
+//! reader auditing the struct would have concluded the characters were not there; they were, twice
+//! over inside the core index alone.
+//!
+//! AND THE SAME HAZARD NOW POINTS THE OTHER WAY, WHICH IS WHY THE RULE IS KEPT RATHER THAN RELAXED.
+//! The entry's written form no longer carries the key -- so a reader auditing `PageEntryAt`'s three
+//! `serialize_field` calls would conclude correctly, by luck, and a reader auditing `BlockIndex`
+//! would still be reading the wrong thing. Nothing here is classified by name either way. Each
+//! instance is found by scanning the encoded bytes for the key's own characters and attributed to
+//! the part it was found in.
 //!
 //! # TWO KEY SHAPES, BECAUSE ONE OF THEM WOULD HAVE BEEN A FIXTURE ARTEFACT
 //!
@@ -129,8 +145,9 @@
 //! taken as a difference between two measured totals rather than by looking at either one's name,
 //! because no walk over a map's values can see what its keys cost.
 //!
-//! NO PRODUCTION CODE CHANGES HERE AND NO STORED SHAPE MOVES, so no `SHARD_INDEX_FORMAT_VERSION`
-//! step is owed.
+//! THE THIRD COPY HAS SINCE BEEN REMOVED AND THE STAMP MOVED 26 -> 27 FOR IT. When this module was
+//! written there were no production changes beside it and no stored shape moved; the count it
+//! reports is a measurement of the index and it moved when the index did.
 //!
 //! rust-internal: measures this crate's own index codec, no product behaviour
 
@@ -699,6 +716,16 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         }
         page_field_instances += in_values;
         page_key_instances += in_whole_map - in_values;
+        // THE CHARACTERS MOVED RATHER THAN LEFT, PER BUCKET. The entry's copy is gone, so a page
+        // index's whole count must now be its KEYS' count -- asserted here, bucket by bucket,
+        // because a total asserted once could be satisfied by some buckets holding a field copy and
+        // others holding no key at all.
+        assert_eq!(
+            in_whole_map, in_whole_map - in_values,
+            "[CLAUSE the-entry-holds-no-copy] a page index holds {in_whole_map} key instance(s) of \
+             which {in_values} are inside its ENTRIES, so this bucket's entries still carry a copy \
+             of the object key"
+        );
     }
     println!();
     println!("================ INSIDE THE BUCKET MAP ================");
@@ -719,10 +746,24 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         "[CLAUSE each-term-nonzero] the page-entry map keys hold no key characters, so this term \
          is a zero that would have been absorbed into another"
     );
-    assert!(
-        page_field_instances > 0,
-        "[CLAUSE each-term-nonzero] the page-entry `object_key` fields hold no key characters, so \
-         this term is a zero that would have been absorbed into another"
+    // AND THIS TERM IS NOW EXACTLY ZERO, WHICH IS A SUBJECT CHANGE AND NOT A RELAXED CLAUSE.
+    //
+    // It read `page_field_instances > 0` under `each-term-nonzero`, and it FAILED on the first
+    // suite run after the page entry stopped writing its own copy of the object key -- which is
+    // how the removal was confirmed to have landed where this module says the copy lived. The
+    // clause is INVERTED rather than deleted: the term has to be zero now, and a non-zero here
+    // would mean the field came back.
+    //
+    // THE NON-ZERO DISCIPLINE MOVES ONTO THE IDENTITY BESIDE IT. A term asserted zero says nothing
+    // about whether the characters are still durable, so the two statements that carry the weight
+    // are that the map KEYS hold them (asserted above) and that the page index's instances are now
+    // ENTIRELY in its keys -- the characters moved, they did not leave the index.
+    assert_eq!(
+        0, page_field_instances,
+        "[CLAUSE the-entry-holds-no-copy] the page entries hold {page_field_instances} instance(s) \
+         of an object key's characters. `object_key` left the entry at \
+         `SHARD_INDEX_FORMAT_VERSION` 27 because the composite key the entry is filed under \
+         already spells it, so a copy on the entry means the field has come back"
     );
     println!(
         "  page-entry names          {page_name_bytes:>8} B in all, {:.2} B/object as written",

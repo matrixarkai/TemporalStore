@@ -2250,7 +2250,7 @@ impl<'de> Deserialize<'de> for DeletedObjectIndex {
 /// disk, so a handle has to mean the same block in every process that reads the file. Assigning
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
 #[derive(Debug, Default, Clone, Deserialize)]
-#[serde(from = "BTreeMap<String, StoredPageEntry>")]
+#[serde(try_from = "BTreeMap<String, StoredPageEntry>")]
 pub(super) enum BlockIndexMap {
     /// A bucket holding nothing: no list, no node, no allocation.
     ///
@@ -3755,27 +3755,34 @@ impl FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap {
 /// twice over.
 fn page_index_and_identities(
     flat: BTreeMap<String, StoredPageEntry>,
-) -> (BlockIndexMap, Vec<(u64, Arc<str>)>) {
+) -> Result<(BlockIndexMap, Vec<(u64, Arc<str>)>), String> {
     let mut map = BlockIndexMap::default();
     let mut identities = Vec::with_capacity(flat.len());
-    for stored in flat.into_values() {
-        // READ ONCE, FROM THE ONE PLACE THAT STILL HAS IT, and handed both to the handle and to
-        // the caller. The key is MOVED out of the stored entry rather than cloned off it.
-        let (object_key, page) = stored.into_parts();
+    // INTO_ITER AND NOT INTO_VALUES, WHICH IS THE WHOLE CHANGE ON THIS SIDE. The stored map's keys
+    // were thrown away here, which is why #2350 could measure that the characters of a page key
+    // are not read back: they reached this loop and were dropped. They are the SOURCE now.
+    for (key, stored) in flat {
+        let (object_key, page) = stored.into_parts_from_key(&key)?;
         let handle = block_index_handle(&object_key, &page);
         map.insert_unaccounted(handle, page);
         identities.push((handle, object_key));
     }
-    (map, identities)
+    Ok((map, identities))
 }
 
 /// THE FIXTURE DOOR onto the same builder, for the bare maps that decode with no node around them.
 ///
 /// It discards the identities because it has nobody to hand them to. One implementation and two
 /// doors; two builders that agree today is the hazard this file keeps a record of.
-impl From<BTreeMap<String, StoredPageEntry>> for BlockIndexMap {
-    fn from(flat: BTreeMap<String, StoredPageEntry>) -> Self {
-        page_index_and_identities(flat).0
+///
+/// `TryFrom` AND NOT `From`, since the identity comes out of the key. A `From` would have to PANIC
+/// on a key it cannot invert, and `#[serde(try_from = ..)]` is what turns the refusal into a decode
+/// error instead -- the same `Err`-not-panic rule the rest of this load path follows.
+impl TryFrom<BTreeMap<String, StoredPageEntry>> for BlockIndexMap {
+    type Error = String;
+
+    fn try_from(flat: BTreeMap<String, StoredPageEntry>) -> Result<Self, Self::Error> {
+        Ok(page_index_and_identities(flat)?.0)
     }
 }
 
@@ -3810,72 +3817,125 @@ impl Serialize for PageIndexAt<'_> {
     }
 }
 
-/// THE ENTRY AS IT REACHES THE WIRE, WITH ITS IDENTITY INJECTED FROM BESIDE IT.
+/// THE ENTRY AS IT REACHES THE WIRE, AND IT NO LONGER RESTATES THE KEY IT IS FILED UNDER.
 ///
-/// `BlockIndex` no longer derives `Serialize`, for one reason: `object_key` is a SERIALIZED MEMBER
-/// and a derive can only read it off the entry. This writes the same five keys, in the same order,
-/// with the same names -- `object_key`, `model_id`, `address`, `dirty`, `deleted` -- taking the
-/// first from the caller and the rest from the page.
+/// # THREE KEYS NOW, NOT FIVE, AND THE TWO THAT LEFT WERE THE KEY'S OWN FIELDS
+///
+/// `object_key` and `model_id` are the key's second and first slots. `block_index_written_key`
+/// renders both into the name this entry is filed under, and #2350 measured that the characters of
+/// the key were NOT READ BACK by the decoder -- every page key in a 2,000-key index was replaced
+/// by the decimal of its handle, fed to the production decoder and re-encoded, and the
+/// `slot_index` that came back was byte-identical. So the map held each fact twice and read it
+/// once, from the copy that costs 4.4x more.
+///
+/// WHICH COPY GOES IS NOT A MATTER OF TASTE AND THE INTUITIVE ANSWER IS WRONG. #2350 priced both
+/// directions on the shipped container at two key shapes and two store sizes: re-keying the map by
+/// the live handle saves 19.6 B/object of STREAM and lands a container 5.1 to 6.8 B/object LARGER
+/// at every point, because the composite is the most compressible structure in the index -- sorted,
+/// long shared prefixes, repeating decimal runs. The entry side pays. The two are mutually
+/// exclusive: exactly one copy of each fact may go.
+///
+/// # `address` STAYS, AND THAT IS A MEASUREMENT RATHER THAN A SCOPE DECISION
+///
+/// Its five values are in the key too, at 12.008 B/object against 53.008 as the named object. They
+/// cannot come back out of it. `block_index_written_key` renders
+/// `block_id().unwrap_or_default()` and `generation().unwrap_or_default()`, and
+/// `ElementEntry::block_id()` is `None` EXACTLY while the block is log-resident -- so a staged page
+/// and the first page of an object in a slab render ONE key and differ in `log_backed()`, which has
+/// production readers.
+/// `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
+/// builds both and asserts the keys identical. Trimming the address slot-wise instead is blocked
+/// independently: `BlockAddressWire` is shared with the index log, which packs it POSITIONALLY.
+///
+/// # THE FIELD COUNT IS PART OF THE ENCODING
+///
+/// The served index is msgpack `with_struct_map`, so `serialize_struct` writes a map header of
+/// exactly this length -- the same reason `BucketNode` counts its own optional key rather than
+/// hard-coding one. Three is therefore a stored-format fact and
+/// `SHARD_INDEX_FORMAT_VERSION` 27 is what pays for it.
 ///
 /// THE KEY SET IS OBSERVED, NOT READ OFF THE ATTRIBUTES.
 /// `page_entry_names::capture_the_stored_spelling_of_a_page_entry` prints a real encode of an
-/// entry and of a whole index; the five keys above are what it printed before this type existed
-/// and what it prints now.
-///
-/// THE FIELD COUNT IS PART OF THE ENCODING. The served index is msgpack `with_struct_map`, so
-/// `serialize_struct` writes a map header of exactly this length -- the same reason `BucketNode`
-/// counts its own optional key rather than hard-coding one.
+/// entry and of a whole index, and
+/// `page_entry_names::the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` pins the three
+/// written forms byte for byte.
 pub(super) struct PageEntryAt<'a> {
     pub(super) page: &'a BlockIndex,
-    pub(super) object_key: &'a str,
 }
 
-/// THE ENTRY AS IT ARRIVES FROM THE WIRE, WITH THE IDENTITY STILL BESIDE IT.
+/// THE ENTRY AS IT ARRIVES FROM THE WIRE, AND THE IDENTITY IS NOT ON IT ANY MORE.
 ///
-/// The counterpart of [`PageEntryAt`], and it exists for a sharper reason than symmetry. A derived
-/// `Deserialize` on `BlockIndex` keeps COMPILING once `object_key` is not a field: serde's derive
-/// ignores a key it has no field for unless `deny_unknown_fields` is set. So the removal would
-/// have taken the identity off the load path without a single error, and `object_block_lookup` --
-/// `skip_serializing`, rebuilt from what the decode reads -- would have come back empty on every
-/// load. That is the exact state the encoder refuses to write.
+/// # IT STILL EXISTS, AND FOR A SHARPER REASON THAN BEFORE
 ///
-/// THE FIVE FIELDS ARE THE DERIVE'S, UNCHANGED AND UNATTRIBUTED. `BlockIndex` carried no
-/// `#[serde(default)]` and no `rename`, so all five keys are required and spelled as declared;
-/// adding an attribute here would be a stored-format change wearing a refactor's clothes.
-/// `page_entry_names::an_index_written_before_this_change_loads_page_for_page` is what drives it.
+/// A derived `Deserialize` on `BlockIndex` would keep COMPILING with the fields gone -- serde's
+/// derive ignores a key it has no field for unless `deny_unknown_fields` is set -- so the removal
+/// would have taken the identity off the load path without a single error, and
+/// `object_block_lookup`, which is `skip_serializing` and rebuilt from what the decode reads,
+/// would have come back empty on every load. That is the exact state the encoder refuses to write.
+/// This type is what makes the key the ONLY place the decode can look.
+///
+/// # THE THREE FIELDS ARE THE THREE THE ENTRY WRITES
+///
+/// No `#[serde(default)]` and no `rename`, so all three keys are required and spelled as declared.
+/// AND THE TWO THAT LEFT ARE DELIBERATELY NOT `#[serde(default)]` DECOYS: the derive drops a key it
+/// has no field for, so an index written before this change arrives with its `object_key` and
+/// `model_id` dropped and the reconstruction reads the SAME values out of the key beside them.
+/// `page_entry_names::an_index_written_before_this_change_loads_page_for_page` drives that against
+/// committed bytes, field by field.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct StoredPageEntry {
-    pub(super) object_key: Arc<str>,
-    pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
 }
 
 impl StoredPageEntry {
-    /// The identity, and the entry that no longer holds it.
+    /// The identity read back out of the key this entry was filed under, and the page beside it.
     ///
-    /// Taken apart by VALUE so the shared pointer moves rather than being cloned: every caller
-    /// keeps the key -- the filing map and the identities handed up to the decode both do -- so
-    /// this has to go on costing one pointer and not a copy of the characters.
-    pub(super) fn into_parts(self) -> (Arc<str>, BlockIndex) {
-        let StoredPageEntry {
-            object_key,
-            model_id,
-            address,
-            dirty,
-            deleted,
-        } = self;
-        let page = BlockIndex {
-            // AND THE IDENTITY IS NOT ASSIGNED TO IT, WHICH IS WHY THE RETURN IS A PAIR. The
-            // pointer is not cloned either: it is MOVED out as the first element, so the load
-            // path is handed the key beside the page at the cost of nothing.
-            model_id,
-            address,
-            dirty,
-            deleted,
-        };
-        (object_key, page)
+    /// # THE KEY IS THE SOURCE NOW, AND IT IS EXACTLY INVERTIBLE FOR THESE TWO TERMS
+    ///
+    /// `index_log::block_ref_key_parts` is the inverse of the `block_ref_key_from_parts` that wrote
+    /// the name: the kind is the leftmost field, the five numbers and the component slot are cut
+    /// from the RIGHT, and everything between is the object key -- colons included, which is what
+    /// makes an object key holding a colon come back whole.
+    ///
+    /// # AN `Err` AND NEVER A PANIC
+    ///
+    /// Every caller is a load path. A key that cannot be inverted, or a kind neither half of
+    /// `model_kind_registry` declares, is a decode failure that `load_index` turns into a replay of
+    /// the write-ahead log -- slower and correct. A panic here would make the store unopenable,
+    /// which is the trade `ObjectRecord::try_from` and `StoredModelKind::deserialize` both state in
+    /// as many words.
+    pub(super) fn into_parts_from_key(self, key: &str) -> Result<(Arc<str>, BlockIndex), String> {
+        let parts = crate::index_log::block_ref_key_parts(key).map_err(|error| error.to_string())?;
+        let model_id =
+            crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(parts.kind)
+                .ok_or_else(|| {
+                    // THE SAME WORDS `StoredModelKind::deserialize` REFUSES WITH, deliberately.
+                    // The refusal MOVED when the spelling left the entry -- it used to be the
+                    // field's own `Deserialize` -- and the guards that read the message are about
+                    // the refusal and not about which door raised it, so the phrase they match on
+                    // is kept rather than those guards being loosened.
+                    format!(
+                        "no stored model kind for model id {:?}, read back out of the stored page \
+                         key {key:?}. The kind is that key's leftmost field and the page's own \
+                         copy of it is gone, so there is nothing else to read it from -- and \
+                         mapping it onto a kind it does not have would file the page under the \
+                         wrong object. Declare it in `model_kind_registry`: under `live` if an arm \
+                         of `visit_model_live_blocks` emits it, under `retired` -- with the reason \
+                         an older index can carry it -- if not.",
+                        parts.kind
+                    )
+                })?;
+        let StoredPageEntry { address, dirty, deleted } = self;
+        Ok((
+            // ONE ALLOCATION, WHICH IS THE ONE THE REMOVED FIELD COST. The parse borrows out of the
+            // key; this is where the borrow becomes the `Arc<str>` the filing map and the
+            // identities handed up to the decode share, exactly as the stored field's own
+            // `Deserialize` produced one.
+            Arc::from(parts.object_key),
+            BlockIndex { model_id, address, dirty, deleted },
+        ))
     }
 }
 
@@ -3887,11 +3947,11 @@ impl Serialize for PageEntryAt<'_> {
         use serde::ser::SerializeStruct;
         // NAMED `BlockIndex`, which is what the derive named it. A `serialize_struct` name reaches
         // some formats and not others, and this one must not move either.
-        let mut entry = serializer.serialize_struct("BlockIndex", 5)?;
-        // AN `&str` WHERE THE DERIVE WROTE AN `Arc<str>`, which is the same bytes: serde's impl
-        // for `Arc<T>` forwards to `T`, and `str` writes a string.
-        entry.serialize_field("object_key", self.object_key)?;
-        entry.serialize_field("model_id", &self.page.model_id)?;
+        //
+        // THREE, NOT FIVE. `object_key` and `model_id` are the key's own second and first slots and
+        // the decoder reads them back out of it now; the arity is part of the stored shape, which is
+        // what the stamp step pays for.
+        let mut entry = serializer.serialize_struct("BlockIndex", 3)?;
         entry.serialize_field("address", &self.page.address)?;
         entry.serialize_field("dirty", &self.page.dirty)?;
         entry.serialize_field("deleted", &self.page.deleted)?;
@@ -4026,7 +4086,7 @@ where
         // binary that still had the field decodes.
         entries.push((
             block_index_written_key(beside.object_key, page),
-            PageEntryAt { page, object_key: beside.object_key },
+            PageEntryAt { page },
         ));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -4117,10 +4177,7 @@ impl Serialize for PageIndexNamedBy<'_> {
             .pairs()
             .into_iter()
             .map(|(object_key, page)| {
-                (
-                    block_index_written_key(object_key, page),
-                    PageEntryAt { page, object_key },
-                )
+                (block_index_written_key(object_key, page), PageEntryAt { page })
             })
             .collect();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -6232,8 +6289,13 @@ impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
                     in_memory.ok_or_else(|| M::Error::missing_field("in_memory"))?,
                 );
 
+                // AND A KEY THAT CANNOT BE INVERTED REFUSES THE NODE RATHER THAN FILING A PAGE
+                // UNDER A GUESS. The identity is read back out of the key now, so this is the one
+                // place a stored page key can be rejected -- and the refusal is an `Err`, which
+                // `load_index` turns into a replay of the write-ahead log.
                 let (block_index, page_keys) =
-                    page_index_and_identities(block_index.unwrap_or_default());
+                    page_index_and_identities(block_index.unwrap_or_default())
+                        .map_err(M::Error::custom)?;
 
                 Ok(BucketNodeWithPageKeys {
                     node: BucketNode {

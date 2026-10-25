@@ -813,7 +813,6 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     };
     let encoded = serde_json::to_string(&crate::engine::state::PageEntryAt {
         page: &nameless_entry,
-        object_key: "ef-wire-probe",
     })
     .expect("a page entry serializes");
     assert!(
@@ -828,7 +827,11 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     );
     let decoded = serde_json::from_str::<crate::engine::state::StoredPageEntry>(&encoded)
         .expect("a component-less page entry decodes")
-        .into_parts()
+        .into_parts_from_key(&crate::engine::state::block_index_written_key(
+            "ef-wire-probe",
+            &nameless_entry,
+        ))
+        .expect("the key the production renderer wrote must invert")
         .1;
     // THE DECODER CANNOT ADMIT A NAME INTO AN ENTRY ANY MORE, so this assertion is gone.
     //

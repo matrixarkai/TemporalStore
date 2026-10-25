@@ -1,10 +1,41 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT THE 226 BYTES PER OBJECT INSIDE `slot_index` ARE, TERM BY TERM.
+//! WHAT THE BYTES PER OBJECT INSIDE `slot_index` ARE, TERM BY TERM.
 //!
-//! WHY THIS EXISTS. On the routing range a deployment runs, `0..1023`, `slot_index` is 226.35 B per
-//! stored object and 79.30% of the served index on the one stream that partitions exactly -- both
+//! # THIS MODULE'S HEADLINE PROPOSAL HAS LANDED, AND THE FIGURE IT DECOMPOSES MOVED WITH IT
+//!
+//! Read the rest of this header as the 226.35 B/object state it was written against. It is
+//! **176.35 B/object** now, measured on the same corpus and the same range, and the step is
+//! EXACTLY the 50.0 B/object this module predicted for two of its own terms -- `entry/object_key`
+//! at 30.0 and `entry/model_id` at 20.0. A page entry no longer restates the `object_key` and
+//! `model_id` that the composite key it is filed under already spells; the decoder parses the key
+//! (`index_log::block_ref_key_parts`), which is the load-path change named below as the whole cost
+//! of taking that direction, and `SHARD_INDEX_FORMAT_VERSION` moved 26 -> 27.
+//!
+//! THE PER-PAGE CLASS CARRIES THE WHOLE OF THE STEP: 177.015 -> 127.015 B/object, with per-bucket
+//! at 49.331 and per-shard at 0.004 unmoved. Four things in this module changed with it, each
+//! named where it is:
+//!
+//!   * `entry/object_key` and `entry/model_id` are GONE from `TERMS`, and an entry that writes
+//!     either lands in the `no-unclassified` panic.
+//!   * `page/map_key/kind` and `page/map_key/object_key` are `Identity` rather than `Redundancy`:
+//!     the key is the only copy, and there is no reconstructor left to name.
+//!   * `key-restates-the-entry` is retired and `address-restates-the-key` stands in its place --
+//!     the surviving duplication runs the other way.
+//!   * `the_page_keys_characters_are_not_read_back_by_the_decoder` is
+//!     `the_page_keys_characters_are_read_back_by_the_decoder_now`: a handle-keyed page index is
+//!     REFUSED where it used to decode byte-identically.
+//!
+//! AND THE THIRD FIELD DID NOT GO. `address` is still written twice and will stay: its five VALUES
+//! are in the key, the two PRESENCE bits beside them are not, and
+//! `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
+//! builds the colliding states and asserts the keys identical. Its container price is still
+//! measured here, because pricing a block is what makes it a decision.
+//!
+//! WHY THIS EXISTS. On the routing range a deployment runs, `0..1023`, `slot_index` was 226.35 B
+//! per stored object and 79.30% of the served index on the one stream that partitions exactly --
+//! both
 //! taken as a division at 8,000 objects, which is the quantity named throughout and not the 274.75
 //! B/object SLOPE published beside it for the whole stream. That share was established without
 //! anything being said about what is inside it. "The index is big and `slot_index` is most of it" is
@@ -335,18 +366,14 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("page_index/open_brace", Scale::PerBucket, Nature::Envelope, ""),
     // ---- per-page: the composite map key, split into the eight slots it composes ----
     ("page/map_key_quotes", Scale::PerPage, Nature::Envelope, ""),
-    (
-        "page/map_key/kind",
-        Scale::PerPage,
-        Nature::Redundancy,
-        "the entry's own `model_id` field",
-    ),
-    (
-        "page/map_key/object_key",
-        Scale::PerPage,
-        Nature::Redundancy,
-        "the entry's own `object_key` field",
-    ),
+    // AND THESE TWO STOPPED BEING REDUNDANCY, WHICH IS THE WHOLE OF WHAT THIS MODULE'S HEADLINE
+    // PROPOSAL BOUGHT. They were classed `Redundancy` with the entry's own fields named as their
+    // reconstructor, because the entry wrote both again. It does not: the decoder parses them out
+    // of this key now (`index_log::block_ref_key_parts`), so the key is the ONLY copy and the only
+    // copy of a fact a reader needs is `Identity`. A term is only `Redundancy` where a
+    // reconstructor is NAMED, and there is nothing left to name.
+    ("page/map_key/kind", Scale::PerPage, Nature::Identity, ""),
+    ("page/map_key/object_key", Scale::PerPage, Nature::Identity, ""),
     (
         "page/map_key/component_slot",
         Scale::PerPage,
@@ -390,8 +417,12 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     // ---- per-page: the entry the key is filed against ----
     ("entry/open_brace", Scale::PerPage, Nature::Envelope, ""),
     ("entry/field_tails", Scale::PerPage, Nature::Envelope, ""),
-    ("entry/object_key", Scale::PerPage, Nature::Identity, ""),
-    ("entry/model_id", Scale::PerPage, Nature::Identity, ""),
+    // `entry/object_key` AND `entry/model_id` ARE GONE FROM THIS TABLE BECAUSE THEY ARE GONE FROM
+    // THE INDEX. They were 30.0 and 20.0 B/object of stream and the two cheapest halves of the
+    // 104.0 this module priced; the entry writes three keys now. Deleted rather than left at zero:
+    // `Tally::add` panics on a label the table does not declare, so a term kept here would be a
+    // term something could still be charged to, and `the_slot_index_term_table_is_well_formed`
+    // asserts every declared term is non-zero except the one named structurally empty.
     ("entry/address/field_name", Scale::PerPage, Nature::Envelope, ""),
     ("entry/address/open_brace", Scale::PerPage, Nature::Envelope, ""),
     ("entry/address/field_tails", Scale::PerPage, Nature::Envelope, ""),
@@ -511,9 +542,13 @@ const PAGE_KEY_TERMS: &[&str] = &[
 /// THE ENTRY FIELDS WHOSE VALUES THE COMPOSITE KEY RESTATES, envelope included -- because removing
 /// a field removes its JSON name and its separator too, and a report counting only the value would
 /// understate what the field costs.
+///
+/// TWO MEMBERS LEFT WHEN THE PROPOSAL LANDED. `entry/object_key` and `entry/model_id` were the
+/// first two rows; the entry does not write them any more. What remains restated is the ADDRESS,
+/// and it is restated for good: its five values are in the key, and the two PRESENCE bits beside
+/// them are not, so it cannot be reconstructed. See
+/// `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`.
 const ENTRY_RESTATED_TERMS: &[&str] = &[
-    "entry/object_key",
-    "entry/model_id",
     "entry/address/field_name",
     "entry/address/open_brace",
     "entry/address/field_tails",
@@ -1028,12 +1063,10 @@ fn walk(reading: &Reading) -> Walked {
             tally.add("entry/field_tails", entry.len(), 0);
             for (field, value) in entry.iter() {
                 match field.as_str() {
-                    "object_key" => {
-                        tally.add("entry/object_key", klen(field) + 1 + jlen(value), klen(field) + 1)
-                    }
-                    "model_id" => {
-                        tally.add("entry/model_id", klen(field) + 1 + jlen(value), klen(field) + 1)
-                    }
+                    // NO `object_key` AND NO `model_id` ARMS. They are the key's own second and
+                    // first slots, the decoder reads them back out of it, and the entry writes
+                    // neither -- so an entry carrying one lands in the `no-unclassified` panic
+                    // below, which is the tripwire that says the field came back.
                     "dirty" => {
                         tally.add("entry/dirty", klen(field) + 1 + jlen(value), klen(field) + 1)
                     }
@@ -1069,13 +1102,22 @@ fn walk(reading: &Reading) -> Walked {
                 }
             }
 
-            // ---- THE RECONSTRUCTION, FROM THE ENTRY'S OWN WRITTEN BYTES ----
+            // ---- THE RECONSTRUCTION, AND HALF OF IT IS CLOSED BECAUSE THE PROPOSAL LANDED ----
             //
-            // The address is decoded back out of the written value through the production
-            // `Deserialize`, which is what a load has in hand, and the key is then rebuilt by
-            // THIS MODULE'S formatter. Not by `block_index_written_key`: comparing that against
-            // the written key would compare one renderer with itself and would say nothing about
-            // whether the entry carries the terms the key spells.
+            // THIS CLAUSE WAS `key-restates-the-entry` AND IT HAS INVERTED. It rebuilt the whole
+            // page key from the entry's own written `object_key`, `model_id` and `address`, and
+            // asserted the result was the key the entry is filed under -- which was the evidence
+            // that the key held nothing the entry did not, so calling it redundancy was fair. The
+            // entry writes neither name now, so that comparison has ONE SOURCE on two of its
+            // terms and would be a renderer compared with itself. It is RETIRED rather than
+            // weakened: a comparison that cannot disagree is worse than no comparison, because its
+            // name goes on claiming the stronger thing.
+            //
+            // WHAT SURVIVES IS THE OTHER DIRECTION, WHICH IS WHERE THE REMAINING DUPLICATION IS.
+            // The entry's `address` still restates five of the key's slots, so the address is
+            // decoded back out of the written value through its production `Deserialize` -- which
+            // is what a load has in hand -- and compared against the five decimals in the key,
+            // read by THIS MODULE'S splitter and not by the production parse.
             let decoded: crate::ElementEntry = serde_json::from_value(
                 entry
                     .get("address")
@@ -1083,37 +1125,34 @@ fn walk(reading: &Reading) -> Walked {
                     .clone(),
             )
             .expect("a written address decodes through its own production impl");
-            let object_key = entry
-                .get("object_key")
-                .expect("a page entry writes `object_key`")
-                .as_str()
-                .expect("`object_key` is written as a string");
-            let model_id = entry
-                .get("model_id")
-                .expect("a page entry writes `model_id`")
-                .as_str()
-                .expect("`model_id` is written as a string");
-            let rebuilt = format!(
-                "{}:{}::{}:{}:{}:{}:{}",
-                model_id,
-                object_key,
-                decoded.block_slab_id(),
-                decoded.offset(),
-                decoded.length(),
-                decoded.block_id().unwrap_or_default(),
-                decoded.generation().unwrap_or_default()
-            );
             assert_eq!(
-                &rebuilt, page_key,
-                "[CLAUSE key-restates-the-entry] the page key rebuilt from the entry's own written \
-                 bytes is not the key the entry is filed under, so the key carries a term the \
-                 entry does not and calling it redundancy would be wrong"
+                (
+                    slots.block_slab_id.as_str(),
+                    slots.offset.as_str(),
+                    slots.length.as_str(),
+                    slots.block_id.as_str(),
+                    slots.generation.as_str(),
+                ),
+                (
+                    decoded.block_slab_id().to_string().as_str(),
+                    decoded.offset().to_string().as_str(),
+                    decoded.length().to_string().as_str(),
+                    decoded.block_id().unwrap_or_default().to_string().as_str(),
+                    decoded.generation().unwrap_or_default().to_string().as_str(),
+                ),
+                "[CLAUSE address-restates-the-key] the five decimals in the page key {page_key:?} \
+                 are not what the entry's own written address spells, so the address is not a \
+                 restatement of them and classing it redundancy would be wrong"
             );
             keys_reconstructed += 1;
 
-            // AND THE OBJECT ID THE NODE FILES THIS PAGE'S OBJECT UNDER, from the same two
-            // written terms. A LIVE page only: a removal's id goes to `deleted_object_index`,
-            // and this fixture performs none -- which `optional-stays-absent` pins.
+            // AND THE OBJECT ID THE NODE FILES THIS PAGE'S OBJECT UNDER, FROM THE KEY'S OWN TWO
+            // NAME SLOTS -- which is where those two terms live now, and the reason this arm still
+            // has content: the ids in `node/object_index` are derived from a kind and an object key
+            // that the entry no longer carries, so the derivation reads the key.
+            //
+            // A LIVE page only: a removal's id goes to `deleted_object_index`, and this fixture
+            // performs none -- which `optional-stays-absent` pins.
             if !entry
                 .get("deleted")
                 .expect("a page entry writes `deleted`")
@@ -1121,7 +1160,9 @@ fn walk(reading: &Reading) -> Walked {
                 .expect("`deleted` is written as a boolean")
             {
                 derived_object_ids.insert(stable_object_id_from_the_written_terms(
-                    SHARD, model_id, object_key,
+                    SHARD,
+                    &slots.kind,
+                    &slots.object_key,
                 ));
             }
         }
@@ -1266,15 +1307,18 @@ enum Candidate {
     PageKeyBecomesTheHandle,
     /// The composite loses the slot that is always empty, and the separator that delimits it.
     PageKeyDropsTheEmptySlot,
-    /// The entry loses `object_key`, which its own map key spells.
-    EntryDropsObjectKey,
-    /// The entry loses `model_id`, which its own map key spells.
-    EntryDropsModelId,
     /// The entry loses `address`, whose five values its own map key spells.
+    ///
+    /// Priced and BLOCKED, and the reason is not a scope decision. The five VALUES are in the key;
+    /// the two PRESENCE bits beside them are not. `block_index_written_key` renders
+    /// `block_id().unwrap_or_default()`, and `ElementEntry::block_id()` is `None` EXACTLY while a
+    /// block is log-resident -- so a staged page and the first page of an object in a slab render
+    /// ONE key and differ in `log_backed()`, which has production readers.
+    /// `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
+    /// builds both and asserts the keys identical. Trimming the address slot-wise instead is
+    /// blocked independently: `BlockAddressWire` is shared with the index log, which packs it
+    /// POSITIONALLY.
     EntryDropsAddress,
-    /// The entry loses all three, so the composite key is the only copy of each fact. The MIRROR
-    /// of `PageKeyBecomesTheHandle`: exactly one of the two may be taken, never both.
-    EntryDropsWhatTheKeyRestates,
     /// The stored address loses its `oi` slot, which the writer fills from a literal `None`.
     ///
     /// Priced and DECLINED, with the reason in the source rather than in this comment: the index
@@ -1289,10 +1333,7 @@ impl Candidate {
             Candidate::Control => "control: nothing removed",
             Candidate::PageKeyBecomesTheHandle => "page key -> the live map's handle",
             Candidate::PageKeyDropsTheEmptySlot => "page key -> drop the always-empty slot",
-            Candidate::EntryDropsObjectKey => "entry -> drop `object_key`",
-            Candidate::EntryDropsModelId => "entry -> drop `model_id`",
-            Candidate::EntryDropsAddress => "entry -> drop `address`",
-            Candidate::EntryDropsWhatTheKeyRestates => "entry -> drop all three the key restates",
+            Candidate::EntryDropsAddress => "entry -> drop `address` (BLOCKED)",
             Candidate::AddressDropsTheAlwaysNilSlot => "address -> drop the always-nil `oi` slot",
         }
     }
@@ -1327,10 +1368,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                 let fields = entry.as_object_mut().expect("a page entry is an object");
                 let new_key = match candidate {
                     Candidate::Control
-                    | Candidate::EntryDropsObjectKey
-                    | Candidate::EntryDropsModelId
                     | Candidate::EntryDropsAddress
-                    | Candidate::EntryDropsWhatTheKeyRestates
                     | Candidate::AddressDropsTheAlwaysNilSlot => page_key.clone(),
                     Candidate::PageKeyBecomesTheHandle => reading
                         .handles_by_written_key
@@ -1363,18 +1401,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                     }
                 };
                 match candidate {
-                    Candidate::EntryDropsObjectKey => {
-                        fields.remove("object_key").expect("object_key was written");
-                    }
-                    Candidate::EntryDropsModelId => {
-                        fields.remove("model_id").expect("model_id was written");
-                    }
                     Candidate::EntryDropsAddress => {
-                        fields.remove("address").expect("address was written");
-                    }
-                    Candidate::EntryDropsWhatTheKeyRestates => {
-                        fields.remove("object_key").expect("object_key was written");
-                        fields.remove("model_id").expect("model_id was written");
                         fields.remove("address").expect("address was written");
                     }
                     Candidate::AddressDropsTheAlwaysNilSlot => {
@@ -1602,8 +1629,8 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     // ---- THE TWO RECONSTRUCTIONS, COUNTED ----
     assert_eq!(
         walked.keys_reconstructed, reading.pages,
-        "[CLAUSE key-restates-the-entry] {} of {} page key(s) were rebuilt from the entry's own \
-         written bytes",
+        "[CLAUSE address-restates-the-key] {} of {} page(s) write an address whose five values are \
+         exactly the five decimals in the key they are filed under",
         walked.keys_reconstructed, reading.pages
     );
     assert_eq!(
@@ -1938,7 +1965,17 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     }
 
     // THE PUBLISHED FIGURE IS THE DIVISION, so that is what is pinned.
-    let published = 226.35f64;
+    //
+    // 226.35 -> 176.35 WHEN THE ENTRY STOPPED RESTATING ITS KEY, and the step is EXACTLY the 50.0
+    // B/object this module predicted for those two fields: `entry/object_key` at 30.0 and
+    // `entry/model_id` at 20.0, on the same corpus and the same range. That is the prediction
+    // closing on its own measurement rather than a figure being re-goldened, which is why the
+    // arithmetic is written here beside the new value.
+    //
+    // THE PER-PAGE CLASS CARRIES THE WHOLE OF IT: 177.015 -> 127.015 B/object, while per-bucket
+    // stays at 49.331 and per-shard at 0.004. A step that had moved the per-bucket class would be
+    // a step in something other than the page entry.
+    let published = 176.35f64;
     assert!(
         (division - published).abs() / published < 0.005,
         "[CLAUSE matches-the-published-division] `slot_index` divides to {division:.2} B/object at \
@@ -2019,15 +2056,30 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
 /// of each other, measured, and the figure is printed beside every price.
 #[test]
 fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() {
-    const CANDIDATES: [Candidate; 8] = [
+    // THREE CANDIDATES LEFT, AND THE THREE THAT LEFT ARE THE ONES THAT LANDED.
+    //
+    // `EntryDropsObjectKey`, `EntryDropsModelId` and `EntryDropsWhatTheKeyRestates` priced the
+    // removal of the entry's `object_key` and `model_id` at +2.34 to +2.96 and +0.26 to +0.37
+    // B/object of container, and the pair of them plus the address at +6.72 to +7.17. The first
+    // two are IN the index now, so a counterfactual that removes them cannot be built -- the
+    // fields are not there to remove, and `doctor`'s own
+    // `fields.remove("object_key").expect("object_key was written")` is what said so when it
+    // panicked on the first run after the change.
+    //
+    // RETIRED RATHER THAN REPAIRED, which is this tree's rule for a measurement whose proposal has
+    // landed: a counterfactual kept against a shape that no longer exists is a measurement nothing
+    // can read. What the landed figure is instead is measured on the production encoder, before
+    // and after, by
+    // `the_key_a_page_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container`.
+    //
+    // `EntryDropsAddress` STAYS, because it has NOT landed and is blocked rather than deferred --
+    // see the variant's own note. Pricing a block is what makes it a decision.
+    const CANDIDATES: [Candidate; 5] = [
         Candidate::Control,
         Candidate::PageKeyBecomesTheHandle,
         Candidate::PageKeyDropsTheEmptySlot,
         Candidate::AddressDropsTheAlwaysNilSlot,
-        Candidate::EntryDropsObjectKey,
-        Candidate::EntryDropsModelId,
         Candidate::EntryDropsAddress,
-        Candidate::EntryDropsWhatTheKeyRestates,
     ];
 
     // TWO KEY SHAPES AND TWO STORE SIZES, BECAUSE A SIGN TAKEN ONCE IS AN ATTRIBUTION. The two
@@ -2146,19 +2198,22 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
                 );
             }
             // AND THE OTHER DIRECTION IS WORTH TAKING, on the artefact and not only on the stream.
-            if candidate == Candidate::EntryDropsWhatTheKeyRestates {
+            //
+            // THE CLAUSE MOVED ONTO WHAT IS LEFT OF THAT DIRECTION, because the two cheap thirds of
+            // it have LANDED and the counterfactual for them cannot be built any more. It read
+            // `EntryDropsWhatTheKeyRestates` -- all three fields at once -- and asserted the
+            // container saving positive and over 10%. What remains removable on the entry side is
+            // the ADDRESS, which is the largest of the three at +4.27 to +4.52 B/object; its sign
+            // is what this clause pins now, so the direction the whole module turns on is still
+            // asserted at every one of the four points rather than taken on trust from a figure
+            // that is now in the commit log.
+            if candidate == Candidate::EntryDropsAddress {
                 assert!(
                     container_saved > 0,
-                    "[CLAUSE the-entry-side-pays-on-the-artefact] dropping the three fields the \
-                     key restates saved {container_saved} B of container at {} {} object(s)",
-                    reading.objects,
-                    shape.label()
-                );
-                assert!(
-                    container_saved as f64 / baseline_container as f64 > 0.10,
-                    "[CLAUSE the-entry-side-pays-on-the-artefact] it saved only {:.2}% of the \
-                     container at {} {} object(s), which is not the order this arm reports",
-                    100.0 * container_saved as f64 / baseline_container as f64,
+                    "[CLAUSE the-entry-side-pays-on-the-artefact] dropping the `address` the key \
+                     restates saved {container_saved} B of container at {} {} object(s) -- the \
+                     recorded direction is that the entry side PAYS, and a flip here is the \
+                     finding changing rather than the fixture",
                     reading.objects,
                     shape.label()
                 );
@@ -2191,41 +2246,59 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
          point measured above."
     );
     println!(
-        "  DROPPING THE ENTRY'S THREE FIELDS PAYS, and it is the larger term as well: 104 B/object \
+        "  DROPPING THE ENTRY'S THREE FIELDS PAID, and it was the larger term as well: 104 B/object \
          of stream and 6.7 to 7.2 B/object of container out of 29 to 42, because a named encoding \
          spends its bytes on field names, braces, a nil slot and separators that the key spends on \
          digits."
     );
     println!(
-        "  WHAT TAKING IT REQUIRES IS NAMED RATHER THAN GLOSSED: the decoder would have to PARSE \
-         the key, which today it does not -- \
-         `the_page_keys_characters_are_not_read_back_by_the_decoder` measures that the page index \
-         decodes through `into_values()` and the key's characters reach nothing. So the cheap \
-         direction turns a term that is written and discarded into the authority for three facts, \
-         which is a load-path change and not a byte change."
+        "  TWO THIRDS OF THAT HAS SINCE LANDED, which is why only three candidates are priced \
+         above. `object_key` and `model_id` are off the entry at `SHARD_INDEX_FORMAT_VERSION` 27 \
+         and the decoder PARSES the key -- the load-path change this module named as the whole \
+         cost. `the_page_keys_characters_are_read_back_by_the_decoder_now` is the same arm as the \
+         one that measured they were not, with its subject inverted."
+    );
+    println!(
+        "  AND THE THIRD IS BLOCKED, not deferred. The address's five VALUES are in the key and the \
+         two PRESENCE bits beside them are not: a log-resident page and the first page of an \
+         object in a slab render ONE key and differ in `log_backed()`. Its container price stays \
+         priced here, and `the_presence_bits_of_an_address_are_not_in_the_key_it_renders` is why \
+         it is not taken."
     );
     println!();
 }
 
 // =================================================================================================
 
-/// THE PAGE KEY'S CHARACTERS ARE NOT READ BACK, AND THAT IS MEASURED ON THE PRODUCTION DECODER.
+/// THE PAGE KEY'S CHARACTERS ARE READ BACK NOW, AND THIS TEST'S SUBJECT INVERTED RATHER THAN MOVED.
 ///
-/// One conclusion: an index whose every page key is replaced by the decimal of the handle the live
-/// map files that page under decodes to the same `slot_index`, byte for byte, as the undoctored one.
-/// So the composite key is not a term a reader consumes; it is a name the writer composes and the
-/// reader discards.
+/// # WHAT IT USED TO SAY, AND WHY THE NAME CHANGED WITH THE FACT
 ///
-/// BOTH SIDES GO THROUGH THE DECODER, which is what makes this a comparison of the DOCTORING rather
-/// than of the decoder's normalisations. The undoctored bytes are decoded and re-encoded too, and
-/// the two re-encodes are compared -- so anything the load path rewrites (a flag it clears, a map
-/// it repacks) moves both sides equally and cannot read as agreement.
+/// It was `the_page_keys_characters_are_not_read_back_by_the_decoder`, and it measured exactly
+/// that: an index whose every page key was replaced by the decimal of the handle the live map files
+/// that page under decoded to the same `slot_index`, BYTE FOR BYTE, as the undoctored one. The
+/// composite key was a name the writer composed and the reader discarded -- `page_index` decoded as
+/// a `BTreeMap<String, StoredPageEntry>` consumed by `into_values()`.
 ///
-/// AND THE INSTRUMENT IS PROVED ABLE TO FIRE. A second doctoring changes one character of one
-/// entry's `object_key` -- a field the decoder DOES read -- and the same comparison must FAIL. A
-/// round trip that cannot tell a changed index from an unchanged one says nothing about either.
+/// That was the measurement the proposal rested on and it is the measurement the proposal ENDED.
+/// The decoder parses the key now (`index_log::block_ref_key_parts`), and
+/// `page_index_and_identities` iterates the map rather than its values. So the old claim is FALSE,
+/// and this test is renamed rather than re-goldened: a test whose NAME asserts the opposite of what
+/// it checks is worse than a stale golden, because the name is what a future reader greps for.
+///
+/// # WHAT IT SAYS NOW, AND IT IS A STRONGER STATEMENT THAN THE EQUALITY IT REPLACES
+///
+/// Re-keying every page by its handle does not produce an equal index. It does not produce an index
+/// at all: the decode REFUSES, because a decimal handle is not an eight-slot composite and the one
+/// place a page's object can be read from is the name it is filed under. A silent misread is the
+/// failure this change could have had, and a refusal naming the key is what it has instead.
+///
+/// AND THE CHARACTERS ARE PROVED TO REACH THE DECODED INDEX. One character of ONE page key's
+/// object-key slot is changed -- the key left a well-formed composite -- and the decoded
+/// `slot_index` must MOVE. Under the old behaviour that doctoring changed nothing at all, which is
+/// the whole difference this change makes, measured in one assertion.
 #[test]
-fn the_page_keys_characters_are_not_read_back_by_the_decoder() {
+fn the_page_keys_characters_are_read_back_by_the_decoder_now() {
     let reading = reading_on(2_000, PUBLISHED_WIDTH, KeyShape::Padded, SHIPPED_END_BUCKET);
     assert!(
         reading.buckets < reading.objects,
@@ -2234,19 +2307,24 @@ fn the_page_keys_characters_are_not_read_back_by_the_decoder() {
         reading.buckets
     );
 
-    let through_the_decoder = |value: &serde_json::Value| -> Vec<u8> {
+    // SPLIT INTO A FALLIBLE DOOR AND AN INFALLIBLE ONE, because the refusal is now part of the
+    // subject: one arm below needs the `Err` and the others need the bytes.
+    let try_the_decoder = |value: &serde_json::Value| -> Result<Vec<u8>, String> {
         let bytes = serde_json::to_vec(value).expect("the index serializes");
-        let decoded = crate::engine::decode_index_bytes(&bytes)
-            .expect("a served index in plain JSON is a shape the decoder sniffs and accepts");
+        let decoded = crate::engine::decode_index_bytes(&bytes)?;
         let again = serde_json::to_value(&decoded).expect("the decoded index re-serializes");
-        serde_json::to_vec(
+        Ok(serde_json::to_vec(
             again
                 .as_object()
                 .expect("an object")
                 .get("slot_index")
                 .expect("slot_index"),
         )
-        .expect("slot_index serializes")
+        .expect("slot_index serializes"))
+    };
+    let through_the_decoder = |value: &serde_json::Value| -> Vec<u8> {
+        try_the_decoder(value)
+            .expect("a served index in plain JSON is a shape the decoder sniffs and accepts")
     };
 
     let baseline = through_the_decoder(&reading.value);
@@ -2263,23 +2341,30 @@ fn the_page_keys_characters_are_not_read_back_by_the_decoder() {
         reading.objects
     );
 
-    let rekeyed = through_the_decoder(&doctor(&reading, Candidate::PageKeyBecomesTheHandle));
-    assert_eq!(
-        rekeyed.len(),
-        baseline.len(),
-        "[CLAUSE page-key-is-not-read] re-keying every page index by its handle produced a \
-         `slot_index` of {} B against {} B, so the key's characters reach something",
-        rekeyed.len(),
-        baseline.len()
-    );
-    assert_eq!(
-        rekeyed, baseline,
-        "[CLAUSE page-key-is-not-read] re-keying every page index by its handle changed the \
-         decoded index, so the composite key carries a term the decoder consumes and it is not \
-         pure redundancy"
+    // ---- THE INVERSION: A HANDLE-KEYED PAGE INDEX IS REFUSED, NOT SILENTLY EQUAL ----
+    let rekeyed = try_the_decoder(&doctor(&reading, Candidate::PageKeyBecomesTheHandle));
+    let refusal = match rekeyed {
+        Ok(bytes) => panic!(
+            "[CLAUSE page-key-is-read] re-keying every page index by its handle still DECODES, to \
+             a {} B `slot_index` against the baseline's {} -- the key is the only source of a \
+             page's object now, so a decimal handle in its place has to be refused and not read",
+            bytes.len(),
+            baseline.len()
+        ),
+        Err(message) => message,
+    };
+    assert!(
+        refusal.contains("is not a block-ref key"),
+        "[CLAUSE page-key-is-read] the handle-keyed index was refused with {refusal:?}, which is \
+         not the key parse refusing -- a refusal for some other reason would pass this arm while \
+         saying nothing about whether the key is read"
     );
 
-    // ---- THE INSTRUMENT, PROVED ABLE TO FIRE ----
+    // ---- AND THE CHARACTERS REACH THE DECODED INDEX, WHICH IS WHAT THE OLD CLAIM DENIED ----
+    //
+    // ONE CHARACTER OF ONE PAGE KEY'S OBJECT-KEY SLOT, and the key stays a well-formed composite --
+    // so what is measured is the decoder READING the slot, not the decoder refusing a malformed
+    // name. Under the old behaviour this doctoring moved nothing at all.
     let mut tampered = reading.value.clone();
     let mut touched = 0usize;
     {
@@ -2291,62 +2376,66 @@ fn the_page_keys_characters_are_not_read_back_by_the_decoder() {
             .as_object_mut()
             .expect("an object");
         for node in bucket_map.values_mut() {
+            if touched > 0 {
+                break;
+            }
             let pages = node
                 .get_mut("page_index")
                 .expect("page_index")
                 .as_object_mut()
                 .expect("an object");
-            for entry in pages.values_mut() {
-                if touched > 0 {
-                    break;
-                }
-                let fields = entry.as_object_mut().expect("an object");
-                let was = fields
-                    .get("object_key")
-                    .expect("object_key")
-                    .as_str()
-                    .expect("a string")
-                    .to_string();
-                let mut now = was.clone();
-                now.replace_range(0..1, "Z");
-                assert_ne!(now, was, "the tamper must change the key");
-                fields.insert(
-                    "object_key".to_string(),
-                    serde_json::Value::String(now),
-                );
-                touched += 1;
-            }
-            if touched > 0 {
-                break;
-            }
+            let Some(was) = pages.keys().next().cloned() else { continue };
+            let slots = split_written_key(&was);
+            let mut object_key = slots.object_key.clone();
+            assert!(
+                !object_key.is_empty(),
+                "[CLAUSE instrument-fires] the key {was:?} names an empty object, so changing a \
+                 character of it is not possible and the tamper below would be a no-op"
+            );
+            object_key.replace_range(0..1, "Z");
+            let now = format!(
+                "{}:{}:{}:{}:{}:{}:{}:{}",
+                slots.kind,
+                object_key,
+                slots.component,
+                slots.block_slab_id,
+                slots.offset,
+                slots.length,
+                slots.block_id,
+                slots.generation
+            );
+            assert_ne!(now, was, "the tamper must change the key");
+            let entry = pages.remove(&was).expect("the key was just read from this map");
+            pages.insert(now, entry);
+            touched += 1;
         }
     }
     assert_eq!(
         touched, 1,
-        "[CLAUSE instrument-fires] the tamper reached {touched} entry(ies) and must reach exactly \
+        "[CLAUSE instrument-fires] the tamper reached {touched} page(s) and must reach exactly \
          one, or a comparison that fails says nothing about which change caused it"
     );
     let tampered_out = through_the_decoder(&tampered);
     assert_ne!(
         tampered_out, baseline,
-        "[CLAUSE instrument-fires] changing one character of ONE entry's `object_key` -- a field \
-         the decoder reads -- left the decoded `slot_index` byte-identical, so the comparison that \
-         passed above cannot tell a changed index from an unchanged one"
+        "[CLAUSE page-key-is-read] changing one character of ONE page key's object-key slot left \
+         the decoded `slot_index` byte-identical, so the decoder is not reading the slot and the \
+         identity it files that page under came from somewhere else"
     );
 
     println!();
-    println!("================ THE PAGE KEY IS WRITTEN AND NOT READ ================");
+    println!("================ THE PAGE KEY IS WRITTEN AND READ ================");
     println!(
-        "  {} object(s), {} page(s), {} bucket(s). Every page key replaced by the decimal of its \
-         handle; the decoded `slot_index` is {} B both ways and byte-identical.",
+        "  {} object(s), {} page(s), {} bucket(s), baseline `slot_index` {} B.",
         reading.objects,
         reading.pages,
         reading.buckets,
         baseline.len()
     );
+    println!("  every page key replaced by its handle -> REFUSED: {refusal}");
     println!(
-        "  The instrument fires: one character changed in one entry's `object_key` moves the \
-         decoded index ({} B against {} B).",
+        "  one character changed in ONE page key's object-key slot moves the decoded index ({} B \
+         against {} B) -- under the shape this change replaced it moved NOTHING.",
         tampered_out.len(),
         baseline.len()
     );

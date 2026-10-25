@@ -152,11 +152,12 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
         deleted: false,
     };
 
-    // THROUGH THE WRAPPER, BECAUSE THE ENTRY HAS NO ENCODER OF ITS OWN. `object_key` is a
-    // serialized member and a derive can only read it off the entry, so the identity is named
-    // here -- by this fixture, which is the only thing that knows it -- and injected beside the
-    // page. These bytes are character-for-character the ones the derive wrote.
-    let named = crate::engine::state::PageEntryAt { page: &page, object_key: "tenant/7/object/1" };
+    // THROUGH THE WRAPPER, BECAUSE THE ENTRY HAS NO ENCODER OF ITS OWN. The identity used to be
+    // INJECTED here, by this fixture, because `object_key` was a serialized member a derive could
+    // only read off the entry. It is not a serialized member any more: the entry is filed under a
+    // key that spells it and the decoder reads it back out of that key. So the wrapper takes the
+    // page alone, and the two names this fixture used to hand it are asserted ABSENT below.
+    let named = crate::engine::state::PageEntryAt { page: &page };
     let encoded = serde_json::to_string(&named).expect("a page entry serializes");
     println!("[log-resident] stored entry: {encoded}");
 
@@ -165,8 +166,15 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
         "the stored key is still written, so this change did not move the shape it claims to: \
          {encoded}",
     );
-    // AND NOTHING ARRIVED IN ITS PLACE. The two gained fields are `skip`ped, so neither may appear.
-    for gained in ["\"kind\"", "\"routing_bucket\""] {
+    // AND NOTHING ARRIVED IN ITS PLACE, AND THE TWO THE KEY RESTATED HAVE LEFT. `kind` and
+    // `routing_bucket` are `skip`ped; `object_key` and `model_id` are the key's own second and
+    // first slots and the entry stopped writing them, which is what the stamp step at 27 pays for.
+    for gained in [
+        "\"kind\"",
+        "\"routing_bucket\"",
+        "\"object_key\"",
+        "\"model_id\"",
+    ] {
         assert!(
             !encoded.contains(gained),
             "{gained} reached the stored form; the named side is supposed to skip it, and every \
@@ -180,7 +188,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // anything.
     let flipped = BlockIndex { deleted: true, ..page.clone() };
     let flipped_encoded =
-        serde_json::to_string(&crate::engine::state::PageEntryAt { page: &flipped, object_key: "tenant/7/object/1" })
+        serde_json::to_string(&crate::engine::state::PageEntryAt { page: &flipped })
             .expect("serializes");
     assert_ne!(
         encoded, flipped_encoded,
