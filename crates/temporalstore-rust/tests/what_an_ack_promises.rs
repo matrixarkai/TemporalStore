@@ -18,12 +18,13 @@
 //!
 //! # The three choices, and why the eighth cell is not reachable by a page
 //!
-//!   * SEPARATE or BATCHED. These are different appends and they do NOT share the rule. A
-//!     separate write reaches `append_for_group_commit`, whose rule is
-//!     `!staged_blocks.is_empty()`; the batch path's own rule is
-//!     `sync || !staged_blocks.is_empty()`. The batch path is the only live place that `sync` term
-//!     decides anything, and `sync` is not a durability fact about a page -- it is a fact about
-//!     the LOG's barrier, which the page fsync is deferred past.
+//!   * SEPARATE or BATCHED. These are different appends. A separate write reaches
+//!     `append_for_group_commit`, whose rule is `!staged_blocks.is_empty()` over the single record
+//!     it is writing; a batch asks `wal::every_result_can_be_found_again`, the same question per
+//!     RESULT. The batch rule used to be `sync || !staged_blocks.is_empty()`, which was wrong
+//!     twice over: it asked a per-result question at BATCH granularity, where one carried page
+//!     answers for every result in the batch, and `sync` is not a durability fact about a page at
+//!     all -- it is a fact about the LOG's barrier, which the page fsync is deferred past.
 //!   * SYNCHRONOUS or ASYNCHRONOUS -- `Config::async_storage`, the per-shard durability choice.
 //!   * A PAGE CARRIED IN THE RECORD, or NO PAGE AT ALL. There is no third option in production:
 //!     every `append_value` call site passes `Some(object_id)`, and `append_value_inner` stages
@@ -388,10 +389,12 @@ fn the_walk_reaches_every_cell_and_every_cell_appends_records() {
 fn no_cell_leaves_an_acked_result_with_no_way_back() {
     let measured = walk();
     // Regime: there are results to be about. A walk whose cells recorded nothing would pass the
-    // conclusion below by having nothing to fail on. Not a count per cell on purpose -- one cell
-    // legitimately records no results at all (an asynchronous batch with no page to carry takes
-    // `append_batch_atomic`, which writes the operations instead), and that cell is covered by
-    // `an_operation_or_a_statement_covers_every_record`.
+    // conclusion below by having nothing to fail on. A SUM rather than a count per cell: while the
+    // batch rule asked whether the batch had staged any page, the asynchronous batched removal cell
+    // recorded no results at all -- it took `append_batch_atomic` and wrote the operations
+    // instead -- so a per-cell clause here would have had to carve that cell out. It now records
+    // twelve, like its synchronous twin, but the sum stays because a cell legitimately CAN record
+    // only operations and `an_operation_or_a_statement_covers_every_record` is what covers that.
     let results: usize = measured.iter().map(|(_, c)| c.results).sum();
     assert!(
         results > 0,

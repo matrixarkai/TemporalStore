@@ -347,7 +347,7 @@ pub struct WriteAheadLogRecord {
 /// sync  / separate / removal       12        12      12      0       8        4         0     0           0
 /// sync  / batched  / removal        1         0      12      0       8        4         0     0           0
 /// async / separate / removal       12        12      12      0       8        4         0     0           0
-/// async / batched  / removal       12        12       0      0       0        0         0     0           0
+/// async / batched  / removal        1         0      12      0       8        4         0     0           0
 /// ```
 ///
 /// Zero in the last column in all eight. An upsert's record carries its page; a removal's record
@@ -356,12 +356,16 @@ pub struct WriteAheadLogRecord {
 /// outstanding on these numbers.
 ///
 /// WHAT IS STILL WORTH WATCHING is the shape of the claim rather than the claim. Three of the
-/// eight cells are recoverable only because a page travels in the record, and the batch path
-/// decides whether to drop the operation from `sync || !staged_blocks.is_empty()` -- where the
-/// `sync` term is exactly the inference the first half of the old paragraph correctly rejects. A
-/// batch whose pages stopped being carried would satisfy that term and lose what it acked. That
-/// is the regression this flag's note exists to flag, and
-/// `no_cell_leaves_an_acked_result_with_no_way_back` is what fails if it happens.
+/// eight cells are recoverable only because a page travels in the record, so the batch path asks
+/// `every_result_can_be_found_again` -- per RESULT. It used to decide from
+/// `sync || !staged_blocks.is_empty()`, and BOTH halves of that were wrong. The `sync` term is
+/// exactly the inference the first half of the old paragraph correctly rejects. The other half
+/// asked a per-result question at BATCH granularity, so one carried page anywhere in a batch
+/// answered for every result in it: measured on a plant that stops one command kind staging, that
+/// left 12 of 20 acked results with no way back, and removing the `sync` term alone moved the 12
+/// by nothing. `no_cell_leaves_an_acked_result_with_no_way_back` is what fails if a batch's pages
+/// stop being carried, and `a_batch_is_not_recoverable_because_a_sibling_carried_a_page` is what
+/// fails if the question is asked at batch granularity again.
 ///
 /// AND THE LESSON ABOUT THE READING, which outlives both numbers: three counts were taken, all
 /// three were zero, and the conclusion drawn was about a FOURTH channel that nobody counted. A
@@ -405,8 +409,9 @@ pub fn wal_data_only_enabled() -> bool {
 /// when `sync` is false, where the term is inert, or when the caller handed over carried blocks,
 /// where the other half is already true.
 ///
-/// The one place `sync ||` is live is the BATCH path, which forms its own `recoverable` the same
-/// way. Read this paragraph as a claim about which writes are exposed and it points at the wrong
+/// The BATCH path used to be the one place `sync ||` was live. It no longer carries the term at
+/// all -- it asks `every_result_can_be_found_again` -- so the only `sync ||` left is the inert one
+/// above. Read this paragraph as a claim about which writes are exposed and it points at the wrong
 /// half of the write path.
 ///
 /// Both halves were found the same way: a recovery test failing 8 runs in 12 against 0 in 12 on
@@ -425,6 +430,138 @@ pub(crate) fn record_command(
         Some(command)
     } else {
         None
+    }
+}
+
+/// The same question, asked of a BATCH, and asked PER RESULT.
+///
+/// A batch is ONE record holding many results, so "can the blocks behind these results be found
+/// again" has as many answers as there are results. The rule the batch path used to form was
+/// `sync || !staged_blocks.is_empty()`, and the SCOPE was the defect rather than the term: the
+/// second half asks a per-result question at BATCH granularity, so one carried page anywhere in a
+/// batch answered it for every result in that batch -- including results whose own page was never
+/// staged.
+///
+/// Measured, on a batch of five command kinds where one kind stops staging its pages: that kind's
+/// four pages kept the staged set non-empty, the operation was dropped anyway, and 12 of 20 acked
+/// results were left naming a block-store address and nothing else. Dropping the `sync` term
+/// moved that 12 by NOTHING, which is what separates the two halves: `sync` is a fact about the
+/// LOG's barrier, inert here because the staged test was already answering true.
+///
+/// So a result is covered when it STATES ITSELF -- bytes, a removal, a new deadline -- or when
+/// this batch carries a page for it. The page match UNDER-matches by design, the same way
+/// `tests/what_an_ack_promises.rs` matches: a whole-object page spells its component `None` and is
+/// accepted for any element of its object, so coverage can only ever be counted LOW and a `true`
+/// here is the direction a durability claim needs.
+///
+/// `a_batch_is_not_recoverable_because_a_sibling_carried_a_page` is what fails if this is ever
+/// asked at batch granularity again.
+pub(crate) fn every_result_can_be_found_again(
+    outcomes: &[WalOutcomeItem],
+    pages: &[StagedBlock],
+) -> bool {
+    outcomes.iter().all(|item| {
+        item.deleted
+            || item.ttl.is_some()
+            || item.value.as_ref().map(|value| !value.is_empty()).unwrap_or(false)
+            || pages.iter().any(|page| {
+                page.object_id == item.object_id
+                    && (page.component.as_deref() == item.component.as_deref()
+                        || page.component.is_none())
+            })
+    })
+}
+
+#[cfg(test)]
+mod every_result_can_be_found_again_tests {
+    use super::{every_result_can_be_found_again, StagedBlock, WalOutcomeItem};
+
+    /// A result that names an address and states nothing about itself.
+    fn names_only_an_address(object_id: u64, component: &str) -> WalOutcomeItem {
+        WalOutcomeItem {
+            kind: "page".to_string(),
+            object_key: format!("object/{object_id}"),
+            component: Some(component.to_string()),
+            object_id,
+            routing_bucket: 7,
+            address: None,
+            value: None,
+            ttl: None,
+            deleted: false,
+            meta: false,
+        }
+    }
+
+    fn page_for(object_id: u64, component: &str) -> StagedBlock {
+        StagedBlock {
+            object_id,
+            component: Some(std::sync::Arc::from(component)),
+            bytes: vec![b'p'; 8],
+        }
+    }
+
+    /// A PAGE COVERS THE RESULT IT BELONGS TO AND NO OTHERS.
+    ///
+    /// This is the regression the per-result scope exists for. A batch-granular implementation --
+    /// `!pages.is_empty()`, which is what this path carried before -- returns `true` for the mixed
+    /// case below, and that is how a measured batch left 12 of 20 acked results with no way back
+    /// while its rule said the batch was recoverable.
+    #[test]
+    fn a_batch_is_not_recoverable_because_a_sibling_carried_a_page() {
+        let covered = names_only_an_address(1, "a");
+        let uncovered = names_only_an_address(2, "b");
+        let pages = vec![page_for(1, "a")];
+        // THE REGIME FIRST, so the `false` below is about the uncovered result and not about a
+        // page set this helper failed to build: the covered result is covered on its own.
+        assert!(
+            every_result_can_be_found_again(std::slice::from_ref(&covered), &pages),
+            "a result whose own page IS staged must be covered, or the mixed case says nothing"
+        );
+        // THE CONCLUSION.
+        assert!(
+            !every_result_can_be_found_again(&[covered, uncovered], &pages),
+            "a result whose own page was never staged is not recoverable because a SIBLING's was"
+        );
+    }
+
+    /// A result that states itself needs no page, which is what keeps a batched removal on the
+    /// one-record writer rather than writing one command record per removal.
+    #[test]
+    fn a_result_that_states_itself_needs_no_page() {
+        let mut removed = names_only_an_address(3, "c");
+        removed.deleted = true;
+        let mut expiring = names_only_an_address(4, "d");
+        expiring.ttl = Some(600_000);
+        let mut carrying = names_only_an_address(5, "e");
+        carrying.value = Some(vec![b'v'; 4]);
+        // THE REGIME: with nothing stated, nothing staged, the answer is NO. Without this the
+        // conclusion below would pass against a function that returns `true` unconditionally.
+        assert!(
+            !every_result_can_be_found_again(
+                std::slice::from_ref(&names_only_an_address(3, "c")),
+                &[]
+            ),
+            "a result that states nothing and has no page must NOT be recoverable"
+        );
+        // THE CONCLUSION, each of the three statements on its own so one carrying the others is
+        // not mistaken for all three working.
+        for (label, item) in [
+            ("a removal", removed),
+            ("a deadline", expiring),
+            ("its own bytes", carrying),
+        ] {
+            assert!(
+                every_result_can_be_found_again(std::slice::from_ref(&item), &[]),
+                "a result stating {label} needs no page and must be recoverable with none staged"
+            );
+        }
+    }
+
+    /// An empty batch is vacuously recoverable, and the caller is what keeps that from mattering:
+    /// the data-only branch is also gated on the outcomes being non-empty.
+    #[test]
+    fn an_empty_batch_is_vacuously_recoverable() {
+        assert!(every_result_can_be_found_again(&[], &[]));
     }
 }
 
@@ -451,15 +588,20 @@ pub(crate) fn record_command(
 /// IT IS NOT "ZERO RECORDS CARRY AN OPERATION", WHICH IS WHAT THAT WALK WAS WRITTEN UP AS. The
 /// walk covered upserts, and a write with no page to carry keeps its operation on purpose --
 /// `record_command` asks whether the blocks behind the results can be found again, and a removal
-/// has staged none. Re-walked over all eight cells by `tests/what_an_ack_promises.rs`, half of
-/// them keep an operation on every record:
+/// has staged none. Re-walked over all eight cells by `tests/what_an_ack_promises.rs`, the two
+/// SEPARATE removal cells keep an operation on every record:
 ///
 /// ```text
 /// sync  / separate / removal   12 records, 12 with an operation
 /// async / separate / removal   12 records, 12 with an operation
-/// async / batched  / removal   12 records, 12 with an operation
 /// sync  / batched  / removal    1 record,   0 with an operation (all 12 results state themselves)
+/// async / batched  / removal    1 record,   0 with an operation (all 12 results state themselves)
 /// ```
+///
+/// Both BATCHED removal cells answer the same way because the batch path asks
+/// `every_result_can_be_found_again`: a removal states itself, so there is nothing to find. The
+/// asynchronous one used to write twelve command records instead -- its rule asked whether the
+/// BATCH had staged a page, and a removal stages none.
 ///
 /// So "zero" was a count over the upsert half of the matrix read as a count over the whole of
 /// it -- which is the same error as the three-column reading recorded on `TS_WAL_DATA_ONLY`

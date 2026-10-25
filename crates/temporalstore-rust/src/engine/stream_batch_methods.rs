@@ -586,7 +586,13 @@ impl TemporalEngine {
             // the same rule a single write follows. Otherwise the commands go, as before.
             let staged_outcomes = super::block_in_wal::take_outcomes();
             let staged_blocks = super::block_in_wal::take_staged();
-            let recoverable = sync || !staged_blocks.is_empty();
+            // ASKED PER RESULT, not per batch -- see `wal::every_result_can_be_found_again`. This
+            // was `sync || !staged_blocks.is_empty()`, which asked a per-result question at BATCH
+            // granularity: one carried page anywhere in the batch answered it for every result in
+            // the batch, and a measured batch left 12 of 20 acked results naming a block-store
+            // address and nothing else while the rule called the batch recoverable.
+            let recoverable =
+                crate::wal::every_result_can_be_found_again(&staged_outcomes, &staged_blocks);
             let batch_result = if crate::wal::wal_data_only_enabled()
                 && !staged_outcomes.is_empty()
                 && recoverable
