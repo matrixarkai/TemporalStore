@@ -713,3 +713,303 @@ UNREACHABLE, {} of {KEYS} read back whole.",
         drop_read.verified(),
     );
 }
+
+/// Total bytes on disk under one directory, walked recursively.
+///
+/// Bracketed around a single `apply_storage_eviction` call, this attributes bytes to that call:
+/// the only writer inside it is `create_bucket_dump_manifest`, which is exactly the dump whose
+/// cost is in question.
+fn bytes_under(path: &std::path::Path) -> u64 {
+    fn walk(path: &std::path::Path, total: &mut u64) {
+        if let Ok(entries) = std::fs::read_dir(path) {
+            for entry in entries.flatten() {
+                match entry.file_type() {
+                    Ok(kind) if kind.is_dir() => walk(&entry.path(), total),
+                    Ok(_) => {
+                        if let Ok(meta) = entry.metadata() {
+                            *total = total.saturating_add(meta.len());
+                        }
+                    }
+                    Err(_) => {}
+                }
+            }
+        }
+    }
+    let mut total = 0u64;
+    walk(path, &mut total);
+    total
+}
+
+/// Dump every dirty bucket and clear its dirty state, so what follows runs on a store whose
+/// objects are UNCHANGED SINCE THEIR DUMP.
+///
+/// Driven through `apply_storage_lifecycle`, which is the shipped checkpoint path: it takes the
+/// plan's dirty-bucket selection, creates the manifest, and clears the dirty state the manifest
+/// covers. `max_dump_buckets_per_round: 0` means no cap, so one call covers the whole shard.
+fn dump_everything_and_clear(engine: &TemporalEngine) -> usize {
+    let report = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: Vec::new(),
+        max_dump_buckets_per_round: 0,
+        min_undumped_wal_records: 1,
+        ..crate::engine::reports::StorageLifecycleRequest::default()
+    });
+    report
+        .dump_manifest
+        .as_ref()
+        .map(|manifest| manifest.bucket_ids.len())
+        .unwrap_or(0)
+}
+
+/// WHAT A DUMP COSTS FOR AN OBJECT NOTHING HAS CHANGED SINCE ITS LAST DUMP: measured, and it is
+/// ZERO BYTES AND ZERO MANIFESTS.
+///
+/// The rule this store holds is that an object unchanged since it was dumped is dropped from
+/// memory DIRECTLY -- its durable copy already exists, so there is nothing to write first -- while
+/// a changed object is dumped and then dropped. The question this answers is whether the shipped
+/// round pays a dump for the first case anyway.
+///
+/// IT DOES NOT, AND THE SELECTION IS WHERE THAT LIVES. `apply_storage_eviction` builds its dump
+/// list as the victims with `dirty_object_count > 0`; a clean victim is not in it, and when no
+/// victim is dirty no manifest is created at all. The release then takes the clean bucket, because
+/// `release_bucket_blocks` REFUSES a dirty one -- so the two cases are not merely distinguished,
+/// they are each other's precondition.
+///
+/// THREE ARMS ON MATCHED CORPORA, each driven by ONE `apply_storage_eviction` call so the bytes
+/// are attributable to it:
+///
+///   A  everything changed       -> a manifest is created, bytes are written, buckets release
+///   B  everything dumped first  -> NO manifest, ZERO bytes, buckets still release
+///   C  one object changed       -> a manifest is created, and it writes the WHOLE index
+///
+/// Arm A is what makes arm B a finding: without it, "no bytes written" is also what a round that
+/// never reached the dump would report. Arm C is the residual and it is stated rather than
+/// removed: a manifest carries the whole-shard index by construction, because install writes the
+/// decoded index as THE index for the shard and a manifest narrowed to its own buckets installs a
+/// shard missing every bucket it did not name. So the bytes an unchanged object contributes to
+/// SOMEONE ELSE's dump are load-bearing, and the only cost this store can decline is the one arm
+/// B measures at zero.
+///
+/// Arm B also carries the correctness proof in both directions: cold read-back, a reload on a
+/// fresh engine over the same directories, and the never-written control.
+#[test]
+fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
+    const KEYS: usize = 1_200;
+    const BATCH: usize = 16;
+
+    struct Arm {
+        label: &'static str,
+        manifests: usize,
+        bytes_written: u64,
+        released: usize,
+        refused: usize,
+        dropped: usize,
+        round_micros: u128,
+    }
+
+    /// One eviction round, with the bytes and the time it spent bracketed around it.
+    fn round(engine: &TemporalEngine, dir: &std::path::Path, label: &'static str) -> Arm {
+        let before = bytes_under(&dir.join("indexes")) + bytes_under(&dir.join("pages"));
+        let clock = std::time::Instant::now();
+        let report = engine.apply_storage_eviction(1, 1, BATCH, true, false);
+        let round_micros = clock.elapsed().as_micros();
+        let after = bytes_under(&dir.join("indexes")) + bytes_under(&dir.join("pages"));
+        assert_eq!(
+            report.skipped_reason, "",
+            "{label}: the gate declined, so this arm measures a refusal: {report:?}"
+        );
+        Arm {
+            label,
+            manifests: report.dump_manifest_ids.len(),
+            bytes_written: after.saturating_sub(before),
+            released: report.bucket_index_buckets_released,
+            refused: report.bucket_index_release_refused,
+            dropped: report.dropped_object_count,
+            round_micros,
+        }
+    }
+
+    // --- ARM A: everything changed. The dump is needed, and it costs. ---
+    let dir_a = tempdir().unwrap();
+    let engine_a = seeded_engine(dir_a.path(), KEYS);
+    let _ = engine_a.cache().invalidate_shard(1);
+    let arm_a = round(&engine_a, dir_a.path(), "A everything changed");
+
+    // --- ARM B: everything dumped first. The same round, with nothing left to dump. ---
+    let dir_b = tempdir().unwrap();
+    let engine_b = seeded_engine(dir_b.path(), KEYS);
+    let dumped_buckets = dump_everything_and_clear(&engine_b);
+    assert!(
+        dumped_buckets > 0,
+        "arm B dumped no bucket, so its objects are not unchanged-since-dump and the arm measures \
+         the wrong thing"
+    );
+    let _ = engine_b.cache().invalidate_shard(1);
+    let arm_b = round(&engine_b, dir_b.path(), "B everything already dumped");
+
+    // --- ARM C: one object changed, every other one unchanged. ---
+    let dir_c = tempdir().unwrap();
+    let engine_c = seeded_engine(dir_c.path(), KEYS);
+    assert!(dump_everything_and_clear(&engine_c) > 0, "arm C did not dump");
+    let changed = engine_c.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringSet {
+            key: key_of(0),
+            value: keyed_value(0),
+        },
+    });
+    assert!(changed.status.ok, "arm C could not change one record");
+    let index_image_c = engine_c
+        .export_index_bytes(1)
+        .expect("arm C could not export its index")
+        .len() as u64;
+    let _ = engine_c.cache().invalidate_shard(1);
+    // Batch 0 means NO limit here, so the one changed bucket is certainly a victim.
+    let before_c = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("pages"));
+    let report_c = engine_c.apply_storage_eviction(1, 1, 0, true, false);
+    let after_c = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("pages"));
+    let arm_c = Arm {
+        label: "C one object changed",
+        manifests: report_c.dump_manifest_ids.len(),
+        bytes_written: after_c.saturating_sub(before_c),
+        released: report_c.bucket_index_buckets_released,
+        refused: report_c.bucket_index_release_refused,
+        dropped: report_c.dropped_object_count,
+        round_micros: 0,
+    };
+
+    eprintln!("  [unchanged-dump-cost] {KEYS} keys on the shipped 0..{SHIPPED_END_BUCKET} range, batch {BATCH}");
+    eprintln!(
+        "    {:<30} {:>10} {:>14} {:>9} {:>8} {:>8} {:>12}",
+        "arm", "manifests", "bytes_written", "released", "refused", "dropped", "round_us"
+    );
+    for arm in [&arm_a, &arm_b, &arm_c] {
+        eprintln!(
+            "    {:<30} {:>10} {:>14} {:>9} {:>8} {:>8} {:>12}",
+            arm.label,
+            arm.manifests,
+            arm.bytes_written,
+            arm.released,
+            arm.refused,
+            arm.dropped,
+            arm.round_micros,
+        );
+    }
+
+    // --- THE FINDING: an unchanged object costs no dump at all. ---
+    assert_eq!(
+        arm_a.manifests, 1,
+        "arm A created {} manifests. With every object changed the round has to dump before it \
+         can release, so this arm is what makes arm B's zero a finding",
+        arm_a.manifests
+    );
+    assert!(
+        arm_a.bytes_written > 0,
+        "arm A wrote no bytes although it created {} manifest(s), so the byte bracket above is \
+         not measuring the dump",
+        arm_a.manifests
+    );
+    assert_eq!(
+        arm_b.manifests, 0,
+        "arm B created {} manifest(s) for victims nothing has changed since their dump. Their \
+         durable copy already exists, so the round owes them no write",
+        arm_b.manifests
+    );
+    assert_eq!(
+        arm_b.bytes_written, 0,
+        "arm B wrote {} bytes dumping objects unchanged since their last dump",
+        arm_b.bytes_written
+    );
+    // AND IT STILL RELEASES. A no-dump path that could not release would be a refusal, not a
+    // saving.
+    assert!(
+        arm_b.released > 0,
+        "arm B released nothing ({} refused), so the no-dump path does not actually reclaim",
+        arm_b.refused
+    );
+    assert_eq!(
+        arm_b.dropped, 0,
+        "arm B deleted {} records. Relieving memory releases pages and never deletes",
+        arm_b.dropped
+    );
+
+    // --- THE RESIDUAL, stated with its number. ---
+    assert_eq!(
+        arm_c.manifests, 1,
+        "arm C created {} manifests for one changed object",
+        arm_c.manifests
+    );
+    assert!(
+        arm_c.bytes_written >= index_image_c,
+        "arm C wrote {} bytes for one changed object against a {index_image_c} B whole-shard \
+         index image. A manifest carries the whole index by construction, so this is the floor, \
+         and if it is now lower the manifest has been narrowed -- which installs a shard missing \
+         every bucket it did not name",
+        arm_c.bytes_written
+    );
+    eprintln!(
+        "    => an unchanged object costs {} B and {} manifests of its OWN round (arm B). The \
+residual is arm C: one changed object out of {KEYS} dumps a {index_image_c} B whole-shard index \
+image ({} B written), so about {:.2}% of those bytes describe objects nothing has changed -- and \
+that is required, because install writes the decoded index as THE index for the shard",
+        arm_b.bytes_written,
+        arm_b.manifests,
+        arm_c.bytes_written,
+        100.0 * (KEYS - 1) as f64 / KEYS as f64,
+    );
+
+    // --- CORRECTNESS, BOTH DIRECTIONS, on the arm that took the no-dump path. ---
+    let reads = read_back_all(&engine_b, KEYS);
+    assert!(
+        reads.missing.is_empty() && reads.wrong.is_empty(),
+        "arm B lost records to a release that wrote nothing: {} missing, {} wrong, first few \
+         {:?} / {:?}",
+        reads.missing.len(),
+        reads.wrong.len(),
+        &reads.missing[..reads.missing.len().min(5)],
+        &reads.wrong[..reads.wrong.len().min(5)]
+    );
+    assert_eq!(
+        reads.verified(),
+        KEYS,
+        "only {} of {KEYS} keys were verified, so the empty lists above are a loop that did not run",
+        reads.verified()
+    );
+    assert_eq!(
+        never_written_keys_that_answered(&engine_b, CONTROL_PROBES),
+        0,
+        "a key this fixture never wrote answered with a value, so the read-back above is not \
+         evidence that the store knows what it holds"
+    );
+    engine_b.flush_shard_index(1);
+    drop(engine_b);
+
+    let reloaded = engine_at(dir_b.path());
+    load_shard_on_shipped_range(&reloaded, 2);
+    let after_reload = read_back_all(&reloaded, KEYS);
+    assert!(
+        after_reload.missing.is_empty() && after_reload.wrong.is_empty(),
+        "arm B lost records across a reload: {} missing, {} wrong, first few {:?} / {:?}",
+        after_reload.missing.len(),
+        after_reload.wrong.len(),
+        &after_reload.missing[..after_reload.missing.len().min(5)],
+        &after_reload.wrong[..after_reload.wrong.len().min(5)]
+    );
+    assert_eq!(
+        after_reload.verified(),
+        KEYS,
+        "only {} of {KEYS} keys were verified after the reload",
+        after_reload.verified()
+    );
+    assert_eq!(
+        never_written_keys_that_answered(&reloaded, CONTROL_PROBES),
+        0,
+        "after the reload a key that was never written answered with a value"
+    );
+    eprintln!(
+        "    [unchanged-correctness] arm B released {} buckets having written {} bytes; all \
+{KEYS} keys read back whole cold and all {KEYS} again after a reload, with {CONTROL_PROBES} \
+never-written probes absent in both",
+        arm_b.released, arm_b.bytes_written
+    );
+}
