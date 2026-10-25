@@ -1041,6 +1041,36 @@ pub struct StorageManagerOptions {
     /// exactly one batch.
     #[serde(default = "default_storage_manager_eviction_count_limit")]
     pub eviction_count_limit: usize,
+    /// A bound on THIS shard's resident bucket index, in bytes. 0 means DISABLED.
+    ///
+    /// `apply_index_resident_bound` is the eviction gate that reads one per-shard quantity and
+    /// gates on ITSELF rather than on `enable_evict`. Until this field existed it was reachable
+    /// only from `run_storage_manager_cycle`, which runs on an inbound
+    /// `TaskRequest::StorageManager` -- so on the periodic loop a server actually starts
+    /// (`start_storage_manager_scheduler_for_all_shards`) there was no route to it at any setting,
+    /// and a gate nothing calls bounds nothing.
+    ///
+    /// WHICH GATE WINS WHEN BOTH ARE SET. Since the evict stage's own signal was narrowed, this and
+    /// `eviction_memory_pressure_threshold` bound the SAME quantity -- `bucket_index_resident_bytes`
+    /// for this shard. Two settings cannot both gate one number, so the HIGHER BAR opens the stage
+    /// and `StorageEvictionReport::mode` says which one did: `index_resident_bound` or
+    /// `evict_cache`/`delete_drop`. One decision, one report, which is the shape
+    /// `run_storage_manager_cycle` already uses for the same reason.
+    ///
+    /// WHAT IT GIVES UP WHEN IT IS THE GATE: `apply_index_resident_bound` releases with the dump on
+    /// and the drop off unconditionally, so `eviction_dump_before_evict` and
+    /// `eviction_delete_drop` do not reach it. Both match their own defaults, so this only matters
+    /// to an operator who changed them -- and the drop arm is the one that can lose unflushed
+    /// state, which a bound on resident memory has no business taking.
+    ///
+    /// DEFAULTS TO 0 HERE, where the cycle request defaults to
+    /// `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`. Deliberately, and not for symmetry's sake: a non-zero
+    /// default would become the higher bar in every fixture that forces the gate open with a
+    /// threshold of 0 or 1, including three round-cost measurements whose run time puts them out of
+    /// reach of a gate -- so the value would be changed in measurements nobody could re-read. The
+    /// number belongs in the same change as the threshold default, against one set of rows.
+    #[serde(default)]
+    pub index_resident_limit_bytes: u64,
     /// How many hot buckets one expire stage may take. 0 means NO LIMIT, which is what this
     /// loop has always passed -- so expiry walked the whole deadline map, hot and cold, on every
     /// tick for every loaded shard. The on-demand cycle has always passed a bound (128) and
@@ -1200,6 +1230,9 @@ impl Default for StorageManagerOptions {
             eviction_dump_before_evict: true,
             eviction_delete_drop: false,
             eviction_count_limit: DEFAULT_EVICTION_COUNT_LIMIT,
+            // 0 = DISABLED, so no existing setting changes behaviour. See the field doc for why
+            // this is not the cycle request's `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`.
+            index_resident_limit_bytes: 0,
             // 0 = unbounded, the behaviour this loop has always had. See the field docs.
             // Likewise the cycle's values. 0 meant the expire stage walked the WHOLE deadline
             // map, hot and cold, every tick for every loaded shard, which is what #1469 measured

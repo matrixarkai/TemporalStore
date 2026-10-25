@@ -1383,3 +1383,563 @@ gate_input={} own_index={}  |  shard 2 ({SMALL_KEYS} keys): gate_input={} own_in
         small_snapshot.eviction_memory_pressure_bytes, small_gate.pressure_before,
     );
 }
+
+/// Read one seeded key back off an engine and say whether it is the value its key encodes.
+///
+/// `keyed_value` makes every value a function of its key, so a read resolved through the WRONG
+/// page fails here instead of passing because the length matched.
+fn reads_back_whole(engine: &TemporalEngine, index: usize) -> Result<(), String> {
+    let key = key_of(index);
+    let answer = engine.execute(ExecuteRequest {
+        shard_id: 1,
+        command: Command::StringGet { key: key.clone() },
+    });
+    if !answer.status.ok {
+        return Err(format!("{key}: read failed {:?}", answer.status));
+    }
+    match answer.response {
+        CommandResponse::Bytes { value: Some(value) } if value == keyed_value(index) => Ok(()),
+        CommandResponse::Bytes { value: Some(value) } => Err(format!(
+            "{key}: {} bytes that are not this key's value",
+            value.len()
+        )),
+        CommandResponse::Bytes { value: None } => Err(format!("{key}: MISSING")),
+        other => Err(format!("{key}: a string read answered {other:?}")),
+    }
+}
+
+/// THE PERIODIC LOOP CAN NOW REACH `apply_index_resident_bound`, AND IT IS GATED ON ITSELF.
+///
+/// That call is the eviction gate whose signal is one per-shard quantity. Its only non-test caller
+/// was inside `run_storage_manager_cycle`, which runs on an inbound `TaskRequest::StorageManager`;
+/// the loop a server starts is `start_storage_manager_scheduler_for_all_shards`, and it had no
+/// field to pass a bound in and no call to pass it to. So the narrow gate existed and nothing on
+/// the shipped loop could open it.
+///
+/// THREE ARMS, BECAUSE "IT FIRED" IS SATISFIED BY A GATE THAT ALWAYS FIRES. `enable_evict` is OFF
+/// in all of them, so nothing here can pass because the wide stage ran:
+///
+///   A  no bound             -> no eviction report at all, and the round says `evict_disabled`
+///   B  a bound ABOVE this shard's resident index -> refuses, releasing nothing
+///   C  a bound BELOW it     -> acts, and the resident index falls
+///
+/// Arm B is the one that makes arm C mean something: without it, a gate wired to fire
+/// unconditionally would pass arms A and C exactly as a correct one does.
+#[test]
+fn the_periodic_loop_reaches_the_index_resident_bound() {
+    const KEYS: usize = 2_000;
+
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+    // Cache out of the way, so every byte compared below is index.
+    let _ = engine.cache().invalidate_shard(1);
+
+    // REGIME 1: the stage flag is off, so no arm can act through the wide gate.
+    let base = StorageManagerOptions {
+        enable_evict: false,
+        ..StorageManagerOptions::default()
+    };
+    assert!(
+        !base.enable_evict,
+        "the arms below are supposed to run with the wide stage off"
+    );
+    // REGIME 2: the shipped default sets NO bound, so a loop reaching one is this test's doing and
+    // not something every deployment is already getting.
+    assert_eq!(
+        StorageManagerOptions::default().index_resident_limit_bytes,
+        0,
+        "the periodic loop now ships a resident bound. That is a behaviour change for every \
+         deployment and belongs in the same decision as the eviction threshold default -- restate \
+         this test against both rather than deleting the assertion"
+    );
+    // REGIME 3: there is a resident index for a bound to be about.
+    let resident = engine.bucket_index_resident_bytes(1);
+    assert!(
+        resident > 0,
+        "the fixture left no resident index, so no bound on it can do anything"
+    );
+
+    // --- ARM A: no bound, stage off. ---
+    let off = runtime.run_storage_manager_once(1, base.clone());
+    assert!(
+        off.eviction.is_none(),
+        "a round with no bound and the stage off still produced an eviction report: {:?}",
+        off.eviction
+    );
+    assert!(
+        off.skipped_stages.iter().any(|stage| stage == "evict_disabled"),
+        "the round did not report the stage as skipped: skipped={:?} executed={:?}",
+        off.skipped_stages,
+        off.executed_stages
+    );
+
+    // --- ARM B: a bound ABOVE this shard's bytes must REFUSE. ---
+    let resident_before_refusal = engine.bucket_index_resident_bytes(1);
+    let above = StorageManagerOptions {
+        index_resident_limit_bytes: resident_before_refusal.saturating_mul(4).saturating_add(1),
+        ..base.clone()
+    };
+    let refused_round = runtime.run_storage_manager_once(1, above);
+    let refused = refused_round
+        .eviction
+        .as_ref()
+        .expect("a bound that is set must report, even when it refuses");
+    assert_eq!(
+        refused.mode, "index_resident_bound",
+        "the round opened some other gate than the bound: mode={} reason={}",
+        refused.mode, refused.skipped_reason
+    );
+    assert_eq!(
+        refused.skipped_reason, "index_resident_below_bound",
+        "a bound four times this shard's resident index did not refuse: reason={:?} \
+         pressure_before={} threshold={}",
+        refused.skipped_reason, refused.pressure_before, refused.memory_pressure_threshold
+    );
+    assert_eq!(
+        refused.bucket_index_buckets_released, 0,
+        "the refusing round released {} buckets",
+        refused.bucket_index_buckets_released
+    );
+
+    // --- ARM C: a bound BELOW them must ACT. ---
+    let resident_before = engine.bucket_index_resident_bytes(1);
+    let limit = resident_before / 2;
+    assert!(
+        limit > 0 && limit < resident_before,
+        "the fixture's resident index ({resident_before} B) is too small to put a bound under, so \
+         arm C cannot be in the regime it is about"
+    );
+    let under = StorageManagerOptions {
+        index_resident_limit_bytes: limit,
+        ..base
+    };
+    let acted_round = runtime.run_storage_manager_once(1, under);
+    let acted = acted_round
+        .eviction
+        .as_ref()
+        .expect("the bound must report when it is set");
+    assert_eq!(
+        acted.mode, "index_resident_bound",
+        "the acting round opened some other gate than the bound: mode={}",
+        acted.mode
+    );
+    assert_eq!(
+        acted.skipped_reason, "",
+        "the bound refused a shard whose resident index ({resident_before} B) is over its limit \
+         ({limit} B): reason={:?}",
+        acted.skipped_reason
+    );
+    assert!(
+        acted.bucket_index_buckets_released > 0,
+        "the round opened the bound's gate and released nothing: victims={} refused={}",
+        acted.selected_victims.len(),
+        acted.bucket_index_release_refused
+    );
+    let resident_after = engine.bucket_index_resident_bytes(1);
+    assert!(
+        resident_after < resident_before,
+        "the round released {} buckets and freed no index memory ({resident_before} -> \
+         {resident_after})",
+        acted.bucket_index_buckets_released
+    );
+    eprintln!(
+        "  [index-bound-loop] {KEYS} keys, stage OFF throughout: no bound -> no stage; bound \
+{} B -> refused, 0 released; bound {limit} B -> {} buckets released, resident index \
+{resident_before} -> {resident_after}",
+        refused.memory_pressure_threshold,
+        acted.bucket_index_buckets_released,
+    );
+}
+
+/// WHEN BOTH SETTINGS ARE SET, THE HIGHER BAR OPENS THE STAGE AND THE REPORT SAYS WHICH.
+///
+/// Since the evict signal was narrowed, `eviction_memory_pressure_threshold` and
+/// `index_resident_limit_bytes` bound the same quantity: this shard's `bucket_index_resident_bytes`.
+/// Two settings on one number cannot both gate it, so the stage takes the higher bar.
+///
+/// THE TWO ARMS ARE THE SAME SETTINGS EXCEPT FOR THE BOUND, each on its own freshly seeded store so
+/// neither inherits the other's cleaning:
+///
+///   control    threshold 1, NO bound           -> the wide gate opens, because no shard holding a
+///                                                 record is under 1
+///   treatment  threshold 1, bound above the shard -> the BOUND is the higher bar and refuses
+///
+/// The control is what makes the treatment a finding rather than a tautology: it shows the round
+/// WOULD have evicted at this threshold, so the refusal is the bound's doing.
+#[test]
+fn the_higher_bar_opens_the_stage_and_the_report_says_which() {
+    const KEYS: usize = 1_000;
+
+    // --- CONTROL: threshold 1, no bound. ---
+    let control_dir = tempdir().unwrap();
+    let control_runtime = seeded_runtime(control_dir.path(), KEYS);
+    let control_engine = control_runtime.engine();
+    let _ = control_engine.cache().invalidate_shard(1);
+    let control_resident = control_engine.bucket_index_resident_bytes(1);
+    // REGIME: a threshold of 1 is below this shard's own bytes, which is what makes it a bar no
+    // shard holding anything can be under.
+    assert!(
+        control_resident > 1,
+        "the control shard's resident index is {control_resident} B, so a threshold of 1 is not \
+         below it and the control cannot show the gate opening"
+    );
+    let control_round = control_runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_evict: true,
+            eviction_memory_pressure_threshold: 1,
+            index_resident_limit_bytes: 0,
+            ..StorageManagerOptions::default()
+        },
+    );
+    let control = control_round
+        .eviction
+        .as_ref()
+        .expect("the stage reports when it is enabled");
+    assert_eq!(
+        control.skipped_reason, "",
+        "the control round did not evict at threshold 1, so it cannot show that the treatment's \
+         refusal is the bound's doing: reason={:?} pressure_before={}",
+        control.skipped_reason, control.pressure_before
+    );
+    assert_eq!(
+        control.mode, "evict_cache",
+        "the control round opened the bound's gate although no bound was set: mode={}",
+        control.mode
+    );
+
+    // --- TREATMENT: the same threshold, plus a bound above the shard. ---
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+    let _ = engine.cache().invalidate_shard(1);
+    let resident = engine.bucket_index_resident_bytes(1);
+    let bound = resident.saturating_mul(4).saturating_add(1);
+    // REGIME: the bound really is the higher bar.
+    assert!(bound > 1, "the bound must exceed the threshold it is tested against");
+    let round = runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            enable_evict: true,
+            eviction_memory_pressure_threshold: 1,
+            index_resident_limit_bytes: bound,
+            ..StorageManagerOptions::default()
+        },
+    );
+    let treatment = round
+        .eviction
+        .as_ref()
+        .expect("the stage reports when it is enabled");
+
+    // THE FINDING: the bound is the gate that ran.
+    assert_eq!(
+        treatment.mode, "index_resident_bound",
+        "the stage took the threshold rather than the higher bound: mode={} threshold={}",
+        treatment.mode, treatment.memory_pressure_threshold
+    );
+    // AND IT IS THE BAR THE REPORT PUBLISHES, so an operator is not shown the one that lost.
+    assert_eq!(
+        treatment.memory_pressure_threshold, bound,
+        "the report publishes {} as the bar while the stage used {bound}",
+        treatment.memory_pressure_threshold
+    );
+    // AND IT REFUSED, which is the behaviour difference the bound buys at this threshold.
+    assert_eq!(
+        treatment.skipped_reason, "index_resident_below_bound",
+        "the stage acted although the shard is under its bound: reason={:?}",
+        treatment.skipped_reason
+    );
+    assert_eq!(
+        treatment.bucket_index_buckets_released, 0,
+        "the refusing round released {} buckets",
+        treatment.bucket_index_buckets_released
+    );
+    eprintln!(
+        "  [which-bar] {KEYS} keys: threshold=1 alone -> gate OPEN (mode={}); threshold=1 with \
+bound={bound} B over a {resident} B index -> mode={} reason={}, 0 released",
+        control.mode, treatment.mode, treatment.skipped_reason,
+    );
+}
+
+/// NOTHING ACKNOWLEDGED IS LOST WHEN THE BOUND RELEASES, INCLUDING ACROSS A RELOAD.
+///
+/// Eviction drops resident state, so the deliverable is not the byte count -- it is that a read
+/// after the release still answers, and keeps answering after the shard comes back from disk.
+///
+/// FOUR THINGS ASSERTED, in this order, because the later ones mean nothing without the earlier:
+///
+///   1  THE ROUND ACTUALLY RELEASED. "Nothing was lost" is also what a round that did nothing
+///      reports, and what a fixture whose gate never opened reports.
+///   2  NOTHING WAS DROPPED. `dropped_object_count` counts records DELETED, and it is incremented
+///      only on the `delete_drop` path -- which `apply_index_resident_bound` never takes. A
+///      non-zero here would mean the round deleted records rather than releasing their pages, so
+///      asserting it zero is the other half of the accounting: pages went, records stayed.
+///   3  EVERY KEY READS BACK WHOLE, COLD. Both directions -- the mismatch list is empty AND the
+///      verified count equals the corpus, so a loop that read nothing cannot pass.
+///   4  AND AGAIN AFTER A RELOAD, on a fresh engine over the same directories, so the answer comes
+///      from what is on disk rather than from anything the evicting process still held in memory.
+#[test]
+fn nothing_acknowledged_is_lost_when_the_bound_releases_and_the_shard_reloads() {
+    const KEYS: usize = 1_200;
+    const MAX_ROUNDS: usize = 8;
+
+    let dir = tempdir().unwrap();
+    let (released_total, dropped_total, resident_before, resident_after) = {
+        // `seeded_runtime` asserts every write's status, so every key below is ACKNOWLEDGED.
+        let runtime = seeded_runtime(dir.path(), KEYS);
+        let engine = runtime.engine();
+        let _ = engine.cache().invalidate_shard(1);
+        let resident_before = engine.bucket_index_resident_bytes(1);
+        assert!(
+            resident_before > 0,
+            "the fixture left no resident index to release"
+        );
+        let limit = resident_before / 2;
+        assert!(
+            limit > 0 && limit < resident_before,
+            "the bound ({limit} B) is not under this shard's resident index ({resident_before} B), \
+             so the round cannot be forced to act"
+        );
+        let options = StorageManagerOptions {
+            enable_evict: false,
+            index_resident_limit_bytes: limit,
+            ..StorageManagerOptions::default()
+        };
+
+        let mut released_total = 0usize;
+        let mut dropped_total = 0usize;
+        for _ in 0..MAX_ROUNDS {
+            let report = runtime.run_storage_manager_once(1, options.clone());
+            if let Some(eviction) = report.eviction.as_ref() {
+                released_total += eviction.bucket_index_buckets_released;
+                dropped_total += eviction.dropped_object_count;
+            }
+            if released_total > 0 {
+                break;
+            }
+        }
+        let resident_after = engine.bucket_index_resident_bytes(1);
+
+        // --- 1. THE ROUND ACTUALLY RELEASED. ---
+        assert!(
+            released_total > 0,
+            "{MAX_ROUNDS} rounds at a bound of {limit} B over a {resident_before} B index released \
+             no bucket, so nothing below is a statement about eviction"
+        );
+        assert!(
+            resident_after < resident_before,
+            "{released_total} buckets were released and the resident index did not fall \
+             ({resident_before} -> {resident_after})"
+        );
+
+        // --- 2. AND NOTHING WAS DROPPED. ---
+        assert_eq!(
+            dropped_total, 0,
+            "the bound's rounds deleted {dropped_total} records. This arm releases pages; only the \
+             `delete_drop` path deletes, and `apply_index_resident_bound` does not take it"
+        );
+
+        // --- 3. EVERY KEY READS BACK WHOLE, COLD. ---
+        let _ = engine.cache().invalidate_shard(1);
+        let mut verified = 0usize;
+        let mut wrong: Vec<String> = Vec::new();
+        for index in 0..KEYS {
+            match reads_back_whole(&engine, index) {
+                Ok(()) => verified += 1,
+                Err(problem) => {
+                    if wrong.len() < 64 {
+                        wrong.push(problem);
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {KEYS} acknowledged keys did not read back after the bound released \
+             {released_total} buckets: first few {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+        assert_eq!(
+            verified, KEYS,
+            "only {verified} of {KEYS} keys were verified, so the empty mismatch list above is a \
+             loop that did not run rather than a store that answered"
+        );
+
+        // Write the index out while the buckets are released, so the reload below comes back from
+        // the state eviction left rather than from one taken before it.
+        engine.flush_shard_index(1);
+        (released_total, dropped_total, resident_before, resident_after)
+    };
+
+    // --- 4. AND AGAIN AFTER A RELOAD. ---
+    //
+    // A fresh engine over the same directories, and ONLY after the first one is dropped: two
+    // handles on one directory is its own failure mode and would make this prove something else.
+    let reloaded = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let response = reloaded.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "evict-live".to_string(),
+        shard_uri: "local://evict-live/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: SHIPPED_END_BUCKET,
+        readonly: false,
+        load_version: 2,
+        local_node_id: Some(1),
+    });
+    assert!(
+        response.status.ok,
+        "the shard did not come back after the bound released {released_total} buckets: {:?}",
+        response.status
+    );
+    // REGIME FOR THE RELOAD ARM: the shard rebuilt an index, so the reads below go through one.
+    let reloaded_resident = reloaded.bucket_index_resident_bytes(1);
+    assert!(
+        reloaded_resident > 0,
+        "the reloaded shard rebuilt no resident index, so its reads are not going through the \
+         structure eviction released"
+    );
+    let mut verified = 0usize;
+    let mut wrong: Vec<String> = Vec::new();
+    for index in 0..KEYS {
+        match reads_back_whole(&reloaded, index) {
+            Ok(()) => verified += 1,
+            Err(problem) => {
+                if wrong.len() < 64 {
+                    wrong.push(problem);
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {KEYS} acknowledged keys did not survive a reload taken after the bound released \
+         {released_total} buckets: first few {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+    assert_eq!(
+        verified, KEYS,
+        "only {verified} of {KEYS} keys were verified after the reload, so the empty mismatch list \
+         above is a loop that did not run"
+    );
+    eprintln!(
+        "  [bound-correctness] {KEYS} acknowledged keys, {released_total} buckets released, \
+{dropped_total} records dropped, resident index {resident_before} -> {resident_after}; all \
+{KEYS} read back cold, and all {KEYS} again after a reload into a {reloaded_resident} B index"
+    );
+}
+
+/// WHICH BUCKETS THE ROUND TAKES, on a fixture whose right answer is known AND whose wrong answer
+/// is what a selector ignoring recency would give.
+///
+/// The shipped selector (`evict_sampled_lru`, on by default) scans the bucket index in ascending
+/// routing-bucket order from a cursor, with a bounded budget, and ranks what it pooled by
+/// `last_used_ms` with ties broken on bucket id. So the buckets it MEETS FIRST are the
+/// lowest-numbered ones.
+///
+/// THE FIXTURE MAKES THE LOWEST-NUMBERED BUCKETS THE HOT ONES. Every key in them is read again
+/// after a clock gap, so their recency is strictly later than every other bucket's. A selector that
+/// ranked on scan order, or on bucket id, or on nothing at all, would take exactly those; a
+/// selector that ranks on recency cannot take any of them while colder buckets are in its pool.
+///
+/// WHAT MAKES THIS FAIL RATHER THAN BE VACUOUS: the scan budget is asserted to reach past the hot
+/// band, the gate is asserted to have opened, and a FULL batch is asserted to have been taken --
+/// a round that took fewer victims than its batch limit did not have to choose between them.
+#[test]
+fn the_round_takes_the_coldest_buckets_it_scanned_not_the_first_ones() {
+    const KEYS: usize = 4_000;
+    const BATCH: usize = 16;
+    /// The hot band. Wider than the sampler's minimum scan of `samples * batch_limit` = 80 would
+    /// need to be "all hot", and narrower than it, so the pass meets hot AND cold buckets.
+    const HOT_BUCKETS: usize = 48;
+
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+
+    let mut occupied: Vec<u32> = (0..KEYS)
+        .map(|index| engine.routing_bucket_for_key(1, &key_of(index)))
+        .collect();
+    occupied.sort_unstable();
+    occupied.dedup();
+    // REGIME 1: there are enough buckets for a hot band and a cold remainder the scan can reach.
+    assert!(
+        occupied.len() > HOT_BUCKETS * 2,
+        "{KEYS} keys occupy only {} buckets, so a {HOT_BUCKETS}-bucket hot band leaves too little \
+         cold for the selector to choose instead",
+        occupied.len()
+    );
+    let hot: std::collections::BTreeSet<u32> = occupied[..HOT_BUCKETS].iter().copied().collect();
+
+    // The clock is milliseconds, so a gap is needed or the re-reads could stamp the same value the
+    // writes did and "hot" would not be hotter.
+    std::thread::sleep(std::time::Duration::from_millis(5));
+    let mut touched = 0usize;
+    for index in 0..KEYS {
+        let key = key_of(index);
+        if hot.contains(&engine.routing_bucket_for_key(1, &key)) {
+            let answer = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet { key: key.clone() },
+            });
+            assert!(answer.status.ok, "warming {key}: {:?}", answer.status);
+            touched += 1;
+        }
+    }
+    // REGIME 2: the hot band actually got touched.
+    assert!(
+        touched > 0,
+        "no key landed in the {HOT_BUCKETS} lowest-numbered buckets, so nothing was made hot"
+    );
+
+    let report = engine.apply_storage_eviction(1, 0, BATCH, true, false);
+    // REGIME 3: the gate opened, so there is a selection to read.
+    assert_eq!(
+        report.skipped_reason, "",
+        "the gate declined at threshold 0, so no victims were selected: {report:?}"
+    );
+    // REGIME 4: and a FULL batch was taken, so the selector had to leave some buckets out.
+    assert_eq!(
+        report.selected_victims.len(),
+        BATCH,
+        "the round took {} victims against a batch limit of {BATCH}, so it did not have to choose \
+         between the buckets it scanned and this fixture cannot tell a recency ranking from any \
+         other",
+        report.selected_victims.len()
+    );
+
+    // THE FINDING: not one victim is a bucket that was just read, although those are precisely the
+    // buckets the scan meets first.
+    let taken_hot: Vec<u32> = report
+        .selected_victims
+        .iter()
+        .map(|victim| victim.routing_bucket)
+        .filter(|bucket| hot.contains(bucket))
+        .collect();
+    assert!(
+        taken_hot.is_empty(),
+        "{} of {BATCH} victims are buckets read {touched} times just before the round: {:?}. The \
+         selector is taking what it scanned first rather than what was used least recently",
+        taken_hot.len(),
+        taken_hot
+    );
+    let lowest_hot = occupied[0];
+    eprintln!(
+        "  [victim-choice] {KEYS} keys over {} buckets; the {HOT_BUCKETS} lowest-numbered \
+(from {lowest_hot}) read {touched} times, then one round of {BATCH}: victims {:?} -- none of them \
+hot, although the scan starts at bucket {lowest_hot}",
+        occupied.len(),
+        report
+            .selected_victims
+            .iter()
+            .map(|victim| victim.routing_bucket)
+            .collect::<Vec<_>>(),
+    );
+}

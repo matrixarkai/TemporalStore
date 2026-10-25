@@ -669,28 +669,58 @@ impl DataNodeRuntime {
         // `data_node.rs`. What is NOT supported is leaning on `still_over` to terminate the loop
         // while the threshold is 0, because at 0 it cannot terminate anything -- the guard below
         // pins that, and `eviction_loop_live_stopping_conditions` is its denominator.
-        let eviction = options.enable_evict.then(|| {
-            let first = self.inner.engine.apply_storage_eviction(
-                shard_id,
-                options.eviction_memory_pressure_threshold,
-                options.eviction_batch_limit,
-                options.eviction_dump_before_evict,
-                options.eviction_delete_drop,
-            );
+        // WHICH GATE OPENS THE STAGE, and there is exactly one of them.
+        //
+        // `index_resident_limit_bytes` and `eviction_memory_pressure_threshold` bound the SAME
+        // quantity since the evict signal was narrowed: `bucket_index_resident_bytes` for this
+        // shard. So the higher bar wins, and `mode` on the report says which one it was. Blending
+        // them arithmetically would publish a bar no operator set.
+        //
+        // AND THE BOUND IS GATED ON ITSELF, NOT ON `enable_evict`. That is the point of it:
+        // `apply_index_resident_bound` is the narrow per-shard gate, and until this field existed
+        // it had no route from this loop at all -- its one non-test caller is inside
+        // `run_storage_manager_cycle`, which runs on an inbound `TaskRequest::StorageManager`,
+        // while this is the loop `start_storage_manager_scheduler_for_all_shards` starts. A safe
+        // trigger reachable only by also switching on the stage it was written to replace is not
+        // reachable.
+        let index_bound_is_the_gate = options.index_resident_limit_bytes > 0
+            && options.index_resident_limit_bytes > options.eviction_memory_pressure_threshold;
+        let eviction = (index_bound_is_the_gate || options.enable_evict).then(|| {
             let engine = &self.inner.engine;
-            run_eviction_stage(
-                options.eviction_memory_pressure_threshold,
-                options.eviction_count_limit,
-                first,
-                |remaining_budget| {
+            // ONE batch function for both arms, so the repeat path cannot call a different gate
+            // from the first one. It did not, and could not, when there was only one gate; with
+            // two it is the obvious way to get a stage that opens on one and loops on the other.
+            let batch = |budget: usize| {
+                if index_bound_is_the_gate {
+                    engine.apply_index_resident_bound(
+                        shard_id,
+                        options.index_resident_limit_bytes,
+                        budget,
+                    )
+                } else {
                     engine.apply_storage_eviction(
                         shard_id,
                         options.eviction_memory_pressure_threshold,
-                        options.eviction_batch_limit.min(remaining_budget),
+                        budget,
                         options.eviction_dump_before_evict,
                         options.eviction_delete_drop,
                     )
-                },
+                }
+            };
+            // The bar `still_over` is read against has to be the one the gate used, or the stage
+            // keeps taking batches against a number nobody set. At the bound this term stops being
+            // vacuous for the first time: a non-zero bar can actually be reached.
+            let stage_threshold = if index_bound_is_the_gate {
+                options.index_resident_limit_bytes
+            } else {
+                options.eviction_memory_pressure_threshold
+            };
+            let first = batch(options.eviction_batch_limit);
+            run_eviction_stage(
+                stage_threshold,
+                options.eviction_count_limit,
+                first,
+                |remaining_budget| batch(options.eviction_batch_limit.min(remaining_budget)),
             )
             .into_stage_report()
         });
@@ -706,9 +736,12 @@ impl DataNodeRuntime {
         }
         pressure_decisions.push(storage_manager_pressure_decision(
             "evict",
-            options.enable_evict,
+            // `enable_evict` is no longer the only thing that can enable this stage, so the
+            // decision reports whether the stage RAN rather than re-reading one of the two flags
+            // that could have started it.
+            eviction.is_some(),
             true,
-            options.enable_evict,
+            eviction.is_some(),
             // The observed value, against the threshold it is actually compared with.
             //
             // This used to pass `eviction_memory_pressure_threshold` as the OBSERVED number and 1
@@ -729,9 +762,28 @@ impl DataNodeRuntime {
                     pressure.bucket_index_resident_bytes,
                     options.eviction_memory_pressure_threshold,
                 ),
+                // THE BAR THE STAGE ACTUALLY USED, against the same observed quantity. With two
+                // settings on one number, a decision that published only one of them cannot be
+                // read: an operator seeing `observed=1,200 threshold=1` would conclude the stage
+                // fired when the bound had in fact refused it.
+                storage_manager_pressure_signal(
+                    "index_resident_limit_bytes",
+                    pressure.bucket_index_resident_bytes,
+                    if index_bound_is_the_gate {
+                        options.index_resident_limit_bytes
+                    } else {
+                        options.eviction_memory_pressure_threshold
+                    },
+                ),
             ],
-            vec!["operator_enabled_eviction".to_string()],
-            (!options.enable_evict).then(|| "evict_disabled".to_string()),
+            vec![if index_bound_is_the_gate {
+                "index_resident_bound_set".to_string()
+            } else {
+                "operator_enabled_eviction".to_string()
+            }],
+            eviction
+                .is_none()
+                .then(|| "evict_disabled".to_string()),
         ));
 
         // Expire and evict run BEFORE the cache invalidation below, not after it.

@@ -3466,6 +3466,17 @@ pub const DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND: usize = 128;
 pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 8;
 /// Buckets evicted per round once the cache is over its memory pressure threshold.
 pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 16;
+
+/// The per-shard resident-index bound `StorageManagerCycleRequest` ships, named rather than
+/// written twice.
+///
+/// It was a literal here and the periodic loop had no field for it at all, so the two pipelines
+/// could not be compared on it. Measured on the shipped `0..1023` routing range, the resident index
+/// runs about 39.4 B a key (`data_node::tests::evict_live::\
+/// what_a_default_eviction_threshold_has_to_clear`), so this bound is reached at roughly 1.7 M keys
+/// in one shard. That is the scale it is a bound at -- stated here because a byte figure on its own
+/// says nothing about when it fires.
+pub const DEFAULT_INDEX_RESIDENT_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// Garbage share a slab must carry before GC will reclaim it, in basis points.
 ///
 /// Expected to be INERT today, and set anyway so the policy is stated rather than implied: our
@@ -3497,7 +3508,7 @@ impl Default for StorageManagerCycleRequest {
             // nothing else. The wide eviction gate is off by default precisely because its signal
             // is mostly other shards' cache -- 99.95% of it on a ten-key shard -- and that defect
             // is the one this entry point does not have.
-            index_resident_limit_bytes: 64 * 1024 * 1024,
+            index_resident_limit_bytes: DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
             enable_prepare: true,
             enable_wal_reclaim: true,
             enable_evict: true,
