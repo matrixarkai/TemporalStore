@@ -1666,23 +1666,43 @@ where
         Ok(Some(report))
     }
 
-    pub async fn load_replay_cursor(
+    /// The persisted consumer cursor for `shard_id`, or `None` when no consumer has ever written
+    /// one.
+    ///
+    /// [`Self::load_replay_cursor`] answers a zero-valued cursor both for an ABSENT cursor object
+    /// and for a consumer that has read NOTHING, and those two are opposites: the first is a shard
+    /// with no reader to protect, the second is the reader with the most left to read. Every
+    /// retention decision that asked `last_wal_index > 0` was really asking whether a consumer
+    /// exists, got the wrong answer for the consumer stuck at zero, and collected the prefix that
+    /// consumer had still to read. Presence is a different question from position, so it gets its
+    /// own answer.
+    pub async fn try_load_replay_cursor(
         &self,
         shard_id: ShardId,
-    ) -> Result<SharedStoreReplayCursor, SharedStoreReplicationError> {
+    ) -> Result<Option<SharedStoreReplayCursor>, SharedStoreReplicationError> {
         match self
             .object_store
             .get(&self.replay_cursor_key(shard_id))
             .await
         {
-            Ok(bytes) => Ok(serde_json::from_slice(&bytes)?),
-            Err(ObjectStoreError::NotFound(_)) => Ok(SharedStoreReplayCursor {
+            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Err(ObjectStoreError::NotFound(_)) => Ok(None),
+            Err(err) => Err(err.into()),
+        }
+    }
+
+    pub async fn load_replay_cursor(
+        &self,
+        shard_id: ShardId,
+    ) -> Result<SharedStoreReplayCursor, SharedStoreReplicationError> {
+        Ok(self
+            .try_load_replay_cursor(shard_id)
+            .await?
+            .unwrap_or(SharedStoreReplayCursor {
                 shard_id,
                 last_wal_index: 0,
                 last_replay_time_ms: 0,
-            }),
-            Err(err) => Err(err.into()),
-        }
+            }))
     }
 
     pub async fn save_replay_cursor(
@@ -1742,19 +1762,22 @@ where
         shard_id: ShardId,
         retain_from_wal_index: u64,
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
-        let cursor = self.load_replay_cursor(shard_id).await?;
-        if cursor.last_wal_index > 0
-            && retain_from_wal_index > cursor.last_wal_index.saturating_add(1)
-        {
-            return Err(SharedStoreReplicationError::GcBlockedByReplayCursor {
-                cursor_wal_index: cursor.last_wal_index,
-                retain_from_wal_index: retain_from_wal_index,
-            });
+        // PRESENCE, not position. A consumer that has read nothing still needs entry 1, so the
+        // only retention point it can tolerate is 1 -- and it is the consumer with the most left
+        // to lose. Reading its existence off `last_wal_index > 0` made it indistinguishable from
+        // a shard with no consumer at all, which is the one case where collecting the whole
+        // prefix is allowed, so the guard waved through exactly the deletion it existed to stop.
+        let cursor = self.try_load_replay_cursor(shard_id).await?;
+        if let Some(cursor) = &cursor {
+            if retain_from_wal_index > cursor.last_wal_index.saturating_add(1) {
+                return Err(SharedStoreReplicationError::GcBlockedByReplayCursor {
+                    cursor_wal_index: cursor.last_wal_index,
+                    retain_from_wal_index,
+                });
+            }
         }
         let mut report = self.gc_wal_before(shard_id, retain_from_wal_index).await?;
-        if cursor.last_wal_index > 0 {
-            report.retained_for_cursor_wal_index = Some(cursor.last_wal_index);
-        }
+        report.retained_for_cursor_wal_index = cursor.map(|cursor| cursor.last_wal_index);
         Ok(report)
     }
 
@@ -1792,14 +1815,20 @@ where
     ) -> Result<SharedStoreGcReport, SharedStoreReplicationError> {
         let keep_last = keep_last.max(1);
         let manifests = self.list_checkpoints(shard_id).await?;
-        let cursor = self.load_replay_cursor(shard_id).await?;
+        // Same presence question as the log collector. The retention SET does not move for a
+        // consumer stuck at zero -- no generation sits at or below position 0, and `keep_last`
+        // already holds a complete state -- but the report did, calling a present consumer absent.
+        let cursor_wal_index = self
+            .try_load_replay_cursor(shard_id)
+            .await?
+            .map(|cursor| cursor.last_wal_index);
         let retain_start = manifests.len().saturating_sub(keep_last);
-        let cursor_anchor = if cursor.last_wal_index > 0 {
+        let cursor_anchor = if let Some(position) = cursor_wal_index {
             manifests
                 .iter()
                 .enumerate()
                 .rev()
-                .find(|(_, manifest)| manifest.checkpoint_wal_index <= cursor.last_wal_index)
+                .find(|(_, manifest)| manifest.checkpoint_wal_index <= position)
                 .map(|(index, _)| index)
         } else {
             None
@@ -1823,13 +1852,12 @@ where
                 }
                 continue;
             }
-            if cursor.last_wal_index > 0
-                && manifest.checkpoint_wal_index <= cursor.last_wal_index
-                && cursor_anchor.is_none()
-            {
+            if cursor_wal_index.is_some_and(|position| {
+                manifest.checkpoint_wal_index <= position && cursor_anchor.is_none()
+            }) {
                 return Err(
                     SharedStoreReplicationError::CheckpointGcBlockedByReplayCursor {
-                        cursor_wal_index: cursor.last_wal_index,
+                        cursor_wal_index: cursor_wal_index.unwrap_or_default(),
                         checkpoint_wal_index: manifest.checkpoint_wal_index,
                         checkpoint_id: manifest.checkpoint_id.clone(),
                     },
@@ -1847,8 +1875,7 @@ where
             deleted_checkpoints,
             deleted_checkpoint_objects,
             retained_checkpoint_ids,
-            retained_for_cursor_wal_index: (cursor.last_wal_index > 0)
-                .then_some(cursor.last_wal_index),
+            retained_for_cursor_wal_index: cursor_wal_index,
             retained_for_cursor_checkpoint_id: cursor_anchor
                 .map(|index| manifests[index].checkpoint_id.clone()),
             ..SharedStoreGcReport::default()
@@ -7197,19 +7224,20 @@ mod tests {
 
     /// A CONSUMER AT ZERO READS AS NO CONSUMER AT ALL.
     ///
-    /// `load_replay_cursor` answers `last_wal_index: 0` for a shard whose cursor object is ABSENT
-    /// and for a shard whose cursor object EXISTS and has never advanced. Both cursor-safe
-    /// collectors then gate every protection on `last_wal_index > 0`, so the consumer that has
-    /// read nothing -- the one with the most still to read -- gets the protection meant for a
-    /// consumer that does not exist.
+    /// `load_replay_cursor` answered `last_wal_index: 0` for a shard whose cursor object is ABSENT
+    /// and for a shard whose cursor object EXISTS and has never advanced, and both cursor-safe
+    /// collectors gated every protection on `last_wal_index > 0` -- so the consumer that had read
+    /// nothing, the one with the most still to read, got the treatment meant for a consumer that
+    /// does not exist. Presence is now asked separately from position.
     ///
-    /// This records that hole where it is harmless, to fix the shape of the report. On the
-    /// checkpoint side a generation is a complete state, so dropping older generations while
-    /// `keep_last` survives costs the stuck consumer a resume and nothing else -- asserted here by
-    /// reading back a key written before the oldest dropped generation. The same blind spot on the
-    /// log side is not harmless, because a log prefix is not a complete state.
+    /// The RETENTION SET is not what moves here. On the checkpoint side a generation is a
+    /// complete state, so dropping older generations while `keep_last` survives costs the stuck
+    /// consumer a resume and nothing else -- asserted here by reading back a key written before
+    /// the oldest dropped generation. What moves is the REPORT: a present consumer at zero now
+    /// says so. The same blind spot on the log side is not harmless, because a log prefix is not a
+    /// complete state, and that is what the two tests below cover.
     #[tokio::test]
-    async fn a_checkpoint_cursor_that_never_advanced_reads_as_no_cursor_at_all() {
+    async fn a_checkpoint_cursor_that_never_advanced_reports_as_a_present_consumer() {
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -7257,12 +7285,13 @@ mod tests {
             "collection did not reach the regime it is being asked about"
         );
         assert_eq!(
-            report.retained_for_cursor_wal_index, None,
-            "a persisted consumer at zero should not report as an absent consumer"
+            report.retained_for_cursor_wal_index,
+            Some(0),
+            "a persisted consumer at zero still reports as an absent consumer"
         );
         assert_eq!(
             report.retained_for_cursor_checkpoint_id, None,
-            "a persisted consumer at zero should not report as an absent consumer"
+            "no generation sits at or below position zero, so none can be the cursor's anchor"
         );
 
         // The stuck consumer is not stranded: the surviving generation is a complete state and
@@ -7286,6 +7315,152 @@ mod tests {
                 value: Some(vec![1u8])
             },
             "the surviving generation does not cover what the dropped ones covered"
+        );
+    }
+
+    /// A CONSUMER THAT HAS READ NOTHING IS A CONSUMER.
+    ///
+    /// The log side is where treating a cursor at zero as an absent cursor loses data. A consumer
+    /// at position 0 has entry 1 still to read; a shard with no consumer has nothing to protect.
+    /// Those took the same branch, so the one deletion the guard existed to stop was the one it
+    /// waved through.
+    ///
+    /// Both directions, because a refusal that refused nothing reports the same way as a refusal
+    /// that worked: the error names the position, AND every log object is still there afterwards.
+    #[tokio::test]
+    async fn log_collection_refuses_to_pass_a_consumer_that_has_read_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=5u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        // REGIME FIRST: five log objects, so there is a prefix to lose.
+        let before = store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            before, 5,
+            "the fixture did not publish the log prefix this test is about"
+        );
+
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_wal_index: 0,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+
+        let refused = replicator
+            .gc_wal_before_cursor_safe(1, 4)
+            .await
+            .expect_err("a consumer at zero still needs entry 1, so retaining from 4 must refuse");
+        assert!(
+            matches!(
+                refused,
+                SharedStoreReplicationError::GcBlockedByReplayCursor {
+                    cursor_wal_index: 0,
+                    retain_from_wal_index: 4,
+                }
+            ),
+            "the refusal did not name the consumer it refused for: {refused:?}"
+        );
+
+        let after = store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            after, before,
+            "the collection was reported as refused but deleted {} object(s) anyway",
+            before.saturating_sub(after)
+        );
+    }
+
+    /// AND THE OTHER SIDE OF IT: no consumer means no constraint.
+    ///
+    /// A guard that refused for every zero-valued cursor would also pass the test above, and
+    /// would collect nothing on any shard -- which is the state this whole area was already in.
+    /// What the fix has to do is tell an ABSENT cursor from a cursor at zero, so this asserts the
+    /// absent case still collects, and asserts it by the objects removed rather than by the
+    /// report.
+    #[tokio::test]
+    async fn log_collection_proceeds_when_no_consumer_has_ever_written_a_cursor() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=5u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            store
+                .list("cluster-a/shards/1/shared/wal/")
+                .await
+                .unwrap()
+                .len(),
+            5,
+            "the fixture did not publish the log prefix this test is about"
+        );
+        assert!(
+            replicator.try_load_replay_cursor(1).await.unwrap().is_none(),
+            "the fixture wrote a cursor, so this is no longer the absent case"
+        );
+
+        let report = replicator.gc_wal_before_cursor_safe(1, 4).await.unwrap();
+
+        // REGIME: it collected. A pass that removed nothing cannot show that an absent cursor
+        // does not block.
+        assert_eq!(
+            report.deleted_wal_objects, 3,
+            "collection did not reach the regime it is being asked about"
+        );
+        assert_eq!(
+            report.retained_for_cursor_wal_index, None,
+            "an absent cursor was reported as a present consumer"
+        );
+        let remaining = store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining.len(),
+            2,
+            "the report and the object store disagree about what was removed"
+        );
+        assert!(
+            remaining
+                .iter()
+                .all(|key| !key.ends_with("wal_00000000000000000001.json")),
+            "the prefix the report claimed to remove is still present"
         );
     }
 
