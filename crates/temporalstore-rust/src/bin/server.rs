@@ -573,10 +573,24 @@ fn main() {
         StorageBackend::SharedPath { root, cluster_id }
             if shared_store_collect_interval_ms > 0 =>
         {
-            let collector = Arc::new(SharedStoreReplicator::new(
-                cluster_id.clone(),
-                Arc::new(FileObjectStore::new(root.clone())),
-            ));
+            // OFF BY DEFAULT, and that is a decision rather than caution. Dropping a
+            // consumer's cursor is the only thing that bounds a log a consumer is pinning, but
+            // nothing on this node's write path writes a consumer cursor, so turning it on by
+            // default would mean picking a bound whose regime no deployment here reaches. What
+            // bounds the log in a default deployment is the checkpoint the pass collects to. A
+            // deployment with real consumers sets these, and then a consumer that stops reading
+            // loses its resume instead of the cluster losing its disk.
+            let cursor_abandon = temporalstore_rust::SharedStoreCursorAbandonPolicy {
+                max_cursor_age_ms: env_u64("TS_SHARED_STORE_CURSOR_MAX_AGE_MS", 0),
+                max_cursor_lag_entries: env_u64("TS_SHARED_STORE_CURSOR_MAX_LAG_ENTRIES", 0),
+            };
+            let collector = Arc::new(
+                SharedStoreReplicator::new(
+                    cluster_id.clone(),
+                    Arc::new(FileObjectStore::new(root.clone())),
+                )
+                .with_cursor_abandon_policy(cursor_abandon),
+            );
             let collector_engine = engine.clone();
             let collector_runtime = Arc::clone(&blob_runtime);
             info!(
@@ -610,6 +624,9 @@ fn main() {
                                 checkpoint_wal_index = report.checkpoint_wal_index,
                                 retain_from_wal_index = report.retain_from_wal_index,
                                 clamped_to_cursor = report.clamped_to_cursor,
+                                abandoned_cursor_wal_index =
+                                    ?report.abandoned_cursor_wal_index,
+                                abandoned_reason = %report.abandoned_reason,
                                 "shared-store collection"
                             );
                         }

@@ -298,6 +298,32 @@ pub struct SharedStoreFlushReport {
     pub last_wal_blob_object_length: Option<u64>,
 }
 
+/// How long a consumer cursor may hold the retention point before it is abandoned.
+///
+/// Zero disables a rule. Both zero is the shape a replicator has when nothing configures a
+/// policy, and it means a consumer holds the log for as long as its cursor exists.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedStoreCursorAbandonPolicy {
+    /// Maximum time since the consumer last recorded an advance. Only applied to a cursor that
+    /// HAS recorded one -- see [`SharedStoreReplicator::abandon_stalled_replay_cursor`].
+    pub max_cursor_age_ms: u64,
+    /// Maximum number of log entries the consumer may sit behind the newest published index.
+    pub max_cursor_lag_entries: u64,
+}
+
+/// A consumer cursor that was dropped because it held the retention point past its bound.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedStoreAbandonedCursor {
+    pub shard_id: ShardId,
+    pub cursor_wal_index: u64,
+    /// Zero when the cursor recorded no time, which is also when the age rule declines to judge
+    /// it.
+    pub cursor_age_ms: u64,
+    pub cursor_lag_entries: u64,
+    /// Which rule fired: `cursor_age_above_bound` or `cursor_lag_entries_above_bound`.
+    pub reason: String,
+}
+
 /// What one pass of [`SharedStoreReplicator::collect_to_checkpoint`] reclaimed, and the two
 /// positions it reasoned from.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -320,6 +346,11 @@ pub struct SharedStoreCollectionReport {
     /// Empty when a pass ran. Non-empty names why a pass declined to collect, which is a
     /// different thing from a pass that ran and found nothing to collect.
     pub blocked_reason: String,
+    /// The position a consumer held when its cursor was dropped for holding the log past its
+    /// bound, or `None` when no cursor was dropped.
+    pub abandoned_cursor_wal_index: Option<u64>,
+    /// Which abandon rule fired, empty when none did.
+    pub abandoned_reason: String,
 }
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -370,6 +401,9 @@ pub struct SharedStoreReplicator<O> {
     /// and have it silently not apply. Nothing outside the R2 test configures one, so nothing
     /// production does changes by the gate going: with no fence there is nothing to enforce.
     fence: Option<ShardFenceConfig>,
+    /// When a consumer cursor stops being treated as live. `None` means never, which is what a
+    /// replicator does with no policy configured.
+    cursor_abandon: Option<SharedStoreCursorAbandonPolicy>,
 }
 
 /// Ownership token carried by a fenced replicator: the `load_version` (monotonic ownership
@@ -419,6 +453,7 @@ impl<O> Clone for SharedStoreReplicator<O> {
             wal_append_mode: self.wal_append_mode,
             wal_frame_format: self.wal_frame_format,
             fence: self.fence.clone(),
+            cursor_abandon: self.cursor_abandon,
         }
     }
 }
@@ -631,6 +666,7 @@ where
             wal_append_mode: SharedStoreWalAppendMode::default(),
             wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
             fence: None,
+            cursor_abandon: None,
         }
     }
 
@@ -649,7 +685,15 @@ where
             wal_append_mode: SharedStoreWalAppendMode::default(),
             wal_frame_format: WAL_FRAME_FORMAT_DEFAULT,
             fence: None,
+            cursor_abandon: None,
         }
+    }
+
+    /// When a consumer cursor stops being treated as live. See
+    /// [`Self::abandon_stalled_replay_cursor`].
+    pub fn with_cursor_abandon_policy(mut self, policy: SharedStoreCursorAbandonPolicy) -> Self {
+        self.cursor_abandon = Some(policy);
+        self
     }
 
     pub fn with_wal_append_mode(mut self, mode: SharedStoreWalAppendMode) -> Self {
@@ -1906,6 +1950,67 @@ where
         })
     }
 
+    /// Decide whether a consumer cursor has held the retention point past its bound, and drop
+    /// it if it has.
+    ///
+    /// CLAMPING TO A CONSUMER IS CORRECT AND IT IS ALSO UNBOUNDED. A consumer that never advances
+    /// holds the retention point at its own position for as long as its cursor exists, and the
+    /// log grows underneath it -- a disk-exhaustion failure in the shape of a retention policy.
+    /// The only honest end to it is to stop treating that consumer as live.
+    ///
+    /// Abandoning it means DELETING the cursor, and that costs the consumer a resume rather than
+    /// its data: the newest generation is a complete state, and restoring from it is the path a
+    /// consumer already takes when it finds no cursor at all.
+    ///
+    /// Two rules, and the age one has a precondition. `last_replay_time_ms` is stamped only when
+    /// a consumer ADVANCES, so a consumer that has never advanced can hold a cursor whose
+    /// recorded time is zero -- which would read as infinitely old and be dropped on the first
+    /// pass, before it had any chance to read anything. The age rule therefore declines to judge
+    /// a cursor that recorded no time, and the distance rule is what ends that consumer's hold
+    /// once the log moves past it. Before this, `last_replay_time_ms` was written by the resume
+    /// path and read by nothing: the cursor recorded how long it had been stuck and no code asked.
+    pub async fn abandon_stalled_replay_cursor(
+        &self,
+        shard_id: ShardId,
+        now_ms: u64,
+    ) -> Result<Option<SharedStoreAbandonedCursor>, SharedStoreReplicationError> {
+        let Some(policy) = self.cursor_abandon else {
+            return Ok(None);
+        };
+        let Some(cursor) = self.try_load_replay_cursor(shard_id).await? else {
+            return Ok(None);
+        };
+        let frontier = self.latest_persisted_wal_index(shard_id).await?;
+        let cursor_lag_entries = frontier.saturating_sub(cursor.last_wal_index);
+        let cursor_age_ms = if cursor.last_replay_time_ms == 0 {
+            0
+        } else {
+            now_ms.saturating_sub(cursor.last_replay_time_ms)
+        };
+        let reason = if policy.max_cursor_age_ms > 0
+            && cursor.last_replay_time_ms > 0
+            && cursor_age_ms > policy.max_cursor_age_ms
+        {
+            "cursor_age_above_bound"
+        } else if policy.max_cursor_lag_entries > 0
+            && cursor_lag_entries > policy.max_cursor_lag_entries
+        {
+            "cursor_lag_entries_above_bound"
+        } else {
+            return Ok(None);
+        };
+        self.object_store
+            .delete(&self.replay_cursor_key(shard_id))
+            .await?;
+        Ok(Some(SharedStoreAbandonedCursor {
+            shard_id,
+            cursor_wal_index: cursor.last_wal_index,
+            cursor_age_ms,
+            cursor_lag_entries,
+            reason: reason.to_string(),
+        }))
+    }
+
     /// Collect this shard's shared objects down to the position the newest checkpoint covers.
     ///
     /// A CHECKPOINT IS WHAT MAKES THE LOG FINITE. A checkpoint is a complete state AT a log
@@ -1933,11 +2038,26 @@ where
         shard_id: ShardId,
         keep_last_checkpoints: usize,
     ) -> Result<SharedStoreCollectionReport, SharedStoreReplicationError> {
+        // The abandon decision comes FIRST, including on the path that collects nothing: a
+        // cursor that has held the log past its bound is not made live again by this shard
+        // having no checkpoint to collect against.
+        let abandoned = self
+            .abandon_stalled_replay_cursor(shard_id, now_ms())
+            .await?;
+        let abandoned_cursor_wal_index = abandoned
+            .as_ref()
+            .map(|abandoned| abandoned.cursor_wal_index);
+        let abandoned_reason = abandoned
+            .as_ref()
+            .map(|abandoned| abandoned.reason.clone())
+            .unwrap_or_default();
         let manifests = self.list_checkpoints(shard_id).await?;
         let Some(newest) = manifests.last() else {
             return Ok(SharedStoreCollectionReport {
                 shard_id,
                 blocked_reason: "no_checkpoint_to_anchor_collection".to_string(),
+                abandoned_cursor_wal_index,
+                abandoned_reason,
                 ..SharedStoreCollectionReport::default()
             });
         };
@@ -1975,6 +2095,8 @@ where
             deleted_checkpoints: checkpoints.deleted_checkpoints,
             deleted_checkpoint_objects: checkpoints.deleted_checkpoint_objects,
             blocked_reason: String::new(),
+            abandoned_cursor_wal_index,
+            abandoned_reason,
         })
     }
 
@@ -7866,6 +7988,339 @@ mod tests {
             },
             "the collected arm cannot restore what it collected the log for"
         );
+    }
+
+    /// A CONSUMER THAT PINS THE LOG PAST ITS BOUND IS ABANDONED, NOT WAITED FOR.
+    ///
+    /// Clamping to a consumer is correct and it is also unbounded: a consumer that never advances
+    /// holds the retention point at its own position for as long as it exists, and the log grows
+    /// underneath it. That is a disk-exhaustion failure wearing a retention policy's clothes, and
+    /// the only honest end to it is to stop treating the consumer as live.
+    ///
+    /// Dropping the cursor is what "stop treating it as live" means here. It costs the consumer a
+    /// resume, not its data: the surviving generation is a complete state, and restoring from it
+    /// is the path the consumer already takes when it finds no cursor. Asserted below in both
+    /// directions -- the pin is real first, then the abandon releases it, then the abandoned
+    /// consumer still restores and serves.
+    #[tokio::test]
+    async fn a_consumer_that_pins_the_log_past_its_lag_bound_is_abandoned() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let patient = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+
+        for wal_index in 1..=20u64 {
+            patient
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "covered".to_string(),
+                value: b"by-the-checkpoint".to_vec(),
+            },
+        });
+        patient
+            .publish_checkpoint(1, 20, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        patient
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_wal_index: 1,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+
+        // REGIME: THE PIN IS REAL. With no bound configured, a consumer one entry into a
+        // twenty-entry log holds all nineteen of them. Without this the abandon below would be
+        // released from a pin that was not there.
+        let pinned = patient.collect_to_checkpoint(1, 2).await.unwrap();
+        assert!(
+            pinned.clamped_to_cursor,
+            "the consumer did not hold the retention point, so there is no pin to release"
+        );
+        assert_eq!(
+            pinned.retain_from_wal_index, 2,
+            "the retention point is not the consumer's own position"
+        );
+        let pinned_objects = store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            pinned_objects, 19,
+            "the pin did not retain the log this test is about"
+        );
+
+        // Now the same store with a lag bound. Nineteen entries behind, bound of five.
+        let bounded = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_cursor_abandon_policy(SharedStoreCursorAbandonPolicy {
+                max_cursor_age_ms: 0,
+                max_cursor_lag_entries: 5,
+            });
+        let released = bounded.collect_to_checkpoint(1, 2).await.unwrap();
+
+        assert_eq!(
+            released.abandoned_cursor_wal_index,
+            Some(1),
+            "the pass did not abandon the consumer that was past its bound"
+        );
+        assert_eq!(
+            released.abandoned_reason, "cursor_lag_entries_above_bound",
+            "the abandon did not name the rule that fired"
+        );
+        assert!(
+            !released.clamped_to_cursor,
+            "the retention point is still held back by a consumer that was abandoned"
+        );
+        assert_eq!(
+            released.retain_from_wal_index, 21,
+            "the retention point did not move up to what the checkpoint covers"
+        );
+        assert_eq!(
+            released.deleted_wal_objects, 19,
+            "the abandon released the pin but collected nothing"
+        );
+        assert!(
+            bounded.try_load_replay_cursor(1).await.unwrap().is_none(),
+            "the cursor was reported abandoned and is still on the object store"
+        );
+        assert_eq!(
+            store
+                .list("cluster-a/shards/1/shared/wal/")
+                .await
+                .unwrap()
+                .len(),
+            0,
+            "the report and the object store disagree about what was removed"
+        );
+
+        // NOTHING ACKED BECAME UNRECOVERABLE. The abandoned consumer restores the surviving
+        // generation and serves a key the deleted log prefix carried.
+        let abandoned_consumer = test_engine(dir.path(), "abandoned");
+        bounded
+            .restore_latest_checkpoint(1, &abandoned_consumer, &abandoned_consumer.block_store())
+            .await
+            .unwrap();
+        abandoned_consumer.load_shard(1);
+        assert_eq!(
+            abandoned_consumer
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "covered".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(b"by-the-checkpoint".to_vec())
+            },
+            "an abandoned consumer cannot restore the state the log was collected against"
+        );
+    }
+
+    /// AND A CONSUMER INSIDE ITS BOUND IS NOT ABANDONED.
+    ///
+    /// A rule that abandoned every cursor would pass the test above and would make the cursor
+    /// mean nothing. The bound has to be a bound, so this asserts the near side of it: a consumer
+    /// within the allowed distance keeps its cursor AND keeps holding the retention point.
+    #[tokio::test]
+    async fn a_consumer_inside_its_lag_bound_keeps_its_cursor_and_its_hold() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let bounded = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_cursor_abandon_policy(SharedStoreCursorAbandonPolicy {
+                max_cursor_age_ms: 0,
+                max_cursor_lag_entries: 5,
+            });
+
+        for wal_index in 1..=8u64 {
+            bounded
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "covered".to_string(),
+                value: b"by-the-checkpoint".to_vec(),
+            },
+        });
+        bounded
+            .publish_checkpoint(1, 8, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        // Four entries behind a frontier of eight: inside a bound of five.
+        bounded
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_wal_index: 4,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+
+        let report = bounded.collect_to_checkpoint(1, 2).await.unwrap();
+
+        assert_eq!(
+            report.abandoned_cursor_wal_index, None,
+            "a consumer inside its bound was abandoned"
+        );
+        assert!(
+            report.abandoned_reason.is_empty(),
+            "a consumer inside its bound was reported against a rule: {}",
+            report.abandoned_reason
+        );
+        // REGIME: it still collected, and it still clamped. Either half missing and this says
+        // nothing about a bound that was respected.
+        assert!(
+            report.clamped_to_cursor,
+            "the consumer inside its bound stopped holding the retention point"
+        );
+        assert_eq!(
+            report.retain_from_wal_index, 5,
+            "the retention point is not the span the consumer has already passed"
+        );
+        assert_eq!(
+            report.deleted_wal_objects, 4,
+            "collection did not reach the regime it is being asked about"
+        );
+        assert_eq!(
+            bounded
+                .try_load_replay_cursor(1)
+                .await
+                .unwrap()
+                .map(|cursor| cursor.last_wal_index),
+            Some(4),
+            "the cursor of a consumer inside its bound was removed"
+        );
+    }
+
+    /// THE AGE RULE NEEDS A RECORDED TIME, AND A CURSOR AT ZERO MAY NOT HAVE ONE.
+    ///
+    /// `last_replay_time_ms` is only stamped when a consumer ADVANCES, so a consumer that has
+    /// never advanced can hold a cursor whose recorded time is zero -- which would read as
+    /// infinitely old and would be abandoned by an age rule on its first pass, before it had any
+    /// chance to read. The age rule therefore declines to judge a cursor that has recorded no
+    /// time, and the distance rule is what ends that consumer's hold once the log moves past it.
+    ///
+    /// Asserted as two conclusions on the same fixture shape, so neither can borrow the other's
+    /// evidence: the age rule alone leaves the unstamped cursor alone, the distance rule alone
+    /// ends it.
+    #[tokio::test]
+    async fn the_age_rule_declines_an_unstamped_cursor_and_the_distance_rule_ends_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+
+        for (label, policy, expect_abandon) in [
+            (
+                "age-only",
+                SharedStoreCursorAbandonPolicy {
+                    max_cursor_age_ms: 1,
+                    max_cursor_lag_entries: 0,
+                },
+                false,
+            ),
+            (
+                "distance-only",
+                SharedStoreCursorAbandonPolicy {
+                    max_cursor_age_ms: 0,
+                    max_cursor_lag_entries: 5,
+                },
+                true,
+            ),
+        ] {
+            let store = Arc::new(FileObjectStore::new(dir.path().join(label)));
+            let replicator =
+                SharedStoreReplicator::new(TEST_CLUSTER_ID, store).with_cursor_abandon_policy(policy);
+            for wal_index in 1..=20u64 {
+                replicator
+                    .publish_wal_entry(SharedStoreWalEntry {
+                        shard_id: 1,
+                        wal_index,
+                        command: Some(Command::StringSet {
+                            key: format!("k{wal_index}"),
+                            value: vec![wal_index as u8],
+                        }),
+                        staged_blocks: Vec::new(),
+                        outcomes: Vec::new(),
+                    })
+                    .await
+                    .unwrap();
+            }
+            replicator
+                .publish_checkpoint(1, 20, &primary, &primary.block_store())
+                .await
+                .unwrap();
+            // A consumer that exists, has read nothing, and recorded no time for it.
+            replicator
+                .save_replay_cursor(&SharedStoreReplayCursor {
+                    shard_id: 1,
+                    last_wal_index: 0,
+                    last_replay_time_ms: 0,
+                })
+                .await
+                .unwrap();
+            assert!(
+                replicator.try_load_replay_cursor(1).await.unwrap().is_some(),
+                "{label}: the fixture did not persist the unstamped cursor it reasons about"
+            );
+
+            let report = replicator.collect_to_checkpoint(1, 2).await.unwrap();
+            assert_eq!(
+                report.abandoned_cursor_wal_index.is_some(),
+                expect_abandon,
+                "{label}: abandon decision was {:?} against an expectation of {expect_abandon}",
+                report.abandoned_cursor_wal_index
+            );
+            if expect_abandon {
+                assert_eq!(
+                    report.abandoned_reason, "cursor_lag_entries_above_bound",
+                    "{label}: the abandon did not name the rule that fired"
+                );
+                assert_eq!(
+                    report.deleted_wal_objects, 20,
+                    "{label}: the abandon released the pin but collected nothing"
+                );
+            } else {
+                assert!(
+                    report.clamped_to_cursor,
+                    "{label}: an unstamped cursor the age rule declined to judge stopped holding the retention point"
+                );
+                assert_eq!(
+                    report.deleted_wal_objects, 0,
+                    "{label}: a consumer that has read nothing had its log collected"
+                );
+            }
+        }
     }
 
     /// THE CHECKPOINT REFUSAL CANNOT FIRE.
