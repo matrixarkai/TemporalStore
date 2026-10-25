@@ -152,7 +152,19 @@ shared store wal -> command replay -> catch up after checkpoint
   failure.
 - Shared-store GC can delete WAL objects before a replay-safe index. Cursor-safe WAL GC refuses
   deletion past a known follower cursor, and cursor-safe checkpoint GC keeps both the newest N
-  checkpoints and the checkpoint generation needed by the persisted follower replay cursor.
+  checkpoints and the checkpoint generation needed by the persisted follower replay cursor. A
+  persisted cursor that has never advanced counts as a follower that has read nothing, not as an
+  absent follower.
+- A running data node collects its shared objects on a periodic pass
+  (`TS_SHARED_STORE_COLLECT_INTERVAL_MS`, default 60000, zero disables) whenever the backend is a
+  shared path. The pass collects the WAL down to the position the newest checkpoint covers, so the
+  shared WAL is bounded by checkpoint cadence rather than by a retention span: a checkpoint is a
+  complete state at a WAL position, which makes the whole prefix below it collectable. A follower
+  cursor is a second and independent constraint, applied by clamping the retention point back to
+  the slowest follower rather than by refusing the whole pass. With no checkpoint the pass
+  collects nothing and names that in its report, because with no complete state behind it no
+  prefix is safe to drop -- a shard that never checkpoints has an unbounded shared WAL by
+  construction, and no cursor policy changes that.
 
 ## Local Storage Modes Harness
 
@@ -189,7 +201,8 @@ files used by each Raft replica.
 ## What Is Still Missing For Production
 
 - integration with real Raft commit index
-- lifecycle scheduling around WAL/checkpoint GC tied to Raft snapshot/install state
+- WAL/checkpoint GC tied to Raft snapshot/install state (the periodic pass above is anchored
+  on the shared checkpoint, not on a Raft snapshot)
 - S3 multipart upload and range-read optimization for large page segment sets
 - concurrency control so followers do not install a partially uploaded generation
 

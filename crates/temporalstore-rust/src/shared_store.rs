@@ -298,6 +298,30 @@ pub struct SharedStoreFlushReport {
     pub last_wal_blob_object_length: Option<u64>,
 }
 
+/// What one pass of [`SharedStoreReplicator::collect_to_checkpoint`] reclaimed, and the two
+/// positions it reasoned from.
+#[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SharedStoreCollectionReport {
+    pub shard_id: ShardId,
+    /// The log position the newest checkpoint covers. Zero when there is no checkpoint, in which
+    /// case nothing was collected and `blocked_reason` names why.
+    pub checkpoint_wal_index: u64,
+    /// The lowest log index kept; everything below it was deleted.
+    pub retain_from_wal_index: u64,
+    /// `None` when no consumer has ever written a cursor -- which is NOT the same as a consumer
+    /// sitting at zero, and the two take different decisions here.
+    pub cursor_wal_index: Option<u64>,
+    /// True when a consumer held the retention point BELOW where the checkpoint alone would have
+    /// put it.
+    pub clamped_to_cursor: bool,
+    pub deleted_wal_objects: usize,
+    pub deleted_checkpoints: usize,
+    pub deleted_checkpoint_objects: usize,
+    /// Empty when a pass ran. Non-empty names why a pass declined to collect, which is a
+    /// different thing from a pass that ran and found nothing to collect.
+    pub blocked_reason: String,
+}
+
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct SharedStoreGcReport {
     pub shard_id: ShardId,
@@ -1879,6 +1903,78 @@ where
             retained_for_cursor_checkpoint_id: cursor_anchor
                 .map(|index| manifests[index].checkpoint_id.clone()),
             ..SharedStoreGcReport::default()
+        })
+    }
+
+    /// Collect this shard's shared objects down to the position the newest checkpoint covers.
+    ///
+    /// A CHECKPOINT IS WHAT MAKES THE LOG FINITE. A checkpoint is a complete state AT a log
+    /// position, so everything at or below that position is recoverable without the log and the
+    /// whole prefix below it can go. The log is then bounded by CHECKPOINT CADENCE rather than by
+    /// a retention span someone has to keep tuning, and that bound is the only one that holds
+    /// when no consumer is present -- which is the ordinary case here, because no write path
+    /// writes a consumer cursor.
+    ///
+    /// With no checkpoint this collects NOTHING and names that in `blocked_reason`. That is not a
+    /// setting that could be loosened: with no complete state behind it there is no prefix that
+    /// is safe to drop, so a shard that never checkpoints has an unbounded shared log by
+    /// construction and no consumer policy can bound it.
+    ///
+    /// A consumer cursor is a SECOND and independent constraint, and it is applied by CLAMPING,
+    /// not by refusing. [`Self::gc_wal_before_cursor_safe`] refuses, which is the right answer to
+    /// a caller that hands it a retention point past a consumer -- that is a caller that got its
+    /// arithmetic wrong and should hear about it. It is the wrong answer as a retention policy,
+    /// because a refusal reclaims nothing at all while the log keeps growing. Clamping reclaims
+    /// exactly the span every consumer has already passed. The local reclaim plan in
+    /// `engine::storage_lifecycle_methods` settled on clamping for that recorded reason, and this
+    /// is the same policy rather than a second one.
+    pub async fn collect_to_checkpoint(
+        &self,
+        shard_id: ShardId,
+        keep_last_checkpoints: usize,
+    ) -> Result<SharedStoreCollectionReport, SharedStoreReplicationError> {
+        let manifests = self.list_checkpoints(shard_id).await?;
+        let Some(newest) = manifests.last() else {
+            return Ok(SharedStoreCollectionReport {
+                shard_id,
+                blocked_reason: "no_checkpoint_to_anchor_collection".to_string(),
+                ..SharedStoreCollectionReport::default()
+            });
+        };
+        let checkpoint_wal_index = newest.checkpoint_wal_index;
+        let mut retain_from_wal_index = checkpoint_wal_index.saturating_add(1);
+        let cursor_wal_index = self
+            .try_load_replay_cursor(shard_id)
+            .await?
+            .map(|cursor| cursor.last_wal_index);
+        let mut clamped_to_cursor = false;
+        if let Some(position) = cursor_wal_index {
+            let consumer_floor = position.saturating_add(1);
+            if consumer_floor < retain_from_wal_index {
+                retain_from_wal_index = consumer_floor;
+                clamped_to_cursor = true;
+            }
+        }
+        // Log first, then generations. The anchor is the NEWEST generation and `keep_last` is at
+        // least one, so the generation this retention point was derived from survives the second
+        // call -- doing it the other way round would reason from a position and then collect the
+        // state that justified it.
+        let wal = self
+            .gc_wal_before_cursor_safe(shard_id, retain_from_wal_index)
+            .await?;
+        let checkpoints = self
+            .gc_checkpoints_cursor_safe(shard_id, keep_last_checkpoints)
+            .await?;
+        Ok(SharedStoreCollectionReport {
+            shard_id,
+            checkpoint_wal_index,
+            retain_from_wal_index,
+            cursor_wal_index,
+            clamped_to_cursor,
+            deleted_wal_objects: wal.deleted_wal_objects,
+            deleted_checkpoints: checkpoints.deleted_checkpoints,
+            deleted_checkpoint_objects: checkpoints.deleted_checkpoint_objects,
+            blocked_reason: String::new(),
         })
     }
 
@@ -7461,6 +7557,314 @@ mod tests {
                 .iter()
                 .all(|key| !key.ends_with("wal_00000000000000000001.json")),
             "the prefix the report claimed to remove is still present"
+        );
+    }
+
+    /// WITHOUT A CHECKPOINT THE SHARED LOG IS UNBOUNDED, AND THAT IS NOT A SETTING.
+    ///
+    /// A collection pass needs a complete state behind the prefix it drops. With no checkpoint
+    /// there is no such state and no prefix is safe to drop, so the pass declines and names why.
+    /// This is the more serious half of the problem: it holds with no consumer attached and no
+    /// consumer policy can change it.
+    #[tokio::test]
+    async fn collection_without_a_checkpoint_reclaims_nothing_and_names_why() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=5u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        assert!(
+            replicator.list_checkpoints(1).await.unwrap().is_empty(),
+            "the fixture published a checkpoint, so this is not the no-checkpoint case"
+        );
+
+        let report = replicator.collect_to_checkpoint(1, 2).await.unwrap();
+
+        assert_eq!(
+            report.blocked_reason, "no_checkpoint_to_anchor_collection",
+            "a pass that collected nothing did not say why"
+        );
+        assert_eq!(
+            report.deleted_wal_objects, 0,
+            "a pass with no state behind it deleted a log prefix anyway"
+        );
+        assert_eq!(
+            store
+                .list("cluster-a/shards/1/shared/wal/")
+                .await
+                .unwrap()
+                .len(),
+            5,
+            "the log shrank although the pass reported collecting nothing"
+        );
+    }
+
+    /// A CONSUMER AT A POSITION CAN STILL RESUME AFTER A COLLECTION BOUNDED BY THAT POSITION.
+    ///
+    /// This is the correctness property the whole collector rests on, and it is asserted in both
+    /// directions: the prefix below the consumer is GONE from the object store, and the consumer
+    /// replays the surviving tail from where it stopped and serves what the tail carried.
+    ///
+    /// The checkpoint here would have allowed a retention point of 4. The consumer sits at 2, so
+    /// clamping pulls it back to 3 -- the span the consumer has already passed and no further.
+    /// Refusing instead would have reclaimed nothing at all.
+    #[tokio::test]
+    async fn a_consumer_can_still_resume_after_a_collection_bounded_by_its_position() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=6u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "covered".to_string(),
+                value: b"by-the-checkpoint".to_vec(),
+            },
+        });
+        replicator
+            .publish_checkpoint(1, 3, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_wal_index: 2,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            store
+                .list("cluster-a/shards/1/shared/wal/")
+                .await
+                .unwrap()
+                .len(),
+            6,
+            "the fixture did not publish the six log objects it reasons about"
+        );
+
+        let report = replicator.collect_to_checkpoint(1, 2).await.unwrap();
+
+        // REGIME: the clamp happened and it collected. Either half missing and the conclusion
+        // below is about a different situation.
+        assert!(
+            report.clamped_to_cursor,
+            "the consumer did not hold the retention point back, so nothing here is about clamping"
+        );
+        assert_eq!(
+            report.cursor_wal_index,
+            Some(2),
+            "the pass did not read the consumer position the fixture wrote"
+        );
+        assert_eq!(
+            report.retain_from_wal_index, 3,
+            "the retention point is not the span the consumer has already passed"
+        );
+        assert_eq!(
+            report.deleted_wal_objects, 2,
+            "collection did not reach the regime it is being asked about"
+        );
+
+        // DIRECTION ONE: the prefix is really gone, not merely reported gone.
+        let remaining = store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap();
+        assert_eq!(
+            remaining.len(),
+            4,
+            "the report and the object store disagree about what was removed"
+        );
+        assert!(
+            remaining
+                .iter()
+                .all(|key| !key.ends_with("wal_00000000000000000002.json")),
+            "the prefix the report claimed to remove is still present"
+        );
+
+        // DIRECTION TWO: the consumer resumes from where it stopped and serves the tail. Strict
+        // replay, because a non-strict one would walk past a hole without saying so and would
+        // pass whether or not the collection had been safe.
+        let consumer = test_engine(dir.path(), "consumer");
+        consumer.load_shard(1);
+        let replayed = replicator
+            .replay_wal_strict(1, 2, &consumer)
+            .await
+            .expect("a consumer at 2 could not resume after a collection bounded by 2");
+        assert_eq!(
+            replayed.applied, 4,
+            "the consumer did not take the whole surviving tail"
+        );
+        assert_eq!(
+            replayed.last_wal_index, 6,
+            "the consumer did not reach the end of the log"
+        );
+        assert_eq!(
+            consumer
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k6".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![6u8])
+            },
+            "the consumer replayed the tail and cannot serve it"
+        );
+    }
+
+    /// THE LOG IS BOUNDED BY CHECKPOINT CADENCE, SWEPT RATHER THAN ASSERTED AT ONE POINT.
+    ///
+    /// Twelve rounds, three log entries each, a checkpoint every third round, and a collection
+    /// pass per round. The control arm takes the identical workload with no collection pass, so
+    /// the claim is about the difference between two curves and not about one number.
+    ///
+    /// The bound itself is the interesting part: nine objects, which is three rounds of three
+    /// entries -- one checkpoint interval. Nothing was tuned to reach it. It falls out of where
+    /// the checkpoints are, which is what makes the log self-limiting rather than retained.
+    #[tokio::test]
+    async fn collection_bounds_the_shared_log_by_checkpoint_cadence() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let (collected_store, collected) = test_shared_store(&dir.path().join("collected"));
+        let (control_store, control) = test_shared_store(&dir.path().join("control"));
+
+        let mut wal_index = 0u64;
+        let mut deleted_total = 0usize;
+        let mut declined_rounds = 0usize;
+        for round in 1..=12u64 {
+            for _ in 0..3 {
+                wal_index += 1;
+                let entry = SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                };
+                collected.publish_wal_entry(entry.clone()).await.unwrap();
+                control.publish_wal_entry(entry).await.unwrap();
+            }
+            let report = collected.collect_to_checkpoint(1, 2).await.unwrap();
+            deleted_total += report.deleted_wal_objects;
+            if !report.blocked_reason.is_empty() {
+                declined_rounds += 1;
+            }
+            if round % 3 == 0 {
+                primary.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("round-{round}"),
+                        value: vec![round as u8],
+                    },
+                });
+                for replicator in [&collected, &control] {
+                    replicator
+                        .publish_checkpoint(1, wal_index, &primary, &primary.block_store())
+                        .await
+                        .unwrap();
+                }
+            }
+        }
+
+        // REGIME, both halves. The control has to have published what the sweep thinks it did,
+        // and the collected arm has to have actually deleted -- a pass that reclaimed nothing
+        // would satisfy any bound for the wrong reason.
+        let control_objects = control_store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap()
+            .len();
+        assert_eq!(
+            control_objects, 36,
+            "the uncollected arm did not grow to the 36 objects the sweep published"
+        );
+        assert!(
+            deleted_total > 0,
+            "the collected arm never deleted an object, so the bound below is vacuous"
+        );
+
+        let collected_objects = collected_store
+            .list("cluster-a/shards/1/shared/wal/")
+            .await
+            .unwrap()
+            .len();
+        println!(
+            "[collect] uncollected={control_objects} collected={collected_objects} \
+             deleted={deleted_total} declined_rounds={declined_rounds}"
+        );
+        assert_eq!(
+            collected_objects, 9,
+            "the collected log is not one checkpoint interval deep"
+        );
+        assert_eq!(
+            collected_objects + deleted_total,
+            control_objects,
+            "the objects kept plus the objects deleted do not account for the objects published"
+        );
+        // The rounds before the first checkpoint are the unbounded regime, and they have to be
+        // present or the sweep never saw it.
+        assert_eq!(
+            declined_rounds, 3,
+            "the sweep did not pass through the rounds that have no checkpoint to anchor on"
+        );
+
+        // AND THE COLLECTED ARM IS STILL WHOLE: the newest surviving generation restores and
+        // serves a key written before the oldest deleted log object.
+        let restored_node = test_engine(dir.path(), "restored");
+        collected
+            .restore_latest_checkpoint(1, &restored_node, &restored_node.block_store())
+            .await
+            .unwrap();
+        restored_node.load_shard(1);
+        assert_eq!(
+            restored_node
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "round-3".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![3u8])
+            },
+            "the collected arm cannot restore what it collected the log for"
         );
     }
 

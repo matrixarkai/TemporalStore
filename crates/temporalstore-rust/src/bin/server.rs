@@ -554,6 +554,76 @@ fn main() {
             None
         };
 
+    // NOTHING COLLECTED THE SHARED TIER. The local write-ahead and index logs have the
+    // storage-manager scheduler started above; the objects a shared-path backend publishes had
+    // four collectors in `shared_store` and not one caller, so a shared-path deployment's object
+    // store grew for the life of the cluster with or without a consumer attached. This is the
+    // sibling of that scheduler for the tier the scheduler cannot see.
+    //
+    // Its own thread rather than a phase of the storage-manager cycle: that cycle runs on the
+    // engine, which holds no replicator, and every call here is async against the object store
+    // while the cycle is synchronous end to end.
+    //
+    // Gated on the backend alone and not on TS_AUTO_REBALANCE_DATA_MOVE, because collecting the
+    // objects this node publishes is not a data-movement feature -- a deployment that writes
+    // shared objects needs them collected whether or not shards ever move. Zero disables it.
+    let shared_store_collect_interval_ms = env_u64("TS_SHARED_STORE_COLLECT_INTERVAL_MS", 60_000);
+    let shared_store_keep_checkpoints = env_usize("TS_SHARED_STORE_KEEP_CHECKPOINTS", 2);
+    let _shared_store_collector = match &storage_backend {
+        StorageBackend::SharedPath { root, cluster_id }
+            if shared_store_collect_interval_ms > 0 =>
+        {
+            let collector = Arc::new(SharedStoreReplicator::new(
+                cluster_id.clone(),
+                Arc::new(FileObjectStore::new(root.clone())),
+            ));
+            let collector_engine = engine.clone();
+            let collector_runtime = Arc::clone(&blob_runtime);
+            info!(
+                interval_ms = shared_store_collect_interval_ms,
+                keep_checkpoints = shared_store_keep_checkpoints,
+                objects = %root.display(),
+                "shared-store collection enabled: log collected to the newest checkpoint"
+            );
+            Some(std::thread::spawn(move || loop {
+                std::thread::sleep(std::time::Duration::from_millis(
+                    shared_store_collect_interval_ms,
+                ));
+                for shard_id in collector_engine.loaded_shard_ids() {
+                    match collector_runtime.block_on(
+                        collector.collect_to_checkpoint(shard_id, shared_store_keep_checkpoints),
+                    ) {
+                        Ok(report) if !report.blocked_reason.is_empty() => warn!(
+                            shard_id,
+                            reason = %report.blocked_reason,
+                            "shared-store collection declined: the shared log is unbounded until this shard checkpoints"
+                        ),
+                        Ok(report)
+                            if report.deleted_wal_objects > 0
+                                || report.deleted_checkpoint_objects > 0 =>
+                        {
+                            info!(
+                                shard_id,
+                                deleted_wal_objects = report.deleted_wal_objects,
+                                deleted_checkpoints = report.deleted_checkpoints,
+                                deleted_checkpoint_objects = report.deleted_checkpoint_objects,
+                                checkpoint_wal_index = report.checkpoint_wal_index,
+                                retain_from_wal_index = report.retain_from_wal_index,
+                                clamped_to_cursor = report.clamped_to_cursor,
+                                "shared-store collection"
+                            );
+                        }
+                        Ok(_) => {}
+                        Err(err) => {
+                            warn!(shard_id, error = %err, "shared-store collection failed")
+                        }
+                    }
+                }
+            }))
+        }
+        _ => None,
+    };
+
     info!(%addr, "temporalstore server listening");
     // Streaming pre-handler: owns `/blob/<key>` and moves bytes straight between
     // the socket and the object store (no full-body buffering). Everything else
