@@ -123,6 +123,24 @@ fn powerloss(root: PathBuf, scope: &str) {
         // No dump occurred: the ONLY durable state is the fsync'd WAL. Drop everything else,
         // exactly as a power cut would drop the never-fsync'd pages + served index.
         "wipe-nondurable" => {
+            // THE CUT HAS TO CUT SOMETHING. "Every acked key recovered" is also what this harness
+            // reports when the directory it wiped was already empty -- the writes would simply
+            // never have reached a page -- and the two are indistinguishable in the recovery
+            // line. So count the slabs FIRST and refuse to call it a power cut otherwise.
+            let slabs = fs::read_dir(root.join("pages"))
+                .map(|entries| {
+                    entries
+                        .flatten()
+                        .filter(|entry| {
+                            entry.path().extension().and_then(|e| e.to_str()) == Some("seg")
+                        })
+                        .count()
+                })
+                .unwrap_or(0);
+            assert!(
+                slabs > 0,
+                "wipe-nondurable found NO page slabs to lose, so whatever recovery reports next                  is not a statement about surviving a power cut"
+            );
             let _ = fs::remove_dir_all(root.join("pages"));
             let _ = fs::remove_dir_all(root.join("indexes").join("indexlogs"));
             // Drop any base index snapshot (only the WAL survives a power cut here).
@@ -240,10 +258,18 @@ fn recover(root: PathBuf, keys: u64) {
     }
     // What replay actually did, so "recovered 0" can be told apart from "replayed nothing".
     let stats = engine.write_ahead_log_store().stats(1);
+    let recovery = engine.storage_recovery_report(1);
     eprintln!(
-        "log: last_sequence={} | recovery: {:?}",
+        "log: last_sequence={} | recovery: {recovery:?}",
         stats.last_sequence,
-        engine.storage_recovery_report(1)
+    );
+    // AND SO "recovered N" can be told apart from "never read the log". A shard that came back
+    // from a surviving base index with no record replayed reports the same N as one rebuilt from
+    // the log, and only one of those is the thing this harness exists to prove.
+    assert!(
+        recovery.wal_records > 0,
+        "recovery read {} log records, so nothing below is evidence that the log rebuilt anything",
+        recovery.wal_records
     );
     let mut missing = Vec::new();
     let mut mismatched = Vec::new();

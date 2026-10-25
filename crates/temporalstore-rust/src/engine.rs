@@ -1140,7 +1140,14 @@ impl TemporalEngine {
                     );
                 }
                 let sync = !config.async_storage && !bulk_ingest_mode();
-                // Concurrent-commit path (gated, default OFF): for a synchronous write, only
+                // Concurrent-commit path, DEFAULT ON -- `concurrent_commit` is constructed
+                // `true` and is false only in the test that measures what the in-lock barrier
+                // costs (see the note on that field). This comment said "gated, default OFF",
+                // which made the branch below read as the unusual one when it is the one every
+                // synchronous separate write takes -- and the rule it applies to a record's
+                // operation is not the same as the other branch's, so believing it is off points
+                // a durability reading at the wrong call site.
+                // For a synchronous write, only
                 // RESERVE the WAL sequence + append the bytes here (under the `shards` lock);
                 // the durable fdatasync barrier is deferred to `commit_barrier` AFTER the lock
                 // is released, so concurrent same-shard writers reach the group-commit queue in

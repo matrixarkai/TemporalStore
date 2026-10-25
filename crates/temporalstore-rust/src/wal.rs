@@ -260,6 +260,16 @@ pub struct WriteAheadLogRecord {
     /// rebuilt from the command alone. Carrying it here is what lets a read serve the page back
     /// out of the log. Empty and skipped for every write that stages nothing, so records
     /// written without this are byte-identical to before.
+    ///
+    /// AT THE SHIPPED DEFAULTS THIS IS THE ONLY WAY BACK FOR AN UPSERT, which is the fact the
+    /// durability note on `TS_WAL_DATA_ONLY` below used to be written without. A record no longer
+    /// carries the operation, and 16 of an upsert cell's 20 results state nothing but a
+    /// block-store address whose fdatasync the ack deferred -- so the bytes in this field are
+    /// what replay rebuilds those 16 from. Staging is unconditional for them: every production
+    /// `append_value` call site passes `Some(object_id)`, and `append_value_inner` stages for
+    /// every one of those, on both the synchronous and the asynchronous arm.
+    ///
+    /// `tests/what_an_ack_promises.rs` walks all eight write shapes and prints the column.
     #[serde(
         rename = "p",
         alias = "staged_blocks",
@@ -273,8 +283,21 @@ pub struct WriteAheadLogRecord {
     /// an `items` field describing the record's shape, and two different `items` on one record
     /// would be read wrong by whoever came next.
     ///
-    /// Empty and skipped unless [`wal_outcome_items_enabled`], so every record written without
-    /// it is byte-identical to before.
+    /// THIS IS WHAT A RECORD NORMALLY HOLDS, NOT AN OPT-IN EXTRA, and this doc used to read as
+    /// the opposite. [`wal_outcome_items_enabled`] is DEFAULT ON and the variable opts OUT, and
+    /// [`wal_data_only_enabled`] is default ON too -- so at the shipped defaults an upserting
+    /// write records its results HERE and its record carries no operation at all. Measured by
+    /// `tests/what_an_ack_promises.rs` across all eight write shapes: every upsert cell records
+    /// 20 results and 0 operations.
+    ///
+    /// The exception is a write with no page to carry. A removal's record keeps its operation
+    /// instead (12 of 12 records on both separate removal cells), because `record_command` asks
+    /// whether the blocks behind these results can be found again and a removal has staged none.
+    /// So a reader cannot assume either field is the populated one: which it is depends on the
+    /// write shape, and the table in that test is the enumeration.
+    ///
+    /// Empty and skipped when it is empty, so a record written without it is byte-identical to a
+    /// record from a build that had no such field.
     #[serde(
         rename = "t",
         alias = "outcomes",
@@ -290,17 +313,60 @@ pub struct WriteAheadLogRecord {
 /// are none. Set to a falsey value to keep writing both, which is what a consumer reading records
 /// directly would want.
 ///
-/// THE BENEFIT IS NOT ZERO, and the sentence above used to say it was. An outcome can be installed
-/// only if the page it names is DURABLE. Under single-barrier -- the default -- the data-page
-/// fdatasync is deferred by design, so a power cut after the ack leaves the outcome naming a page
-/// that was never written, and this flag has removed the operation that could have re-derived the
-/// value. `tests/wal_single_barrier_recovery.rs` recovers 0 of 300 acked keys for exactly that
-/// reason, and its probe output is unambiguous: 300 records, all decoding, 0 carrying a command,
-/// 0 whose outcome items carry a value.
+/// # THE "0 OF 300" THIS PARAGRAPH USED TO REPORT IS STALE. RE-MEASURED, IT IS 300 OF 300
 ///
-/// Turning this off is one of the four ways out that file lists. Which one is right is a decision
-/// about what an ack promises, not a tuning change -- but a comment claiming the flag costs
-/// nothing is how it gets treated as one.
+/// What it said was that an outcome can be installed only if the page it names is DURABLE; that
+/// under single-barrier the data-page fdatasync is deferred past the ack; and that this flag has
+/// therefore removed the only thing that could re-derive the value. It cited
+/// `tests/wal_single_barrier_recovery.rs` recovering 0 of 300 acked keys, over a probe reading
+/// "300 records, all decoding, 0 carrying a command, 0 whose outcome items carry a value".
+///
+/// The first half is sound and still is: `sync` is a fact about the LOG's barrier, and a page
+/// fsync deferred past it is not made durable by it. What the reading MISSED is a third column.
+/// A record can carry the page itself, and at these defaults it does. Run on this commit, with no
+/// mode variable set:
+///
+/// ```text
+/// test result: ok. 8 passed; 0 failed      (tests/wal_single_barrier_recovery.rs)
+/// ```
+///
+/// including `wal_is_self_sufficient_when_all_non_wal_state_is_wiped`, which deletes every
+/// non-WAL byte -- pages, served index and delta log -- and reads all 300 keys back. The probe
+/// the old paragraph quoted prints the missing column itself, one line below the three it was
+/// read from: `carrying STAGED PAGES`.
+///
+/// `tests/what_an_ack_promises.rs` takes the count per write shape, per RESULT rather than per
+/// record, and matches each address-only result against the pages its own record carries:
+///
+/// ```text
+/// shape                       records operation results  bytes removal deadline addr-only pages no-way-back
+/// sync  / separate / upsert        20         0      20      4       0        0        16    20           0
+/// sync  / batched  / upsert         1         0      20      4       0        0        16    20           0
+/// async / separate / upsert        20         0      20      4       0        0        16    20           0
+/// async / batched  / upsert         1         0      20      4       0        0        16    20           0
+/// sync  / separate / removal       12        12      12      0       8        4         0     0           0
+/// sync  / batched  / removal        1         0      12      0       8        4         0     0           0
+/// async / separate / removal       12        12      12      0       8        4         0     0           0
+/// async / batched  / removal       12        12       0      0       0        0         0     0           0
+/// ```
+///
+/// Zero in the last column in all eight. An upsert's record carries its page; a removal's record
+/// keeps its operation or states the removal. So this flag does not cost an ack its durability at
+/// the shipped defaults, and the decision the old paragraph said was outstanding is not
+/// outstanding on these numbers.
+///
+/// WHAT IS STILL WORTH WATCHING is the shape of the claim rather than the claim. Three of the
+/// eight cells are recoverable only because a page travels in the record, and the batch path
+/// decides whether to drop the operation from `sync || !staged_blocks.is_empty()` -- where the
+/// `sync` term is exactly the inference the first half of the old paragraph correctly rejects. A
+/// batch whose pages stopped being carried would satisfy that term and lose what it acked. That
+/// is the regression this flag's note exists to flag, and
+/// `no_cell_leaves_an_acked_result_with_no_way_back` is what fails if it happens.
+///
+/// AND THE LESSON ABOUT THE READING, which outlives both numbers: three counts were taken, all
+/// three were zero, and the conclusion drawn was about a FOURTH channel that nobody counted. A
+/// probe that prints four columns and an argument that uses three agree with each other right up
+/// to the point where they do not.
 pub fn wal_data_only_enabled() -> bool {
     // Default ON; the variable opts OUT. It used to recognise `0` and `false` and nothing else,
     // so `off` -- and `no`, and a `" 0"` a unit file leaves behind -- kept it on. Its neighbour
@@ -321,10 +387,27 @@ pub fn wal_data_only_enabled() -> bool {
 ///
 /// So results replace the operation when the block behind them can be found afterwards: a
 /// synchronous write whose block is already in the block store, or ANY write carrying its block
-/// inside the record, because replay now registers what it replays. What is left is the
-/// asynchronous write with nothing carried -- its result names a block-store address a crash may
-/// leave unwritten, and registering cannot conjure a block that was never stored. That one keeps
-/// its operation and recovers by re-running it.
+/// inside the record, because replay now registers what it replays. What is left keeps its
+/// operation and recovers by re-running it -- its result names a block-store address a crash may
+/// leave unwritten, and registering cannot conjure a block that was never stored.
+///
+/// THAT LAST CASE IS NOT "THE ASYNCHRONOUS WRITE WITH NOTHING CARRIED", WHICH IS WHAT THIS
+/// PARAGRAPH USED TO CALL IT. It is ANY write with nothing carried, synchronous included, and the
+/// difference is visible in the `operation` column of `tests/what_an_ack_promises.rs`: the
+/// synchronous separate removal cell keeps its operation on 12 of 12 records, exactly as the
+/// asynchronous one does.
+///
+/// The reason is which caller reaches here. `Engine::concurrent_commit` is true on every engine
+/// but the one test that measures the in-lock barrier, so a separate synchronous write takes
+/// `append_for_group_commit`, and that call site passes `!staged_blocks.is_empty()` with no
+/// `sync` term -- deliberately, as the comment there explains. The `sync ||` at the
+/// `append_with_sync_inner` call site decides nothing at the shipped defaults: it is reached only
+/// when `sync` is false, where the term is inert, or when the caller handed over carried blocks,
+/// where the other half is already true.
+///
+/// The one place `sync ||` is live is the BATCH path, which forms its own `recoverable` the same
+/// way. Read this paragraph as a claim about which writes are exposed and it points at the wrong
+/// half of the write path.
 ///
 /// Both halves were found the same way: a recovery test failing 8 runs in 12 against 0 in 12 on
 /// the code before this, measured interleaved on one machine because an uncontrolled comparison
@@ -362,9 +445,25 @@ pub(crate) fn record_command(
 ///
 /// DEFAULT ON. The comment here used to say "default OFF while both are carried", and described a
 /// state that no longer exists: records no longer carry both. A mixed workload was walked across
-/// every write shape -- synchronous and asynchronous, separate and batched -- and ZERO records
-/// carry an operation, so the payoff this flag was waiting for has arrived and the command has
-/// come out.
+/// every write shape -- synchronous and asynchronous, separate and batched -- and the command has
+/// come out of the records that record results.
+///
+/// IT IS NOT "ZERO RECORDS CARRY AN OPERATION", WHICH IS WHAT THAT WALK WAS WRITTEN UP AS. The
+/// walk covered upserts, and a write with no page to carry keeps its operation on purpose --
+/// `record_command` asks whether the blocks behind the results can be found again, and a removal
+/// has staged none. Re-walked over all eight cells by `tests/what_an_ack_promises.rs`, half of
+/// them keep an operation on every record:
+///
+/// ```text
+/// sync  / separate / removal   12 records, 12 with an operation
+/// async / separate / removal   12 records, 12 with an operation
+/// async / batched  / removal   12 records, 12 with an operation
+/// sync  / batched  / removal    1 record,   0 with an operation (all 12 results state themselves)
+/// ```
+///
+/// So "zero" was a count over the upsert half of the matrix read as a count over the whole of
+/// it -- which is the same error as the three-column reading recorded on `TS_WAL_DATA_ONLY`
+/// above, in the other direction.
 ///
 /// The flip was correct; the comment simply outlived it. A flag comment that states the opposite
 /// default from the code is worse than no comment, because the two are indistinguishable from

@@ -2735,24 +2735,48 @@ impl LocalIndexLogStore {
     /// which is what turns the per-write served-index persist cost from O(store) into
     /// O(delta). Returns the assigned monotonic sequence.
     ///
-    /// `durable` controls the fsync, and **under the shipped default no production caller passes
-    /// `true`**. Both callers compute
-    /// `!raft_applying() && !wal_single_barrier()`, and `wal_single_barrier()` is
-    /// `!wal_legacy_recovery()` -- which reads `TS_WAL_LEGACY_RECOVERY`, off by default. So the
-    /// raft apply path defers because the raft log is the durability and reconstruction source,
-    /// and the single-node path defers too because the WAL barrier has already committed before
-    /// this is reached. A synchronous barrier here is restored only by the
-    /// `TS_WAL_LEGACY_RECOVERY` escape hatch, which switches recovery to the delta fold that does
-    /// trust a durable delta.
+    /// `durable` controls the fsync, and WHAT IT IS AT THE SHIPPED DEFAULT IS PER CALL SITE.
+    /// There are exactly FOUR in the library, and they do not agree:
     ///
-    /// THIS DOC SAID THE OPPOSITE, and the distinction is not cosmetic: it claimed the normal path
-    /// fsync'd the record and only raft deferred. A reader taking that at face value would believe
-    /// the delta tail is durable on every single-node write, and would then read the sentence below
-    /// as covering an edge case. It covers the DEFAULT.
+    /// | call site | expression | at the shipped default |
+    /// |---|---|---|
+    /// | `engine.rs` single-command ack | `!raft_applying() && !wal_single_barrier()` | **false** |
+    /// | `engine/recovery_sweep_compact.rs` expiry flush | `!raft_applying() && !wal_single_barrier()` | **false** |
+    /// | `engine/stream_batch_methods.rs` batch ack | `!raft_applying()` | **true** |
+    /// | `engine/persistence.rs` threshold catalog dump | `true` | **true** |
     ///
-    /// Either way the record is written and flushed to the OS, so the served-index stream is
-    /// unchanged and a lost tail is rebuilt by replay. The consumer-aware GC never truncates such
-    /// a tail: its retain floor is `min(durable frontier, slowest cursor) + 1`, which
+    /// `wal_single_barrier()` is `!wal_legacy_recovery()`, which reads `TS_WAL_LEGACY_RECOVERY`,
+    /// off by default -- so the two expressions carrying that term evaluate false, and the raft
+    /// term is what defers them on the apply path instead. The single-command ack therefore
+    /// defers, because the WAL barrier has already committed before this is reached. The BATCH
+    /// ack does not: its expression never had the `wal_single_barrier()` term, so on every
+    /// single-node batch write it takes the barrier. And the dump passes a literal `true`, which
+    /// is the point of a dump -- step 4 of `dump_index_catalog` advances the dumped watermark on
+    /// the strength of this record being durable.
+    ///
+    /// # THIS DOC HAS NOW BEEN WRONG TWICE, IN OPPOSITE DIRECTIONS
+    ///
+    /// It first claimed the normal path fsync'd and only raft deferred. That was corrected to
+    /// "under the shipped default no production caller passes `true`", over "both callers", and
+    /// THAT IS ALSO WRONG -- the correction is mine and it is the worse of the two, because a
+    /// reader who checks it finds a literal `true` at the second call site down.
+    ///
+    /// Two separate errors produced it. "Both callers" was a count taken from a grep: there are
+    /// four, and only two compute the expression quoted. And "no caller passes `true`" read the
+    /// term `!wal_single_barrier()` as though every call site carried it.
+    ///
+    /// The caller count here is the COMPILER's, not a grep's. `append_delta`'s `durable`
+    /// parameter was removed and `cargo check --lib` run: four arity errors, the four rows above.
+    /// A grep over the same tree reports 89 call sites and 28 that look like production -- the
+    /// rest are inside `#[cfg(test)]` functions of the measurement modules, which a grep cannot
+    /// see and the compiler does not compile.
+    ///
+    /// Either way the record is WRITTEN and flushed to the OS at every one of the four, so the
+    /// served-index stream is the same shape regardless, and a tail lost from a deferred one is
+    /// rebuilt by replay.
+    ///
+    /// The consumer-aware GC never truncates such a tail: its retain floor is
+    /// `min(durable frontier, slowest cursor) + 1`, which
     /// `the_index_log_retain_floor_never_passes_the_durable_frontier` asserts rather than leaving
     /// to this sentence.
     pub fn append_delta(
