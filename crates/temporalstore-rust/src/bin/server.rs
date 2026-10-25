@@ -49,7 +49,8 @@ use temporalstore_rust::{
     CompactionRequest, DataNodeRuntime, DataNodeRuntimeOptions, DistributedRaftCommandResponse,
 
     DistributedRaftProposeRequest, DistributedRaftReadRequest, DumpShardRequest, GcRequest,
-    LoadShardRequest, MembershipUpdateRequest, ProductionRaftEngineKind, ProductionRaftNode,
+    LoadShardRequest, LoadShardResponse, MembershipUpdateRequest, ProductionRaftEngineKind,
+    ProductionRaftNode,
     ProductionRaftRuntime, ProductionRaftRuntimeOptions, RaftConfig, RaftControlLeadershipRequest,
     RaftFailoverReport, RaftMembershipChangeReport, RaftNodeId, RaftRpcRuntimeOptions,
     RequestController, ScanStreamRequest, SchedulerLifecycleToken, SetConfigRequest,
@@ -908,14 +909,27 @@ fn main() {
                             shard_id,
                         )
                     };
-                    let load_response = runtime.load_shard_with(req);
+                    let mut load_response = runtime.load_shard_with(req);
                     if load_response.status.ok && !had_local_wal {
+                        // The response goes IN, so a refusal cannot be dropped on the way out:
+                        // a hole in the shared log replaces the `ok` the load itself returned,
+                        // and this response is the only thing that can tell the caller its
+                        // reassignment failed.
+                        //
+                        // What this deliberately does NOT do is unload the shard.
+                        // `unload_shard_with` materializes the in-memory index to disk before
+                        // dropping the shard, so unloading here would write the truncated
+                        // history into this node's on-disk base and make it DURABLE -- worse
+                        // than leaving it in memory, where nothing has recorded it and a
+                        // restart is enough to be rid of it. Dropping a shard without
+                        // persisting it is not something the engine offers today.
                         replay_shared_wal_tail(
                             &handler_replicator,
                             &handler_block_runtime,
                             &engine,
                             shard_id,
                             restore_after_wal_index.unwrap_or(0),
+                            &mut load_response,
                         );
                     }
                     json_response(200, &load_response)
@@ -1377,12 +1391,19 @@ fn restore_shared_index_before_load(
 /// Replay the shared WAL tail (records after `after_wal_index`) on top of the already
 /// loaded shard, applying each through `engine.execute` — which is why this runs AFTER
 /// the shard is loaded. No-op when no shared replicator is configured.
+///
+/// When the tail CANNOT be replayed this writes the refusal straight into `load_response`,
+/// which is the response the handler is about to return. It is done this way, rather than by
+/// returning the status for the caller to install, because a RETURNED status is a value a caller
+/// can drop -- and a check whose result is only a value is not a check. Deleting the one line
+/// that installed it was planted and NOTHING failed; there is now no such line to delete.
 fn replay_shared_wal_tail(
     replicator: &Option<Arc<SharedStoreReplicator<FileObjectStore>>>,
     runtime: &Arc<tokio::runtime::Runtime>,
     engine: &TemporalEngine,
     shard_id: ShardId,
     after_wal_index: u64,
+    load_response: &mut LoadShardResponse,
 ) {
     let Some(replicator) = replicator else {
         return;
@@ -1399,7 +1420,32 @@ fn replay_shared_wal_tail(
                 );
             }
         }
-        Err(err) => warn!(shard_id, %err, "no shared-storage data replayed for shard"),
+        // A HOLE IS NOT A WARNING. This is a reassignment: something asked this node to take the
+        // shard, and `after_wal_index` is the position the restored checkpoint vouches for. An
+        // index missing above it is a span of this shard's history that no checkpoint covers and
+        // this node cannot obtain, so the shard it would serve is a TRUNCATED one. Warning and
+        // answering the reassignment with `ok` is the silent-success shape: the caller is told the
+        // node has the shard, and routes reads to a node that does not.
+        Err(err @ SharedStoreReplicationError::ReplayGap { .. }) => {
+            error!(
+                shard_id,
+                %err,
+                after_wal_index,
+                "refusing a shard whose shared log is missing a span no checkpoint covers"
+            );
+            load_response.status = Status::error(
+                "shared_wal_replay_hole",
+                format!(
+                    "shard {shard_id} cannot be served from shared storage: {err} (restore anchored at {after_wal_index})"
+                ),
+            );
+        }
+        // Every other replay failure keeps the behavior it had. Narrowing them is a separate
+        // question with a separate test, and widening this change to cover them would mean
+        // shipping an untested refusal on paths this one is not about.
+        Err(err) => {
+            warn!(shard_id, %err, "no shared-storage data replayed for shard");
+        }
     }
 }
 /// Read the blocks a set of results points at, so they can travel with them.
@@ -2072,6 +2118,17 @@ fn wire_matrixobject_durability(
                 "recovered shard {shard_id} from matrixobject shared storage at {store_dir}: {} WAL entries replayed (through index {})",
                 report.applied, report.last_wal_index
             ),
+            // A hole already reached the same exit as every other replay failure on this path;
+            // it gets its own arm so the operator reading the line knows the shard is missing
+            // history nothing can supply, rather than that a replay happened to fail.
+            Err(err @ temporalstore_rust::SharedStoreReplicationError::ReplayGap { .. }) => {
+                eprintln!(
+                    "matrixobject recovery for shard {shard_id} refused a hole in the shared log: {err}; \
+                     a span of this shard's history is missing and no checkpoint covers it, so this node \
+                     will not come up serving a truncated shard"
+                );
+                std::process::exit(1);
+            }
             Err(err) => {
                 eprintln!("matrixobject recovery replay failed for shard {shard_id}: {err}");
                 std::process::exit(1);
@@ -2335,6 +2392,21 @@ fn wire_matrixobject_networked_durability(
                     );
                 }
             }
+            // A hole here is FATAL, matching the node-local startup path above rather than the
+            // `/load` path. This is startup on a node with no local state: it has nothing to fall
+            // back to, and `return None` would only switch durability off and leave the shard
+            // loaded and serving the truncated history it just restored. A node that cannot
+            // reconstruct the shard it was given should not come up holding it.
+            Err(err @ SharedStoreReplicationError::ReplayGap { .. }) => {
+                error!(
+                    shard_id,
+                    %err,
+                    after_wal_index,
+                    "refusing to come up: the networked shared log is missing a span no checkpoint covers"
+                );
+                std::process::exit(1);
+            }
+            // Unchanged for every other replay failure, for the reason given at the `/load` site.
             Err(err) => {
                 warn!(shard_id, %err, "no networked matrixobject data replayed for shard")
             }
@@ -2949,6 +3021,99 @@ mod tests {
         assert!(
             is_raft_read_command(&read_only),
             "ControlStateQuery is read-only and must remain locally servable"
+        );
+    }
+
+
+    /// THE `/load` RESTORE PATH ANSWERS A HOLE WITH A FAILURE, NOT A WARNING.
+    ///
+    /// This is the call site, not the check. `replay_wal` refusing is tested in `shared_store`;
+    /// what is tested here is that the refusal reaches a caller instead of being logged and
+    /// dropped. It used to be dropped: the whole function returned `()`, every error went to
+    /// `warn!`, and `/load` answered the reassignment that triggered it with `ok`. A control
+    /// plane told the shard is present routes reads to it.
+    ///
+    /// The status code is asserted by NAME. "Some status came back" is also what a failure for an
+    /// unrelated reason looks like, and this site deliberately leaves every other replay error on
+    /// the warning path it was already on.
+    #[test]
+    fn a_hole_in_the_shared_log_makes_the_load_restore_path_refuse() {
+        let dir = tempdir().unwrap();
+        let engine = test_engine(dir.path(), "follower");
+        engine.load_shard(1);
+
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let replicator = Arc::new(SharedStoreReplicator::new("cluster-a", store.clone()));
+        let rt = Arc::new(
+            tokio::runtime::Builder::new_multi_thread()
+                .worker_threads(1)
+                .enable_all()
+                .build()
+                .unwrap(),
+        );
+
+        for wal_index in 1..=4u64 {
+            rt.block_on(replicator.publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index,
+                command: Some(Command::StringSet {
+                    key: format!("k{wal_index}"),
+                    value: vec![wal_index as u8],
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            }))
+            .unwrap();
+        }
+
+        let prefix = "cluster-a/shards/1/shared/wal/";
+        let doomed = format!("{prefix}wal_00000000000000000002.json");
+
+        // REGIME: the key names a real object, so the deletion below is not a no-op.
+        assert!(
+            rt.block_on(store.list(prefix))
+                .unwrap()
+                .iter()
+                .any(|key| key == &doomed),
+            "the fixture's key does not name a published object"
+        );
+        rt.block_on(store.delete(&doomed)).unwrap();
+
+        // REGIME: and the hole is in the MIDDLE -- its neighbours are both still there, named.
+        let after = rt.block_on(store.list(prefix)).unwrap();
+        assert!(
+            !after.iter().any(|key| key == &doomed),
+            "the object is still present, so there is no hole here to refuse"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000001.json")),
+            "the entry below the hole went too, so this is a collected prefix"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000003.json")),
+            "the entry above the hole went too, so the log is merely short"
+        );
+
+        // CONCLUSION: the response the `/load` handler would return carries the refusal. The
+        // response is what is asserted, not a status handed back for someone to install -- that
+        // shape was planted by deleting the install and nothing failed.
+        let mut load_response = LoadShardResponse {
+            status: Status::ok(),
+        };
+        replay_shared_wal_tail(&Some(replicator), &rt, &engine, 1, 0, &mut load_response);
+        assert!(
+            !load_response.status.ok,
+            "the /load restore path reported success over a hole in the shared log: {:?}",
+            load_response.status
+        );
+        assert_eq!(
+            load_response.status.code, "shared_wal_replay_hole",
+            "the refusal does not name the hole: {:?}",
+            load_response.status
         );
     }
 

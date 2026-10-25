@@ -1500,6 +1500,20 @@ where
         Ok(manifest)
     }
 
+    /// Replay the shared WAL tail above `after_wal_index`, REFUSING a hole in it.
+    ///
+    /// `after_wal_index` is a position something else vouches for: a checkpoint's
+    /// `checkpoint_wal_index`, or 0 for a log replayed from its start. Nothing covers what sits
+    /// above it, so every index from `after_wal_index + 1` upwards must be present and
+    /// contiguous. A missing one is a span of history this node cannot reconstruct, and the only
+    /// honest answer is [`SharedStoreReplicationError::ReplayGap`] naming the position it wanted.
+    ///
+    /// THE CHECK IS IN THE DEFAULT, AND THAT IS THE POINT. It used to exist only in
+    /// [`Self::replay_wal_strict`], while this -- the function all three production restore paths
+    /// call -- had none at all. A collected prefix no checkpoint covered was therefore restored as
+    /// a truncated history and REPORTED SUCCESS, with every surface saying fine. Putting the check
+    /// behind a second name would leave the next caller to know to reach for it; there is now no
+    /// unchecked loop in either layout for one to reach.
     pub async fn replay_wal(
         &self,
         shard_id: ShardId,
@@ -1511,86 +1525,7 @@ where
             SharedStoreWalAppendMode::ProtobufAppendBlob
         ) {
             if let Some(report) = self
-                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine, false)
-                .await?
-            {
-                return Ok(report);
-            }
-        }
-        let wal_entries = self.load_wal_entries(shard_id).await?;
-
-        let mut report = ReplayReport {
-            applied: 0,
-            last_wal_index: after_wal_index,
-            offset_index_reads: 0,
-            range_bytes_read: 0,
-        };
-        for (wal_index, entry) in wal_entries {
-            if wal_index <= after_wal_index {
-                continue;
-            }
-            // An entry that says what its write DID is installed, not re-executed. Re-executing
-            // reproduces the write only if everything that influenced it is reproduced too, and on
-            // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
-            // a different clock, and whatever config it happens to hold.
-            //
-            // The fallback is what makes this safe to land. An entry carrying no outcomes replays
-            // exactly as it used to, so a shared log written before this still applies.
-            if !entry.outcomes.is_empty() {
-                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_blocks) {
-                    return Err(SharedStoreReplicationError::ApplyFailed {
-                        wal_index,
-                        status: Status::error(
-                            "shared_wal_outcome_refused",
-                            "a recorded outcome could not be installed; refusing to serve a shard missing it",
-                        ),
-                    });
-                }
-                report.applied += 1;
-                report.last_wal_index = wal_index;
-                continue;
-            }
-            // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
-            // command would otherwise substitute this node's reconstruction for the bytes that
-            // were actually acked -- identical for a plain value, and not necessarily so for
-            // derived state.
-            let Some(command) = entry.command else {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    wal_index,
-                    status: Status::error(
-                        "shared_wal_entry_empty",
-                        "entry carries neither results nor an operation; refusing rather than skipping a durable write",
-                    ),
-                });
-            };
-            let response = engine.execute_with_carried_blocks(
-                ExecuteRequest { shard_id, command },
-                entry.staged_blocks,
-            );
-            if !response.status.ok {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    wal_index,
-                    status: response.status,
-                });
-            }
-            report.applied += 1;
-            report.last_wal_index = wal_index;
-        }
-        Ok(report)
-    }
-
-    pub async fn replay_wal_strict(
-        &self,
-        shard_id: ShardId,
-        after_wal_index: u64,
-        engine: &TemporalEngine,
-    ) -> Result<ReplayReport, SharedStoreReplicationError> {
-        if matches!(
-            self.wal_append_mode,
-            SharedStoreWalAppendMode::ProtobufAppendBlob
-        ) {
-            if let Some(report) = self
-                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine, true)
+                .replay_wal_from_offset_metadata(shard_id, after_wal_index, engine)
                 .await?
             {
                 return Ok(report);
@@ -1615,6 +1550,13 @@ where
                     actual: wal_index,
                 });
             }
+            // Advance the expected position HERE, before the branches, and not at the end of the
+            // loop body. The outcomes branch below ends in `continue`, so an increment at the
+            // bottom is skipped for every entry that carries outcomes -- which is how the strict
+            // loop this check came from would refuse a perfectly contiguous log of them at its
+            // SECOND entry. Nothing noticed, because that loop had no production caller and every
+            // test that exercised it published entries with no outcomes.
+            expected = wal_index + 1;
             // An entry that says what its write DID is installed, not re-executed. Re-executing
             // reproduces the write only if everything that influenced it is reproduced too, and on
             // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
@@ -1661,9 +1603,22 @@ where
             }
             report.applied += 1;
             report.last_wal_index = wal_index;
-            expected += 1;
         }
         Ok(report)
+    }
+
+    /// The older name for [`Self::replay_wal`], which now refuses a hole by itself.
+    ///
+    /// It delegates rather than keeping a second copy of the loop. The two copies DID diverge --
+    /// one grew the hole check and the other, the one production reached, did not -- and that
+    /// divergence is the whole of the finding above. One body cannot drift from itself.
+    pub async fn replay_wal_strict(
+        &self,
+        shard_id: ShardId,
+        after_wal_index: u64,
+        engine: &TemporalEngine,
+    ) -> Result<ReplayReport, SharedStoreReplicationError> {
+        self.replay_wal(shard_id, after_wal_index, engine).await
     }
 
     async fn replay_wal_from_offset_metadata(
@@ -1671,7 +1626,6 @@ where
         shard_id: ShardId,
         after_wal_index: u64,
         engine: &TemporalEngine,
-        strict: bool,
     ) -> Result<Option<ReplayReport>, SharedStoreReplicationError> {
         let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
         if offset_metadata.is_empty() {
@@ -1696,7 +1650,7 @@ where
         // asserted below by `offset_index_reads`, which now counts the entries it served
         // from one load rather than the loads it performed.
         for (wal_index, metadata) in offset_metadata.range((after_wal_index + 1)..) {
-            if strict && *wal_index != expected {
+            if *wal_index != expected {
                 return Err(SharedStoreReplicationError::ReplayGap {
                     expected,
                     actual: *wal_index,
@@ -7863,6 +7817,407 @@ mod tests {
                 value: Some(vec![6u8])
             },
             "the consumer replayed the tail and cannot serve it"
+        );
+    }
+
+    /// THE RESTORE PATH REFUSES A LOG WHOSE MISSING SPAN NO CHECKPOINT COVERS.
+    ///
+    /// `replay_wal` is the function all three production restore paths call, and it had no hole
+    /// check of any kind: it skipped everything at or below `after_wal_index` and applied whatever
+    /// else it found, in whatever order the object store listed it. A collected prefix therefore
+    /// came back as a truncated history with `Ok` on it.
+    ///
+    /// The fixture makes the hole in the MIDDLE of the log and names the three keys it cares
+    /// about, rather than counting them. A count passes just as well when the right NUMBER of
+    /// objects was removed from the wrong END, and that fixture would then be asserting a
+    /// refusal of something else.
+    #[tokio::test]
+    async fn the_restore_path_refuses_a_log_missing_a_span_no_checkpoint_covers() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=5u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let prefix = "cluster-a/shards/1/shared/wal/";
+        let doomed = format!("{prefix}wal_00000000000000000002.json");
+
+        // REGIME, BEFORE THE DELETION: the key the fixture is about to remove exists under
+        // exactly the name the fixture uses. A mistyped key deletes nothing, and every assertion
+        // after it then describes a log with no hole in it at all.
+        let before = store.list(prefix).await.unwrap();
+        assert!(
+            before.iter().any(|key| key == &doomed),
+            "the fixture's key does not name a published object, so the deletion below is a no-op"
+        );
+        assert_eq!(
+            before.len(),
+            5,
+            "the fixture did not publish the five log objects it reasons about"
+        );
+
+        store.delete(&doomed).await.unwrap();
+
+        // REGIME, AFTER THE DELETION: the span is gone, and it is gone from the MIDDLE. Both
+        // neighbours are named, because a pass that deleted one object from the front or the back
+        // leaves the same count behind and refuses for a different reason than this test claims.
+        let after = store.list(prefix).await.unwrap();
+        assert!(
+            !after.iter().any(|key| key == &doomed),
+            "the object the fixture deleted is still present, so there is no hole to refuse"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000001.json")),
+            "the entry BELOW the hole went too, so this is a collected prefix and not a hole"
+        );
+        assert!(
+            after
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000003.json")),
+            "the entry ABOVE the hole went too, so the log is merely short and has no hole"
+        );
+
+        // REGIME: nothing covers the missing span. With a checkpoint above it this would be a
+        // legitimately collected prefix, which is the case the next test is about.
+        assert!(
+            replicator.list_checkpoints(1).await.unwrap().is_empty(),
+            "a checkpoint covers the missing span, so refusing it would be wrong"
+        );
+
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+
+        // CONCLUSION: the shipped path refuses, and says which position it wanted.
+        let err = replicator
+            .replay_wal(1, 0, &follower)
+            .await
+            .expect_err("the shipped restore path accepted a log with a hole in it");
+        assert!(
+            matches!(
+                err,
+                SharedStoreReplicationError::ReplayGap {
+                    expected: 2,
+                    actual: 3
+                }
+            ),
+            "the refusal does not name the missing position: {err}"
+        );
+    }
+
+    /// THE REFUSAL DOES NOT COST THE ENTRIES ABOVE THE HOLE THEIR SILENCE.
+    ///
+    /// Separate block, separate conclusion: the one above says it refuses, this one says what it
+    /// did NOT do on the way. Applying 3, 4 and 5 and then refusing would leave the shard holding
+    /// writes that belong after history it does not have.
+    #[tokio::test]
+    async fn a_refused_restore_does_not_serve_the_entries_above_the_hole() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=5u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        let prefix = "cluster-a/shards/1/shared/wal/";
+        let doomed = format!("{prefix}wal_00000000000000000002.json");
+        assert!(
+            store.list(prefix).await.unwrap().iter().any(|key| key == &doomed),
+            "the fixture's key does not name a published object"
+        );
+        store.delete(&doomed).await.unwrap();
+        assert!(
+            store
+                .list(prefix)
+                .await
+                .unwrap()
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000005.json")),
+            "the entry this test asks about is not in the log"
+        );
+
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+        assert!(
+            replicator.replay_wal(1, 0, &follower).await.is_err(),
+            "the restore did not refuse, so there is nothing to ask about what it applied"
+        );
+
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k5".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: None },
+            "a refused restore served an entry from above the hole"
+        );
+    }
+
+    /// AND IT DOES NOT REFUSE WHAT IT MUST NOT: A CHECKPOINT-ANCHORED COLLECTION STILL RESTORES.
+    ///
+    /// This is the other half, and it is the half a check that refuses everything would fail. The
+    /// prefix below the checkpoint is legitimately gone -- removed by the shipped collector, not
+    /// by this fixture's hand -- and a node restoring from that checkpoint must still take the
+    /// surviving tail and SERVE it.
+    ///
+    /// The collector runs for real rather than being imitated, because the property under test is
+    /// that the retention point the collector picks and the position the restore starts from are
+    /// the same number. A fixture that deleted the prefix itself would be asserting its own
+    /// arithmetic instead.
+    #[tokio::test]
+    async fn a_checkpoint_anchored_collection_leaves_a_restore_that_still_serves_the_tail() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for wal_index in 1..=6u64 {
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index,
+                    command: Some(Command::StringSet {
+                        key: format!("k{wal_index}"),
+                        value: vec![wal_index as u8],
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "covered".to_string(),
+                value: b"by-the-checkpoint".to_vec(),
+            },
+        });
+        replicator
+            .publish_checkpoint(1, 3, &primary, &primary.block_store())
+            .await
+            .unwrap();
+
+        let report = replicator.collect_to_checkpoint(1, 2).await.unwrap();
+
+        // REGIME: the collector reached the state this test is about. No consumer cursor exists,
+        // so the retention point is the checkpoint's own successor and nothing clamped it.
+        assert!(
+            !report.clamped_to_cursor,
+            "a consumer held the retention point back, so this is the clamped case and not this one"
+        );
+        assert_eq!(
+            report.checkpoint_wal_index, 3,
+            "the pass anchored on a different checkpoint than the fixture published"
+        );
+        assert_eq!(
+            report.retain_from_wal_index, 4,
+            "the retention point is not the checkpoint's successor"
+        );
+        assert_eq!(
+            report.deleted_wal_objects, 3,
+            "the collector did not remove the prefix this test needs gone"
+        );
+
+        // REGIME: and it removed it from the BOTTOM. Named keys, both directions: the last entry
+        // of the collected prefix is gone and the first entry of the surviving tail is present.
+        // The counts agree with either outcome.
+        let prefix = "cluster-a/shards/1/shared/wal/";
+        let remaining = store.list(prefix).await.unwrap();
+        assert!(
+            !remaining
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000003.json")),
+            "the top of the collected prefix survived, so the prefix is not below the checkpoint"
+        );
+        assert!(
+            remaining
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000004.json")),
+            "the first entry of the surviving tail was collected too, which IS a hole"
+        );
+        assert!(
+            remaining
+                .iter()
+                .any(|key| key.ends_with("wal_00000000000000000006.json")),
+            "the end of the log was collected, so the tail this test serves from is not there"
+        );
+
+        // CONCLUSION: a node that has never seen this shard restores and serves, with the prefix
+        // below the checkpoint legitimately absent.
+        let follower = test_engine(dir.path(), "follower");
+        let restored = replicator
+            .restore_index_and_block_addresses(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.checkpoint_wal_index, 3,
+            "the restore anchored somewhere other than the checkpoint the collector used"
+        );
+        follower.load_shard(1);
+        let replayed = replicator
+            .replay_wal(1, restored.checkpoint_wal_index, &follower)
+            .await
+            .expect("the hole check refused a legitimately collected prefix");
+        assert_eq!(
+            replayed.applied, 3,
+            "the restore did not take the whole surviving tail"
+        );
+        assert_eq!(
+            replayed.last_wal_index, 6,
+            "the restore did not reach the end of the log"
+        );
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "k6".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![6u8])
+            },
+            "the restore replayed the tail and cannot serve what it carried"
+        );
+    }
+
+    /// NOR DOES IT REFUSE A CONTIGUOUS LOG OF ENTRIES THAT CARRY THEIR RESULTS.
+    ///
+    /// The check this change moved into `replay_wal` came from `replay_wal_strict`, where the
+    /// expected position was advanced at the END of the loop body -- and the branch that installs
+    /// recorded outcomes ends in `continue`, so that increment was SKIPPED for every entry
+    /// carrying them. A perfectly contiguous log of such entries was refused at its second one,
+    /// naming a position that was never missing.
+    ///
+    /// Nothing caught it: `replay_wal_strict` had no production caller, and every test that
+    /// reached it published entries with `outcomes: Vec::new()`, which take the branch that did
+    /// increment. Copying that body into the shipped path would have shipped the refusal.
+    #[tokio::test]
+    async fn a_contiguous_log_of_result_carrying_entries_is_not_refused() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for index in 1..=3u64 {
+            let write = primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("carried-{index}"),
+                    value: format!("value-{index}").into_bytes(),
+                },
+            });
+            assert!(write.status.ok, "the fixture's own write failed");
+        }
+
+        // Take what those writes RECORDED, from the primary's own log, and republish each at a
+        // contiguous shared index. The outcomes are what put the entries on the branch this test
+        // is about; renumbering is what makes the log contiguous by construction, so a refusal
+        // below cannot be blamed on the fixture's spacing.
+        let records = primary
+            .write_ahead_log_store()
+            .scan(1, 0, u64::MAX, u64::MAX)
+            .unwrap()
+            .iter()
+            .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
+            .filter(|record| !record.outcomes.is_empty())
+            .collect::<Vec<_>>();
+        assert!(
+            records.len() >= 3,
+            "the fixture's writes recorded no outcomes, so nothing here takes the branch under test: {} found",
+            records.len()
+        );
+
+        for (offset, record) in records.iter().take(3).enumerate() {
+            let mut carried = record.staged_blocks.clone();
+            if carried.is_empty() {
+                for item in &record.outcomes {
+                    if let Some(address) = item.resolved_address() {
+                        if let Ok(bytes) = primary.block_store().read(&address) {
+                            carried.push(crate::wal::StagedBlock {
+                                object_id: item.object_id,
+                                component: item.component.as_deref().map(std::sync::Arc::from),
+                                bytes,
+                            });
+                        }
+                    }
+                }
+            }
+            replicator
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index: offset as u64 + 1,
+                    command: record.command.clone(),
+                    staged_blocks: carried,
+                    outcomes: record.outcomes.clone(),
+                })
+                .await
+                .unwrap();
+        }
+
+        // REGIME: three contiguous indices, NAMED, and every one of them carrying outcomes. A
+        // count alone would pass against a log published at 1, 2 and 4.
+        let prefix = "cluster-a/shards/1/shared/wal/";
+        let published = store.list(prefix).await.unwrap();
+        for wal_index in 1..=3u64 {
+            let key = format!("{prefix}wal_{wal_index:020}.json");
+            assert!(
+                published.iter().any(|present| present == &key),
+                "the fixture did not publish a contiguous log: {key} is missing"
+            );
+        }
+        assert_eq!(
+            published.len(),
+            3,
+            "the fixture published something other than the three entries it reasons about"
+        );
+
+        let follower = test_engine(dir.path(), "follower");
+        follower.load_shard(1);
+
+        // CONCLUSION: it replays, rather than refusing at the second entry.
+        let replayed = replicator
+            .replay_wal(1, 0, &follower)
+            .await
+            .expect("a contiguous log of result-carrying entries was refused as having a hole");
+        assert_eq!(
+            replayed.applied, 3,
+            "the replay stopped short of the contiguous log it was given"
+        );
+        assert_eq!(
+            replayed.last_wal_index, 3,
+            "the replay did not reach the end of a log with nothing missing from it"
         );
     }
 
