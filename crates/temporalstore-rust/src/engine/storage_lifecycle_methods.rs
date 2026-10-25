@@ -25,6 +25,33 @@ pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
 /// round touches a per-bucket structure at all, and an entry count answers that identically on an
 /// idle box and a loaded one. Process-wide, so a reader must reset it immediately before the call
 /// it is measuring, and the suite it is read in runs single-threaded.
+/// Buckets the sampled selector LOOKED AT, summed over every pass in this process.
+///
+/// WHY A COUNTER AND NOT A REPORT FIELD. This is the number the sampler's whole bound is stated
+/// in -- a pass walks at most `samples * batch_limit * scan_turns` buckets -- and nothing on the
+/// shipped report carried it, so the one clause that makes a steady-state pass CHEAP had no
+/// engine-side guard: a selector handed a constant clock instead of a real one sees no candidate
+/// as cold, walks its whole ceiling on every pass for ever, and is indistinguishable from a
+/// correct one by every other number a round publishes. `the_second_pass_stops_at_its_minimum_\
+/// scan_once_the_first_has_stamped_its_clock` is what reads it.
+///
+/// PROCESS-WIDE, like the counter below it, so a test that reads it has to run serially. CI runs
+/// this suite with `--test-threads=1`.
+pub(crate) static EVICTION_SAMPLER_BUCKETS_SCANNED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Read the counter above. The module is private to `engine`, so the only way a fixture outside
+/// it can see this number is through a re-exported accessor -- the same shape
+/// `storage_plan_build_counts` already uses.
+pub fn eviction_sampler_buckets_scanned() -> u64 {
+    EVICTION_SAMPLER_BUCKETS_SCANNED.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Zero it, so a fixture can bracket ONE round rather than read a process total it did not cause.
+pub fn reset_eviction_sampler_buckets_scanned() {
+    EVICTION_SAMPLER_BUCKETS_SCANNED.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) static EVICTION_RECENCY_ENTRIES_CLONED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
@@ -1877,7 +1904,12 @@ impl TemporalEngine {
             // whether a candidate has been used since the previous pass, which is a comparison
             // against a stamp this engine produced; passing the stamp in is what lets the
             // module's own fixtures state a recency history instead of racing a wall clock.
-            select_victims(&mut sampler, config, batch_limit, source, now).victims
+            let outcome = select_victims(&mut sampler, config, batch_limit, source, now);
+            // CHARGED HERE, which is the only place the pass's own count exists: the outcome is
+            // consumed for its victims and nothing else survives this scope.
+            EVICTION_SAMPLER_BUCKETS_SCANNED
+                .fetch_add(outcome.scanned as u64, std::sync::atomic::Ordering::Relaxed);
+            outcome.victims
         };
         shard.evict_sampler = sampler;
 

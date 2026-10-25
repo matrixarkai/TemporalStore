@@ -34,7 +34,10 @@ mod zset_index_serde;
 mod seen_index_serde;
 mod bucket_dump_manifest_methods;
 mod storage_lifecycle_methods;
-pub use storage_lifecycle_methods::{reset_storage_plan_build_counts, storage_plan_build_counts};
+pub use storage_lifecycle_methods::{
+    eviction_sampler_buckets_scanned, reset_eviction_sampler_buckets_scanned,
+    reset_storage_plan_build_counts, storage_plan_build_counts,
+};
 mod timestamped_series;
 mod storage_manager_cycle;
 mod storage_reports;

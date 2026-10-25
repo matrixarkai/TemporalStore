@@ -2802,3 +2802,99 @@ fn a_round_that_skips_a_band_in_use_keeps_every_acknowledged_record() {
 reload into a {reloaded_resident} B index, with {ABSENT} absent in both"
     );
 }
+
+/// THE SECOND PASS STOPS AT ITS MINIMUM SCAN, ONCE THE FIRST HAS STAMPED ITS CLOCK.
+///
+/// The selector decides whether a candidate is cold by comparing its recency with the previous
+/// pass's clock, and the engine is what hands that clock over. Nothing else a round publishes can
+/// tell a real clock from a constant: a selector given a constant sees no candidate as cold, so it
+/// walks its whole ceiling on EVERY pass instead of stopping at its minimum scan, and still ranks
+/// by recency and still returns the right victims. The cost is the only observable, so the cost is
+/// what this asserts.
+///
+/// TWO PASSES, AND THE FIRST IS THE CONTROL. A fresh shard has no previous pass, so its floor
+/// falls back to "never touched at all"; every bucket here has been written, so the first pass has
+/// no cold candidate by that test and walks its ceiling. The second pass inherits a clock and a
+/// pool of candidates nothing has touched since, so it stops at its minimum. Asserting only the
+/// second would pass on a selector that always stops early; asserting only the first would pass on
+/// one that never does.
+///
+/// SERIAL: the counter is process-wide. CI runs this suite with `--test-threads=1`.
+#[test]
+fn the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_clock() {
+    const KEYS: usize = 4_000;
+    const BATCH: usize = 16;
+
+    let sampler = crate::engine::evict_sampler_config();
+    let min_scan = sampler.samples * BATCH;
+    let ceiling = min_scan * sampler.scan_turns;
+
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+
+    let occupied = {
+        let mut buckets: Vec<u32> = (0..KEYS)
+            .map(|index| engine.routing_bucket_for_key(1, &key_of(index)))
+            .collect();
+        buckets.sort_unstable();
+        buckets.dedup();
+        buckets.len()
+    };
+    // REGIME: the store is larger than one pass's ceiling, or "walked the ceiling" and "walked the
+    // whole store" are the same reading and the first pass proves nothing.
+    assert!(
+        occupied > ceiling,
+        "{KEYS} keys occupy {occupied} buckets against a {ceiling}-bucket ceiling, so a pass that \
+         covered the store would be indistinguishable from one that spent its budget"
+    );
+
+    crate::engine::reset_eviction_sampler_buckets_scanned();
+    let first = engine.apply_storage_eviction(1, 1, BATCH, true, false);
+    let scanned_first = crate::engine::eviction_sampler_buckets_scanned();
+    assert_eq!(
+        first.skipped_reason, "",
+        "the first round declined, so no pass ran: {first:?}"
+    );
+
+    crate::engine::reset_eviction_sampler_buckets_scanned();
+    let second = engine.apply_storage_eviction(1, 1, BATCH, true, false);
+    let scanned_second = crate::engine::eviction_sampler_buckets_scanned();
+    assert_eq!(
+        second.skipped_reason, "",
+        "the second round declined, so there is no second pass to compare: {second:?}"
+    );
+
+    eprintln!(
+        "  [pass-cost] {KEYS} keys over {occupied} buckets, batch {BATCH}: pass 1 scanned \
+{scanned_first} buckets (ceiling {ceiling}), pass 2 scanned {scanned_second} (minimum scan \
+{min_scan}); {} and {} buckets released",
+        first.bucket_index_buckets_released, second.bucket_index_buckets_released
+    );
+
+    assert_eq!(
+        scanned_first as usize, ceiling,
+        "the first pass on a shard with no eviction history scanned {scanned_first} buckets. With \
+         no previous pass to compare against, no written bucket is cold, so the pass has to spend \
+         its {ceiling}-bucket ceiling and rank the widest window the bound allows"
+    );
+    assert_eq!(
+        scanned_second as usize, min_scan,
+        "the second pass scanned {scanned_second} buckets rather than stopping at {min_scan}. \
+         Nothing touched this shard between the two rounds, so every candidate the first pass \
+         pooled is cold to the second -- a pass that still walks its {ceiling}-bucket ceiling here \
+         is one whose clock never advanced, and it pays {}x the steady-state cost for ever",
+        ceiling / min_scan
+    );
+    // AND IT IS NOT CHEAP BECAUSE IT DID NOTHING.
+    assert!(
+        second.bucket_index_buckets_released > 0 || second.bucket_index_release_refused > 0,
+        "the second round neither released nor refused anything, so its cheap pass is a pass that \
+         found no candidate rather than one that stopped early"
+    );
+    assert_eq!(
+        second.dropped_object_count, 0,
+        "the second round deleted {} records; relieving memory releases pages and never deletes",
+        second.dropped_object_count
+    );
+}

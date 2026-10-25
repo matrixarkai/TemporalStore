@@ -345,26 +345,38 @@ fn ratio(small: u64, large: u64) -> f64 {
 ///      are the same object and every ratio is a comparison of a thing with itself;
 ///   2. the store holds MORE THAN ONE block slab, and both slabs hold RECORDS. A slab count taken
 ///      from the directory would pass on two empty files;
-///   3. the victims a round chooses span MORE THAN ONE slab. A mutant in this area survived
-///      elsewhere because every live page sat in slab 0 and the test compared `{0}` against
-///      `{0}`; re-seeding into one key range collapses it back, which is why the fixture rolls
-///      mid-seed and the halves are disjoint key ranges;
+///   3. the victims a round chooses are the OLDEST-WRITTEN pages in the store, and not the
+///      pages a scan-ordered selection would reach. This clause used to assert that the victims
+///      SPAN slabs, and that was a property of the selection WINDOW rather than of the ordering.
+///      Every bucket in this fixture holds exactly one page and nothing is ever read here, so a
+///      bucket's recency IS its write time, and the fixture rolls a slab per seed batch -- which
+///      makes the slab monotonic in that time. The coldest sixteen buckets in the store are
+///      therefore the earliest-written sixteen and their pages are on the FIRST slab, by
+///      construction, once the pass looks at enough of the store to find them. A selection that
+///      spans slabs here is one that is NOT ordering by recency: the sixteen lowest ROUTING
+///      buckets are scattered across the seed batches (see [`scale_key`]) and so across slabs,
+///      which is exactly the set this clause now asserts the round does not take. Clause 2 is
+///      what keeps this from comparing `{0}` with `{0}`: live pages sit on every slab, so
+///      confining the victims to the first one is a choice the selection made;
 ///   4. the round chooses FEWER victims than there are buckets, which is what makes "per victim"
 ///      and "per record" different denominators at all.
 #[test]
-fn the_eviction_fixture_holds_several_slabs_and_the_victims_span_them() {
+fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_pages() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = evict_engine(dir.path());
     seed_with_a_slab_roll(&engine, GUARD_LARGE);
 
     let by_slab = live_pages_by_slab(&engine);
-    let buckets = {
+    // The ids, not only the count: clause 3 below needs the set a SCAN-ordered selection would
+    // reach, and `bucket_map` is ordered, so its leading entries are exactly that set.
+    let all_buckets: Vec<u32> = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         shards
             .get(&1)
-            .map(|shard| shard.bucket_index.bucket_map.len())
+            .map(|shard| shard.bucket_index.bucket_map.keys().copied().collect())
             .unwrap_or_default()
     };
+    let buckets = all_buckets.len();
     let report = engine.apply_storage_eviction(1, 0, BATCH, false, false);
     let victims = report
         .selected_victims
@@ -402,12 +414,51 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_span_them() {
         !victims.is_empty(),
         "the round chose no victims, so there is nothing whose slab span could be asserted"
     );
+    // CLAUSE 3, AND ITS CONTROL IS THE OTHER CANDIDATE ANSWER.
+    //
+    // `scan_order` is what a selection ordered by position in the key space would take: the
+    // leading entries of the ordered bucket map. Those buckets' ordinals are scattered across the
+    // seed batches, so their pages are scattered across slabs -- which is why this set is the
+    // right control and why a span used to read as a pass. The round's own victims are the
+    // oldest-written buckets, so their pages are on the earliest slabs. The two statements below
+    // are each other's: the recency answer reaches no further forward in slab order than the
+    // scan answer does, and it is not the same answer.
+    let scan_order = all_buckets
+        .iter()
+        .take(BATCH)
+        .copied()
+        .collect::<BTreeSet<u32>>();
+    let scan_order_slabs = slabs_spanned_by(&engine, &scan_order);
+    println!(
+        "  clause 3: victims {victims:?} on slabs {victim_slabs:?}; a scan-ordered selection \
+         would take {scan_order:?} on slabs {scan_order_slabs:?}"
+    );
     assert!(
-        victim_slabs.len() > 1,
-        "the {} victims chosen all sit on slab(s) {victim_slabs:?}; with the victims confined to \
-         one slab a guard comparing victim slabs against store slabs would be comparing a set \
-         with itself",
-        victims.len()
+        scan_order_slabs.len() > 1,
+        "the {BATCH} lowest-numbered buckets sit on slab(s) {scan_order_slabs:?}; this control \
+         has to span slabs or it cannot be told apart from the recency answer, and the scattering \
+         in `scale_key` is what makes it span",
+    );
+    assert_ne!(
+        victim_slabs, scan_order_slabs,
+        "the round took the pages a scan-ordered selection would take ({victim_slabs:?}); the \
+         victims have to be chosen by recency, and in this fixture recency is write time"
+    );
+    let newest_victim_slab = victim_slabs
+        .iter()
+        .copied()
+        .max()
+        .expect("the victim slab set is non-empty");
+    let newest_scan_slab = scan_order_slabs
+        .iter()
+        .copied()
+        .max()
+        .expect("the control slab set is non-empty");
+    assert!(
+        newest_victim_slab < newest_scan_slab,
+        "the newest slab the victims touch is {newest_victim_slab}, against {newest_scan_slab} \
+         for the scan-ordered control. The round has to take the OLDEST pages, so its victims \
+         cannot reach further forward in slab order than the selection it is supposed to beat"
     );
     assert!(
         victims.len() < buckets,
