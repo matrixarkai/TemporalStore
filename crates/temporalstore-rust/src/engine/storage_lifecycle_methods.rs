@@ -2517,8 +2517,11 @@ mod eviction_round_scale {
 
     /// WHAT ONE EVICTION ROUND COSTS AS THE STORE GROWS, if eviction were turned on.
     ///
-    /// Eviction is dark in production -- `enable_evict` defaults to false -- so this is
-    /// conditional by construction and says so. It measures allocation CALLS and BYTES across one round at two
+    /// Eviction ships ON, but this wide arm is not the one a shipped round takes: the default
+    /// pairs the flag with a 64 MiB `index_resident_limit_bytes`, which is the higher bar, so a
+    /// shard under that bound reaches `apply_index_resident_bound` and declines. What this
+    /// measures is therefore the cost once a shard is OVER the bound, or once an operator has
+    /// lowered it below the threshold. It measures allocation CALLS and BYTES across one round at two
     /// corpus sizes and prints the ratio beside the corpus ratio, so a cost that tracks the store
     /// and a cost that does not are told apart by a number rather than by reading the code.
     ///
@@ -2756,8 +2759,8 @@ mod eviction_round_scale {
             }
         };
         println!(
-            "\n  ONE SAMPLED EVICTION ROUND, at two corpus sizes (eviction defaults OFF; this is what \
-             it WOULD cost)\n\
+            "\n  ONE SAMPLED EVICTION ROUND, at two corpus sizes (eviction ships ON but BOUNDED at \
+             64 MiB of resident index; this is what a round over that bound costs)\n\
              \n                                {SMALL:>10} objects {LARGE:>10} objects      ratio\n\
                buckets                     {small_buckets:>10} {large_buckets:>18}   {:>8.2}x\n\
                victims chosen              {small_victims:>10} {large_victims:>18}\n\

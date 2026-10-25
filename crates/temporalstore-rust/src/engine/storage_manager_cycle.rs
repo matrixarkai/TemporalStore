@@ -638,9 +638,11 @@ impl TemporalEngine {
             })
         } else if request.index_resident_limit_bytes > 0 && !request.dry_run {
             // THE NARROW BOUND RUNS WITH THE WIDE STAGE OFF, which is the whole reason it is a
-            // separate arm. `enable_evict` gates a signal that is mostly other shards' cache, so
-            // it defaults off and should stay off; a bound that reads only THIS shard's resident
-            // index has none of that defect and must not inherit being disabled by it.
+            // separate arm. `enable_evict` carries a threshold, and the shipped threshold is 0 --
+            // "evicts whenever it runs" -- so a bound that inherited the flag's state would have
+            // inherited an always-open gate. On the periodic loop the two are reconciled by taking
+            // the higher bar; here, where the flag is explicit in the request, the flag wins and
+            // this arm is what a caller gets by setting only the bound.
             //
             // It reports through the same field because it reaches the same release, so an
             // operator reads one eviction report either way -- `mode` says which gate opened.

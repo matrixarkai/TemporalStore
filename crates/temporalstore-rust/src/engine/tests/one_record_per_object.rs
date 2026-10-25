@@ -988,9 +988,12 @@ fn probe_engine_on_for_record(
 /// the figure behind it was taken on the WRONG PATH.
 ///
 /// The 151.9 B/object the census reported recovered came from `apply_storage_eviction(.., dump =
-/// true, ..)`. That path is reached only through `StorageManagerOptions::enable_evict`, which
-/// ships FALSE (`data_node.rs:1058`), and `runtime_storage.rs:723` records the skip as
-/// `"evict_disabled"`. So the number was measured on a path a deployment does not take.
+/// true, ..)`. `StorageManagerOptions::enable_evict` now ships TRUE, but that is not the path a
+/// shipped round takes: the same default pairs the flag with a 64 MiB `index_resident_limit_bytes`,
+/// which is the higher bar, so the periodic loop calls `apply_index_resident_bound` and a shard
+/// under the bound declines with `"index_resident_below_bound"`. So the number is still measured on
+/// a path a deployment does not take -- the deployment has to be holding roughly 1.7 M keys in one
+/// shard before it does.
 ///
 /// The path a deployment DOES take is `apply_storage_lifecycle`, which is ungated -- only
 /// `dry_run` skips it (`storage_manager_cycle.rs:546`) -- and whose dump is released by
@@ -1036,10 +1039,19 @@ fn what_the_default_dump_cadence_actually_drains() {
     );
     // THE TWO FACTS THE WHOLE READING RESTS ON, asserted so this fails loudly if either moves
     // rather than silently costing the wrong lever.
+    // RESTATED. This asserted `!shipped.enable_evict`. The flag now ships ON, but the claim this
+    // test rests on -- that the census figure was taken on a path a deployment does not take -- is
+    // unchanged, because what the shipped round reaches is `apply_index_resident_bound`, not
+    // `apply_storage_eviction(.., dump = true, ..)`. The bound is the higher bar, and a shard
+    // reaches the dump path only once it is OVER 64 MiB of resident index, which is about 1.7 M
+    // keys. So the fact to pin is the bound being in force, not the flag being off.
     assert!(
-        !shipped.enable_evict,
-        "enable_evict now ships ON -- the eviction dump path is reachable by default and the \
-         census figure taken on it is no longer the wrong path's figure. Re-cost the dirty half."
+        shipped.index_resident_limit_bytes > shipped.eviction_memory_pressure_threshold,
+        "the shipped bound ({}) is no longer above the shipped threshold ({}), so a default round \
+         DOES take `apply_storage_eviction` with the dump on and the census figure is no longer \
+         the wrong path's figure. Re-cost the dirty half.",
+        shipped.index_resident_limit_bytes,
+        shipped.eviction_memory_pressure_threshold
     );
     assert!(
         shipped.max_dump_buckets_per_round > 0,
@@ -1209,9 +1221,10 @@ fn what_the_default_dump_cadence_actually_drains() {
     }
     println!(
         "VERDICT for the record's dirty bit, CORRECTING THE CENSUS. The trigger is ARMED, \
-         unlike `enable_evict` -- but it is NOT the duplicate the census took it for, on three \
-         measured grounds. (1) The census figure of 151.9 B/object came from the UNCAPPED \
-         eviction path, which ships off. (2) On the default path, unbatched, one released round \
+         unlike the uncapped eviction path -- but it is NOT the duplicate the census took it for, \
+         on three measured grounds. (1) The census figure of 151.9 B/object came from the UNCAPPED \
+         eviction path, which ships BOUNDED: the stage is on, and a shard reaches that path only \
+         above 64 MiB of resident index. (2) On the default path, unbatched, one released round \
          drained 14.7% and then STALLED: taking the dump advances the dumped-sequence watermark, \
          so the record count falls back below the threshold and no further dump is selected -- \
          one dump per threshold crossing, capped at {} buckets. (3) Batched, it drains NOTHING, \

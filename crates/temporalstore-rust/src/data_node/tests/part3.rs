@@ -56,18 +56,45 @@ fn every_maintenance_phase_is_enabled_under_the_shipped_default() {
         .filter(|stage| stage.ends_with("_disabled"))
         .cloned()
         .collect::<Vec<_>>();
-    // `evict` is the one stage that ships OFF, deliberately: wiring it made eviction reachable
-    // from this loop at all, and turning it on by default is a production eviction-policy change
-    // (`eviction_delete_drop` can discard unflushed state). Pinning the exact list rather than
-    // dropping the assertion keeps both teeth: another stage going off still fails here, and so
-    // does `evict` being quietly switched on.
-    assert_eq!(
-        disabled,
-        vec!["evict_disabled".to_string()],
-        "phases switched off under the options the server ships with: {disabled:?} \
+    // NINE OF NINE STAGES NOW SHIP ON, and this list is EMPTY. It used to be
+    // `vec!["evict_disabled"]`, and its comment read "so does `evict` being quietly switched on" --
+    // which is the tooth that fired when the ninth stage was defaulted on, exactly as intended.
+    // The assertion is restated rather than relaxed, and it keeps both teeth: any stage going off
+    // still fails here, and so would a tenth stage arriving switched off.
+    assert!(
+        disabled.is_empty(),
+        "phases switched off under the options the server ships with: {disabled:?}. All nine \
+         stages ship enabled -- `evict` was the last, defaulted on together with the \
+         `index_resident_limit_bytes` bound that keeps its gate shut on a shard under the bound \
          (executed: {:?}, skipped: {:?})",
         report.executed_stages,
         report.skipped_stages
+    );
+    // AND THE NINTH STAGE RAN BOUNDED, not merely "ran". A stage that is enabled and unbounded is
+    // the thing the bound exists to prevent, and `executed_stages` alone cannot tell the two
+    // apart -- it says "evict" either way. So read the report: the gate that opened must be the
+    // bound, it must have declined on this 64-record shard, and it must have released nothing.
+    let eviction = report
+        .eviction
+        .as_ref()
+        .expect("the ninth stage ships on, so a shipped round must report it");
+    assert_eq!(
+        eviction.mode, "index_resident_bound",
+        "the shipped round opened the WIDE eviction gate rather than the bound: mode={} \
+         threshold={}. At the shipped threshold of 0 the wide gate cannot close, so this is an \
+         always-open release on every loaded shard",
+        eviction.mode, eviction.memory_pressure_threshold
+    );
+    assert_eq!(
+        eviction.skipped_reason, "index_resident_below_bound",
+        "a 64-record shard was not under the shipped bound: reason={:?} pressure_before={} \
+         threshold={}",
+        eviction.skipped_reason, eviction.pressure_before, eviction.memory_pressure_threshold
+    );
+    assert_eq!(
+        eviction.bucket_index_buckets_released, 0,
+        "the shipped round released {} buckets from a 64-record shard",
+        eviction.bucket_index_buckets_released
     );
 
     // Every phase must have reported SOMETHING -- ran, or declined for a reason that is not
@@ -3384,27 +3411,41 @@ fn the_periodic_loop_can_evict_when_the_operator_asks() {
         },
     );
 
-    // CONTROL: the shipped default must not evict. This is the half that says the change is
-    // opt-in rather than a silent change to how every deployment relieves memory.
+    // CONTROL, RESTATED. This asserted `evict_disabled` and read "the shipped default must not
+    // evict ... the change is opt-in". The stage now ships ON, so the control is no longer "it
+    // does not run" -- it is "it runs and RELEASES NOTHING", because the shipped
+    // `index_resident_limit_bytes` is the higher bar and this 64-record shard is far under it.
+    // That is the half that says defaulting the stage on did not silently change how every
+    // deployment relieves memory.
     let default_report = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
-    assert!(
-        default_report.skipped_stages.iter().any(|stage| stage == "evict_disabled"),
-        "the default must skip eviction, got skipped={:?} executed={:?}",
-        default_report.skipped_stages,
-        default_report.executed_stages
+    let default_eviction = default_report
+        .eviction
+        .as_ref()
+        .expect("the stage ships on, so a default round reports it");
+    assert_eq!(
+        default_eviction.mode, "index_resident_bound",
+        "the shipped default opened the wide gate: mode={} threshold={}",
+        default_eviction.mode, default_eviction.memory_pressure_threshold
     );
     assert_eq!(
-        runtime.stats().storage_manager_evict_runs,
-        0,
-        "the default must not have evicted"
+        default_eviction.skipped_reason, "index_resident_below_bound",
+        "the shipped default acted on a 64-record shard: reason={:?} pressure_before={}",
+        default_eviction.skipped_reason, default_eviction.pressure_before
+    );
+    assert_eq!(
+        default_eviction.bucket_index_buckets_released, 0,
+        "the shipped default released {} buckets from a 64-record shard",
+        default_eviction.bucket_index_buckets_released
     );
 
-    // And with the operator asking, the stage the loop could never reach now runs.
+    // And with the operator lowering the bound out of the way, the wide stage runs and acts.
     let enabled_report = runtime.run_storage_manager_once(
         1,
         StorageManagerOptions {
             enable_evict: true,
             eviction_dump_before_evict: true,
+            // The one field that differs from the control above.
+            index_resident_limit_bytes: 0,
             ..StorageManagerOptions::default()
         },
     );
@@ -3414,10 +3455,27 @@ fn the_periodic_loop_can_evict_when_the_operator_asks() {
         enabled_report.executed_stages,
         enabled_report.skipped_stages
     );
+    // AND IT TOOK THE WIDE ARM, which is what makes the control's `index_resident_bound` a
+    // statement about the BOUND rather than about this fixture.
+    let enabled_eviction = enabled_report
+        .eviction
+        .as_ref()
+        .expect("the stage reports when it is enabled");
+    assert_eq!(
+        enabled_eviction.mode, "evict_cache",
+        "removing the bound did not fall back on the wide gate: mode={}",
+        enabled_eviction.mode
+    );
+    assert_eq!(
+        enabled_eviction.skipped_reason, "",
+        "the wide gate declined at a threshold of 0: reason={:?}",
+        enabled_eviction.skipped_reason
+    );
+    // Two rounds have run and BOTH reached the stage: the default one bounded, this one wide.
     assert_eq!(
         runtime.stats().storage_manager_evict_runs,
-        1,
-        "the stage must be counted exactly once"
+        2,
+        "the stage must be counted once per round that reached it"
     );
 }
 
@@ -4351,15 +4409,21 @@ time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
             );
         }
 
-        // `enable_evict` is the ONE stage flag that defaults to false (manual `Default` impl, with
-        // a comment saying so), so a subtract-one row for it would toggle nothing and report a
-        // false zero. Measure it the other way round: what turning it ON adds.
+        // `enable_evict` used to be the ONE stage flag that defaulted to false, so a subtract-one
+        // row for it would have toggled nothing. It now defaults ON, and what is special about it
+        // instead is its BOUND: the shipped `index_resident_limit_bytes` is the higher bar, so the
+        // default round declines under it and the row above measures a refusal. This arm pins the
+        // bound away, so it still measures what an ACTING evict stage walks.
         let (with_evict, evict_stages) = scan_once(
             objects,
-            StorageManagerOptions { enable_evict: true, ..Default::default() },
+            StorageManagerOptions {
+                enable_evict: true,
+                index_resident_limit_bytes: 0,
+                ..Default::default()
+            },
         );
         eprintln!(
-            "  [stage-scan] {objects:>6}   evict is OFF by default; ON -> {with_evict:>9} \
+            "  [stage-scan] {objects:>6}   evict ships ON but bounded; unbounded -> {with_evict:>9} \
 (adds {:>9} entries, {:>5.1}x the shard), stages {evict_stages:?}",
             with_evict.saturating_sub(all_on),
             with_evict.saturating_sub(all_on) as f64 / objects as f64,
@@ -5543,10 +5607,13 @@ fn the_maintenance_round_runs_its_stages_in_order() {
             },
         });
     }
-    // Every stage on, so the round has something to order. Eviction ships DISABLED, so without
-    // this the evict stage would be absent and the assertion about it would be vacuous.
+    // Every stage on, so the round has something to order. Eviction now ships ENABLED, so this
+    // restates the shipped value rather than overriding it -- but the shipped BOUND is pinned
+    // away, because at 64 MiB this fixture's evict stage declines on the bound and the order this
+    // test is about is the order of stages that ran.
     let options = StorageManagerOptions {
         enable_evict: true,
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let report = runtime.run_storage_manager_once(1, options);
@@ -5976,6 +6043,8 @@ fn how_long_eviction_takes_to_converge() {
             enable_evict: true,
             enable_memory_reclaim: memory_reclaim,
             eviction_memory_pressure_threshold: threshold,
+            // The shipped bound pinned away: this fixture is about the WIDE gate's threshold.
+            index_resident_limit_bytes: 0,
             ..StorageManagerOptions::default()
         };
         let mut converged: Option<usize> = None;
@@ -6060,10 +6129,11 @@ fn the_round_reports_what_eviction_did() {
         });
     }
 
-    // Eviction ships disabled, so without this the stage would not run and the assertion would
-    // be about a round that never reached it.
+    // Eviction now ships enabled, so the flag here restates the shipped value; the BOUND is
+    // pinned away so the stage acts rather than declining under it on a fixture this size.
     let options = StorageManagerOptions {
         enable_evict: true,
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let report = runtime.run_storage_manager_once(1, options);
@@ -6497,6 +6567,8 @@ fn eviction_opens_its_gate_when_the_cache_is_still_there() {
     let options = StorageManagerOptions {
         enable_evict: true,
         eviction_memory_pressure_threshold: warm / 4,
+        // The shipped bound pinned away: this fixture is about the WIDE gate's threshold.
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let report = runtime.run_storage_manager_once(1, options);
@@ -6958,6 +7030,8 @@ fn the_evict_stage_keeps_going_while_batches_still_help() {
         // A threshold far below what the fixture built, so one batch cannot possibly reach it and
         // the loop has a reason to keep going.
         eviction_memory_pressure_threshold: warm / 8,
+        // The shipped bound pinned away: this fixture is about the WIDE gate's threshold.
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let batch_limit = options.eviction_batch_limit;
@@ -8620,6 +8694,9 @@ fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
     let options = StorageManagerOptions {
         enable_evict: true,
         eviction_memory_pressure_threshold: THRESHOLD,
+        // The shipped bound pinned away: the signal this reads is published against the WIDE
+        // gate's threshold, and with the bound in force the published bar would be the bound.
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &options);
@@ -8689,64 +8766,71 @@ fn the_evict_decision_reports_the_pressure_it_gates_on_not_its_own_threshold() {
     );
 }
 
-/// THE DECISION ON THE DEFAULT: `enable_evict` stays OFF, and this is why, measured.
+/// WHY DEFAULTING THE NINTH STAGE ON IS NOT THE SAME CHANGE AS OPENING ITS GATE, measured.
 ///
-/// RESTATED, NOT RE-GOLDENED. This test was
-/// `enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure`, and it
-/// held that there were TWO objections to flipping the flag: a threshold of 0, and
-/// `eviction_dump_before_evict` false, so that "an evicted dirty bucket keeps pinning the log it
-/// was never written out of". It named what would retire each. ONE OF THE TWO IS NOW RETIRED: the
-/// dump defaults true, on the measurement its own prose asked for -- a release without a dump
-/// refuses every candidate (16 of 16, 0 released, in
-/// `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`), so the
-/// dump is not an optional improvement to eviction, it is the half that recovers anything. The
-/// superseded reasoning stays written down above rather than deleted, because a reader who finds
-/// this test needs to know the dump default was argued and settled, not merely flipped.
+/// RESTATED TWICE NOW, NOT RE-GOLDENED, and the history is the argument. This test was
+/// `enable_evict_stays_off_because_its_neighbouring_defaults_would_evict_at_zero_pressure`, then
+/// `enable_evict_stays_off_because_its_gate_reads_other_shards_memory`. It held THREE objections to
+/// flipping `enable_evict` on, in that order, and every one of them has now been settled -- two
+/// retired by work done since, and the third, which is the one that STILL STANDS, settled by not
+/// flipping that flag on its own.
 ///
-/// THE OTHER OBJECTION STANDS, and a second one joined it that the old prose did not know about.
+///   1  `eviction_dump_before_evict` WAS FALSE, so "an evicted dirty bucket keeps pinning the log
+///      it was never written out of". RETIRED: the dump defaults true, on the measurement this
+///      test's own prose asked for -- a release without a dump refuses every candidate (16 of 16,
+///      0 released, in
+///      `data_node::tests::evict_live::what_the_dump_costs_and_which_half_recovers_the_index`).
 ///
-///   1  THE THRESHOLD IS STILL 0, which is documented as "0 evicts whenever it runs". The gate is
-///      `pressure_before < threshold`, false for every shard that has ever existed, so the gate
-///      cannot close. That is unchanged and is measured below.
+///   2  THE GATE'S SIGNAL WAS MOSTLY OTHER SHARDS' MEMORY -- process-wide cache terms from
+///      `MultiLayerCache::stats()` summed with one per-shard index term, so a ten-key shard's gate
+///      read a busy shard's cache and no constant threshold was both safe and effective. RETIRED by
+///      the narrowing: `apply_storage_eviction`'s gate now reads `bucket_index_resident_bytes(shard_id)`
+///      and nothing else, which `the_evict_gate_reads_only_this_shards_own_bytes` is the gate on.
+///      The figures the old prose quoted here belonged to the wide signal and are not restated,
+///      because the signal they measured no longer exists.
 ///
-///   2  AND A NON-ZERO THRESHOLD CANNOT BE CHOSEN FROM THIS SIGNAL, which is the new finding and
-///      the reason "pick a number against a measured working set" is not an available move. The
-///      quantity the gate reads is cache memory + cache disk + the writeback queue +
-///      `bucket_index_resident_bytes`, and `MultiLayerCache::stats()` is NOT filtered by shard: the
-///      three cache terms are PROCESS-WIDE while the index term is per-shard.
-///      `the_evict_gates_cache_terms_are_process_wide_not_per_shard` runs two shards and measures a
-///      TEN-KEY shard whose gate reads 2,685,344 B of which 2,683,904 B -- 99.95% -- is an
-///      eight-thousand-key shard's cache. `what_a_default_eviction_threshold_has_to_clear` measures
-///      the cache term at 4.5x the index term at every size it tried. So a constant default
-///      threshold low enough to fire on a fat index also fires on an idle shard sharing the process,
-///      and one high enough to be safe has its trigger point set by other shards rather than by the
-///      shard being decided about. Either way the gate opens at pressure the operator never asked to
-///      relieve -- the same defect the old prose named, reached through the cache term instead of
-///      through the zero.
+///   3  THE THRESHOLD IS STILL 0, documented as "0 evicts whenever it runs". The gate is
+///      `pressure_before < threshold`, false for every shard that has ever held a record, so the
+///      gate cannot close. THIS OBJECTION IS UNCHANGED, and it is what this test measures.
 ///
-/// WHAT WOULD HAVE TO BE TRUE TO FLIP IT NOW, restated against that: the gate needs a signal whose
-/// terms all belong to the shard it is deciding about. The cheap per-shard term exists already
-/// (`bucket_index_resident_bytes`, which is also the only term the release can reduce); the
-/// per-shard CACHE bytes do not, because `matrixcache` keeps `memory_bytes` per cache partition and
-/// the only per-shard view is `entries_for_shard`, a listing whose cost is the thing
-/// `the_declining_gate_pays_no_cache_listing` exists to keep out of the round. So the remaining
-/// decision is narrowing the gate's signal, not picking a number, and it is not made here.
+/// SO THE CONCLUSION MOVED WITHOUT OBJECTION 3 MOVING. A change that flipped only `enable_evict`
+/// would ship an always-open gate: every loaded shard releasing buckets on every round of the
+/// periodic loop, at a default interval of 30 s, whatever its actual pressure. The change that did
+/// ship pairs the flag with a non-zero `index_resident_limit_bytes`, and the loop takes the HIGHER
+/// of the two bars -- so the bar in force is 64 MiB of this shard's own resident index, not 0, and
+/// the gate closes on every shard under it.
+///
+/// THE TWO ARMS ARE THEREFORE THE TWO CANDIDATE CHANGES, on one fixture under no pressure anyone
+/// would act on:
+///
+///   control    the SHIPPED pair      -> the stage runs, opens the BOUND, and releases nothing
+///   treatment  flip ONLY the flag    -> the gate cannot close, and the round takes victims
+///
+/// The treatment is the finding: it is the measured reason the flag does not ship alone. The
+/// control is what makes it a finding rather than an argument about an unshipped configuration.
 #[test]
-fn enable_evict_stays_off_because_its_gate_reads_other_shards_memory() {
+fn the_change_that_moves_only_this_flag_cannot_close_its_gate() {
     let defaults = StorageManagerOptions::default();
 
-    // The default is a DECISION, pinned here so a later edit to the `Default` impl has to come
+    // The defaults are a DECISION, pinned here so a later edit to the `Default` impl has to come
     // past this test and its reasoning rather than sliding through as a tidy-up.
     assert!(
-        !defaults.enable_evict,
-        "enable_evict now defaults on; the two defaults below must have changed with it"
+        defaults.enable_evict,
+        "enable_evict defaults off again; the pairing below is what made ON safe, so revisit both \
+         rather than deleting this assertion"
     );
     assert_eq!(
         defaults.eviction_memory_pressure_threshold, 0,
-        "the eviction threshold is no longer 0. That is objection 1 above retired, but objection 2 \
-         -- that the gate's cache terms are process-wide, so no constant threshold is both safe \
-         and effective -- is not retired by a number. Revisit the enable_evict decision against \
-         both, rather than deleting this assertion"
+        "the eviction threshold is no longer 0, which retires objection 3 above -- the one the \
+         treatment arm below measures. Restate this test against the new threshold rather than \
+         deleting the assertion"
+    );
+    assert!(
+        defaults.index_resident_limit_bytes > defaults.eviction_memory_pressure_threshold,
+        "the bound ({}) is no longer the higher bar over the threshold ({}), so the shipped pair \
+         IS the treatment arm below: an always-open gate on every loaded shard",
+        defaults.index_resident_limit_bytes,
+        defaults.eviction_memory_pressure_threshold
     );
     // RESTATED. This asserted `!defaults.eviction_dump_before_evict` and told a future reader to
     // revisit the enable_evict default if it ever turned on. It has turned on, on the evidence the
@@ -8789,21 +8873,35 @@ fn enable_evict_stays_off_because_its_gate_reads_other_shards_memory() {
         },
     );
 
-    // CONTROL: the shipped default does not reach the stage at all.
+    // CONTROL, RESTATED: the shipped default REACHES the stage -- it is on -- and the stage
+    // declines, because the bound is the bar. This used to assert `evict_disabled`.
     let shipped = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+    let shipped_eviction = shipped
+        .eviction
+        .as_ref()
+        .expect("the ninth stage ships on, so the shipped round reports it");
+    assert_eq!(
+        shipped_eviction.mode, "index_resident_bound",
+        "the shipped default opened the wide gate rather than the bound: mode={} skipped={:?} \
+         executed={:?}",
+        shipped_eviction.mode, shipped.skipped_stages, shipped.executed_stages
+    );
+    assert_eq!(
+        shipped_eviction.skipped_reason, "index_resident_below_bound",
+        "the shipped default acted on a {KEYS}-record shard under no pressure: reason={:?}",
+        shipped_eviction.skipped_reason
+    );
     assert!(
-        shipped
-            .skipped_stages
-            .iter()
-            .any(|stage| stage == "evict_disabled"),
-        "the shipped default already evicts: skipped={:?} executed={:?}",
-        shipped.skipped_stages,
-        shipped.executed_stages
+        shipped_eviction.selected_victims.is_empty(),
+        "the shipped default took {} victims from a {KEYS}-record shard",
+        shipped_eviction.selected_victims.len()
     );
 
-    // TREATMENT: flip ONLY `enable_evict`, exactly as a "default it on" change would.
+    // TREATMENT: the change that flips ONLY `enable_evict` and leaves the bound at 0, which is
+    // what "default the ninth stage on" means if it is done by itself.
     let would_be_default = StorageManagerOptions {
         enable_evict: true,
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let (pressure, _) = runtime.storage_manager_pressure_snapshot(1, &would_be_default);
@@ -8969,12 +9067,14 @@ fn the_periodic_loop_relieves_index_memory_and_still_serves_every_key() {
     );
 
     // A threshold BELOW the shard's real pressure, and dump-before-evict on -- the two settings
-    // the shipped defaults do not have. This is the configuration the decision above says would
-    // have to become the default before `enable_evict` could.
+    // the shipped defaults do not have. The dump IS now a shipped default; the threshold of 1 is
+    // not, and the shipped BOUND is pinned away because at 64 MiB this 400-key shard declines
+    // under it and releases nothing, which is the opposite of what this test measures.
     let options = StorageManagerOptions {
         enable_evict: true,
         eviction_dump_before_evict: true,
         eviction_memory_pressure_threshold: 1,
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     let report = runtime.run_storage_manager_once(1, options);

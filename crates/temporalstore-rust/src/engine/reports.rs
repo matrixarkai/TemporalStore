@@ -3357,13 +3357,12 @@ pub struct StorageManagerCycleRequest {
     /// Dump and release a shard's resident page lists once THAT SHARD'S OWN index passes this
     /// many bytes. **Zero means no bound**, as it does on every other bound here.
     ///
-    /// GATED ON ITSELF, NOT ON `enable_evict`, and that is the point of it. The eviction stage's
-    /// own gate sums four PROCESS-WIDE cache terms with one per-shard index term, so a ten-key
-    /// shard's gate reads a busy shard's cache -- measured at 99.95% of the signal -- which is why
-    /// `enable_evict` defaults off and should stay off. This bound reads
-    /// `bucket_index_resident_bytes` and nothing else: per-shard, and the only term a release can
-    /// reduce. Making it inherit the wide gate's disabled state would hide a safe trigger behind an
-    /// unsafe one.
+    /// GATED ON ITSELF, NOT ON `enable_evict`, and that is still the point of it even now that
+    /// `enable_evict` defaults on. The stage flag carries a threshold, and the shipped threshold is
+    /// 0 -- "evicts whenever it runs" -- so a trigger that inherited the flag's state would have
+    /// inherited an always-open gate. This bound reads `bucket_index_resident_bytes` and nothing
+    /// else: per-shard, and the only term a release can reduce. On the periodic loop the higher of
+    /// the two bars wins, which is how a non-zero value here closes the gate the flag opens.
     ///
     /// Measured at 40,040 keys on the shipped routing range: the per-key index falls from 223.2 to
     /// 26.6 B/key and the whole resident index from 326.3 to 130.6 B/key, with every read still
@@ -3505,9 +3504,10 @@ impl Default for StorageManagerCycleRequest {
             // every read still answering.
             //
             // It is safe to have ON because of what it reads: this shard's own index bytes and
-            // nothing else. The wide eviction gate is off by default precisely because its signal
-            // is mostly other shards' cache -- 99.95% of it on a ten-key shard -- and that defect
-            // is the one this entry point does not have.
+            // nothing else. The wide eviction gate reads the same quantity now, but it reads it
+            // against a threshold of 0 -- a bar no shard holding a record is under -- so it is
+            // this value, not the flag, that decides when anything is released. Since the periodic
+            // loop defaults both on, the same reasoning carries there and the constant is shared.
             index_resident_limit_bytes: DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
             enable_prepare: true,
             enable_wal_reclaim: true,

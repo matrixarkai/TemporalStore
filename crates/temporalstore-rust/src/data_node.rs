@@ -982,14 +982,27 @@ pub struct StorageManagerOptions {
     pub enable_metrics_reap: bool,
     /// Whether the periodic loop may EVICT, not merely invalidate cached pages.
     ///
-    /// Defaults to FALSE, alone among the stage flags, and that is deliberate. Until this existed
-    /// the eviction machinery -- `apply_storage_eviction`, with dump-before-evict, delete-drop, a
-    /// batch limit and a pressure threshold -- was reachable only from the on-demand cycle, so the
-    /// loop the server actually starts could not evict at ANY setting. This makes it reachable.
+    /// DEFAULTS TO TRUE, with the other eight stage flags, and what changed is not an appetite for
+    /// eviction -- it is that the stage now has a bound to run under. Until this field existed the
+    /// eviction machinery -- `apply_storage_eviction`, with dump-before-evict, delete-drop, a batch
+    /// limit and a pressure threshold -- was reachable only from the on-demand cycle, so the loop
+    /// the server actually starts could not evict at ANY setting. Wiring it made it reachable; this
+    /// default makes it live.
     ///
-    /// Turning it on by default is a production eviction-policy decision and a behaviour change,
-    /// which is why it is opt-in: shipping it default-on would change what every deployment does
-    /// to relieve memory, on no evidence about their workloads.
+    /// WHY ON IS SAFE, AND IT IS NOT THIS FLAG THAT MAKES IT SO. `eviction_memory_pressure_threshold`
+    /// below is still 0, and 0 is documented as "evicts whenever it runs": the wide gate is
+    /// `pressure_before < threshold`, which no shard that has ever held a record can satisfy. On its
+    /// own, therefore, flipping this flag is an ALWAYS-OPEN gate -- every loaded shard releasing
+    /// buckets on every round of
+    /// `start_storage_manager_scheduler_for_all_shards`.
+    /// `the_change_that_moves_only_this_flag_cannot_close_its_gate` measures exactly that.
+    ///
+    /// What makes the shipped pair safe is `index_resident_limit_bytes`, which in the same change
+    /// stops being 0. The loop takes the HIGHER BAR of the two (`runtime_storage.rs`), so a bound of
+    /// 64 MiB over a threshold of 0 means the round that actually runs is
+    /// `apply_index_resident_bound` -- one per-shard quantity, this shard's own resident index --
+    /// and the wide arm is unreachable at the shipped settings. The two defaults are one decision
+    /// and neither should be moved without the other.
     #[serde(default)]
     pub enable_evict: bool,
     /// Bytes above which the evict stage acts. 0 evicts whenever it runs.
@@ -1063,12 +1076,25 @@ pub struct StorageManagerOptions {
     /// to an operator who changed them -- and the drop arm is the one that can lose unflushed
     /// state, which a bound on resident memory has no business taking.
     ///
-    /// DEFAULTS TO 0 HERE, where the cycle request defaults to
-    /// `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`. Deliberately, and not for symmetry's sake: a non-zero
-    /// default would become the higher bar in every fixture that forces the gate open with a
-    /// threshold of 0 or 1, including three round-cost measurements whose run time puts them out of
-    /// reach of a gate -- so the value would be changed in measurements nobody could re-read. The
-    /// number belongs in the same change as the threshold default, against one set of rows.
+    /// DEFAULTS TO `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`, the same value the cycle request has
+    /// always shipped, and in the same change as `enable_evict`. That pairing is the whole point:
+    /// the flag alone is an always-open gate at a threshold of 0, and this is the bar that closes
+    /// it. See `enable_evict` above for the pair.
+    ///
+    /// WHAT THE NUMBER IS DERIVED FROM: 64 MiB of `bucket_index_resident_bytes` for one shard. On
+    /// the shipped `0..1023` routing range the resident index runs about 39 B a key once the bucket
+    /// nodes exist -- the marginal cost, not the ratio at a fixture size, which carries the fixed
+    /// node term and reads several times higher. 64 MiB is therefore crossed somewhere around 1.7 M
+    /// keys in ONE shard. `the_default_bound_is_far_above_any_fixture_and_reached_at_a_known_scale`
+    /// re-derives both from a two-point slope rather than quoting them.
+    ///
+    /// WHICH FIXTURES THIS MOVED, because a non-zero default becomes the higher bar in every
+    /// fixture that forces the gate open at a threshold of 0 or 1. Each such fixture now pins
+    /// `index_resident_limit_bytes: 0` for itself, so it keeps exercising the wide arm it was
+    /// written for; the pins are in `data_node::tests::evict_live` and `data_node::tests::part3`.
+    /// The three round-cost measurements whose run time puts them out of reach of a gate --
+    /// `round_stage_cost`, `round_walk_scope`, `round_backlog_cost` -- build
+    /// `StorageManagerCycleRequest`, not this struct, so they are untouched by this default.
     #[serde(default)]
     pub index_resident_limit_bytes: u64,
     /// How many hot buckets one expire stage may take. 0 means NO LIMIT, which is what this
@@ -1198,16 +1224,24 @@ impl Default for StorageManagerOptions {
             enable_block_compaction: true,
             enable_index_gc: true,
             enable_metrics_reap: true,
-            // Off, unlike every stage above it. See the field doc: this makes eviction REACHABLE
-            // from the periodic loop; enabling it by default is a separate decision.
-            enable_evict: false,
+            // ON, with every stage above it, and the ninth of nine to get there. See the field
+            // doc. This flag and `index_resident_limit_bytes` below are ONE decision: alone, at
+            // the threshold of 0 on the next line, this is an always-open gate, and the bound is
+            // what closes it.
+            enable_evict: true,
+            // STILL 0, and still meaning "evicts whenever it runs" -- but no longer the bar the
+            // shipped round is compared against, because the bound below is higher and the loop
+            // takes the higher of the two. Left at 0 rather than raised because a constant
+            // threshold on this signal is a separate decision with its own evidence, and the bound
+            // is the one that can be derived (`reports.rs`).
             eviction_memory_pressure_threshold: 0,
             // The CYCLE's value, not 0. Both pipelines run the same stages, and where they
             // disagree on a bound the periodic one -- the loop a server actually starts -- was
             // the unbounded side. 0 here was mine (#1467) and I justified it as "preserve current
             // behaviour", which was the weaker reading: the choice was never change-vs-no-change,
             // it was between a considered value that already existed next door and an accidental
-            // one. Only reachable when `enable_evict` is on, which is still off by default.
+            // one. Reached on every shipped round now that the stage is on, where it used to be
+            // reachable only by an operator turning `enable_evict` on by hand.
             eviction_batch_limit: crate::engine::reports::DEFAULT_EVICTION_BATCH_LIMIT,
             // ON, and the one of the two objections to `enable_evict` that measurement settles.
             //
@@ -1221,18 +1255,29 @@ impl Default for StorageManagerOptions {
             // SHIPPED SETTINGS: nothing". Defaulting the dump on is what makes the stage do the
             // thing its name claims when anyone turns it on.
             //
-            // THIS IS INERT TODAY and deliberately so: the flag is read only inside the evict stage,
-            // and `enable_evict` above is still false, so no shipped round's behaviour moves. What
-            // it DOES change is the behaviour an operator gets from setting `enable_evict` on by
-            // hand -- previously a cheap no-op, now a stage that dumps and releases, and costs
-            // accordingly. That is the better of the two, because a flag that silently does nothing
-            // is the worse failure, but it is a change and the PR says so.
+            // NO LONGER INERT. When this was set, `enable_evict` above was still false and no
+            // shipped round's behaviour moved; it changed only what an operator got from turning
+            // the stage on by hand. The stage now ships on, so this is the setting every shipped
+            // round carries -- and it is the half that recovers anything, which is why the stage
+            // being on is worth having.
+            //
+            // It does not reach the arm the shipped default actually takes: `apply_index_resident_bound`
+            // releases with the dump on and the drop off unconditionally. Both match these
+            // defaults, so the shipped round behaves the same either way; this matters to an
+            // operator who lowers the bound below the threshold and lands on the wide arm.
             eviction_dump_before_evict: true,
+            // STAYS OFF, and this is the one default the enablement makes load-bearing rather than
+            // academic: the drop arm DELETES records to reclaim memory. `apply_index_resident_bound`
+            // never takes it, so the shipped round cannot reach it, but a stage that ships on must
+            // not ship pointing at it either.
             eviction_delete_drop: false,
             eviction_count_limit: DEFAULT_EVICTION_COUNT_LIMIT,
-            // 0 = DISABLED, so no existing setting changes behaviour. See the field doc for why
-            // this is not the cycle request's `DEFAULT_INDEX_RESIDENT_LIMIT_BYTES`.
-            index_resident_limit_bytes: 0,
+            // THE CYCLE REQUEST'S VALUE, not 0, and the other half of the `enable_evict` decision
+            // above. 0 meant DISABLED, and with the stage now on, disabled would leave the wide
+            // gate at a threshold of 0 as the only bar -- an always-open gate on every loaded
+            // shard. 64 MiB of this shard's own resident index is roughly 1.7 M keys in one shard;
+            // see the field doc for the derivation and the fixtures it moved.
+            index_resident_limit_bytes: crate::engine::reports::DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
             // 0 = unbounded, the behaviour this loop has always had. See the field docs.
             // Likewise the cycle's values. 0 meant the expire stage walked the WHOLE deadline
             // map, hot and cold, every tick for every loaded shard, which is what #1469 measured

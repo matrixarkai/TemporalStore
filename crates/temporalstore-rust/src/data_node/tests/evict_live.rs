@@ -127,14 +127,24 @@ fn warm_cache_by_reading(engine: &TemporalEngine, shard_id: ShardId, prefix: &st
 /// The configuration a default-on change would ship, so the gates below run that rather than a
 /// hand-tuned neighbour of it.
 ///
-/// NOT the shipped default: this file lands before any default moves, and the threshold here is 1 so
-/// the fixtures' own pressure clears it. A real default needs a threshold the cache alone cannot
-/// clear, which is a separate decision with its own evidence.
+/// NOT the shipped default. `enable_evict` and `eviction_dump_before_evict` have since become the
+/// shipped values, but the threshold here is 1 so the fixtures' own pressure clears it, and the
+/// shipped bound is pinned AWAY so that it does not.
+///
+/// WHY THE BOUND IS PINNED TO 0 HERE AND AT EVERY OTHER FIXTURE IN THIS FILE THAT FORCES THE GATE.
+/// The shipped default is now `index_resident_limit_bytes` = 64 MiB, and the periodic loop takes
+/// the HIGHER of the bound and the threshold. A fixture holding a few thousand keys carries a few
+/// hundred kilobytes of resident index, so at the shipped bound every one of these fixtures would
+/// decline with `index_resident_below_bound` -- and the measurements about the WIDE arm would
+/// silently become measurements of a refusal. Pinning 0 keeps each fixture testing what it was
+/// written to test. The shipped pair has its own gates; see
+/// `the_shipped_default_opens_the_bound_and_never_the_wide_gate`.
 fn proposed_options() -> StorageManagerOptions {
     StorageManagerOptions {
         enable_evict: true,
         eviction_dump_before_evict: true,
         eviction_memory_pressure_threshold: 1,
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     }
 }
@@ -443,6 +453,8 @@ fn what_the_dump_costs_and_which_half_recovers_the_index() {
             enable_evict: true,
             eviction_dump_before_evict: false,
             eviction_memory_pressure_threshold: 1,
+            // PINNED to 0; see `proposed_options`.
+            index_resident_limit_bytes: 0,
             ..StorageManagerOptions::default()
         },
     );
@@ -1030,6 +1042,9 @@ fn the_declining_gate_pays_no_cache_listing() {
         enable_evict: true,
         eviction_dump_before_evict: true,
         eviction_memory_pressure_threshold: closing_threshold,
+        // PINNED to 0; see `proposed_options`. This arm is about the WIDE gate declining, and at
+        // the shipped bound it would decline as the bound instead, which pays a different price.
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
 
@@ -1052,6 +1067,9 @@ fn the_declining_gate_pays_no_cache_listing() {
             enable_evict: true,
             eviction_dump_before_evict: true,
             eviction_memory_pressure_threshold: 0,
+            // PINNED to 0; see `proposed_options`. This arm's whole job is to OPEN the wide gate,
+            // which the shipped bound would close.
+            index_resident_limit_bytes: 0,
             ..StorageManagerOptions::default()
         },
     );
@@ -1165,6 +1183,9 @@ fn the_eviction_loop_settles_below_its_threshold_instead_of_refiring() {
         enable_evict: true,
         eviction_dump_before_evict: true,
         eviction_memory_pressure_threshold: threshold,
+        // PINNED to 0; see `proposed_options`. The convergence this measures is the WIDE gate's --
+        // it stops on `memory_pressure_below_threshold`, a reason the bound's arm never reports.
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
 
@@ -1417,7 +1438,8 @@ fn reads_back_whole(engine: &TemporalEngine, index: usize) -> Result<(), String>
 /// the shipped loop could open it.
 ///
 /// THREE ARMS, BECAUSE "IT FIRED" IS SATISFIED BY A GATE THAT ALWAYS FIRES. `enable_evict` is OFF
-/// in all of them, so nothing here can pass because the wide stage ran:
+/// in all of them -- pinned off, since it now ships on -- so nothing here can pass because the
+/// wide stage ran, and the shipped bound is pinned off too so that arm A really has no bound:
 ///
 ///   A  no bound             -> no eviction report at all, and the round says `evict_disabled`
 ///   B  a bound ABOVE this shard's resident index -> refuses, releasing nothing
@@ -1435,23 +1457,39 @@ fn the_periodic_loop_reaches_the_index_resident_bound() {
     // Cache out of the way, so every byte compared below is index.
     let _ = engine.cache().invalidate_shard(1);
 
-    // REGIME 1: the stage flag is off, so no arm can act through the wide gate.
+    // REGIME 1: the stage flag is off AND the shipped bound is pinned away, so no arm can act
+    // through the wide gate and no arm can act through a bound this test did not set. Both halves
+    // are needed now that the flag and the bound both ship on: without the pin, arm A would get
+    // the shipped 64 MiB bound and run the stage it is asserting does not run.
     let base = StorageManagerOptions {
         enable_evict: false,
+        index_resident_limit_bytes: 0,
         ..StorageManagerOptions::default()
     };
     assert!(
         !base.enable_evict,
         "the arms below are supposed to run with the wide stage off"
     );
-    // REGIME 2: the shipped default sets NO bound, so a loop reaching one is this test's doing and
-    // not something every deployment is already getting.
     assert_eq!(
-        StorageManagerOptions::default().index_resident_limit_bytes,
-        0,
-        "the periodic loop now ships a resident bound. That is a behaviour change for every \
-         deployment and belongs in the same decision as the eviction threshold default -- restate \
-         this test against both rather than deleting the assertion"
+        base.index_resident_limit_bytes, 0,
+        "arm A asserts that no eviction report is produced at all, which needs BOTH gates shut"
+    );
+    // REGIME 2: RESTATED, as the assertion that stood here asked. It read
+    // `StorageManagerOptions::default().index_resident_limit_bytes == 0` and said that a shipped
+    // bound "is a behaviour change for every deployment and belongs in the same decision as the
+    // eviction threshold default". It now ships, in that same decision, so the pin moves from "no
+    // deployment gets a bound" to "the bound a deployment gets is the named constant, and it is
+    // not the one this test's arms use".
+    let shipped_bound = StorageManagerOptions::default().index_resident_limit_bytes;
+    assert_eq!(
+        shipped_bound,
+        crate::engine::reports::DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
+        "the periodic loop's shipped bound has drifted off the named constant"
+    );
+    assert_ne!(
+        shipped_bound, base.index_resident_limit_bytes,
+        "the pin above is no longer pinning anything away from the shipped default, so arms B and \
+         C are no longer this test's doing"
     );
     // REGIME 3: there is a resident index for a bound to be about.
     let resident = engine.bucket_index_resident_bytes(1);
@@ -1941,5 +1979,507 @@ hot, although the scan starts at bucket {lowest_hot}",
             .iter()
             .map(|victim| victim.routing_bucket)
             .collect::<Vec<_>>(),
+    );
+}
+
+/// THE SHIPPED DEFAULT RUNS THE NINTH STAGE AND OPENS THE BOUND, NOT THE WIDE GATE.
+///
+/// This is the gate on the pairing. `enable_evict` ships true and
+/// `eviction_memory_pressure_threshold` ships 0, and 0 is documented as "evicts whenever it runs":
+/// the wide gate is `pressure_before < threshold`, which no shard holding a record satisfies. So
+/// the flag on its own is an always-open release on every loaded shard, every round. What makes it
+/// safe is that `index_resident_limit_bytes` ships at 64 MiB and the loop takes the HIGHER bar, so
+/// the arm the shipped round actually takes is `apply_index_resident_bound`.
+///
+/// TWO ARMS ON TWO FRESHLY SEEDED STORES, because a refusal is also what a fixture that cannot
+/// evict at all reports, and because an arm that has already been cleaned by the other arm's round
+/// would refuse for the wrong reason:
+///
+///   treatment  the SHIPPED defaults, untouched -> the stage RUNS, mode is the bound, 0 released
+///   control    the same with ONLY the bound zeroed -> the wide gate opens and victims are taken
+///
+/// The control is what makes the treatment a finding: it shows this shard WOULD have been evicted
+/// at the shipped threshold, so the refusal is the bound's doing and not the fixture's.
+#[test]
+fn the_shipped_default_opens_the_bound_and_never_the_wide_gate() {
+    const KEYS: usize = 1_000;
+
+    let defaults = StorageManagerOptions::default();
+
+    // --- REGIME, before anything is read out of a round. ---
+    //
+    // R1 the ninth stage is on.
+    assert!(
+        defaults.enable_evict,
+        "enable_evict ships off, so this test is about a configuration nobody gets"
+    );
+    // R2 the bound is the named constant and is not disabled.
+    assert_eq!(
+        defaults.index_resident_limit_bytes,
+        crate::engine::reports::DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
+        "the shipped bound has drifted off the named constant"
+    );
+    assert!(
+        defaults.index_resident_limit_bytes > 0,
+        "the shipped bound is 0, which means DISABLED -- the wide gate at a threshold of 0 is then \
+         the only bar, and it cannot close"
+    );
+    // R3 the bound is the HIGHER bar, which is the comparison `index_bound_is_the_gate` makes.
+    assert!(
+        defaults.index_resident_limit_bytes > defaults.eviction_memory_pressure_threshold,
+        "the shipped bound ({}) is not above the shipped threshold ({}), so the round falls back \
+         on the wide arm",
+        defaults.index_resident_limit_bytes,
+        defaults.eviction_memory_pressure_threshold
+    );
+
+    // --- TREATMENT: the shipped defaults, not one field changed. ---
+    let dir = tempdir().unwrap();
+    let runtime = seeded_runtime(dir.path(), KEYS);
+    let engine = runtime.engine();
+    // Cache out of the way, so the bytes compared are index bytes.
+    let _ = engine.cache().invalidate_shard(1);
+
+    // R4 there is a resident index, and it is UNDER the shipped bound. Asserted rather than
+    // assumed: the conclusion below is "it declines because the shard is under the bound", and
+    // that is a statement about this fixture as much as about the default.
+    let resident_before = engine.bucket_index_resident_bytes(1);
+    assert!(
+        resident_before > 0,
+        "the fixture left no resident index, so there is nothing for a bound to be about"
+    );
+    assert!(
+        resident_before < defaults.index_resident_limit_bytes,
+        "this {KEYS}-key fixture holds {resident_before} B of resident index, which is already at \
+         or over the shipped bound of {} B -- so a refusal here would not be a refusal",
+        defaults.index_resident_limit_bytes
+    );
+
+    let shipped_round = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
+
+    // CONCLUSION 1: the stage RAN. The enablement is the point of the change, and a bound that
+    // works by the stage never running would be the old behaviour under a new name.
+    assert!(
+        shipped_round
+            .executed_stages
+            .iter()
+            .any(|stage| stage == "evict"),
+        "the ninth stage did not run under the shipped defaults: executed={:?} skipped={:?}",
+        shipped_round.executed_stages,
+        shipped_round.skipped_stages
+    );
+    let shipped = shipped_round
+        .eviction
+        .as_ref()
+        .expect("a stage that ran must report");
+
+    // CONCLUSION 2: and the gate it opened is the BOUND, never the wide one.
+    assert_eq!(
+        shipped.mode, "index_resident_bound",
+        "the shipped round opened `{}` -- at the shipped threshold of 0 that gate cannot close, so \
+         this is an unbounded release on every loaded shard",
+        shipped.mode
+    );
+    assert_ne!(
+        shipped.mode, "evict_cache",
+        "the shipped round took the wide cache-eviction arm"
+    );
+    assert_ne!(
+        shipped.mode, "delete_drop",
+        "the shipped round took the arm that DELETES records to reclaim memory"
+    );
+    // AND THE BAR IT PUBLISHES IS THE ONE IT USED, so an operator is not shown the loser.
+    assert_eq!(
+        shipped.memory_pressure_threshold, defaults.index_resident_limit_bytes,
+        "the round published {} as its bar while the bound is {}",
+        shipped.memory_pressure_threshold, defaults.index_resident_limit_bytes
+    );
+
+    // CONCLUSION 3: and it RELEASED NOTHING and DROPPED NOTHING, which is what "bounded" means on
+    // a shard under the bound.
+    assert_eq!(
+        shipped.skipped_reason, "index_resident_below_bound",
+        "the shipped round acted on a {KEYS}-key shard: reason={:?} pressure_before={}",
+        shipped.skipped_reason, shipped.pressure_before
+    );
+    assert_eq!(
+        shipped.bucket_index_buckets_released, 0,
+        "the shipped round released {} buckets from a {KEYS}-key shard",
+        shipped.bucket_index_buckets_released
+    );
+    assert_eq!(
+        shipped.dropped_object_count, 0,
+        "the shipped round deleted {} records",
+        shipped.dropped_object_count
+    );
+    assert!(
+        shipped.selected_victims.is_empty(),
+        "the shipped round chose {} victims",
+        shipped.selected_victims.len()
+    );
+    assert_eq!(
+        engine.bucket_index_resident_bytes(1),
+        resident_before,
+        "the resident index moved under a round that reported releasing nothing"
+    );
+
+    // --- CONTROL: the same defaults with ONLY the bound zeroed, on its OWN fresh store. ---
+    //
+    // This is the configuration a change that flipped the flag alone would have shipped.
+    let control_dir = tempdir().unwrap();
+    let control_runtime = seeded_runtime(control_dir.path(), KEYS);
+    let control_engine = control_runtime.engine();
+    let _ = control_engine.cache().invalidate_shard(1);
+    let control_round = control_runtime.run_storage_manager_once(
+        1,
+        StorageManagerOptions {
+            index_resident_limit_bytes: 0,
+            ..StorageManagerOptions::default()
+        },
+    );
+    let control = control_round
+        .eviction
+        .as_ref()
+        .expect("the stage is enabled in the shipped defaults, so it reports here too");
+    assert_eq!(
+        control.mode, "evict_cache",
+        "zeroing the bound did not fall back on the wide gate: mode={}",
+        control.mode
+    );
+    assert_eq!(
+        control.skipped_reason, "",
+        "the wide gate DECLINED at the shipped threshold of 0, so the treatment's refusal cannot \
+         be attributed to the bound: reason={:?} pressure_before={} threshold={}",
+        control.skipped_reason, control.pressure_before, control.memory_pressure_threshold
+    );
+    assert!(
+        !control.selected_victims.is_empty(),
+        "the wide gate opened and took no victims, so this control cannot show what the bound \
+         prevented"
+    );
+
+    eprintln!(
+        "  [shipped-pair] {KEYS} keys, {resident_before} B resident index against a {} B bound: \
+shipped defaults -> stage RAN, mode={} reason={}, {} released, {} dropped, {} victims. Same \
+defaults with the bound zeroed -> mode={} reason=<open>, {} victims taken.",
+        defaults.index_resident_limit_bytes,
+        shipped.mode,
+        shipped.skipped_reason,
+        shipped.bucket_index_buckets_released,
+        shipped.dropped_object_count,
+        shipped.selected_victims.len(),
+        control.mode,
+        control.selected_victims.len(),
+    );
+}
+
+/// A BOUNDED ROUND AT THE SHIPPED DEFAULTS RELEASES PAGES AND KEEPS EVERY RECORD.
+///
+/// `nothing_acknowledged_is_lost_when_the_bound_releases_and_the_shard_reloads` above proves this
+/// for the bound reached with the stage flag OFF. The flag now ships ON, and that is a different
+/// round: `eviction_dump_before_evict` and `eviction_batch_limit` are read, the stage is counted,
+/// and `run_eviction_stage` loops on the bound rather than running once. So the property is
+/// re-proved on the configuration that actually ships, with ONE field moved -- the bound lowered
+/// under this shard's index, which is what a 1.7-million-key shard reaches on its own.
+///
+/// FOUR THINGS ASSERTED, IN THIS ORDER, because the later ones mean nothing without the earlier:
+///
+///   1  THE ROUND ACTUALLY RELEASED, and it was the BOUND's arm that did it. "Nothing was lost" is
+///      also what a round that did nothing reports.
+///   2  NOTHING WAS DROPPED. `dropped_object_count` counts records DELETED and is incremented only
+///      inside the `delete_drop` branch, which `apply_index_resident_bound` never takes and which
+///      ships off. Asserting it POSITIVE would force this fixture onto the arm that deletes
+///      records, which is the opposite of what is being proved; asserting it ZERO is the other
+///      half of the accounting -- pages went, records stayed.
+///   3  EVERY KEY READS BACK WHOLE, COLD, in both directions: the mismatch list empty AND the
+///      verified count equal to the corpus, so a loop that read nothing cannot pass.
+///   4  AND AGAIN AFTER A RELOAD, on a fresh engine over the same directories and only after the
+///      first is dropped, in both directions again.
+#[test]
+fn the_shipped_defaults_release_pages_and_keep_every_record_when_the_bound_is_crossed() {
+    const KEYS: usize = 1_200;
+    const MAX_ROUNDS: usize = 8;
+
+    let dir = tempdir().unwrap();
+    let (released_total, dropped_total, resident_before, resident_after, mode) = {
+        // `seeded_runtime` asserts every write's status, so every key below is ACKNOWLEDGED.
+        let runtime = seeded_runtime(dir.path(), KEYS);
+        let engine = runtime.engine();
+        let _ = engine.cache().invalidate_shard(1);
+
+        // --- REGIME. ---
+        let defaults = StorageManagerOptions::default();
+        assert!(
+            defaults.enable_evict,
+            "the stage ships off, so this is not the shipped configuration"
+        );
+        let resident_before = engine.bucket_index_resident_bytes(1);
+        assert!(
+            resident_before > 0,
+            "the fixture left no resident index to release"
+        );
+        let limit = resident_before / 2;
+        assert!(
+            limit > 0 && limit < resident_before,
+            "the bound ({limit} B) is not under this shard's resident index ({resident_before} B), \
+             so the round cannot be forced to act"
+        );
+        // AND THE BOUND IS STILL THE HIGHER BAR, so this round takes the bound's arm and not the
+        // wide one. With the shipped threshold of 0 this holds for any non-zero limit; asserted
+        // because the conclusion names the arm.
+        assert!(
+            limit > defaults.eviction_memory_pressure_threshold,
+            "the lowered bound ({limit}) is not above the shipped threshold ({}), so this round \
+             takes the wide arm and proves something else",
+            defaults.eviction_memory_pressure_threshold
+        );
+
+        // THE SHIPPED DEFAULTS WITH EXACTLY ONE FIELD MOVED.
+        let options = StorageManagerOptions {
+            index_resident_limit_bytes: limit,
+            ..StorageManagerOptions::default()
+        };
+
+        let mut released_total = 0usize;
+        let mut dropped_total = 0usize;
+        let mut mode = String::new();
+        for _ in 0..MAX_ROUNDS {
+            let report = runtime.run_storage_manager_once(1, options.clone());
+            if let Some(eviction) = report.eviction.as_ref() {
+                released_total += eviction.bucket_index_buckets_released;
+                dropped_total += eviction.dropped_object_count;
+                mode = eviction.mode.clone();
+            }
+            if released_total > 0 {
+                break;
+            }
+        }
+        let resident_after = engine.bucket_index_resident_bytes(1);
+
+        // --- 1. THE ROUND ACTUALLY RELEASED, THROUGH THE BOUND'S ARM. ---
+        assert_eq!(
+            mode, "index_resident_bound",
+            "the rounds opened `{mode}` rather than the bound, so what follows is not a statement \
+             about the bound"
+        );
+        assert!(
+            released_total > 0,
+            "{MAX_ROUNDS} rounds at a bound of {limit} B over a {resident_before} B index released \
+             no bucket, so nothing below is a statement about eviction"
+        );
+        assert!(
+            resident_after < resident_before,
+            "{released_total} buckets were released and the resident index did not fall \
+             ({resident_before} -> {resident_after})"
+        );
+
+        // --- 2. AND NOTHING WAS DROPPED. ---
+        assert_eq!(
+            dropped_total, 0,
+            "the bound's rounds deleted {dropped_total} records. This arm releases pages; only the \
+             `delete_drop` branch deletes, it ships off, and `apply_index_resident_bound` does not \
+             take it"
+        );
+
+        // --- 3. EVERY KEY READS BACK WHOLE, COLD, BOTH DIRECTIONS. ---
+        let _ = engine.cache().invalidate_shard(1);
+        let mut verified = 0usize;
+        let mut wrong: Vec<String> = Vec::new();
+        for index in 0..KEYS {
+            match reads_back_whole(&engine, index) {
+                Ok(()) => verified += 1,
+                Err(problem) => {
+                    if wrong.len() < 64 {
+                        wrong.push(problem);
+                    }
+                }
+            }
+        }
+        assert!(
+            wrong.is_empty(),
+            "{} of {KEYS} acknowledged keys did not read back after the shipped round released \
+             {released_total} buckets: first few {:?}",
+            wrong.len(),
+            &wrong[..wrong.len().min(5)]
+        );
+        assert_eq!(
+            verified, KEYS,
+            "only {verified} of {KEYS} keys were verified, so the empty mismatch list above is a \
+             loop that did not run rather than a store that answered"
+        );
+
+        // Write the index out while the buckets are released, so the reload comes back from the
+        // state eviction left rather than from one taken before it.
+        engine.flush_shard_index(1);
+        (
+            released_total,
+            dropped_total,
+            resident_before,
+            resident_after,
+            mode,
+        )
+    };
+
+    // --- 4. AND AGAIN AFTER A RELOAD, BOTH DIRECTIONS. ---
+    //
+    // A fresh engine over the same directories, and ONLY after the first one is dropped: two
+    // handles on one directory is its own failure mode and would make this prove something else.
+    let reloaded = TemporalEngine::with_local_dirs(
+        16 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    let response = reloaded.load_shard_with(crate::control::LoadShardRequest {
+        shard_id: 1,
+        table_name: "evict-live".to_string(),
+        shard_uri: "local://evict-live/1".to_string(),
+        start_routing_bucket: 0,
+        end_routing_bucket: SHIPPED_END_BUCKET,
+        readonly: false,
+        load_version: 2,
+        local_node_id: Some(1),
+    });
+    assert!(
+        response.status.ok,
+        "the shard did not come back after the shipped round released {released_total} buckets: \
+         {:?}",
+        response.status
+    );
+    let reloaded_resident = reloaded.bucket_index_resident_bytes(1);
+    assert!(
+        reloaded_resident > 0,
+        "the reloaded shard rebuilt no resident index, so its reads are not going through the \
+         structure eviction released"
+    );
+    let mut verified = 0usize;
+    let mut wrong: Vec<String> = Vec::new();
+    for index in 0..KEYS {
+        match reads_back_whole(&reloaded, index) {
+            Ok(()) => verified += 1,
+            Err(problem) => {
+                if wrong.len() < 64 {
+                    wrong.push(problem);
+                }
+            }
+        }
+    }
+    assert!(
+        wrong.is_empty(),
+        "{} of {KEYS} acknowledged keys did not survive a reload taken after the shipped round \
+         released {released_total} buckets: first few {:?}",
+        wrong.len(),
+        &wrong[..wrong.len().min(5)]
+    );
+    assert_eq!(
+        verified, KEYS,
+        "only {verified} of {KEYS} keys were verified after the reload, so the empty mismatch list \
+         above is a loop that did not run"
+    );
+    eprintln!(
+        "  [shipped-bound-correctness] {KEYS} acknowledged keys, mode={mode}, {released_total} \
+buckets released, {dropped_total} records dropped, resident index {resident_before} -> \
+{resident_after}; all {KEYS} read back cold, and all {KEYS} again after a reload into a \
+{reloaded_resident} B index"
+    );
+}
+
+/// WHAT SCALE THE SHIPPED BOUND IS A BOUND AT, derived from a two-point slope rather than quoted.
+///
+/// A byte figure on its own says nothing about when a bound fires, and the obvious way to get a
+/// per-key figure -- divide one fixture's resident index by its key count -- is the wrong one here.
+/// On the shipped `0..1023` routing range a small shard's resident index is dominated by the FIXED
+/// cost of having bucket nodes at all, so that ratio reads several times the marginal cost and
+/// would put the bound at a key count several times too low. Two sizes and a slope separates the
+/// two terms.
+///
+/// TWO CONCLUSIONS, each from the same pair of measurements and each in its own block:
+///
+///   1  THE SCALE IT FIRES AT. The marginal cost times a key count equals 64 MiB somewhere around
+///      a million and a half keys in ONE shard, which is the claim the field doc makes.
+///   2  AND THAT NO FIXTURE REACHES IT. Projected from the same slope, a shard of 100,000 keys --
+///      five times the largest corpus any fixture in this file seeds -- is still under the bound.
+///      That is the property that lets the bound ship as a default without re-goldening the
+///      suite's eviction measurements, so it is asserted rather than assumed.
+#[test]
+fn the_default_bound_is_far_above_any_fixture_and_reached_at_a_known_scale() {
+    const SMALL: usize = 2_000;
+    const LARGE: usize = 6_000;
+    /// Five times the largest corpus any fixture in this file seeds.
+    const FIXTURE_CEILING: usize = 100_000;
+
+    let limit = crate::engine::reports::DEFAULT_INDEX_RESIDENT_LIMIT_BYTES;
+    assert_eq!(
+        StorageManagerOptions::default().index_resident_limit_bytes,
+        limit,
+        "the periodic loop's bound is not the constant this test derives a scale for"
+    );
+
+    let measure = |keys: usize| -> u64 {
+        let dir = tempdir().unwrap();
+        let runtime = seeded_runtime(dir.path(), keys);
+        let engine = runtime.engine();
+        // Cold, so the number is index and not cache wearing a new label.
+        let _ = engine.cache().invalidate_shard(1);
+        let resident = engine.bucket_index_resident_bytes(1);
+        assert!(resident > 0, "{keys} keys produced no resident index");
+        resident
+    };
+
+    let small = measure(SMALL);
+    let large = measure(LARGE);
+
+    // --- REGIME: the index grows with the corpus, or there is no slope to take. ---
+    assert!(
+        large > small,
+        "the resident index did not grow between {SMALL} keys ({small} B) and {LARGE} keys \
+         ({large} B), so no marginal cost can be derived"
+    );
+    let marginal = (large - small) as f64 / (LARGE - SMALL) as f64;
+    assert!(
+        marginal > 0.0,
+        "the marginal cost came out at {marginal} B/key"
+    );
+    // AND THE RATIO REALLY IS THE MISLEADING ONE, which is why the slope is taken. Asserted so the
+    // prose above is a measured claim rather than an explanation of a choice.
+    let ratio_at_small = small as f64 / SMALL as f64;
+    assert!(
+        ratio_at_small > marginal,
+        "the per-key ratio at {SMALL} keys ({ratio_at_small:.1} B/key) is not above the marginal \
+         cost ({marginal:.1} B/key), so the fixed node term this test is separating out is not \
+         there and the slope buys nothing"
+    );
+
+    // --- CONCLUSION 1: the scale the bound fires at. ---
+    //
+    // Solved from the measured line rather than from the slope alone, so the fixed term is carried
+    // rather than dropped.
+    let keys_at_bound = SMALL as f64 + (limit.saturating_sub(small)) as f64 / marginal;
+    assert!(
+        keys_at_bound > 500_000.0 && keys_at_bound < 10_000_000.0,
+        "the shipped bound of {limit} B is reached at {keys_at_bound:.0} keys in one shard, which \
+         is outside the band this default was chosen in. At the low end it would fire on shards a \
+         deployment really runs; at the high end it is not a bound at all. Re-derive the default."
+    );
+
+    // --- CONCLUSION 2: and no fixture-scale shard reaches it. ---
+    let projected_at_ceiling =
+        small as f64 + marginal * (FIXTURE_CEILING - SMALL) as f64;
+    assert!(
+        projected_at_ceiling < limit as f64,
+        "a {FIXTURE_CEILING}-key shard projects to {projected_at_ceiling:.0} B of resident index, \
+         at or over the shipped bound of {limit} B. Every fixture that forces the evict gate open \
+         would then be refused by the bound instead, and the suite's eviction measurements would \
+         have to be re-derived rather than pinned."
+    );
+
+    eprintln!(
+        "  [bound-scale] resident index {small} B at {SMALL} keys, {large} B at {LARGE} keys \
+=> marginal {marginal:.1} B/key (ratio at {SMALL} keys reads {ratio_at_small:.1} B/key, \
+{:.1}x the marginal, which is the fixed node term). The {limit} B bound is reached at \
+{keys_at_bound:.0} keys in one shard; a {FIXTURE_CEILING}-key shard projects to \
+{projected_at_ceiling:.0} B, {:.1}% of the bound.",
+        ratio_at_small / marginal,
+        projected_at_ceiling / limit as f64 * 100.0,
     );
 }

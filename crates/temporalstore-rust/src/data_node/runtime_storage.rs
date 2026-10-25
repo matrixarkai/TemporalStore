@@ -663,12 +663,15 @@ impl DataNodeRuntime {
         //                           and for the same reason: no `u64` is below 0, so the early
         //                           return is unreachable and the field is a constant `true`.
         //
-        // Neither vacuous term is deleted -- both become real the moment an operator raises the
-        // threshold, which is the only supported way to turn this stage into a goal-seeking loop.
-        // The shipped default keeps `enable_evict` false and the threshold 0 together; see
-        // `data_node.rs`. What is NOT supported is leaning on `still_over` to terminate the loop
-        // while the threshold is 0, because at 0 it cannot terminate anything -- the guard below
-        // pins that, and `eviction_loop_live_stopping_conditions` is its denominator.
+        // Neither vacuous term is deleted, and on the SHIPPED path neither is vacuous any more.
+        // Both vacuity arguments above are about the threshold, and `stage_threshold` below is the
+        // bar the gate actually used: the shipped default pairs `enable_evict: true` with a 64 MiB
+        // `index_resident_limit_bytes`, the bound is the higher bar, so the number these terms are
+        // read against is 64 MiB rather than 0. They are vacuous only on the wide arm, which the
+        // shipped settings cannot reach; see `data_node.rs`. What is NOT supported is leaning on
+        // `still_over` to terminate the loop while the bar in force is 0, because at 0 it cannot
+        // terminate anything -- the guard below pins that, and
+        // `eviction_loop_live_stopping_conditions` is its denominator.
         // WHICH GATE OPENS THE STAGE, and there is exactly one of them.
         //
         // `index_resident_limit_bytes` and `eviction_memory_pressure_threshold` bound the SAME
@@ -800,8 +803,12 @@ impl DataNodeRuntime {
         // ARE the memory relief. Our blanket invalidation is a separate mechanism with no
         // counterpart, so there is no ordering to match, only an input not to destroy.
         //
-        // `enable_evict` ships false, so no default server changes behaviour here. What
-        // changes is that the knob now means something when an operator turns it on.
+        // `enable_evict` now ships TRUE, so this ordering is load-bearing on a default server
+        // rather than only for an operator who turned the stage on. The shipped round opens the
+        // bound rather than the wide gate, and the bound reads `bucket_index_resident_bytes`,
+        // which a cache invalidation does not touch -- but the ordering stays as it is, because
+        // lowering the bound below the threshold lands on the wide arm, whose input this
+        // invalidation would zero.
         if options.enable_memory_reclaim && cache_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
                 shard_id,
@@ -1841,18 +1848,41 @@ mod eviction_loop_terms_tests {
         }
     }
 
-    /// The shipped default really is the vacuous one. If this changes, every claim below about
-    /// what can and cannot fire has to be re-derived, so it is asserted rather than assumed.
+    /// THE THRESHOLD IS STILL THE VACUOUS ONE, AND THE SHIPPED ROUND NO LONGER USES IT.
+    ///
+    /// RESTATED, not re-goldened. This asserted `!options.enable_evict` and read "the threshold of
+    /// 0 is only safe because the stage does not run by default". The stage now runs by default,
+    /// and the thing that makes a threshold of 0 safe is no longer the stage being off -- it is
+    /// that `index_resident_limit_bytes` is the higher bar, so `stage_threshold` in the loop above
+    /// is 64 MiB and not 0. All four claims above are read against whichever bar the gate used.
+    ///
+    /// Three facts, each of which the vacuity reasoning needs, and each pinned separately so a
+    /// later edit to the `Default` impl has to come past the one it breaks.
     #[test]
-    fn shipped_eviction_threshold_is_zero_and_evict_is_off() {
+    fn the_shipped_bar_is_the_bound_and_the_vacuous_threshold_is_not_the_one_in_force() {
         let options = StorageManagerOptions::default();
         assert_eq!(
             options.eviction_memory_pressure_threshold, 0,
             "the vacuity documented at the eviction loop is derived from a threshold of 0",
         );
         assert!(
-            !options.enable_evict,
-            "the threshold of 0 is only safe because the stage does not run by default",
+            options.enable_evict,
+            "enable_evict ships off again; the loop above describes a stage that runs",
+        );
+        // THE BAR IN FORCE. `index_bound_is_the_gate` in the loop above is exactly this
+        // comparison, so asserting it here is asserting that the shipped round takes the bound.
+        assert!(
+            options.index_resident_limit_bytes > options.eviction_memory_pressure_threshold,
+            "the bound ({}) is no longer above the threshold ({}), so the shipped round falls back \
+             on the wide arm, where both terms above ARE vacuous and nothing closes the gate",
+            options.index_resident_limit_bytes,
+            options.eviction_memory_pressure_threshold,
+        );
+        assert_eq!(
+            options.index_resident_limit_bytes,
+            crate::engine::reports::DEFAULT_INDEX_RESIDENT_LIMIT_BYTES,
+            "the periodic loop's bound has drifted off the named constant the cycle request uses, \
+             so the two pipelines no longer agree on it",
         );
     }
 
