@@ -7043,6 +7043,329 @@ mod tests {
         assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
     }
 
+    /// WHAT CURSOR-SAFE CHECKPOINT COLLECTION ACTUALLY RETAINS.
+    ///
+    /// `gc_checkpoints_cursor_safe` carries a published guarantee -- it keeps the newest
+    /// `keep_last` generations AND the generation a persisted consumer cursor still needs -- and
+    /// had no test of any kind. A published guarantee with no test is a claim, not a behaviour.
+    ///
+    /// Four generations, `keep_last = 1`, cursor at 2. That makes the fixture discriminating: the
+    /// generation at index 2 is kept ONLY because the cursor names it, and the generation at
+    /// index 3 -- NEWER than the cursor's -- is deleted. A two-generation fixture could not tell
+    /// "kept because newest" from "kept because a consumer needs it", and would agree with
+    /// whatever it was asked.
+    ///
+    /// Asserted in both directions, because "nothing was lost" is also what a broken fixture
+    /// reports: the generations it dropped have no objects left under their prefix, and the two it
+    /// kept still do and still restore.
+    #[tokio::test]
+    async fn cursor_safe_checkpoint_collection_keeps_the_newest_and_the_cursor_generation() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let (store, replicator) = test_shared_store(dir.path());
+
+        for checkpoint_wal_index in 1..=4u64 {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("checkpoint-{checkpoint_wal_index}"),
+                    value: vec![checkpoint_wal_index as u8],
+                },
+            });
+            replicator
+                .publish_checkpoint(1, checkpoint_wal_index, &primary, &primary.block_store())
+                .await
+                .unwrap();
+        }
+
+        // REGIME FIRST. Everything below is a conclusion about a four-generation shard with a
+        // cursor in the middle of it; if the fixture never got there, the conclusions are vacuous.
+        let before = replicator.list_checkpoints(1).await.unwrap();
+        assert_eq!(
+            before.len(),
+            4,
+            "the fixture did not reach four generations, so nothing below is about a choice"
+        );
+        let generation_ids = before
+            .iter()
+            .map(|manifest| manifest.checkpoint_id.clone())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            before
+                .iter()
+                .map(|manifest| manifest.checkpoint_wal_index)
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3, 4],
+            "the generations are not ordered by the log position they cover"
+        );
+
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_wal_index: 2,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+
+        let report = replicator.gc_checkpoints_cursor_safe(1, 1).await.unwrap();
+
+        // REGIME: it collected. A collection that collected nothing proves nothing.
+        assert_eq!(
+            report.deleted_checkpoints, 2,
+            "collection did not reach the regime it is being asked about"
+        );
+        assert!(
+            report.deleted_checkpoint_objects > 0,
+            "a collection that removed no objects cannot be evidence that collection works"
+        );
+
+        // THE PUBLISHED GUARANTEE, named: the generation the cursor needs is reported as retained
+        // for the cursor, not merely as surviving.
+        assert_eq!(
+            report.retained_for_cursor_wal_index,
+            Some(2),
+            "the report does not say which consumer position it retained for"
+        );
+        assert_eq!(
+            report.retained_for_cursor_checkpoint_id.as_deref(),
+            Some(generation_ids[1].as_str()),
+            "the generation retained for the cursor is not the newest one at or below it"
+        );
+
+        let mut retained = report.retained_checkpoint_ids.clone();
+        retained.sort();
+        let mut expected_retained = vec![generation_ids[1].clone(), generation_ids[3].clone()];
+        expected_retained.sort();
+        assert_eq!(
+            retained, expected_retained,
+            "retention kept a different set than the newest plus the cursor's"
+        );
+
+        // BOTH DIRECTIONS, at the object store rather than at the report. The report is the thing
+        // under test, so it cannot also be the witness.
+        for dropped in [&generation_ids[0], &generation_ids[2]] {
+            let keys = store
+                .list(&format!("cluster-a/shards/1/shared/checkpoints/{dropped}/"))
+                .await
+                .unwrap();
+            assert!(
+                keys.is_empty(),
+                "generation {dropped} was reported deleted but still has {} object(s)",
+                keys.len()
+            );
+        }
+        for kept in [&generation_ids[1], &generation_ids[3]] {
+            let keys = store
+                .list(&format!("cluster-a/shards/1/shared/checkpoints/{kept}/"))
+                .await
+                .unwrap();
+            assert!(
+                keys.iter().any(|key| key.ends_with("/manifest.json")),
+                "generation {kept} was reported retained but its manifest is gone"
+            );
+        }
+
+        // AND IT IS STILL USABLE. A surviving prefix that cannot be restored from is not a
+        // retained generation, it is litter.
+        let follower = test_engine(dir.path(), "restored");
+        let restored = replicator
+            .restore_latest_checkpoint(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        assert_eq!(
+            restored.checkpoint_id, generation_ids[3],
+            "restore did not land on the newest surviving generation"
+        );
+        follower.load_shard(1);
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "checkpoint-4".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![4u8])
+            },
+            "the newest surviving generation does not serve what it covered"
+        );
+    }
+
+    /// A CONSUMER AT ZERO READS AS NO CONSUMER AT ALL.
+    ///
+    /// `load_replay_cursor` answers `last_wal_index: 0` for a shard whose cursor object is ABSENT
+    /// and for a shard whose cursor object EXISTS and has never advanced. Both cursor-safe
+    /// collectors then gate every protection on `last_wal_index > 0`, so the consumer that has
+    /// read nothing -- the one with the most still to read -- gets the protection meant for a
+    /// consumer that does not exist.
+    ///
+    /// This records that hole where it is harmless, to fix the shape of the report. On the
+    /// checkpoint side a generation is a complete state, so dropping older generations while
+    /// `keep_last` survives costs the stuck consumer a resume and nothing else -- asserted here by
+    /// reading back a key written before the oldest dropped generation. The same blind spot on the
+    /// log side is not harmless, because a log prefix is not a complete state.
+    #[tokio::test]
+    async fn a_checkpoint_cursor_that_never_advanced_reads_as_no_cursor_at_all() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        let (_store, replicator) = test_shared_store(dir.path());
+
+        for checkpoint_wal_index in 1..=3u64 {
+            primary.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("stuck-{checkpoint_wal_index}"),
+                    value: vec![checkpoint_wal_index as u8],
+                },
+            });
+            replicator
+                .publish_checkpoint(1, checkpoint_wal_index, &primary, &primary.block_store())
+                .await
+                .unwrap();
+        }
+        assert_eq!(
+            replicator.list_checkpoints(1).await.unwrap().len(),
+            3,
+            "the fixture did not reach the three generations it reasons about"
+        );
+
+        // A consumer that EXISTS and has read nothing. This is a written cursor object, not a
+        // missing one.
+        replicator
+            .save_replay_cursor(&SharedStoreReplayCursor {
+                shard_id: 1,
+                last_wal_index: 0,
+                last_replay_time_ms: now_ms(),
+            })
+            .await
+            .unwrap();
+        assert_eq!(
+            replicator.load_replay_cursor(1).await.unwrap().last_wal_index,
+            0,
+            "the fixture did not persist a cursor that has never advanced"
+        );
+
+        let report = replicator.gc_checkpoints_cursor_safe(1, 1).await.unwrap();
+
+        assert_eq!(
+            report.deleted_checkpoints, 2,
+            "collection did not reach the regime it is being asked about"
+        );
+        assert_eq!(
+            report.retained_for_cursor_wal_index, None,
+            "a persisted consumer at zero should not report as an absent consumer"
+        );
+        assert_eq!(
+            report.retained_for_cursor_checkpoint_id, None,
+            "a persisted consumer at zero should not report as an absent consumer"
+        );
+
+        // The stuck consumer is not stranded: the surviving generation is a complete state and
+        // covers the keys the dropped generations covered.
+        let follower = test_engine(dir.path(), "stuck-consumer");
+        replicator
+            .restore_latest_checkpoint(1, &follower, &follower.block_store())
+            .await
+            .unwrap();
+        follower.load_shard(1);
+        assert_eq!(
+            follower
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet {
+                        key: "stuck-1".to_string()
+                    },
+                })
+                .response,
+            CommandResponse::Bytes {
+                value: Some(vec![1u8])
+            },
+            "the surviving generation does not cover what the dropped ones covered"
+        );
+    }
+
+    /// THE CHECKPOINT REFUSAL CANNOT FIRE.
+    ///
+    /// `CheckpointGcBlockedByReplayCursor` is returned only for a generation at or below the
+    /// cursor when no anchor generation was found. The anchor is the newest generation at or below
+    /// the cursor -- so the condition that reaches the refusal is the same condition that produces
+    /// an anchor, and the refusal is unreachable by construction. What protects a consumer on the
+    /// checkpoint side is RETENTION, not refusal.
+    ///
+    /// Swept over every cursor position the fixture can hold rather than asserted at one, because
+    /// the claim is about all of them. The sweep asserts its own regime: the contested positions
+    /// -- the ones with a generation at or below the cursor -- have to actually occur, or the
+    /// sweep proves nothing about them.
+    #[tokio::test]
+    async fn checkpoint_collection_protects_a_cursor_by_retention_and_never_by_refusal() {
+        let dir = tempfile::tempdir().unwrap();
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+
+        let mut contested_positions = 0usize;
+        for cursor_position in 0..=4u64 {
+            // A fresh object store per position: collection is destructive, so one shared fixture
+            // would make every position after the first a conclusion about a different shard.
+            let (_store, replicator) = test_shared_store(
+                &dir.path().join(format!("sweep-{cursor_position}")),
+            );
+            for checkpoint_wal_index in 1..=3u64 {
+                primary.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("sweep-{cursor_position}-{checkpoint_wal_index}"),
+                        value: vec![checkpoint_wal_index as u8],
+                    },
+                });
+                replicator
+                    .publish_checkpoint(1, checkpoint_wal_index, &primary, &primary.block_store())
+                    .await
+                    .unwrap();
+            }
+            let generations = replicator.list_checkpoints(1).await.unwrap();
+            assert_eq!(
+                generations.len(),
+                3,
+                "position {cursor_position} did not reach three generations"
+            );
+            replicator
+                .save_replay_cursor(&SharedStoreReplayCursor {
+                    shard_id: 1,
+                    last_wal_index: cursor_position,
+                    last_replay_time_ms: now_ms(),
+                })
+                .await
+                .unwrap();
+
+            let report = replicator
+                .gc_checkpoints_cursor_safe(1, 1)
+                .await
+                .unwrap_or_else(|err| {
+                    panic!("cursor position {cursor_position} was refused: {err:?}")
+                });
+
+            let covered = generations
+                .iter()
+                .any(|manifest| manifest.checkpoint_wal_index <= cursor_position);
+            if covered && cursor_position > 0 {
+                contested_positions += 1;
+                assert!(
+                    report.retained_for_cursor_checkpoint_id.is_some(),
+                    "position {cursor_position} has a generation at or below it and retained none for the cursor"
+                );
+            }
+        }
+        assert!(
+            contested_positions >= 3,
+            "the sweep never entered the contested regime: {contested_positions} position(s) had a generation at or below the cursor"
+        );
+    }
+
     #[cfg(feature = "matrixobject")]
     #[tokio::test]
     async fn shared_store_protobuf_append_blob_replays_matrixobject_blob() {
