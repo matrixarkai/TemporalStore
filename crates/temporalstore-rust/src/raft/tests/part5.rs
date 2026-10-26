@@ -755,6 +755,144 @@ fn authenticated_route_accepts_a_binary_append() {
     assert!(parsed.success, "the append must actually be accepted");
 }
 
+/// The majority check is the ONLY thing stopping a cut-off node serving its own frozen bar.
+///
+/// `read_from_replica` decides freshness by comparing this node's indices against
+/// `inner.nodes[inner.leader_id].commit_index` -- a value this process maintains itself, from
+/// what the leader last told it. When the peers go away that value FREEZES, and a frozen bar
+/// that the node already satisfies can never refuse. What actually refuses is the separate
+/// majority check in `read_index`.
+///
+/// That is a single point of failure for a consistency property, so this pins it. The test is
+/// written as two arms so it names what is load-bearing instead of merely passing: with the
+/// majority intact the read is allowed, and when the ONLY thing taken away is the majority --
+/// no index moves -- the read must be refused. It also asserts, in that same state, that
+/// `read_from_replica` on its own still serves, which is the evidence that the bar is not what
+/// is protecting anything.
+///
+/// This is the second instance in this codebase of a node comparing against a value it
+/// maintains itself, with the comparison unable to fail: the first was a restarted replica
+/// whose health check took its own frozen index as the thing to beat, reported `lag: 0`, and
+/// answered that committed keys did not exist. Treat the shape as a pattern, not a one-off.
+#[test]
+fn only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers() {
+    let dir = tempfile::tempdir().unwrap();
+    let cluster =
+        RaftCluster::new_single_shard_with_wal(dir.path(), 1, [1, 2, 3], RaftConfig::default())
+            .unwrap();
+    cluster
+        .propose(Command::StringSet {
+            key: "frozen-bar".to_string(),
+            value: b"v1".to_vec(),
+        })
+        .unwrap();
+
+    let before = cluster.status();
+    let node3 = |status: &RaftClusterStatus| {
+        status
+            .nodes
+            .iter()
+            .find(|n| n.node_id == 3)
+            .expect("node 3 must be in the status")
+            .clone()
+    };
+    let n3_before = node3(&before);
+    // The bar `read_from_replica` uses is the leader's commit index as THIS process holds it.
+    // Everything is caught up, so node 3 already satisfies it -- the bar cannot refuse.
+    assert!(
+        before.has_majority,
+        "the baseline needs a majority, or the arms below are not isolating it: {before:?}"
+    );
+    assert!(
+        n3_before.applied_index >= before.commit_index,
+        "node 3 must be fully applied before the majority is taken away, or a refusal could \
+         come from lag rather than from the majority check: node3={n3_before:?} \
+         cluster_commit={}",
+        before.commit_index
+    );
+
+    // Arm 1 -- majority intact: the read is ALLOWED. Without this the refusal below could be
+    // agreeing with nothing.
+    assert!(
+        cluster.read_index(3).is_ok(),
+        "with a majority, the read index must be granted"
+    );
+    assert_eq!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "frozen-bar".to_string()
+                },
+            )
+            .unwrap(),
+        CommandResponse::Bytes {
+            value: Some(b"v1".to_vec())
+        },
+        "with a majority, node 3 must serve the committed value"
+    );
+
+    // Arm 2 -- take away ONLY the majority. No index moves; the bar stays exactly where it was,
+    // which is what being cut off does to it.
+    cluster.set_alive(1, false).unwrap();
+    cluster.set_alive(2, false).unwrap();
+    let after = cluster.status();
+    let n3_after = node3(&after);
+    assert!(
+        !after.has_majority,
+        "taking two of three voters away must drop the majority: {after:?}"
+    );
+    assert_eq!(
+        (n3_after.commit_index, n3_after.applied_index),
+        (n3_before.commit_index, n3_before.applied_index),
+        "no index may move between the arms, or this test is not isolating the majority check"
+    );
+
+    // The bar on its own does NOT refuse: it is frozen at a value node 3 already satisfies.
+    // This is the finding the guard exists to pin, not an incidental detail.
+    assert!(
+        cluster
+            .read_from_replica(
+                3,
+                Command::StringGet {
+                    key: "frozen-bar".to_string()
+                },
+            )
+            .is_ok(),
+        "the freshness bar is expected NOT to refuse here -- it is a value this node maintains \
+         itself and it froze when the peers went away. If this ever starts refusing, the bar has \
+         become load-bearing and the comment above is stale."
+    );
+
+    // ...and the read index refuses.
+    let before_counts = cluster.read_safety_runtime_state();
+    assert!(
+        matches!(cluster.read_index(3), Err(RaftError::LeaderUnavailable)),
+        "a node that has lost its majority must be refused the read index. Got: {:?}",
+        cluster.read_index(3)
+    );
+
+    // The refusal ALONE does not pin the majority check, and asserting only `is_err()` here was
+    // measured to be worthless: with `has_majority` forced true, this test still PASSED, because
+    // the stale leader lease refuses in the same breath. Two independent maintainers, so a
+    // single-removal plant proves nothing -- "not caught" meant REDUNDANT, not wrong.
+    //
+    // So assert the ATTRIBUTION. The minority counter only moves when the decision was reached
+    // on the majority, which is what makes this guard about `has_majority` rather than about the
+    // node merely saying no.
+    let after_counts = cluster.read_safety_runtime_state();
+    assert!(
+        after_counts.minority_partition_read_rejected
+            > before_counts.minority_partition_read_rejected,
+        "the refusal must be ATTRIBUTED to the lost majority, not merely happen. \
+         minority_partition_read_rejected went {} -> {}. If this is flat while the read still \
+         fails, something else is refusing and the majority check has quietly stopped being \
+         what protects a cut-off node.",
+        before_counts.minority_partition_read_rejected,
+        after_counts.minority_partition_read_rejected
+    );
+}
+
 /// Which peer a request came from must be answerable for BOTH encodings of an append.
 ///
 /// The sibling above fixed the auth wrapper, which failed loudly: a JSON parse over a binary body

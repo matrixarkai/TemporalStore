@@ -1054,8 +1054,16 @@ fn run_rolling_restart_phase(
             elect_leader(active_leader, active_leader_id);
             wait_for_local_catch_up(follower, follower.node_id);
         }
+        // Two separate things, not one. The TIMING bound is the applied index: it is the precise
+        // signal for "this node has caught up", so waiting on it is reliable in a way that
+        // waiting on a value appearing is not -- a value poll that times out cannot say whether
+        // the node was slow or wrong. The CORRECTNESS claim is the value, and it is asserted
+        // rather than inferred from the index: an index says a node applied everything up to a
+        // point, not that it applied it to the right state.
+        let committed = cluster_commit_index(active_leader);
         for node in nodes {
-            reads_after_each_restart.push(wait_for_value(node, node.node_id, &key, &value));
+            wait_for_applied_at_least(node, node.node_id, committed);
+            reads_after_each_restart.push(assert_value(node, node.node_id, &key, &value));
         }
         writes_after_each_restart.push(write);
 
@@ -1530,18 +1538,39 @@ fn bootstrap_external_snapshot(
     let cluster_id = "raft-secondary-harness".to_string();
     let bucket = "raft".to_string();
 
-    let published: PublishExternalSnapshotResponse = post_json_with_options(
-        &leader.addr,
-        "/raft/admin/publish_external_snapshot",
-        &PublishExternalSnapshotRequest {
-            object_root: object_root.display().to_string(),
-            local_root: publish_local_root.display().to_string(),
-            cluster_id: cluster_id.clone(),
-            bucket: bucket.clone(),
-        },
-        request_options(),
-    )
-    .expect("publish external snapshot admin request failed");
+    // This call reaches the leader immediately after a membership change, so it can land while
+    // the group is still settling on who leads -- "leader is not available", which
+    // `is_transient_admin_error` already classifies as a condition that CLEARS. Every other admin
+    // call in this harness retries on it; this one asserted on the first answer, and that is the
+    // whole of the residual 1-in-20 flake. Retrying the enumerated transient is not a wider
+    // timeout: a non-transient failure still fails on the first answer.
+    let mut published: PublishExternalSnapshotResponse = PublishExternalSnapshotResponse {
+        status: Status::error("raft_error", "not attempted"),
+        report: None,
+    };
+    for attempt in 0..200 {
+        published = post_json_with_options(
+            &leader.addr,
+            "/raft/admin/publish_external_snapshot",
+            &PublishExternalSnapshotRequest {
+                object_root: object_root.display().to_string(),
+                local_root: publish_local_root.display().to_string(),
+                cluster_id: cluster_id.clone(),
+                bucket: bucket.clone(),
+            },
+            request_options(),
+        )
+        .expect("publish external snapshot admin request failed");
+        if published.status.ok || !is_transient_admin_error(&published.status) {
+            break;
+        }
+        assert!(
+            attempt < 199,
+            "publish external snapshot stayed transiently unavailable for 200 attempts: {:?}",
+            published.status
+        );
+        thread::sleep(Duration::from_millis(50));
+    }
     assert!(
         published.status.ok,
         "publish external snapshot failed: {:?}",
@@ -1637,6 +1666,71 @@ fn wait_for_value(
         }
         thread::sleep(Duration::from_millis(50));
     }
+}
+
+/// The cluster commit index as this node reports it. Every entry at or below it is committed,
+/// so a replica whose applied index reaches it has applied the write just made.
+fn cluster_commit_index(node: &ProductionRaftNode) -> u64 {
+    let status: RaftClusterStatus =
+        get_json_with_options(&node.addr, "/raft/status", request_options())
+            .expect("status request failed");
+    status.commit_index
+}
+
+/// Wait for a node to have APPLIED everything up to `required`, as that node reports about
+/// itself. This is the timing bound; it says nothing about what was applied.
+///
+/// Bounded by an iteration count rather than only a wall clock, so a stalled box lengthens the
+/// wait instead of turning it into a failure. The message names both indices, because "it did
+/// not catch up" and "it caught up and the state is wrong" need different fixes and a value
+/// poll cannot tell them apart.
+fn wait_for_applied_at_least(node: &ProductionRaftNode, node_id: RaftNodeId, required: u64) {
+    let mut last = None;
+    for _ in 0..600 {
+        let status: RaftClusterStatus =
+            get_json_with_options(&node.addr, "/raft/status", request_options())
+                .expect("status request failed");
+        let applied = status
+            .nodes
+            .iter()
+            .find(|replica| replica.node_id == node_id)
+            .map(|replica| replica.applied_index);
+        if applied.is_some_and(|applied| applied >= required) {
+            return;
+        }
+        last = applied;
+        thread::sleep(Duration::from_millis(50));
+    }
+    panic!(
+        "node {node_id} did not apply up to index {required} within 600 polls; its applied index \
+         was last {last:?}. This is the catch-up bound, not a claim about the value.{}",
+        cluster_wide_status()
+    );
+}
+
+/// Read once and ASSERT the value. The caller has already waited for the node to catch up, so a
+/// wrong or missing value here is a correctness failure, not impatience.
+fn assert_value(
+    node: &ProductionRaftNode,
+    node_id: RaftNodeId,
+    key: &str,
+    expected: &str,
+) -> ReadSummary {
+    let read = read_value(node, node_id, key);
+    assert!(
+        read.status.ok,
+        "node {node_id} refused a read of {key} after it had caught up: {read:?}{}",
+        cluster_wide_status()
+    );
+    assert_eq!(
+        read.value.as_deref(),
+        Some(expected),
+        "node {node_id} had applied everything committed, so it should hold {key}={expected}; it \
+         returned {:?} instead{}",
+        read.value,
+        cluster_wide_status()
+    );
+    read
 }
 
 fn read_value(node: &ProductionRaftNode, node_id: RaftNodeId, key: &str) -> ReadSummary {

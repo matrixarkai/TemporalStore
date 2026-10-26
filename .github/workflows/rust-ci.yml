@@ -138,15 +138,34 @@ jobs:
       # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so a renamed or moved
       # test would turn this gate into a no-op that still reports success. The grep
       # on `1 passed` is what makes the gate real; do not drop it.
-      - name: cargo test (raft peer attribution, hard gate)
+      # Two guards here, not one:
+      #   - the sender attribution, whose silent failure made the chaos harness lie
+      #   - the majority check, which is the ONLY thing refusing a read on a node that has lost
+      #     its peers; the freshness bar beside it is a value the node maintains itself and
+      #     freezes when it is cut off, so it cannot refuse
+      - name: cargo test (raft read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
           set -o pipefail
-          cargo test --release -p temporalstore-rust --lib \
-            raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
-            -- --test-threads=1 2>&1 | tee /tmp/attribution-gate.log
-          grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/attribution-gate.log \
-            || { echo "::error::the attribution gate matched no test, or did not pass exactly one"; exit 1; }
+          # One invocation per guard, because `cargo test` takes a single positional filter and a
+          # second one is silently an error rather than a second filter.
+          for t in \
+            raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \
+            raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
+            # `cargo test` exits 0 when a filter matches NOTHING, so the exit code is not the
+            # gate. Assert the COUNT as well as the result: a rename would otherwise leave this
+            # step green having run nothing at all.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
 
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a
