@@ -1638,3 +1638,12 @@ fn the_measured_amplification_tracks_the_space_amplification_bound() {
     );
     let _ = BTreeSet::<u64>::new();
 }
+
+/// THE OTHER HALF OF THE TRADE: what a recovery reads at each of these budgets.
+///
+/// A child of this module rather than a sibling, because it reuses this one's fixture whole --
+/// the shipped-range engine, the key shapes, the round, the path classification and the
+/// amortised-regime assertion -- so the `a` and `b` it prints beside a recovery figure are the
+/// same numbers this module publishes rather than a second measurement of them.
+#[path = "index_recovery_cost.rs"]
+mod index_recovery_cost;

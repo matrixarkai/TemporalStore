@@ -2546,6 +2546,58 @@ fn indexlog_wal_only_sync() -> bool {
 /// A constant rather than a deployment knob. It is a dimensionless ratio, it is the same at every
 /// size by construction, and the deployment already sets the FLOOR through
 /// `TS_INDEX_DUMP_WAL_GAP_BYTES`.
+///
+/// # WHY 8, AND WHY THE EXPRESSION STAYS A DIVISION OF THE BASE INDEX
+///
+/// Chosen on measurement rather than inherited. `index_write_amplification` drives this divisor
+/// across a sweep and prices the WRITE side; `index_recovery_cost` recovers the same five stores
+/// at the budget's high-water mark -- the worst moment a crash can pick -- and prices the READ
+/// side. At 4,000 objects on the shipped routing range `0..1023`, physical bytes throughout:
+///
+/// ```text
+///   divisor      b        a    index log    base read    WAL read    NAMED read    wall
+///         2  1.3563    3.810      143,669      286,242     763,392     1,193,303  1671 ms
+///         4  1.2125    5.715       61,768      243,537     566,784       872,089   405 ms
+///         8  1.1159    9.658       28,807      223,389     493,056       745,252   252 ms
+///        16  1.0609   17.511       14,409      213,124     468,480       696,013   249 ms
+///        32  1.0347   30.083        7,245      208,503     443,904       659,652   228 ms
+/// ```
+///
+/// The two sides are RECIPROCAL in `b - 1`. `a = b/(b-1)` is about `divisor + 1`, and the index
+/// log a recovery reads is `(b - 1)` times the base index -- read WHOLE, because the default load
+/// path's `latest_slab_catalog` walks every record to find the last one carrying a catalog, and
+/// the piece-name decline buys nothing in a post-sweep state (measured: the sweep has already
+/// dropped every piece the base reflects, so there is no piece left to decline). A looser budget
+/// also dumps less often, which leaves a longer unreflected write-ahead tail, so the replay term
+/// moves with the same threshold -- and that is the one term in a restore that is superlinear in
+/// its own size (`restore_large_scale`: 89% of what a 200,000-record restart reads, 6.70x per
+/// stored record for a 10x store).
+///
+/// So neither direction is free and the sweep identifies no interior optimum on its own -- the two
+/// costs are in different units, one paid continuously and one per restart, and no measurement
+/// fixes the exchange rate between them. What the measurement DOES decide is both ends:
+///
+/// - TIGHTER IS A BAD TRADE. 8 -> 16 costs 81% more bytes written per byte logged (9.658 ->
+///   17.511) and takes 6.6% off what a recovery reads (745,252 -> 696,013 B). The first is paid on
+///   every write for as long as the store is up; the second once per restart.
+/// - LOOSER PAST `b = 2` CANNOT BE EXPRESSED HERE, AND SHOULD NOT BE. `b = 1 + 1/divisor` for
+///   integer `divisor >= 1` confines `b` to `(1, 2]`, so `a >= 2` structurally; reaching
+///   `a <= 1.25` needs `b = 5`, a threshold FOUR TIMES the base index. At the measured 0.1255
+///   share that is a 32-fold increase in both the whole-log read and the unreflected tail -- a
+///   recovery that reads several times the store it is recovering. A multiplier, a rational or a
+///   configured byte value would each reach it; none of them should.
+/// - LOOSER WITHIN REACH IS ARGUABLE AND NOT FORCED. 8 -> 4 buys 41% off `a` for 17% more recovery
+///   read. It is the only move this measurement leaves open, and it would spend the budget on a
+///   read that is currently UNBOUNDED rather than on one that is minimal: the catalog walk needs
+///   one record and reads the whole log for it. Bounding that read is the prerequisite for
+///   revisiting this constant, not a reason to move it first.
+///
+/// AND THAT IS WHY THE FORM STAYS A DIVISION. Every budget the evidence supports lies in
+/// `(1, 2]`, which a division of the base index expresses exactly; a multiplier or a rational
+/// would only widen the reachable range into the region the recovery measurement refuses. A
+/// configured byte value would give up the property every figure above depends on -- the threshold
+/// is a FRACTION of the base index, so `b`, `a` and the recovery's index-log term are the same at
+/// every store size, measured at 0.1290 and 0.1255 of the base index across a 5.2x corpus.
 pub const INDEX_DUMP_BASE_FRACTION_DIVISOR: u64 = 8;
 
 /// The accrual a threshold dump must have to show for itself: the configured floor, raised so a
