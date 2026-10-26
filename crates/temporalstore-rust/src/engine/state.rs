@@ -952,7 +952,7 @@ pub(super) struct CoreIndex {
     /// "unknown" cannot be incremented into a right answer.
     pub(super) object_component_block_refs: Option<usize>,
     /// Buckets whose block list has been released: present in `bucket_map`, `in_memory: false`,
-    /// `page_index` empty, reloadable from the model maps on demand.
+    /// `block_index` empty, reloadable from the model maps on demand.
     ///
     /// A registry rather than a scan, because three hot paths need the answer "is anything
     /// released" in O(1): the per-execute promote reconcile (which would otherwise see a released
@@ -5442,7 +5442,7 @@ pub(super) struct BucketNode {
     /// `release_bucket_blocks` and `reload_released_bucket` in `storage_bucket_internals`.
     ///
     /// A RELEASED bucket is `meta_loaded: true, loading: false, in_memory: false` with an empty
-    /// `page_index` and its `object_index` intact: the node stays in `bucket_map`, so the bucket
+    /// `block_index` and its `object_index` intact: the node stays in `bucket_map`, so the bucket
     /// is still routable, still countable, and still findable -- it simply no longer holds the
     /// per-block entries, which are what the index actually costs (~760 B a record).
     ///
@@ -6015,7 +6015,7 @@ impl BucketNode {
 /// [`PageIndexFromTheEntriesOwnCopies`], which is not reachable from production code.
 fn serialize_bucket_node<S, P>(
     node_ref: &BucketNode,
-    page_index: &P,
+    block_index: &P,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
@@ -6045,7 +6045,7 @@ where
         node.serialize_field("deleted_object_index", &self_.deleted_object_index)?;
         // AT THE BUCKET LEVEL, through `BlockIndexAt`, so the written key is composed where the
         // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
-        node.serialize_field("page_index", page_index)?;
+        node.serialize_field("page_index", block_index)?;
         // THE ELEMENT EACH TOMBSTONE IN THIS BUCKET IS ABOUT, which the entries themselves no
         // longer say. Written LAST so the key is appended to the shape rather than inserted into
         // the middle of it, and `skip_serializing_if` keeps it off every bucket that has never had

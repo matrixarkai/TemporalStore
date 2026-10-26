@@ -8432,7 +8432,7 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
 
 /// Bucket maintenance must not make a write cost more as the store grows.
 ///
-/// `update_bucket_layout` rebuilds a bucket's whole object set from `page_index`, and the
+/// `update_bucket_layout` rebuilds a bucket's whole object set from `block_index`, and the
 /// per-object dirty-state clear walks every bucket in the shard. Both are `O(pages)` and both sit
 /// inside loops, so the write path can be quadratic in the corpus while every individual function
 /// still looks cheap.
@@ -19320,10 +19320,10 @@ fn released_delete(engine: &TemporalEngine, index: usize) {
 
 /// A delete against a RELEASED bucket settles that bucket's object count at the delete.
 ///
-/// Releasing clears `page_index` and KEEPS `object_index` -- the keeping is the only thing that
+/// Releasing clears `block_index` and KEEPS `object_index` -- the keeping is the only thing that
 /// tells a released bucket from one holding nothing, and since the layout classifier was
 /// corrected the object count is also the sole authority for whether a bucket is empty at all.
-/// Both delete paths remove an object by walking `page_index`, which a release has already
+/// Both delete paths remove an object by walking `block_index`, which a release has already
 /// emptied, so a delete arriving while the bucket is released removed the block from the model map
 /// and left the id in the object index: the node went on claiming an object that no longer
 /// existed. `reload_released_bucket` re-derives the set and would settle it, but only whenever a

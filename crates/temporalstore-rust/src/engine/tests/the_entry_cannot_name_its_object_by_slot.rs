@@ -85,7 +85,7 @@
 //! characters have exactly one place to get them, and it is the field being removed:
 //!
 //!   * `BUCKET_NODE_FIELDS` is thirteen names. `object_index` and `deleted_object_index` are bare
-//!     ids. `page_index` is the `BlockIndex` rows. Nothing else on a node carries text.
+//!     ids. `block_index` is the `BlockIndex` rows. Nothing else on a node carries text.
 //!   * The block store does not keep a key with a page; `object_key` appears in `block_store.rs`
 //!     only in prose about routing.
 //!   * The index-log row DOES carry `object_key` as text -- and it is not a fallback, for two
@@ -98,7 +98,7 @@
 //! `the_block_entry_is_the_only_durable_home_of_an_object_keys_characters` drives that, with both
 //! controls: a key that IS in the store must be found (or the scan is vacuous) and a key of the
 //! same shape that is NOT must be found nowhere (or the matcher matches anything). MEASURED: of
-//! the twelve members a stored `BucketNode` writes, the key's characters are in `page_index` and
+//! the twelve members a stored `BucketNode` writes, the key's characters are in `block_index` and
 //! in no other, and `object_index`'s 106 bytes are ids and placeholders only.
 //!
 //! AND IT IS MEASURED ON THE SERIALIZED NODE, NOT ON THE FILE, because of a detector failure worth
@@ -296,7 +296,7 @@ fn an_address() -> ElementEntry {
 /// `size_of_val` over the fields of a real instance cannot drift that way: the term IS the field.
 fn ordinal_entry_field_sum() -> usize {
     let probe = OrdinalEntry {
-        _kind: crate::index_log::IndexItemKind::Page,
+        _kind: crate::index_log::IndexItemKind::Block,
         _routing_bucket: 0,
         _object_ordinal: 0,
         _model_id: StoredModelKind::String,
@@ -317,7 +317,7 @@ fn ordinal_entry_field_sum() -> usize {
 
 fn both_gone_field_sum() -> usize {
     let probe = BothGoneEntry {
-        _kind: crate::index_log::IndexItemKind::Page,
+        _kind: crate::index_log::IndexItemKind::Block,
         _routing_bucket: 0,
         _object_ordinal: 0,
         _model_id: StoredModelKind::String,
@@ -1071,7 +1071,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     assert_eq!(
         vec!["page_index".to_string()],
         carrying,
-        "the key's characters are carried by {carrying:?} rather than by `page_index` alone, so \
+        "the key's characters are carried by {carrying:?} rather than by `block_index` alone, so \
          the page entry is NOT the only member of a stored node that holds them and this ground \
          does not hold"
     );
@@ -1130,7 +1130,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     // dump as well as after, because this fixture's rows are not on disk until the dump writes
     // them. So the claim here is the narrow one that the file supports -- the log on disk does not
     // contain this key -- and the matcher is controlled on both sides: it finds the key in the
-    // `page_index` text above, and finds the never-written key nowhere.
+    // `block_index` text above, and finds the never-written key nowhere.
     // ---------------------------------------------------------------------------------------------
     engine
         .dump_and_reclaim_index_logs_with_min_reclaimable(SHARD, 0)
@@ -1169,7 +1169,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     let block_index_text = serde_json::to_string(
         members
             .get("page_index")
-            .expect("APPARATUS: a stored node has no `page_index` member"),
+            .expect("APPARATUS: a stored node has no `block_index` member"),
     )
     .expect("the page rows serialize");
     let haystack = block_index_text.as_bytes();

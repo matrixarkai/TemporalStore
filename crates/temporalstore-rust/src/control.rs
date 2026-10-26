@@ -270,7 +270,7 @@ pub struct ShardCanonicalStorageStats {
     /// same one `apply_storage_eviction` gates on; it is published here so the heartbeat and the
     /// metrics path can read it without taking the shard lock a second time.
     ///
-    /// O(resident buckets): `page_index.len()` is O(1) per bucket, so this is one walk of the
+    /// O(resident buckets): `block_index.len()` is O(1) per bucket, so this is one walk of the
     /// bucket map and no walk of the pages.
     #[serde(default)]
     pub bucket_index_resident_bytes: u64,

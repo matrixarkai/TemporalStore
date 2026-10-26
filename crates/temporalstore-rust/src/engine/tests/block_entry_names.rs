@@ -1403,7 +1403,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     // TWICE in a stored row, which is why this is two substitutions and not one:
     //
     //   * the entry's own `"component":"f0"` key, which the wire struct no longer declares; and
-    //   * the page_index MAP KEY, `"hash:k:f0:1:9:3:4:4"`. `block_index_written_key` renders the
+    //   * the block_index MAP KEY, `"hash:k:f0:1:9:3:4:4"`. `block_index_written_key` renders the
     //     element name into that key, and it passes `None` now, so the slot between the object key
     //     and the slab id is empty -- the same shape the five string rows in this fixture already
     //     have.
@@ -2154,7 +2154,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
 
     // FIXTURE ONE: the handle OMITTED, which is what a pre-shed writer left on disk.
     let omitted = IndexItem {
-        kind: IndexItemKind::Page,
+        kind: IndexItemKind::Block,
         routing_bucket,
         block_ref_key: String::new(),
         object_key: KEY.into(),
@@ -2167,7 +2167,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
     };
     // FIXTURE TWO: a handle that is not any derivation of anything.
     let nonsense = IndexItem {
-        kind: IndexItemKind::Page,
+        kind: IndexItemKind::Block,
         routing_bucket: wrong_routing_bucket,
         block_ref_key: NOT_A_DERIVATION.to_string(),
         object_key: WRONG_KEY.into(),

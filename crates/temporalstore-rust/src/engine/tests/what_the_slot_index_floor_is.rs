@@ -22,7 +22,7 @@
 //!   * `node/object_index` IS DECLARED `Redundancy` with the pages of its own bucket named as its
 //!     reconstructor, and the reconstruction is asserted on all 1,024 buckets of a corpus in which
 //!     every bucket is resident. A RELEASED bucket is not: `release_bucket_blocks` empties
-//!     `page_index` and KEEPS `object_index`, and production says in as many words that the
+//!     `block_index` and KEEPS `object_index`, and production says in as many words that the
 //!     keeping "is the only thing that tells a released bucket from one legitimately holding
 //!     nothing". So the set has a state in which no page names its members, and a term that cannot
 //!     be rebuilt in a state the engine reaches is not reconstructible -- it is floor. Built here
@@ -496,7 +496,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
 /// [`super::what_the_slot_index_is_made_of`] declares that term `Redundancy` and names "the stable
 /// object id of each page entry in the same bucket" as its reconstructor, and asserts the
 /// reconstruction on all 1,024 buckets. Every bucket in that corpus is RESIDENT. The engine reaches
-/// a state in which a bucket is not: `release_bucket_blocks` empties `page_index` and keeps
+/// a state in which a bucket is not: `release_bucket_blocks` empties `block_index` and keeps
 /// `object_index`, and `settle_released_bucket_object_delete` says in as many words that the
 /// keeping "is the only thing that tells a released bucket from one legitimately holding nothing".
 ///

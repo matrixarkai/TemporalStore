@@ -71,7 +71,7 @@ fn arm_removals() -> ArmedRemovals {
 
 fn item(key: &str) -> IndexItem {
     IndexItem {
-        kind: IndexItemKind::Page,
+        kind: IndexItemKind::Block,
         routing_bucket: 0,
         block_ref_key: key.to_string(),
         object_key: key.into(),

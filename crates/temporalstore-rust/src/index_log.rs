@@ -593,7 +593,7 @@ pub struct IndexLogRecord {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexItemKind {
     #[serde(rename = "page")]
-    Page,
+    Block,
     #[serde(rename = "object")]
     Object,
     #[serde(rename = "meta")]
@@ -602,7 +602,7 @@ pub enum IndexItemKind {
 
 impl Default for IndexItemKind {
     fn default() -> Self {
-        IndexItemKind::Page
+        IndexItemKind::Block
     }
 }
 
@@ -1339,7 +1339,7 @@ where
     S: serde::Serializer,
 {
     serializer.serialize_u64(match value {
-        IndexItemKind::Page => 0,
+        IndexItemKind::Block => 0,
         IndexItemKind::Object => 1,
         IndexItemKind::Meta => 2,
     })
@@ -1360,7 +1360,7 @@ where
 
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<IndexItemKind, E> {
             match value {
-                "page" => Ok(IndexItemKind::Page),
+                "page" => Ok(IndexItemKind::Block),
                 "object" => Ok(IndexItemKind::Object),
                 "meta" => Ok(IndexItemKind::Meta),
                 other => Err(E::custom(format!("unknown item kind {other}"))),
@@ -1373,7 +1373,7 @@ where
 
         fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<IndexItemKind, E> {
             match value {
-                0 => Ok(IndexItemKind::Page),
+                0 => Ok(IndexItemKind::Block),
                 1 => Ok(IndexItemKind::Object),
                 2 => Ok(IndexItemKind::Meta),
                 // Refused rather than defaulted: a kind this cannot name would otherwise arrive as
@@ -4715,7 +4715,7 @@ mod tests {
         let root = dir.path().join("indexlogs");
         let store = LocalIndexLogStore::new(&root);
         let item = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 0,
             block_ref_key: "k".to_string(),
             object_key: "k".into(),
@@ -5006,7 +5006,7 @@ mod tests {
 
     fn block_item(bucket: u32, key: &str, deleted: bool) -> IndexItem {
         IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: bucket,
             block_ref_key: key.to_string(),
             object_key: key.into(),
@@ -6296,7 +6296,7 @@ mod tests {
         // Field names were 65.3% of a measured 859-byte index-log record: they are written once
         // per item, forever, and cost more than the addresses they label.
         let item = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 545210715,
             block_ref_key: "string:m:0::0:0:126:0:0".to_string(),
             object_key: "m:0".into(),
@@ -6531,7 +6531,7 @@ mod tests {
                 address.generation().unwrap_or_default(),
             );
             IndexItem {
-                kind: IndexItemKind::Page,
+                kind: IndexItemKind::Block,
                 routing_bucket: 1024,
                 block_ref_key,
                 object_key: key.into(),
@@ -6588,7 +6588,7 @@ mod tests {
         let store = LocalIndexLogStore::new(dir.path());
         let items: Vec<IndexItem> = (0..32)
             .map(|index| IndexItem {
-                kind: IndexItemKind::Page,
+                kind: IndexItemKind::Block,
                 routing_bucket: 1024,
                 block_ref_key: String::new(),
                 object_key: "ctx:event:41:tenant-7".into(),
@@ -7473,7 +7473,7 @@ mod tests {
         }
 
         let sparse = Sparse {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".to_string(),
@@ -7504,7 +7504,7 @@ mod tests {
 
         // And a full item still round-trips: skipping is about what is written, not what is meant.
         let full = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".into(),
@@ -7589,7 +7589,7 @@ mod tests {
 
         let handle = 17_665_223_918_442_101_733u64;
         let numeric = NumericHandle {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: handle,
             object_key: "tenant/7/object/000000123".to_string(),
@@ -7612,7 +7612,7 @@ mod tests {
 
         // The text shape still reads, and is still what gets written.
         let textual = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: handle.to_string(),
             object_key: "tenant/7/object/000000123".into(),
@@ -7677,7 +7677,7 @@ mod tests {
         let object_id = 12_345_678_901_234_567u64;
         let bucket = 8539u32;
         let build = |address: Option<crate::block_store::ElementEntry>| IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".into(),
@@ -7934,7 +7934,7 @@ mod tests {
         let address =
             crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
         let item = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: "17665223918442101733".to_string(),
             object_key: "tenant/7/object/000000123".into(),
@@ -8074,7 +8074,7 @@ mod tests {
         assert_eq!(832, address.length(), "VACUITY: the fixture address states its length");
 
         let item = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 1024,
             block_ref_key: "k".to_string(),
             object_key: "tenant/1/object/9".into(),
@@ -8315,7 +8315,7 @@ flag exists to say",
         let object_id = 12_345_678_901_234_567u64;
         let bucket = 8539u32;
         let item = |address: Option<crate::block_store::ElementEntry>| IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: bucket,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".into(),
@@ -8360,7 +8360,7 @@ flag exists to say",
     #[ignore]
     fn what_an_index_item_is_made_of() {
         let full = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: 17_665_223_918_442_101_733u64.to_string(),
             object_key: "tenant/7/object/000000123".into(),
@@ -8582,7 +8582,7 @@ flag exists to say",
         let object_key = "tenant/7/object/000000123".to_string();
         let model_id = "string".to_string();
         let mut item = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: block_ref_key_from_parts(
                 &model_id,
@@ -8765,7 +8765,7 @@ flag exists to say",
                         None,
                     );
                     let mut item = IndexItem {
-                        kind: IndexItemKind::Page,
+                        kind: IndexItemKind::Block,
                         routing_bucket: 8539,
                         block_ref_key: block_ref_key_from_parts(
                             &model_id,
@@ -8885,7 +8885,7 @@ flag exists to say",
                         None,
                     );
                     let mut item = IndexItem {
-                        kind: IndexItemKind::Page,
+                        kind: IndexItemKind::Block,
                         routing_bucket: 8539,
                         block_ref_key: block_ref_key_from_parts(
                             &model_id,
@@ -9200,7 +9200,7 @@ flag exists to say",
                         None,
                     );
                     let mut item = IndexItem {
-                        kind: IndexItemKind::Page,
+                        kind: IndexItemKind::Block,
                         routing_bucket: 8539,
                         // `None`, NOT THE LOOP'S OWN NAME. The strip clears the stored handle
                         // only on an exact match against a derivation that passes `None`, so
@@ -10407,7 +10407,7 @@ flag exists to say",
         let shard: ShardId = 1;
         let address = crate::block_store::ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None);
         let item = IndexItem {
-            kind: IndexItemKind::Page,
+            kind: IndexItemKind::Block,
             routing_bucket: 8539,
             block_ref_key: String::new(),
             object_key: "ungated/hash".into(),

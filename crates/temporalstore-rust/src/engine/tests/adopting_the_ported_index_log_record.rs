@@ -442,7 +442,7 @@ fn the_fold_stores_the_rows_object_id_as_a_u64_and_the_truncation_is_not_a_membe
     );
 
     let item = crate::index_log::IndexItem {
-        kind: crate::index_log::IndexItemKind::Page,
+        kind: crate::index_log::IndexItemKind::Block,
         routing_bucket: 7,
         block_ref_key: String::new(),
         object_key: Arc::from(key),
@@ -508,7 +508,7 @@ fn the_fold_stores_the_rows_object_id_as_a_u64_and_the_truncation_is_not_a_membe
 #[test]
 fn the_fold_takes_the_bucket_from_the_row_and_not_from_a_default() {
     let item = crate::index_log::IndexItem {
-        kind: crate::index_log::IndexItemKind::Page,
+        kind: crate::index_log::IndexItemKind::Block,
         routing_bucket: 9,
         block_ref_key: String::new(),
         object_key: Arc::from("the-key"),
@@ -766,7 +766,7 @@ fn the_stamp_this_adoption_was_costed_against() {
 #[test]
 fn an_index_log_row_states_its_shape_only_by_its_slot_count() {
     let item = crate::index_log::IndexItem {
-        kind: crate::index_log::IndexItemKind::Page,
+        kind: crate::index_log::IndexItemKind::Block,
         routing_bucket: 7,
         block_ref_key: String::new(),
         object_key: Arc::from("the-key"),

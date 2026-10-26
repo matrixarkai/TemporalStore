@@ -874,8 +874,8 @@ impl TemporalEngine {
                 // log until it is written to again.
                 bucket.first_dirty_wal_sequence = 0;
                 bucket.first_dirty_index_log_sequence = 0;
-                for page in bucket.block_index.blocks_mut_unaccounted() {
-                    page.dirty = false;
+                for block in bucket.block_index.blocks_mut_unaccounted() {
+                    block.dirty = false;
                 }
             }
         }
@@ -1921,13 +1921,13 @@ impl TemporalEngine {
                 let mut logical_bytes = 0u64;
                 let mut physical_bytes = 0u64;
                 let mut dirty_object_count = 0u64;
-                for page in bucket.block_index.values() {
-                    if page.deleted {
+                for block in bucket.block_index.values() {
+                    if block.deleted {
                         continue;
                     }
-                    logical_bytes = logical_bytes.saturating_add(page.address.length());
-                    physical_bytes = physical_bytes.saturating_add(page.address.length());
-                    if page.dirty {
+                    logical_bytes = logical_bytes.saturating_add(block.address.length());
+                    physical_bytes = physical_bytes.saturating_add(block.address.length());
+                    if block.dirty {
                         dirty_object_count = dirty_object_count.saturating_add(1);
                     }
                 }
@@ -2126,7 +2126,7 @@ impl TemporalEngine {
             // byte estimate added to `physical_bytes`, so it should track the bytes a dump would
             // write, which pages do and distinct objects do not.
             // `the_two_eviction_arms_must_agree_on_what_the_dirty_count_means` is the gate.
-            let dirty_pages_by_bucket: std::collections::HashMap<u32, u64> = {
+            let dirty_blocks_by_bucket: std::collections::HashMap<u32, u64> = {
                 let shards = self.shards.read().expect("engine lock poisoned");
                 shards
                     .get(&shard_id)
@@ -2139,7 +2139,7 @@ impl TemporalEngine {
                                 let dirty = bucket
                                     .block_index
                                     .values()
-                                    .filter(|page| !page.deleted && page.dirty)
+                                    .filter(|block| !block.deleted && block.dirty)
                                     .count() as u64;
                                 (*routing_bucket, dirty)
                             })
@@ -2157,7 +2157,7 @@ impl TemporalEngine {
                     let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
                     // Absent means the bucket holds no node, which holds no dirty page either, so
                     // zero is the answer and not a fallback.
-                    let dirty_pages = dirty_pages_by_bucket
+                    let dirty_blocks = dirty_blocks_by_bucket
                         .get(&summary.routing_bucket)
                         .copied()
                         .unwrap_or(0);
@@ -2168,12 +2168,12 @@ impl TemporalEngine {
                         physical_bytes: summary.physical_bytes,
                         cache_memory_bytes,
                         cache_disk_bytes,
-                        dirty_object_count: dirty_pages,
+                        dirty_object_count: dirty_blocks,
                         weight: cache_memory_bytes
                             .saturating_mul(4)
                             .saturating_add(cache_disk_bytes.saturating_mul(2))
                             .saturating_add(summary.physical_bytes)
-                            .saturating_add(dirty_pages.saturating_mul(1024)),
+                            .saturating_add(dirty_blocks.saturating_mul(1024)),
                         last_touched_ms: recency_by_bucket
                             .get(&summary.routing_bucket)
                             .copied()

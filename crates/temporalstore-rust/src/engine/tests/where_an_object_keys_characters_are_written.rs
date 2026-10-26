@@ -32,13 +32,13 @@
 //!
 //! ```text
 //!     objects/string                                     the model map's key          1.000
-//!     slot_index/bucket_map/*/page_index                 the page entry's map key     1.000
+//!     slot_index/bucket_map/*/block_index                 the page entry's map key     1.000
 //!                                                                                     -----
 //!                                                                                     2.000
 //! ```
 //!
 //! AND IT WAS THREE UNTIL THE THIRD HOME WAS CLOSED, WHICH IS THIS MODULE'S OWN PROPOSAL CLOSING.
-//! The third row was `slot_index/bucket_map/*/page_index/*/object_key`, the page entry's own field,
+//! The third row was `slot_index/bucket_map/*/block_index/*/object_key`, the page entry's own field,
 //! at 1.000 per object. The entry stopped writing it at `SHARD_INDEX_FORMAT_VERSION` 27, when the
 //! decoder began parsing the composite key the page is filed under -- and this module is where the
 //! removal was CONFIRMED to have landed in the place it said the copy lived: the clause asserting
@@ -689,13 +689,13 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     let mut block_name_key_chars = 0usize;
     for node in bucket_map.values() {
         *node_counts.entry(reading.instances_in(node)).or_default() += 1;
-        let page_index = node
+        let block_index = node
             .as_object()
             .expect("a bucket node writes an object")
             .get("page_index")
-            .expect("a bucket node writes `page_index`");
-        let in_whole_map = reading.instances_in(page_index);
-        let blocks = page_index
+            .expect("a bucket node writes `block_index`");
+        let in_whole_map = reading.instances_in(block_index);
+        let blocks = block_index
             .as_object()
             .expect("the page index writes an object");
         let in_values: usize = blocks.values().map(|entry| reading.instances_in(entry)).sum();

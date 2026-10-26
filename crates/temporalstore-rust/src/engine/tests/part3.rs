@@ -2842,7 +2842,7 @@ fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
 // shared-corpus: storage_object_manager_bucketstore_runtime_authority;
 /// The layout label of a bucket holding NO resident pages, asked once per object-count half.
 ///
-/// A released bucket is exactly this shape: release_bucket_blocks empties page_index and keeps
+/// A released bucket is exactly this shape: release_bucket_blocks empties block_index and keeps
 /// object_index, then relabels with a page count of zero. The one-object half answered
 /// single_object; the two-or-more half answered empty -- the same label a bucket holding
 /// nothing gets, and the label a never-classified bucket defaults to. So a released bucket

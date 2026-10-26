@@ -11,7 +11,7 @@ use temporalstore_rust::index_log::{IndexItem, IndexItemKind, LocalIndexLogStore
 
 fn small_item(bucket: u32, key: &str) -> IndexItem {
     IndexItem {
-        kind: IndexItemKind::Page,
+        kind: IndexItemKind::Block,
         routing_bucket: bucket,
         block_ref_key: key.to_string(),
         object_key: key.into(),

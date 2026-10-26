@@ -3574,7 +3574,7 @@ fn default_storage_manager_eviction_threshold() -> u64 {
 ///
 /// `live_block_entries` counts whole-shard live-page entries MATERIALIZED -- an owned entry per
 /// live page, the expensive walk. `bucket_block_index_visits` counts the cheaper-looking
-/// `page_index` passes, which run inside loops over buckets and so cost a product rather than a
+/// `block_index` passes, which run inside loops over buckets and so cost a product rather than a
 /// sum. They are different walks and are reported apart, because a stage can be flat in one and
 /// growing in the other.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]

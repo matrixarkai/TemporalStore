@@ -1002,7 +1002,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     );
 
     let nameless_item = crate::index_log::IndexItem {
-        kind: crate::index_log::IndexItemKind::Page,
+        kind: crate::index_log::IndexItemKind::Block,
         routing_bucket: block_routing_bucket(nameless_key, 0, OPERATOR_END),
         block_ref_key: format!(
             "hash:{nameless_key}::{}:nameless",
@@ -1390,7 +1390,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
     // the claim: the key an entry is filed under is computed from the page, not read off the row.
     let census = |handle: &str| -> Vec<(u32, String, String, u64, u64, u64, bool, u64)> {
         let item = crate::index_log::IndexItem {
-            kind: crate::index_log::IndexItemKind::Page,
+            kind: crate::index_log::IndexItemKind::Block,
             routing_bucket,
             block_ref_key: handle.to_string(),
             object_key: object_key.into(),

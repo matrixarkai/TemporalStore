@@ -211,21 +211,21 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
         &["tenant/1/obj/aaa", "tenant/1/obj/bbb", "tenant/1/obj/ccc"],
     ))
     .expect("a node serializes");
-    let page_index = written
+    let block_index = written
         .get("page_index")
         .and_then(|value| value.as_object())
         .expect("the node writes a page_index object");
 
     assert_eq!(
         4,
-        page_index.len(),
+        block_index.len(),
         "the written page index holds {} entries, not the four filed -- so either the map lost one \
          or two entries collided on one rendered key",
-        page_index.len()
+        block_index.len()
     );
     // THE ORDER IS EXERCISED, which a single-entry fixture could not show: the keys come out
     // ascending by rendered string, not in the hash order the map iterates in.
-    let keys: Vec<&String> = page_index.keys().collect();
+    let keys: Vec<&String> = block_index.keys().collect();
     let mut ascending = keys.clone();
     ascending.sort();
     assert_eq!(ascending, keys, "the written keys are not in ascending order");

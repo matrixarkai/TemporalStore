@@ -341,12 +341,12 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
 
     let encoded =
         serde_json::to_value(&crate::engine::state::NodeNamedBy(&bucket, &["an-object"])).expect("a bucket node serializes");
-    let page_index = encoded
+    let block_index = encoded
         .get("page_index")
         .and_then(serde_json::Value::as_object)
         .expect("a node writes its page index as a map");
-    assert_eq!(page_index.len(), 1, "one page was inserted");
-    let (stored_key, entry) = page_index.iter().next().expect("one entry");
+    assert_eq!(block_index.len(), 1, "one page was inserted");
+    let (stored_key, entry) = block_index.iter().next().expect("one entry");
     let entry = entry
         .as_object()
         .expect("a page entry is written as a map");

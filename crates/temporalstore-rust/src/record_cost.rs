@@ -59,7 +59,7 @@ fn wal_command(index: usize) -> Command {
 
 fn index_item(index: usize) -> IndexItem {
     IndexItem {
-        kind: IndexItemKind::Page,
+        kind: IndexItemKind::Block,
         routing_bucket: (index % 64) as u32,
         block_ref_key: format!("tenant/1/object/{index:08}"),
         object_key: format!("tenant/1/object/{index:08}").into(),

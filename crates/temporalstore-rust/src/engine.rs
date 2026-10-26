@@ -3714,7 +3714,7 @@ fn collect_upsert_index_items(
             address.generation().unwrap_or_default(),
         );
         items.push(crate::index_log::IndexItem {
-            kind: crate::index_log::IndexItemKind::Page,
+            kind: crate::index_log::IndexItemKind::Block,
             routing_bucket,
             block_ref_key,
             object_key: std::sync::Arc::from(object_key.as_str()),
@@ -3829,7 +3829,7 @@ fn collect_command_index_items_for(
                 }
             }
             items.push(crate::index_log::IndexItem {
-                kind: crate::index_log::IndexItemKind::Page,
+                kind: crate::index_log::IndexItemKind::Block,
                 routing_bucket,
                 block_ref_key: block_ref_key.to_string(),
                 // The resident entry already holds these as shared names, so the item

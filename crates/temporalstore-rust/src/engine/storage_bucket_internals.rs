@@ -1160,16 +1160,16 @@ pub fn reset_bucket_index_resident_bytes_visits() {
     BUCKET_INDEX_RESIDENT_BYTES_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Running total of bucket `page_index` entries visited by the bucket-maintenance walks.
+/// Running total of bucket `block_index` entries visited by the bucket-maintenance walks.
 ///
 /// Distinct from [`LIVE_BLOCK_SCAN_ENTRIES`], which counts materialized live-block entries. This
-/// one counts the cheaper-looking `bucket.page_index.values()` passes -- `update_bucket_layout`
+/// one counts the cheaper-looking `bucket.block_index.values()` passes -- `update_bucket_layout`
 /// and the per-object dirty-state clear. Each is `O(pages in the bucket)` and they run inside
 /// loops over buckets, so their cost is a product, not a sum, and does not show up in any single
 /// obvious place.
 static BUCKET_BLOCK_INDEX_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// Bucket `page_index` entries visited since the last reset.
+/// Bucket `block_index` entries visited since the last reset.
 pub fn bucket_block_index_visits() -> u64 {
     BUCKET_BLOCK_INDEX_VISITS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -1201,7 +1201,7 @@ static STAGE_BUCKET_BLOCK_INDEX_VISITS: std::sync::atomic::AtomicU64 =
 ///
 /// A WHOLE-STORE COST NEITHER WALK COUNTER CAN SEE. `serialize_index` encodes the entire served
 /// index for the shard; its cost is the store, and it materialises no live-block entry and visits
-/// no bucket `page_index`, so both counters above read zero across it. It is charged here so the
+/// no bucket `block_index`, so both counters above read zero across it. It is charged here so the
 /// round's own rows account for it -- and so the part of the round that does it OUTSIDE every
 /// stage shows up as a residual instead of as nothing.
 static STAGE_INDEX_ENCODES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -2249,10 +2249,10 @@ pub(super) const RELEASABLE_MODEL_KINDS: [&str; 2] = ["string", "context_node"];
 
 /// Drop a deleted object's id from its RELEASED bucket's object index.
 ///
-/// `release_bucket_blocks` empties `page_index` and KEEPS `object_index`; the keeping is the only
+/// `release_bucket_blocks` empties `block_index` and KEEPS `object_index`; the keeping is the only
 /// thing that tells a released bucket from one legitimately holding nothing, and since
 /// `classify_bucket_layout` was corrected the object count is the sole authority for whether a
-/// bucket is empty at all. Both delete paths remove an object by walking `page_index` -- which a
+/// bucket is empty at all. Both delete paths remove an object by walking `block_index` -- which a
 /// release has already emptied -- so a delete arriving while the bucket is released dropped the
 /// block from the model map and left the id claimed. The node then reported an object that no
 /// longer existed, and reported it as LIVE: the resident path tombstones what it removes in
@@ -2432,7 +2432,7 @@ impl BucketReleaseOutcome {
 /// This is the half that was missing. `evict_cache` drops CACHED BLOCKS and leaves every
 /// `BucketNode` whole, so eviction could free only what the cache held and the index -- the part
 /// that actually grows one entry per record -- was untouchable. Releasing a bucket frees its
-/// `page_index` and its lookup refs while the node, its `object_index` and its durable watermarks
+/// `block_index` and its lookup refs while the node, its `object_index` and its durable watermarks
 /// stay, so the next read through `reload_released_bucket` rebuilds exactly what was dropped.
 ///
 /// Every precondition is CHECKED here, against this shard's live state, rather than assumed from
@@ -5713,7 +5713,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // degraded from 7 ms to 105 ms per message as `corpus^0.96` -- linear per write, quadratic
     // overall.
     //
-    // Only a bucket whose `page_index` actually shrank above can have newly become empty, and
+    // Only a bucket whose `block_index` actually shrank above can have newly become empty, and
     // that set is `touched_buckets`. Buckets the publish loop inserted into gained a block, and
     // buckets this call never opened are unchanged. So the same buckets are removed, without
     // reading the ones that cannot have changed.
@@ -5756,7 +5756,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
 /// The label a bucket wears, from how many objects it holds and how many blocks are resident.
 ///
 /// EMPTY IS ABOUT OBJECTS, NOT BLOCKS. A bucket with no resident blocks is not thereby empty: a
-/// RELEASED bucket is exactly that shape -- `release_bucket_blocks` clears `page_index` and
+/// RELEASED bucket is exactly that shape -- `release_bucket_blocks` clears `block_index` and
 /// deliberately keeps `object_index`, which is the only thing distinguishing a released bucket
 /// from one that genuinely holds nothing -- and a bucket whose blocks live only in the model maps
 /// is still holding every object it held before.

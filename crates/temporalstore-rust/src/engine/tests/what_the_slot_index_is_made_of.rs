@@ -95,7 +95,7 @@
 //! half of the sweep exactly.
 //!
 //! AND THE CLASS OF EVERY TERM IS MEASURED, NEVER READ OFF ITS NAME. `slot_index/bucket_map` is
-//! bucket-keyed and holds one entry per BUCKET; the `page_index` inside each of those holds one
+//! bucket-keyed and holds one entry per BUCKET; the `block_index` inside each of those holds one
 //! entry per PAGE, 7.81 of them per bucket on this range -- so a name-based reading of the
 //! structure under `bucket_map` is wrong by that factor. Every term declares a scale and the sweep
 //! asserts it against the measured instance count at three store sizes: all 50 held, exactly.
@@ -892,7 +892,7 @@ fn address_field_label(name: &str) -> &'static str {
 /// Returns the tally, the page-level subtotal measured independently, and the reconstruction count.
 struct Walked {
     tally: Tally,
-    /// The bytes of every `page_index` VALUE, summed over buckets and measured directly off the
+    /// The bytes of every `block_index` VALUE, summed over buckets and measured directly off the
     /// JSON rather than from the tally. The second, independent identity: a term charged at the
     /// bucket level that belongs at the page level balances the whole and breaks this.
     block_subtree_bytes: usize,
@@ -1014,11 +1014,11 @@ fn walk(reading: &Reading) -> Walked {
         let mut derived_object_ids: std::collections::BTreeSet<u64> =
             std::collections::BTreeSet::new();
 
-        let page_index = node
+        let block_index = node
             .get("page_index")
-            .expect("a bucket node writes `page_index`");
-        block_subtree_bytes += jlen(page_index);
-        let blocks = page_index.as_object().expect("the page index writes an object");
+            .expect("a bucket node writes `block_index`");
+        block_subtree_bytes += jlen(block_index);
+        let blocks = block_index.as_object().expect("the page index writes an object");
         assert!(
             !blocks.is_empty(),
             "[CLAUSE no-empty-page-index] bucket `{bucket_key}` writes an EMPTY page index, and \
@@ -1356,14 +1356,14 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
             .as_object_mut()
             .expect("an object");
         for node in bucket_map.values_mut() {
-            let page_index = node
+            let block_index = node
                 .get("page_index")
                 .expect("page_index")
                 .as_object()
                 .expect("an object")
                 .clone();
-            let mut replacement = serde_json::Map::with_capacity(page_index.len());
-            for (block_key, entry_value) in page_index.iter() {
+            let mut replacement = serde_json::Map::with_capacity(block_index.len());
+            for (block_key, entry_value) in block_index.iter() {
                 let mut entry = entry_value.clone();
                 let fields = entry.as_object_mut().expect("a page entry is an object");
                 let new_key = match candidate {
@@ -1563,7 +1563,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     // ---- IDENTITY TWO: THE PAGE SUBTREE, MEASURED SEPARATELY ----
     //
     // THIS IS THE ONE THAT CATCHES A TERM CHARGED AT THE WRONG LEVEL. `bucket_map` is bucket-keyed
-    // and the `page_index` inside it is page-keyed at 7.81 entries a bucket, so a term moved
+    // and the `block_index` inside it is page-keyed at 7.81 entries a bucket, so a term moved
     // between those two levels is wrong by that factor and the whole still balances.
     let block_level: usize = tally
         .rows
@@ -1772,7 +1772,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
 /// checked against its MEASURED instance count at every size.
 ///
 /// THIS IS WHERE THE CLASSIFICATION IS EARNED. A name-based reading of `slot_index/bucket_map` says
-/// bucket-keyed and is wrong by the bucket occupancy for everything inside its `page_index`. So no
+/// bucket-keyed and is wrong by the bucket occupancy for everything inside its `block_index`. So no
 /// term is classed by its name: a term declared per-page whose instance count is not EXACTLY the
 /// page count fails here, and so does a per-bucket term that is not exactly the bucket count and a
 /// per-shard term that is not exactly one. An earlier probe on this structure reported 3 -> 1 -> 0
@@ -2277,7 +2277,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
 /// It was `the_page_keys_characters_are_not_read_back_by_the_decoder`, and it measured exactly
 /// that: an index whose every page key was replaced by the decimal of the handle the live map files
 /// that page under decoded to the same `slot_index`, BYTE FOR BYTE, as the undoctored one. The
-/// composite key was a name the writer composed and the reader discarded -- `page_index` decoded as
+/// composite key was a name the writer composed and the reader discarded -- `block_index` decoded as
 /// a `BTreeMap<String, StoredBlockEntry>` consumed by `into_values()`.
 ///
 /// That was the measurement the proposal rested on and it is the measurement the proposal ENDED.
