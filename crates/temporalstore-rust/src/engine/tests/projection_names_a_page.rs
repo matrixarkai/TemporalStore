@@ -60,7 +60,7 @@ fn member_bytes(index: usize) -> Vec<u8> {
 fn pages_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut pages = std::collections::BTreeSet::new();
     let mut live = 0usize;
     let mut tombstoned = 0usize;

@@ -287,7 +287,7 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
         // A `g` that is not there at all is not a disagreement -- it is an index written before
         // the field existed. The OLDEST spelling this tree still loads is exactly that shape:
         // `page_segment_id` / `routing_slot` / `page_refs`, a `page_id`, and no generation key
-        // anywhere (`engine::tests::part3::core_index_loads_legacy_bucket_block_field_names` holds
+        // anywhere (`engine::tests::part3::core_index_loads_legacy_bucket_page_field_names` holds
         // those bytes). Such an index has always loaded with NO generation, and it must keep
         // doing so -- deriving one for it would move every key it resolves through. So the
         // presence comes from the wire and only the VALUE is derived.
@@ -477,9 +477,9 @@ pub struct BlockAddress {
 /// `Option<u64>` threaded to the same sites would compile with `None` and lose a block quietly.
 ///
 /// THAT CONSTRAINT IS NOW SATISFIED, AND IT IS WHAT THIS PARAGRAPH USED TO BE WAITING FOR.
-/// `engine::hashing::PageIdentity` is that identity: `read_block_bytes` and `read_block_shared` take
+/// `engine::hashing::BlockIdentity` is that identity: `read_block_bytes` and `read_block_shared` take
 /// one by value instead of recovering an object from `address.object_id()` with `and_then`, and the
-/// type has NO constructor that accepts an id. `PageIdentity::of` takes the shard, the kind and the
+/// type has NO constructor that accepts an id. `BlockIdentity::of` takes the shard, the kind and the
 /// key and derives it, so a caller cannot pass a stale id, an id from somewhere else, or none at all
 /// -- there is no value of that shape to pass. The read path no longer reads this field.
 ///

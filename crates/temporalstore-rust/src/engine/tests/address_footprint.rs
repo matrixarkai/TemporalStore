@@ -2011,7 +2011,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     // used rather than the live-only inversion because this walk reports on DELETED pages too --
     // two of its rows are about zero-length tombstones -- and a tombstone's object is named by
     // the bucket's own removal row, not by the object lookup.
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -2972,7 +2972,7 @@ fn the_derivation_census_reports_a_differing_id_when_one_exists() {
 // =================================================================================================
 // WHAT THE RECOMPUTATION COSTS, AND THE CONTROL THAT SAYS IT IS THE SAME NUMBER
 //
-// The read path takes a `PageIdentity` and derives the object id from the terms rather than reading
+// The read path takes a `BlockIdentity` and derives the object id from the terms rather than reading
 // `address.object_id()`. Two questions follow and neither is answerable by reading the code: what
 // that derivation COSTS, and whether the value it produces is the one the field held.
 // =================================================================================================
@@ -3076,7 +3076,7 @@ fn what_deriving_the_block_identity_costs_at_the_read_path() {
 }
 
 /// RETIRED WITH THE FIELD, for the same reason as the census above: there is no id the address
-/// held. It compared `PageIdentity::of`'s answer against the address's stored id at 0.00% divergence
+/// held. It compared `BlockIdentity::of`'s answer against the address's stored id at 0.00% divergence
 /// and that control is what licensed the read path to stop consulting the field. The read path no
 /// longer consults it and the field no longer exists, so both halves of the comparison are now the
 /// same expression. `shard_carried_identity` is the surviving non-circular control.
@@ -3108,8 +3108,8 @@ fn the_block_identity_has_no_constructor_that_takes_an_id() {
     );
 
     let start = HASHING
-        .find("impl<'a> PageIdentity<'a> {")
-        .expect("the identity's impl block is still spelled `impl<'a> PageIdentity<'a>`");
+        .find("impl<'a> BlockIdentity<'a> {")
+        .expect("the identity's impl block is still spelled `impl<'a> BlockIdentity<'a>`");
     let rest = &HASHING[start..];
     let end = rest
         .find("\n}\n")
@@ -3137,7 +3137,7 @@ fn the_block_identity_has_no_constructor_that_takes_an_id() {
 
     // AND NO OTHER DOOR. `From`/`TryFrom`/`new` would each be a second constructor that the count
     // above cannot see if it is written outside this impl block.
-    for door in ["fn from_object_id", "impl From<u64> for PageIdentity", "fn new(", "fn with_id"] {
+    for door in ["fn from_object_id", "impl From<u64> for BlockIdentity", "fn new(", "fn with_id"] {
         assert!(
             !HASHING.contains(door),
             "hashing.rs now contains {door:?}: an identity that can be built from a value rather \
@@ -3147,8 +3147,8 @@ fn the_block_identity_has_no_constructor_that_takes_an_id() {
 
     // The field is private, so nothing outside this module can construct the struct literally.
     assert!(
-        HASHING.contains("pub(super) struct PageIdentity<'a> {\n    object_id: u64,"),
-        "PageIdentity's object_id is no longer a private field. A `pub` field is a constructor \
+        HASHING.contains("pub(super) struct BlockIdentity<'a> {\n    object_id: u64,"),
+        "BlockIdentity's object_id is no longer a private field. A `pub` field is a constructor \
          with no name on it"
     );
 }

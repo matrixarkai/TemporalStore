@@ -265,7 +265,7 @@ fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> 
     let shard = shards.get(&1).expect("shard is loaded");
     // THE OBJECT A PAGE BELONGS TO COMES FROM THE LOOKUP BESIDE IT, not off the page. The
     // model spelling is still the page's own field and is still read there.
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut entries = 0usize;
@@ -776,7 +776,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     let shard = shards.get(&1).expect("shard is loaded");
     // EVERY PREDICATE BELOW ASKS THE LOOKUP WHICH OBJECT A PAGE BELONGS TO. The page has no
     // answer of its own any more, and the lookup is the structure beside it that does.
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     for (kind, key) in [
@@ -896,7 +896,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
     let today_page_bytes = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
             &shard.bucket_index.object_block_lookup,
         );
         let lengths = shard

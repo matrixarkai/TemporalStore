@@ -190,7 +190,7 @@ fn round_trip_every_page_through_the_wire(
 
 /// Every bucket that holds at least one page, with the object keys it holds, sorted.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         let mut keys: Vec<String> = bucket

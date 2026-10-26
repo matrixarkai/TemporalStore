@@ -121,7 +121,7 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
 fn live_entries(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     shard
         .bucket_index
         .bucket_map

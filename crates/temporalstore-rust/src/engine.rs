@@ -1659,7 +1659,7 @@ impl TemporalEngine {
                                 request.shard_id,
                                 &address,
                                 // A string block IS its whole object, so the element is `None`.
-                                PageIdentity::of(request.shard_id, "string", key, None),
+                                BlockIdentity::of(request.shard_id, "string", key, None),
                                 Some(routing_bucket),
                             ),
                         },
@@ -1679,7 +1679,7 @@ impl TemporalEngine {
                             &self.block_store,
                             request.shard_id,
                             address,
-                            PageIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
+                            BlockIdentity::of(request.shard_id, "hash", key, Some(&field[..])),
                             Some(routing_bucket),
                         )
                         .map(|value| (field.to_string(), value))
@@ -2840,7 +2840,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 ///     compares every page of it field by field against a committed table.
 ///   * AN OLD BINARY READING NEW BYTES IS WHAT THE STAMP IS SPENT ON, and the msgpack container
 ///     refuses on EQUALITY in its header before decoding anything -- so 27 makes that refusal
-///     clean, where without a bump the old binary would reach `StoredPageEntry` and fail on a
+///     clean, where without a bump the old binary would reach `StoredBlockEntry` and fail on a
 ///     missing required field, reporting corruption for a format step.
 ///
 /// So the trade is unusual for this constant: the bump costs every existing store a replay it did
@@ -3750,7 +3750,7 @@ fn collect_command_index_items_for(
     // its own copy, so the source is the object lookup inverted by position -- built ONCE here and
     // queried per page, never built per page. `shard` is held immutably throughout, so there is no
     // borrow to split.
-    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+    let identities = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut items = Vec::new();
@@ -4759,7 +4759,7 @@ fn fold_delta_block_items(
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
             let names = crate::engine::state::page_identities_in(
                 bucket,
-                &crate::engine::state::PageKeysByPosition::from_lookup(
+                &crate::engine::state::BlockKeysByPosition::from_lookup(
                     &bucket_index.object_block_lookup,
                 ),
             );
@@ -4805,7 +4805,7 @@ fn fold_delta_block_items(
         } = &mut *bucket_index;
         // NAMED BEFORE THE MUTATION, for the reason at the upsert arm above. Here the destructure
         // is what lets the inversion be read while the bucket map is held mutably.
-        let identities = crate::engine::state::PageKeysByPosition::from_lookup(object_block_lookup);
+        let identities = crate::engine::state::BlockKeysByPosition::from_lookup(object_block_lookup);
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
             let names = crate::engine::state::page_identities_in(bucket, &identities);
@@ -5845,7 +5845,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::page_identities_in(
             bucket,
-            &crate::engine::state::PageKeysByPosition::from_lookup(
+            &crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
             ),
         );
@@ -6072,7 +6072,7 @@ fn mark_bucket_index_block_deleted_recording(
     let mut tombstone_bucket: Option<u32> = None;
     // Kept for the gated branch at the end, because the ungated `if let` below MOVES `tombstone`
     // out of scope when it builds its tuple.
-    let tombstone_for_the_page_named_arm = tombstone.clone();
+    let tombstone_for_the_block_named_arm = tombstone.clone();
     // THE BUCKET A GATED TOMBSTONE MUST BE FILED IN, read off the object's existing LIVE entry
     // rather than recomputed.
     //
@@ -6091,7 +6091,7 @@ fn mark_bucket_index_block_deleted_recording(
     // exactly the live pages of that object -- `insert_object_block_lookup` returns early on a
     // deleted one -- so the minimum routing bucket among its refs is that same bucket, without a
     // walk over every page in the shard.
-    let tombstone_bucket_for_a_page_named_kind: Option<u32> = shard
+    let tombstone_bucket_for_a_block_named_kind: Option<u32> = shard
         .bucket_index
         .block_refs_for(model_id, key, None)
         .and_then(|block_refs| {
@@ -6133,7 +6133,7 @@ fn mark_bucket_index_block_deleted_recording(
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::page_identities_in(
             bucket,
-            &crate::engine::state::PageKeysByPosition::from_lookup(
+            &crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
             ),
         );
@@ -6303,11 +6303,11 @@ fn mark_bucket_index_block_deleted_recording(
     //
     // AND ONLY WHERE THE OBJECT ACTUALLY HAS AN ENTRY. The invariant the ungated path states just
     // above -- a removal that matched nothing must not file a tombstone, because that would state a
-    // removal that never happened -- is not weakened here: `tombstone_bucket_for_a_page_named_kind` is `None`
+    // removal that never happened -- is not weakened here: `tombstone_bucket_for_a_block_named_kind` is `None`
     // unless the object already holds a live page entry, so a removal against an object the index
     // does not know files nothing.
     if !removed {
-        if let (Some(address), Some(routing_bucket)) = (tombstone_for_the_page_named_arm, tombstone_bucket_for_a_page_named_kind) {
+        if let (Some(address), Some(routing_bucket)) = (tombstone_for_the_block_named_arm, tombstone_bucket_for_a_block_named_kind) {
             // THE TOMBSTONE KEEPS THE ELEMENT'S NAME EVEN THOUGH THE LIVE ENTRY DOES NOT, and the
             // asymmetry is the point rather than an exception.
             //
@@ -6587,8 +6587,8 @@ fn append_value_of_object(
     block_ordinal: u32,
 ) -> Result<ElementEntry, BlockStoreError> {
     // Both arms, and every command that stores a value, reach a slab through here. The payload's
-    // own copies re-tag themselves inside -- the encode as `PageBytes`, the carried copy as
-    // `CarriedPage` -- so what is left under this class is the append machinery and not the bytes.
+    // own copies re-tag themselves inside -- the encode as `BlockBytes`, the carried copy as
+    // `CarriedBlock` -- so what is left under this class is the append machinery and not the bytes.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::SlabAppend, || {
         append_value_inner(
             cache,
@@ -6655,7 +6655,7 @@ fn append_value_inner(
     if let Some(object_id) = object_id {
         block_in_wal::stage(object_id, component, bytes);
     }
-    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::PageBytes, || {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes, || {
         let bytes = bytes.to_vec();
         cache.put_memory_only(
             CacheKey::page_with_slot(
@@ -7317,7 +7317,7 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// with `and_then`, and that was the one `Option` on this path that could lose data rather than
 /// weaken a cache key. The in-log fallbacks below are what serve a block whose only durable copy is
 /// its WAL record; a caller that could not name the object got `None` from the `and_then` and the
-/// read fell through to MISSING for a durably acknowledged write. See [`PageIdentity`] for why the
+/// read fell through to MISSING for a durably acknowledged write. See [`BlockIdentity`] for why the
 /// type takes the shard, the kind and the key rather than an id: there is no value to pass that
 /// could be absent, stale, or from somewhere else.
 ///
@@ -7337,7 +7337,7 @@ fn read_block_frame_bytes(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &ElementEntry,
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     let cache_key = CacheKey::page_with_slot(
@@ -7436,7 +7436,7 @@ fn read_block_frame_bytes(
 ///
 /// This door asks the frame reader for a block and then picks one element out of it. Those are two
 /// questions about the same block -- which object, and which element of it -- and they were two
-/// parameters that happened to be spelled once. A [`PageIdentity`] is the pair: the element the
+/// parameters that happened to be spelled once. A [`BlockIdentity`] is the pair: the element the
 /// frame reader resolves a WAL record by is `identity.component()`, and so is the element selected
 /// out of the bytes, because there is only one place either can come from.
 fn read_block_bytes(
@@ -7444,7 +7444,7 @@ fn read_block_bytes(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &ElementEntry,
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     let bytes = read_block_frame_bytes(
@@ -7468,7 +7468,7 @@ fn read_block_bytes(
         container_pages::ContainerElementRead::Absent
         | container_pages::ContainerElementRead::Removed => None,
         container_pages::ContainerElementRead::Corrupt(_) => {
-            note_corrupt_container_page();
+            note_corrupt_container_block();
             None
         }
     }
@@ -7479,20 +7479,20 @@ fn read_block_bytes(
 /// A counter and not a log line: the one thing a test needs to tell apart is "the element is not in
 /// the block" from "the block could not be read", and #1989 is the recorded case of those two being
 /// the same answer. Counting the second is what lets a guard assert the first happened zero times.
-static CORRUPT_CONTAINER_PAGES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static CORRUPT_CONTAINER_BLOCKS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-fn note_corrupt_container_page() {
-    CORRUPT_CONTAINER_PAGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+fn note_corrupt_container_block() {
+    CORRUPT_CONTAINER_BLOCKS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// How many container pages this process has failed to walk.
 pub fn corrupt_container_page_count() -> u64 {
-    CORRUPT_CONTAINER_PAGES.load(std::sync::atomic::Ordering::Relaxed)
+    CORRUPT_CONTAINER_BLOCKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Forget the count, so a test can measure one exercise rather than the suite before it.
 pub fn reset_corrupt_container_page_count() {
-    CORRUPT_CONTAINER_PAGES.store(0, std::sync::atomic::Ordering::Relaxed);
+    CORRUPT_CONTAINER_BLOCKS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// The block's bytes, shared rather than copied.
@@ -7516,7 +7516,7 @@ fn read_block_shared(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &ElementEntry,
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<std::sync::Arc<[u8]>> {
     let cache_key = CacheKey::page_with_slot(
@@ -7545,7 +7545,7 @@ fn read_block_shared(
             container_pages::ContainerElementRead::Absent
             | container_pages::ContainerElementRead::Removed => None,
             container_pages::ContainerElementRead::Corrupt(_) => {
-                note_corrupt_container_page();
+                note_corrupt_container_block();
                 None
             }
         };

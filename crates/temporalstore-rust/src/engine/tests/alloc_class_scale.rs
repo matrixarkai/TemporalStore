@@ -285,8 +285,8 @@ fn every_alloc_class_has_a_production_scope() {
 fn variant_name(class: crate::alloc_probe::AllocClass) -> &'static str {
     use crate::alloc_probe::AllocClass;
     match class {
-        AllocClass::PageBytes => "PageBytes",
-        AllocClass::CarriedPage => "CarriedPage",
+        AllocClass::BlockBytes => "BlockBytes",
+        AllocClass::CarriedBlock => "CarriedBlock",
         AllocClass::SlabAppend => "SlabAppend",
         AllocClass::BucketIndex => "BucketIndex",
         AllocClass::DirtyObjects => "DirtyObjects",
@@ -321,7 +321,7 @@ fn an_uninstrumented_build_reports_no_classes_rather_than_a_table_of_zeros() {
     // And the scope still runs the work it is given, so a production path wrapped in one behaves
     // identically in the build that does not count.
     let mut sink = 0usize;
-    let out = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::PageBytes, || {
+    let out = crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes, || {
         sink += 1;
         7usize
     });
@@ -347,7 +347,7 @@ fn the_class_probe_recovers_exactly_the_allocations_planted_in_a_class() {
     const EACH: usize = 4096;
 
     let span = ClassSpan::open();
-    crate::alloc_probe::in_class(AllocClass::PageBytes, || {
+    crate::alloc_probe::in_class(AllocClass::BlockBytes, || {
         for _ in 0..PLANTED {
             let sink: Vec<u8> = Vec::with_capacity(EACH);
             assert_eq!(EACH, sink.capacity());
@@ -358,7 +358,7 @@ fn the_class_probe_recovers_exactly_the_allocations_planted_in_a_class() {
         .close()
         .expect("built with `alloc-probe`, so the ledger is a measurement");
 
-    let row = counts.classes.row(AllocClass::PageBytes);
+    let row = counts.classes.row(AllocClass::BlockBytes);
     assert_eq!(
         PLANTED as u64, row.allocs,
         "planted {PLANTED} allocations in one class and the row recovered {}",
@@ -379,7 +379,7 @@ fn the_class_probe_recovers_exactly_the_allocations_planted_in_a_class() {
     // The other rows must not have moved. A scope that leaked into its neighbours would still
     // reconcile against the total, so the total cannot catch this.
     for class in AllocClass::ALL.iter() {
-        if *class == AllocClass::PageBytes {
+        if *class == AllocClass::BlockBytes {
             continue;
         }
         assert_eq!(
@@ -447,7 +447,7 @@ fn a_nested_class_takes_the_allocation_and_gives_the_scope_back() {
     let span = ClassSpan::open();
     crate::alloc_probe::in_class(AllocClass::SlabAppend, || {
         let outer_first: Vec<u8> = Vec::with_capacity(1024);
-        crate::alloc_probe::in_class(AllocClass::CarriedPage, || {
+        crate::alloc_probe::in_class(AllocClass::CarriedBlock, || {
             let inner: Vec<u8> = Vec::with_capacity(2048);
             drop(inner);
         });
@@ -463,12 +463,12 @@ fn a_nested_class_takes_the_allocation_and_gives_the_scope_back() {
     );
     assert_eq!(
         1,
-        counts.classes.row(AllocClass::CarriedPage).allocs,
+        counts.classes.row(AllocClass::CarriedBlock).allocs,
         "the nested class should hold exactly the allocation made inside it"
     );
     assert_eq!(
         2048,
-        counts.classes.row(AllocClass::CarriedPage).alloc_bytes,
+        counts.classes.row(AllocClass::CarriedBlock).alloc_bytes,
         "the nested class should hold exactly the bytes asked for inside it"
     );
 }

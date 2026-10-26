@@ -66,7 +66,7 @@ use std::collections::BTreeMap;
 #[cfg(feature = "alloc-probe")]
 use crate::alloc_probe::Probe;
 
-use crate::engine::state::{BlockIndex, BlockIndexMap, PAGE_LIST_GROWTH_STEP};
+use crate::engine::state::{BlockIndex, BlockIndexMap, BLOCK_LIST_GROWTH_STEP};
 
 /// The end bucket a production shard is loaded with -- `TS_SHARD_END_ROUTING_BUCKET=1023`, THE
 /// OPERATOR'S RANGE and the shipped default since #1973.
@@ -390,7 +390,7 @@ fn grow_list(held: usize, page: &BlockIndex, first_block: usize) -> Vec<(u64, Bl
             let want = if pages.is_empty() {
                 first_block
             } else {
-                (pages.len() + 1).div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP
+                (pages.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP
             };
             pages.reserve_exact(want - pages.len());
         }
@@ -401,7 +401,7 @@ fn grow_list(held: usize, page: &BlockIndex, first_block: usize) -> Vec<(u64, Bl
 
 /// The shipped first block: one whole step of the growth policy.
 fn block_list(held: usize, page: &BlockIndex) -> Vec<(u64, BlockIndex)> {
-    grow_list(held, page, PAGE_LIST_GROWTH_STEP)
+    grow_list(held, page, BLOCK_LIST_GROWTH_STEP)
 }
 
 #[cfg(feature = "alloc-probe")]
@@ -1063,7 +1063,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
 ///
 /// The single-block arm answers a lookup with ONE COMPARISON and one pointer load, and never enters
 /// `find_page` -- boxing the entry did not change that, because the arm still exists. So
-/// `PAGE_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page` that every list lookup goes
+/// `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page` that every list lookup goes
 /// through, reads exactly what it read before this change: a single-block bucket contributes nothing
 /// to it.
 ///
@@ -1560,9 +1560,9 @@ fn mirror_arm<E: Clone>(held: usize, page: &E) -> MirrorShippedArm<E> {
             for entry in 0..held {
                 if pages.len() == pages.capacity() {
                     let want = if pages.is_empty() {
-                        PAGE_LIST_GROWTH_STEP
+                        BLOCK_LIST_GROWTH_STEP
                     } else {
-                        (pages.len() + 1).div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP
+                        (pages.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP
                     };
                     pages.reserve_exact(want - pages.len());
                 }
@@ -1855,7 +1855,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             .map(|held| match *held {
                 0 => 0u64,
                 1 => 1u64,
-                n => (n.div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP) as u64,
+                n => (n.div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP) as u64,
             })
             .sum();
         let pages = census.pages() as u64;

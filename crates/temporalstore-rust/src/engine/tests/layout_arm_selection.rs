@@ -243,7 +243,7 @@ struct Population {
 fn population(engine: &TemporalEngine) -> Population {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut out = Population::default();
     for arm in EVERY_ARM {
         out.arms.insert(arm, (0, 0));
@@ -315,7 +315,7 @@ fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usiz
 fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut out: Vec<Vec<usize>> = Vec::new();
     for node in shard.bucket_index.bucket_map.values() {
         if node.block_index.len() == 0 {

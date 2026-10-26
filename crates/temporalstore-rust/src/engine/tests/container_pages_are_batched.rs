@@ -159,7 +159,7 @@ fn bytes_of(width: usize, index: usize) -> Vec<u8> {
 fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut addresses = BTreeSet::new();
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -349,7 +349,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         // two columns are one measurement and nothing independent could make them disagree.
         //
         // FIVE MUTATIONS WERE DRIVEN LOOKING FOR A SENSITIVITY HERE AND ALL FIVE STAYED GREEN,
-        // listed so the next lane does not repeat them: defeating `emit_one_entry_a_page`'s
+        // listed so the next lane does not repeat them: defeating `emit_one_entry_a_block`'s
         // dedup; dropping the offset term from `block_index_handle`; making every
         // `insert_unaccounted` file a fresh handle; making
         // `sync_bucket_index_object_blocks_with_mode`'s retain keep the object's old entries; and
@@ -915,7 +915,7 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
         let stored_bytes = |kind: &str| -> u64 {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let named = super::PageObjects::of(&shard.bucket_index);
+            let named = super::BlockObjects::of(&shard.bucket_index);
             let mut seen = BTreeSet::new();
             let mut total = 0u64;
             for bucket in shard.bucket_index.bucket_map.values() {

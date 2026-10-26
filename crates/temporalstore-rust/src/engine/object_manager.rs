@@ -155,18 +155,18 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !page.deleted {
                 live_block_ref_count = live_block_ref_count.saturating_add(1);
             }
-            let page_object_id = page.object_id(shard_id, object_key);
-            object_ids.insert(page_object_id);
-            *object_ref_counts.entry(page_object_id).or_default() += 1;
+            let block_object_id = page.object_id(shard_id, object_key);
+            object_ids.insert(block_object_id);
+            *object_ref_counts.entry(block_object_id).or_default() += 1;
             // `missing_object_owner_refs` STOOD HERE AND HAS BEEN RETIRED, not zeroed. It counted
             // blocks whose address named an object other than the entry's -- a real comparison of
             // two stored copies while there were two. There is one source now, so the test could
             // only compare a value with itself, and a counter that is structurally zero reports
             // "no problems" indistinguishably from a counter that works.
             let object = objects
-                .entry(page_object_id)
+                .entry(block_object_id)
                 .or_insert_with(|| ObjectRuntimeState {
-                    object_id: page_object_id,
+                    object_id: block_object_id,
                     routing_bucket: bucket.routing_bucket,
                     object_keys: Vec::new(),
                     model_ids: Vec::new(),
@@ -194,7 +194,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             // The FIELD did, and it is reported beside the residency that contradicts it.
             // `a_removed_member_does_not_make_its_object_deleted` drives both.
             let object_deleted =
-                bucket.deleted() || bucket.deleted_object_index.contains(&page_object_id);
+                bucket.deleted() || bucket.deleted_object_index.contains(&block_object_id);
             object.deleted |= object_deleted;
             if page.deleted || object_deleted {
                 object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);

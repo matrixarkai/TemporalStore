@@ -6,8 +6,8 @@
 //! # WHY THIS IS DRIVEN RATHER THAN BUILT
 //!
 //! Deletion as a property of the element in the payload is already implemented:
-//! `CONTAINER_PAGE_MAGIC_V2` writes a `TAG_REMOVED` item per removed element, and
-//! `ContainerPageItem::deleted` carries it. The module says why in the place a reader would look --
+//! `CONTAINER_BLOCK_MAGIC_V2` writes a `TAG_REMOVED` item per removed element, and
+//! `ContainerBlockItem::deleted` carries it. The module says why in the place a reader would look --
 //! "a removal has to be a WRITTEN ITEM rather than an absence, because a page is never rewritten by
 //! the removal path" -- and records the failure it closed: twelve members folded onto one page, one
 //! removed, the index naming eleven and the page holding twelve, so a membership derived from pages
@@ -98,7 +98,7 @@ fn components_the_blocks_state(
 ) -> std::collections::BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -110,7 +110,7 @@ fn components_the_blocks_state(
             let Ok(bytes) = engine.block_store.read(&page.address) else {
                 continue;
             };
-            if let crate::engine::container_pages::ContainerPageDecode::Framed {
+            if let crate::engine::container_pages::ContainerBlockDecode::Framed {
                 spelling,
                 items,
                 ..
@@ -138,7 +138,7 @@ fn components_the_blocks_state(
 fn entry_counts(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {

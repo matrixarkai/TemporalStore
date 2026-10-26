@@ -90,7 +90,7 @@ fn members_of(engine: &TemporalEngine) -> BTreeSet<Vec<u8>> {
 fn entry_counts(engine: &TemporalEngine) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {

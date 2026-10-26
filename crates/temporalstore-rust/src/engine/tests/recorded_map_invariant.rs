@@ -230,12 +230,12 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "values",
         "iter",
         "entries",
-        // A READ, AND IT CANNOT MUTATE A MAP. `page_an_element_vacates` takes `&self` and returns a
+        // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the page an element is moving off, which the
         // filer needs because an index entry no longer names its element. There is no `&mut` on it
         // and nothing it returns can be written through, so it is on the same footing as the reads
         // above rather than on the exception list below.
-        "page_an_element_vacates",
+        "block_an_element_vacates",
         // The five shared exceptions.
         "from_decoded",
         "reconcile_from_durable",

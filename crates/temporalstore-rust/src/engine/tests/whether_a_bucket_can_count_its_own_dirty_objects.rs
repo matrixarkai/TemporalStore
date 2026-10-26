@@ -21,7 +21,7 @@
 //!
 //! A COUNT OF DIRTY PAGES IS NOT A COUNT OF DIRTY OBJECTS, so the derived figure counts DISTINCT
 //! objects having at least one dirty page in the bucket -- identity taken from
-//! `PageKeysByPosition`, which is how a production derivation would have to take it, because a page
+//! `BlockKeysByPosition`, which is how a production derivation would have to take it, because a page
 //! entry holds no identity of its own. The fixture is built so a page count and an object count are
 //! DIFFERENT NUMBERS; otherwise this could not tell a correct derivation from a page tally.
 //!

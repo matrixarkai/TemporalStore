@@ -101,7 +101,7 @@ fn write(engine: &TemporalEngine, command: Command) {
 fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut addresses = Vec::new();
     let mut live = 0usize;
     let mut tombstoned = 0usize;
@@ -136,7 +136,7 @@ fn components_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String
         let Ok(bytes) = engine.block_store.read(address) else {
             continue;
         };
-        if let crate::engine::container_pages::ContainerPageDecode::Framed {
+        if let crate::engine::container_pages::ContainerBlockDecode::Framed {
             spelling, items, ..
         } = crate::engine::container_pages::decode_container_page(&bytes)
         {

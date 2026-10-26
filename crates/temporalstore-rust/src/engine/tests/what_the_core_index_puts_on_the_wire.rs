@@ -739,7 +739,7 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
     // with no other symptom: everything still compiles, the round trip above still passes, because
     // a round trip only ever writes the CURRENT spelling and reads it back.
     //
-    // `core_index_loads_legacy_bucket_block_field_names` does cover this today. Relying on it means
+    // `core_index_loads_legacy_bucket_page_field_names` does cover this today. Relying on it means
     // the guard that sits beside the impl does not assert the thing the impl is most likely to
     // break, so the coverage is restated here where the destructuring and the key set already are.
     //

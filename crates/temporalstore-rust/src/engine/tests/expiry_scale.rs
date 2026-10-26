@@ -1190,7 +1190,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     /// Pages the index holds for one object key, across every bucket. The page half of the
     /// removal, which the key-state blobs say nothing about.
     fn blocks_for(state: &ShardState, key: &str) -> usize {
-        let named = super::PageObjects::of(&state.bucket_index);
+        let named = super::BlockObjects::of(&state.bucket_index);
         state
             .bucket_index
             .bucket_map

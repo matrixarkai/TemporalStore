@@ -49,7 +49,7 @@
 //!
 //! # THE READ PATH IS COUNTED, NOT TIMED
 //!
-//! `PAGE_LOOKUP_ENTRIES_EXAMINED` counts the entries the shipped bisection touches, incremented
+//! `BLOCK_LOOKUP_ENTRIES_EXAMINED` counts the entries the shipped bisection touches, incremented
 //! inside `find_page`, the one door every `Many`-arm lookup goes through. A deeper fill means a
 //! longer list means more probes, and that is the read-path price of the fill. It is a count, so
 //! it does not move with the load on the box.
@@ -590,7 +590,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
 /// WHAT MORE BLOCKS A BUCKET COSTS THE READ PATH, AS ENTRIES EXAMINED PER LOOKUP.
 ///
 /// COUNTED, NOT TIMED. A timing-ratio instrument in this campaign read 485x idle against 11x busy
-/// off identical code. `PAGE_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page` -- the one
+/// off identical code. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page` -- the one
 /// door every `Many`-arm lookup goes through -- so this counts the entries the shipped bisection
 /// actually touched on the production path.
 ///

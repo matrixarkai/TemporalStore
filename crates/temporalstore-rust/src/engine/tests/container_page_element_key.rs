@@ -65,7 +65,7 @@ use super::*;
 use crate::engine::container_pages::{
     component_from_element_key, decode_container_page, element_key_from_component,
     encode_container_page, select_container_element, varint_len, ContainerElementRead,
-    ContainerPageDecode, ContainerPageItem, ElementKeySpelling, CONTAINER_PAGE_MAGIC,
+    ContainerBlockDecode, ContainerBlockItem, ElementKeySpelling, CONTAINER_BLOCK_MAGIC,
 };
 
 /// Every spelling, so a test over "all of them" cannot silently stop covering one that is added.
@@ -428,27 +428,27 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
             ],
         );
         match decode_container_page(&page) {
-            ContainerPageDecode::Framed {
+            ContainerBlockDecode::Framed {
                 spelling: seen,
                 shape,
                 items,
             } => {
                 assert_eq!(spelling, seen, "the frame reports the spelling it was written with");
                 assert_eq!(
-                    crate::engine::container_pages::ContainerPageShape::WithRemovals,
+                    crate::engine::container_pages::ContainerBlockShape::WithRemovals,
                     shape,
                     "a page written today takes the shape that CAN say an element was removed, \
-                     whether or not this one does -- see CONTAINER_PAGE_MAGIC_V2 on why there is \
+                     whether or not this one does -- see CONTAINER_BLOCK_MAGIC_V2 on why there is \
                      one writer and not a branch on the contents"
                 );
                 assert_eq!(
                     vec![
-                        ContainerPageItem {
+                        ContainerBlockItem {
                             key: first_key.clone(),
                             value: first_value.clone(),
                             deleted: false
                         },
-                        ContainerPageItem {
+                        ContainerBlockItem {
                             key: second_key.clone(),
                             value: second_value.clone(),
                             deleted: false
@@ -622,7 +622,7 @@ fn a_one_item_frame_is_exactly_its_parts() {
     let key = b"field-0001";
     let value = bytes_of(40, 1);
     let page = encode_container_page(ElementKeySpelling::Utf8, &[(key.as_slice(), &value)]);
-    let expected = CONTAINER_PAGE_MAGIC.len()
+    let expected = CONTAINER_BLOCK_MAGIC.len()
         + 1
         + varint_len(1)
         + varint_len(key.len() as u64)
@@ -636,7 +636,7 @@ fn a_one_item_frame_is_exactly_its_parts() {
     );
     println!(
         "\n=== a one-item hash frame ===\n  magic {} + spelling 1 + count {} + key len {} + key {} + value tag {} + value {} = {}",
-        CONTAINER_PAGE_MAGIC.len(),
+        CONTAINER_BLOCK_MAGIC.len(),
         varint_len(1),
         varint_len(key.len() as u64),
         key.len(),
@@ -755,20 +755,20 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     // The control: unmutilated, it is a frame and it answers.
     assert!(matches!(
         decode_container_page(&good),
-        ContainerPageDecode::Framed { .. }
+        ContainerBlockDecode::Framed { .. }
     ));
 
     let mut mutants: Vec<(&str, Vec<u8>)> = Vec::new();
     // The spelling byte names a spelling that does not exist.
     let mut bad_spelling = good.clone();
-    bad_spelling[CONTAINER_PAGE_MAGIC.len()] = 99;
+    bad_spelling[CONTAINER_BLOCK_MAGIC.len()] = 99;
     mutants.push(("unknown key spelling", bad_spelling));
     // Truncated at every interesting boundary.
     for cut in [
-        CONTAINER_PAGE_MAGIC.len(),
-        CONTAINER_PAGE_MAGIC.len() + 1,
-        CONTAINER_PAGE_MAGIC.len() + 2,
-        CONTAINER_PAGE_MAGIC.len() + 3,
+        CONTAINER_BLOCK_MAGIC.len(),
+        CONTAINER_BLOCK_MAGIC.len() + 1,
+        CONTAINER_BLOCK_MAGIC.len() + 2,
+        CONTAINER_BLOCK_MAGIC.len() + 3,
         good.len() - 1,
         good.len() / 2,
     ] {
@@ -780,11 +780,11 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     mutants.push(("trailing byte", trailing));
     // An item count far larger than the payload could hold.
     let mut huge_count = good.clone();
-    huge_count[CONTAINER_PAGE_MAGIC.len() + 1] = 0x7f;
+    huge_count[CONTAINER_BLOCK_MAGIC.len() + 1] = 0x7f;
     mutants.push(("item count beyond the payload", huge_count));
     // A key length that runs past the end.
     let mut huge_key = good.clone();
-    huge_key[CONTAINER_PAGE_MAGIC.len() + 2] = 0x7f;
+    huge_key[CONTAINER_BLOCK_MAGIC.len() + 2] = 0x7f;
     mutants.push(("key length beyond the payload", huge_key));
     // A value offset past the end of its key.
     let offset_block = encode_container_page(ElementKeySpelling::Utf8, &[(&key, b"")]);
@@ -802,7 +802,7 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     println!("\n=== frames that must be refused ===");
     for (what, mutant) in mutants {
         let verdict = decode_container_page(&mutant);
-        let is_refused = matches!(verdict, ContainerPageDecode::Corrupt(_));
+        let is_refused = matches!(verdict, ContainerBlockDecode::Corrupt(_));
         println!(
             "  {:<30} {} bytes -> {}",
             what,
@@ -839,7 +839,7 @@ fn bytes_with_no_magic_are_not_a_frame() {
         serde_json::to_vec(&serde_json::json!({"any": "json"})).expect("json"),
     ] {
         assert_eq!(
-            ContainerPageDecode::NotFramed,
+            ContainerBlockDecode::NotFramed,
             decode_container_page(&payload),
             "a payload of {} bytes was taken for a frame",
             payload.len()
@@ -1084,7 +1084,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
             .container_page_frame_for_test(1, kind, key, Some(component.as_str()))
             .unwrap_or_else(|| panic!("no stored page for {kind} {key} component {component}"));
         match crate::engine::container_pages::decode_container_page(&frame) {
-            crate::engine::container_pages::ContainerPageDecode::Framed { spelling, items, .. } => {
+            crate::engine::container_pages::ContainerBlockDecode::Framed { spelling, items, .. } => {
                 assert_eq!(
                     1,
                     items.len(),

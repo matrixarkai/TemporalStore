@@ -11,7 +11,7 @@
 //!
 //! WHAT THIS DOES NOT COVER, deliberately: a DURABLE name. Every `#[serde(alias = ...)]` and
 //! `#[serde(rename = ...)]` in this crate is a spelling already written into stores in the
-//! world -- `page_in_log`, `page_size`, `routing_slot` -- and a name that entered this codebase
+//! world -- `block_in_log`, `page_size`, `routing_slot` -- and a name that entered this codebase
 //! from anywhere is OURS once a store carries it, because dropping it is a store that stops
 //! loading. The scan below is a scan for DESCRIPTIVE text: a string, a comment or an identifier
 //! that names someone else's type where it could have named ours. It is not a renaming campaign
@@ -75,7 +75,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
     (
         "TRIVIAL_PAGE",
         "From the same source and removed by the same change, as REDUNDANT rather than merely \
-         foreign: its documented meaning was that the page is deleted, which `PAGE_DELETED` \
+         foreign: its documented meaning was that the page is deleted, which `BLOCK_DELETED` \
          already carries. Our word for this is `deleted`, which 141 files already use. Two bits \
          for one fact is the defect; the borrowed name was how it arrived.",
     ),

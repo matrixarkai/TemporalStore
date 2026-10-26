@@ -77,7 +77,7 @@ pub(super) fn stage(object_id: u64, component: Option<&str>, bytes: &[u8]) {
     // smaller cost of carrying the page -- a hash field name is two or three bytes, a zset member
     // is `16 + 2n` characters -- and it belongs beside the page copy it travels with rather than
     // against whichever caller happened to render the name.
-    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedPage, || {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedBlock, || {
         STAGED.with(|staged| {
             staged.borrow_mut().push(StagedBlock {
                 object_id,
@@ -418,7 +418,7 @@ pub(super) fn read_block(
             .iter()
             .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
         {
-            if let Some(page) = pages.iter().find(|page| names_page(page, object_id, component)) {
+            if let Some(page) = pages.iter().find(|page| names_block(page, object_id, component)) {
                 return Some(page.bytes.clone());
             }
         }
@@ -455,7 +455,7 @@ pub(super) fn read_block(
     }
     pages
         .into_iter()
-        .find(|page| names_page(&page, object_id, component))
+        .find(|page| names_block(&page, object_id, component))
         .map(|page| page.bytes)
 }
 
@@ -469,7 +469,7 @@ pub(super) fn read_block(
 ///
 /// Written once and used at both sites deliberately. The two were separate copies of a one-line
 /// predicate, which is how one of them would come to test one term while the other tested two.
-fn names_page(page: &StagedBlock, object_id: u64, component: Option<&str>) -> bool {
+fn names_block(page: &StagedBlock, object_id: u64, component: Option<&str>) -> bool {
     page.object_id == object_id && page.component.as_deref() == component
 }
 

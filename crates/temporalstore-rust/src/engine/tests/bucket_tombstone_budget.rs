@@ -472,7 +472,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     ) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&TOMB_SHARD).expect("shard is loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let mut target: Option<(u32, u64)> = None;
         let mut buckets_with_tombstone = 0usize;
         let mut buckets_outliving = 0usize;
@@ -600,7 +600,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&TOMB_SHARD).expect("shard is loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
             .bucket_map

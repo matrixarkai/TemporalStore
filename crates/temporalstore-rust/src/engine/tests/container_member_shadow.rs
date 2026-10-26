@@ -38,7 +38,7 @@
 //!      `bucket_index_component_block_addresses` -- the door a container read goes through -- is
 //!      called for `"hash"` and `"set"` and for nothing else.
 //!      `a_zset_read_examines_no_page_index_entries_and_a_hash_read_does` counts it with
-//!      `PAGE_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page`, and carries the hash arm as
+//!      `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page`, and carries the hash arm as
 //!      the CONTROL: an instrument reading zero on both arms would be measuring nothing.
 //!
 //!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE COMPONENT NAME. The `"zset"`
@@ -181,7 +181,7 @@ struct ZsetBlock {
 fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetBlock> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut pages = Vec::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         for (handle, page) in bucket.block_index.iter() {
@@ -754,7 +754,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// addressing to lose. `ZSetScore` reads the score straight out of `shard.zsets`, `ZSetCard` reads
 /// `len()`, `ZSetRange` orders the same map's keys.
 ///
-/// COUNT, DO NOT TIME. `PAGE_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page`, the one
+/// COUNT, DO NOT TIME. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page`, the one
 /// door every page lookup goes through, so this reads the copy production calls. A timing ratio on
 /// this box once read 485x idle against 11x busy off identical code.
 ///

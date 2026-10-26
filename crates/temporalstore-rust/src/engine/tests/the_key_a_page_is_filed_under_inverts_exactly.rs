@@ -418,7 +418,7 @@ fn no_stored_model_spelling_holds_the_separator() {
 ///
 /// The left side is the reconstruction: the object key and the kind read back out of the key the
 /// page is filed under. The right side is the LIVE value the encoder is handed -- the `object_key`
-/// off `PageKeysByPosition`, which is what `serialize_page_index` composes the key from, and the
+/// off `BlockKeysByPosition`, which is what `serialize_block_index` composes the key from, and the
 /// `model_id` off the page itself. So this is a parse compared with a SOURCE, not a renderer
 /// compared with itself.
 ///
@@ -1146,7 +1146,7 @@ struct Before {
 /// A CONSTANT AND NOT A SECOND FIXTURE RUN, deliberately. The alternative is to build the old shape
 /// here, and the old shape is what this change deletes: a fixture that could still produce it would
 /// be a second encoder to keep agreeing with the first, which is the hazard this file's own
-/// `serialize_page_index` keeps a record of.
+/// `serialize_block_index` keeps a record of.
 const BEFORE_PADDED: Before = Before {
     stream: 2_283_431,
     slot_index: 1_810_793,

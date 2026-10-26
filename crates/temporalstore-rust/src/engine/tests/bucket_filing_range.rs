@@ -243,7 +243,7 @@ fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Ve
     // inside that test -- it is called by the five rebuild and adoption arms, each over an index
     // whose pages sit where they were filed -- and a page this cannot name panics with its handle
     // rather than being dropped from a listing that is compared element by element.
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         let mut keys: Vec<String> = bucket

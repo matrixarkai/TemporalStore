@@ -364,7 +364,7 @@ pub struct WriteAheadLogRecord {
 /// answered for every result in it: measured on a plant that stops one command kind staging, that
 /// left 12 of 20 acked results with no way back, and removing the `sync` term alone moved the 12
 /// by nothing. `no_cell_leaves_an_acked_result_with_no_way_back` is what fails if a batch's pages
-/// stop being carried, and `a_batch_is_not_recoverable_because_a_sibling_carried_a_page` is what
+/// stop being carried, and `a_batch_is_not_recoverable_because_a_sibling_carried_a_block` is what
 /// fails if the question is asked at batch granularity again.
 ///
 /// AND THE LESSON ABOUT THE READING, which outlives both numbers: three counts were taken, all
@@ -454,7 +454,7 @@ pub(crate) fn record_command(
 /// accepted for any element of its object, so coverage can only ever be counted LOW and a `true`
 /// here is the direction a durability claim needs.
 ///
-/// `a_batch_is_not_recoverable_because_a_sibling_carried_a_page` is what fails if this is ever
+/// `a_batch_is_not_recoverable_because_a_sibling_carried_a_block` is what fails if this is ever
 /// asked at batch granularity again.
 pub(crate) fn every_result_can_be_found_again(
     outcomes: &[WalOutcomeItem],
@@ -507,7 +507,7 @@ mod every_result_can_be_found_again_tests {
     /// case below, and that is how a measured batch left 12 of 20 acked results with no way back
     /// while its rule said the batch was recoverable.
     #[test]
-    fn a_batch_is_not_recoverable_because_a_sibling_carried_a_page() {
+    fn a_batch_is_not_recoverable_because_a_sibling_carried_a_block() {
         let covered = names_only_an_address(1, "a");
         let uncovered = names_only_an_address(2, "b");
         let pages = vec![page_for(1, "a")];
@@ -527,7 +527,7 @@ mod every_result_can_be_found_again_tests {
     /// A result that states itself needs no page, which is what keeps a batched removal on the
     /// one-record writer rather than writing one command record per removal.
     #[test]
-    fn a_result_that_states_itself_needs_no_page() {
+    fn a_result_that_states_itself_needs_no_block() {
         let mut removed = names_only_an_address(3, "c");
         removed.deleted = true;
         let mut expiring = names_only_an_address(4, "d");

@@ -366,7 +366,7 @@ pub(super) struct StorageBlockOwnershipValidation {
 /// any of its uses, and narrowing it let the arm lend with zero call-site edits. The deferral was
 /// an inference about callers I had not checked.
 ///
-/// The same mistake sat in `emit_one_entry_a_page`'s note, which claimed its callers had no handle
+/// The same mistake sat in `emit_one_entry_a_block`'s note, which claimed its callers had no handle
 /// and was corrected the same way. Two stale claims in this file, both mine, both written while
 /// generalising from the arms I had looked at to the ones I had not.
 ///
@@ -936,7 +936,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     // THE IDENTITY COMES FROM BESIDE THE PAGE. The delete marker below states an object, and
     // the entry is losing its own copy; the inversion is built once for the whole walk, which
     // `shard` being immutable here makes free of any borrow to split.
-    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+    let identities = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     for (bucket_id, runtime_bucket) in &shard.bucket_index.bucket_map {
@@ -1265,8 +1265,8 @@ pub(super) enum ModelWalkTally {
     WholeShardEntries,
     /// Materializing the blocks of NAMED routing buckets: [`BUCKET_SCOPED_MODEL_ENTRIES`].
     BucketScopedEntries,
-    /// The promotion check's borrow-only pass: `PROMOTE_MODEL_MAP_PAGES`.
-    PromotionCheckPages,
+    /// The promotion check's borrow-only pass: `PROMOTE_MODEL_MAP_BLOCKS`.
+    PromotionCheckBlocks,
 }
 
 /// Charge live-block entries to the scan counter AND to the caller that asked for them.
@@ -1599,7 +1599,7 @@ pub(super) fn rebuild_bucket_block_ownership(
             .insert_object_block_lookup(*routing_bucket, *handle, object_key, page);
     }
     // FILE THE TOMBSTONE ENTRIES BACK, after the live rebuild and before the flag pass below, so the
-    // `every_page_deleted` computation sees the finished bucket rather than a half-built one.
+    // `every_block_deleted` computation sees the finished bucket rather than a half-built one.
     //
     // Into the bucket each was FILED IN, not one recomputed from the key: the removal recorded that
     // bucket deliberately, because `block_routing_bucket(key, 0, u32::MAX)` -- the form the WAL outcome
@@ -1706,14 +1706,14 @@ pub(super) fn rebuild_bucket_block_ownership(
     // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
     // order that pass already pays; built per bucket it would be that order per bucket.
     let index = &mut shard.bucket_index;
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
     for bucket in index.bucket_map.values_mut() {
         bucket.set_meta_loaded(true);
         bucket.set_loading(false);
         bucket.set_in_memory(!bucket.block_index.is_empty());
-        let every_page_deleted =
+        let every_block_deleted =
             !bucket.block_index.is_empty() && bucket.block_index.values().all(|page| page.deleted);
-        bucket.set_deleted(every_page_deleted);
+        bucket.set_deleted(every_block_deleted);
         update_bucket_layout(shard_id, bucket, &keys);
     }
     // Every block above was charged as it was filed, and the tally started empty, so it now
@@ -1762,7 +1762,7 @@ static PROMOTE_MODEL_MAP_CHECKS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static PROMOTE_MODEL_MAP_REBUILDS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-static PROMOTE_MODEL_MAP_PAGES: std::sync::atomic::AtomicU64 =
+static PROMOTE_MODEL_MAP_BLOCKS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Promotion checks run, promotions that REBUILT, and model-map blocks the checks walked.
@@ -1770,7 +1770,7 @@ pub(super) fn promote_model_map_check_counts() -> (u64, u64, u64) {
     (
         PROMOTE_MODEL_MAP_CHECKS.load(std::sync::atomic::Ordering::Relaxed),
         PROMOTE_MODEL_MAP_REBUILDS.load(std::sync::atomic::Ordering::Relaxed),
-        PROMOTE_MODEL_MAP_PAGES.load(std::sync::atomic::Ordering::Relaxed),
+        PROMOTE_MODEL_MAP_BLOCKS.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -1778,7 +1778,7 @@ pub(super) fn promote_model_map_check_counts() -> (u64, u64, u64) {
 pub(super) fn reset_promote_model_map_check_counts() {
     PROMOTE_MODEL_MAP_CHECKS.store(0, std::sync::atomic::Ordering::Relaxed);
     PROMOTE_MODEL_MAP_REBUILDS.store(0, std::sync::atomic::Ordering::Relaxed);
-    PROMOTE_MODEL_MAP_PAGES.store(0, std::sync::atomic::Ordering::Relaxed);
+    PROMOTE_MODEL_MAP_BLOCKS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Make the bucket index name every live model-map block, if it does not already.
@@ -1833,7 +1833,7 @@ pub(super) fn promote_model_maps_to_bucket_index_authority(
         let mut missing_entry = false;
         visit_model_live_blocks(
             shard,
-            ModelWalkTally::PromotionCheckPages,
+            ModelWalkTally::PromotionCheckBlocks,
             |_, _| true,
             |kind, object_key, component, address| {
                 saw_model_entry = true;
@@ -1953,7 +1953,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
     // below is built from, so the filter can only ever remove what the derived view also lacks.
     let walked = collect_bucket_index_live_block_entries(shard);
-    let live_pages_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
+    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> = walked
         .iter()
         .filter(|entry| !entry.deleted)
         .map(|entry| super::live_page_key(&entry.address))
@@ -1968,7 +1968,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     let mut resurrections_refused = 0usize;
     shard.hashes.reconcile_from_durable(
         hashes,
-        &live_pages_by_address,
+        &live_blocks_by_address,
         &mut resurrections_refused,
     );
     if resurrections_refused > 0 {
@@ -1987,7 +1987,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // materializes the indexed blocks and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
     // THE IDENTITY COMES FROM BESIDE THE PAGE, once for the walk. `shard` is immutable here.
-    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+    let identities = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
@@ -2517,7 +2517,7 @@ pub(super) fn release_bucket_blocks(
         // further down takes the index mutably.
         let names = crate::engine::state::page_identities_in(
             bucket,
-            &crate::engine::state::PageKeysByPosition::from_lookup(
+            &crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
             ),
         );
@@ -3408,7 +3408,7 @@ impl std::fmt::Display for StoredModelKind {
 /// POSITIONALLY -- a plain `rmp_serde::Serializer`, no field names -- so every field after a
 /// changed one shifts, and a store written by an older engine would mis-parse. Keeping the
 /// spelling on the wire means there is no migration to get wrong, no decoy field to pay for, and
-/// `core_index_loads_legacy_bucket_block_field_names` keeps asserting what it always asserted.
+/// `core_index_loads_legacy_bucket_page_field_names` keeps asserting what it always asserted.
 impl serde::Serialize for StoredModelKind {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -3479,7 +3479,7 @@ impl<'de> serde::Deserialize<'de> for StoredModelKind {
 /// packed as the same byte killed nothing, because at the time this function read
 /// `ModelKind::report_code` and the new accessor had no production caller at all -- a second
 /// derivation of the report byte that nothing reached. Routing the report through it makes the
-/// accessor reachable, and `a_zset_and_a_list_page_pack_as_their_own_kind_and_not_as_the_empty_code`
+/// accessor reachable, and `a_zset_and_a_list_block_pack_as_their_own_kind_and_not_as_the_empty_code`
 /// then kills that mutant: it derives its expectation from `ModelKind::report_code`, which is a
 /// genuinely independent derivation rather than the same function compared against itself.
 pub(super) fn model_report_code(model_id: &str) -> u8 {
@@ -3576,7 +3576,7 @@ fn visit_model_live_blocks(
     /// generic arm cannot produce one, but these four simply were never asked. Deferring this as
     /// "every caller would need a handle, and two provably do not" was true of the walk's arms in
     /// general and NOT of this helper's callers -- checking beat the inference.
-    fn emit_one_entry_a_page<'addr>(
+    fn emit_one_entry_a_block<'addr>(
         kind: ModelKind,
         key: &ModelKey,
         addresses: impl Iterator<Item = &'addr ElementEntry>,
@@ -3597,11 +3597,11 @@ fn visit_model_live_blocks(
         //
         // The dedup key stays the page triple, NOT the whole `ElementEntry`: two entries can name
         // one page and differ in their element, which is the whole reason this helper exists.
-        let mut first_page: Option<(u64, u64, u64)> = None;
-        let mut emitted_pages: Option<std::collections::BTreeSet<(u64, u64, u64)>> = None;
+        let mut first_block: Option<(u64, u64, u64)> = None;
+        let mut emitted_blocks: Option<std::collections::BTreeSet<(u64, u64, u64)>> = None;
         for address in addresses {
             // ACCEPT FIRST, AND THE ORDER IS LOAD-BEARING. The original read
-            // `accept(..) && emitted_pages.insert(..)`, which short-circuits: a REJECTED address
+            // `accept(..) && emitted_blocks.insert(..)`, which short-circuits: a REJECTED address
             // never marked its page as seen. Computing the dedup first would mark it, and then a
             // later accepted address naming that page would be dropped -- a faster walk that
             // loses entries. So the gate stays ahead of the state.
@@ -3613,7 +3613,7 @@ fn visit_model_live_blocks(
                 address.offset(),
                 address.length(),
             );
-            let is_new = match (&first_page, &mut emitted_pages) {
+            let is_new = match (&first_block, &mut emitted_blocks) {
                 // Second and later pages, once the set exists.
                 (_, Some(seen)) => seen.insert(page),
                 // A repeat of the only page seen so far: nothing to allocate.
@@ -3624,19 +3624,19 @@ fn visit_model_live_blocks(
                     let mut seen = std::collections::BTreeSet::new();
                     seen.insert(*held);
                     let fresh = seen.insert(page);
-                    emitted_pages = Some(seen);
+                    emitted_blocks = Some(seen);
                     fresh
                 }
                 // The first page of this key.
                 (None, None) => {
-                    first_page = Some(page);
+                    first_block = Some(page);
                     true
                 }
             };
             if is_new {
                 // THIS NOTE WAS STALE AND CONTRADICTED THE LINE UNDER IT, and it was mine.
                 //
-                // It read: "`emit_one_entry_a_page` takes its key as `&str`, so this shared helper
+                // It read: "`emit_one_entry_a_block` takes its key as `&str`, so this shared helper
                 // has no handle to lend either [..] changing ITS parameter is a separate question
                 // from the walk's: every caller of it would have to have a handle, and the composed
                 // and generic arms do not."
@@ -3675,12 +3675,12 @@ fn visit_model_live_blocks(
         // questions rather than left out so that widening the predicate is the only edit their
         // collapse needs in this function -- see `index_entry_names_a_page` for the measured
         // reason each is held out, neither of which is about this walk.
-        let hash_names_a_page = index_entry_names_a_page(ModelKind::Hash.as_str());
-        let zset_names_a_page = index_entry_names_a_page(ModelKind::Zset.as_str());
-        let list_names_a_page = index_entry_names_a_page(ModelKind::List.as_str());
+        let hash_names_a_block = index_entry_names_a_page(ModelKind::Hash.as_str());
+        let zset_names_a_block = index_entry_names_a_page(ModelKind::Zset.as_str());
+        let list_names_a_block = index_entry_names_a_page(ModelKind::List.as_str());
         for (key, fields) in &shard.hashes {
-            if hash_names_a_page {
-                emit_one_entry_a_page(ModelKind::Hash, key, fields.values(), &accept, &mut emit);
+            if hash_names_a_block {
+                emit_one_entry_a_block(ModelKind::Hash, key, fields.values(), &accept, &mut emit);
             } else {
                 for (field, address) in fields.iter() {
                     if accept(key, address) {
@@ -3695,7 +3695,7 @@ fn visit_model_live_blocks(
             }
         }
         for (key, members) in &shard.zsets {
-            if zset_names_a_page {
+            if zset_names_a_block {
                 // THIS IS THE BRANCH THAT RUNS, and the note here used to say the opposite.
                 //
                 // It read: "UNREACHED TODAY: `index_entry_names_a_page` answers false for zset,
@@ -3722,7 +3722,7 @@ fn visit_model_live_blocks(
                 // That test's own doc records the predicate going through exactly this cleanup
                 // once before: "the old name itself asserted the false claim, which is why it
                 // could not stay". This comment is a survivor of that pass.
-                emit_one_entry_a_page(
+                emit_one_entry_a_block(
                     ModelKind::Zset,
                     key,
                     members.values().map(|(_biased, address)| address),
@@ -3745,12 +3745,12 @@ fn visit_model_live_blocks(
             }
         }
         for (key, elements) in &shard.lists {
-            if list_names_a_page {
+            if list_names_a_block {
                 // AND THE GATED ARM DROPS A `format!` PER ELEMENT. The ungated arm below renders
                 // a biased sequence word to sixteen hex digits, once per element on every walk,
                 // for a name the collapsed entry does not carry -- so the allocation goes with it
                 // rather than being built and then discarded.
-                emit_one_entry_a_page(ModelKind::List, key, elements.values(), &accept, &mut emit);
+                emit_one_entry_a_block(ModelKind::List, key, elements.values(), &accept, &mut emit);
             } else {
                 for (seq, address) in elements.iter() {
                     if accept(key, address) {
@@ -3787,12 +3787,12 @@ fn visit_model_live_blocks(
         // each one. And the ungated arm is left byte-identical, including its allocation
         // behaviour: this walk is deliberately careful not to build a `String` for a block the
         // caller will discard, so the gated arm's bookkeeping is created only when it is used.
-        let set_names_a_page = index_entry_names_a_page(ModelKind::Set.as_str());
+        let set_names_a_block = index_entry_names_a_page(ModelKind::Set.as_str());
         for (key, members) in &shard.sets {
-            if set_names_a_page {
+            if set_names_a_block {
                 // The dedup, and the note explaining why it is correctness and not bookkeeping,
-                // both live on `emit_one_entry_a_page` now -- shared with the zset and list arms.
-                emit_one_entry_a_page(ModelKind::Set, key, members.values(), &accept, &mut emit);
+                // both live on `emit_one_entry_a_block` now -- shared with the zset and list arms.
+                emit_one_entry_a_block(ModelKind::Set, key, members.values(), &accept, &mut emit);
             } else {
                 for (member, address) in members.iter() {
                     if accept(key, address) {
@@ -3913,8 +3913,8 @@ fn visit_model_live_blocks(
             BUCKET_SCOPED_MODEL_ENTRIES
                 .fetch_add(emitted as u64, std::sync::atomic::Ordering::Relaxed);
         }
-        ModelWalkTally::PromotionCheckPages => {
-            PROMOTE_MODEL_MAP_PAGES
+        ModelWalkTally::PromotionCheckBlocks => {
+            PROMOTE_MODEL_MAP_BLOCKS
                 .fetch_add(emitted as u64, std::sync::atomic::Ordering::Relaxed);
         }
     }
@@ -4243,7 +4243,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// move first, and a fourth turned out to be on the read path:
 ///
 ///  1. THE FILING SUPERSEDE TERM. Keyed on the landing address it finds nothing for a rewrite in
-///     place. `ReplacedPage` carries the element's previous address, read from the resident map,
+///     place. `ReplacedBlock` carries the element's previous address, read from the resident map,
 ///     and the filer retires that page's entry when no sibling is left on it.
 ///  2. THE TOMBSTONE SWEEP. A tombstone is a per-ELEMENT fact; its name lives in
 ///     `BucketNode::tombstone_elements` now, where only a removal pays for it.
@@ -4272,7 +4272,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// What it costs is an entry per removal that nothing collects.
 ///
 /// THE FIX IS THE ONE THE WRITE PATH ALREADY HAS: ask the resident map whether any sibling is still
-/// on the vacated page -- `RecordedMap::page_an_element_vacates` is that question -- and retire the
+/// on the vacated page -- `RecordedMap::block_an_element_vacates` is that question -- and retire the
 /// entry when none is. It is not done here because a removal reaches the index through a different
 /// door and that door takes no element type. `container_page_ordinal::the_ordinal_names_a_position_
 /// and_a_delete_frees_it` is the arm that reads the retained live entry.
@@ -4542,12 +4542,12 @@ impl ElementComponent {
 /// A first write replaces no page. A rewrite that lands back on its own page is superseded through
 /// the landing address and needs nothing extra. A rewrite off a page a SIBLING element is still on
 /// replaces nothing either -- that page is still live, and its entry is what keeps the sibling
-/// reachable. `recorded_map::RecordedMap::page_an_element_vacates` is the one producer of a
+/// reachable. `recorded_map::RecordedMap::block_an_element_vacates` is the one producer of a
 /// non-empty one, and it asks all three questions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
-pub(super) struct ReplacedPage(Option<ElementEntry>);
+pub(super) struct ReplacedBlock(Option<ElementEntry>);
 
-impl ReplacedPage {
+impl ReplacedBlock {
     pub(super) fn of(page: Option<ElementEntry>) -> Self {
         Self(page)
     }
@@ -4581,7 +4581,7 @@ pub(super) fn upsert_bucket_index_block_filed(
     address: ElementEntry,
     dirty: bool,
     value: Option<Vec<u8>>,
-    replaces: ReplacedPage,
+    replaces: ReplacedBlock,
 ) -> BlockFiled {
     upsert_bucket_index_block_with_value(
         shard, shard_id, kind, object_key, component, address, dirty, true, value, replaces,
@@ -4956,7 +4956,7 @@ pub(super) fn upsert_bucket_index_block_with(
         // context-node registration and the maintenance paths -- so there is no previous address
         // for it to hand over. The element writes that DO overwrite go through
         // `upsert_bucket_index_block_filed`, which takes one.
-        ReplacedPage::none(),
+        ReplacedBlock::none(),
     )
 }
 
@@ -4976,7 +4976,7 @@ pub(super) fn upsert_bucket_index_block_with_value(
     dirty: bool,
     stage: bool,
     value: Option<Vec<u8>>,
-    replaces: ReplacedPage,
+    replaces: ReplacedBlock,
 ) {
     // Every single-block writer reaches the bucket index through here, so the charge sits here and
     // not at the arms. A new command arm that files a block is counted because this function counts
@@ -5008,7 +5008,7 @@ fn upsert_bucket_index_block_inner(
     dirty: bool,
     stage: bool,
     value: Option<Vec<u8>>,
-    replaces: ReplacedPage,
+    replaces: ReplacedBlock,
 ) {
     // THE SHARD'S OWN RANGE, carried on the shard. This site PLACES: `routing_bucket` below is
     // the KEY this block is filed under, not a filter over an answer already decided. Under the
@@ -5132,7 +5132,7 @@ fn upsert_bucket_index_block_inner(
     // is written to a NEW address, so keyed on the landing page alone this converges on nothing and
     // the element's previous entry survives as a live entry over a dead page -- measured as a gated
     // hash serving one element more than was written, and as a zset rescore leaving two live
-    // entries for one member. `ReplacedPage` is the caller's answer to which page that is, and it
+    // entries for one member. `ReplacedBlock` is the caller's answer to which page that is, and it
     // is empty unless the write really is a rewrite that leaves its old page empty.
     let vacated = replaces.page_key();
     let here = super::live_page_key(&entry.address);
@@ -5245,7 +5245,7 @@ fn upsert_bucket_index_block_inner(
                 // the survivors are named from beside themselves rather than from this entry.
                 let names = crate::engine::state::page_identities_in(
                     bucket,
-                    &crate::engine::state::PageKeysByPosition::from_lookup(
+                    &crate::engine::state::BlockKeysByPosition::from_lookup(
                         &shard.bucket_index.object_block_lookup,
                     ),
                 );
@@ -5320,7 +5320,7 @@ fn upsert_bucket_index_block_inner(
                 bucket.tombstone_element_page(&entry.object_key, entry.kind, element)
             })
     });
-    if let Some(tombstoned_page) = sweep {
+    if let Some(tombstoned_block) = sweep {
         if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             bucket
                 .block_index
@@ -5333,7 +5333,7 @@ fn upsert_bucket_index_block_inner(
                     // again once its bytes are reused.
                     !(page.deleted
                         && crate::engine::state::tombstone_page_key(&page.address)
-                            == tombstoned_page)
+                            == tombstoned_block)
                 });
             touched_buckets.push(routing_bucket);
             classify_bucket_layout_in_place(bucket);
@@ -5535,7 +5535,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         // NAMED BEFORE THE MUTATION, for the reason at `state::page_identities_in`.
         let names = crate::engine::state::page_identities_in(
             bucket,
-            &crate::engine::state::PageKeysByPosition::from_lookup(
+            &crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
             ),
         );
@@ -5861,7 +5861,7 @@ pub mod layout_by_caller {
 ///
 /// AND THE KEY IS NO LONGER TAKEN FROM THE PAGE. The entry is losing the only copy it held, so the
 /// walk asks the structure beside a live page instead: `object_block_lookup`, inverted by the
-/// `(routing_bucket, handle)` the page is filed under. [`PageKeysByPosition`] is that inversion,
+/// `(routing_bucket, handle)` the page is filed under. [`BlockKeysByPosition`] is that inversion,
 /// and it is HOISTED BY THE CALLER rather than built here -- building it is O(block refs), which is
 /// the order of a whole-shard pass and not of one bucket. Every caller that reaches this function
 /// is making such a pass. A caller holding one bucket on a targeted path must not build one; the
@@ -5871,7 +5871,7 @@ pub mod layout_by_caller {
 ///
 /// EXACTLY WHEN EVERY LIVE PAGE IN THE BUCKET HAS AN IDENTITY BESIDE IT, and otherwise not at all.
 /// A derived set that is missing pages is not a smaller answer to the same question, it is a WRONG
-/// one: [`reconcile_object_index_with_live_pages`] reads the absence of an id as "no live page
+/// one: [`reconcile_object_index_with_live_blocks`] reads the absence of an id as "no live page
 /// names this object" and would drop an id whose object is still live. So a bucket holding even one
 /// unnamed live page reclassifies from the set the mutation sites already maintain, and prunes
 /// nothing.
@@ -5910,7 +5910,7 @@ pub mod layout_by_caller {
 pub(super) fn update_bucket_layout(
     shard_id: ShardId,
     bucket: &mut BucketNode,
-    keys: &crate::engine::state::PageKeysByPosition<'_>,
+    keys: &crate::engine::state::BlockKeysByPosition<'_>,
 ) {
     note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
     // Tests only: this takes a lock, and `update_bucket_layout` is on a write path. It exists
@@ -5922,7 +5922,7 @@ pub(super) fn update_bucket_layout(
     // Read out before the walk: the inversion is keyed by position, and a position is
     // `(routing_bucket, handle)` -- the bucket half is a property of the node, not of the page.
     let routing_bucket = bucket.routing_bucket;
-    let mut live_pages_with_no_identity = 0usize;
+    let mut live_blocks_with_no_identity = 0usize;
     let live_object_ids: BTreeSet<u64> = bucket
         .block_index
         .iter()
@@ -5932,7 +5932,7 @@ pub(super) fn update_bucket_layout(
             if named.is_none() {
                 // COUNTED, NOT SHRUGGED AT. The count is what decides below whether this set is
                 // an answer at all, so a missing source cannot be absorbed into a smaller one.
-                live_pages_with_no_identity += 1;
+                live_blocks_with_no_identity += 1;
             }
             named
         })
@@ -5940,7 +5940,7 @@ pub(super) fn update_bucket_layout(
             crate::engine::hashing::stable_block_object_id(shard_id, model_id, object_key)
         })
         .collect();
-    if live_pages_with_no_identity == 0 {
+    if live_blocks_with_no_identity == 0 {
         // THE TIE BACK TO THE ENTRY'S OWN COPY, FOR AS LONG AS THE ENTRY STILL HOLDS ONE.
         //
         // This is the scaffold that makes the whole suite a check on the MOVE rather than on the
@@ -5954,11 +5954,11 @@ pub(super) fn update_bucket_layout(
         // the inversion cannot name, which `page_identities_in` omits -- so the failure mode moved
         // from a set disagreement to a short set, and the guard that would see it is a count on
         // the caller's side rather than an equality here.
-        reconcile_object_index_with_live_pages(bucket, &live_object_ids);
+        reconcile_object_index_with_live_blocks(bucket, &live_object_ids);
     } else {
         debug_assert!(
             keys.names_no_position(),
-            "bucket {routing_bucket} holds {live_pages_with_no_identity} live page(s) with no \
+            "bucket {routing_bucket} holds {live_blocks_with_no_identity} live page(s) with no \
              identity beside them while the inversion DOES name positions, so this is not the \
              decode-then-rebuild window and the object list is being left alone for the wrong \
              reason"
@@ -5987,7 +5987,7 @@ pub(super) fn update_bucket_layout_with_live_objects(
     note_site(&bucket_visit_sites::LAYOUT, bucket.block_index.len());
     #[cfg(test)]
     layout_by_caller::note(std::panic::Location::caller(), bucket.block_index.len());
-    reconcile_object_index_with_live_pages(bucket, live_object_ids);
+    reconcile_object_index_with_live_blocks(bucket, live_object_ids);
     bucket.reconcile_tombstone_elements();
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
@@ -5998,7 +5998,7 @@ pub(super) fn update_bucket_layout_with_live_objects(
 ///
 /// It removed exactly the ids whose pages the call had dropped, on the argument that no other
 /// object's pages had changed so no other id's membership could have. That argument is sound about
-/// THIS CALL and it is not the whole claim: `reconcile_object_index_with_live_pages` removed every
+/// THIS CALL and it is not the whole claim: `reconcile_object_index_with_live_blocks` removed every
 /// held id that no live page named -- a REPAIR -- so drift that existed before the call was
 /// silently fixed by it, and a delta cannot fix what it did not cause.
 ///
@@ -6061,7 +6061,7 @@ pub(super) fn repair_object_index_against_its_pages(
             names.get(handle).map(|beside| page.object_id(shard_id, beside))
         })
         .collect();
-    reconcile_object_index_with_live_pages(bucket, &live_object_ids);
+    reconcile_object_index_with_live_blocks(bucket, &live_object_ids);
     // THE RECONCILE'S POSTCONDITION, ASSERTED -- AND IT IS NOT A RESTATEMENT OF THE LINE ABOVE.
     //
     // What it checks is that `ObjectIndex` actually REALIZES the set the reconcile asked for. That
@@ -6116,7 +6116,7 @@ pub(super) fn repair_object_index_against_its_pages(
 /// THE MEMBERSHIP TEST IS AGAINST A COLLECTED VECTOR AND NOT `ObjectIndex::contains`, because
 /// `contains` charges the probe counter that `the_join_a_name_reader_would_pay` reads. Asking it
 /// here would bill a maintenance scan to the read path's measurement.
-fn reconcile_object_index_with_live_pages(bucket: &mut BucketNode, live: &BTreeSet<u64>) {
+fn reconcile_object_index_with_live_blocks(bucket: &mut BucketNode, live: &BTreeSet<u64>) {
     object_index_divergence::note_rebuild();
 
     if live.is_empty() {
@@ -6137,13 +6137,13 @@ fn reconcile_object_index_with_live_pages(bucket: &mut BucketNode, live: &BTreeS
     let held: Vec<u64> = bucket.object_index.iter().copied().collect();
     for id in live {
         if !held.contains(id) {
-            object_index_divergence::note_page_named_an_object_the_list_lacked(*id);
+            object_index_divergence::note_block_named_an_object_the_list_lacked(*id);
             bucket.object_index.insert(*id);
         }
     }
     for id in &held {
         if !live.contains(id) {
-            object_index_divergence::note_list_held_an_object_no_page_names(*id);
+            object_index_divergence::note_list_held_an_object_no_block_names(*id);
             bucket.object_index.remove(id);
         }
     }
@@ -6168,8 +6168,8 @@ pub(super) mod object_index_divergence {
 
     static REBUILDS: AtomicU64 = AtomicU64::new(0);
     static RECONSTRUCTS: AtomicU64 = AtomicU64::new(0);
-    static PAGES_NAMED_AN_OBJECT_THE_LIST_LACKED: AtomicU64 = AtomicU64::new(0);
-    static LIST_HELD_AN_OBJECT_NO_PAGE_NAMES: AtomicU64 = AtomicU64::new(0);
+    static BLOCKS_NAMED_AN_OBJECT_THE_LIST_LACKED: AtomicU64 = AtomicU64::new(0);
+    static LIST_HELD_AN_OBJECT_NO_BLOCK_NAMES: AtomicU64 = AtomicU64::new(0);
     static DIVERGENCES_LOGGED: AtomicU64 = AtomicU64::new(0);
     static LAST: std::sync::Mutex<Option<(&'static str, u64)>> = std::sync::Mutex::new(None);
 
@@ -6189,13 +6189,13 @@ pub(super) mod object_index_divergence {
         RECONSTRUCTS.fetch_add(1, Ordering::Relaxed);
     }
 
-    pub(crate) fn note_page_named_an_object_the_list_lacked(object_id: u64) {
-        let seen = PAGES_NAMED_AN_OBJECT_THE_LIST_LACKED.fetch_add(1, Ordering::Relaxed) + 1;
+    pub(crate) fn note_block_named_an_object_the_list_lacked(object_id: u64) {
+        let seen = BLOCKS_NAMED_AN_OBJECT_THE_LIST_LACKED.fetch_add(1, Ordering::Relaxed) + 1;
         record("a live page named an object its bucket list did not hold", object_id, seen);
     }
 
-    pub(crate) fn note_list_held_an_object_no_page_names(object_id: u64) {
-        let seen = LIST_HELD_AN_OBJECT_NO_PAGE_NAMES.fetch_add(1, Ordering::Relaxed) + 1;
+    pub(crate) fn note_list_held_an_object_no_block_names(object_id: u64) {
+        let seen = LIST_HELD_AN_OBJECT_NO_BLOCK_NAMES.fetch_add(1, Ordering::Relaxed) + 1;
         record("a bucket list held an object no live page names", object_id, seen);
     }
 
@@ -6214,9 +6214,9 @@ pub(super) mod object_index_divergence {
         ObjectIndexDivergenceCounts {
             rebuilds: REBUILDS.load(Ordering::Relaxed),
             reconstructs: RECONSTRUCTS.load(Ordering::Relaxed),
-            pages_named_an_object_the_list_lacked: PAGES_NAMED_AN_OBJECT_THE_LIST_LACKED
+            pages_named_an_object_the_list_lacked: BLOCKS_NAMED_AN_OBJECT_THE_LIST_LACKED
                 .load(Ordering::Relaxed),
-            list_held_an_object_no_page_names: LIST_HELD_AN_OBJECT_NO_PAGE_NAMES
+            list_held_an_object_no_page_names: LIST_HELD_AN_OBJECT_NO_BLOCK_NAMES
                 .load(Ordering::Relaxed),
             divergences_logged: DIVERGENCES_LOGGED.load(Ordering::Relaxed),
             last: LAST.lock().ok().and_then(|last| *last),
@@ -6296,7 +6296,7 @@ fn refresh_one_bucket_runtime_flags(
     // THE IDENTITIES, AND SEPARATELY THE DECISION TO REBUILD. ONE PARAMETER WAS CARRYING BOTH
     // AND THAT WAS WRONG IN A WAY A TEST CAUGHT.
     //
-    // It was a single `Option<&PageKeysByPosition>`, where `Some` meant both "here is the source"
+    // It was a single `Option<&BlockKeysByPosition>`, where `Some` meant both "here is the source"
     // and "rebuild the object index". That was sound while the identities had exactly one consumer.
     // The TTL rollup is a second consumer and it does NOT want the rebuild's answer to its
     // question: `refresh_bucket_runtime_flags_after_reconstruct` asks for a TTL recompute while
@@ -6308,7 +6308,7 @@ fn refresh_one_bucket_runtime_flags(
     // `rebuild_object_index` is the DECISION. The objection the single `Option` was built to
     // answer -- that a `bool` can ask for a rebuild with nothing to rebuild from -- is answered by
     // asserting the implication instead of by conflating the two.
-    identities: Option<&crate::engine::state::PageKeysByPosition<'_>>,
+    identities: Option<&crate::engine::state::BlockKeysByPosition<'_>>,
     rebuild_object_index: bool,
     // SEPARATE FROM `object_index_rebuild` ON PURPOSE -- see [`BucketTtlRollup`]. The two
     // agree at every call site today and they answer different questions.
@@ -6326,13 +6326,13 @@ fn refresh_one_bucket_runtime_flags(
     // any store without an expiry. `inspect` charges what the fold stepped over, which is the only
     // honest figure given the short-circuit the comment above describes.
     let mut fold_visits = 0u64;
-    let every_page_deleted = !bucket.block_index.is_empty()
+    let every_block_deleted = !bucket.block_index.is_empty()
         && bucket
             .block_index
             .values()
             .inspect(|_| fold_visits += 1)
             .all(|page| page.deleted);
-    bucket.set_deleted(every_page_deleted);
+    bucket.set_deleted(every_block_deleted);
     // ASKED OF THE INDEX, NOT FOLDED OVER THE PAGES. The dirty-object index already records which
     // routing bucket each dirty object belongs to -- it is recorded there at mark time, beside the
     // bucket that was just computed for the key -- so this is one ordered-map lookup where it was
@@ -6488,7 +6488,7 @@ fn refresh_all_bucket_runtime_flags(
     // INDEX IS BEING REBUILT. The TTL rollup selects pages by the object held BESIDE them, so a
     // `Recompute` needs the inversion even on the reconstruct path, which skips the rescan.
     let keys = if rebuild_object_index || matches!(ttl_rollup, BucketTtlRollup::Recompute) {
-        Some(crate::engine::state::PageKeysByPosition::from_lookup(
+        Some(crate::engine::state::BlockKeysByPosition::from_lookup(
             &index.object_block_lookup,
         ))
     } else {
@@ -6679,7 +6679,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
     // order that pass already pays; built per bucket it would be that order per bucket.
     let index = &mut shard.bucket_index;
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
     for routing_bucket in touched_buckets {
         let Some(bucket) = index.bucket_map.get_mut(&routing_bucket) else {
             continue;
@@ -7115,7 +7115,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // released bucket, on any of the five reconcile sites a release can be followed by. Taking the
     // set from the same `entries` the derived view is built from means the filter and its subject
     // read one population, so the filter can only ever remove what the derived view also lacks.
-    let live_pages_by_address: std::collections::HashSet<super::LiveBlockKey> = entries
+    let live_blocks_by_address: std::collections::HashSet<super::LiveBlockKey> = entries
         .iter()
         .map(|entry| super::live_page_key(&entry.address))
         .collect();
@@ -7479,21 +7479,21 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     {
         shard.lists.reconcile_from_durable(
             lists,
-            &live_pages_by_address,
+            &live_blocks_by_address,
             &mut resurrections_refused,
         );
     }
     {
         shard.zsets.reconcile_from_durable(
             zsets,
-            &live_pages_by_address,
+            &live_blocks_by_address,
             &mut resurrections_refused,
         );
     }
     {
         shard.sets.reconcile_from_durable(
             sets,
-            &live_pages_by_address,
+            &live_blocks_by_address,
             &mut resurrections_refused,
         );
     }
@@ -7508,7 +7508,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     {
         shard.hashes.reconcile_from_durable(
             hashes,
-            &live_pages_by_address,
+            &live_blocks_by_address,
             &mut resurrections_refused,
         );
     }
@@ -7519,16 +7519,16 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         eprintln!(
             "reconcile: {resurrections_refused} persisted container element(s) named a page the \
              finished index does not hold and were not restored, over {} live page(s)",
-            live_pages_by_address.len()
+            live_blocks_by_address.len()
         );
     }
-    let (page_read_failures, page_decode_failures) = view_rebuild_page_failure_counts();
-    if page_read_failures > 0 || page_decode_failures > 0 {
+    let (block_read_failures, block_decode_failures) = view_rebuild_page_failure_counts();
+    if block_read_failures > 0 || block_decode_failures > 0 {
         // SAID OUT LOUD, like the line below it. These were the quietest of the lot: an
         // `.unwrap_or_default()` inside a helper, with no counter and no message, on the only copy
         // two kinds have.
         eprintln!(
-            "reconcile: {page_read_failures} page(s) could not be read and {page_decode_failures} \
+            "reconcile: {block_read_failures} page(s) could not be read and {block_decode_failures} \
              could not be decoded while rebuilding the timestamped views; neither contributed an \
              empty series"
         );
@@ -7655,7 +7655,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
     // method that would borrow the whole index. Built ONCE above a whole-shard pass, which is the
     // order that pass already pays; built per bucket it would be that order per bucket.
     let index = &mut shard.bucket_index;
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
     for bucket in index.bucket_map.values_mut() {
         match shard_id {
             Some(shard_id) => update_bucket_layout(shard_id, bucket, &keys),
@@ -7680,23 +7680,23 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
 /// the other two are faults. A single counter over all three cannot be floored at zero on a corpus
 /// that contains the middle one, so it would have to be floored at "whatever it was", which is not a
 /// claim about anything.
-pub static VIEW_REBUILD_PAGE_READ_FAILURES: std::sync::atomic::AtomicU64 =
+pub static VIEW_REBUILD_BLOCK_READ_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-pub static VIEW_REBUILD_PAGE_DECODE_FAILURES: std::sync::atomic::AtomicU64 =
+pub static VIEW_REBUILD_BLOCK_DECODE_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// How many blocks a view rebuild could not read, and how many it could not decode, in this process.
 pub fn view_rebuild_page_failure_counts() -> (u64, u64) {
     (
-        VIEW_REBUILD_PAGE_READ_FAILURES.load(std::sync::atomic::Ordering::Relaxed),
-        VIEW_REBUILD_PAGE_DECODE_FAILURES.load(std::sync::atomic::Ordering::Relaxed),
+        VIEW_REBUILD_BLOCK_READ_FAILURES.load(std::sync::atomic::Ordering::Relaxed),
+        VIEW_REBUILD_BLOCK_DECODE_FAILURES.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
 /// Forget both counts, so a test measures its own load.
 pub fn reset_view_rebuild_page_failure_counts() {
-    VIEW_REBUILD_PAGE_READ_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
-    VIEW_REBUILD_PAGE_DECODE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+    VIEW_REBUILD_BLOCK_READ_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
+    VIEW_REBUILD_BLOCK_DECODE_FAILURES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// `block_store.read`, with the failure COUNTED instead of flattened into an empty series.
@@ -7707,11 +7707,11 @@ pub fn reset_view_rebuild_page_failure_counts() {
 /// reads through the seam and nothing exercised the arm that runs in production. A torn block is
 /// producible on demand -- truncate the slab files the store was written into -- so the seam was
 /// buying a `cfg(test)` hook to cover a path it is not on. The guards tear the files instead.
-fn read_page_for_view_rebuild(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
+fn read_block_for_view_rebuild(block_store: &BlockStore, address: &ElementEntry) -> Option<Vec<u8>> {
     match block_store.read(address) {
         Ok(bytes) => Some(bytes),
         Err(_) => {
-            VIEW_REBUILD_PAGE_READ_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            VIEW_REBUILD_BLOCK_READ_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             None
         }
     }
@@ -7745,7 +7745,7 @@ where
     // `context_events` or `context_indexes`: both are `skip_serializing` on `ShardState`
     // (`state.rs`), so the persisted map is EMPTY by construction and this derived view is the only
     // copy. A swallowed read there does not degrade an answer, it removes the events.
-    let bytes = read_page_for_view_rebuild(block_store, &address);
+    let bytes = read_block_for_view_rebuild(block_store, &address);
     // Fold the disk->memory promotion into the load read we already perform here.
     // page_store.read is mutex-serialized, so a separate post-load warm pass would
     // re-read every block under the same lock; collect the bytes we just read for a
@@ -7778,7 +7778,7 @@ where
         // names no timestamps, so it contributes none.
         PackedFeatureBlockDecode::Legacy => Vec::new(),
         PackedFeatureBlockDecode::Corrupt(_) => {
-            VIEW_REBUILD_PAGE_DECODE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            VIEW_REBUILD_BLOCK_DECODE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
     };
@@ -7848,7 +7848,7 @@ pub(super) fn insert_context_event_views<K, S>(
     // Through the same seam, counted the same way, and for the sharper reason: `context_events`
     // and `context_event_timeline` are rebuilt here and the primary map is `skip_serializing`, so
     // there is no durable copy behind this derived one.
-    let bytes = read_page_for_view_rebuild(block_store, &address);
+    let bytes = read_block_for_view_rebuild(block_store, &address);
     if let (Some(shard_id), Some(bytes)) = (warm_shard, bytes.as_ref()) {
         let key = CacheKey::page_with_slot(
             shard_id,
@@ -7866,7 +7866,7 @@ pub(super) fn insert_context_event_views<K, S>(
         PackedFeatureBlockDecode::Packed(points) => points,
         PackedFeatureBlockDecode::Legacy => Vec::new(),
         PackedFeatureBlockDecode::Corrupt(_) => {
-            VIEW_REBUILD_PAGE_DECODE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            VIEW_REBUILD_BLOCK_DECODE_FAILURES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             return;
         }
     };
@@ -8078,7 +8078,7 @@ mod released_supplement_guards {
     /// whose filing has been dropped is still returned, still live, still the right block, and
     /// reads as a block that simply has no bucket.
     #[test]
-    fn a_released_buckets_pages_still_report_the_bucket_they_are_filed_in() {
+    fn a_released_buckets_blocks_still_report_the_bucket_they_are_filed_in() {
         let mut shard = ShardState::default();
         let released_key = releasable_bucket(&mut shard, 7, "released-key");
         let resident_key = releasable_bucket(&mut shard, 9, "resident-key");
@@ -8242,13 +8242,13 @@ mod release_refusal_guards {
     /// It was 11, and no object in this store can carry that. The ordinal names WHICH PAGE of an
     /// object an address is, so a single-page object -- which every `string` is -- has page zero
     /// by construction. `ObjectRecord::from_object_rows` refuses a nonzero one by name as
-    /// `NonZeroPageOrdinalDoesNotFitInline`, and the measurement behind that refusal found
+    /// `NonZeroBlockOrdinalDoesNotFitInline`, and the measurement behind that refusal found
     /// ordinal 0 on 400 of 400 live string addresses, the largest seen being 0.
     ///
     /// # WHY THE ELEVEN COST NINE GUARDS, AND WHY NOT ONE OF THEM SAID SO
     ///
     /// The string map holds an `ObjectSlot` rather than a bare address. The inline arm of its
-    /// record keeps the ordinal's PRESENCE -- the one bit it spends as `PAGE_IN_LOG` -- and not
+    /// record keeps the ordinal's PRESENCE -- the one bit it spends as `BLOCK_IN_LOG` -- and not
     /// its VALUE, so `set_string_address` was handed 11 and `string_address` gave back 0. The
     /// bucket index still holds a whole `ElementEntry`, and kept the 11.
     ///
@@ -8351,20 +8351,20 @@ mod release_refusal_guards {
     /// AND ONE DOOR RATHER THAN A FILING CALL BESIDE EACH `insert`, for the reason the whole
     /// campaign keeps re-finding: two obligations spelled at six call sites are six chances to
     /// spell one. A fixture added here from now on gets both or neither.
-    fn install_page(shard: &mut ShardState, routing_bucket: u32, key: &str, page: BlockIndex) {
+    fn install_block(shard: &mut ShardState, routing_bucket: u32, key: &str, page: BlockIndex) {
         shard
             .bucket_index
             .bucket_map
             .insert(routing_bucket, node(routing_bucket, page.clone()));
-        file_page(shard, routing_bucket, key, &page);
+        file_block(shard, routing_bucket, key, &page);
     }
 
     /// File an ALREADY-PLACED page's position in the object lookup.
     ///
-    /// Separate from [`install_page`] for the one fixture that MOVES a node after building it: the
+    /// Separate from [`install_block`] for the one fixture that MOVES a node after building it: the
     /// move has to carry the filing with it, or the page stops being named and the guard refuses
     /// on the wrong term.
-    fn file_page(shard: &mut ShardState, routing_bucket: u32, key: &str, page: &BlockIndex) {
+    fn file_block(shard: &mut ShardState, routing_bucket: u32, key: &str, page: &BlockIndex) {
         let object_key: Arc<str> = Arc::from(key);
         shard.bucket_index.insert_object_block_lookup(
             routing_bucket,
@@ -8391,7 +8391,7 @@ mod release_refusal_guards {
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
         file_string_row(shard, &key, &held);
-        install_page(shard, routing_bucket, &key, block(&key, "string", None, held));
+        install_block(shard, routing_bucket, &key, block(&key, "string", None, held));
         key
     }
 
@@ -8409,7 +8409,7 @@ mod release_refusal_guards {
         let routing_bucket = crate::engine::hashing::block_routing_bucket(key, 0, u32::MAX);
         let held = address(routing_bucket, 64);
         file_string_row(shard, key, &held);
-        install_page(shard, routing_bucket, key, block(key, "string", None, held));
+        install_block(shard, routing_bucket, key, block(key, "string", None, held));
         routing_bucket
     }
 
@@ -8435,7 +8435,7 @@ mod release_refusal_guards {
             dirty: true,
             ..block(&key, "string", None, held)
         };
-        install_page(shard, routing_bucket, &key, dirty);
+        install_block(shard, routing_bucket, &key, dirty);
         key
     }
 
@@ -8467,7 +8467,7 @@ mod release_refusal_guards {
             Some(0),
             "this module's page ordinal must be the zero a single-page object has by \
              construction: `ObjectRecord::from_object_rows` refuses a nonzero one by name as \
-             NonZeroPageOrdinalDoesNotFitInline, and the write-back door drops its value",
+             NonZeroBlockOrdinalDoesNotFitInline, and the write-back door drops its value",
         );
         assert_eq!(
             shard.string_address("whole-address-key"),
@@ -8568,7 +8568,7 @@ mod release_refusal_guards {
         shard
             .hashes
             .insert_element_for_test(&key, std::sync::Arc::from("field"), held.clone());
-        install_page(&mut shard, 7, &key, block(&key, "hash", Some("field"), held));
+        install_block(&mut shard, 7, &key, block(&key, "hash", Some("field"), held));
 
         let outcome = release_bucket_blocks(&mut shard, &[7]);
 
@@ -8606,7 +8606,7 @@ mod release_refusal_guards {
     ///
     /// THE FIXTURE MOVES THE BLOCK, not the address: there is no address field left to tamper with.
     #[test]
-    fn a_page_whose_key_does_not_route_here_is_refused_and_the_refusal_names_the_routing_term() {
+    fn a_block_whose_key_does_not_route_here_is_refused_and_the_refusal_names_the_routing_term() {
         let mut shard = ShardState::default();
         let key = releasable_bucket(&mut shard, 7, "misfiled-key");
 
@@ -8649,7 +8649,7 @@ mod release_refusal_guards {
             elsewhere,
             BucketNode { routing_bucket: elsewhere, ..node },
         );
-        file_page(&mut shard, elsewhere, &key, &moved);
+        file_block(&mut shard, elsewhere, &key, &moved);
 
         let outcome = release_bucket_blocks(&mut shard, &[elsewhere]);
 
@@ -8747,7 +8747,7 @@ mod release_refusal_guards {
         shard
             .hashes
             .insert_element_for_test(&kind_key, std::sync::Arc::from("field"), held.clone());
-        install_page(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
+        install_block(&mut shard, 4, &kind_key, block(&kind_key, "hash", Some("field"), held));
         shard.set_string_address(std::sync::Arc::from(disagreement_key.as_str()), &address(5, 4_096));
 
         let candidates = [1u32, 2, 3, 4, 5];
@@ -8872,7 +8872,7 @@ mod release_walk_scale {
     /// derivation that built nothing at all, both read zero at every store size -- and zero
     /// satisfies "does not grow with the store" perfectly while measuring nothing.
     #[test]
-    fn the_release_derivation_materializes_the_four_victims_pages() {
+    fn the_release_derivation_materializes_the_four_victims_blocks() {
         let (materialized, live_pages, released_blocks, released_buckets) = release_four_of(64);
 
         assert_eq!(
@@ -8942,7 +8942,7 @@ mod release_walk_scale {
     /// inside the assertion: a reload that installed nothing would materialize nothing, and the
     /// released-block count it is compared against is 1.
     #[test]
-    fn reloading_one_bucket_materializes_only_that_buckets_pages() {
+    fn reloading_one_bucket_materializes_only_that_buckets_blocks() {
         const SMALL: u32 = 500;
         const LARGE: u32 = 4_000;
 
@@ -9041,7 +9041,7 @@ mod live_block_scan_coverage {
     /// below being made. A shard whose blocks all sat in one bucket could not tell a whole-shard
     /// walk from a bucket-scoped one.
     #[test]
-    fn the_fixture_spreads_its_pages_over_many_buckets() {
+    fn the_fixture_spreads_its_blocks_over_many_buckets() {
         let (shard, _landed) = shard_with(BUCKETS);
 
         assert_eq!(
@@ -9247,9 +9247,9 @@ mod model_kind_registry_guards {
     /// The ordinal names WHICH page of an object an address is, and every kind this fixture files
     /// holds one page, so zero is not a convenience here -- it is the only value the store can
     /// keep. `ObjectRecord::from_object_rows` refuses a nonzero one by name
-    /// (`NonZeroPageOrdinalDoesNotFitInline`) and `set_string_address` silently coerces it, which
+    /// (`NonZeroBlockOrdinalDoesNotFitInline`) and `set_string_address` silently coerces it, which
     /// is how this fixture carried an 11 that the string map turned into a 0 without anything
-    /// failing. The read-back in `shard_holding_one_page_of_every_kind` is what now says so.
+    /// failing. The read-back in `shard_holding_one_block_of_every_kind` is what now says so.
     fn address(_routing_bucket: u32) -> ElementEntry {
         ElementEntry::from_parts(3, 128, 64, Some(0), Some(22))
     }
@@ -9260,7 +9260,7 @@ mod model_kind_registry_guards {
     /// filing one of these kinds would make the completeness check below pass by holding fewer
     /// kinds, which is the failure it exists to catch. Every field here is a field of
     /// `ShardState` that an arm of `visit_model_live_blocks` reads.
-    fn shard_holding_one_page_of_every_kind() -> ShardState {
+    fn shard_holding_one_block_of_every_kind() -> ShardState {
         let mut shard = ShardState::default();
         let at = address(7);
         shard.set_string_address("s".into(), &at.clone());
@@ -9328,7 +9328,7 @@ mod model_kind_registry_guards {
     /// `ModelKind::ALL.len() >= 15` in the declaration is the other half of that.
     #[test]
     fn the_walk_emits_every_model_kind_the_registry_declares() {
-        let shard = shard_holding_one_page_of_every_kind();
+        let shard = shard_holding_one_block_of_every_kind();
         let entries = collect_model_live_block_entries(&shard);
 
         let mut per_kind: BTreeMap<String, usize> = BTreeMap::new();
@@ -9380,7 +9380,7 @@ mod model_kind_registry_guards {
     /// kind is emitted is a kind whose code is reachable from two lists.
     #[test]
     fn the_retired_model_spellings_are_not_emitted_by_any_arm() {
-        let shard = shard_holding_one_page_of_every_kind();
+        let shard = shard_holding_one_block_of_every_kind();
         let emitted: BTreeSet<String> = collect_model_live_block_entries(&shard)
             .iter()
             .map(|entry| entry.kind.to_string())
@@ -9460,8 +9460,8 @@ mod model_kind_registry_guards {
     /// index report the way the reporting path does and reads the byte back out of the published
     /// hex, so it fails if the registry is right and the packing stops using it.
     #[test]
-    fn a_zset_and_a_list_page_pack_as_their_own_kind_and_not_as_the_empty_code() {
-        let shard = shard_holding_one_page_of_every_kind();
+    fn a_zset_and_a_list_block_pack_as_their_own_kind_and_not_as_the_empty_code() {
+        let shard = shard_holding_one_block_of_every_kind();
         let report = crate::engine::storage_reporting::storage_physical_index_report(
             1,
             &shard,

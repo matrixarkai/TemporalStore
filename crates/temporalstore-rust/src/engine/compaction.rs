@@ -81,11 +81,11 @@ pub(super) fn compaction_utility_report_from_entries(
         .iter()
         .map(|address| address.block_slab_id())
         .collect::<BTreeSet<_>>();
-    let slab_page_counts = slab_block_counts_by_slab(block_store);
+    let slab_block_counts = slab_block_counts_by_slab(block_store);
     let total_block_count = live_block_slab_ids
         .iter()
         .map(|block_slab_id| {
-            slab_page_counts
+            slab_block_counts
                 .get(block_slab_id)
                 .copied()
                 .unwrap_or_default()
@@ -104,14 +104,14 @@ pub(super) fn compaction_utility_report_from_entries(
         live_block_refs,
         stale_block_estimate,
         live_ref_density_basis_points,
-        model_policies: model_compaction_policy_reports(shard, &entries, &slab_page_counts),
+        model_policies: model_compaction_policy_reports(shard, &entries, &slab_block_counts),
     }
 }
 
 pub(super) fn model_compaction_policy_reports(
     shard: &ShardState,
     entries: &[LiveBlockEntry],
-    slab_page_counts: &BTreeMap<u64, u64>,
+    slab_block_counts: &BTreeMap<u64, u64>,
 ) -> Vec<ModelCompactionPolicyReport> {
     #[derive(Default)]
     struct ModelStats {
@@ -173,7 +173,7 @@ pub(super) fn model_compaction_policy_reports(
                 .slab_ids
                 .iter()
                 .map(|slab_id| {
-                    slab_page_counts
+                    slab_block_counts
                         .get(slab_id)
                         .copied()
                         .unwrap_or_default()
@@ -457,13 +457,13 @@ pub(super) fn compaction_model_layout_reports(
     block_store: &BlockStore,
     shard: &ShardState,
 ) -> Vec<ShardCompactionModelLayoutReport> {
-    let slab_page_counts = slab_block_counts_by_slab(block_store);
+    let slab_block_counts = slab_block_counts_by_slab(block_store);
     let mut reports = Vec::new();
     reports.push(compaction_layout_from_addresses(
         "string",
         shard.strings().len(),
         shard.strings().values().map(|slot| slot.address()),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -473,7 +473,7 @@ pub(super) fn compaction_model_layout_reports(
             .hashes
             .values()
             .flat_map(|fields| fields.values().cloned()),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -483,7 +483,7 @@ pub(super) fn compaction_model_layout_reports(
             .zsets
             .values()
             .flat_map(|members| members.values().map(|(_, address)| address.clone())),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -493,7 +493,7 @@ pub(super) fn compaction_model_layout_reports(
             .lists
             .values()
             .flat_map(|elements| elements.values().cloned()),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_layout_from_addresses(
@@ -503,35 +503,35 @@ pub(super) fn compaction_model_layout_reports(
             .sets
             .values()
             .flat_map(|members| members.values().cloned()),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "feature",
         shard.features(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.push(compaction_layout_from_addresses(
         "context_node",
         shard.context_nodes().len(),
         shard.context_nodes().values().cloned(),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_event",
         shard.context_events(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_index",
         shard.context_indexes(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_audit",
         shard.context_audits(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.push(compaction_layout_from_addresses(
         "context_entity",
@@ -544,23 +544,23 @@ pub(super) fn compaction_model_layout_reports(
             .context_entities()
             .values()
             .flat_map(|series| series.addresses().cloned()),
-        &slab_page_counts,
+        &slab_block_counts,
         None,
     ));
     reports.push(compaction_timestamped_layout(
         "context_child",
         shard.context_children(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_summary",
         shard.context_summaries(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.push(compaction_timestamped_layout(
         "context_compression",
         shard.context_compressions(),
-        &slab_page_counts,
+        &slab_block_counts,
     ));
     reports.retain(|report| report.object_count > 0 || report.index_refs > 0);
     reports
@@ -573,7 +573,7 @@ pub(super) fn compaction_model_layout_reports(
 pub(super) fn compaction_timestamped_layout<K, S>(
     kind: &str,
     timelines: &HashMap<K, S>,
-    slab_page_counts: &BTreeMap<u64, u64>,
+    slab_block_counts: &BTreeMap<u64, u64>,
 ) -> ShardCompactionModelLayoutReport
 where
     S: super::timestamped_series::TimestampedSeries,
@@ -590,7 +590,7 @@ where
         kind,
         timelines.len(),
         ref_counts.keys().cloned(),
-        slab_page_counts,
+        slab_block_counts,
         Some(packed_blocks),
     )
     .with_index_refs(ref_counts.values().sum())
@@ -600,7 +600,7 @@ pub(super) fn compaction_layout_from_addresses(
     kind: &str,
     object_count: usize,
     addresses: impl IntoIterator<Item = ElementEntry>,
-    slab_page_counts: &BTreeMap<u64, u64>,
+    slab_block_counts: &BTreeMap<u64, u64>,
     packed_blocks: Option<usize>,
 ) -> ShardCompactionModelLayoutReport {
     let addresses = addresses.into_iter().collect::<Vec<_>>();
@@ -617,7 +617,7 @@ pub(super) fn compaction_layout_from_addresses(
     let total_blocks_in_live_slabs = live_slab_ids
         .iter()
         .map(|slab_id| {
-            slab_page_counts
+            slab_block_counts
                 .get(slab_id)
                 .copied()
                 .unwrap_or_default()
@@ -682,7 +682,7 @@ fn read_block_bytes_for_compaction(
     // WHICH PAGE, which this function could not say and now must. The element stays `None` for the
     // reason spelled out below; what changed is that the OBJECT is stated from the key rather than
     // recovered from the address, so a relocation cannot read a page it cannot name.
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
     #[cfg(test)]
@@ -831,7 +831,7 @@ pub(super) fn compact_container_pages_batched<'a>(
     // `compact_block_addresses` carries a key per ITEM because its string arm walks a map of many
     // objects; these four arms do not.
     //
-    // AND IT IS NOT OPTIONAL, because a [`PageIdentity`] cannot be built without it. The read below
+    // AND IT IS NOT OPTIONAL, because a [`BlockIdentity`] cannot be built without it. The read below
     // asks for ONE ELEMENT of a page, and a read handed only a component and no object cannot say
     // which object's element it means.
     object_key: &str,
@@ -855,7 +855,7 @@ pub(super) fn compact_container_pages_batched<'a>(
     let mut batch_bytes = 0usize;
     let mut cold_in_batch = false;
     let mut batches = 0usize;
-    let mut pages_folded = 0usize;
+    let mut blocks_folded = 0usize;
 
     // The object id every element of this object already carries. #2019 made it the OBJECT's rather
     // than one of its elements, which is what lets one page stand for several elements at all: a
@@ -885,7 +885,7 @@ pub(super) fn compact_container_pages_batched<'a>(
             // element from the component just rendered, so the identity is derived here from both
             // halves rather than recovered from the address -- which is what #2024 made the only
             // way to name a page, precisely so a relocation cannot read a page it cannot name.
-            PageIdentity::of(shard_id, model_id, object_key, Some(component.as_str())),
+            BlockIdentity::of(shard_id, model_id, object_key, Some(component.as_str())),
             routing_bucket,
         )
         .ok_or_else(|| {
@@ -907,7 +907,7 @@ pub(super) fn compact_container_pages_batched<'a>(
             && (items.len() >= CONTAINER_BATCH_ELEMENT_CAP
                 || batch_bytes + item_bytes > target_bytes)
         {
-            pages_folded += flush_container_batch(
+            blocks_folded += flush_container_batch(
                 block_store,
                 cache,
                 shard_id,
@@ -932,7 +932,7 @@ pub(super) fn compact_container_pages_batched<'a>(
     }
 
     if !items.is_empty() {
-        pages_folded += flush_container_batch(
+        blocks_folded += flush_container_batch(
             block_store,
             cache,
             shard_id,
@@ -949,7 +949,7 @@ pub(super) fn compact_container_pages_batched<'a>(
         )?;
         batches += 1;
     }
-    note_container_batch_round(batches, pages_folded);
+    note_container_batch_round(batches, blocks_folded);
     Ok(())
 }
 
@@ -967,7 +967,7 @@ fn read_block_bytes_for_container_element(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &ElementEntry,
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     routing_bucket: u32,
 ) -> Option<Vec<u8>> {
     #[cfg(test)]
@@ -1050,26 +1050,26 @@ fn flush_container_batch(
 /// not tell batching from an idle round. These two say what this code DID.
 static CONTAINER_BATCHES_WRITTEN: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
-static CONTAINER_PAGES_FOLDED: std::sync::atomic::AtomicU64 =
+static CONTAINER_BLOCKS_FOLDED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-fn note_container_batch_round(batches: usize, pages_folded: usize) {
+fn note_container_batch_round(batches: usize, blocks_folded: usize) {
     CONTAINER_BATCHES_WRITTEN.fetch_add(batches as u64, std::sync::atomic::Ordering::Relaxed);
-    CONTAINER_PAGES_FOLDED.fetch_add(pages_folded as u64, std::sync::atomic::Ordering::Relaxed);
+    CONTAINER_BLOCKS_FOLDED.fetch_add(blocks_folded as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Batches written and element pages folded into them since the last reset.
 pub fn container_batch_counts() -> (u64, u64) {
     (
         CONTAINER_BATCHES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
-        CONTAINER_PAGES_FOLDED.load(std::sync::atomic::Ordering::Relaxed),
+        CONTAINER_BLOCKS_FOLDED.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
 /// Forget the counts, so a test measures its own round.
 pub fn reset_container_batch_counts() {
     CONTAINER_BATCHES_WRITTEN.store(0, std::sync::atomic::Ordering::Relaxed);
-    CONTAINER_PAGES_FOLDED.store(0, std::sync::atomic::Ordering::Relaxed);
+    CONTAINER_BLOCKS_FOLDED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// THE BUCKET AND THE KEY COME IN BESIDE EACH ADDRESS, because compaction reads and re-writes
@@ -1081,7 +1081,7 @@ pub fn reset_container_batch_counts() {
 /// makes the caller say them, and the compiler name any caller that cannot.
 ///
 /// THE KEY IS THE ADDITION, and it is the same doctrine one term further. The relocation read needs
-/// a [`PageIdentity`], the identity is `(shard, kind, key)`, and `model_id` beside this parameter is
+/// a [`BlockIdentity`], the identity is `(shard, kind, key)`, and `model_id` beside this parameter is
 /// only two of those three. Every arm in `recovery_sweep_compact` was ALREADY deriving its bucket
 /// from the key it is iterating, so no arm had to find one it did not have.
 ///
@@ -1109,7 +1109,7 @@ pub(super) fn compact_block_addresses<'a>(
             block_store,
             shard_id,
             address,
-            PageIdentity::of(shard_id, model_id, object_key.as_ref(), None),
+            BlockIdentity::of(shard_id, model_id, object_key.as_ref(), None),
             Some(routing_bucket),
         )
             .ok_or_else(|| {
@@ -1175,7 +1175,7 @@ pub(super) fn compact_feature_block_addresses(
             block_store,
             shard_id,
             &old_address,
-            PageIdentity::of(shard_id, model_id, object_key, None),
+            BlockIdentity::of(shard_id, model_id, object_key, None),
             Some(routing_bucket),
         )
             .ok_or_else(|| {

@@ -1052,7 +1052,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
             "the durable map does not hold both fields, so this fixture cannot create the state it \
              needs and the assertions below would be about nothing"
         );
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let mut entries = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, page) in &bucket.block_index {
@@ -1246,7 +1246,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         let addresses = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let named = super::PageObjects::of(&shard.bucket_index);
+            let named = super::BlockObjects::of(&shard.bucket_index);
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             for bucket in shard.bucket_index.bucket_map.values() {
                 for (handle, page) in &bucket.block_index {
@@ -1963,7 +1963,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
 #[test]
 fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     use crate::engine::container_pages::{
-        component_from_element_key, decode_container_page, ContainerPageDecode, ElementKeySpelling,
+        component_from_element_key, decode_container_page, ContainerBlockDecode, ElementKeySpelling,
     };
 
     const KEY: &str = "pay-hash";
@@ -2013,7 +2013,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     for record in &records {
         for page in &record.staged_blocks {
             match decode_container_page(&page.bytes) {
-                ContainerPageDecode::Framed { spelling, items, .. } => {
+                ContainerBlockDecode::Framed { spelling, items, .. } => {
                     framed += 1;
                     spellings.insert(format!("{spelling:?}"));
                     items_per_block.push(items.len());
@@ -2027,8 +2027,8 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
                         "a hash page spells its key as {spelling:?}, not as the field name"
                     );
                 }
-                ContainerPageDecode::NotFramed => not_framed += 1,
-                ContainerPageDecode::Corrupt(why) => {
+                ContainerBlockDecode::NotFramed => not_framed += 1,
+                ContainerBlockDecode::Corrupt(why) => {
                     corrupt += 1;
                     println!("[pay] a staged page is CORRUPT: {why}");
                 }

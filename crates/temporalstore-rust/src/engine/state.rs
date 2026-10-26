@@ -424,8 +424,8 @@ pub(super) struct ShardState {
     /// WHERE A MULTI-PAGE OBJECT'S PAGES LIVE, so they hang off the object's own record.
     ///
     /// A record keeps ONE address word that is either a page address or a handle
-    /// (`PageAddress::One` / `PageAddress::Many`). This is what the handle half points into. Until
-    /// it existed, a handle was only a number: every production mention of `PageAddress::Many`,
+    /// (`BlockAddress::One` / `BlockAddress::Many`). This is what the handle half points into. Until
+    /// it existed, a handle was only a number: every production mention of `BlockAddress::Many`,
     /// `Deadline::PerElement` and `RecordFlags::ADDRESS_IS_POINTER` sat inside `object_record.rs`
     /// itself, so the arm was reachable from tests and from nothing else.
     ///
@@ -456,7 +456,7 @@ pub(super) struct ShardState {
     // inner types already derive Serialize, so carrying it costs only a `default` so
     // that dumps written before this still decode.
     #[serde(default)]
-    pub(super) object_page_layouts: super::object_record::PageLayoutStore,
+    pub(super) object_page_layouts: super::object_record::BlockLayoutStore,
     /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
     /// ONE MAP, WHERE THERE WERE TWO. `control_state_change_sketch` stood beside this holding the
@@ -1083,7 +1083,7 @@ impl<'de> Deserialize<'de> for CoreIndex {
             {
                 use serde::de::Error as _;
 
-                let mut buckets: Option<BTreeMap<u32, BucketNodeWithPageKeys>> = None;
+                let mut buckets: Option<BTreeMap<u32, BucketNodeWithBlockKeys>> = None;
                 let mut stored_lookup: Option<ObjectBlockLookup> = None;
                 while let Some(key) = map.next_key::<CoreIndexField>()? {
                     match key {
@@ -1190,11 +1190,11 @@ impl<'de> Deserialize<'de> for CoreIndex {
 /// `identity_of` can hand it back again in one line; what a field with no reader buys is a term
 /// every caller has to pattern-match past, and the entry's own `model_id` is in scope at every one
 /// of those call sites anyway.
-pub(super) struct PageObjectIdentity<'a> {
+pub(super) struct BlockObjectIdentity<'a> {
     pub(super) object_key: &'a Arc<str>,
 }
 
-pub(super) struct PageKeysByPosition<'a> {
+pub(super) struct BlockKeysByPosition<'a> {
     by_position: std::collections::HashMap<(u32, u64), (&'a Arc<str>, &'a Arc<str>)>,
     /// THE SAME ANSWER WITHOUT THE BUCKET, FOR THE ONE QUESTION POSITION CANNOT ANSWER.
     ///
@@ -1217,7 +1217,7 @@ pub(super) struct PageKeysByPosition<'a> {
     by_handle: std::collections::HashMap<u64, (&'a Arc<str>, &'a Arc<str>)>,
 }
 
-impl<'a> PageKeysByPosition<'a> {
+impl<'a> BlockKeysByPosition<'a> {
     /// REACHABLE FROM THE SIBLING MODULE THAT DERIVES, not only from this file's encoder.
     ///
     /// It was private while the only builder was `CoreIndex::serialize` one screen below. The
@@ -1278,14 +1278,14 @@ impl<'a> PageKeysByPosition<'a> {
         node: &'a BucketNode,
         handle: u64,
         page: &BlockIndex,
-    ) -> Option<PageObjectIdentity<'a>> {
+    ) -> Option<BlockObjectIdentity<'a>> {
         if page.deleted {
             return node
                 .tombstone_element_at(&page.address)
-                .map(|row| PageObjectIdentity { object_key: &row.object_key });
+                .map(|row| BlockObjectIdentity { object_key: &row.object_key });
         }
         self.live_identity(node.routing_bucket, handle)
-            .map(|(_model_id, object_key)| PageObjectIdentity { object_key })
+            .map(|(_model_id, object_key)| BlockObjectIdentity { object_key })
     }
 
     /// WHETHER THIS NAMES NO POSITION AT ALL, which is what an UNESTABLISHED lookup looks like.
@@ -1329,7 +1329,7 @@ impl<'a> PageKeysByPosition<'a> {
 ///
 /// # WHY THIS EXISTS AND IS NOT JUST `identity_of` IN A LOOP
 ///
-/// `BlockIndexMap::retain` borrows the page index MUTABLY, and [`PageKeysByPosition::identity_of`]
+/// `BlockIndexMap::retain` borrows the page index MUTABLY, and [`BlockKeysByPosition::identity_of`]
 /// needs the NODE -- because a deleted page's identity lives in the node's tombstone rows and not
 /// in the lookup. So a `retain` closure cannot ask which object the page it is looking at belongs
 /// to: the borrow checker refuses it, and rightly, since the answer is drawn in part from the
@@ -1345,7 +1345,7 @@ impl<'a> PageKeysByPosition<'a> {
 /// caller and shared across that caller's buckets; this is the per-bucket projection of it.
 pub(super) fn page_identities_in(
     node: &BucketNode,
-    keys: &PageKeysByPosition<'_>,
+    keys: &BlockKeysByPosition<'_>,
 ) -> std::collections::HashMap<u64, Arc<str>> {
     node.block_index
         .iter()
@@ -1379,7 +1379,7 @@ impl Serialize for CoreIndex {
         // entry's own copy of the identity and this inversion only CONFIRMED it. The key is
         // composed from the inversion now, so a release build without one would write no key at
         // all. The type's own doc prices the pass.
-        let keys = PageKeysByPosition::from_lookup(&self.object_block_lookup);
+        let keys = BlockKeysByPosition::from_lookup(&self.object_block_lookup);
         let mut index = serializer.serialize_struct("CoreIndex", 1)?;
         index.serialize_field(
             "bucket_map",
@@ -1399,7 +1399,7 @@ impl Serialize for CoreIndex {
 /// What changes is which `Serialize` each VALUE goes through.
 struct BucketMapAt<'a> {
     buckets: &'a BucketMap,
-    keys: &'a PageKeysByPosition<'a>,
+    keys: &'a BlockKeysByPosition<'a>,
 }
 
 impl Serialize for BucketMapAt<'_> {
@@ -1441,7 +1441,7 @@ impl Serialize for BucketMapAt<'_> {
 /// does.
 struct BucketNodeAt<'a> {
     node: &'a BucketNode,
-    keys: &'a PageKeysByPosition<'a>,
+    keys: &'a BlockKeysByPosition<'a>,
 }
 
 impl Serialize for BucketNodeAt<'_> {
@@ -1451,7 +1451,7 @@ impl Serialize for BucketNodeAt<'_> {
     {
         serialize_bucket_node(
             self.node,
-            &PageIndexAt { node: self.node, keys: self.keys },
+            &BlockIndexAt { node: self.node, keys: self.keys },
             serializer,
         )
     }
@@ -2250,7 +2250,7 @@ impl<'de> Deserialize<'de> for DeletedObjectIndex {
 /// disk, so a handle has to mean the same block in every process that reads the file. Assigning
 /// them from a counter compiled, round-tripped, and lost an object on the first reload.
 #[derive(Debug, Default, Clone, Deserialize)]
-#[serde(try_from = "BTreeMap<String, StoredPageEntry>")]
+#[serde(try_from = "BTreeMap<String, StoredBlockEntry>")]
 pub(super) enum BlockIndexMap {
     /// A bucket holding nothing: no list, no node, no allocation.
     ///
@@ -2439,22 +2439,22 @@ pub(super) fn object_index_entries_examined() -> u64 {
     OBJECT_INDEX_ENTRIES_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-pub(super) static PAGE_LOOKUP_ENTRIES_EXAMINED: std::sync::atomic::AtomicU64 =
+pub(super) static BLOCK_LOOKUP_ENTRIES_EXAMINED: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 #[cfg(test)]
 pub(super) fn page_lookup_entries_examined() -> u64 {
-    PAGE_LOOKUP_ENTRIES_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
+    BLOCK_LOOKUP_ENTRIES_EXAMINED.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 #[cfg(test)]
 pub(super) fn reset_page_lookup_entries_examined() {
-    PAGE_LOOKUP_ENTRIES_EXAMINED.store(0, std::sync::atomic::Ordering::Relaxed);
+    BLOCK_LOOKUP_ENTRIES_EXAMINED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(test)]
 fn note_entries_examined(count: usize) {
-    PAGE_LOOKUP_ENTRIES_EXAMINED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
+    BLOCK_LOOKUP_ENTRIES_EXAMINED.fetch_add(count as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
 #[cfg(not(test))]
@@ -2546,11 +2546,11 @@ pub(super) fn find_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize,
 /// the measured distribution is p50 4, p90 6, MAX 8, and a step of eight would have charged a
 /// list of two the same as a list of eight. Four ties `Vec`'s own first block at every length up
 /// to eight and wins from twelve upward, which is where the large corpus lives.
-pub(super) const PAGE_LIST_GROWTH_STEP: usize = 4;
+pub(super) const BLOCK_LIST_GROWTH_STEP: usize = 4;
 
 fn reserve_one_more(pages: &mut Vec<(u64, BlockIndex)>) {
     if pages.len() == pages.capacity() {
-        let want = (pages.len() + 1).div_ceil(PAGE_LIST_GROWTH_STEP) * PAGE_LIST_GROWTH_STEP;
+        let want = (pages.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP;
         pages.reserve_exact(want - pages.len());
     }
 }
@@ -3283,7 +3283,7 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => None,
             // ONE COMPARISON AND ONE POINTER LOAD, not a bisection. The arm does not enter
-            // `find_page`, which is why `PAGE_LOOKUP_ENTRIES_EXAMINED` counts nothing at all for a
+            // `find_page`, which is why `BLOCK_LOOKUP_ENTRIES_EXAMINED` counts nothing at all for a
             // single-block bucket.
             BlockIndexMap::One(handle, page) => (handle == key).then_some(&**page),
             BlockIndexMap::Many(pages) => find_page(pages, key).ok().map(|at| &pages[at].1),
@@ -3458,7 +3458,7 @@ impl BlockIndexMap {
                     // three cost twice what doubling would have;
                     // `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement`
                     // is what said so.
-                    let mut pages = Vec::with_capacity(PAGE_LIST_GROWTH_STEP);
+                    let mut pages = Vec::with_capacity(BLOCK_LIST_GROWTH_STEP);
                     if first_handle < handle {
                         pages.push((first_handle, first));
                         pages.push((handle, page));
@@ -3542,7 +3542,7 @@ impl BlockIndexMap {
     ///     whole deployment by 12.5%.
     ///   * `Many` owns `Vec<(u64, BlockIndex)>`. Its element is the PAIR, eight bytes wider than
     ///     the entry, and the buffer is owned at CAPACITY -- `reserve_one_more` steps it by
-    ///     `PAGE_LIST_GROWTH_STEP` with `reserve_exact`, so a list of five owns a buffer of eight.
+    ///     `BLOCK_LIST_GROWTH_STEP` with `reserve_exact`, so a list of five owns a buffer of eight.
     ///
     /// WHAT THIS DELIBERATELY DOES NOT CHARGE, ON A MEASUREMENT AND NOT AN OVERSIGHT. `BlockIndex`
     /// holds `object_key: Arc<str>` and `component: Option<Arc<str>>`, whose bytes live off the
@@ -3753,8 +3753,8 @@ impl FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap {
 /// UNACCOUNTED, as it always was: this is how a `ShardState` arrives from serde and the live tally
 /// is derived AFTER a load by `reconcile_block_slab_live`. Charging here would count a loaded index
 /// twice over.
-fn page_index_and_identities(
-    flat: BTreeMap<String, StoredPageEntry>,
+fn block_index_and_identities(
+    flat: BTreeMap<String, StoredBlockEntry>,
 ) -> Result<(BlockIndexMap, Vec<(u64, Arc<str>)>), String> {
     let mut map = BlockIndexMap::default();
     let mut identities = Vec::with_capacity(flat.len());
@@ -3778,11 +3778,11 @@ fn page_index_and_identities(
 /// `TryFrom` AND NOT `From`, since the identity comes out of the key. A `From` would have to PANIC
 /// on a key it cannot invert, and `#[serde(try_from = ..)]` is what turns the refusal into a decode
 /// error instead -- the same `Err`-not-panic rule the rest of this load path follows.
-impl TryFrom<BTreeMap<String, StoredPageEntry>> for BlockIndexMap {
+impl TryFrom<BTreeMap<String, StoredBlockEntry>> for BlockIndexMap {
     type Error = String;
 
-    fn try_from(flat: BTreeMap<String, StoredPageEntry>) -> Result<Self, Self::Error> {
-        Ok(page_index_and_identities(flat)?.0)
+    fn try_from(flat: BTreeMap<String, StoredBlockEntry>) -> Result<Self, Self::Error> {
+        Ok(block_index_and_identities(flat)?.0)
     }
 }
 
@@ -3803,17 +3803,17 @@ impl TryFrom<BTreeMap<String, StoredPageEntry>> for BlockIndexMap {
 /// before a byte is written. And the sort is not incidental: the map this used to convert into was
 /// keyed by the rendered string and emitted entries in string order, while this map is keyed by a
 /// handle and iterates in hash order, so writing them as they come would reorder every dump.
-struct PageIndexAt<'a> {
+struct BlockIndexAt<'a> {
     node: &'a BucketNode,
-    keys: &'a PageKeysByPosition<'a>,
+    keys: &'a BlockKeysByPosition<'a>,
 }
 
-impl Serialize for PageIndexAt<'_> {
+impl Serialize for BlockIndexAt<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
-        serialize_page_index(self.node, self.keys, serializer)
+        serialize_block_index(self.node, self.keys, serializer)
     }
 }
 
@@ -3859,7 +3859,7 @@ impl Serialize for PageIndexAt<'_> {
 /// entry and of a whole index, and
 /// `page_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins the three
 /// written forms byte for byte.
-pub(super) struct PageEntryAt<'a> {
+pub(super) struct BlockEntryAt<'a> {
     pub(super) page: &'a BlockIndex,
 }
 
@@ -3883,13 +3883,13 @@ pub(super) struct PageEntryAt<'a> {
 /// `page_entry_names::an_index_written_before_this_change_loads_block_for_block` drives that against
 /// committed bytes, field by field.
 #[derive(Debug, Clone, Deserialize)]
-pub(super) struct StoredPageEntry {
+pub(super) struct StoredBlockEntry {
     pub(super) address: ElementEntry,
     pub(super) dirty: bool,
     pub(super) deleted: bool,
 }
 
-impl StoredPageEntry {
+impl StoredBlockEntry {
     /// The identity read back out of the key this entry was filed under, and the page beside it.
     ///
     /// # THE KEY IS THE SOURCE NOW, AND IT IS EXACTLY INVERTIBLE FOR THESE TWO TERMS
@@ -3927,7 +3927,7 @@ impl StoredPageEntry {
                         parts.kind
                     )
                 })?;
-        let StoredPageEntry { address, dirty, deleted } = self;
+        let StoredBlockEntry { address, dirty, deleted } = self;
         Ok((
             // ONE ALLOCATION, WHICH IS THE ONE THE REMOVED FIELD COST. The parse borrows out of the
             // key; this is where the borrow becomes the `Arc<str>` the filing map and the
@@ -3939,7 +3939,7 @@ impl StoredPageEntry {
     }
 }
 
-impl Serialize for PageEntryAt<'_> {
+impl Serialize for BlockEntryAt<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
@@ -4035,16 +4035,16 @@ impl Serialize for PageEntryAt<'_> {
 /// THE SORT IS NOT INCIDENTAL. The map this used to convert into was keyed by the rendered string
 /// and emitted entries in string order, while this map is keyed by a handle and iterates in hash
 /// order, so writing them as they come would reorder every dump.
-fn serialize_page_index<'k, S>(
+fn serialize_block_index<'k, S>(
     node: &'k BucketNode,
-    keys: &PageKeysByPosition<'k>,
+    keys: &BlockKeysByPosition<'k>,
     serializer: S,
 ) -> Result<S::Ok, S::Error>
 where
     S: serde::Serializer,
 {
     use serde::ser::{Error as _, SerializeMap};
-    let mut entries: Vec<(String, PageEntryAt<'_>)> =
+    let mut entries: Vec<(String, BlockEntryAt<'_>)> =
         Vec::with_capacity(node.block_index.len());
     for (handle, page) in node.block_index.iter() {
         // THROUGH THE ONE DOOR, so the encoder and the readers cannot disagree about where an
@@ -4086,7 +4086,7 @@ where
         // binary that still had the field decodes.
         entries.push((
             block_index_written_key(beside.object_key, page),
-            PageEntryAt { page },
+            BlockEntryAt { page },
         ));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -4130,10 +4130,10 @@ where
 /// how this kind of hand-written argument rots: a fixture that stops writing an object and leaves
 /// its name here would otherwise go on passing.
 #[cfg(test)]
-pub(super) struct PageIndexNamedBy<'a>(pub(super) &'a BlockIndexMap, pub(super) &'a [&'a str]);
+pub(super) struct BlockIndexNamedBy<'a>(pub(super) &'a BlockIndexMap, pub(super) &'a [&'a str]);
 
 #[cfg(test)]
-impl PageIndexNamedBy<'_> {
+impl BlockIndexNamedBy<'_> {
     /// The object each page is filed under, matched by the handle the map keyed it with.
     fn pairs(&self) -> Vec<(&str, &BlockIndex)> {
         let mut used = vec![false; self.1.len()];
@@ -4167,17 +4167,17 @@ impl PageIndexNamedBy<'_> {
 }
 
 #[cfg(test)]
-impl Serialize for PageIndexNamedBy<'_> {
+impl Serialize for BlockIndexNamedBy<'_> {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
         S: serde::Serializer,
     {
         use serde::ser::SerializeMap;
-        let mut entries: Vec<(String, PageEntryAt<'_>)> = self
+        let mut entries: Vec<(String, BlockEntryAt<'_>)> = self
             .pairs()
             .into_iter()
             .map(|(object_key, page)| {
-                (block_index_written_key(object_key, page), PageEntryAt { page })
+                (block_index_written_key(object_key, page), BlockEntryAt { page })
             })
             .collect();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -4201,7 +4201,7 @@ impl Serialize for NodeNamedBy<'_> {
     {
         serialize_bucket_node(
             self.0,
-            &PageIndexNamedBy(&self.0.block_index, self.1),
+            &BlockIndexNamedBy(&self.0.block_index, self.1),
             serializer,
         )
     }
@@ -4236,7 +4236,7 @@ pub(super) fn block_index_handle(object_key: &str, page: &BlockIndex) -> u64 {
     // `None` and the handle is decided by the object key and the address alone.
     //
     // That is safe only because all of them go through ONE emitter,
-    // `visit_model_live_blocks::emit_one_entry_a_page`, which emits at most one entry per distinct
+    // `visit_model_live_blocks::emit_one_entry_a_block`, which emits at most one entry per distinct
     // physical page: two of its entries cannot share an address and therefore cannot share a
     // handle. It is one function rather than one block per arm precisely so that this property is
     // held in a single place -- there is a note at the dedup saying what it is holding. A collision
@@ -4373,7 +4373,7 @@ pub(super) struct ObjectBlockLookup {
 ///      route pays in exactly one arm, the arm that stops holding the object key, and every
 ///      variant that keeps the key is a regression before a single tree node is counted.
 ///   2. THE KEY IS NOT A WORKING SET. IT IS THE SOURCE OF A WRITTEN FIELD. `impl Serialize for
-///      CoreIndex` builds [`PageKeysByPosition::from_lookup`] IN EVERY BUILD and composes each
+///      CoreIndex` builds [`BlockKeysByPosition::from_lookup`] IN EVERY BUILD and composes each
 ///      page's written key from it -- its own note says a release build without the inversion
 ///      "would write no key at all" -- because the page entry carries no identity of its own.
 ///      Readers beside the encoder reach the same inversion through `page_identities`,
@@ -5546,7 +5546,7 @@ pub(super) struct BucketNode {
     /// [`BucketNode::reconcile_tombstone_elements`] derives the rows back from the deleted entries
     /// at the classification pass every bucket mutation funnels through, so a site that drops a
     /// tombstone entry without saying so cannot leave a row describing a tombstone that is gone.
-    /// That is the same doctrine `reconcile_object_index_with_live_pages` already applies to the
+    /// That is the same doctrine `reconcile_object_index_with_live_blocks` already applies to the
     /// object list.
     /// NO `#[serde]` ATTRIBUTE, DELIBERATELY. `BucketNode`'s `Serialize` and `Deserialize` are
     /// written by hand -- the five flags are five wire keys and one byte in memory -- so an
@@ -5939,7 +5939,7 @@ impl BucketNode {
     ///
     /// A row whose page no longer carries a deleted entry in this bucket describes a tombstone that
     /// is not here. That is the drift direction a reconcile can fix, and it is fixed the way
-    /// `reconcile_object_index_with_live_pages` fixes the object list: by deriving from the pages,
+    /// `reconcile_object_index_with_live_blocks` fixes the object list: by deriving from the pages,
     /// at the pass every bucket mutation already funnels through, instead of asking each mutation
     /// site to remember. The OTHER direction -- a deleted entry with no row -- is not repairable
     /// here and is not left to chance either: `insert_container_tombstone_entry` is the one
@@ -5983,7 +5983,7 @@ impl BucketNode {
 ///     THIS engine writes will not load in an engine older than this change, which is the whole
 ///     of the break and is why it is stated here rather than discovered;
 ///   * `object_ids`, `deleted_object_ids` and `page_refs` are still accepted as aliases, which is
-///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_block_field_names`
+///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_page_field_names`
 ///     holds that spelling and an alias dropped from here is a store that stops loading;
 ///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
 ///     that did not still REFUSE a node that omits them. Presence comes from the wire.
@@ -6000,7 +6000,7 @@ impl BucketNode {
 // type is reachable from anywhere in the test tree, so nothing would ask the caller for the
 // identity it means.
 //
-// [`NodeNamedBy`] and [`PageIndexNamedBy`] replace them. They are wrappers, so every one of the
+// [`NodeNamedBy`] and [`BlockIndexNamedBy`] replace them. They are wrappers, so every one of the
 // twenty-six arms now states the objects its fixture wrote, and the compiler asked each of them
 // to. Their doc carries why the objects are matched by handle rather than listed per page.
 
@@ -6009,7 +6009,7 @@ impl BucketNode {
 /// The page index used to be composed inside this function from an `Option` context, which is
 /// what let the keyless case exist. It arrives as a value that already knows how to write itself,
 /// so there is one body, no `Option`, and exactly two things that can be passed: the production
-/// [`PageIndexAt`], which is handed the identity from beside each page, and the `#[cfg(test)]`
+/// [`BlockIndexAt`], which is handed the identity from beside each page, and the `#[cfg(test)]`
 /// [`PageIndexFromTheEntriesOwnCopies`], which is not reachable from production code.
 fn serialize_bucket_node<S, P>(
     node_ref: &BucketNode,
@@ -6041,7 +6041,7 @@ where
         node.serialize_field("dirty_generation", &self_.dirty_generation)?;
         node.serialize_field("object_index", &self_.object_index)?;
         node.serialize_field("deleted_object_index", &self_.deleted_object_index)?;
-        // AT THE BUCKET LEVEL, through `PageIndexAt`, so the written key is composed where the
+        // AT THE BUCKET LEVEL, through `BlockIndexAt`, so the written key is composed where the
         // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
         node.serialize_field("page_index", page_index)?;
         // THE ELEMENT EACH TOMBSTONE IN THIS BUCKET IS ABOUT, which the entries themselves no
@@ -6081,7 +6081,7 @@ enum BucketNodeField {
     LastDumpSequence,
     ObjectIndex,
     DeletedObjectIndex,
-    PageIndex,
+    BlockIndex,
     TombstoneElements,
     Ignore,
 }
@@ -6137,7 +6137,7 @@ impl<'de> Deserialize<'de> for BucketNodeField {
                     "deleted_object_index" | "deleted_object_ids" => {
                         BucketNodeField::DeletedObjectIndex
                     }
-                    "page_index" | "page_refs" => BucketNodeField::PageIndex,
+                    "page_index" | "page_refs" => BucketNodeField::BlockIndex,
                     "tombstone_elements" => BucketNodeField::TombstoneElements,
                     _ => BucketNodeField::Ignore,
                 })
@@ -6156,7 +6156,7 @@ impl<'de> Deserialize<'de> for BucketNodeField {
 ///
 /// The same shape as `BucketNodeAt` on the encode side, for the same reason and in the other
 /// direction.
-pub(super) struct BucketNodeWithPageKeys {
+pub(super) struct BucketNodeWithBlockKeys {
     pub(super) node: BucketNode,
     pub(super) page_keys: Vec<(u64, Arc<str>)>,
 }
@@ -6167,11 +6167,11 @@ impl<'de> Deserialize<'de> for BucketNode {
     where
         D: serde::Deserializer<'de>,
     {
-        Ok(BucketNodeWithPageKeys::deserialize(deserializer)?.node)
+        Ok(BucketNodeWithBlockKeys::deserialize(deserializer)?.node)
     }
 }
 
-impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
+impl<'de> Deserialize<'de> for BucketNodeWithBlockKeys {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
         D: serde::Deserializer<'de>,
@@ -6179,13 +6179,13 @@ impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
         struct NodeVisitor;
 
         impl<'de> serde::de::Visitor<'de> for NodeVisitor {
-            type Value = BucketNodeWithPageKeys;
+            type Value = BucketNodeWithBlockKeys;
 
             fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
                 formatter.write_str("a bucket node")
             }
 
-            fn visit_map<M>(self, mut map: M) -> Result<BucketNodeWithPageKeys, M::Error>
+            fn visit_map<M>(self, mut map: M) -> Result<BucketNodeWithBlockKeys, M::Error>
             where
                 M: serde::de::MapAccess<'de>,
             {
@@ -6209,7 +6209,7 @@ impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
                 // threw the stored map's keys away inside the conversion; the page identities have
                 // to come out of this decode, so the flat form is what is held and the conversion
                 // happens where both halves can be kept.
-                let mut block_index: Option<BTreeMap<String, StoredPageEntry>> = None;
+                let mut block_index: Option<BTreeMap<String, StoredBlockEntry>> = None;
                 // DEFAULTS WHEN ABSENT, and that is not a compatibility affordance: an index
                 // written before this key existed is REFUSED by its stamp before it reaches here
                 // (`persistence` compares `<` and falls back to WAL replay), so the only node that
@@ -6248,7 +6248,7 @@ impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
                         BucketNodeField::DeletedObjectIndex => {
                             once!(deleted_object_index, "deleted_object_index")
                         }
-                        BucketNodeField::PageIndex => once!(block_index, "page_index"),
+                        BucketNodeField::BlockIndex => once!(block_index, "page_index"),
                         BucketNodeField::TombstoneElements => {
                             once!(tombstone_elements, "tombstone_elements")
                         }
@@ -6294,10 +6294,10 @@ impl<'de> Deserialize<'de> for BucketNodeWithPageKeys {
                 // place a stored page key can be rejected -- and the refusal is an `Err`, which
                 // `load_index` turns into a replay of the write-ahead log.
                 let (block_index, page_keys) =
-                    page_index_and_identities(block_index.unwrap_or_default())
+                    block_index_and_identities(block_index.unwrap_or_default())
                         .map_err(M::Error::custom)?;
 
-                Ok(BucketNodeWithPageKeys {
+                Ok(BucketNodeWithBlockKeys {
                     node: BucketNode {
                         routing_bucket: routing_bucket
                             .ok_or_else(|| M::Error::missing_field("routing_slot"))?,
@@ -6339,10 +6339,10 @@ pub(super) enum BucketLayoutState {
 //
 // `object_key` is a SERIALIZED MEMBER of the stored entry, so a derive on this struct is a derive
 // that reads the identity off the entry -- the one place it is about to stop being. The entry
-// reaches the wire through [`PageEntryAt`] instead, which is handed the identity from BESIDE the
+// reaches the wire through [`BlockEntryAt`] instead, which is handed the identity from BESIDE the
 // page and writes the same five keys in the same order.
 //
-// AND IT ARRIVES THROUGH [`StoredPageEntry`], FOR THE MIRROR-IMAGE REASON. A derived
+// AND IT ARRIVES THROUGH [`StoredBlockEntry`], FOR THE MIRROR-IMAGE REASON. A derived
 // `Deserialize` would go on compiling with the field gone -- serde IGNORES an unknown key on a
 // derived struct unless `deny_unknown_fields` is set -- and would silently drop the one term the
 // load path cannot do without. `object_block_lookup` is `skip_serializing` and is rebuilt from
@@ -6426,7 +6426,7 @@ pub(super) struct BlockIndex {
 /// are `the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` (the four goldens),
 /// `an_index_written_before_this_change_loads_block_for_block` (that an old row still decodes),
 /// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
-/// binary writes back in its place) and `core_index_loads_legacy_bucket_block_field_names` (that
+/// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
 /// the old names still read).
 // FORTY, AND THE NEIGHBOUR BRACKET THAT STOOD HERE IS GONE.
 //
@@ -6562,7 +6562,7 @@ const _: () = {
 //
 // `block_index_handle` hashes five address terms, and the reading that frees it is that the bare
 // word IS the physical page, so slab and offset alone still tell two entries apart. THE SITE SAYS
-// OTHERWISE. `storage_bucket_internals::emit_one_entry_a_page` dedups on the TRIPLE
+// OTHERWISE. `storage_bucket_internals::emit_one_entry_a_block` dedups on the TRIPLE
 // `(block_slab_id, offset, length)`, and its own note states the safety direction: deduping on
 // that narrow triple is safe only because the handle hashes a WIDER tuple, so the set "can only
 // ever emit FEWER entries than the handle is able to tell apart, never more". Dropping `length`
@@ -6876,7 +6876,7 @@ impl CoreIndex {
     // `rebuild_object_block_lookup` GOES WITH THEM, AND IT IS THE SAME ARGUMENT ONE LEVEL UP. It
     // rebuilt the lookup by walking the pages and reading each one's key -- so with the key off
     // the entry there is nothing to rebuild FROM. The load path does not need it: the decode
-    // returns `BucketNodeWithPageKeys`, the identities beside the pages, and files as it decodes.
+    // returns `BucketNodeWithBlockKeys`, the identities beside the pages, and files as it decodes.
     // It had no production caller left and six test callers, each of which either compared the
     // maintained lookup against a fresh rebuild -- an oracle with only one side now -- or used it
     // to establish a lookup the write path already establishes.
@@ -6936,11 +6936,11 @@ impl CoreIndex {
     /// EVERY PAGE'S OBJECT IDENTITY, INDEXED BY THE POSITION THE PAGE IS HELD AT.
     ///
     /// Built once by a reader that walks pages and needs to know which object each belongs to --
-    /// see [`PageKeysByPosition`] for what it costs and [`PageKeysByPosition::identity_of`] for
+    /// see [`BlockKeysByPosition`] for what it costs and [`BlockKeysByPosition::identity_of`] for
     /// the two sources a page can be named by. A reader that starts FROM an object wants
     /// [`Self::block_refs_for`] instead and should not build this.
-    pub(super) fn page_identities(&self) -> PageKeysByPosition<'_> {
-        PageKeysByPosition::from_lookup(&self.object_block_lookup)
+    pub(super) fn page_identities(&self) -> BlockKeysByPosition<'_> {
+        BlockKeysByPosition::from_lookup(&self.object_block_lookup)
     }
 
     /// Every block ref this object holds, for one component.
@@ -7164,7 +7164,7 @@ pub(super) fn next_block_index_for_object(
     // would step back over a deleted block's ordinal and hand it out twice.
     //
     // WHAT THIS REPLACED ASKED THE WHOLE SHARD TO ANSWER FOR ONE OBJECT. It built
-    // `PageKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s, one
+    // `BlockKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s, one
     // insert per block ref of every object in the shard -- and then walked this bucket's whole
     // page index, calling `identity_of` on every page, to choose one integer. Both terms are
     // sized by the shard and neither is sized by the object, so an append to a one-page object in
@@ -7531,7 +7531,7 @@ mod component_lookup_tests {
     //! with the collapse and the third with the merge that joined this branch to the element-name
     //! one:
     //!
-    //!   * `the_insert_accumulates_an_objects_pages_into_the_one_slot` -- the half of the filing
+    //!   * `the_insert_accumulates_an_objects_blocks_into_the_one_slot` -- the half of the filing
     //!     tripwire that HAS a discriminator, since the half about what a page carried cannot fail
     //!     here. See the note on [`page`] for why.
     //!   * `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` -- the
@@ -7555,7 +7555,7 @@ mod component_lookup_tests {
     /// slot WHATEVER THE PAGE CARRIED" cannot fail against this tree: no page can carry an element
     /// name to file, so the clause after "whatever" has no values to range over and the assertion
     /// would pass on any insert at all. The half that can still move is asserted instead -- see
-    /// [`the_insert_accumulates_an_objects_pages_into_the_one_slot`].
+    /// [`the_insert_accumulates_an_objects_blocks_into_the_one_slot`].
     /// AND THE `object` PARAMETER IS REMOVED RATHER THAN RENAMED `_object`, which is the
     /// treatment `entry_count_versus_page_count::block_at` already took for a dead `component`
     /// argument and for the same reason: a caller that still tries to name an object here should
@@ -7680,7 +7680,7 @@ mod component_lookup_tests {
     /// every other arm in this module, which asks whether something is there rather than how much,
     /// would still pass.
     #[test]
-    fn the_insert_accumulates_an_objects_pages_into_the_one_slot() {
+    fn the_insert_accumulates_an_objects_blocks_into_the_one_slot() {
         let index = core_with("k", 3);
         assert_eq!(
             3,
@@ -9311,7 +9311,7 @@ impl ShardState {
 }
 
 #[cfg(test)]
-mod the_dirty_index_shares_the_page_indexs_key {
+mod the_dirty_index_shares_the_block_indexs_key {
     use super::{DirtyObjectIndex, ObjectBlockLookup};
     use std::sync::Arc;
 
@@ -9689,21 +9689,21 @@ mod does_the_sharing_survive_a_decode {
 }
 
 #[cfg(test)]
-mod a_records_pages_can_live_on_the_shard_beside_the_record {
+mod a_records_blocks_can_live_on_the_shard_beside_the_record {
     use super::ShardState;
     use crate::block_store::ElementEntry;
-    use crate::engine::object_record::{ObjectRecord, PageAddress, PageLayout};
+    use crate::engine::object_record::{ObjectRecord, BlockAddress, BlockLayout};
 
     /// The handle arm, driven through the shard rather than through the type's own tests.
     ///
     /// WHY THIS TEST AND NOT ONLY THE STORE'S OWN: a store nothing reaches is the same dead arm it
-    /// replaces. `PageAddress::Many` was constructible and tested for some time while every
+    /// replaces. `BlockAddress::Many` was constructible and tested for some time while every
     /// production mention stayed inside `object_record.rs`, because a handle is only a number until
     /// something maps it to a layout AND that something is somewhere a shard can get at. This
     /// drives the whole path -- shard field, handle, layout, record, and back -- so the field is
     /// reachable state and not a declaration.
     #[test]
-    fn a_page_layout_filed_on_the_shard_gives_the_record_its_rows_back() {
+    fn a_block_layout_filed_on_the_shard_gives_the_record_its_rows_back() {
         let mut shard = ShardState::default();
         assert!(
             shard.object_page_layouts.is_empty(),
@@ -9711,12 +9711,12 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
         );
 
         let address = ElementEntry::from_parts(7, 64, 128, Some(3), None);
-        let reserved = shard.object_page_layouts.insert(PageLayout::default());
+        let reserved = shard.object_page_layouts.insert(BlockLayout::default());
         let (record, layout) =
             ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
                 .expect("the layout arm refused an entry it is documented to hold");
         assert!(
-            matches!(record.page_address(), PageAddress::Many(_)),
+            matches!(record.page_address(), BlockAddress::Many(_)),
             "the record should carry a handle rather than an inline address"
         );
 
@@ -9759,7 +9759,7 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
     fn a_filed_layout_is_carried_in_the_stored_bytes_and_comes_back() {
         let without = ShardState::default();
         let mut with = ShardState::default();
-        with.object_page_layouts.insert(PageLayout::default());
+        with.object_page_layouts.insert(BlockLayout::default());
         assert_eq!(1, with.object_page_layouts.len(), "the layout did not land");
 
         let a = serde_json::to_vec(&without).expect("encoding a shard failed");
@@ -9780,7 +9780,7 @@ mod a_records_pages_can_live_on_the_shard_beside_the_record {
 }
 
 #[cfg(test)]
-mod the_dirty_index_adopts_the_page_indexs_handle_after_the_fact {
+mod the_dirty_index_adopts_the_block_indexs_handle_after_the_fact {
     use super::{DirtyObjectIndex, ObjectBlockLookup};
     use std::sync::Arc;
 

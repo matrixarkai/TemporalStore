@@ -52,7 +52,7 @@ use temporalstore_rust::{
 
 /// What the records of one cell are carrying.
 ///
-/// `pages_in_the_record` is the column the durability note on `TS_WAL_DATA_ONLY` did not have. It
+/// `blocks_in_the_record` is the column the durability note on `TS_WAL_DATA_ONLY` did not have. It
 /// counted operations and result values, found zero of each, and concluded there was nothing to
 /// rebuild from -- while the pages were travelling inside those same records the whole time.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -64,7 +64,7 @@ struct Carried {
     results_stating_a_removal: usize,
     results_stating_a_deadline: usize,
     results_naming_only_an_address: usize,
-    pages_in_the_record: usize,
+    blocks_in_the_record: usize,
     results_with_no_way_back: usize,
 }
 
@@ -212,7 +212,7 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
         if has_operation {
             counts.records_with_an_operation += 1;
         }
-        counts.pages_in_the_record += record.staged_blocks.len();
+        counts.blocks_in_the_record += record.staged_blocks.len();
         // Which pages this record carries, keyed as the page itself spells its identity.
         let mut pages: HashMap<(u64, Option<String>), usize> = HashMap::new();
         for page in &record.staged_blocks {
@@ -357,7 +357,7 @@ fn walk() -> Vec<(Shape, Carried)> {
             counts.results_stating_a_removal,
             counts.results_stating_a_deadline,
             counts.results_naming_only_an_address,
-            counts.pages_in_the_record,
+            counts.blocks_in_the_record,
             counts.results_with_no_way_back
         );
     }
@@ -418,7 +418,7 @@ fn no_cell_leaves_an_acked_result_with_no_way_back() {
 }
 
 #[test]
-fn an_upsert_carries_its_page_inside_the_record() {
+fn an_upsert_carries_its_block_inside_the_record() {
     let measured = walk();
     // Regime: four upsert cells.
     let upserts: Vec<&(Shape, Carried)> =
@@ -440,11 +440,11 @@ fn an_upsert_carries_its_page_inside_the_record() {
     // `an_upsert_records_results_that_name_only_an_address`.
     for (shape, counts) in &upserts {
         assert!(
-            counts.pages_in_the_record >= counts.results_naming_only_an_address,
+            counts.blocks_in_the_record >= counts.results_naming_only_an_address,
             "upsert cell {} carries {} pages for {} results that name only an address, so some \
              acked value can only be rebuilt from an address the ack did not make durable",
             shape.label.trim(),
-            counts.pages_in_the_record,
+            counts.blocks_in_the_record,
             counts.results_naming_only_an_address
         );
     }
@@ -453,14 +453,14 @@ fn an_upsert_carries_its_page_inside_the_record() {
 #[test]
 fn an_upsert_records_results_that_name_only_an_address() {
     let measured = walk();
-    // The cell count is asserted by `an_upsert_carries_its_page_inside_the_record` and is not
+    // The cell count is asserted by `an_upsert_carries_its_block_inside_the_record` and is not
     // repeated here. Two clauses asserting one fact cannot be planted apart, and the plant that
     // moves the upsert count moves the removal count with it -- the two are complementary over
     // one partition, so neither can fail alone.
     let upserts: Vec<&(Shape, Carried)> =
         measured.iter().filter(|(shape, _)| shape.upsert).collect();
     // What makes the carried page LOAD-BEARING rather than spare. A build whose results all
-    // carried their own bytes would satisfy `an_upsert_carries_its_page_inside_the_record` without
+    // carried their own bytes would satisfy `an_upsert_carries_its_block_inside_the_record` without
     // any page mattering, so that test would stop being about anything.
     for (shape, counts) in &upserts {
         assert!(
@@ -474,7 +474,7 @@ fn an_upsert_records_results_that_name_only_an_address() {
 }
 
 #[test]
-fn a_removal_carries_no_page() {
+fn a_removal_carries_no_block() {
     let measured = walk();
     // Regime: four removal cells.
     let removals: Vec<&(Shape, Carried)> =
@@ -490,11 +490,11 @@ fn a_removal_carries_no_page() {
     // `an_operation_or_a_statement_covers_every_record` for the wrong reason.
     for (shape, counts) in &removals {
         assert_eq!(
-            counts.pages_in_the_record,
+            counts.blocks_in_the_record,
             0,
             "removal cell {} carried {} pages, so it is not the no-page cell it is labelled",
             shape.label.trim(),
-            counts.pages_in_the_record
+            counts.blocks_in_the_record
         );
     }
 }
@@ -502,7 +502,7 @@ fn a_removal_carries_no_page() {
 #[test]
 fn an_operation_or_a_statement_covers_every_record() {
     let measured = walk();
-    // The cell count is asserted by `a_removal_carries_no_page` and is not repeated here, for the
+    // The cell count is asserted by `a_removal_carries_no_block` and is not repeated here, for the
     // reason given there.
     let removals: Vec<&(Shape, Carried)> =
         measured.iter().filter(|(shape, _)| !shape.upsert).collect();

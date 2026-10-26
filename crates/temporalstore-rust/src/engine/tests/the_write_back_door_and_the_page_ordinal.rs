@@ -7,7 +7,7 @@
 //! THE ASYMMETRY. `ObjectRecord`'s inline arm keeps a page ordinal's PRESENCE and not its value,
 //! which is correct and measured: a single-page object has page zero by construction, and 400 of
 //! 400 live addresses on a real store carried ordinal 0. The conversion path refuses a NONZERO
-//! ordinal by name, as `NonZeroPageOrdinalDoesNotFitInline`. `set_address` -- the compactor's
+//! ordinal by name, as `NonZeroBlockOrdinalDoesNotFitInline`. `set_address` -- the compactor's
 //! write-back door -- did not refuse it; it wrote the presence bit and dropped the value.
 //!
 //! WHY NOTHING CAUGHT IT. No test fed either path a nonzero ordinal. The existing fixture at
@@ -32,7 +32,7 @@ fn entry_with_ordinal(ordinal: Option<u64>) -> ElementEntry {
 ///
 /// Two halves of one contract have to give one answer. `try_set_address` is the half that was
 /// missing: the conversion path already answered
-/// `NonZeroPageOrdinalDoesNotFitInline`, and the write-back door answered nothing at all.
+/// `NonZeroBlockOrdinalDoesNotFitInline`, and the write-back door answered nothing at all.
 ///
 /// THE POSITIVE CONTROLS ARE THE POINT OF THE SECOND HALF. A refusal that fires on every input
 /// would pass the first assertion just as well, so ordinal zero and ordinal absent must both still
@@ -47,7 +47,7 @@ fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
         .expect_err("a nonzero page ordinal has no room in the inline arm and must be refused");
     assert_eq!(
         refusal,
-        ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline { block_id: 7 },
+        ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline { block_id: 7 },
         "the write-back door must refuse by the SAME named variant the conversion path uses, or \
          the two halves of one contract give two different answers to one question"
     );

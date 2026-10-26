@@ -25,7 +25,7 @@
 //!      is single-page. No per-page constant can be correct at both ranges, in either direction,
 //!      which is the actual defect: the report reads a container's cost off a type name instead
 //!      of off the container.
-//!   2. CAPACITY, NOT LENGTH. `reserve_one_more` steps the page list by `PAGE_LIST_GROWTH_STEP`
+//!   2. CAPACITY, NOT LENGTH. `reserve_one_more` steps the page list by `BLOCK_LIST_GROWTH_STEP`
 //!      with `reserve_exact`, so a list of five entries owns a buffer of eight. The report counts
 //!      `len()`.
 //!   3. NOTHING OUT OF LINE IS COUNTED. `object_key: Arc<str>` and `component: Option<Arc<str>>`
@@ -53,7 +53,7 @@ use super::bucket_fill::{
     engine_on, load_on, seed_container, seed_routed, LARGE, NARROW_END, SMALL, WIDE_END,
 };
 use super::*;
-use crate::engine::state::{BlockIndex, BlockIndexMap, BucketNode, PAGE_LIST_GROWTH_STEP};
+use crate::engine::state::{BlockIndex, BlockIndexMap, BucketNode, BLOCK_LIST_GROWTH_STEP};
 use std::collections::BTreeMap;
 
 // Imported as a NAME rather than spelled at the call site: the counting-allocator gate walks back
@@ -412,7 +412,7 @@ fn the_arc_payload_rule_used_here_is_recovered_from_the_allocator() {
 fn the_resident_index_report_is_measured_against_the_allocator() {
     println!(
         "size_of: BucketNode {} B, BlockIndex {} B, (u64, BlockIndex) {} B, BlockIndexMap {} B, \
-         growth step {PAGE_LIST_GROWTH_STEP}",
+         growth step {BLOCK_LIST_GROWTH_STEP}",
         std::mem::size_of::<BucketNode>(),
         std::mem::size_of::<BlockIndex>(),
         std::mem::size_of::<(u64, BlockIndex)>(),

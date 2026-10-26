@@ -401,8 +401,8 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
 // AND THE SAVING IS CONDITIONAL ON THE READER CENSUS, WHICH IS WHERE THIS NOW LIVES OR DIES. Two
 // functions cannot take a model-map source at all, and one of them is on the write path:
 //
-//   * `block_index_written_key` through `serialize_page_index`, reached as
-//     `PageIndexAt<'a>(&'a BucketNode)` inside a DERIVED `Serialize for CoreIndex`. Serde hands a
+//   * `block_index_written_key` through `serialize_block_index`, reached as
+//     `BlockIndexAt<'a>(&'a BucketNode)` inside a DERIVED `Serialize for CoreIndex`. Serde hands a
 //     `Serialize` impl no context, so neither the shard nor the model maps can reach that scope.
 //     Structural, not a cost.
 //   * `refresh_one_bucket_runtime_flags`, which holds only a `&mut BucketNode` and contains FIVE

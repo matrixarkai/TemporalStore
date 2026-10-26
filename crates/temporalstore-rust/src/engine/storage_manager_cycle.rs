@@ -560,7 +560,7 @@ impl TemporalEngine {
             }
         }
 
-        let reclaim_page_span = StageSpan::close(&mut stage_clock);
+        let reclaim_block_span = StageSpan::close(&mut stage_clock);
         let lifecycle_report = if request.dry_run {
             None
         } else {
@@ -990,8 +990,8 @@ impl TemporalEngine {
         });
 
         stages.push(StorageManagerStageReport {
-            duration_ms: reclaim_page_span.duration_ms,
-            walk: reclaim_page_span.walk,
+            duration_ms: reclaim_block_span.duration_ms,
+            walk: reclaim_block_span.walk,
             stage: "reclaim_page".to_string(),
             enabled: request.enable_block_reclaim,
             applied: request.enable_block_reclaim

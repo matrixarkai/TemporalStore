@@ -187,7 +187,7 @@ fn members_returned(response: &crate::types::CommandResponse) -> Vec<Vec<u8>> {
 fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut stated = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -200,7 +200,7 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
             let Ok(bytes) = engine.block_store.read(&page.address) else {
                 continue;
             };
-            if let crate::engine::container_pages::ContainerPageDecode::Framed {
+            if let crate::engine::container_pages::ContainerBlockDecode::Framed {
                 spelling,
                 items,
                 ..

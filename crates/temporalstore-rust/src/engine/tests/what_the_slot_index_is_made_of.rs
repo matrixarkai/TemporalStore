@@ -124,7 +124,7 @@
 //! rebuilt from the map key its bucket is filed under, on all 1,024.
 //!
 //! AND THE KEY'S CHARACTERS ARE NOT READ BACK. The decoder takes the page index as a
-//! `BTreeMap<String, StoredPageEntry>` and consumes it with `into_values()`, so what the map key
+//! `BTreeMap<String, StoredBlockEntry>` and consumes it with `into_values()`, so what the map key
 //! spells reaches nothing. Measured rather than read off the source: every page key in a 2,000-key
 //! index is replaced by the decimal of its handle, fed to the production decoder, and re-encoded --
 //! and the `slot_index` that comes back is byte-identical to the undoctored one's, with the
@@ -704,7 +704,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     // module: this is bookkeeping for a counterfactual, not the redundancy claim. The claim is
     // taken in the other direction -- the key rebuilt from the entry's WRITTEN BYTES -- because a
     // comparison against `block_index_written_key` would be a renderer compared with itself.
-    let identity_keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let identity_keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut handles_by_written_key = BTreeMap::new();
@@ -2278,11 +2278,11 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
 /// that: an index whose every page key was replaced by the decimal of the handle the live map files
 /// that page under decoded to the same `slot_index`, BYTE FOR BYTE, as the undoctored one. The
 /// composite key was a name the writer composed and the reader discarded -- `page_index` decoded as
-/// a `BTreeMap<String, StoredPageEntry>` consumed by `into_values()`.
+/// a `BTreeMap<String, StoredBlockEntry>` consumed by `into_values()`.
 ///
 /// That was the measurement the proposal rested on and it is the measurement the proposal ENDED.
 /// The decoder parses the key now (`index_log::block_ref_key_parts`), and
-/// `page_index_and_identities` iterates the map rather than its values. So the old claim is FALSE,
+/// `block_index_and_identities` iterates the map rather than its values. So the old claim is FALSE,
 /// and this test is renamed rather than re-goldened: a test whose NAME asserts the opposite of what
 /// it checks is worse than a stale golden, because the name is what a future reader greps for.
 ///

@@ -811,7 +811,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         dirty: false,
         deleted: false,
     };
-    let encoded = serde_json::to_string(&crate::engine::state::PageEntryAt {
+    let encoded = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         page: &nameless_entry,
     })
     .expect("a page entry serializes");
@@ -825,7 +825,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         "a component-less page entry still wrote a component key, so the absent shape this finding \
          rests on is not what the encoder produces: {encoded}"
     );
-    let decoded = serde_json::from_str::<crate::engine::state::StoredPageEntry>(&encoded)
+    let decoded = serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&encoded)
         .expect("a component-less page entry decodes")
         .into_parts_from_key(&crate::engine::state::block_index_written_key(
             "ef-wire-probe",
@@ -1407,7 +1407,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
             std::slice::from_ref(&item),
             false,
         );
-        let named = super::PageObjects::of(&index);
+        let named = super::BlockObjects::of(&index);
         let mut rows = Vec::new();
         for bucket in index.bucket_map.values() {
             for (allocated, page) in bucket.block_index.iter() {

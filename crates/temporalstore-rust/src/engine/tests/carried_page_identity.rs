@@ -181,7 +181,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 ///
 /// JOINED BY ADDRESS, WHICH IS THE JOIN THE ENGINE ITSELF MAKES. The resident map holds an
 /// `ElementEntry` per field and the index entry holds the same address, so the address is what
-/// identifies a page in both. `RecordedMap::page_an_element_vacates` asks this exact question on
+/// identifies a page in both. `RecordedMap::block_an_element_vacates` asks this exact question on
 /// the write path, so this is not a fixture-only correspondence.
 fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -204,7 +204,7 @@ fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String
             }
         }
     }
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -800,7 +800,7 @@ fn what_an_element_named_block_adds_to_the_record() {
 
 /// THE ALLOCATIONS, which a byte count cannot see. The log is on the write path.
 ///
-/// `stage` is charged to `CarriedPage`, and this change adds the component's own copy to that same
+/// `stage` is charged to `CarriedBlock`, and this change adds the component's own copy to that same
 /// class deliberately -- it is a cost of carrying the page, and charging it elsewhere would let it
 /// disappear from the class that exists to measure exactly this.
 ///
@@ -823,7 +823,7 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
         let counts = span
             .close()
             .expect("built with `alloc-probe`, so the ledger is a measurement");
-        let row = counts.classes.row(AllocClass::CarriedPage);
+        let row = counts.classes.row(AllocClass::CarriedBlock);
         let _ = crate::engine::block_in_wal::take_staged();
         (row.allocs, row.alloc_bytes)
     };
@@ -1120,7 +1120,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
         let (pages, recovered) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
-            let named = super::PageObjects::of(&shard.bucket_index);
+            let named = super::BlockObjects::of(&shard.bucket_index);
             let pages = shard
                 .bucket_index
                 .bucket_map

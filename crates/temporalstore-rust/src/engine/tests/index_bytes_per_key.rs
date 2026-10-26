@@ -5190,7 +5190,7 @@ fn what_the_composed_entity_key_costs_the_walk() {
 ///   strings    one entry per object, key lent, no component, no inner collection
 ///   features   goes through `visit_timestamped_series`, which builds a collection of unique
 ///              addresses per series before emitting
-///   hashes     goes through `emit_one_entry_a_page`, which builds a `BTreeSet` of pages per key
+///   hashes     goes through `emit_one_entry_a_block`, which builds a `BTreeSet` of pages per key
 ///              to dedup them
 ///
 /// So if the residual is per-SERIES rather than per-entry, the arms with an inner collection will
@@ -5253,7 +5253,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
         (n, counts.allocs, counts.chunk_bytes)
     };
 
-    // ---- hashes: through `emit_one_entry_a_page`, one field each ----------------------
+    // ---- hashes: through `emit_one_entry_a_block`, one field each ----------------------
     let hashes_only = {
         let mut shard = crate::engine::state::ShardState::default();
         for i in 0..KEYS {
@@ -5295,7 +5295,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
     println!("  MEASURED: strings 0.01, hashes 1.01, features 2.01. The mixed walk's 1.00 is the");
     println!("  average of those three and nothing else -- (0.01 + 2.01 + 1.01) / 3 = 1.01.");
     println!("  strings pays NOTHING: its key is lent, it has no component and nothing nested.");
-    println!("  hashes pays once, for `emit_one_entry_a_page`'s dedup set per key.");
+    println!("  hashes pays once, for `emit_one_entry_a_block`'s dedup set per key.");
     println!("  features pays TWICE, and `unique_timestamped_kv_block_addresses` is why:");
     println!("      .collect::<HashSet<_>>().into_iter().collect::<Vec<_>>()");
     println!("  a hash set to dedup, then a vector to sort.");
@@ -6326,7 +6326,7 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
 ///
 /// # WHAT IT USED TO COST
 ///
-/// It built `PageKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s,
+/// It built `BlockKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s,
 /// one insert per block ref of every object in the shard -- and then walked the bucket's whole
 /// page index asking `identity_of` for each page, to choose one integer. Both terms sized by the
 /// shard, neither by the object. Measured by this arm on the parent commit, after the bucket bug
@@ -6681,7 +6681,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
 /// the collection and neither allocates, so neither is the figure above:
 /// `resident_highest_block_id`, which takes a max over every member's address to choose an
 /// ordinal (O(members) per add, so O(members squared) to fill), and
-/// `page_an_element_vacates`, which the filer consults when an index entry names a page.
+/// `block_an_element_vacates`, which the filer consults when an index entry names a page.
 ///
 /// WRITTEN DOWN RATHER THAN ACTED ON, because "it is on the shared path so it must generalise"
 /// was the reasoning this probe existed to check, and it was half right. The same caution applies

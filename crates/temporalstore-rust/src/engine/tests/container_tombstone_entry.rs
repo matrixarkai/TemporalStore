@@ -145,7 +145,7 @@
 //! bounds by DISTINCT elements removed rather than by removals; and the refusal is counted, so it is
 //! visible rather than silent. Releasing across it would lose the removals.
 //!
-//! **2. A bucket whose every entry is a tombstone is marked `deleted`** (#21, #33). `every_page_deleted
+//! **2. A bucket whose every entry is a tombstone is marked `deleted`** (#21, #33). `every_block_deleted
 //! = !is_empty() && all(|page| page.deleted)`, and that is arguably just true of such a bucket: it
 //! holds no live data. Two things read it. `bucket_store::runtime_report` counts it in
 //! `deleted_bucket_count`, which is a report. Eviction eligibility is `in_memory() && !deleted() &&
@@ -205,7 +205,7 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -229,7 +229,7 @@ fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize
 fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -297,7 +297,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     // THE ASYMMETRY IS KNOWN AND RECORDED, not discovered here:
     // `index_entry_names_a_page`'s doc calls it "a defect of footprint rather than of answers" and
     // names the fix -- ask the resident map whether any sibling is still on the vacated page,
-    // which `RecordedMap::page_an_element_vacates` is -- and why a removal cannot reach it, since
+    // which `RecordedMap::block_an_element_vacates` is -- and why a removal cannot reach it, since
     // it enters the index through a door that takes no element type. What this arm still holds is
     // the half that is about ANSWERS: every reader below must refuse to answer FROM the tombstone,
     // and that is asserted member by member rather than by a count.
@@ -604,7 +604,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     //
     // This asserted `MEMBERS - REMOVED` live entries after the round -- one per surviving member.
     // It is ONE. The rebuild re-derives from the resident maps through
-    // `emit_one_entry_a_page`, which emits at most one entry per distinct PHYSICAL PAGE, and the
+    // `emit_one_entry_a_block`, which emits at most one entry per distinct PHYSICAL PAGE, and the
     // round folded the survivors onto a single page. So the rebuild files one live entry, and the
     // stale live entries that a removal left over its vacated pages are GONE.
     //
@@ -621,7 +621,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     let live_blocks_folded = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         shard
             .bucket_index
             .bucket_map
@@ -708,7 +708,7 @@ fn a_keys_last_element_still_files_its_object_id() {
     let filed = |engine: &TemporalEngine| -> bool {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         shard.bucket_index.bucket_map.values().any(|bucket| {
             bucket.deleted_object_index.contains(&object_id)
                 && bucket

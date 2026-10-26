@@ -125,7 +125,7 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
     // being caught by a counter here. The `written` keys this census still collects are the
     // second guard: `block_index_written_key` renders the stored spelling, and a name on an entry
     // would show up in it.
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut pages = std::collections::BTreeSet::new();
     let mut written = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -427,7 +427,7 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
     let (live, pages) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let mut live = 0usize;
         let mut pages = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
@@ -496,7 +496,7 @@ fn remove(engine: &TemporalEngine, member: Vec<u8>) {
 fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut out = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -851,8 +851,8 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
 /// nothing reached -- so the fixture is first shown to have put each member on its own page and to
 /// have actually MOVED the rewritten one, and only then are the two counts compared.
 ///
-/// THE MUTATION: `RecordedMap::page_an_element_vacates` returning `None` unconditionally, which is
-/// the tree before `ReplacedPage` existed. That reddens the one-to-one assertion here and leaves
+/// THE MUTATION: `RecordedMap::block_an_element_vacates` returning `None` unconditionally, which is
+/// the tree before `ReplacedBlock` existed. That reddens the one-to-one assertion here and leaves
 /// the fold arm above green, which is what says the two arms are about different halves.
 #[test]
 fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {

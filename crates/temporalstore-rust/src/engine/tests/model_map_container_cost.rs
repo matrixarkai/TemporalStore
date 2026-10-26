@@ -1032,7 +1032,7 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
         // this comparison. It is stated as a zero with the entry width beside it rather than
         // dropped, because a table that simply lost the row would read as the pointer having been
         // forgotten rather than retired.
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let mut distinct: std::collections::HashSet<*const u8> = std::collections::HashSet::new();
         let mut entries = 0usize;
         let mut distinct_text_bytes = 0usize;

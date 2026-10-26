@@ -956,7 +956,7 @@ impl TemporalEngine {
                 &self.block_store,
                 shard_id,
                 &address,
-                PageIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
+                BlockIdentity::of(shard_id, target.kind(), target.object_key(), target.component()),
                 Some(routing_bucket),
             ) {
                 // Derived BEFORE `target` moves into the tuple: the terms are borrowed from it.

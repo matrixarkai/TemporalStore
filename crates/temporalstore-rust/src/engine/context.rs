@@ -15,7 +15,7 @@ use crate::types::{
 use matrixcache::MultiLayerCache;
 
 use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
-use super::hashing::PageIdentity;
+use super::hashing::BlockIdentity;
 use super::timestamped_series::TimestampedSeries;
 use super::{read_block_bytes, stable_object_hash, ShardState};
 /// `prefix` then two decimal parts, joined by colons, in one allocation.
@@ -388,7 +388,7 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
 /// THE ONE SPELLING, so that a reader and the write path that produced the page cannot disagree
 /// about which bucket the page cache is keyed by. Every context loader here reaches it through this
 /// rather than composing `routing_range()` and `block_routing_bucket` for itself.
-pub(super) fn shard_page_routing_bucket(shard: &ShardState, object_key: &str) -> Option<u32> {
+pub(super) fn shard_block_routing_bucket(shard: &ShardState, object_key: &str) -> Option<u32> {
     let (start_routing_bucket, end_routing_bucket) = shard.routing_range();
     Some(crate::engine::hashing::block_routing_bucket(
         object_key,
@@ -406,7 +406,7 @@ pub(super) fn read_context_value<T: ContextWire>(
     // Which page, stated by the caller: the timeline series this record sits in. The kind differs
     // per caller -- a child ref, a summary and a compression event are three kinds over three maps
     // -- and neither the address nor the timeline key names it.
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<T> {
     let point = read_feature_point(
@@ -437,7 +437,7 @@ pub(super) fn read_context_value_cached<T: ContextWire>(
     timeline_key: u64,
     address: &ElementEntry,
     // As `read_context_value` above.
-    identity: PageIdentity<'_>,
+    identity: BlockIdentity<'_>,
     packed_block_cache: &mut HashMap<ElementEntry, Option<Vec<FeaturePoint>>>,
     routing_bucket: Option<u32>,
 ) -> Option<T> {
@@ -859,7 +859,7 @@ pub(super) fn load_context_children(
     shard: &ShardState,
     object_key: &str,
 ) -> Vec<ContextChildRef> {
-    let routing_bucket = shard_page_routing_bucket(shard, object_key);
+    let routing_bucket = shard_block_routing_bucket(shard, object_key);
     shard
         .context_children()
         .get(object_key)
@@ -873,7 +873,7 @@ pub(super) fn load_context_children(
                         shard_id,
                         timeline_key,
                         address,
-                        PageIdentity::of(shard_id, "context_child", object_key, None),
+                        BlockIdentity::of(shard_id, "context_child", object_key, None),
                         routing_bucket,
                     )
                 })
@@ -931,14 +931,14 @@ pub(super) fn load_context_node_vector(
         .map(|address| {
             (
                 address,
-                PageIdentity::of(shard_id, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)),
+                BlockIdentity::of(shard_id, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)),
             )
         })
         .or_else(|| {
             shard
                 .context_nodes()
                 .get(object_key.as_str())
-                .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+                .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
         })
         .and_then(|(address, identity)| {
             super::read_block_shared(
@@ -979,14 +979,14 @@ pub(super) fn load_context_node(
         .map(|address| {
             (
                 address,
-                PageIdentity::of(shard_id, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)),
+                BlockIdentity::of(shard_id, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)),
             )
         })
         .or_else(|| {
             shard
                 .context_nodes()
                 .get(object_key.as_str())
-                .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+                .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
         })
         .and_then(|(address, identity)| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
@@ -1012,7 +1012,7 @@ pub(super) fn load_context_summaries(
     as_of_ms: u64,
     limit: Option<usize>,
 ) -> Vec<ContextSummary> {
-    let routing_bucket = shard_page_routing_bucket(shard, object_key);
+    let routing_bucket = shard_block_routing_bucket(shard, object_key);
     shard
         .context_summaries()
         .get(object_key)
@@ -1027,7 +1027,7 @@ pub(super) fn load_context_summaries(
                         shard_id,
                         timeline_key,
                         address,
-                        PageIdentity::of(shard_id, "context_summary", object_key, None),
+                        BlockIdentity::of(shard_id, "context_summary", object_key, None),
                         routing_bucket,
                     )
                 })
@@ -1057,7 +1057,7 @@ pub(super) fn load_newest_context_summary(
     object_key: &str,
     as_of_ms: u64,
 ) -> Option<ContextSummary> {
-    let routing_bucket = shard_page_routing_bucket(shard, object_key);
+    let routing_bucket = shard_block_routing_bucket(shard, object_key);
     shard
         .context_summaries()
         .get(object_key)
@@ -1072,7 +1072,7 @@ pub(super) fn load_newest_context_summary(
                         shard_id,
                         timeline_key,
                         address,
-                        PageIdentity::of(shard_id, "context_summary", object_key, None),
+                        BlockIdentity::of(shard_id, "context_summary", object_key, None),
                         routing_bucket,
                     )
                 })
@@ -1113,7 +1113,7 @@ pub(super) fn load_context_compression_events(
         .filter(|node_hash| *node_hash != 0)
     {
         let object_key = context_compression_key(tenant_hash, node_hash);
-        let routing_bucket = shard_page_routing_bucket(shard, &object_key);
+        let routing_bucket = shard_block_routing_bucket(shard, &object_key);
         if let Some(series) = shard.context_compressions().get(&object_key[..]) {
             events.extend(series.points().filter_map(|(timeline_key, address)| {
                 read_context_value::<ContextCompressionEvent>(
@@ -1122,7 +1122,7 @@ pub(super) fn load_context_compression_events(
                     shard_id,
                     timeline_key,
                     address,
-                    PageIdentity::of(shard_id, "context_compression", &object_key, None),
+                    BlockIdentity::of(shard_id, "context_compression", &object_key, None),
                     routing_bucket,
                 )
                 .filter(|event| {

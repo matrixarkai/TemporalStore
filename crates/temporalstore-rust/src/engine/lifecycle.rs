@@ -366,7 +366,7 @@ pub(crate) mod restore_phase_probe {
 /// the size of the class that still depends on the outcome carrying the name. It is also what says
 /// whether a test exercised the fallback at all -- a fallback nothing reaches is a fallback nothing
 /// has checked.
-static OUTCOME_NAME_FROM_PAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+static OUTCOME_NAME_FROM_BLOCK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static OUTCOME_NAME_FROM_COMPONENT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static OUTCOME_NAME_DISAGREED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -374,7 +374,7 @@ static OUTCOME_NAME_DISAGREED: std::sync::atomic::AtomicU64 = std::sync::atomic:
 /// (from the page, from the outcome's own copy, refused for disagreeing).
 pub fn outcome_element_name_sources() -> (u64, u64, u64) {
     (
-        OUTCOME_NAME_FROM_PAGE.load(std::sync::atomic::Ordering::Relaxed),
+        OUTCOME_NAME_FROM_BLOCK.load(std::sync::atomic::Ordering::Relaxed),
         OUTCOME_NAME_FROM_COMPONENT.load(std::sync::atomic::Ordering::Relaxed),
         OUTCOME_NAME_DISAGREED.load(std::sync::atomic::Ordering::Relaxed),
     )
@@ -382,7 +382,7 @@ pub fn outcome_element_name_sources() -> (u64, u64, u64) {
 
 /// Reset the three, so a test measures its own replays and not another test's.
 pub fn reset_outcome_element_name_sources() {
-    OUTCOME_NAME_FROM_PAGE.store(0, std::sync::atomic::Ordering::Relaxed);
+    OUTCOME_NAME_FROM_BLOCK.store(0, std::sync::atomic::Ordering::Relaxed);
     OUTCOME_NAME_FROM_COMPONENT.store(0, std::sync::atomic::Ordering::Relaxed);
     OUTCOME_NAME_DISAGREED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
@@ -391,18 +391,18 @@ pub fn reset_outcome_element_name_sources() {
 ///
 /// `Unreadable` carries WHY, because the reason is what the refusal message has to print and what
 /// the next reader of a failed load needs. An `Option` here lost it once already.
-enum OutcomePageElements {
+enum OutcomeBlockElements {
     /// The frame named these elements, with each one's removed flag.
     Named(Vec<(String, bool)>),
     /// The page could not be asked, for this reason.
     Unreadable(&'static str),
 }
 
-impl OutcomePageElements {
+impl OutcomeBlockElements {
     fn why(&self) -> &'static str {
         match self {
-            OutcomePageElements::Named(_) => "names its elements",
-            OutcomePageElements::Unreadable(why) => why,
+            OutcomeBlockElements::Named(_) => "names its elements",
+            OutcomeBlockElements::Unreadable(why) => why,
         }
     }
 
@@ -440,7 +440,7 @@ impl OutcomePageElements {
         want_removed: bool,
     ) -> Option<Vec<String>> {
         match self {
-            OutcomePageElements::Named(named) => {
+            OutcomeBlockElements::Named(named) => {
                 if let Some(component) = item.component.as_deref() {
                     if !named.iter().any(|(name, _)| name == component) {
                         OUTCOME_NAME_DISAGREED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -455,10 +455,10 @@ impl OutcomePageElements {
                 if wanted.is_empty() {
                     return None;
                 }
-                OUTCOME_NAME_FROM_PAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                OUTCOME_NAME_FROM_BLOCK.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Some(wanted)
             }
-            OutcomePageElements::Unreadable(_) => {
+            OutcomeBlockElements::Unreadable(_) => {
                 let component = item.component.clone()?;
                 OUTCOME_NAME_FROM_COMPONENT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 Some(vec![component])
@@ -745,7 +745,7 @@ impl TemporalEngine {
             shard_id,
             &address,
             // The same three terms `bucket_index_block_address` was just asked, above.
-            PageIdentity::of(shard_id, model_id, object_key, component),
+            BlockIdentity::of(shard_id, model_id, object_key, component),
             Some(routing_bucket),
         )
     }
@@ -1778,16 +1778,16 @@ impl TemporalEngine {
     /// prices both arms. AND IT CAN FAIL: an asynchronous write leaves its block buffered, so the
     /// address can name bytes the block store does not have yet, which is one of the ways this
     /// answers `Unreadable` rather than naming anything.
-    fn elements_the_outcome_page_holds(
+    fn elements_the_outcome_block_holds(
         &self,
         item: &crate::wal::WalOutcomeItem,
         carried: &[crate::wal::StagedBlock],
-    ) -> OutcomePageElements {
+    ) -> OutcomeBlockElements {
         let Some(spelling) = super::container_pages::ElementKeySpelling::for_kind(&item.kind) else {
-            return OutcomePageElements::Unreadable("this kind has no element-key page");
+            return OutcomeBlockElements::Unreadable("this kind has no element-key page");
         };
         let Some(address) = item.resolved_address() else {
-            return OutcomePageElements::Unreadable("the outcome names no address");
+            return OutcomeBlockElements::Unreadable("the outcome names no address");
         };
         let mut of_this_object = carried
             .iter()
@@ -1801,7 +1801,7 @@ impl TemporalEngine {
             (Some(_), Some(_)) => match self.block_store.read(&address) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    return OutcomePageElements::Unreadable(
+                    return OutcomeBlockElements::Unreadable(
                         "the record carries several pages of this object, so the carried page \
                          cannot be told apart, and the address is not in the block store",
                     )
@@ -1810,7 +1810,7 @@ impl TemporalEngine {
             (None, _) => match self.block_store.read(&address) {
                 Ok(bytes) => bytes,
                 Err(_) => {
-                    return OutcomePageElements::Unreadable(
+                    return OutcomeBlockElements::Unreadable(
                         "the record carries no page for this object and the address is not in the \
                          block store",
                     )
@@ -1818,7 +1818,7 @@ impl TemporalEngine {
             },
         };
         match super::container_pages::decode_container_page(&bytes) {
-            super::container_pages::ContainerPageDecode::Framed {
+            super::container_pages::ContainerBlockDecode::Framed {
                 spelling: written, items, ..
             } if written == spelling => {
                 let mut named = Vec::with_capacity(items.len());
@@ -1826,7 +1826,7 @@ impl TemporalEngine {
                     match super::container_pages::component_from_element_key(written, &element.key) {
                         Some(component) => named.push((component, element.deleted)),
                         None => {
-                            return OutcomePageElements::Unreadable(
+                            return OutcomeBlockElements::Unreadable(
                                 "a page key does not render back as a component",
                             )
                         }
@@ -1835,18 +1835,18 @@ impl TemporalEngine {
                 if named.is_empty() {
                     // A FRAME NAMING NOTHING IS NOT AN EMPTY ANSWER. A page exists because a write
                     // put an element on it, so a frame with no items is as unusable as no frame.
-                    return OutcomePageElements::Unreadable("the frame names no element");
+                    return OutcomeBlockElements::Unreadable("the frame names no element");
                 }
-                OutcomePageElements::Named(named)
+                OutcomeBlockElements::Named(named)
             }
-            super::container_pages::ContainerPageDecode::Framed { .. } => {
-                OutcomePageElements::Unreadable("the frame's key spelling is not this kind's")
+            super::container_pages::ContainerBlockDecode::Framed { .. } => {
+                OutcomeBlockElements::Unreadable("the frame's key spelling is not this kind's")
             }
-            super::container_pages::ContainerPageDecode::NotFramed => {
-                OutcomePageElements::Unreadable("the page carries no frame")
+            super::container_pages::ContainerBlockDecode::NotFramed => {
+                OutcomeBlockElements::Unreadable("the page carries no frame")
             }
-            super::container_pages::ContainerPageDecode::Corrupt(_) => {
-                OutcomePageElements::Unreadable("the frame could not be walked")
+            super::container_pages::ContainerBlockDecode::Corrupt(_) => {
+                OutcomeBlockElements::Unreadable("the frame could not be walked")
             }
         }
     }
@@ -1903,7 +1903,7 @@ impl TemporalEngine {
         // RESOLVED BEFORE THE SHARD LOCK IS TAKEN, because it can read the block store and holding
         // the shard write guard across an I/O would serialise every reader of the shard behind a
         // replay. The arms below need no lock to decide they do not want it.
-        let page = self.elements_the_outcome_page_holds(item, carried);
+        let page = self.elements_the_outcome_block_holds(item, carried);
         let live = page.element_names(item, false);
         let removed = page.element_names(item, true);
         let mut shards = self.shards.write().expect("engine lock poisoned");
@@ -2106,7 +2106,7 @@ impl TemporalEngine {
             //
             // This arm read `item.component` -- the recorded outcome's own copy of the field name
             // -- and refused when it was absent. It reads the page the outcome's address names
-            // instead, through `elements_the_outcome_page_holds`, which decodes the container frame
+            // instead, through `elements_the_outcome_block_holds`, which decodes the container frame
             // and renders each element key back through the spelling the write path used.
             //
             // EVERY ELEMENT THE PAGE NAMES IS INSTALLED, not one, and that is a widening rather
@@ -2118,7 +2118,7 @@ impl TemporalEngine {
             // the previous arm did.
             //
             // A REMOVED ITEM IS SKIPPED AND NOT INSTALLED. The v2 page shape can say an element is
-            // gone, and `ContainerPageItem::deleted` is that statement; installing it would put
+            // gone, and `ContainerBlockItem::deleted` is that statement; installing it would put
             // back the element the page records the removal of, which is the resurrection the shape
             // exists to prevent.
             "hash" => {
@@ -2150,7 +2150,7 @@ impl TemporalEngine {
             // the element key stored in the page is the member's own bytes, and the component is
             // `hex::encode` of them -- so the hex round trip below is undoing a rendering that only
             // ever existed to put the member in a `String`. It is kept rather than short-circuited
-            // because `elements_the_outcome_page_holds` answers in components for every kind, which
+            // because `elements_the_outcome_block_holds` answers in components for every kind, which
             // is what lets all four arms share one resolver instead of each decoding the frame its
             // own way.
             "set" => {
@@ -2625,7 +2625,7 @@ impl TemporalEngine {
                 // This loop walks `shard.strings`, whose blocks ARE their whole object. The same
                 // identity `object_id` above was derived from, now stated as one value rather than
                 // computed once for the filter and again inside the read.
-                PageIdentity::of(shard_id, "string", &key, None),
+                BlockIdentity::of(shard_id, "string", &key, None),
                 Some(routing_bucket),
             ) else {
                 continue;
@@ -3089,7 +3089,7 @@ impl TemporalEngine {
                             // that is about to refuse the whole load, and the alternative is
                             // threading a diagnostic out of eighteen `false` returns.
                             let page = self
-                                .elements_the_outcome_page_holds(item, &record.staged_blocks)
+                                .elements_the_outcome_block_holds(item, &record.staged_blocks)
                                 .why()
                                 .to_string();
                             return Err(Status::error(

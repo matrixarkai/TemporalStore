@@ -12,7 +12,7 @@
 //! const-asserted at 24 bytes. So the refusals' subject is gone and their ground has MOVED one
 //! structure outwards, to `ObjectBlockLookup` -- which is keyed by `Arc<str>` and from which
 //! `impl Serialize for CoreIndex` composes every page's written key through
-//! `PageKeysByPosition::from_lookup`.
+//! `BlockKeysByPosition::from_lookup`.
 //!
 //! WHICH MAKES THE OPEN QUESTION NARROWER AND ANSWERABLE: if the key's characters are ALREADY held
 //! durably, per kind, by a map that exists for its own reasons, then re-addressing the lookup adds

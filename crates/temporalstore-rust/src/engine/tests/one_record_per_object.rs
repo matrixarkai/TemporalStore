@@ -21,7 +21,7 @@ use super::*;
 
 use crate::block_store::ElementEntry;
 use crate::engine::object_record::{
-    ObjectRecord, ObjectRecordRefusal, PageAddress, PageLayout, PageLayoutHandle, RecordFlags,
+    ObjectRecord, ObjectRecordRefusal, BlockAddress, BlockLayout, BlockLayoutHandle, RecordFlags,
 };
 
 // Imported as a NAME rather than called through its full path, for the reason the sibling census
@@ -62,10 +62,10 @@ const NAMED_BITS: [(&str, u16); 8] = [
     ("INDEX_DIRTY", RecordFlags::INDEX_DIRTY),
     ("LOADING", RecordFlags::LOADING),
     ("IN_MEMORY", RecordFlags::IN_MEMORY),
-    ("PAGE_DIRTY", RecordFlags::PAGE_DIRTY),
-    ("PAGE_DELETED", RecordFlags::PAGE_DELETED),
-    ("PAGE_IN_LOG", RecordFlags::PAGE_IN_LOG),
-    ("PAGE_GENERATION", RecordFlags::PAGE_GENERATION),
+    ("BLOCK_DIRTY", RecordFlags::BLOCK_DIRTY),
+    ("BLOCK_DELETED", RecordFlags::BLOCK_DELETED),
+    ("BLOCK_IN_LOG", RecordFlags::BLOCK_IN_LOG),
+    ("BLOCK_GENERATION", RecordFlags::BLOCK_GENERATION),
 ];
 
 /// THE WIDTH AND THE ALIGNMENT, MEASURED AND PRINTED RATHER THAN PREDICTED.
@@ -247,10 +247,10 @@ fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
     // meanings has nothing left to walk; the address word still has two and is walked below. The
     // property is unchanged -- a tag decides which arm a word means, never the value.
     for arm in [
-        PageAddress::One(0),
-        PageAddress::One(crate::engine::object_record::address_word_from_parts(7, 4_096)),
-        PageAddress::Many(PageLayoutHandle::from_stored(0)),
-        PageAddress::Many(PageLayoutHandle::from_stored(42)),
+        BlockAddress::One(0),
+        BlockAddress::One(crate::engine::object_record::address_word_from_parts(7, 4_096)),
+        BlockAddress::Many(BlockLayoutHandle::from_stored(0)),
+        BlockAddress::Many(BlockLayoutHandle::from_stored(42)),
     ] {
         record.set_page_address(arm);
         assert_eq!(arm, record.page_address(), "the address arm did not survive a set-then-get");
@@ -258,9 +258,9 @@ fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
 
     // A HANDLE OF ZERO AND AN ADDRESS OF ZERO ARE DIFFERENT ARMS. Both words are zero, so only the
     // tag separates them -- which is exactly the case a sentinel would collapse.
-    record.set_page_address(PageAddress::One(0));
+    record.set_page_address(BlockAddress::One(0));
     let as_address = record.page_address();
-    record.set_page_address(PageAddress::Many(PageLayoutHandle::from_stored(0)));
+    record.set_page_address(BlockAddress::Many(BlockLayoutHandle::from_stored(0)));
     let as_handle = record.page_address();
     assert_ne!(as_address, as_handle, "a zero address and a zero handle read the same");
 }
@@ -274,8 +274,8 @@ fn the_record_survives_its_own_codec_intact() {
     // is exactly the failure it exists to catch.
     let mut cases: Vec<ObjectRecord> = Vec::new();
     for address in
-        [PageAddress::One(crate::engine::object_record::address_word_from_parts(3, 64)),
-         PageAddress::Many(PageLayoutHandle::from_stored(11))]
+        [BlockAddress::One(crate::engine::object_record::address_word_from_parts(3, 64)),
+         BlockAddress::Many(BlockLayoutHandle::from_stored(11))]
     {
         let mut record = ObjectRecord::default();
         record.set_page_address(address);
@@ -404,7 +404,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
         let record = ObjectRecord::from_object_rows(&address, model_id, deadline, dirty)
             .unwrap_or_else(|error| panic!("{what}: the inline arm refused a row it should hold: {error}"));
         assert!(
-            matches!(record.page_address(), PageAddress::One(_)),
+            matches!(record.page_address(), BlockAddress::One(_)),
             "{what}: a log-resident page should take the inline arm"
         );
         let (back_address, back_model) = record
@@ -430,12 +430,12 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
         ("ordinal zero, in the layout arm too", ElementEntry::from_parts(1, 0, 16, Some(0), Some(0)), 1, None, false),
     ];
     for (what, address, model_id, deadline, dirty) in layout_cases {
-        let handle = PageLayoutHandle::from_stored(77);
+        let handle = BlockLayoutHandle::from_stored(77);
         let (record, layout) =
             ObjectRecord::from_object_rows_with_layout(&address, model_id, deadline, dirty, handle)
                 .unwrap_or_else(|error| panic!("{what}: the layout arm refused: {error}"));
         assert!(
-            matches!(record.page_address(), PageAddress::Many(_)),
+            matches!(record.page_address(), BlockAddress::Many(_)),
             "{what}: an identified page should take the layout arm"
         );
         assert_eq!(1, layout.len(), "{what}: one page should produce a one-page layout");
@@ -454,7 +454,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
 /// THE INLINE ARM'S ONE LIMIT, REFUSED BY NAME RATHER THAN DROPPED -- AND ITS EXACT BOUNDARY.
 ///
 /// Twenty-three of the record's twenty-four bytes are spoken for, so the sixteen-bit page ordinal
-/// an [`ElementEntry`] carries has no inline home as a VALUE. Its PRESENCE does, as `PAGE_IN_LOG`.
+/// an [`ElementEntry`] carries has no inline home as a VALUE. Its PRESENCE does, as `BLOCK_IN_LOG`.
 /// So the boundary is at zero: ordinal absent and ordinal zero are both inline, and a nonzero
 /// ordinal -- which is a page of a multi-page object -- is refused by name and routed to the
 /// layout arm. Dropping it instead would resolve a key to a different page of the same object and
@@ -472,7 +472,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
             panic!("the inline arm refused ordinal {ordinal:?}, which it must hold: {error}")
         });
         assert!(
-            matches!(record.page_address(), PageAddress::One(_)),
+            matches!(record.page_address(), BlockAddress::One(_)),
             "ordinal {ordinal:?} did not take the inline arm"
         );
         let (back, ..) = record.into_object_rows(None).expect("unfold");
@@ -484,12 +484,12 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
     let refusal = ObjectRecord::from_object_rows(&identified, 1, None, false)
         .expect_err("the inline arm accepted a nonzero page ordinal it has no room for");
     assert_eq!(
-        ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline { block_id: 7 },
+        ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline { block_id: 7 },
         refusal,
         "the refusal is not the named one"
     );
     assert!(
-        refusal.to_string().contains("NonZeroPageOrdinalDoesNotFitInline"),
+        refusal.to_string().contains("NonZeroBlockOrdinalDoesNotFitInline"),
         "the refusal does not name itself: {refusal}"
     );
 
@@ -499,7 +499,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
         1,
         None,
         false,
-        PageLayoutHandle::from_stored(1),
+        BlockLayoutHandle::from_stored(1),
     )
     .expect("the layout arm must hold what the inline arm refuses");
     assert!(!layout.is_empty(), "the layout arm produced nothing");
@@ -509,7 +509,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
 #[test]
 fn a_layout_handle_with_no_layout_is_refused_by_name() {
     let mut record = ObjectRecord::default();
-    record.set_page_address(PageAddress::Many(PageLayoutHandle::from_stored(5)));
+    record.set_page_address(BlockAddress::Many(BlockLayoutHandle::from_stored(5)));
     let refusal = record
         .into_object_rows(None)
         .expect_err("unfolding a handle with no layout returned an address anyway");
@@ -518,7 +518,7 @@ fn a_layout_handle_with_no_layout_is_refused_by_name() {
         "the refusal is not the named one: {refusal}"
     );
 
-    let empty = PageLayout::default();
+    let empty = BlockLayout::default();
     let refusal = record
         .into_object_rows(Some(&empty))
         .expect_err("unfolding against an EMPTY layout returned an address anyway");
@@ -914,7 +914,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
                         panic!("the census put this address inline and the converter refused: {error}")
                     });
                 assert!(
-                    matches!(record.page_address(), PageAddress::One(_)),
+                    matches!(record.page_address(), BlockAddress::One(_)),
                     "an address counted as inline did not take the inline arm"
                 );
                 let (back, ..) = record.into_object_rows(None).unwrap_or_else(|error| {
@@ -929,7 +929,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
                     1,
                     None,
                     true,
-                    PageLayoutHandle::from_stored(converted_layout as u64),
+                    BlockLayoutHandle::from_stored(converted_layout as u64),
                 )
                 .unwrap_or_else(|error| panic!("the layout arm refused a live address: {error}"));
                 let (back, ..) = record.into_object_rows(Some(&layout)).unwrap_or_else(|error| {
@@ -1387,8 +1387,8 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
     .expect("the inline arm must hold an ordinary live address");
     record.set_flag(RecordFlags::INDEX_DIRTY, true);
     record.set_flag(RecordFlags::IN_MEMORY, true);
-    record.set_flag(RecordFlags::PAGE_DIRTY, true);
-    record.set_flag(RecordFlags::PAGE_DELETED, true);
+    record.set_flag(RecordFlags::BLOCK_DIRTY, true);
+    record.set_flag(RecordFlags::BLOCK_DELETED, true);
 
     // NON-VACUITY FIRST: the state this test is about has to be set, or "it survived" is empty.
     assert_eq!(7, record.model_id(), "fixture: model id not set");
@@ -1405,14 +1405,14 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
     // --- GROUP ONE: what must SURVIVE, because it is not the address. ---
     assert!(record.flags().get(RecordFlags::INDEX_DIRTY), "the write-back dropped INDEX_DIRTY");
     assert!(record.flags().get(RecordFlags::IN_MEMORY), "the write-back dropped IN_MEMORY");
-    assert!(record.flags().get(RecordFlags::PAGE_DIRTY), "the write-back dropped PAGE_DIRTY");
-    assert!(record.flags().get(RecordFlags::PAGE_DELETED), "the write-back dropped PAGE_DELETED");
+    assert!(record.flags().get(RecordFlags::BLOCK_DIRTY), "the write-back dropped BLOCK_DIRTY");
+    assert!(record.flags().get(RecordFlags::BLOCK_DELETED), "the write-back dropped BLOCK_DELETED");
     assert_eq!(7, record.model_id(), "the write-back dropped the MODEL ID");
 
     // --- GROUP TWO: what must TRACK, because it IS the address. ---
     assert_eq!(relocated, record.address(), "the address did not take");
     assert!(
-        matches!(record.page_address(), PageAddress::One(_)),
+        matches!(record.page_address(), BlockAddress::One(_)),
         "the write-back left the address arm as a handle"
     );
     assert_eq!(128, record.page_size(), "the page size did not track the new address");
@@ -1444,7 +1444,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
 
         let built = ObjectRecord::from_object_rows(&entry, 1, None, false).expect("inline arm");
         assert!(
-            matches!(built.page_address(), PageAddress::One(_)),
+            matches!(built.page_address(), BlockAddress::One(_)),
             "from_object_rows left a handle for ordinal {ordinal:?}"
         );
         assert_eq!(entry, built.address(), "address() did not return what was filed");
@@ -1452,7 +1452,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
         let mut written = ObjectRecord::default();
         written.set_address(&entry);
         assert!(
-            matches!(written.page_address(), PageAddress::One(_)),
+            matches!(written.page_address(), BlockAddress::One(_)),
             "set_address left a handle for ordinal {ordinal:?}"
         );
         assert_eq!(entry, written.address(), "address() did not return what set_address wrote");
@@ -1462,7 +1462,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
 
     // AND THE HANDLE ARM REFUSES RATHER THAN INVENTING, through the non-panicking door.
     let mut layout_armed = ObjectRecord::default();
-    layout_armed.set_page_address(PageAddress::Many(PageLayoutHandle::from_stored(5)));
+    layout_armed.set_page_address(BlockAddress::Many(BlockLayoutHandle::from_stored(5)));
     let refusal = layout_armed
         .try_address()
         .expect_err("a handle arm returned a single address, which would be a wrong address");

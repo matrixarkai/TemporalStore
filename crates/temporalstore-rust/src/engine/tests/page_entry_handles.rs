@@ -326,7 +326,7 @@ fn pages_per_object(engine: &TemporalEngine) -> BlocksPerObject {
     let shard = shards.get(&1).expect("shard is loaded");
     let mut per_object: BTreeMap<(StoredModelKind, String), (usize, BTreeSet<String>)> =
         BTreeMap::new();
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut measured = BlocksPerObject::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
@@ -594,7 +594,7 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
     // table this prices interns shared names; the pages have none of their own, so the shared
     // names the bucket's own lookup holds are the input, and that is the same set of `Arc`s the
     // table would be fed in production.
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut names: Vec<Arc<str>> = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, _page) in bucket.block_index.iter() {
@@ -1207,7 +1207,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
 /// one byte and touches nothing outside the entry that was already loaded.
 ///
 /// COUNTED, not timed -- a timing-ratio instrument in this tree once read 485x idle against 11x
-/// busy off identical code. `PAGE_LOOKUP_ENTRIES_EXAMINED` is the existing counter inside
+/// busy off identical code. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is the existing counter inside
 /// `find_page`, and the claim is that reading every page's spelling adds NOTHING to it.
 #[test]
 fn resolving_a_model_spelling_examines_no_block_index_entries() {
@@ -1239,7 +1239,7 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
 
     println!(
         "\n=== resolving a model spelling ===\n  {resolved} spellings resolved, \
-         PAGE_LOOKUP_ENTRIES_EXAMINED {before} -> {after}, checksum {folded}"
+         BLOCK_LOOKUP_ENTRIES_EXAMINED {before} -> {after}, checksum {folded}"
     );
     assert!(resolved > 0, "no spelling was resolved, so the count below is free");
     assert_ne!(0, folded, "the fold read nothing, so the loads may have been dropped");
@@ -1432,8 +1432,8 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
         "the plant matched nothing in {real_key:?}, so the refusal below would be about the real \
          spelling"
     );
-    let stored = serde_json::from_value::<crate::engine::state::StoredPageEntry>(
-        serde_json::to_value(&crate::engine::state::PageEntryAt { page: &page }).expect("encode"),
+    let stored = serde_json::from_value::<crate::engine::state::StoredBlockEntry>(
+        serde_json::to_value(&crate::engine::state::BlockEntryAt { page: &page }).expect("encode"),
     )
     .expect("a real entry decodes");
     let error = stored
@@ -1570,8 +1570,8 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
             "the retired spelling was not planted into {real_key:?}, so this arm is about the \
              live kind instead"
         );
-        let stored = serde_json::from_value::<crate::engine::state::StoredPageEntry>(
-            serde_json::to_value(&crate::engine::state::PageEntryAt { page: &sample })
+        let stored = serde_json::from_value::<crate::engine::state::StoredBlockEntry>(
+            serde_json::to_value(&crate::engine::state::BlockEntryAt { page: &sample })
                 .expect("encode"),
         )
         .expect("a real entry decodes");
@@ -1634,7 +1634,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // THROUGH THE WRAPPER IN ALL THREE ENCODINGS, and the msgpack pair is why the wrapper counts
     // its fields rather than hard-coding one: `to_vec` writes the entry POSITIONALLY, so a field
     // count or an order that moved would move these bytes and not just the named form's.
-    let at = crate::engine::state::PageEntryAt { page: &page };
+    let at = crate::engine::state::BlockEntryAt { page: &page };
     let named = rmp_serde::to_vec_named(&at).expect("named encode");
     let positional = rmp_serde::to_vec(&at).expect("positional encode");
     let json = serde_json::to_value(&at).expect("json encode");
@@ -1682,12 +1682,12 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // land here and nowhere else, while the object key and the kind are supplied from the one
     // place that still has them.
     let (named_key, from_named) =
-        rmp_serde::from_slice::<crate::engine::state::StoredPageEntry>(&named)
+        rmp_serde::from_slice::<crate::engine::state::StoredBlockEntry>(&named)
             .expect("named decode")
             .into_parts_from_key(&stored_key)
             .expect("the key the production renderer wrote must invert");
     let (positional_key, from_positional) =
-        rmp_serde::from_slice::<crate::engine::state::StoredPageEntry>(&positional)
+        rmp_serde::from_slice::<crate::engine::state::StoredBlockEntry>(&positional)
             .expect("positional decode")
             .into_parts_from_key(&stored_key)
             .expect("the key the production renderer wrote must invert");
@@ -2143,7 +2143,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     let mut zero_length_live = 0usize;
     let mut nonzero_length_live = 0usize;
     let mut deleted_blocks = 0usize;
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in bucket.block_index.iter() {
             if page.deleted {

@@ -305,7 +305,7 @@ pub(super) fn install_element<K: RecordedKind>(
     // component-keyed supersede already takes the predecessor, so there is nothing to tell it and
     // nothing to pay for: the ungated path does not reach the scan at all.
     let replaces = if super::storage_bucket_internals::index_entry_names_a_page(K::KIND) {
-        K::resident(shard).page_an_element_vacates(object_key, &element, &address)
+        K::resident(shard).block_an_element_vacates(object_key, &element, &address)
     } else {
         None
     };
@@ -320,7 +320,7 @@ pub(super) fn install_element<K: RecordedKind>(
         address,
         dirty,
         outcome_value,
-        super::storage_bucket_internals::ReplacedPage::of(replaces),
+        super::storage_bucket_internals::ReplacedBlock::of(replaces),
     );
     // THEN THE MUTATION, through the proof.
     K::resident(shard).install(RecordedElement::<K> {
@@ -590,7 +590,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// already walks the whole BUCKET's pages twice per write -- once to decide whether the object
     /// still has a page there and once for the tombstone probe. One object's elements are a subset
     /// of its bucket's pages, so this does not change the order of a container write.
-    pub(super) fn page_an_element_vacates(
+    pub(super) fn block_an_element_vacates(
         &self,
         object_key: &str,
         element: &<K::Elements as ElementMap>::Element,

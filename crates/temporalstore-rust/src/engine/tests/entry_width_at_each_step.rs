@@ -6,7 +6,7 @@
 //! The target shape was twenty-four bytes carrying NO IDENTITY OF ITS OWN: a flag group, a model
 //! spelling, and an address, with the identity supplied by the position the entry is held at. THE
 //! ENTRY IS THAT SHAPE. `state.rs` pins it at twenty-four with nineteen bytes of field and five of
-//! slack, and the identity is resolved through `PageKeysByPosition` from the position the page is
+//! slack, and the identity is resolved through `BlockKeysByPosition` from the position the page is
 //! filed at.
 //!
 //! # SO STEP ZERO AND STEP ONE ARE ONE SHAPE, AND THE MIRROR FOLDED INTO THE LIVE TYPE

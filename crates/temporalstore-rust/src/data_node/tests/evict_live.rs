@@ -2196,7 +2196,7 @@ defaults with the bound zeroed -> mode={} reason=<open>, {} victims taken.",
 ///   4  AND AGAIN AFTER A RELOAD, on a fresh engine over the same directories and only after the
 ///      first is dropped, in both directions again.
 #[test]
-fn the_shipped_defaults_release_pages_and_keep_every_record_when_the_bound_is_crossed() {
+fn the_shipped_defaults_release_blocks_and_keep_every_record_when_the_bound_is_crossed() {
     const KEYS: usize = 1_200;
     const MAX_ROUNDS: usize = 8;
 

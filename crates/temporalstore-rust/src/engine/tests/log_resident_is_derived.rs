@@ -157,7 +157,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // only read off the entry. It is not a serialized member any more: the entry is filed under a
     // key that spells it and the decoder reads it back out of that key. So the wrapper takes the
     // page alone, and the two names this fixture used to hand it are asserted ABSENT below.
-    let named = crate::engine::state::PageEntryAt { page: &page };
+    let named = crate::engine::state::BlockEntryAt { page: &page };
     let encoded = serde_json::to_string(&named).expect("a page entry serializes");
     println!("[log-resident] stored entry: {encoded}");
 
@@ -188,7 +188,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // anything.
     let flipped = BlockIndex { deleted: true, ..page.clone() };
     let flipped_encoded =
-        serde_json::to_string(&crate::engine::state::PageEntryAt { page: &flipped })
+        serde_json::to_string(&crate::engine::state::BlockEntryAt { page: &flipped })
             .expect("serializes");
     assert_ne!(
         encoded, flipped_encoded,

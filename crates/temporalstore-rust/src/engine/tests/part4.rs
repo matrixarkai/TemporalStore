@@ -4669,7 +4669,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 //
 // WHY IT IS NOT REWRITTEN. The only claim that survives is "six written fields produce six block
 // refs", and that is a claim about `BlockRefs` accumulating, not about per-component grouping --
-// `the_insert_accumulates_an_objects_pages_into_the_one_slot` in `state.rs` holds it directly,
+// `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `state.rs` holds it directly,
 // against the producer. The `Some`-misses half would restate `names_the_only_slot`, which
 // `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` already asserts
 // in both directions in one arm so that it cannot pass one-sided.
@@ -4682,7 +4682,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 // `BlockRefs::insert` keeps the refs sorted and `BlockRefs::remove` binary-searches them, so an
 // `insert` rewritten to append would make `remove` miss a ref that is present. Nothing else in the
 // tree asserted it. It is restated against the producer, beside
-// `the_insert_accumulates_an_objects_pages_into_the_one_slot` in `state.rs`.
+// `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `state.rs`.
 //
 // AND RESTATED ON THE WHOLE REF, NOT RE-GOLDENED. That branch's version sorted a PROJECTION --
 // `refs.iter().map(|r| r.block_ref_key)` -- while `BlockLookupRef` derives `Ord` over
@@ -5171,14 +5171,14 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     // true of nothing, and a test that asserted it would pass for free.
     //
     // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a page is the lookup's own
-    // allocation. Every production reader reaches a page's object through `PageKeysByPosition`,
+    // allocation. Every production reader reaches a page's object through `BlockKeysByPosition`,
     // which is built by inverting the lookup, and `page_identities_in` hands back
     // `Arc::clone` of what it found. A clone shares the buffer, so `as_ptr` must equal
     // `key_ptr`'s -- and if the inversion ever started copying the text instead, this reddens.
     // That is a load-bearing property rather than a curiosity: forty walks in this module tree
     // take a key per page that way, and a copy per page would put the duplication this change
     // removed straight back, one level out.
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
     let mut shared = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -5246,7 +5246,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut seen = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (ref_key, page) in bucket.block_index.iter() {
@@ -5484,7 +5484,7 @@ fn dumping_the_block_index_does_not_copy_it_first() {
             .expect("the writes must produce pages");
 
         let probe = crate::alloc_probe::Probe::start();
-        let json = serde_json::to_string(&crate::engine::state::PageIndexNamedBy(&bucket.block_index, &["dumped"]))
+        let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"]))
             .expect("the index serializes");
         let counts = probe.stop();
         assert!(!json.is_empty());
@@ -5545,7 +5545,7 @@ fn the_block_index_dump_is_ordered_by_its_written_key() {
         .find(|b| b.block_index.len() > 4)
         .expect("the writes must produce several pages in one bucket");
 
-    let json = serde_json::to_string(&crate::engine::state::PageIndexNamedBy(&bucket.block_index, &["ordered"]))
+    let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["ordered"]))
         .expect("the index serializes");
     let value: serde_json::Value = serde_json::from_str(&json).expect("valid json");
     let keys: Vec<String> = value
@@ -5681,8 +5681,8 @@ fn the_block_index_still_writes_string_keys() {
 
     // On the wire: the same rendered key it always wrote, rebuilt from the block AND the identity
     // beside it -- which is where the renderer takes it from now.
-    let named = super::PageObjects::of(&shard.bucket_index);
-    let json = serde_json::to_value(&crate::engine::state::PageIndexNamedBy(&bucket.block_index, &["dumped"])).unwrap();
+    let named = super::BlockObjects::of(&shard.bucket_index);
+    let json = serde_json::to_value(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"])).unwrap();
     let written = json.as_object().expect("the wire form is a map of string keys");
     let expected = crate::engine::state::block_index_written_key(
         named.at(bucket.routing_bucket, *handle),
@@ -6930,7 +6930,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -7037,7 +7037,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let bucket = shard
             .bucket_index
             .bucket_map
@@ -7093,7 +7093,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let named = super::PageObjects::of(&shard.bucket_index);
+        let named = super::BlockObjects::of(&shard.bucket_index);
         let held: usize = shard
             .bucket_index
             .bucket_map
@@ -8227,7 +8227,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
     let mut mismatches = Vec::new();
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
@@ -13675,7 +13675,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
     let shard = shards.get(&1).expect("shard 1 loaded");
 
     let mut divergent = Vec::new();
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
     let mut live_total = 0usize;
     for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
@@ -14110,7 +14110,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
 
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut pages = 0usize;
     let mut routing_matches_bucket = 0usize;
     for (bucket_key, bucket) in shard.bucket_index.bucket_map.iter() {

@@ -66,7 +66,7 @@ fn load_on(engine: &TemporalEngine) {
 fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut pages = std::collections::BTreeSet::new();
@@ -102,7 +102,7 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     // `identity_of` RATHER THAN THE LIVE INVERSION, because this listing is the one that
     // includes tombstones -- its rows print `deleted=` -- and a deleted page is named by the
     // bucket's removal row instead of by the object lookup.
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut rows = Vec::new();
@@ -443,7 +443,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut ordinals = std::collections::BTreeSet::new();
@@ -620,7 +620,7 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     let live_pages = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
             &shard.bucket_index.object_block_lookup,
         );
         shard
@@ -709,7 +709,7 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
 fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     shard

@@ -21,7 +21,7 @@ use matrixcache::MultiLayerCache;
 
 use super::packed_pages::decode_feature_block_strict;
 use super::state::PackedFeatureBlockDecode;
-use super::hashing::PageIdentity;
+use super::hashing::BlockIdentity;
 use super::{parse_i64, read_block_bytes, ShardState};
 pub(super) fn read_sequence_row(
     cache: &MultiLayerCache,
@@ -32,8 +32,8 @@ pub(super) fn read_sequence_row(
     // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
     // element of its object, so the element half is `None` -- but the OBJECT half cannot be
     // recovered here: this function is handed an address and a timestamp, and neither names a key.
-    // See [`PageIdentity`] for why it is the terms rather than an id that cross.
-    identity: PageIdentity<'_>,
+    // See [`BlockIdentity`] for why it is the terms rather than an id that cross.
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<SequenceFeatureRow> {
     let bytes = read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)?;
@@ -93,7 +93,7 @@ pub(super) fn sequence_rows_in_range(
                         shard_id,
                         timestamp_ms,
                         address,
-                        PageIdentity::of(shard_id, "feature", key, None),
+                        BlockIdentity::of(shard_id, "feature", key, None),
                         Some(routing_bucket),
                     )
                 })

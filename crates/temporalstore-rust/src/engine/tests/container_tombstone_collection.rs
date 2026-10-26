@@ -42,8 +42,8 @@
 use crate::block_store::ElementEntry;
 use crate::engine::container_membership::{append_position, derive_membership, may_drop_tombstones};
 use crate::engine::container_pages::{
-    decode_container_page, encode_container_page_items, ContainerPageDecode, ContainerPageShape,
-    ContainerPageWrite, ElementKeySpelling, CONTAINER_PAGE_MAGIC, CONTAINER_PAGE_MAGIC_V2,
+    decode_container_page, encode_container_page_items, ContainerBlockDecode, ContainerBlockShape,
+    ContainerBlockWrite, ElementKeySpelling, CONTAINER_BLOCK_MAGIC, CONTAINER_BLOCK_MAGIC_V2,
 };
 
 /// An address at a chosen append position, which is what orders pages.
@@ -64,26 +64,26 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
     // plausible nonsense rather than refusing. `container_pages` carries a const assert on this; this
     // states it where a reader looking for the guard will find it.
     assert_eq!(
-        CONTAINER_PAGE_MAGIC.len(),
-        CONTAINER_PAGE_MAGIC_V2.len(),
+        CONTAINER_BLOCK_MAGIC.len(),
+        CONTAINER_BLOCK_MAGIC_V2.len(),
         "the two magics are different lengths, so the spelling byte is at two offsets"
     );
     assert_ne!(
-        CONTAINER_PAGE_MAGIC, CONTAINER_PAGE_MAGIC_V2,
+        CONTAINER_BLOCK_MAGIC, CONTAINER_BLOCK_MAGIC_V2,
         "the two magics are equal, so nothing DISCRIMINATES the shapes and a tombstone in a new page \
          would be read by the old rule as an empty live value"
     );
     // And they differ in exactly one byte, which is what makes the rewrite in
     // `a_live_suffix_block_is_the_same_bytes_under_either_shape` a magic swap and not a reshaping.
-    let differing = CONTAINER_PAGE_MAGIC
+    let differing = CONTAINER_BLOCK_MAGIC
         .iter()
-        .zip(CONTAINER_PAGE_MAGIC_V2.iter())
+        .zip(CONTAINER_BLOCK_MAGIC_V2.iter())
         .filter(|(left, right)| left != right)
         .count();
     println!(
         "magics {:?} and {:?} differ in {differing} byte(s)",
-        String::from_utf8_lossy(CONTAINER_PAGE_MAGIC),
-        String::from_utf8_lossy(CONTAINER_PAGE_MAGIC_V2)
+        String::from_utf8_lossy(CONTAINER_BLOCK_MAGIC),
+        String::from_utf8_lossy(CONTAINER_BLOCK_MAGIC_V2)
     );
     assert_eq!(1, differing, "the two magics differ in {differing} bytes, not one");
 }
@@ -138,8 +138,8 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
         let page = crate::engine::container_pages::tombstone_page(kind, component);
         assert!(page.is_some(), "{kind} could not frame a removal of {component}");
         match decode_container_page(page.as_ref().expect("framed")) {
-            ContainerPageDecode::Framed { items, shape, .. } => {
-                assert_eq!(ContainerPageShape::WithRemovals, shape, "{kind}: wrong shape");
+            ContainerBlockDecode::Framed { items, shape, .. } => {
+                assert_eq!(ContainerBlockShape::WithRemovals, shape, "{kind}: wrong shape");
                 assert_eq!(1, items.len(), "{kind}: wrong item count");
                 assert!(items[0].deleted, "{kind}: the tombstone item is not marked removed");
                 // THE ROUND TRIP, AND IT IS THE PROPERTY A SIDE TABLE WOULD OTHERWISE HAVE TO HOLD.
@@ -208,16 +208,16 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
 
     let older = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::live(&member, &member)],
+        &[ContainerBlockWrite::live(&member, &member)],
     );
     // A LATER page that is perfectly well formed and simply holds a different element.
     let silent = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::live(&unrelated, &unrelated)],
+        &[ContainerBlockWrite::live(&unrelated, &unrelated)],
     );
     let tomb = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::removed(&member)],
+        &[ContainerBlockWrite::removed(&member)],
     );
 
     let older_at = at(1, 100, older.len() as u32);
@@ -292,11 +292,11 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
 
     let empty = encode_container_page_items(
         ElementKeySpelling::Utf8,
-        &[ContainerPageWrite::live(&key, b"")],
+        &[ContainerBlockWrite::live(&key, b"")],
     );
     let removed = encode_container_page_items(
         ElementKeySpelling::Utf8,
-        &[ContainerPageWrite::removed(&key)],
+        &[ContainerBlockWrite::removed(&key)],
     );
 
     println!("empty-valued page:  {} bytes {:?}", empty.len(), &empty[7..]);
@@ -304,7 +304,7 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
 
     // DENOMINATOR: both must actually be frames, or "they differ" could be two failures.
     assert!(
-        empty.starts_with(CONTAINER_PAGE_MAGIC_V2) && removed.starts_with(CONTAINER_PAGE_MAGIC_V2),
+        empty.starts_with(CONTAINER_BLOCK_MAGIC_V2) && removed.starts_with(CONTAINER_BLOCK_MAGIC_V2),
         "one of the two is not a frame of the second shape at all"
     );
     assert_ne!(
@@ -319,8 +319,8 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
         [(&empty, false, "empty value"), (&removed, true, "removal")]
     {
         match decode_container_page(bytes) {
-            ContainerPageDecode::Framed { items, shape, .. } => {
-                assert_eq!(ContainerPageShape::WithRemovals, shape, "{label}: wrong shape");
+            ContainerBlockDecode::Framed { items, shape, .. } => {
+                assert_eq!(ContainerBlockShape::WithRemovals, shape, "{label}: wrong shape");
                 assert_eq!(1, items.len(), "{label}: wrong item count");
                 assert_eq!(key, items[0].key, "{label}: wrong key");
                 assert_eq!(
@@ -347,14 +347,14 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
     let member = b"member-0007".to_vec();
     let page = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::live(&member, &member)],
+        &[ContainerBlockWrite::live(&member, &member)],
     );
-    assert!(page.starts_with(CONTAINER_PAGE_MAGIC_V2));
+    assert!(page.starts_with(CONTAINER_BLOCK_MAGIC_V2));
 
     // The SAME BYTES with the magic rewritten. If the two shapes disagreed anywhere in the body for
     // a live suffix item, this would not decode, or would decode to different items.
     let mut as_first_shape = page.clone();
-    as_first_shape[..CONTAINER_PAGE_MAGIC.len()].copy_from_slice(CONTAINER_PAGE_MAGIC);
+    as_first_shape[..CONTAINER_BLOCK_MAGIC.len()].copy_from_slice(CONTAINER_BLOCK_MAGIC);
     assert_eq!(
         page.len(),
         as_first_shape.len(),
@@ -368,19 +368,19 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
 
     match (second, first) {
         (
-            ContainerPageDecode::Framed {
+            ContainerBlockDecode::Framed {
                 items: new_items,
                 shape: new_shape,
                 spelling: new_spelling,
             },
-            ContainerPageDecode::Framed {
+            ContainerBlockDecode::Framed {
                 items: old_items,
                 shape: old_shape,
                 spelling: old_spelling,
             },
         ) => {
-            assert_eq!(ContainerPageShape::WithRemovals, new_shape);
-            assert_eq!(ContainerPageShape::LiveOnly, old_shape);
+            assert_eq!(ContainerBlockShape::WithRemovals, new_shape);
+            assert_eq!(ContainerBlockShape::LiveOnly, old_shape);
             assert_eq!(new_spelling, old_spelling, "the spelling byte moved");
             assert_eq!(
                 new_items, old_items,
@@ -400,11 +400,11 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
     let member = b"m".to_vec();
     let live = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::live(&member, &member)],
+        &[ContainerBlockWrite::live(&member, &member)],
     );
     let tomb = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::removed(&member)],
+        &[ContainerBlockWrite::removed(&member)],
     );
 
     let earlier = at(1, 100, live.len() as u32);
@@ -475,17 +475,17 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
 
     let older = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::live(&member, &member)],
+        &[ContainerBlockWrite::live(&member, &member)],
     );
     let tomb = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::removed(&member)],
+        &[ContainerBlockWrite::removed(&member)],
     );
     // What a fold writes when it rewrites the tombstone's page and DROPS the tombstone: a page
     // holding the round's other element and saying nothing about `m`.
     let folded_without_tombstone = encode_container_page_items(
         ElementKeySpelling::Hex,
-        &[ContainerPageWrite::live(&other, &other)],
+        &[ContainerBlockWrite::live(&other, &other)],
     );
 
     let older_at = at(1, 100, older.len() as u32);

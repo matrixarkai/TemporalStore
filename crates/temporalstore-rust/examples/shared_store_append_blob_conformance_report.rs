@@ -870,7 +870,7 @@ fn matrixobject_cache_stats(store: &MatrixObjectObjectStore) -> MatrixObjectCach
         misses: stats.misses,
         evictions: stats.evictions,
         // A COUNT'S SUCCESSOR IS A COUNT, AND THE COMPILER SUGGESTED THE OTHER ONE.
-        // `ChunkReadCacheStats` carries BOTH `direct_fill_pages` and `direct_fill_bytes`, so
+        // `ChunkReadCacheStats` carries BOTH `direct_fill_blocks` and `direct_fill_bytes`, so
         // when `direct_fill_blocks` went away rustc offered `direct_fill_bytes` -- the nearest
         // NAME, and the wrong quantity. Taking it would have put a byte total under a field
         // this report publishes as a number of fills, in all three of these rows, and the
@@ -878,11 +878,11 @@ fn matrixobject_cache_stats(store: &MatrixObjectObjectStore) -> MatrixObjectCach
         //
         // The report's own keys stay spelled `_blocks` because they are an output surface and
         // the quantity has not changed; only the upstream field's name did.
-        direct_fill_blocks: stats.direct_fill_pages,
+        direct_fill_blocks: stats.direct_fill_blocks,
         direct_fill_bytes: stats.direct_fill_bytes,
-        compressed_fill_blocks: stats.compressed_fill_pages,
+        compressed_fill_blocks: stats.compressed_fill_blocks,
         compressed_fill_bytes: stats.compressed_fill_bytes,
-        ec_fill_blocks: stats.ec_fill_pages,
+        ec_fill_blocks: stats.ec_fill_blocks,
         ec_fill_bytes: stats.ec_fill_bytes,
         pressure: stats.pressure,
     }

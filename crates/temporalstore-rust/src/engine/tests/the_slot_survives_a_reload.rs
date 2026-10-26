@@ -394,7 +394,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         // reads the object lookup and this arm holds the bucket map mutably.
         let index = &mut shard.bucket_index;
         let page_keys =
-            crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+            crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
         let bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
@@ -460,7 +460,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         // reads the object lookup and this arm holds the bucket map mutably.
         let index = &mut shard.bucket_index;
         let page_keys =
-            crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+            crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
         let bucket = index
             .bucket_map
             .get_mut(&routing_bucket)

@@ -111,7 +111,7 @@ fn the_control_state_mutators_keep_the_consolidated_map_right_through_removals()
     // DISAGREE. The record's inline arm holds the ordinal's PRESENCE and not its value -- correct,
     // and measured: a single-page object has page zero by construction, and 400 of 400 live
     // addresses carried ordinal 0. The CONVERSION path refuses a nonzero one by name
-    // (`NonZeroPageOrdinalDoesNotFitInline`). `set_address` does not refuse it; it writes the
+    // (`NonZeroBlockOrdinalDoesNotFitInline`). `set_address` does not refuse it; it writes the
     // presence bit and drops the value.
     //
     // That asymmetry is correct today only because the maps holding records are single-page. It

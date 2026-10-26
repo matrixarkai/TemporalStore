@@ -48,11 +48,11 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 /// bucket map mutably and the keys are drawn from a SIBLING field of the same index, so a map that
 /// borrowed would be refused; the `Arc` clones cost one refcount bump each and the borrow ends
 /// when this returns.
-pub(super) struct PageObjects {
+pub(super) struct BlockObjects {
     by_position: std::collections::HashMap<(u32, u64), std::sync::Arc<str>>,
 }
 
-impl PageObjects {
+impl BlockObjects {
     /// Taken in ONE pass over the index, from the same two sources [`pages_with_identity`] reads.
     pub(super) fn of(index: &crate::engine::state::CoreIndex) -> Self {
         Self {
@@ -89,11 +89,11 @@ impl PageObjects {
 /// such walks across this module tree. Written out one by one they are forty chances to pick the
 /// WRONG DOOR, and the wrong door fails silently rather than loudly:
 ///
-///   * [`PageKeysByPosition::live_identity`] answers from the object lookup alone, and
+///   * [`BlockKeysByPosition::live_identity`] answers from the object lookup alone, and
 ///     `insert_object_block_lookup` returns early on a deleted page -- so it names NO tombstone.
 ///     A walk that reports on deleted pages and asks that door drops every one of them and comes
 ///     back with a smaller, entirely plausible number.
-///   * [`PageKeysByPosition::identity_of`] knows about both sources: the lookup for a live page,
+///   * [`BlockKeysByPosition::identity_of`] knows about both sources: the lookup for a live page,
 ///     and the bucket's own tombstone row for a deleted one. That is what this asks, so a caller
 ///     cannot get the tombstone case wrong by omitting to think about it.
 ///
@@ -131,12 +131,12 @@ impl PageObjects {
 /// A test whose SUBJECT is a page filed under a bucket its key does not route to. This asks by
 /// POSITION, and the lookup names such a page at the position it was filed under, not the one it
 /// now sits in -- so this would panic on the very state that test is driving.
-/// [`PageKeysByPosition::identity_anywhere`] is the door for that, and
+/// [`BlockKeysByPosition::identity_anywhere`] is the door for that, and
 /// `bucket_fill`'s mis-filing walk uses it directly and says so.
 pub(super) fn pages_with_identity(
     index: &crate::engine::state::CoreIndex,
 ) -> Vec<(u32, u64, std::sync::Arc<str>, &crate::engine::state::BlockIndex)> {
-    let keys = crate::engine::state::PageKeysByPosition::from_lookup(&index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
     let mut out = Vec::new();
     for bucket in index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {

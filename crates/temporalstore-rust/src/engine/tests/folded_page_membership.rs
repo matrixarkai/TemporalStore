@@ -184,7 +184,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
     let mut live_entries = 0usize;
     let mut tombstone_entries = 0usize;
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
             if page.model_id.as_str() != "set"

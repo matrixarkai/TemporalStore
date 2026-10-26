@@ -137,7 +137,7 @@
 //!     signatures and ABSORB the re-keying, so every caller beyond them still type-checks. A
 //!     census stopped there would have priced this leg at ten sites.
 //!   * STAGE TWO pushed it through the wrappers -- the six `CoreIndex` methods that take an object
-//!     key, plus `PageKeysByPosition`'s identity pair and `PageObjectIdentity`'s field -- and
+//!     key, plus `BlockKeysByPosition`'s identity pair and `BlockObjectIdentity`'s field -- and
 //!     named SIXTY-FIVE production sites on `--lib` and ONE HUNDRED AND THIRTY-FIVE on
 //!     `--all-targets`, the second across fifteen test modules as well as the seven production
 //!     files.
@@ -163,7 +163,7 @@
 //! its signature and FIFTEEN do not, the fifteen falling in eight functions.
 //!
 //! THE FIFTEEN ARE NOT ALL BLOCKERS, AND SORTING THEM IS THE POINT. Two of the eight are the
-//! encode and the decode -- `serialize_page_index` and `CoreIndex`'s visitor -- which under an
+//! encode and the decode -- `serialize_block_index` and `CoreIndex`'s visitor -- which under an
 //! id-addressed lookup move IDS rather than characters, so they are served by the change rather
 //! than blocked by it. `fold_delta_block_items` holds six of the fifteen and takes a bare
 //! `&mut CoreIndex`, but its one production caller passes `&mut shard.bucket_index` and calls

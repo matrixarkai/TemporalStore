@@ -2532,7 +2532,7 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn core_index_loads_legacy_bucket_block_field_names() {
+fn core_index_loads_legacy_bucket_page_field_names() {
     let legacy_json = r#"{
         "slots": {
             "7": {

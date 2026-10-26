@@ -9,7 +9,7 @@ use matrixcache::{CacheKey, MultiLayerCache};
 
 use super::constants::{FEATURE_BLOCK_BINARY_MAGIC, FEATURE_BLOCK_MAGIC};
 use super::state::{PackedFeatureBlock, PackedFeatureBlockDecode};
-use super::hashing::PageIdentity;
+use super::hashing::BlockIdentity;
 use super::{append_value, read_block_bytes, read_block_bytes_cold, stable_block_object_id};
 use crate::storage_config::context_block_target_bytes;
 pub(super) fn sorted_feature_points(mut points: Vec<FeaturePoint>) -> Vec<FeaturePoint> {
@@ -506,8 +506,8 @@ pub(super) fn read_feature_point(
     // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
     // element of its object, so the element half is `None` -- but the OBJECT half cannot be
     // recovered here: this function is handed an address and a timestamp, and neither names a key.
-    // See [`PageIdentity`] for why it is the terms rather than an id that cross.
-    identity: PageIdentity<'_>,
+    // See [`BlockIdentity`] for why it is the terms rather than an id that cross.
+    identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {
     let bytes = read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)?;
@@ -550,8 +550,8 @@ pub(super) fn read_feature_point_cached(
     // WHICH PAGE, stated by the caller. A packed series page holds many points and is not an
     // element of its object, so the element half is `None` -- but the OBJECT half cannot be
     // recovered here: this function is handed an address and a timestamp, and neither names a key.
-    // See [`PageIdentity`] for why it is the terms rather than an id that cross.
-    identity: PageIdentity<'_>,
+    // See [`BlockIdentity`] for why it is the terms rather than an id that cross.
+    identity: BlockIdentity<'_>,
     packed_block_cache: &mut HashMap<ElementEntry, Option<Vec<FeaturePoint>>>,
     routing_bucket: Option<u32>,
 ) -> Option<FeaturePoint> {

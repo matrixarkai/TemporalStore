@@ -161,7 +161,7 @@ fn list_len(engine: &TemporalEngine) -> i64 {
 fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -185,7 +185,7 @@ fn live_and_tombstoned(
 ) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {

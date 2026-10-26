@@ -28,7 +28,7 @@ pub(super) fn bucket_for_object(key: &str, start_routing_bucket: u32, routing_bu
 /// and not a timing, because a timing on a shared box moves with whatever is building next door.
 ///
 /// `#[cfg(test)]` DELIBERATELY, which is the one place these counters differ from
-/// `PAGE_LOOKUP_ENTRIES_EXAMINED`. That one is charged in production because a page lookup is a walk
+/// `BLOCK_LOOKUP_ENTRIES_EXAMINED`. That one is charged in production because a page lookup is a walk
 /// whose length an operator may need to see. This is one FNV-1a pass over a short borrowed string,
 /// and two relaxed atomics per read to measure it would cost more than the thing being measured --
 /// which is itself the answer the counters exist to report. A count does not vary with the build
@@ -193,7 +193,7 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
 /// MISSING for a durably acknowledged write, which is the exact hole `block_in_wal` exists to close.
 /// An `Option<u64>` threaded to the same sites compiles with `None` and loses a page in silence.
 ///
-/// SO THERE IS NO CONSTRUCTOR THAT TAKES AN ID. [`PageIdentity::of`] takes the TERMS -- the shard,
+/// SO THERE IS NO CONSTRUCTOR THAT TAKES AN ID. [`BlockIdentity::of`] takes the TERMS -- the shard,
 /// the kind and the key -- and derives the identity here. A caller cannot pass an id it computed
 /// somewhere else, cannot pass a stale one it found on an address, and cannot pass none at all: the
 /// compiler names every site that has no key in hand. That is the same doctrine
@@ -213,12 +213,12 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
 /// carried beside the id rather than folded into it. Both fields are here for that reason: they
 /// answer two different questions and a single number cannot answer both.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PageIdentity<'a> {
+pub(super) struct BlockIdentity<'a> {
     object_id: u64,
     component: Option<&'a str>,
 }
 
-impl<'a> PageIdentity<'a> {
+impl<'a> BlockIdentity<'a> {
     /// THE ONLY CONSTRUCTOR, AND IT TAKES THE TERMS RATHER THAN THE ANSWER.
     ///
     /// Deriving here rather than accepting a `u64` is the whole point of the type: a caller that

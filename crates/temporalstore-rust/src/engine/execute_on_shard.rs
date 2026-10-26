@@ -191,12 +191,12 @@ fn load_context_node(
         .hashes
         .get(object_key)
         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-        .map(|address| (address, PageIdentity::of(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD))))
+        .map(|address| (address, BlockIdentity::of(shard_id, "hash", object_key, Some(CONTEXT_NODE_FIELD))))
         .or_else(|| {
             shard
                 .context_nodes()
                 .get(object_key)
-                .map(|address| (address, PageIdentity::of(shard_id, "context_node", object_key, None)))
+                .map(|address| (address, BlockIdentity::of(shard_id, "context_node", object_key, None)))
         })
         .and_then(|(address, identity)| {
             // Owning, not shared: the summary upsert calls this while writing, where the block
@@ -727,7 +727,7 @@ pub(crate) fn execute_on_shard(
                     &address,
                     // `shard.strings`: a whole-object block, so the element is `None` and the
                     // object is the key itself.
-                    PageIdentity::of(shard_id, "string", &key, None),
+                    BlockIdentity::of(shard_id, "string", &key, None),
                     Some(block_routing_bucket(
                         &key,
                         start_routing_bucket,
@@ -984,7 +984,7 @@ pub(crate) fn execute_on_shard(
                                 block_store,
                                 shard_id,
                                 address,
-                                PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                                BlockIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -1019,7 +1019,7 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 address,
                                 // The hash the key names, and the field being read as its element.
-                                PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                                BlockIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -1115,7 +1115,7 @@ pub(crate) fn execute_on_shard(
                         block_store,
                         shard_id,
                         address,
-                        PageIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
+                        BlockIdentity::of(shard_id, "hash", &key, Some(field.as_str())),
                         Some(block_routing_bucket(
                             &key,
                             start_routing_bucket,
@@ -1307,7 +1307,7 @@ pub(crate) fn execute_on_shard(
                         shard_id,
                         &address,
                         // The element the whole-object door handed back beside this address.
-                        PageIdentity::of(shard_id, "hash", &key, component.as_deref()),
+                        BlockIdentity::of(shard_id, "hash", &key, component.as_deref()),
                         Some(block_routing_bucket(
                             &key,
                             start_routing_bucket,
@@ -2097,7 +2097,7 @@ pub(crate) fn execute_on_shard(
                             shard_id,
                             &address,
                             // The element rendered two lines up, which is the one the index removal names.
-                            PageIdentity::of(shard_id, "list", &key, Some(component.as_str())),
+                            BlockIdentity::of(shard_id, "list", &key, Some(component.as_str())),
                             Some(block_routing_bucket(
                                 &key,
                                 start_routing_bucket,
@@ -2162,7 +2162,7 @@ pub(crate) fn execute_on_shard(
                                 address,
                                 // Re-derived from the sequence the same way ListPop renders it. `.values()` used to
                                 // drop that sequence, which is why the iteration above is now `.iter()`.
-                                PageIdentity::of(shard_id, "list", &key, Some(component.as_str())),
+                                BlockIdentity::of(shard_id, "list", &key, Some(component.as_str())),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -2234,7 +2234,7 @@ pub(crate) fn execute_on_shard(
                             block_store,
                             shard_id,
                             address,
-                            PageIdentity::of(shard_id, "set", &key, None),
+                            BlockIdentity::of(shard_id, "set", &key, None),
                             Some(routing_bucket),
                         )
                     },
@@ -2487,7 +2487,7 @@ pub(crate) fn execute_on_shard(
                         .features()
                         .get(&key[..])
                         .map(|series| {
-                            let mut page_cache = HashMap::new();
+                            let mut block_cache = HashMap::new();
                             // feature_append_keeps_oversized_single_timestamped_value_readable:
                             // range queries rehydrate each timestamp through the packed
                             // block reader, so a large single timestamped value remains
@@ -2504,8 +2504,8 @@ pub(crate) fn execute_on_shard(
                                         shard_id,
                                         timestamp_ms,
                                         address,
-                                        PageIdentity::of(shard_id, "feature", &key, None),
-                                        &mut page_cache,
+                                        BlockIdentity::of(shard_id, "feature", &key, None),
+                                        &mut block_cache,
                                     Some(block_routing_bucket(
                                         &key,
                                         start_routing_bucket,
@@ -2543,7 +2543,7 @@ pub(crate) fn execute_on_shard(
                 .features()
                 .get(&key[..])
                 .map(|series| {
-                    let mut page_cache = HashMap::new();
+                    let mut block_cache = HashMap::new();
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
                         .take(limit)
@@ -2554,8 +2554,8 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 timestamp_ms,
                                 address,
-                                PageIdentity::of(shard_id, "feature", &key, None),
-                                &mut page_cache,
+                                BlockIdentity::of(shard_id, "feature", &key, None),
+                                &mut block_cache,
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -2718,7 +2718,7 @@ pub(crate) fn execute_on_shard(
                                         shard_id,
                                         timestamp_ms,
                                         address,
-                                        PageIdentity::of(shard_id, "feature", &key, None),
+                                        BlockIdentity::of(shard_id, "feature", &key, None),
                                         Some(block_routing_bucket(
                                             &key,
                                             start_routing_bucket,
@@ -2760,7 +2760,7 @@ pub(crate) fn execute_on_shard(
                                     shard_id,
                                     timestamp_ms,
                                     address,
-                                    PageIdentity::of(shard_id, "feature", &key, None),
+                                    BlockIdentity::of(shard_id, "feature", &key, None),
                                     Some(block_routing_bucket(
                                         &key,
                                         start_routing_bucket,
@@ -2867,7 +2867,7 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 timestamp_ms,
                                 address,
-                                PageIdentity::of(shard_id, "feature", &key, None),
+                                BlockIdentity::of(shard_id, "feature", &key, None),
                                 Some(block_routing_bucket(
                                     &key,
                                     start_routing_bucket,
@@ -3581,7 +3581,7 @@ pub(crate) fn execute_on_shard(
                         .hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                        .map(|address| (address, PageIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
+                        .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
                         .or_else(|| {
                                 // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                                 // hash. `model_map_block_address` spells it `("context_node", None)` and is the
@@ -3590,7 +3590,7 @@ pub(crate) fn execute_on_shard(
                                 shard
                                     .context_nodes()
                                     .get(object_key.as_str())
-                                    .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+                                    .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
                         })
                         .and_then(|(address, identity)| {
                             read_block_shared(
@@ -3684,7 +3684,7 @@ pub(crate) fn execute_on_shard(
                 .hashes
                 .get(&object_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                .map(|address| (address, PageIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
+                .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
                 .or_else(|| {
                         // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                         // hash. `model_map_block_address` spells it `("context_node", None)` and is the
@@ -3693,7 +3693,7 @@ pub(crate) fn execute_on_shard(
                         shard
                             .context_nodes()
                             .get(object_key.as_str())
-                            .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+                            .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
                 })
                 .and_then(|(address, identity)| {
                     read_block_shared(
@@ -3736,7 +3736,7 @@ pub(crate) fn execute_on_shard(
                         .hashes
                         .get(&object_key)
                         .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                        .map(|address| (address, PageIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
+                        .map(|address| (address, BlockIdentity::of(shard_id, "hash", &object_key, Some(CONTEXT_NODE_FIELD))))
                         .or_else(|| {
                                 // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                                 // hash. `model_map_block_address` spells it `("context_node", None)` and is the
@@ -3745,7 +3745,7 @@ pub(crate) fn execute_on_shard(
                                 shard
                                     .context_nodes()
                                     .get(object_key.as_str())
-                                    .map(|address| (address, PageIdentity::of(shard_id, "context_node", &object_key, None)))
+                                    .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &object_key, None)))
                         })
                         .and_then(|(address, identity)| {
                             read_block_shared(
@@ -4053,7 +4053,7 @@ pub(crate) fn execute_on_shard(
                 .context_events()
                 .get(&*object_key)
                 .map(|_series| {
-                    let mut page_cache = HashMap::new();
+                    let mut block_cache = HashMap::new();
                     // Range the TIME INDEX, not the primary map: the primary is keyed by event
                     // id hash now, so a time window is not contiguous in it.
                     context_event_time_range(shard, &object_key, start_time_ms, end_time_ms)
@@ -4070,8 +4070,8 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 timeline_key,
                                 address,
-                                PageIdentity::of(shard_id, "context_event", &object_key, None),
-                                &mut page_cache,
+                                BlockIdentity::of(shard_id, "context_event", &object_key, None),
+                                &mut block_cache,
                                 Some(block_routing_bucket(
                                     &object_key,
                                     start_routing_bucket,
@@ -4168,7 +4168,7 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 timeline_key,
                                 address,
-                                PageIdentity::of(shard_id, "context_index", &object_key, None),
+                                BlockIdentity::of(shard_id, "context_index", &object_key, None),
                                 Some(block_routing_bucket(
                                     &object_key,
                                     start_routing_bucket,
@@ -4212,7 +4212,7 @@ pub(crate) fn execute_on_shard(
                 );
                 let mut seen_for_predicate = HashMap::new();
                 if let Some(series) = shard.context_indexes().get(&object_key[..]) {
-                    let mut page_cache = HashMap::new();
+                    let mut block_cache = HashMap::new();
                     for (timeline_key, address) in series.range(
                         context_timeline_start(predicate.start_time_ms)
                             ..context_timeline_end(predicate.end_time_ms),
@@ -4223,8 +4223,8 @@ pub(crate) fn execute_on_shard(
                             shard_id,
                             timeline_key,
                             address,
-                            PageIdentity::of(shard_id, "context_index", &object_key, None),
-                            &mut page_cache,
+                            BlockIdentity::of(shard_id, "context_index", &object_key, None),
+                            &mut block_cache,
                             Some(block_routing_bucket(
                                 &object_key,
                                 start_routing_bucket,
@@ -4329,7 +4329,7 @@ pub(crate) fn execute_on_shard(
                                 shard_id,
                                 timeline_key,
                                 address,
-                                PageIdentity::of(shard_id, "context_audit", &object_key, None),
+                                BlockIdentity::of(shard_id, "context_audit", &object_key, None),
                                 Some(block_routing_bucket(
                                     &object_key,
                                     start_routing_bucket,
@@ -4605,7 +4605,7 @@ pub(crate) fn execute_on_shard(
                         // THE PER-ENTITY KEY, not the collection key this map is keyed by -- the
                         // same string the bucket below is derived from, and the one
                         // `ContextUpsertEntity` files the block under. Filed with `None`.
-                        PageIdentity::of(
+                        BlockIdentity::of(
                             shard_id,
                             "context_entity",
                             &context_entity_key(tenant_hash, node_hash, entity_hash),
@@ -4641,7 +4641,7 @@ pub(crate) fn execute_on_shard(
                     shard_id,
                     address,
                     // The per-entity key, as the bucket below. Filed with `None`.
-                    PageIdentity::of(
+                    BlockIdentity::of(
                         shard_id,
                         "context_entity",
                         &context_entity_key(tenant_hash, node_hash, entity_hash),
@@ -5127,7 +5127,7 @@ pub(crate) fn execute_on_shard(
                 .hashes
                 .get(&node_key)
                 .and_then(|fields| fields.get(CONTEXT_NODE_FIELD))
-                .map(|address| (address, PageIdentity::of(shard_id, "hash", &node_key, Some(CONTEXT_NODE_FIELD))))
+                .map(|address| (address, BlockIdentity::of(shard_id, "hash", &node_key, Some(CONTEXT_NODE_FIELD))))
                 .or_else(|| {
                         // THE PRE-HASHES ARM IS A WHOLE `context_node` BLOCK, not the `meta` field of a
                         // hash. `model_map_block_address` spells it `("context_node", None)` and is the
@@ -5136,7 +5136,7 @@ pub(crate) fn execute_on_shard(
                         shard
                             .context_nodes()
                             .get(node_key.as_str())
-                            .map(|address| (address, PageIdentity::of(shard_id, "context_node", &node_key, None)))
+                            .map(|address| (address, BlockIdentity::of(shard_id, "context_node", &node_key, None)))
                 })
                 .and_then(|(address, identity)| {
                     read_block_shared(

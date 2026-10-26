@@ -605,7 +605,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     // THE TWO HALVES, ON THE SAME BUCKETS.
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&SHARD).expect("shard is loaded");
-    let identities = crate::engine::state::PageKeysByPosition::from_lookup(
+    let identities = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
     let mut unnameable: BTreeMap<u32, (usize, usize)> = BTreeMap::new();

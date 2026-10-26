@@ -953,7 +953,7 @@ pub(super) fn validate_command_preconditions(
                     block_store,
                     shard_id,
                     address,
-                    PageIdentity::of(shard_id, "hash", key, Some(field.as_str())),
+                    BlockIdentity::of(shard_id, "hash", key, Some(field.as_str())),
                     Some(crate::engine::hashing::block_routing_bucket(
                         key,
                         start_routing_bucket,

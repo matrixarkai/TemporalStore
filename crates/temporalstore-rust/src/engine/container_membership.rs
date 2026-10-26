@@ -62,7 +62,7 @@
 use std::collections::{BTreeMap, BTreeSet};
 
 use super::container_pages::{
-    component_from_element_key, decode_container_page, ContainerPageDecode, ContainerPageShape,
+    component_from_element_key, decode_container_page, ContainerBlockDecode, ContainerBlockShape,
 };
 use crate::block_store::ElementEntry;
 
@@ -133,7 +133,7 @@ pub(super) fn append_position(address: &ElementEntry) -> (u64, u64) {
 pub(super) fn derive_membership<F>(
     kind: &str,
     pages: impl IntoIterator<Item = ElementEntry>,
-    mut read_page: F,
+    mut read_block: F,
 ) -> DerivedMembership
 where
     F: FnMut(&ElementEntry) -> Option<Vec<u8>>,
@@ -159,7 +159,7 @@ where
     let mut latest: BTreeMap<String, Option<Vec<u8>>> = BTreeMap::new();
 
     for address in &ordered {
-        let Some(bytes) = read_page(address) else {
+        let Some(bytes) = read_block(address) else {
             // COUNTED, NOT SKIPPED. #2028's fix to `insert_timestamped_secondary_view` is the
             // recorded reason: a read failure that produces no entry and no count is a derived view
             // that is silently short, and the derived view is the only copy.
@@ -168,12 +168,12 @@ where
         };
         derived.pages_read += 1;
         match decode_container_page(&bytes) {
-            ContainerPageDecode::Framed {
+            ContainerBlockDecode::Framed {
                 spelling,
                 shape,
                 items,
             } => {
-                if shape == ContainerPageShape::LiveOnly {
+                if shape == ContainerBlockShape::LiveOnly {
                     derived.live_only_pages += 1;
                 }
                 for item in items {
@@ -194,10 +194,10 @@ where
                     );
                 }
             }
-            ContainerPageDecode::NotFramed => {
+            ContainerBlockDecode::NotFramed => {
                 derived.unframed += 1;
             }
-            ContainerPageDecode::Corrupt(_) => {
+            ContainerBlockDecode::Corrupt(_) => {
                 derived.undecodable += 1;
             }
         }
@@ -258,8 +258,8 @@ where
 /// the index rather than the resident map. This function is the rule that walk will have to obey, and
 /// it is written and driven now so that the walk cannot be added without it.
 pub(super) fn may_drop_tombstones(
-    pages_in_container: usize,
-    pages_being_rewritten: usize,
+    blocks_in_container: usize,
+    blocks_being_rewritten: usize,
     batches_this_round: usize,
 ) -> bool {
     // ASSERTED AS A CONJUNCTION OF THREE, and none of the three is implied by the others:
@@ -267,7 +267,7 @@ pub(super) fn may_drop_tombstones(
     // tombstone dropped into batch 1 is not seen by batch 2; and a single batch is not enough if it
     // does not cover every page. The denominator is checked too -- a container with no pages makes
     // the first two agree at zero, which would let a round over nothing claim a total rewrite.
-    pages_in_container > 0
-        && pages_being_rewritten == pages_in_container
+    blocks_in_container > 0
+        && blocks_being_rewritten == blocks_in_container
         && batches_this_round == 1
 }

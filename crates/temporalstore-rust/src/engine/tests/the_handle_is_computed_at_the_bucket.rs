@@ -10,7 +10,7 @@
 //! into a per-bucket structure would have become unreachable from the one line that needs it.
 //!
 //! It is computed at [`BucketNode::insert_page`] now, where the bucket's own structures are in
-//! scope, and the written key is composed through `PageIndexAt`, which holds the whole node.
+//! scope, and the written key is composed through `BlockIndexAt`, which holds the whole node.
 //!
 //! # WHY VALUE EQUALITY IS THE WHOLE SAFETY ARGUMENT
 //!
@@ -191,7 +191,7 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
 
 /// AND THE STORED SPELLING DID NOT MOVE, which is the written-key half of the same hoist.
 ///
-/// `PageIndexAt` composes the key at the bucket level where `impl Serialize for BlockIndexMap` used
+/// `BlockIndexAt` composes the key at the bucket level where `impl Serialize for BlockIndexMap` used
 /// to compose it inside the map. Same function, same order, so the bytes are the same -- asserted
 /// against a node built the same way, with a control that the fixture writes more than one entry so
 /// the ORDER of the written map is actually exercised.

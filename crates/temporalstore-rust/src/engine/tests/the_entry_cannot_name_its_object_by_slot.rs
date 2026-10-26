@@ -52,7 +52,7 @@
 //!     remove path at `storage_bucket_internals.rs:4086` drops an id only when NO ENTRY names it
 //!     -- `block_index.values().any(|page| page.object_id(shard_id) == removed_object_id)`, with
 //!     no `!page.deleted` filter -- so a tombstone holds its slot, which is exactly the invariant
-//!     a durable ordinal needs. `reconcile_object_index_with_live_pages`'s own doc comment had
+//!     a durable ordinal needs. `reconcile_object_index_with_live_blocks`'s own doc comment had
 //!     said in advance that the load is "the fatal one for anything that stored a slot, and it is
 //!     also the quietest, which is why a test driving a write and finding nothing proves nothing
 //!     here". A write is what draft one drove.
@@ -635,7 +635,7 @@ fn entries_naming(engine: &TemporalEngine, routing_bucket: u32, object_id: u64) 
     let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
         return (0, 0);
     };
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for (handle, page) in &bucket.block_index {
@@ -705,7 +705,7 @@ fn three_keys_in_one_bucket(prefix: &str) -> (u32, String, String, String) {
 /// slot 1 to slot 0 across the same reload.
 ///
 /// DRAFT THREE then named the wrong branch for that, and the COUNTER caught it. It asserted a
-/// RECONSTRUCT -- `reconcile_object_index_with_live_pages` re-inserting from a `BTreeSet<u64>` in
+/// RECONSTRUCT -- `reconcile_object_index_with_live_blocks` re-inserting from a `BTreeSet<u64>` in
 /// ascending id order -- and the scan reported `rebuilds +5, reconstructs +0,
 /// list_held_an_object_no_page_names +1`. So the load RECONCILED, and the live id still moved. The
 /// branch is not asserted now, for a reason the same reading gives: one load scanned five buckets

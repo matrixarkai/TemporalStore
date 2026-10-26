@@ -381,7 +381,7 @@ pub(super) fn native_packed_block_index_bytes(
 
 pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode) -> [u8; NATIVE_PACKED_BUCKET_NODE_SIZE] {
     let mut bytes = [0u8; NATIVE_PACKED_BUCKET_NODE_SIZE];
-    let page_in_log = bucket.block_indexes.iter().any(|page| page.log_backed);
+    let block_in_log = bucket.block_indexes.iter().any(|page| page.log_backed);
     let trivial_block = bucket.block_ref_count <= 1;
     let block_deleted = bucket.block_ref_count == 0;
     let mut flags = 0u32;
@@ -391,7 +391,7 @@ pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode
     flags |= (bucket.in_memory as u32) << 5;
     flags |= (bucket.dirty as u32) << 6;
     flags |= (block_deleted as u32) << 7;
-    flags |= (page_in_log as u32) << 8;
+    flags |= (block_in_log as u32) << 8;
     flags |= (trivial_block as u32) << 9;
     let flag_bytes = flags.to_le_bytes();
     bytes[0..3].copy_from_slice(&flag_bytes[0..3]);
@@ -1019,7 +1019,7 @@ pub(super) fn unique_timestamped_kv_block_addresses(
             .then(left.offset().cmp(&right.offset()))
             .then(left.length().cmp(&right.length()))
     });
-    let same_page = |left: &ElementEntry, right: &ElementEntry| {
+    let same_block = |left: &ElementEntry, right: &ElementEntry| {
         left.block_slab_id() == right.block_slab_id()
             && left.offset() == right.offset()
             && left.length() == right.length()
@@ -1031,7 +1031,7 @@ pub(super) fn unique_timestamped_kv_block_addresses(
         // inline fields -- an address word, a length, a block id and flag bits -- with nothing on
         // the heap, so a copy costs no allocation.
         let candidate = addresses[read].clone();
-        if write > group_start && !same_page(&addresses[write - 1], &candidate) {
+        if write > group_start && !same_block(&addresses[write - 1], &candidate) {
             group_start = write;
         }
         if addresses[group_start..write]

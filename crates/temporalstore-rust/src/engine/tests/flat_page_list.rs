@@ -982,7 +982,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let by_bucket: Vec<Vec<(std::sync::Arc<str>, BlockIndex)>> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+            let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
             );
             shard
@@ -1450,7 +1450,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     }
     // ONE OBJECT NAMES THE WHOLE LIST: `sorted_list` builds components of `bag`.
     let written =
-        serde_json::to_vec(&crate::engine::state::PageIndexNamedBy(&list, &["bag"])).expect("the page index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&list, &["bag"])).expect("the page index serializes");
     assert!(
         written.len() > 1_000,
         "the fixture wrote {} bytes for 24 pages; too small to be the index",
@@ -1464,7 +1464,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         backwards.insert(&object_key, entry.clone(), &mut live);
     }
     let written_backwards =
-        serde_json::to_vec(&crate::engine::state::PageIndexNamedBy(&backwards, &["bag"])).expect("the page index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&backwards, &["bag"])).expect("the page index serializes");
     assert_eq!(
         written, written_backwards,
         "the same pages filled in the opposite order wrote different bytes"
@@ -1479,7 +1479,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         "an index written and read back walks in a different order than the one that wrote it"
     );
     let rewritten =
-        serde_json::to_vec(&crate::engine::state::PageIndexNamedBy(&loaded, &["bag"])).expect("the loaded index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&loaded, &["bag"])).expect("the loaded index serializes");
     assert_eq!(
         written, rewritten,
         "loading and rewriting the index changed {} bytes",
@@ -1496,7 +1496,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         injected.insert(&object_key, entry, &mut live);
     }
     let with_injection =
-        serde_json::to_vec(&crate::engine::state::PageIndexNamedBy(&injected, &["bag"])).expect("the page index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&injected, &["bag"])).expect("the page index serializes");
     assert_ne!(
         written, with_injection,
         "altering one page of twenty-four left the written bytes unchanged; this comparison \
@@ -1608,7 +1608,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         // STRONGER claim than the field read was, and deliberately: a page the lookup does not
         // name would have been counted under its own copy of the key before, and is refused
         // here -- which is the state `insert_object_block_lookup` exists to rule out.
-        let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+        let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
             &shard.bucket_index.object_block_lookup,
         );
         let mut handles = std::collections::BTreeSet::new();
@@ -1657,7 +1657,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         let (routing_bucket, handle, key) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let keys = crate::engine::state::PageKeysByPosition::from_lookup(
+            let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
             );
             let mut found = None;

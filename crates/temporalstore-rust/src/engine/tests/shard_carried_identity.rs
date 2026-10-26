@@ -295,7 +295,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
         let carried = state
             .shard_id()
             .expect("a served shard carries its id; part 1 of this module holds that");
-        let named = super::PageObjects::of(&state.bucket_index);
+        let named = super::BlockObjects::of(&state.bucket_index);
         let mut blocks_here = 0usize;
         for bucket in state.bucket_index.bucket_map.values() {
             for (handle, page) in bucket.block_index.iter() {

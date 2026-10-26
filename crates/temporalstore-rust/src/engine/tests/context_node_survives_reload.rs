@@ -264,7 +264,7 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
     let shard = shards.get_mut(&1).expect("shard is loaded");
 
     // 1. IS THE NODE IN THE BUCKET INDEX? Asked of the index itself rather than of a comment.
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut index_entries_for_node = Vec::new();
     let mut index_entries_for_control = 0usize;
     for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
@@ -389,7 +389,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         .get("orphan-object")
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut index_names_orphan = false;
     for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
         for (handle, _page) in &bucket.block_index {

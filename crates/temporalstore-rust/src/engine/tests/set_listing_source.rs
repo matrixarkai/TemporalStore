@@ -121,7 +121,7 @@ fn block_and_entry_counts(
 ) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut pages = std::collections::BTreeSet::new();
     let mut live = 0usize;
     let mut tombstoned = 0usize;
@@ -156,7 +156,7 @@ fn components_the_blocks_still_state(
 ) -> std::collections::BTreeSet<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -168,7 +168,7 @@ fn components_the_blocks_still_state(
             let Ok(bytes) = engine.block_store.read(&page.address) else {
                 continue;
             };
-            if let crate::engine::container_pages::ContainerPageDecode::Framed {
+            if let crate::engine::container_pages::ContainerBlockDecode::Framed {
                 spelling,
                 items,
                 ..
@@ -197,7 +197,7 @@ fn components_the_blocks_still_state(
 fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<ElementEntry> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut addresses = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in &bucket.block_index {
@@ -229,7 +229,7 @@ fn components_at(
         let Ok(bytes) = engine.block_store.read(address) else {
             continue;
         };
-        if let crate::engine::container_pages::ContainerPageDecode::Framed {
+        if let crate::engine::container_pages::ContainerBlockDecode::Framed {
             spelling,
             items,
             ..
@@ -258,7 +258,7 @@ fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize)
     // TAKEN BEFORE THE `retain`, AND OWNING ITS KEYS SO IT CAN BE. The keys live in a sibling
     // field of the index whose bucket map this holds mutably; a map that borrowed would be
     // refused here.
-    let named = super::PageObjects::of(&shard.bucket_index);
+    let named = super::BlockObjects::of(&shard.bucket_index);
     let mut dropped = 0usize;
     for bucket in shard.bucket_index.bucket_map.values_mut() {
         let routing_bucket = bucket.routing_bucket;

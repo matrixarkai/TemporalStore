@@ -165,8 +165,8 @@ impl ElementKeySpelling {
 /// THE FIRST SHAPE, WHICH STILL READS. Every item in it is present: it has no way to say an element
 /// was removed, which is the whole reason there is a second shape. Kept because stores written by
 /// #2022 and #2027 hold these pages and a reader that could not walk them would lose their
-/// elements -- see [`CONTAINER_PAGE_MAGIC_V2`] for what changed and what it costs.
-pub(super) const CONTAINER_PAGE_MAGIC: &[u8] = b"TSCPG1\n";
+/// elements -- see [`CONTAINER_BLOCK_MAGIC_V2`] for what changed and what it costs.
+pub(super) const CONTAINER_BLOCK_MAGIC: &[u8] = b"TSCPG1\n";
 
 /// Seven bytes that say a page payload holds items SOME OF WHICH MAY BE REMOVALS.
 ///
@@ -209,14 +209,14 @@ pub(super) const CONTAINER_PAGE_MAGIC: &[u8] = b"TSCPG1\n";
 /// would enforce it -- a writer that took the wrong shape for its contents would produce a page
 /// whose tombstone decodes as an empty live value, which is the resurrection this whole stage
 /// exists to close, reintroduced by a branch. One writer, one shape, and the cost is priced above.
-pub(super) const CONTAINER_PAGE_MAGIC_V2: &[u8] = b"TSCPG2\n";
+pub(super) const CONTAINER_BLOCK_MAGIC_V2: &[u8] = b"TSCPG2\n";
 
 /// The magic, the spelling byte, and the smallest possible item count.
-const CONTAINER_PAGE_HEADER_BYTES: usize = CONTAINER_PAGE_MAGIC_V2.len() + 1 + 1;
+const CONTAINER_BLOCK_HEADER_BYTES: usize = CONTAINER_BLOCK_MAGIC_V2.len() + 1 + 1;
 
 /// Which shape a frame's magic named, because the value tag means different things in each.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum ContainerPageShape {
+pub(super) enum ContainerBlockShape {
     /// `TSCPG1\n`. Every item is live; the shape cannot say otherwise.
     LiveOnly,
     /// `TSCPG2\n`. An item may be a removal.
@@ -230,7 +230,7 @@ pub(super) enum ContainerPageShape {
 /// for it and the decoder does not invent any. Reading the value of an item whose `deleted` is set
 /// is therefore always a mistake, and `deleted` is checked before `value` at every use.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) struct ContainerPageItem {
+pub(super) struct ContainerBlockItem {
     pub(super) key: Vec<u8>,
     pub(super) value: Vec<u8>,
     /// This item says its element is GONE, not what it holds.
@@ -239,7 +239,7 @@ pub(super) struct ContainerPageItem {
 
 /// What a payload turned out to be.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub(super) enum ContainerPageDecode {
+pub(super) enum ContainerBlockDecode {
     /// No magic. The payload is one value and the index entry beside it names the element -- which
     /// is every page written before this module, and every page of a kind that is its whole object.
     NotFramed,
@@ -248,8 +248,8 @@ pub(super) enum ContainerPageDecode {
         spelling: ElementKeySpelling,
         /// Which magic it carried. A `LiveOnly` page cannot hold a removal, so a derivation reading
         /// one knows its silence about an element means nothing rather than meaning present.
-        shape: ContainerPageShape,
-        items: Vec<ContainerPageItem>,
+        shape: ContainerBlockShape,
+        items: Vec<ContainerBlockItem>,
     },
     /// The magic is there and what follows it is not a frame. NEVER treated as `NotFramed`: the
     /// bytes claim to be a frame, so handing them back as a value would serve framing bytes as
@@ -342,13 +342,13 @@ fn take_slice<'a>(
 /// no value at all -- `TOMBSTONE_VALUE` is what a caller passes for it, so that "a removal carries
 /// no value" is a fact about this type rather than a convention each site remembers.
 #[derive(Debug, Clone, Copy)]
-pub(super) struct ContainerPageWrite<'a> {
+pub(super) struct ContainerBlockWrite<'a> {
     pub(super) key: &'a [u8],
     pub(super) value: &'a [u8],
     pub(super) deleted: bool,
 }
 
-impl<'a> ContainerPageWrite<'a> {
+impl<'a> ContainerBlockWrite<'a> {
     /// A live element and the value it holds.
     pub(super) fn live(key: &'a [u8], value: &'a [u8]) -> Self {
         Self {
@@ -379,9 +379,9 @@ pub(super) fn encode_container_page(
     spelling: ElementKeySpelling,
     items: &[(&[u8], &[u8])],
 ) -> Vec<u8> {
-    let writes: Vec<ContainerPageWrite<'_>> = items
+    let writes: Vec<ContainerBlockWrite<'_>> = items
         .iter()
-        .map(|(key, value)| ContainerPageWrite::live(key, value))
+        .map(|(key, value)| ContainerBlockWrite::live(key, value))
         .collect();
     encode_container_page_items(spelling, &writes)
 }
@@ -393,16 +393,16 @@ pub(super) fn encode_container_page(
 /// not asked at all for a removal -- a removal has no value to place.
 pub(super) fn encode_container_page_items(
     spelling: ElementKeySpelling,
-    items: &[ContainerPageWrite<'_>],
+    items: &[ContainerBlockWrite<'_>],
 ) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(
-        CONTAINER_PAGE_HEADER_BYTES
+        CONTAINER_BLOCK_HEADER_BYTES
             + items
                 .iter()
                 .map(|item| item.key.len() + item.value.len() + 6)
                 .sum::<usize>(),
     );
-    bytes.extend_from_slice(CONTAINER_PAGE_MAGIC_V2);
+    bytes.extend_from_slice(CONTAINER_BLOCK_MAGIC_V2);
     bytes.push(spelling.to_byte());
     put_varint(&mut bytes, items.len() as u64);
     for item in items {
@@ -430,7 +430,7 @@ pub(super) fn encode_container_page_items(
 /// which is why a live suffix item does not change width.
 const TAG_SUFFIX: u64 = 0;
 
-/// The item is a removal. Only meaningful under [`CONTAINER_PAGE_MAGIC_V2`]; under the first shape
+/// The item is a removal. Only meaningful under [`CONTAINER_BLOCK_MAGIC_V2`]; under the first shape
 /// this number is an empty inline value, which the encoder never produced.
 const TAG_REMOVED: u64 = 1;
 
@@ -450,22 +450,22 @@ fn suffix_offset_of(key: &[u8], value: &[u8]) -> Option<usize> {
 }
 
 /// Walk a payload, if it is a frame.
-pub(super) fn decode_container_page(bytes: &[u8]) -> ContainerPageDecode {
+pub(super) fn decode_container_page(bytes: &[u8]) -> ContainerBlockDecode {
     let Some(header) = frame_header(bytes) else {
-        return ContainerPageDecode::NotFramed;
+        return ContainerBlockDecode::NotFramed;
     };
     let (shape, spelling) = match header {
         Ok(header) => header,
-        Err(error) => return ContainerPageDecode::Corrupt(error),
+        Err(error) => return ContainerBlockDecode::Corrupt(error),
     };
-    let mut cursor = CONTAINER_PAGE_MAGIC.len() + 1;
+    let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
-        Err(error) => return ContainerPageDecode::Corrupt(error),
+        Err(error) => return ContainerBlockDecode::Corrupt(error),
     };
     // A count wider than the payload can hold items would otherwise reserve on a corrupt number.
     if count > bytes.len() as u64 {
-        return ContainerPageDecode::Corrupt(format!(
+        return ContainerBlockDecode::Corrupt(format!(
             "container page claims {count} items in {} bytes",
             bytes.len()
         ));
@@ -473,21 +473,21 @@ pub(super) fn decode_container_page(bytes: &[u8]) -> ContainerPageDecode {
     let mut items = Vec::with_capacity(count as usize);
     for index in 0..count {
         match take_item(bytes, &mut cursor, index, shape) {
-            Ok((key, value, deleted)) => items.push(ContainerPageItem {
+            Ok((key, value, deleted)) => items.push(ContainerBlockItem {
                 key: key.to_vec(),
                 value,
                 deleted,
             }),
-            Err(error) => return ContainerPageDecode::Corrupt(error),
+            Err(error) => return ContainerBlockDecode::Corrupt(error),
         }
     }
     if cursor != bytes.len() {
-        return ContainerPageDecode::Corrupt(format!(
+        return ContainerBlockDecode::Corrupt(format!(
             "container page has {} bytes after its last item",
             bytes.len() - cursor
         ));
     }
-    ContainerPageDecode::Framed {
+    ContainerBlockDecode::Framed {
         spelling,
         shape,
         items,
@@ -510,16 +510,16 @@ pub(super) fn decode_container_page(bytes: &[u8]) -> ContainerPageDecode {
 /// truncation ladder cuts at exactly this boundary.
 fn frame_header(
     bytes: &[u8],
-) -> Option<Result<(ContainerPageShape, ElementKeySpelling), String>> {
-    const _: () = assert!(CONTAINER_PAGE_MAGIC.len() == CONTAINER_PAGE_MAGIC_V2.len());
-    let shape = if bytes.starts_with(CONTAINER_PAGE_MAGIC_V2) {
-        ContainerPageShape::WithRemovals
-    } else if bytes.starts_with(CONTAINER_PAGE_MAGIC) {
-        ContainerPageShape::LiveOnly
+) -> Option<Result<(ContainerBlockShape, ElementKeySpelling), String>> {
+    const _: () = assert!(CONTAINER_BLOCK_MAGIC.len() == CONTAINER_BLOCK_MAGIC_V2.len());
+    let shape = if bytes.starts_with(CONTAINER_BLOCK_MAGIC_V2) {
+        ContainerBlockShape::WithRemovals
+    } else if bytes.starts_with(CONTAINER_BLOCK_MAGIC) {
+        ContainerBlockShape::LiveOnly
     } else {
         return None;
     };
-    let Some(byte) = bytes.get(CONTAINER_PAGE_MAGIC.len()).copied() else {
+    let Some(byte) = bytes.get(CONTAINER_BLOCK_MAGIC.len()).copied() else {
         return Some(Err(String::from(
             "container page is the magic and nothing else, so it names no key spelling",
         )));
@@ -542,7 +542,7 @@ fn take_item<'a>(
     bytes: &'a [u8],
     cursor: &mut usize,
     index: u64,
-    shape: ContainerPageShape,
+    shape: ContainerBlockShape,
 ) -> Result<(&'a [u8], Vec<u8>, bool), String> {
     let key_len = take_varint(bytes, cursor, "key length")? as usize;
     let key = take_slice(bytes, cursor, key_len, "key")?;
@@ -556,14 +556,14 @@ fn take_item<'a>(
         })?;
         return Ok((key, tail.to_vec(), false));
     }
-    if shape == ContainerPageShape::WithRemovals && tag == TAG_REMOVED {
+    if shape == ContainerBlockShape::WithRemovals && tag == TAG_REMOVED {
         // NO VALUE BYTES FOLLOW. The cursor stands after the tag, which is what keeps the
         // consume-the-payload-exactly property true for a page whose last item is a removal.
         return Ok((key, Vec::new(), true));
     }
     let bias = match shape {
-        ContainerPageShape::LiveOnly => TAG_INLINE_BIAS_V1,
-        ContainerPageShape::WithRemovals => TAG_INLINE_BIAS_V2,
+        ContainerBlockShape::LiveOnly => TAG_INLINE_BIAS_V1,
+        ContainerBlockShape::WithRemovals => TAG_INLINE_BIAS_V2,
     };
     let value = take_slice(bytes, cursor, (tag - bias) as usize, "value")?;
     Ok((key, value.to_vec(), false))
@@ -607,7 +607,7 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
             None => return ContainerElementRead::Absent,
         }
     };
-    let mut cursor = CONTAINER_PAGE_MAGIC.len() + 1;
+    let mut cursor = CONTAINER_BLOCK_MAGIC.len() + 1;
     let count = match take_varint(bytes, &mut cursor, "item count") {
         Ok(count) => count,
         Err(error) => return ContainerElementRead::Corrupt(error),
@@ -688,7 +688,7 @@ pub(super) fn element_key_from_component(
             // PLACEHOLDER in the first eight, not the true score.
             //
             // THAT IS SAFE, AND HERE IS THE WHOLE ARGUMENT WHY: every caller of this arm either
-            // builds a brand-new page (`encode_single_element_page`, `encode_tombstone_page` --
+            // builds a brand-new page (`encode_single_element_block`, `encode_tombstone_block` --
             // the placeholder is all a fresh write needs, since nothing downstream reads it back)
             // or does not call it at all. `select_container_element` is the one caller that used
             // to call this and compare the result for EXACT equality against a stored key -- which
@@ -723,7 +723,7 @@ pub(super) fn element_key_from_component(
 /// can produce. Neither is reachable from the write path -- every container component is built by
 /// the very function this reverses -- and [`single_element_page`] is what the write sites call, so
 /// the unreachable case is counted rather than expressed as an `unwrap`.
-pub(super) fn encode_single_element_page(
+pub(super) fn encode_single_element_block(
     kind: &str,
     component: &str,
     value: &[u8],
@@ -759,7 +759,7 @@ pub fn reset_unframed_container_write_count() {
 /// site that had to branch on whether it got one would reintroduce the per-site decision this
 /// function exists to remove.
 pub(super) fn single_element_page(kind: &str, component: &str, value: &[u8]) -> Vec<u8> {
-    match encode_single_element_page(kind, component, value) {
+    match encode_single_element_block(kind, component, value) {
         Some(page) => page,
         None => {
             UNFRAMED_CONTAINER_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -788,12 +788,12 @@ pub(super) fn single_element_page(kind: &str, component: &str, value: &[u8]) -> 
 /// `None` therefore means the caller must not treat the removal as durable in the pages. Every
 /// caller counts it; `a_removal_that_cannot_be_framed_is_counted_and_writes_no_block` drives the
 /// count, and the four kinds all frame, so a nonzero count is a defect and not a tolerance.
-pub(super) fn encode_tombstone_page(kind: &str, component: &str) -> Option<Vec<u8>> {
+pub(super) fn encode_tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
     let spelling = ElementKeySpelling::for_kind(kind)?;
     let key = element_key_from_component(spelling, component)?;
     Some(encode_container_page_items(
         spelling,
-        &[ContainerPageWrite::removed(&key)],
+        &[ContainerBlockWrite::removed(&key)],
     ))
 }
 
@@ -819,9 +819,9 @@ pub fn reset_unframed_container_removal_count() {
 /// The payload a container removal stores, or `None` with the miss counted.
 ///
 /// The counting twin of [`single_element_page`], and it returns an `Option` where that one returns
-/// bytes for exactly the reason in [`encode_tombstone_page`]: there is no degraded form of "gone".
+/// bytes for exactly the reason in [`encode_tombstone_block`]: there is no degraded form of "gone".
 pub(super) fn tombstone_page(kind: &str, component: &str) -> Option<Vec<u8>> {
-    match encode_tombstone_page(kind, component) {
+    match encode_tombstone_block(kind, component) {
         Some(page) => Some(page),
         None => {
             UNFRAMED_CONTAINER_REMOVALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);

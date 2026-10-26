@@ -262,7 +262,7 @@ fn encode_block_record_payload(
     payload: &[u8],
     options: BlockStoreOptions,
 ) -> Result<(Vec<u8>, BlockRecordCompression), BlockStoreError> {
-    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::PageBytes, || {
+    crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::BlockBytes, || {
         encode_block_record_payload_inner(payload, options)
     })
 }

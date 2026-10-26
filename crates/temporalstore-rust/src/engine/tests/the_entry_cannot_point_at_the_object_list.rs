@@ -496,7 +496,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
 
-    let ordinal_names = super::PageObjects::of(&shard.bucket_index);
+    let ordinal_names = super::BlockObjects::of(&shard.bucket_index);
     let mut rows_seen = 0usize;
     let mut pages_seen = 0usize;
     let mut id_already_answered = 0usize;

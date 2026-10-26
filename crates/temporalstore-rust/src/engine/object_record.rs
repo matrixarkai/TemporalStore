@@ -90,7 +90,7 @@ use crate::block_store::{
 ///     THREE: absent, a value, or a handle. A sentinel value is refused for the reason stated in
 ///     the module header, so absence costs a bit. Ten bits cannot represent an absent deadline
 ///     without one.
-///   * `PAGE_GENERATION` (bit 11). [`ElementEntry`] carries a generation-present bit that is
+///   * `BLOCK_GENERATION` (bit 11). [`ElementEntry`] carries a generation-present bit that is
 ///     independent of its block-id-present bit ON THE STORED PATH: an index written before the
 ///     generation existed carries an identity and no generation, and must keep loading that way.
 ///     Dropping this bit would hand such an entry a generation it never had and move every key it
@@ -130,16 +130,16 @@ impl RecordFlags {
     /// The object's bytes are resident.
     pub(super) const IN_MEMORY: u16 = 1 << 5;
     /// The page named by the address word has unflushed writes.
-    pub(super) const PAGE_DIRTY: u16 = 1 << 6;
+    pub(super) const BLOCK_DIRTY: u16 = 1 << 6;
     /// The page named by the address word is a tombstone.
-    pub(super) const PAGE_DELETED: u16 = 1 << 7;
+    pub(super) const BLOCK_DELETED: u16 = 1 << 7;
     /// The page's only durable copy is an operation-log record.
-    pub(super) const PAGE_IN_LOG: u16 = 1 << 8;
+    pub(super) const BLOCK_IN_LOG: u16 = 1 << 8;
     //
     // BIT 9 IS A HOLE, AND IT IS THE RECORD OF A BIT REMOVED AS REDUNDANT.
     //
     // It held a second flag whose documented meaning was "the page is deleted" -- which is
-    // exactly what `PAGE_DELETED` at bit 7 already says. Two bits for one fact is worse than
+    // exactly what `BLOCK_DELETED` at bit 7 already says. Two bits for one fact is worse than
     // either of them alone, because nothing stops them disagreeing and then no reader knows
     // which to believe. So the fact keeps one bit and the other is gone.
     //
@@ -153,7 +153,7 @@ impl RecordFlags {
     // deadline now, and a per-key deadline lives in its own structure where a sweep can walk
     // due keys in DEADLINE order rather than scanning every row to find them.
     /// The page carries a generation, independently of whether it carries an identity.
-    pub(super) const PAGE_GENERATION: u16 = 1 << 11;
+    pub(super) const BLOCK_GENERATION: u16 = 1 << 11;
 
     /// Bits 1, 2, 9, 10 and 12..=15. Set in a decoded record, these mean a writer newer than
     /// this reader -- 1, 2, 9 and 10 because they were retired, the rest because they were never
@@ -209,9 +209,9 @@ const _: () = assert!(RecordFlags::KNOWN & RecordFlags::RESERVED == 0);
 /// A handle naming the pages of a multi-page object, held outside the record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
-pub(super) struct PageLayoutHandle(u64);
+pub(super) struct BlockLayoutHandle(u64);
 
-impl PageLayoutHandle {
+impl BlockLayoutHandle {
     pub(super) const fn from_stored(value: u64) -> Self {
         Self(value)
     }
@@ -222,11 +222,11 @@ impl PageLayoutHandle {
 
 /// What the address word means. THE TAG DECIDES, NEVER THE VALUE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) enum PageAddress {
+pub(super) enum BlockAddress {
     /// One page, at this address word: the slab in the high half and the offset in the low.
     One(u64),
     /// Several pages, in a side layout this handle names.
-    Many(PageLayoutHandle),
+    Many(BlockLayoutHandle),
 }
 
 // =================================================================================================
@@ -298,22 +298,22 @@ impl ObjectRecord {
 
 
     /// The address, decided by its tag bit and not by its value.
-    pub(super) fn page_address(&self) -> PageAddress {
+    pub(super) fn page_address(&self) -> BlockAddress {
         if self.flags.get(RecordFlags::ADDRESS_IS_POINTER) {
-            PageAddress::Many(PageLayoutHandle::from_stored(self.address))
+            BlockAddress::Many(BlockLayoutHandle::from_stored(self.address))
         } else {
-            PageAddress::One(self.address)
+            BlockAddress::One(self.address)
         }
     }
 
     /// Set the address and its tag bit TOGETHER, so the two cannot disagree.
-    pub(super) fn set_page_address(&mut self, address: PageAddress) {
+    pub(super) fn set_page_address(&mut self, address: BlockAddress) {
         match address {
-            PageAddress::One(word) => {
+            BlockAddress::One(word) => {
                 self.address = word;
                 self.flags.set(RecordFlags::ADDRESS_IS_POINTER, false);
             }
-            PageAddress::Many(handle) => {
+            BlockAddress::Many(handle) => {
                 self.address = handle.get();
                 self.flags.set(RecordFlags::ADDRESS_IS_POINTER, true);
             }
@@ -388,8 +388,8 @@ impl ObjectRecord {
     /// The same, as a `Result`, for a caller that cannot assume the inline arm.
     pub(super) fn try_address(&self) -> Result<ElementEntry, ObjectRecordRefusal> {
         let word = match self.page_address() {
-            PageAddress::One(word) => word,
-            PageAddress::Many(handle) => {
+            BlockAddress::One(word) => word,
+            BlockAddress::Many(handle) => {
                 return Err(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })
             }
         };
@@ -397,8 +397,8 @@ impl ObjectRecord {
             u64::from(extract_block_slab_id(word)),
             u64::from(extract_block_offset(word)),
             u64::from(self.page_size),
-            (!self.flags.get(RecordFlags::PAGE_IN_LOG)).then_some(0u64),
-            self.flags.get(RecordFlags::PAGE_GENERATION),
+            (!self.flags.get(RecordFlags::BLOCK_IN_LOG)).then_some(0u64),
+            self.flags.get(RecordFlags::BLOCK_GENERATION),
         )
         .map_err(|_| ObjectRecordRefusal::AddressWordOutOfRange { word })
     }
@@ -422,7 +422,7 @@ impl ObjectRecord {
     /// caller remembering: it writes the address word, the page size, and the two bits that are
     /// part of what an address MEANS (whether an ordinal is present, and whether a generation is).
     /// It cannot reach the deadline word, the deadline tags, `DIRTY`, `INDEX_DIRTY`, `LOADING`,
-    /// `IN_MEMORY`, `PAGE_DIRTY`, `PAGE_DELETED`, or the model id. A careless caller gets the
+    /// `IN_MEMORY`, `BLOCK_DIRTY`, `BLOCK_DELETED`, or the model id. A careless caller gets the
     /// right answer.
     ///
     /// `compacting_a_record_keeps_everything_that_is_not_the_address` is the guard, and it asserts
@@ -430,7 +430,7 @@ impl ObjectRecord {
     /// records would fail for the wrong reason, and a test that asserted "nothing changed" would
     /// be wrong about the two bits that are supposed to change.
     pub(super) fn set_address(&mut self, address: &ElementEntry) {
-        self.set_page_address(PageAddress::One(address.address_word()));
+        self.set_page_address(BlockAddress::One(address.address_word()));
         // NOT SATURATED. `ElementEntry::length` is a `u32` field and its accessor widens, so a
         // value that does not fit here cannot exist -- and if one ever does, the honest answer is
         // to say so rather than to record a shorter page than the one that was written. A
@@ -442,14 +442,14 @@ impl ObjectRecord {
                 address.length()
             )
         });
-        self.flags.set(RecordFlags::PAGE_IN_LOG, address.block_id().is_none());
-        self.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
+        self.flags.set(RecordFlags::BLOCK_IN_LOG, address.block_id().is_none());
+        self.flags.set(RecordFlags::BLOCK_GENERATION, address.generation().is_some());
         // COUNTED, BECAUSE THE VALUE IS DROPPED HERE AND NOTHING ELSE SAYS SO.
         //
         // The inline arm keeps the ordinal's PRESENCE, set just above, and has no room for its
         // value -- correct for a single-page object, which has page zero by construction. A
         // NONZERO ordinal is therefore silently lost at this line, while the conversion path
-        // refuses the same condition by name as `NonZeroPageOrdinalDoesNotFitInline`. Two halves
+        // refuses the same condition by name as `NonZeroBlockOrdinalDoesNotFitInline`. Two halves
         // of one contract disagreeing, and no test fed either path a nonzero ordinal, so nothing
         // could tell.
         //
@@ -459,7 +459,7 @@ impl ObjectRecord {
         // `dropped_nonzero_page_ordinals` for the whole argument, and `try_set_address` for the
         // refusing door the callers move to once such an object has somewhere to go.
         if address.block_id().is_some_and(|block_id| block_id != 0) {
-            DROPPED_NONZERO_PAGE_ORDINALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            DROPPED_NONZERO_BLOCK_ORDINALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
 
@@ -484,7 +484,7 @@ impl ObjectRecord {
     /// actually said: 400 of 400 carried ordinal 0, the largest seen being 0. The ordinal names
     /// WHICH PAGE of the object this is, so an object with one page has page zero by construction.
     /// What the inline arm needs is the ordinal's PRESENCE -- a bit it already spends as
-    /// `PAGE_IN_LOG`, since an absent ordinal is exactly what log-residence means -- and not its
+    /// `BLOCK_IN_LOG`, since an absent ordinal is exactly what log-residence means -- and not its
     /// value.
     ///
     /// So a NONZERO ordinal is what is refused, and a nonzero ordinal means a multi-page object,
@@ -501,14 +501,14 @@ impl ObjectRecord {
         let block_id = address.block_id();
         if let Some(ordinal) = block_id {
             if ordinal != 0 {
-                return Err(ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline {
+                return Err(ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline {
                     block_id: ordinal,
                 });
             }
         }
         let length = address.length();
         let page_size = u32::try_from(length)
-            .map_err(|_| ObjectRecordRefusal::PageSizeDoesNotFit { length })?;
+            .map_err(|_| ObjectRecordRefusal::BlockSizeDoesNotFit { length })?;
 
         let mut record = Self {
             address: 0,
@@ -516,12 +516,12 @@ impl ObjectRecord {
             flags: RecordFlags::empty(),
             model_id,
         };
-        record.set_page_address(PageAddress::One(address.address_word()));
+        record.set_page_address(BlockAddress::One(address.address_word()));
         // `block_id()` is `None` exactly while the block lives in the log, which is the one
         // derivation this type keeps rather than restates: see `ElementEntry::log_resident`. So
         // this ONE BIT carries the ordinal's presence, and the inline arm's ordinal value is zero.
-        record.flags.set(RecordFlags::PAGE_IN_LOG, block_id.is_none());
-        record.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
+        record.flags.set(RecordFlags::BLOCK_IN_LOG, block_id.is_none());
+        record.flags.set(RecordFlags::BLOCK_GENERATION, address.generation().is_some());
         Ok(record)
     }
 
@@ -535,20 +535,20 @@ impl ObjectRecord {
         model_id: u8,
         deadline: Option<u64>,
         dirty: bool,
-        handle: PageLayoutHandle,
-    ) -> Result<(Self, PageLayout), ObjectRecordRefusal> {
+        handle: BlockLayoutHandle,
+    ) -> Result<(Self, BlockLayout), ObjectRecordRefusal> {
         let length = address.length();
         let page_size = u32::try_from(length)
-            .map_err(|_| ObjectRecordRefusal::PageSizeDoesNotFit { length })?;
+            .map_err(|_| ObjectRecordRefusal::BlockSizeDoesNotFit { length })?;
         let block_id = match address.block_id() {
             None => None,
             Some(id) => Some(
                 u16::try_from(id)
-                    .map_err(|_| ObjectRecordRefusal::PageIdentityOutOfRange { block_id: id })?,
+                    .map_err(|_| ObjectRecordRefusal::BlockIdentityOutOfRange { block_id: id })?,
             ),
         };
-        let layout = PageLayout {
-            pages: vec![StoredPage {
+        let layout = BlockLayout {
+            pages: vec![StoredBlock {
                 address: address.address_word(),
                 length: page_size,
                 block_id: block_id.unwrap_or_default(),
@@ -562,9 +562,9 @@ impl ObjectRecord {
             flags: RecordFlags::empty(),
             model_id,
         };
-        record.set_page_address(PageAddress::Many(handle));
-        record.flags.set(RecordFlags::PAGE_IN_LOG, block_id.is_none());
-        record.flags.set(RecordFlags::PAGE_GENERATION, address.generation().is_some());
+        record.set_page_address(BlockAddress::Many(handle));
+        record.flags.set(RecordFlags::BLOCK_IN_LOG, block_id.is_none());
+        record.flags.set(RecordFlags::BLOCK_GENERATION, address.generation().is_some());
         Ok((record, layout))
     }
 
@@ -574,19 +574,19 @@ impl ObjectRecord {
     /// is refused by name rather than papered over with a default address.
     pub(super) fn into_object_rows(
         &self,
-        layout: Option<&PageLayout>,
+        layout: Option<&BlockLayout>,
     ) -> Result<(ElementEntry, u8), ObjectRecordRefusal> {
         let (word, length, block_id, has_generation) = match self.page_address() {
-            // THE INLINE ARM'S ORDINAL IS ZERO WHEN IT IS PRESENT AT ALL, and `PAGE_IN_LOG`
+            // THE INLINE ARM'S ORDINAL IS ZERO WHEN IT IS PRESENT AT ALL, and `BLOCK_IN_LOG`
             // carries that presence: set means no ordinal, clear means ordinal zero. See
             // `from_object_rows` for the measurement that settled this.
-            PageAddress::One(word) => (
+            BlockAddress::One(word) => (
                 word,
                 u64::from(self.page_size),
-                (!self.flags.get(RecordFlags::PAGE_IN_LOG)).then_some(0u64),
-                self.flags.get(RecordFlags::PAGE_GENERATION),
+                (!self.flags.get(RecordFlags::BLOCK_IN_LOG)).then_some(0u64),
+                self.flags.get(RecordFlags::BLOCK_GENERATION),
             ),
-            PageAddress::Many(handle) => {
+            BlockAddress::Many(handle) => {
                 let layout =
                     layout.ok_or(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })?;
                 let page = layout
@@ -615,11 +615,11 @@ impl ObjectRecord {
 
 /// The pages of a multi-page object, named by a record whose address word is a handle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct PageLayout {
-    pages: Vec<StoredPage>,
+pub(super) struct BlockLayout {
+    pages: Vec<StoredBlock>,
 }
 
-impl PageLayout {
+impl BlockLayout {
     pub(super) fn len(&self) -> usize {
         self.pages.len()
     }
@@ -631,7 +631,7 @@ impl PageLayout {
 
 /// One page inside a layout: everything the inline arm cannot hold, held exactly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct StoredPage {
+pub(super) struct StoredBlock {
     address: u64,
     length: u32,
     block_id: u16,
@@ -645,7 +645,7 @@ pub(super) struct StoredPage {
 
 /// Where the pages of a multi-page object actually live.
 ///
-/// THIS IS THE PIECE WHOSE ABSENCE MADE THE HANDLE ARM DEAD CODE. `PageAddress::Many` and
+/// THIS IS THE PIECE WHOSE ABSENCE MADE THE HANDLE ARM DEAD CODE. `BlockAddress::Many` and
 /// `from_object_rows_with_layout` have existed and been tested for some time, and
 /// `RecordFlags::ADDRESS_IS_POINTER` with them -- but every production mention of all three was
 /// inside this file, because a handle is only a number until something maps it to a layout. The
@@ -655,7 +655,7 @@ pub(super) struct StoredPage {
 ///
 /// # HANDLE ZERO IS NEVER A LAYOUT, AND THAT IS LOAD-BEARING
 ///
-/// `PageLayoutHandle` derives `Default`, so a zeroed or defaulted handle is `0`. If slot zero
+/// `BlockLayoutHandle` derives `Default`, so a zeroed or defaulted handle is `0`. If slot zero
 /// backed handle zero, a record that never had a layout would resolve to whatever landed in the
 /// first slot. So a slot at index `i` backs handle `i + 1` in the low half, and zero resolves to
 /// nothing by construction rather than by a check someone has to remember.
@@ -669,7 +669,7 @@ pub(super) struct StoredPage {
 /// to the wrong thing. A raw pointer cannot express this; a handle can, for the cost of bookkeeping
 /// in the half of the word that was going spare.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
-pub(super) struct PageLayoutStore {
+pub(super) struct BlockLayoutStore {
     slots: Vec<LayoutSlot>,
     vacant: Vec<u32>,
     live: usize,
@@ -678,27 +678,27 @@ pub(super) struct PageLayoutStore {
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 struct LayoutSlot {
     generation: u32,
-    layout: Option<PageLayout>,
+    layout: Option<BlockLayout>,
 }
 
-impl PageLayoutStore {
+impl BlockLayoutStore {
     /// Split a handle into the slot it names and the generation it was issued at.
     ///
     /// `None` for handle zero, which names no slot -- see the type's doc.
-    fn decode(handle: PageLayoutHandle) -> Option<(usize, u32)> {
+    fn decode(handle: BlockLayoutHandle) -> Option<(usize, u32)> {
         let word = handle.get();
         let low = (word & 0xFFFF_FFFF) as u32;
         let index = low.checked_sub(1)?;
         Some((index as usize, (word >> 32) as u32))
     }
 
-    fn encode(index: usize, generation: u32) -> PageLayoutHandle {
+    fn encode(index: usize, generation: u32) -> BlockLayoutHandle {
         let low = u64::from(index as u32 + 1);
-        PageLayoutHandle::from_stored((u64::from(generation) << 32) | low)
+        BlockLayoutHandle::from_stored((u64::from(generation) << 32) | low)
     }
 
     /// File a layout and return the handle a record should carry.
-    pub(super) fn insert(&mut self, layout: PageLayout) -> PageLayoutHandle {
+    pub(super) fn insert(&mut self, layout: BlockLayout) -> BlockLayoutHandle {
         self.live += 1;
         match self.vacant.pop() {
             Some(index) => {
@@ -715,7 +715,7 @@ impl PageLayoutStore {
     }
 
     /// The layout this handle names, or `None` if it names nothing any more.
-    pub(super) fn get(&self, handle: PageLayoutHandle) -> Option<&PageLayout> {
+    pub(super) fn get(&self, handle: BlockLayoutHandle) -> Option<&BlockLayout> {
         let (index, generation) = Self::decode(handle)?;
         let slot = self.slots.get(index)?;
         if slot.generation != generation {
@@ -725,7 +725,7 @@ impl PageLayoutStore {
     }
 
     /// Give up a layout. The slot is reused, and its generation moves so the old handle cannot.
-    pub(super) fn remove(&mut self, handle: PageLayoutHandle) -> Option<PageLayout> {
+    pub(super) fn remove(&mut self, handle: BlockLayoutHandle) -> Option<BlockLayout> {
         let (index, generation) = Self::decode(handle)?;
         let slot = self.slots.get_mut(index)?;
         if slot.generation != generation {
@@ -877,13 +877,13 @@ pub(super) enum ObjectRecordRefusal {
     ReservedFlagBitsSet { bits: u16 },
     /// The inline arm carries a page ordinal's presence but not a nonzero value. Use the layout
     /// arm, which is where a multi-page object belongs regardless.
-    NonZeroPageOrdinalDoesNotFitInline { block_id: u64 },
+    NonZeroBlockOrdinalDoesNotFitInline { block_id: u64 },
     /// A page identity wider than the sixteen bits the stored form accepts.
-    PageIdentityOutOfRange { block_id: u64 },
+    BlockIdentityOutOfRange { block_id: u64 },
     /// A page longer than the stored size field can name.
-    PageSizeDoesNotFit { length: u64 },
+    BlockSizeDoesNotFit { length: u64 },
     /// The address word is a handle and no layout was supplied for it.
-    LayoutHandleWithNoLayout { handle: PageLayoutHandle },
+    LayoutHandleWithNoLayout { handle: BlockLayoutHandle },
     /// The address word does not decode to an address this store can name.
     AddressWordOutOfRange { word: u64 },
 }
@@ -897,21 +897,21 @@ impl std::fmt::Display for ObjectRecordRefusal {
                  was written by a newer reader; refusing rather than reading it with those bits' \
                  meaning dropped"
             ),
-            Self::NonZeroPageOrdinalDoesNotFitInline { block_id } => write!(
+            Self::NonZeroBlockOrdinalDoesNotFitInline { block_id } => write!(
                 f,
-                "NonZeroPageOrdinalDoesNotFitInline: page ordinal {block_id} has no room in the \
+                "NonZeroBlockOrdinalDoesNotFitInline: page ordinal {block_id} has no room in the \
                  inline arm's twenty-four bytes, which carry the ordinal's presence and an implied \
                  value of zero; a nonzero ordinal is a multi-page object and belongs in the layout \
                  arm"
             ),
-            Self::PageIdentityOutOfRange { block_id } => write!(
+            Self::BlockIdentityOutOfRange { block_id } => write!(
                 f,
-                "PageIdentityOutOfRange: page identity {block_id} is wider than the stored form \
+                "BlockIdentityOutOfRange: page identity {block_id} is wider than the stored form \
                  accepts; truncating it would name a different page of the same object"
             ),
-            Self::PageSizeDoesNotFit { length } => write!(
+            Self::BlockSizeDoesNotFit { length } => write!(
                 f,
-                "PageSizeDoesNotFit: page length {length} is wider than the stored size field"
+                "BlockSizeDoesNotFit: page length {length} is wider than the stored size field"
             ),
             Self::LayoutHandleWithNoLayout { handle } => write!(
                 f,
@@ -1423,7 +1423,7 @@ impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
 /// layout arm.
 ///
 /// The conversion path refuses such an entry by name, as
-/// [`ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline`]. The write-back door did not: it
+/// [`ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline`]. The write-back door did not: it
 /// wrote the presence bit and dropped the value, silently.
 ///
 /// # WHY THIS IS A COUNTER AND NOT YET A REFUSAL
@@ -1448,17 +1448,17 @@ impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
 ///
 /// [`ObjectRecord::try_set_address`] is the refusing door, reachable and tested now, for the
 /// callers that will be able to handle it once there is somewhere for such an object to go.
-static DROPPED_NONZERO_PAGE_ORDINALS: std::sync::atomic::AtomicU64 =
+static DROPPED_NONZERO_BLOCK_ORDINALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// How many nonzero page ordinals the write-back door has dropped.
 pub(crate) fn dropped_nonzero_page_ordinals() -> u64 {
-    DROPPED_NONZERO_PAGE_ORDINALS.load(std::sync::atomic::Ordering::Relaxed)
+    DROPPED_NONZERO_BLOCK_ORDINALS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Forget the count, so a test measures its own writes rather than the suite before it.
 pub(crate) fn reset_dropped_nonzero_page_ordinals() {
-    DROPPED_NONZERO_PAGE_ORDINALS.store(0, std::sync::atomic::Ordering::Relaxed);
+    DROPPED_NONZERO_BLOCK_ORDINALS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 impl ObjectRecord {
@@ -1477,7 +1477,7 @@ impl ObjectRecord {
     ) -> Result<(), ObjectRecordRefusal> {
         if let Some(block_id) = address.block_id() {
             if block_id != 0 {
-                return Err(ObjectRecordRefusal::NonZeroPageOrdinalDoesNotFitInline {
+                return Err(ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline {
                     block_id: u64::from(block_id),
                 });
             }
@@ -1490,7 +1490,7 @@ impl ObjectRecord {
 #[cfg(test)]
 mod the_handle_arm_now_has_something_to_point_into {
     use super::{
-        ElementEntry, ObjectRecord, PageAddress, PageLayout, PageLayoutHandle, PageLayoutStore,
+        ElementEntry, ObjectRecord, BlockAddress, BlockLayout, BlockLayoutHandle, BlockLayoutStore,
     };
 
     fn an_entry() -> ElementEntry {
@@ -1499,20 +1499,20 @@ mod the_handle_arm_now_has_something_to_point_into {
 
     /// Handle zero names nothing, and no issued handle is ever zero.
     ///
-    /// `PageLayoutHandle` derives `Default`, so this is the property that keeps a record which
+    /// `BlockLayoutHandle` derives `Default`, so this is the property that keeps a record which
     /// never had a layout from reading whatever landed in the first slot.
     #[test]
     fn handle_zero_names_nothing_and_is_never_issued() {
-        let mut store = PageLayoutStore::default();
-        assert!(store.get(PageLayoutHandle::default()).is_none(), "the default handle resolved");
-        assert!(store.get(PageLayoutHandle::from_stored(0)).is_none(), "handle zero resolved");
+        let mut store = BlockLayoutStore::default();
+        assert!(store.get(BlockLayoutHandle::default()).is_none(), "the default handle resolved");
+        assert!(store.get(BlockLayoutHandle::from_stored(0)).is_none(), "handle zero resolved");
 
         for _ in 0..4 {
-            let handle = store.insert(PageLayout::default());
+            let handle = store.insert(BlockLayout::default());
             assert_ne!(0, handle.get(), "an issued handle must never be zero");
         }
         assert_eq!(4, store.len());
-        assert!(store.get(PageLayoutHandle::from_stored(0)).is_none(), "handle zero resolved");
+        assert!(store.get(BlockLayoutHandle::from_stored(0)).is_none(), "handle zero resolved");
     }
 
     /// A record whose address word is a HANDLE gives its rows back unchanged through the store.
@@ -1521,17 +1521,17 @@ mod the_handle_arm_now_has_something_to_point_into {
     /// store holds the layout, and nothing is lost in either direction.
     #[test]
     fn a_record_and_its_layout_round_trip_through_the_store() {
-        let mut store = PageLayoutStore::default();
+        let mut store = BlockLayoutStore::default();
         let address = an_entry();
 
         // The handle has to be known before the record is built, which is why the store issues it
         // first and the layout is filed under the same handle afterwards.
-        let reserved = store.insert(PageLayout::default());
+        let reserved = store.insert(BlockLayout::default());
         let (record, layout) =
             ObjectRecord::from_object_rows_with_layout(&address, 9, Some(1_700), true, reserved)
                 .expect("the layout arm refused an entry it is documented to hold");
         assert!(
-            matches!(record.page_address(), PageAddress::Many(_)),
+            matches!(record.page_address(), BlockAddress::Many(_)),
             "the record should carry a handle, not an inline address"
         );
 
@@ -1555,14 +1555,14 @@ mod the_handle_arm_now_has_something_to_point_into {
     /// handle would fail to resolve trivially. So the slot count is pinned at one.
     #[test]
     fn a_stale_handle_does_not_resolve_to_the_layout_that_replaced_it() {
-        let mut store = PageLayoutStore::default();
+        let mut store = BlockLayoutStore::default();
 
-        let first = store.insert(PageLayout::default());
+        let first = store.insert(BlockLayout::default());
         assert!(store.get(first).is_some());
         assert!(store.remove(first).is_some(), "the first layout should have been there");
         assert!(store.get(first).is_none(), "a removed handle still resolved");
 
-        let second = store.insert(PageLayout::default());
+        let second = store.insert(BlockLayout::default());
         assert_eq!(
             1,
             store.slots.len(),
@@ -1585,12 +1585,12 @@ mod the_handle_arm_now_has_something_to_point_into {
     /// Removing a handle twice is not a second removal, and neither is removing a fabricated one.
     #[test]
     fn a_handle_that_names_nothing_removes_nothing() {
-        let mut store = PageLayoutStore::default();
-        let handle = store.insert(PageLayout::default());
+        let mut store = BlockLayoutStore::default();
+        let handle = store.insert(BlockLayout::default());
         assert!(store.remove(handle).is_some());
         assert!(store.remove(handle).is_none(), "the same handle removed twice");
         assert!(
-            store.remove(PageLayoutHandle::from_stored(9_999)).is_none(),
+            store.remove(BlockLayoutHandle::from_stored(9_999)).is_none(),
             "a fabricated handle removed something"
         );
         assert!(store.is_empty(), "the store should be empty");
@@ -1600,7 +1600,7 @@ mod the_handle_arm_now_has_something_to_point_into {
 
 #[cfg(test)]
 mod what_moving_one_kinds_refs_onto_its_record_would_cost {
-    use super::{PageLayout, PageLayoutStore, StoredPage};
+    use super::{BlockLayout, BlockLayoutStore, StoredBlock};
 
     /// glibc, which is what production uses: the crate's only `#[global_allocator]` is behind
     /// `cfg(all(test, feature = "alloc-probe"))`.
@@ -1627,11 +1627,11 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
     ///
     ///   MOVED  the record already exists in `objects` for this kind and already holds the key,
     ///          so the key is free on this side too. What is added is a store slot and a layout:
-    ///          the layout's `Vec<StoredPage>` buffer, and the refs beside it.
+    ///          the layout's `Vec<StoredBlock>` buffer, and the refs beside it.
     #[test]
     fn the_two_shapes_priced_side_by_side() {
-        let pair = std::mem::size_of::<StoredPage>();
-        let layout_inline = std::mem::size_of::<PageLayout>();
+        let pair = std::mem::size_of::<StoredBlock>();
+        let layout_inline = std::mem::size_of::<BlockLayout>();
         let refs_inline = 24; // BlockRefs, pinned in state.rs
 
         // TODAY: a B-tree node holds up to 11 entries; a one-element map allocates a 280-byte root
@@ -1639,17 +1639,17 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
         let node_bytes_per_entry = 288.0 / 5.8;
         let today = node_bytes_per_entry + refs_inline as f64;
 
-        // MOVED: one store slot (generation + Option<PageLayout>, inline in the arena's Vec) plus
+        // MOVED: one store slot (generation + Option<BlockLayout>, inline in the arena's Vec) plus
         // one exact-capacity page buffer. The arena's own Vec amortises, so per object it is the
         // slot inline plus the buffer chunk.
-        let slot_inline = 4 + 4 + layout_inline; // generation, padding, the Option<PageLayout>
+        let slot_inline = 4 + 4 + layout_inline; // generation, padding, the Option<BlockLayout>
         let buffer = chunk(pair * 1);
         let moved = slot_inline as f64 + buffer as f64 + refs_inline as f64;
 
         println!();
         println!("  per object holding one block, chunk bytes:");
-        println!("    StoredPage                {pair} B");
-        println!("    PageLayout inline         {layout_inline} B");
+        println!("    StoredBlock                {pair} B");
+        println!("    BlockLayout inline         {layout_inline} B");
         println!("    BlockRefs inline          {refs_inline} B");
         println!();
         println!("    TODAY  lookup entry       {today:>7.1} B  (node {node_bytes_per_entry:.1} + refs {refs_inline})");
@@ -1660,9 +1660,9 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
 
         // The arena's growth is amortised, so confirm the slot really is inline rather than a
         // per-object allocation -- otherwise the figure above understates the moved side.
-        let mut store = PageLayoutStore::default();
+        let mut store = BlockLayoutStore::default();
         for _ in 0..64 {
-            store.insert(PageLayout::default());
+            store.insert(BlockLayout::default());
         }
         assert_eq!(64, store.len(), "the arena did not take 64 layouts");
 

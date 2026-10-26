@@ -75,7 +75,7 @@ const END: u32 = SPREAD - 1;
 /// The ordinal names WHICH page of an object an address is, and every page here belongs to a
 /// single-page object, so zero is not a convenience: it is the only value the store can keep.
 /// `ObjectRecord::from_object_rows` refuses a nonzero one by name as
-/// `NonZeroPageOrdinalDoesNotFitInline`, `set_address` coerces it and counts the coercion
+/// `NonZeroBlockOrdinalDoesNotFitInline`, `set_address` coerces it and counts the coercion
 /// (`the_write_back_door_and_the_page_ordinal`), and #2322 corrected the identical datum in
 /// `model_kind_registry_guards`. So this changes what the fixture says, not what it tests.
 ///

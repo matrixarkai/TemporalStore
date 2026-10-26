@@ -178,11 +178,11 @@ unsafe impl GlobalAlloc for CountingAllocator {
 pub enum AllocClass {
     /// The stored value's own bytes: the block-record payload encode, and the copy the in-memory
     /// page holds on the asynchronous arm. The largest class by bytes after the log record.
-    PageBytes,
+    BlockBytes,
     /// The copy of those same bytes that the write-ahead record CARRIES, so an ack promises the
-    /// page and not only the command that produced it. Separate from `PageBytes` because a
+    /// page and not only the command that produced it. Separate from `BlockBytes` because a
     /// durability decision put it there and reclaim is what takes it away again.
-    CarriedPage,
+    CarriedBlock,
     /// Appending that page to a slab, minus the payload itself: the record header, the framing,
     /// the address, and what the block store keeps about where it went.
     SlabAppend,
@@ -232,8 +232,8 @@ const CLASS_COUNT: usize = 11;
 impl AllocClass {
     /// Every class, in slot order. `alloc_class_slots_are_dense_and_in_order` holds that.
     pub const ALL: [AllocClass; CLASS_COUNT] = [
-        AllocClass::PageBytes,
-        AllocClass::CarriedPage,
+        AllocClass::BlockBytes,
+        AllocClass::CarriedBlock,
         AllocClass::SlabAppend,
         AllocClass::BucketIndex,
         AllocClass::DirtyObjects,
@@ -254,8 +254,8 @@ impl AllocClass {
     /// which fails by name on a class no production file enters.
     pub(crate) const fn slot(self) -> usize {
         match self {
-            AllocClass::PageBytes => 0,
-            AllocClass::CarriedPage => 1,
+            AllocClass::BlockBytes => 0,
+            AllocClass::CarriedBlock => 1,
             AllocClass::SlabAppend => 2,
             AllocClass::BucketIndex => 3,
             AllocClass::DirtyObjects => 4,
@@ -271,8 +271,8 @@ impl AllocClass {
     /// The name a report prints.
     pub const fn label(self) -> &'static str {
         match self {
-            AllocClass::PageBytes => "page_bytes",
-            AllocClass::CarriedPage => "carried_page",
+            AllocClass::BlockBytes => "page_bytes",
+            AllocClass::CarriedBlock => "carried_page",
             AllocClass::SlabAppend => "slab_append",
             AllocClass::BucketIndex => "bucket_index",
             AllocClass::DirtyObjects => "dirty_objects",

@@ -8,7 +8,7 @@
 //! It asked how wide the pointer to a name on `BlockIndex` has to be, and priced narrowing it.
 //! THE NAME DID NOT GET NARROWER -- IT LEFT. The entry carries no identity of its own; the object
 //! key lives once per object in `CoreIndex::object_block_lookup` and every reader resolves it from
-//! the POSITION the page is filed at, through `PageKeysByPosition`. There is no name slot on the
+//! the POSITION the page is filed at, through `BlockKeysByPosition`. There is no name slot on the
 //! entry to make one word wide.
 //!
 //! SO ITS FOUR PRICING ARMS ARE RETIRED RATHER THAN RE-NUMBERED, and that distinction is the whole
@@ -405,14 +405,14 @@ fn an_entry_names_its_object_from_its_own_terms() {
         "the shard is a term of the identity, so two shards must not agree"
     );
     // AND IT SURVIVES THE STORED FORM: the id was never written, so nothing about it can be lost.
-    let written = serde_json::to_string(&crate::engine::state::PageEntryAt { page: &entry })
+    let written = serde_json::to_string(&crate::engine::state::BlockEntryAt { page: &entry })
         .expect("a page entry serializes");
     // AND THE TERMS COME BACK FROM THE KEY, which is where the object key and the kind live now.
     // Rendered by the production renderer rather than hand-written, so the two halves of the round
     // trip are the two halves production uses.
     let stored_key = crate::engine::state::block_index_written_key(&entry_key, &entry);
     let (read_back_key, read_back) =
-        serde_json::from_str::<crate::engine::state::StoredPageEntry>(&written)
+        serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&written)
             .expect("a page entry deserializes")
             .into_parts_from_key(&stored_key)
             .expect("the key the production renderer wrote must invert");

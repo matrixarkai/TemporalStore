@@ -100,7 +100,7 @@
 //! over inside the core index alone.
 //!
 //! AND THE SAME HAZARD NOW POINTS THE OTHER WAY, WHICH IS WHY THE RULE IS KEPT RATHER THAN RELAXED.
-//! The entry's written form no longer carries the key -- so a reader auditing `PageEntryAt`'s three
+//! The entry's written form no longer carries the key -- so a reader auditing `BlockEntryAt`'s three
 //! `serialize_field` calls would conclude correctly, by luck, and a reader auditing `BlockIndex`
 //! would still be reading the wrong thing. Nothing here is classified by name either way. Each
 //! instance is found by scanning the encoded bytes for the key's own characters and attributed to
