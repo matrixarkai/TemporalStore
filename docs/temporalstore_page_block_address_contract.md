@@ -531,8 +531,8 @@ configs, or environment readers internally.
 | `TS_STREAM_MAX_BLOB_SIZE` | Stream/blob cap; effective segment target is the lower of this and block segment target. | `10485760` |
 | `TS_COMPACTION_WATERMARK_BYTES` | Compaction scheduling/reclaim watermark. | `268435456` |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | Default no-cache/no-promote behavior for cold lifecycle scans. | `true` |
-| `TS_PAGE_INDEX_CACHE_BYTES` | Page-index cache budget for object/range lookup metadata. | `67108864` |
-| `TS_BLOCK_INDEX_CACHE_BYTES` | Block-index cache budget for physical address metadata. | `67108864` |
+| `TS_PAGE_INDEX_CACHE_BYTES` | Published in the tuning report and read by nothing else; bounds no cache. | `67108864` |
+| `TS_BLOCK_INDEX_CACHE_BYTES` | Published in the tuning report and read by nothing else; bounds no cache. | `67108864` |
 
 Names the first milestone moved. The engine reads the CURRENT spelling first and the previous
 one only when the current is unset, so a deployment setting either keeps working. The table and

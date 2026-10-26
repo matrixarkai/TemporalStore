@@ -155,8 +155,10 @@ distance: with shared storage the durable copy is on another machine, so a local
 milliseconds; with consensus replication the durable copy is this node's own disk, where the tier
 would be a third copy of bytes the operating system already serves from the same device, so it is
 off. The backend is resolved before the engine is built, and publishes the reason it chose what it
-chose. Budgets: `TS_CACHE_MEMORY_BYTES` (16 MiB default), `TS_PAGE_INDEX_CACHE_BYTES` and
-`TS_BLOCK_INDEX_CACHE_BYTES` (64 MiB each).
+chose. The budget is `TS_CACHE_MEMORY_BYTES` (16 MiB default), and it is the only one:
+`TS_PAGE_INDEX_CACHE_BYTES` and `TS_BLOCK_INDEX_CACHE_BYTES` (64 MiB each) are published in a
+node's tuning report and bound nothing, because the resident index named above takes no cache
+call and so has no cache to bound.
 
 **Pages are packed**, so one window read of adjacent instants typically decodes one block, and a
 multi-point read memoizes each block for the duration of the query.

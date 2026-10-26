@@ -2475,6 +2475,12 @@ pub fn effective_storage_tuning_from_env() -> BTreeMap<String, StorageContractVa
         TS_COLD_SCAN_NO_CACHE_FILL.to_string(),
         contract_bool(tuning.cold_scan_no_cache_fill),
     );
+    // THE ONLY PRODUCTION READ OF EITHER INDEX-CACHE BUDGET, AND IT ENDS HERE. Both are
+    // published so an operator can see what the process resolved, and neither sizes anything:
+    // there is no index cache in this engine. Measured two ways -- both budgets set to 1 byte
+    // leave the index and cache arms within the jitter of a control pair of baseline runs, and
+    // a `panic!()` planted on these two reads kills every arm that builds a lifecycle report
+    // while the index, cache, compaction and bucket arms all still pass.
     values.insert(
         TS_PAGE_INDEX_CACHE_BYTES.to_string(),
         contract_u64(tuning.page_index_cache_bytes),
