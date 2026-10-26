@@ -63,7 +63,7 @@
 //! dirty, which is true and is what makes `bucket_summaries` an `Option`. It does not make the
 //! ROUND cheap: measured on a shard whose dirty set had drained to zero and which had taken no
 //! write since, the round still materialised 14.00x the record count, because the other walks
-//! never consult the dirty set. `an_idle_round_still_walks_the_live_page_set` is that number.
+//! never consult the dirty set. `an_idle_round_still_walks_the_live_block_set` is that number.
 //!
 //! WHAT THESE TESTS ARE FOR. The ratio is asserted at TWO sizes, so the two failures read
 //! differently: a ratio that changed at both sizes means a walk was added or removed, and a ratio
@@ -211,7 +211,7 @@ fn steady_walks_per_record(records: usize, batch: usize) -> u64 {
 /// walk" (both move together) from "something stopped being proportional to the store" (they
 /// diverge).
 #[test]
-fn a_round_walks_the_live_page_set_a_constant_number_of_times() {
+fn a_round_walks_the_live_block_set_a_constant_number_of_times() {
     const SMALL: usize = 2_000;
     const LARGE: usize = 20_000;
 
@@ -240,7 +240,7 @@ fn a_round_walks_the_live_page_set_a_constant_number_of_times() {
 /// dirty set first -- asserted, so the test cannot pass by never reaching the idle state -- then
 /// measures a round that has nothing whatever to do.
 #[test]
-fn an_idle_round_still_walks_the_live_page_set() {
+fn an_idle_round_still_walks_the_live_block_set() {
     const RECORDS: usize = 2_000;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -773,7 +773,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
 ///
 /// Counted with `size_of`, so this needs no counting allocator and cannot be moved by box load.
 #[test]
-fn a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak() {
+fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak() {
     let entry_bytes = std::mem::size_of::<LiveBlockEntry>();
     let address_bytes = std::mem::size_of::<crate::block_store::ElementEntry>();
     let arc_str_bytes = std::mem::size_of::<std::sync::Arc<str>>();
@@ -802,17 +802,17 @@ fn a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak() 
 
     // HALF TWO: the peak this function holds per live page fell. Ordered after the half above so
     // a mutant that makes entries owned is reported as what it is rather than as a peak change.
-    let old_peak_per_page = entry_bytes + address_bytes;
-    let new_peak_per_page = entry_bytes;
+    let old_peak_per_block = entry_bytes + address_bytes;
+    let new_peak_per_block = entry_bytes;
     println!(
-        "  recovery report peak per live page: {old_peak_per_page} B -> {new_peak_per_page} B, \
+        "  recovery report peak per live page: {old_peak_per_block} B -> {new_peak_per_block} B, \
          {} B/page of address vector no longer built beside the entries",
-        old_peak_per_page - new_peak_per_page
+        old_peak_per_block - new_peak_per_block
     );
     assert!(
-        new_peak_per_page < old_peak_per_page,
-        "the hoist holds {new_peak_per_page} B per live page where the three-walk version held \
-         {old_peak_per_page} B. If these are equal the address vector is still being built and \
+        new_peak_per_block < old_peak_per_block,
+        "the hoist holds {new_peak_per_block} B per live page where the three-walk version held \
+         {old_peak_per_block} B. If these are equal the address vector is still being built and \
          the cost was moved rather than removed"
     );
 }

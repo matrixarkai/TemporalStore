@@ -92,7 +92,7 @@ fn resident_members(engine: &TemporalEngine, object_key: &str) -> std::collectio
 /// THE OTHER SOURCE: every element key a live page of this object still states as PRESENT.
 ///
 /// Read off the bytes, so the disagreement below is observed rather than assumed.
-fn components_the_pages_state(
+fn components_the_blocks_state(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> std::collections::BTreeSet<String> {
@@ -214,7 +214,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         );
 
         // ---- PART 2: THE PAGE STILL STATES THE MEMBER, so the sources disagree. ----
-        let stated = components_the_pages_state(&engine, "removal/set");
+        let stated = components_the_blocks_state(&engine, "removal/set");
         assert!(
             stated.contains(&victim_component),
             "no live page states the removed member any more, so the payload and the durable map \
@@ -256,7 +256,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     load_on(&reloaded);
 
     let resident = resident_members(&reloaded, "removal/set");
-    let stated = components_the_pages_state(&reloaded, "removal/set");
+    let stated = components_the_blocks_state(&reloaded, "removal/set");
     println!(
         "  after reload: durable holds {} member(s); pages state {}",
         resident.len(),

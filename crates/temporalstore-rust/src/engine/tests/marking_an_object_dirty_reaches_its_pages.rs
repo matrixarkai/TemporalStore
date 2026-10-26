@@ -54,7 +54,7 @@ use crate::engine::storage_bucket_internals::{
 
 const WHOLE_RANGE_END: u32 = u32::MAX;
 
-fn a_shard_holding_one_clean_page(object_key: &str) -> (ShardState, u32) {
+fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
     let routing_bucket = block_routing_bucket(object_key, 0, WHOLE_RANGE_END);
     let mut shard = ShardState::default();
     let mut bucket = BucketNode::default();
@@ -88,11 +88,11 @@ fn a_shard_holding_one_clean_page(object_key: &str) -> (ShardState, u32) {
 /// written at the assertion in `push_object_dirty_onto_its_existing_pages`; this is the fixture
 /// that proves the assertion can fire.
 ///
-/// Every other arm in this module wants [`a_shard_holding_one_filed_clean_page`], because their
+/// Every other arm in this module wants [`a_shard_holding_one_filed_clean_block`], because their
 /// subjects are positive -- that a mark reaches its pages, and that a mark on a different object
 /// does not -- and neither is testable in a state the engine refuses.
-fn a_shard_holding_one_filed_clean_page(object_key: &str) -> (ShardState, u32) {
-    let (mut shard, routing_bucket) = a_shard_holding_one_clean_page(object_key);
+fn a_shard_holding_one_filed_clean_block(object_key: &str) -> (ShardState, u32) {
+    let (mut shard, routing_bucket) = a_shard_holding_one_clean_block(object_key);
     // FILED, AS ALL NINE PRODUCTION INSTALL SITES FILE: in the same breath as the install.
     //
     // THIS IS NOT A FIXTURE QUIETLY REPAIRED TO MAKE A TEST PASS. The unfiled state used to be the
@@ -131,10 +131,10 @@ fn any_page_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
 }
 
 #[test]
-fn marking_an_object_dirty_sets_the_dirty_bit_on_the_pages_it_already_has() {
+fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
     // THE FILED FIXTURE, because this arm's subject is POSITIVE -- that a mark reaches the pages
     // an object already has -- and that is not testable in a state the engine refuses.
-    let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_page("pushed-object");
+    let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_block("pushed-object");
 
     // THE STARTING STATE IS ASSERTED, or "it is dirty afterwards" could be true of a fixture that
     // was dirty all along and the mark could be doing nothing.
@@ -166,13 +166,13 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_pages_it_already_has() {
 }
 
 #[test]
-fn an_unmarked_object_leaves_its_pages_clean() {
+fn an_unmarked_object_leaves_its_blocks_clean() {
     // THE CONTROL FOR THE MODULE. If marking is what makes a page dirty, NOT marking must leave it
     // clean -- otherwise the assertion above would hold on a shard where everything is dirty.
     // THE FILED FIXTURE TOO. This is the CONTROL for the arm above -- if marking is what makes a
     // page dirty, not marking must leave it clean -- so it has to run in the same reachable state,
     // or it controls for nothing the arm above does.
-    let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_page("untouched-object");
+    let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_block("untouched-object");
 
     mark_object_dirty(&mut shard, "a-different-object", 0, WHOLE_RANGE_END);
 
@@ -202,16 +202,16 @@ fn an_unmarked_object_leaves_its_pages_clean() {
 ///
 /// So the push asserts the invariant instead, and this arm is what proves the assertion can FIRE.
 /// It is the only arm in this module that still wants the unfiled fixture; the other two want
-/// [`a_shard_holding_one_filed_clean_page`], because their subjects are positive.
+/// [`a_shard_holding_one_filed_clean_block`], because their subjects are positive.
 ///
 /// rust-internal: drives an engine invariant, no product behaviour
 #[test]
 #[should_panic(expected = "a live page is resident while the object lookup names nothing")]
-fn a_mark_on_a_live_page_nothing_has_filed_is_refused() {
+fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
     // THE CASE THE FAILED PREMISE WAS ABOUT. The fixture never builds the lookup, so the push has
     // to establish it before it can find anything. This is the state two existing tests reached
     // and the first version of the push asserted was unreachable.
-    let (mut shard, routing_bucket) = a_shard_holding_one_clean_page("unbuilt-lookup-object");
+    let (mut shard, routing_bucket) = a_shard_holding_one_clean_block("unbuilt-lookup-object");
     assert!(
         shard.bucket_index.object_block_lookup.is_empty(),
         "the fixture must start with an unbuilt lookup, or this test is about the other path"
@@ -373,7 +373,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         // zero is what the first reading of this probe mistook for the folds being free.
         let folds = crate::engine::bucket_visit_sites::flag_folds();
 
-        let pages_in_bucket: usize = {
+        let blocks_in_bucket: usize = {
             let shards = engine.shards.read().expect("shards lock poisoned");
             let shard = shards.get(&1).expect("shard 1 loaded");
             shard
@@ -385,9 +385,9 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         };
 
         println!(
-            "  {rung:>6}   {pages_in_bucket:>15}   {folds:>11}   {layout:>6}   {clear_dirty:>11}   {ttl_rollup:>10}   {remove_all:>10}"
+            "  {rung:>6}   {blocks_in_bucket:>15}   {folds:>11}   {layout:>6}   {clear_dirty:>11}   {ttl_rollup:>10}   {remove_all:>10}"
         );
-        measured.push((rung, pages_in_bucket as u64, folds));
+        measured.push((rung, blocks_in_bucket as u64, folds));
     }
 
     // --- DENOMINATOR: the fold's input is the pages in the bucket, so the fixture has to have put
@@ -431,11 +431,11 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         "the folds charged {small_folds} and {large_folds} visits, so at least one rung measured \
          nothing and the flatness below would be the flatness of two zeroes"
     );
-    let page_growth = large_pages as f64 / small_pages.max(1) as f64;
+    let block_growth = large_pages as f64 / small_pages.max(1) as f64;
     let fold_growth = large_folds as f64 / small_folds.max(1) as f64;
     assert!(
-        fold_growth * 2.0 < page_growth,
-        "fold visits grew x{fold_growth:.1} while the bucket grew x{page_growth:.1} \
+        fold_growth * 2.0 < block_growth,
+        "fold visits grew x{fold_growth:.1} while the bucket grew x{block_growth:.1} \
          ({small_folds} visits at {small_pages} pages on corpus {small_rung}, {large_folds} at \
          {large_pages} on corpus {large_rung}). The two folds in \
          `refresh_one_bucket_runtime_flags` are cheap only because `all` and `any` stop at the \
@@ -470,8 +470,8 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
             .status
             .ok
     );
-    const CONTROL_PAGES: usize = 40;
-    for index in 0..CONTROL_PAGES {
+    const CONTROL_BLOCKS: usize = 40;
+    for index in 0..CONTROL_BLOCKS {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
@@ -489,17 +489,17 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     }
     let control_folds = crate::engine::bucket_visit_sites::flag_folds();
     println!(
-        "  positive control: calling the sweep over {CONTROL_PAGES} pages charges {control_folds} fold visits"
+        "  positive control: calling the sweep over {CONTROL_BLOCKS} pages charges {control_folds} fold visits"
     );
     // MOVES, NOT REACHES THE LENGTH. A sweep over 40 pages charges 2, because the folds
     // short-circuit -- that is the finding, not a fault. The control's job is only to prove the
     // counter is wired to the walk, so that the flat numbers above are a measurement of a cheap
     // fold rather than a reading of a dead counter. An earlier version of this control demanded
-    // `>= CONTROL_PAGES` and failed on a correct tree, which is a guard asserting the wrong
+    // `>= CONTROL_BLOCKS` and failed on a correct tree, which is a guard asserting the wrong
     // quantity.
     assert!(
         control_folds > 0,
-        "the sweep over {CONTROL_PAGES} pages charged {control_folds} fold visits, so the counter \
+        "the sweep over {CONTROL_BLOCKS} pages charged {control_folds} fold visits, so the counter \
          is not wired to the fold it is named for. Every figure this probe prints is then a dead \
          measurement rather than a cheap one -- which is exactly the fault this control was added \
          to catch, and it caught it once already on `REFRESH_FLAGS`."

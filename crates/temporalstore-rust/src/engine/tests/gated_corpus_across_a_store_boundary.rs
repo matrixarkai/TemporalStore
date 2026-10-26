@@ -317,7 +317,7 @@ struct Boundary {
     /// The denominator the entry count is compared against, and read from the OTHER source on
     /// purpose: the index's own page set is derived from the entries being counted, so it cannot
     /// witness an entry over a page no field is on. This can.
-    hash_pages_reloaded: usize,
+    hash_blocks_reloaded: usize,
 }
 
 /// Write the corpus under `writer`, fold it, materialize the index, DROP the engine, and open a
@@ -356,7 +356,7 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         set_entries_written,
         set_entries_reloaded: live_entries(&reloaded, "set", SET_KEY),
         hash_entries_reloaded: live_entries(&reloaded, "hash", HASH_KEY),
-        hash_pages_reloaded: occupied_pages(&reloaded, "hash", HASH_KEY),
+        hash_blocks_reloaded: occupied_pages(&reloaded, "hash", HASH_KEY),
     }
 }
 
@@ -409,17 +409,17 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
     // DISTINCT PAGES the elements resolve to, which is the denominator the collapse is about, and
     // the serving figures below are what say nothing was lost on the way.
     // THE "AND NO ELEMENT NAME" HALF IS GONE FROM THIS PAIR. It was asserted as the tuple
-    // `(hash_pages_reloaded, 0)`, and the second term is structurally zero -- an entry has no
+    // `(hash_blocks_reloaded, 0)`, and the second term is structurally zero -- an entry has no
     // element name -- so pairing it in meant a wrong entry count and a constant read as one
     // failure, with only the constant guaranteed. The entry count stands alone and is still
     // compared against the DISTINCT PAGES the elements resolve to rather than against a literal,
     // which is the denominator the collapse is about.
     assert_eq!(
-        seen.hash_pages_reloaded, hash_entries,
+        seen.hash_blocks_reloaded, hash_entries,
         "a GATED reader filed {hash_entries} live hash entries over {} distinct page(s). One entry \
          per page is what the collapse means, and more entries than pages is a stale entry over a \
          dead page",
-        seen.hash_pages_reloaded
+        seen.hash_blocks_reloaded
     );
     // THE GATED PROJECTION WROTE THIS STORE. Asserted on the WRITER's census, before any reader
     // could have re-derived it, so "a gated store" is established rather than assumed.

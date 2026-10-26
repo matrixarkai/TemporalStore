@@ -113,7 +113,7 @@
 //! page for, and the test below holds the fixed arithmetic.
 //!
 //! The reuse idea is refuted on three grounds that the fix does not touch, all in
-//! `the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot`:
+//! `the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot`:
 //!
 //!   1. **IT IS A MEMBERSHIP SET, NOT A MARK.** It holds a HASH of the component. It answers "was
 //!      ordinal N used?" and cannot answer "what is the highest?", so an assignment on it probes
@@ -304,7 +304,7 @@
 //! high-water mark and no non-reuse enforcement, because the name is still derived from the member.
 //! That is a different change from this one and it is not refuted by anything below.
 //!
-//! The pointer half is measured separately by `what_an_element_ordinal_would_have_saved_a_page`, at
+//! The pointer half is measured separately by `what_an_element_ordinal_would_have_saved_a_block`, at
 //! both routing ranges and two corpus sizes: 58.06-58.13 B requested and 69.20-69.32 B of chunk a
 //! name over a container store whose mean name is 22.4 characters, against 0.00 on the routed control
 //! where no page carries a component at all. Two populations and never a mean: routed p50 1 page an
@@ -380,7 +380,7 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// Every assertion in this module that uses this helper means the LIVE set: it is asking what the
 /// object holds and what ordinal the next element would take. So the filter restores each of those
 /// claims to the quantity it was always about, rather than weakening any of them.
-/// [`tombstoned_pages_of`] is the other half, and the arms below assert BOTH.
+/// [`tombstoned_blocks_of`] is the other half, and the arms below assert BOTH.
 fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<String>, Option<u64>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -424,7 +424,7 @@ fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<
 }
 
 /// Pages of this object that carry `deleted == true`.
-fn tombstoned_pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
+fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut count = 0usize;
@@ -648,14 +648,14 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         );
         assert_eq!(
             0,
-            tombstoned_pages_of(&engine, kind, key),
+            tombstoned_blocks_of(&engine, kind, key),
             "DENOMINATOR: {kind}/{key} already carries a tombstone before its delete, so the count \
              after it would not be attributable to the delete"
         );
 
         write(&engine, delete);
         let after = pages_of(&engine, kind, key);
-        let tombstoned = tombstoned_pages_of(&engine, kind, key);
+        let tombstoned = tombstoned_blocks_of(&engine, kind, key);
 
         println!(
             "  {kind:<5} {key:<14} {:<12} live pages {} -> {}, entries carrying deleted=true: {}",
@@ -915,7 +915,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 ///
 /// rust-internal: drives a removal and a re-add, no external surface
 #[test]
-fn the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot() {
+fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -961,12 +961,12 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot() {
         },
     );
     let held_after_rewrite = tombstone_holds(&engine, object_id);
-    let pages_after_rewrite = pages_of(&engine, "zset", "eo-tombstone").len();
+    let blocks_after_rewrite = pages_of(&engine, "zset", "eo-tombstone").len();
 
     println!(
         "\n  [tombstone] object id {object_id}: held before delete={held_before_delete}, after \
          delete={held_after_delete}, after the next write={held_after_rewrite}; pages after that \
-         write={pages_after_rewrite}"
+         write={blocks_after_rewrite}"
     );
 
     assert!(
@@ -986,7 +986,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_page_reads_as_hot() {
          back."
     );
     assert_eq!(
-        pages_after_rewrite, 1,
+        blocks_after_rewrite, 1,
         "the rewrite must have filed its page, or the stale tombstone below is not sitting beside a \
          LIVE page"
     );
@@ -1113,12 +1113,12 @@ fn a_high_water_mark_lives_only_where_the_rebuild_recomputes_it() {
             },
         );
 
-        let seeded_pages = pages_of(&engine, "zset", "eo-reload").len();
+        let seeded_blocks = pages_of(&engine, "zset", "eo-reload").len();
         let seeded_durable = durable_element_count(&engine, "zset", "eo-reload");
         assert_eq!(
-            seeded_pages,
+            seeded_blocks,
             survivors.len() + 1,
-            "DENOMINATOR: {seeded_pages} pages for {} elements seeded",
+            "DENOMINATOR: {seeded_blocks} pages for {} elements seeded",
             survivors.len() + 1
         );
         assert_eq!(
@@ -1952,7 +1952,7 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "counting allocator; run by name under --features alloc-probe"]
-fn what_an_element_ordinal_would_have_saved_a_page() {
+fn what_an_element_ordinal_would_have_saved_a_block() {
     use crate::alloc_probe::Probe;
 
     let component_field_bytes = std::mem::size_of::<Option<std::sync::Arc<str>>>();

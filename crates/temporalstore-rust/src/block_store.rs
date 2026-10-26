@@ -287,7 +287,7 @@ impl TryFrom<BlockAddressWire> for ElementEntry {
         // A `g` that is not there at all is not a disagreement -- it is an index written before
         // the field existed. The OLDEST spelling this tree still loads is exactly that shape:
         // `page_segment_id` / `routing_slot` / `page_refs`, a `page_id`, and no generation key
-        // anywhere (`engine::tests::part3::core_index_loads_legacy_bucket_page_field_names` holds
+        // anywhere (`engine::tests::part3::core_index_loads_legacy_bucket_block_field_names` holds
         // those bytes). Such an index has always loaded with NO generation, and it must keep
         // doing so -- deriving one for it would move every key it resolves through. So the
         // presence comes from the wire and only the VALUE is derived.
@@ -450,7 +450,7 @@ pub struct BlockAddress {
 /// decides it. `BlockIndex` carries `object_key`, `model_id` and `component` beside this address
 /// and `ShardState` carries the shard, so `stable_block_object_id(shard, kind, key)` is
 /// computable wherever a block entry is. Measured by
-/// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
+/// `engine::tests::address_footprint::the_object_id_on_a_live_block_entry_is_the_hash_of_fields_beside_it`
 /// over every live block entry at two corpus sizes: the stored id equalled that derivation on 2,524
 /// of 2,524 entries and on 20,632 of 20,632, and differed on NONE. #1974 established the derivation
 /// at about thirty sites, `index_log` already STRIPS a derivable id from the row it writes

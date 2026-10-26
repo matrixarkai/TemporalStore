@@ -167,7 +167,7 @@ fn node_state(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, (bool, 
 }
 
 /// Per-bucket counts of dirty PAGES -- the number a careless derivation would produce.
-fn derived_dirty_pages(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
+fn derived_dirty_blocks(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, u64> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         let dirty = bucket.block_index.values().filter(|page| page.dirty).count() as u64;
@@ -300,13 +300,13 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
 
     let by_set = authority(shard);
     let by_objects = derived_distinct_objects(shard);
-    let by_pages = derived_dirty_pages(shard);
+    let by_blocks = derived_dirty_blocks(shard);
     let by_node = node_state(shard);
 
     let bucket_total = shard.bucket_index.bucket_map.len();
     // What a per-bucket page walk would have to look at: a page's own `dirty` bit is the only
     // thing that marks it, so finding the dirty ones means visiting all of them.
-    let page_total_in_shard: usize = shard
+    let block_total_in_shard: usize = shard
         .bucket_index
         .bucket_map
         .values()
@@ -314,7 +314,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         .sum();
     let set_total: u64 = by_set.values().sum();
     let object_total: u64 = by_objects.values().sum();
-    let page_total: u64 = by_pages.values().sum();
+    let page_total: u64 = by_blocks.values().sum();
 
     // How many pages the busiest dirty object holds, so "not every object is single-page" is a
     // measured property of this fixture rather than an expectation about the write path.
@@ -325,14 +325,14 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     let widest_object = pages_per_object.values().copied().max().unwrap_or(0);
 
     // How much of the set has no live page anywhere -- the term no page walk can ever reach.
-    let any_page: BTreeSet<String> = super::pages_with_identity(&shard.bucket_index)
+    let any_block: BTreeSet<String> = super::pages_with_identity(&shard.bucket_index)
         .into_iter()
         .map(|(_, _, object_key, _)| object_key.to_string())
         .collect();
-    let set_members_with_no_page = shard
+    let set_members_with_no_block = shard
         .dirty_objects
         .iter()
-        .filter(|key| !any_page.contains(*key))
+        .filter(|key| !any_block.contains(*key))
         .count();
 
     println!();
@@ -347,10 +347,10 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     println!("    total, via the SET (the authority)      {set_total:>6}");
     println!("    total, distinct objects via the PAGES   {object_total:>6}");
     println!("    total, dirty PAGES                      {page_total:>6}");
-    println!("    set members with NO live page at all    {set_members_with_no_page:>6}");
+    println!("    set members with NO live page at all    {set_members_with_no_block:>6}");
     println!();
     println!("    the producer's loop visited              {producer_visits:>6}  (one per dirty bucket)");
-    println!("    a page walk would have to visit         {page_total_in_shard:>6}  (every page in the shard)");
+    println!("    a page walk would have to visit         {block_total_in_shard:>6}  (every page in the shard)");
     println!();
     println!("    after the dump: {after_dump} dirty object(s) in {after_dump_set_buckets} bucket(s), {after_dump_nodes_dirty} node(s) still reading dirty");
     println!();
@@ -360,7 +360,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     let every_bucket: BTreeSet<u32> = by_set
         .keys()
         .chain(by_objects.keys())
-        .chain(by_pages.keys())
+        .chain(by_blocks.keys())
         .chain(by_node.keys())
         .chain(produced_summaries.keys())
         .copied()
@@ -368,7 +368,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     for bucket in &every_bucket {
         let set_count = by_set.get(bucket).copied().unwrap_or(0);
         let (node_dirty, node_gen) = by_node.get(bucket).copied().unwrap_or((false, 0));
-        let pages = by_pages.get(bucket).copied().unwrap_or(0);
+        let pages = by_blocks.get(bucket).copied().unwrap_or(0);
         println!(
             "    {bucket:>6} {set_count:>5} {:>6} {:>11} {:>7} {:>9} {pages:>6} {node_gen:>10} {:>9}",
             set_count > 0,
@@ -422,17 +422,17 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
 
     // The buckets the node reports with no dirty page of their own -- computed here, beside the
     // table it belongs with, and ASSERTED much further down. See the ordering note below.
-    let node_carries_what_no_page_does: Vec<u32> = by_set
+    let node_carries_what_no_block_does: Vec<u32> = by_set
         .keys()
         .copied()
         .filter(|bucket| {
-            by_pages.get(bucket).copied().unwrap_or(0) == 0
+            by_blocks.get(bucket).copied().unwrap_or(0) == 0
                 && by_node.get(bucket).map(|(dirty, _)| *dirty).unwrap_or(false)
         })
         .collect();
     println!(
         "    dirty bucket(s) with NO dirty page that the node still reports: {:?}",
-        node_carries_what_no_page_does
+        node_carries_what_no_block_does
     );
     println!();
 
@@ -442,7 +442,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // SHADOWS it: the plant written for the lower clause never reaches it, and the lower clause
     // ends up guarded by its neighbour rather than proven. That is not a theory -- these clauses
     // were once ordered with the node block first, and three plants landed on the wrong clause:
-    // the two fixture-regime plants both stopped on `node_carries_what_no_page_does`, and the
+    // the two fixture-regime plants both stopped on `node_carries_what_no_block_does`, and the
     // plant that switches the producer stopped on the generation identity instead of the pin,
     // which is the one clause whose whole purpose is to catch that switch.
     //
@@ -495,7 +495,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // used to shadow it. Without it the conclusions below would rest on bucket attribution alone,
     // which is a weaker claim than this module states.
     assert!(
-        set_members_with_no_page > 0,
+        set_members_with_no_block > 0,
         "every dirty object has a live page on this fixture, so the term that decides the question \
          did not arise here. The fixture's removals are what put a non-page-backed \
          `control_state:cpc:*` record in the set -- check that they still do before reading the \
@@ -593,7 +593,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // AND IT AGREES WHERE A PAGE WALK CANNOT, which is the case that makes the agreement worth
     // something: without it the two columns could be agreeing only on page-backed buckets.
     assert!(
-        !node_carries_what_no_page_does.is_empty(),
+        !node_carries_what_no_block_does.is_empty(),
         "every dirty bucket here has a dirty page, so the node flag and the page walk cannot be \
          told apart on this fixture and the agreement above says nothing about the case that \
          matters. The fixture's removals are what produce a dirty bucket holding no page"

@@ -287,7 +287,7 @@ impl Histogram {
     }
 }
 
-fn zset_pages_per_bucket(pages: &[ZsetBlock]) -> Histogram {
+fn zset_blocks_per_bucket(pages: &[ZsetBlock]) -> Histogram {
     let mut per_bucket: BTreeMap<u32, usize> = BTreeMap::new();
     for page in pages {
         *per_bucket.entry(page.routing_bucket).or_default() += 1;
@@ -582,7 +582,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 ///
 /// rust-internal: reads the engine's own bucket index and the page codec, no product behaviour
 #[test]
-fn a_zset_members_identity_survives_the_page_key_that_is_now_its_only_copy() {
+fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -616,10 +616,10 @@ fn a_zset_members_identity_survives_the_page_key_that_is_now_its_only_copy() {
     //
     // ASSERTED IN BOTH DIRECTIONS ON PURPOSE. A renderer that returned the empty string would
     // satisfy "the score is not spelled here" while losing the member entirely.
-    let mut pages_per_key: BTreeMap<String, usize> = BTreeMap::new();
+    let mut blocks_per_key: BTreeMap<String, usize> = BTreeMap::new();
     let mut stored_lengths: BTreeSet<usize> = BTreeSet::new();
     for page in &pages {
-        *pages_per_key.entry(page.object_key.clone()).or_default() += 1;
+        *blocks_per_key.entry(page.object_key.clone()).or_default() += 1;
         stored_lengths.insert(page.address.length() as usize);
     }
 
@@ -646,13 +646,13 @@ fn a_zset_members_identity_survives_the_page_key_that_is_now_its_only_copy() {
     );
 
     assert_eq!(
-        pages_per_key.len(),
+        blocks_per_key.len(),
         CONTAINER_KEYS,
         "the index does not hold pages for every container key"
     );
     let mut covered = 0usize;
     for key in &keys {
-        let held = *pages_per_key
+        let held = *blocks_per_key
             .get(key)
             .unwrap_or_else(|| panic!("no pages for {key}"));
         let model = model_members(&engine, key);
@@ -791,7 +791,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 ///
 /// rust-internal: reads a cfg(test) counter inside the engine, no product behaviour
 #[test]
-fn a_zset_read_examines_no_page_index_entries_and_a_hash_whole_object_read_does() {
+fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -984,7 +984,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
             .map(|page| page.component.len() - (8 + MEMBER_WIDTH))
             .sum();
 
-        let hist = zset_pages_per_bucket(&pages);
+        let hist = zset_blocks_per_bucket(&pages);
         hist.report(&format!("0..{end_routing_bucket}, zset pages per bucket"));
         assert!(
             hist.buckets() > 0,
@@ -1125,7 +1125,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
             )
         })
         .collect();
-    let before_pages = before_addresses.len();
+    let before_blocks = before_addresses.len();
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::ZSetAdd {
@@ -1138,7 +1138,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     let after = zset_pages(&engine);
     assert_eq!(
         after.len(),
-        before_pages + 1,
+        before_blocks + 1,
         "a single-member write did not file exactly one new page"
     );
     let added: Vec<&ZsetBlock> = after

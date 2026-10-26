@@ -62,7 +62,7 @@ fn by_object_set(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
 
 /// The dirty buckets, found the way the sibling arm finds them: the bucket's own bit, or any page
 /// of it carrying one.
-fn by_page_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
+fn by_block_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1");
     shard
@@ -153,7 +153,7 @@ fn the_page_bit_answers_the_dirty_bucket_question() {
     }
 
     let via_objects = by_object_set(&engine);
-    let via_pages = by_page_bit(&engine);
+    let via_blocks = by_block_bit(&engine);
 
     let (object_count, bucket_count, pages) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
@@ -177,7 +177,7 @@ fn the_page_bit_answers_the_dirty_bucket_question() {
     println!("    buckets in the map            {bucket_count:>5}");
     println!("    pages across those buckets    {pages:>5}");
     println!("    dirty buckets via the SET     {:>5}", via_objects.len());
-    println!("    dirty buckets via the PAGE    {:>5}", via_pages.len());
+    println!("    dirty buckets via the PAGE    {:>5}", via_blocks.len());
     println!();
 
     // ---- THE FIXTURE HAS TO REACH THE CASE. With one bucket per object the two agree trivially.
@@ -205,9 +205,9 @@ fn the_page_bit_answers_the_dirty_bucket_question() {
     // ---- AND THEY MUST AGREE. This is the whole claim: the page bit is sufficient, so the
     // ---- object-keyed set is not load-bearing for this question and can be removed.
     assert_eq!(
-        via_objects, via_pages,
+        via_objects, via_blocks,
         "the two methods disagree.\n  via the object set: {via_objects:?}\n  via the page bit:   \
-         {via_pages:?}\n\nThe page bit is only sufficient while \
+         {via_blocks:?}\n\nThe page bit is only sufficient while \
          `push_object_dirty_onto_its_existing_pages` runs at EVERY site that marks an object dirty. \
          A disagreement means a marking site stopped pushing, and the object-keyed set is covering \
          for it -- fix the push rather than keeping the set, because a bucket missing from the page \

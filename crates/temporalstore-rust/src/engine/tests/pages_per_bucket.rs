@@ -311,7 +311,7 @@ fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
 /// character. Bucket and block COUNTS are immune to it, which is why the counts carry the claim.
 #[test]
 #[ignore = "seeds six stores up to 40,000 records each; run by name"]
-fn the_pages_a_bucket_holds_are_two_populations_and_not_one_mean() {
+fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut routed: Vec<BlocksPerBucket> = Vec::new();
     let mut container: Vec<BlocksPerBucket> = Vec::new();
@@ -473,7 +473,7 @@ fn the_pages_a_bucket_holds_are_two_populations_and_not_one_mean() {
 /// named group and the failure says which group it landed in rather than only that a total moved.
 /// A total-only assertion cannot tell "a field was added" from "the aligner rounded differently".
 #[test]
-fn every_byte_of_the_page_index_is_accounted_for() {
+fn every_byte_of_the_block_index_is_accounted_for() {
     // --- BlockIndex: TWO shared names and an address pack solid; the one-byte model spelling,
     // TWO flags and the two locating fields the entry absorbed from the index-log row fill the
     // tail EXACTLY, with nothing spare. The model spelling used to be a second `Arc<str>` in the
@@ -499,7 +499,7 @@ fn every_byte_of_the_page_index_is_accounted_for() {
     // retired both from `BlockIndex` and this reconstruction kept adding their five bytes: the
     // tail came to eight and rounded to eight, so it reached forty and passed. Three terms round
     // to the same word as eight, which is exactly the blindness this file's own
-    // `every_byte_of_the_page_index_is_accounted_for` exists to narrow -- and it was the
+    // `every_byte_of_the_block_index_is_accounted_for` exists to narrow -- and it was the
     // reconstruction that finally caught it, on a leg where the width moved.
     let index_eight_aligned = size_of::<ElementEntry>();
     let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
@@ -644,7 +644,7 @@ fn round_up_to(value: usize, multiple: usize) -> usize {
 /// declaration is not a statement about widths, and this one is the control that says so.
 #[allow(dead_code)]
 #[derive(Clone)]
-enum MirrorLivePageIndex {
+enum MirrorLiveBlockIndex {
     Empty,
     Many(Vec<(u64, BlockIndex)>),
 }
@@ -657,7 +657,7 @@ enum MirrorLivePageIndex {
 /// both routing ranges.
 #[allow(dead_code)]
 #[derive(Clone)]
-enum MirrorInlinePageIndex {
+enum MirrorInlineBlockIndex {
     Empty,
     One(u64, BlockIndex),
     Many(Vec<(u64, BlockIndex)>),
@@ -666,7 +666,7 @@ enum MirrorInlinePageIndex {
 /// The single block behind a pointer: the shape whose sign is not visible in its width.
 #[allow(dead_code)]
 #[derive(Clone)]
-enum MirrorBoxedPageIndex {
+enum MirrorBoxedBlockIndex {
     Empty,
     One(u64, Box<BlockIndex>),
     Many(Vec<(u64, BlockIndex)>),
@@ -734,7 +734,7 @@ enum MirrorInlineAddress {
 /// The block entry with `deleted` removed -- encoded instead as a length of zero, which removes a
 /// field rather than narrowing one.
 #[allow(dead_code)]
-struct MirrorPageNoDeleted {
+struct MirrorBlockNoDeleted {
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
     dirty: bool,
@@ -743,7 +743,7 @@ struct MirrorPageNoDeleted {
 
 /// The block entry with all three flags folded into a single byte.
 #[allow(dead_code)]
-struct MirrorPageOneFlagByte {
+struct MirrorBlockOneFlagByte {
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
     flags: u8,
@@ -751,7 +751,7 @@ struct MirrorPageOneFlagByte {
 
 /// The block entry with all three flags gone entirely.
 #[allow(dead_code)]
-struct MirrorPageNoFlags {
+struct MirrorBlockNoFlags {
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
 }
@@ -761,13 +761,13 @@ struct MirrorPageNoFlags {
 /// The only shape that still crosses the rounding, and it is here to bound the negative claim
 /// below rather than as a proposal: the spelling is not removable, it is what names the kind.
 #[allow(dead_code)]
-struct MirrorPageEmptyTail {
+struct MirrorBlockEmptyTail {
     address: ElementEntry,
 }
 
 /// The block entry with its three shared names gone -- the largest group in it.
 #[allow(dead_code)]
-struct MirrorPageAddressOnly {
+struct MirrorBlockAddressOnly {
     address: ElementEntry,
     dirty: bool,
     deleted: bool,
@@ -803,13 +803,13 @@ struct MirrorNode<I> {
 /// buckets in a routed store hold exactly one, so "narrower" and "cheaper" point in opposite
 /// directions here, and only the allocator settles it. That is the next test.
 #[test]
-fn what_each_shape_of_the_page_index_would_cost() {
+fn what_each_shape_of_the_block_index_would_cost() {
     assert_eq!(
         size_of::<BlockIndexMap>(),
-        size_of::<MirrorLivePageIndex>(),
+        size_of::<MirrorLiveBlockIndex>(),
         "the mirror of the live page index is {} bytes against the declaration's {}; the mirrors \
          have drifted and every price below is fiction",
-        size_of::<MirrorLivePageIndex>(),
+        size_of::<MirrorLiveBlockIndex>(),
         size_of::<BlockIndexMap>()
     );
     assert_eq!(
@@ -832,8 +832,8 @@ fn what_each_shape_of_the_page_index_would_cost() {
         ),
         (
             "the single page behind a pointer",
-            size_of::<MirrorBoxedPageIndex>(),
-            size_of::<MirrorNode<MirrorBoxedPageIndex>>(),
+            size_of::<MirrorBoxedBlockIndex>(),
+            size_of::<MirrorNode<MirrorBoxedBlockIndex>>(),
             true,
         ),
         (
@@ -890,18 +890,18 @@ fn what_each_shape_of_the_page_index_would_cost() {
     // both are things this module must notice rather than print a difference for.
     assert_eq!(
         live_node,
-        size_of::<MirrorNode<MirrorBoxedPageIndex>>(),
+        size_of::<MirrorNode<MirrorBoxedBlockIndex>>(),
         "the boxed mirror is {} B against the live node's {live_node} B. Boxing the single page is \
          what SHIPPED, so these must be equal; a difference means the mirror no longer describes the \
          declaration",
-        size_of::<MirrorNode<MirrorBoxedPageIndex>>()
+        size_of::<MirrorNode<MirrorBoxedBlockIndex>>()
     );
     // And the shape that was replaced must still be the wider one, or there was nothing to recover.
     assert!(
-        size_of::<MirrorNode<MirrorInlinePageIndex>>() > live_node,
+        size_of::<MirrorNode<MirrorInlineBlockIndex>>() > live_node,
         "the node with its page entry held INLINE is {} B against the shipped {live_node} B; if the \
          two are equal the inline entry was never costing width",
-        size_of::<MirrorNode<MirrorInlinePageIndex>>()
+        size_of::<MirrorNode<MirrorInlineBlockIndex>>()
     );
 
     // Inline storage for a second block makes the common case wider to avoid an allocation the
@@ -956,11 +956,11 @@ fn what_each_shape_of_the_page_index_would_cost() {
 /// what they price; that is no longer the live entry's field set, while the width each of them is
 /// compared against is the live entry's.
 #[test]
-fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbids() {
+fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forbids() {
     // --- The controls, first and twice. ---
     assert_eq!(
         size_of::<BlockIndexMap>(),
-        size_of::<MirrorLivePageIndex>(),
+        size_of::<MirrorLiveBlockIndex>(),
         "the mirror of the live page index has drifted from the declaration"
     );
     assert_eq!(
@@ -1015,7 +1015,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
     );
     println!(
         "  the address plus its three flags      : {:>4} B",
-        size_of::<MirrorPageAddressOnly>()
+        size_of::<MirrorBlockAddressOnly>()
     );
     println!(
         "  the whole page entry as declared      : {:>4} B",
@@ -1049,16 +1049,16 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
         ("the page entry as declared", size_of::<BlockIndex>()),
         (
             "with `deleted` gone (a size of zero means deleted)",
-            size_of::<MirrorPageNoDeleted>(),
+            size_of::<MirrorBlockNoDeleted>(),
         ),
         (
             "with all three flags folded into one byte",
-            size_of::<MirrorPageOneFlagByte>(),
+            size_of::<MirrorBlockOneFlagByte>(),
         ),
-        ("with all three flags gone", size_of::<MirrorPageNoFlags>()),
+        ("with all three flags gone", size_of::<MirrorBlockNoFlags>()),
         (
             "with the three shared names gone",
-            size_of::<MirrorPageAddressOnly>(),
+            size_of::<MirrorBlockAddressOnly>(),
         ),
     ] {
         println!(
@@ -1080,33 +1080,33 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
     // the tail's WIDTH, and it goes stale the moment anything else lands in it.
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<MirrorPageNoDeleted>(),
+        size_of::<MirrorBlockNoDeleted>(),
         "removing the `deleted` field moved the entry's width; the tail is no longer sitting \
          inside one rounding and the note above is stale"
     );
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<MirrorPageOneFlagByte>(),
+        size_of::<MirrorBlockOneFlagByte>(),
         "folding the three flags into one byte moved the entry's width, which would mean they had \
          been costing more than three bytes and they are not"
     );
     assert_eq!(
         size_of::<BlockIndex>(),
-        size_of::<MirrorPageNoFlags>(),
+        size_of::<MirrorBlockNoFlags>(),
         "removing ALL THREE flags moved the entry from {} B to {} B. That used to be the one flag \
          change that crossed the rounding, and it stopped being one when the model spelling joined \
          the tail -- so if it crosses again, something has left the tail and the claim below is \
          stale",
         size_of::<BlockIndex>(),
-        size_of::<MirrorPageNoFlags>()
+        size_of::<MirrorBlockNoFlags>()
     );
     // AND THE BOUND ON THAT NEGATIVE. A claim that nothing in the tail can pay is worth having
     // only if something COULD: emptying the tail entirely does cross, by a whole word.
     assert!(
-        size_of::<MirrorPageEmptyTail>() < size_of::<BlockIndex>(),
+        size_of::<MirrorBlockEmptyTail>() < size_of::<BlockIndex>(),
         "an entry with NO tail at all is {} B against {} B; if even that does not cross, this \
          reconstruction is not describing the rounding it claims to",
-        size_of::<MirrorPageEmptyTail>(),
+        size_of::<MirrorBlockEmptyTail>(),
         size_of::<BlockIndex>()
     );
     println!(
@@ -1116,7 +1116,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_page_entry_forbi
         size_of::<crate::engine::storage_bucket_internals::StoredModelKind>() + 3,
         align_of::<BlockIndex>(),
         size_of::<BlockIndex>(),
-        size_of::<MirrorPageEmptyTail>()
+        size_of::<MirrorBlockEmptyTail>()
     );
 
     // --- AND THE SAVING THE WHOLE TIERING WOULD BUY, IF THE ENTRY EVER GOT THERE. ---
@@ -1209,19 +1209,19 @@ fn mirror_live_node(node: &BucketNode) -> MirrorNode<BlockIndexMap> {
 }
 
 /// The same node with its block index in the boxed shape, holding the SAME block set.
-fn mirror_boxed_node(node: &BucketNode) -> MirrorNode<MirrorBoxedPageIndex> {
+fn mirror_boxed_node(node: &BucketNode) -> MirrorNode<MirrorBoxedBlockIndex> {
     let entries: Vec<(u64, BlockIndex)> = node
         .block_index
         .iter()
         .map(|(handle, page)| (*handle, page.clone()))
         .collect();
     let block_index = match entries.len() {
-        0 => MirrorBoxedPageIndex::Empty,
+        0 => MirrorBoxedBlockIndex::Empty,
         1 => {
             let (handle, page) = entries.into_iter().next().expect("length is one");
-            MirrorBoxedPageIndex::One(handle, Box::new(page))
+            MirrorBoxedBlockIndex::One(handle, Box::new(page))
         }
-        _ => MirrorBoxedPageIndex::Many(entries.into_iter().collect()),
+        _ => MirrorBoxedBlockIndex::Many(entries.into_iter().collect()),
     };
     MirrorNode {
         routing_bucket: node.routing_bucket,
@@ -1307,7 +1307,7 @@ fn fill(entries: usize, node_allocations: u64) -> (f64, f64) {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "seeds 40,000 records and clones six bucket maps; run by name"]
-fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_one() {
+fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_one() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path_length = dir.path().as_os_str().len();
     let engine = probe_engine(dir.path());
@@ -1319,14 +1319,14 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
     hist.report("the store this is measured on");
 
     let buckets = hist.buckets();
-    let single_page = hist.holding(1);
+    let single_block = hist.holding(1);
     assert!(buckets > 0, "denominator: the shard holds no buckets");
     assert!(
         hist.multi_page() > 0,
         "the fixture reaches no multi-page bucket, so the Many arm is unexercised on both sides"
     );
     assert!(
-        single_page > 0,
+        single_block > 0,
         "denominator: no bucket holds exactly one page, so the shape under test is unreached"
     );
 
@@ -1341,7 +1341,7 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
     // mirror is not a mirror.
     let mut partner: BTreeMap<u32, BucketNode> = BTreeMap::new();
     let mut live_mirror: BTreeMap<u32, MirrorNode<BlockIndexMap>> = BTreeMap::new();
-    let mut boxed_mirror: BTreeMap<u32, MirrorNode<MirrorBoxedPageIndex>> = BTreeMap::new();
+    let mut boxed_mirror: BTreeMap<u32, MirrorNode<MirrorBoxedBlockIndex>> = BTreeMap::new();
     for routing_bucket in &order {
         let node = shard
             .bucket_index
@@ -1360,7 +1360,7 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
         .iter()
         .map(|(routing_bucket, node)| (*routing_bucket, mirror_live_node(node)))
         .collect();
-    let boxed_full: BTreeMap<u32, MirrorNode<MirrorBoxedPageIndex>> = shard
+    let boxed_full: BTreeMap<u32, MirrorNode<MirrorBoxedBlockIndex>> = shard
         .bucket_index
         .bucket_map
         .iter()
@@ -1392,12 +1392,12 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
 
     // A boxed arm allocates once per single-block bucket; those are not tree nodes and must come
     // out before any fill is reported, or the boxed rows read as an 8%-full tree.
-    let boxes = single_page as u64;
+    let boxes = single_block as u64;
 
     println!("\n=== one clone of the bucket map, by the counting allocator ===");
     println!("  store path length held at {path_length} characters");
     println!(
-        "  buckets={buckets}  single-page={single_page}  pages={}",
+        "  buckets={buckets}  single-page={single_block}  pages={}",
         hist.pages()
     );
     println!(
@@ -1457,7 +1457,7 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
     );
 
     // --- THE CANDIDATE, at production's fill and at full. ---
-    let per_bucket_saving = size_of::<BucketNode>() - size_of::<MirrorNode<MirrorBoxedPageIndex>>();
+    let per_bucket_saving = size_of::<BucketNode>() - size_of::<MirrorNode<MirrorBoxedBlockIndex>>();
     let arithmetic_saving = per_bucket_saving * buckets;
     let measured = boxed_bytes as i64 - live_bytes as i64;
     let measured_full = boxed_full_bytes as i64 - live_full_bytes as i64;
@@ -1515,24 +1515,24 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
     // with the tree shape, the store path, or the box, and it is the cost the width cannot show.
     for (label, calls) in [("as built", extra_calls), ("full tree", extra_calls_full)] {
         assert!(
-            calls as usize >= single_page,
-            "boxing charged {calls} extra allocations ({label}) against {single_page} single-page \
+            calls as usize >= single_block,
+            "boxing charged {calls} extra allocations ({label}) against {single_block} single-page \
              buckets; it is supposed to be at least one apiece, and fewer means the shape under \
              test is not being built"
         );
     }
     println!(
-        "\n  the allocation count is the durable figure: {:+} allocations for {single_page} \
+        "\n  the allocation count is the durable figure: {:+} allocations for {single_block} \
          single-page buckets, {:.4} apiece, and it does not move with the tree shape",
         extra_calls,
-        extra_calls as f64 / single_page as f64
+        extra_calls as f64 / single_block as f64
     );
 
     // WHAT THE ALLOCATOR UNDERCHARGES. Each added request is 104 bytes and is served out of a
     // larger chunk; at eight bytes of rounding apiece that is what the counted figure omits.
-    let undercount = (single_page * 8) as i64;
+    let undercount = (single_block * 8) as i64;
     println!(
-        "  and the counted bytes omit the allocator's own rounding: {single_page} requests of {} \
+        "  and the counted bytes omit the allocator's own rounding: {single_block} requests of {} \
          B, at least {undercount} B of chunk beyond what is charged above",
         size_of::<BlockIndex>()
     );
@@ -1566,9 +1566,9 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
         );
     }
     println!(
-        "  WHAT IT BUYS THAT WITH: {single_page} allocations that did not exist, one for every \
+        "  WHAT IT BUYS THAT WITH: {single_block} allocations that did not exist, one for every \
          bucket that holds a single page -- a per-bucket allocation on the write path, one \
-         dependent load on every page read, and {single_page} small scattered chunks for the \
+         dependent load on every page read, and {single_block} small scattered chunks for the \
          allocator to fragment around. The bytes are within this instrument's own rounding; the \
          allocations are not."
     );
@@ -1615,7 +1615,7 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
 /// The two are separated entirely by what they allocate, which is a byte question and is priced in
 /// `inline_arm_trade.rs`. What the read path DOES say is that both keep the single-block lookup out of
 /// `find_page`... for the box only: a list would send it through a bisection. That asymmetry is
-/// counted in `inline_arm_trade::the_read_path_examines_no_entry_for_a_single_page_bucket_and_one_if_the_arm_were_dropped`.
+/// counted in `inline_arm_trade::the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_were_dropped`.
 ///
 /// MEASURED ABBA, not A then B: this box runs other work, and a drift between the first and second
 /// half of a run lands entirely on whichever arm ran second. ABBA cancels a linear drift; an A/B
@@ -1624,7 +1624,7 @@ fn boxing_the_single_page_arm_costs_an_allocation_for_every_bucket_that_holds_on
 /// reader can see whether it separated at all.
 #[test]
 #[ignore = "times four million lookups; run by name"]
-fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
+fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     const BUCKETS: usize = 20_000;
     const ROUNDS: usize = 50;
 
@@ -1638,18 +1638,18 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
         listed.push((handle, index));
     }
     // THE DECLINED SHAPE, as a mirror: the entry held in the node's own bytes.
-    let inline: Vec<(u64, MirrorInlinePageIndex)> = listed
+    let inline: Vec<(u64, MirrorInlineBlockIndex)> = listed
         .iter()
         .map(|(handle, index)| {
             let page = index.get(handle).expect("the page is there").clone();
-            (*handle, MirrorInlinePageIndex::One(*handle, page))
+            (*handle, MirrorInlineBlockIndex::One(*handle, page))
         })
         .collect();
-    let boxed: Vec<(u64, MirrorBoxedPageIndex)> = listed
+    let boxed: Vec<(u64, MirrorBoxedBlockIndex)> = listed
         .iter()
         .map(|(handle, index)| {
             let page = index.get(handle).expect("the page is there").clone();
-            (*handle, MirrorBoxedPageIndex::One(*handle, Box::new(page)))
+            (*handle, MirrorBoxedBlockIndex::One(*handle, Box::new(page)))
         })
         .collect();
 
@@ -1663,20 +1663,20 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     assert!(
         inline
             .iter()
-            .all(|(_, index)| matches!(index, MirrorInlinePageIndex::One(..))),
+            .all(|(_, index)| matches!(index, MirrorInlineBlockIndex::One(..))),
         "the inline mirror is not holding its pages inline, so the treatment did not run"
     );
     assert!(
         boxed
             .iter()
-            .all(|(_, index)| matches!(index, MirrorBoxedPageIndex::One(..))),
+            .all(|(_, index)| matches!(index, MirrorBoxedBlockIndex::One(..))),
         "the boxed arm is not holding its pages behind a pointer, so the treatment did not run"
     );
 
     let read_inline = || {
         let mut sum = 0u64;
         for (handle, index) in &inline {
-            if let MirrorInlinePageIndex::One(held, page) = index {
+            if let MirrorInlineBlockIndex::One(held, page) = index {
                 if held == handle {
                     sum = sum.wrapping_add(page.address.block_slab_id());
                 }
@@ -1696,7 +1696,7 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     let read_boxed = || {
         let mut sum = 0u64;
         for (handle, index) in &boxed {
-            if let MirrorBoxedPageIndex::One(held, page) = index {
+            if let MirrorBoxedBlockIndex::One(held, page) = index {
                 if held == handle {
                     sum = sum.wrapping_add(page.address.block_slab_id());
                 }
@@ -1785,25 +1785,25 @@ fn reading_a_page_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() {
     // same niche, so boxing recovers the identical width. The choice between them is a heap
     // question, and `inline_arm_trade.rs` is where it is priced.
     assert!(
-        size_of::<MirrorInlinePageIndex>() > size_of::<BlockIndexMap>(),
+        size_of::<MirrorInlineBlockIndex>() > size_of::<BlockIndexMap>(),
         "the inline mirror is {} B against the shipped {} B; if holding the entry inline were not \
          wider there would have been nothing to recover",
-        size_of::<MirrorInlinePageIndex>(),
+        size_of::<MirrorInlineBlockIndex>(),
         size_of::<BlockIndexMap>()
     );
     assert_eq!(
         size_of::<BlockIndexMap>(),
-        size_of::<MirrorBoxedPageIndex>(),
+        size_of::<MirrorBoxedBlockIndex>(),
         "the boxed shape is {} B against the shipped {} B. Measured, the two lay out identically; \
          if they have separated, boxing has started to cost or save width on its own and the \
          comparison above is no longer only about the heap",
-        size_of::<MirrorBoxedPageIndex>(),
+        size_of::<MirrorBoxedBlockIndex>(),
         size_of::<BlockIndexMap>()
     );
     println!(
         "  widths: inline {} B, boxed {} B, shipped {} B",
-        size_of::<MirrorInlinePageIndex>(),
-        size_of::<MirrorBoxedPageIndex>(),
+        size_of::<MirrorInlineBlockIndex>(),
+        size_of::<MirrorBoxedBlockIndex>(),
         size_of::<BlockIndexMap>()
     );
 }
@@ -1832,7 +1832,7 @@ fn page_for(seed: u64) -> (Arc<str>, BlockIndex) {
     )
 }
 
-fn component_page(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
+fn component_block(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
     (
         Arc::from("container"),
         BlockIndex {
@@ -1856,7 +1856,7 @@ fn component_page(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
 /// `BlockIndex` does not derive `PartialEq`, and a comparison written as "both are non-empty" is
 /// exactly the assertion that cannot see the failure this guards against. A block index that loses
 /// an entry is SILENT data loss: the block is still on the slab and nothing can find it.
-fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &BlockIndex) {
+fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &BlockIndex) {
     // THE OBJECT-KEY COMPARISON IS RETIRED RATHER THAN REWRITTEN, and where its claim went is
     // the whole of the reason. The entry has no object key to compare: the identity lives beside
     // the page, in the bucket's own lookup, and the two page indexes this is handed -- one of
@@ -1892,7 +1892,7 @@ fn assert_same_page(context: &str, handle: u64, left: &BlockIndex, right: &Block
 }
 
 /// The whole block set, as an ordered list of handle-and-entry, compared element by element.
-fn assert_same_page_set(context: &str, left: &BlockIndexMap, right: &BlockIndexMap) {
+fn assert_same_block_set(context: &str, left: &BlockIndexMap, right: &BlockIndexMap) {
     let left_entries: Vec<(u64, &BlockIndex)> =
         left.iter().map(|(handle, page)| (*handle, page)).collect();
     let right_entries: Vec<(u64, &BlockIndex)> =
@@ -1910,8 +1910,8 @@ fn assert_same_page_set(context: &str, left: &BlockIndexMap, right: &BlockIndexM
         left_handles, right_handles,
         "{context}: the page set's handles are not the same handles in the same order"
     );
-    for ((handle, left_page), (_, right_page)) in left_entries.iter().zip(right_entries.iter()) {
-        assert_same_page(context, *handle, left_page, right_page);
+    for ((handle, left_block), (_, right_block)) in left_entries.iter().zip(right_entries.iter()) {
+        assert_same_block(context, *handle, left_block, right_block);
     }
 }
 
@@ -1947,7 +1947,7 @@ fn assert_same_page_set(context: &str, left: &BlockIndexMap, right: &BlockIndexM
 /// `retain`, because that is a second caller of the same demotion and a guard covering one caller
 /// lets the other keep the bug.
 #[test]
-fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() {
+fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
     assert!(index.is_empty(), "a fresh page index holds nothing");
@@ -1984,7 +1984,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     let survived = index
         .get(&first_handle)
         .expect("the page held inline before the promotion is gone after it -- silent data loss");
-    assert_same_page("across the promotion into a map", first_handle, &first, survived);
+    assert_same_block("across the promotion into a map", first_handle, &first, survived);
 
     // Every one of the four is present and is its own block, compared one at a time.
     for (offset, handle) in handles.iter().enumerate() {
@@ -1992,11 +1992,11 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         let held = index
             .get(handle)
             .unwrap_or_else(|| panic!("page {handle} (seed {seed}) is not in the grown index"));
-        assert_same_page("in the grown index", *handle, &page_for(seed).1, held);
+        assert_same_block("in the grown index", *handle, &page_for(seed).1, held);
     }
 
     // --- A clone of a four-block index is the same four blocks. ---
-    assert_same_page_set("cloning a four-page index", &grown_control, &index);
+    assert_same_block_set("cloning a four-page index", &grown_control, &index);
 
     // --- Shrink back to one: the list keeps its arm, and keeps the right block. ---
     //
@@ -2017,7 +2017,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     );
 
     // --- THE STRONG FORM. The surviving block set is EQUAL to what it was before the round trip. ---
-    assert_same_page_set(
+    assert_same_block_set(
         "after growing to four pages and shrinking back to one",
         &single_control,
         &index,
@@ -2047,7 +2047,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     let last = index
         .remove(&first_handle, &mut live, crate::engine::state::StaleCause::Removed)
         .expect("the last page is gone before it was removed");
-    assert_same_page("the last page removed", first_handle, &first, &last);
+    assert_same_block("the last page removed", first_handle, &first, &last);
     assert!(
         matches!(index, BlockIndexMap::Empty),
         "an emptied index did not return to the Empty shape"
@@ -2076,7 +2076,7 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     let survivor = retained
         .get(&keep)
         .expect("the page retain was told to keep is gone");
-    assert_same_page("the page retain kept", keep, &page_for(12).1, survivor);
+    assert_same_block("the page retain kept", keep, &page_for(12).1, survivor);
 
     // --- And retain the last block away, which is the collapse that DOES still happen. ---
     retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _page| false);
@@ -2127,8 +2127,8 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // not read the component would file them all as one block and 99 of every 100 would be lost --
     // while every length assertion on a single-block fixture still passed."
     //
-    // The handle no longer reads a component, because the entry has none. `component_page(20,
-    // "alpha")` and `component_page(20, "beta")` are now the SAME entry -- same object key, same
+    // The handle no longer reads a component, because the entry has none. `component_block(20,
+    // "alpha")` and `component_block(20, "beta")` are now the SAME entry -- same object key, same
     // model, same address -- so they hash alike and the second takes the first's slot. That is the
     // loss the old assertion warned about, and it is why the collapse is a correctness requirement:
     // the projection emits one entry per distinct PAGE, so two entries of one object at one address
@@ -2140,9 +2140,9 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
     // collision is real, and that `index_entry_names_a_page` keeps it unreachable -- and this is the
     // one that sits beside the bucket distribution the loss would have shown up in.
     let mut components = BlockIndexMap::default();
-    let (alpha_key, alpha) = component_page(20, "alpha");
+    let (alpha_key, alpha) = component_block(20, "alpha");
     let first_component = components.insert(&alpha_key, alpha, &mut live);
-    let (beta_key, beta) = component_page(20, "beta");
+    let (beta_key, beta) = component_block(20, "beta");
     let second_component = components.insert(&beta_key, beta, &mut live);
     assert_eq!(
         first_component, second_component,
@@ -2156,10 +2156,10 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
         "two entries of one object at one address are ONE page in this index, and it holds {}",
         components.len()
     );
-    assert_same_page(
+    assert_same_block(
         "the surviving entry",
         first_component,
-        &component_page(20, "alpha").1,
+        &component_block(20, "alpha").1,
         components.get(&first_component).expect("the entry is filed"),
     );
 }
@@ -2181,16 +2181,16 @@ fn a_bucket_that_grows_past_one_page_and_shrinks_back_holds_the_same_page_set() 
 /// to four and shrank back to that same block; and the four-block node compared against itself
 /// through a clone. If the arm reached the bytes, the first two would differ.
 #[test]
-fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
+fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     let mut live = BlockSlabLiveIndex::default();
 
     // A node that has only ever held one block.
     let mut untouched = BucketNode::default();
     untouched.routing_bucket = 11;
-    let (untouched_key, untouched_page) = page_for(1);
+    let (untouched_key, untouched_block) = page_for(1);
     let handle = untouched
         .block_index
-        .insert(&untouched_key, untouched_page, &mut live);
+        .insert(&untouched_key, untouched_block, &mut live);
     assert!(
         matches!(untouched.block_index, BlockIndexMap::One(..)),
         "the untouched node is not holding its one page in the single-page arm"
@@ -2199,10 +2199,10 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // A node that grew to four blocks and shrank back to the same single block.
     let mut round_tripped = BucketNode::default();
     round_tripped.routing_bucket = 11;
-    let (round_tripped_key, round_tripped_page) = page_for(1);
+    let (round_tripped_key, round_tripped_block) = page_for(1);
     round_tripped
         .block_index
-        .insert(&round_tripped_key, round_tripped_page, &mut live);
+        .insert(&round_tripped_key, round_tripped_block, &mut live);
     let mut extra = Vec::new();
     for seed in 2..=4u64 {
         let (object_key, entry) = page_for(seed);
@@ -2243,10 +2243,10 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // Without it, two nodes that both serialized to nothing would pass the assertion above.
     let mut different = BucketNode::default();
     different.routing_bucket = 11;
-    let (different_key, different_page) = page_for(2);
+    let (different_key, different_block) = page_for(2);
     different
         .block_index
-        .insert(&different_key, different_page, &mut live);
+        .insert(&different_key, different_block, &mut live);
     let different_bytes =
         serde_json::to_string(&crate::engine::state::NodeNamedBy(&different, &["key-2"])).expect("a node serializes");
     assert_ne!(
@@ -2288,7 +2288,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
     // used to overwrite the entry's own copy and then read that copy back out to render with;
     // the two pages are byte-identical by construction, so handing the SAME page under two
     // different keys says what it meant -- that the key is what moved.
-    let (here_object, here) = component_page(5, "body");
+    let (here_object, here) = component_block(5, "body");
     let elsewhere_object: std::sync::Arc<str> = std::sync::Arc::from("a-different-object");
     let here_key = crate::engine::state::block_index_written_key(&here_object, &here);
     let other_key = crate::engine::state::block_index_written_key(&elsewhere_object, &here);
@@ -2312,14 +2312,14 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
         let (object_key, entry) = page_for(seed);
         many.block_index.insert(&object_key, entry, &mut live);
     }
-    let (body_key, body) = component_page(5, "body");
+    let (body_key, body) = component_block(5, "body");
     many.block_index.insert(&body_key, body, &mut live);
     assert_eq!(5, many.block_index.len(), "five pages, five entries");
     // FIVE PAGES OVER FIVE OBJECTS: four `page_for` keys and the container.
     const MANY_OBJECTS: &[&str] = &["key-1", "key-2", "key-3", "key-4", "container"];
     let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&many, MANY_OBJECTS)).expect("a node serializes");
     let read_back: BucketNode = serde_json::from_str(&written).expect("a node deserializes");
-    assert_same_page_set(
+    assert_same_block_set(
         "a five-page bucket through the stored form",
         &many.block_index,
         &read_back.block_index,
@@ -2361,7 +2361,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_page_set() {
 /// than printing a number nobody checks.
 #[test]
 #[ignore = "seeds two stores; run by name"]
-fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
+fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     let mut rows: Vec<(&'static str, usize, usize, usize, usize)> = Vec::new();
     let mut path_lengths = Vec::new();
 
@@ -2410,24 +2410,24 @@ fn the_page_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         println!("  {name:<34} {buckets:>9} {pages:>9} {node_bytes:>16} {page_bytes:>16}");
     }
 
-    let (_, routed_buckets, routed_pages, routed_nodes, routed_pages_bytes) = rows[0];
-    let (_, container_buckets, container_pages, container_nodes, container_pages_bytes) = rows[1];
+    let (_, routed_buckets, routed_blocks, routed_nodes, routed_blocks_bytes) = rows[0];
+    let (_, container_buckets, container_pages, container_nodes, container_blocks_bytes) = rows[1];
     assert!(routed_buckets > 0 && container_buckets > 0, "denominator: a workload holds no buckets");
-    assert!(routed_pages > 0 && container_pages > 0, "denominator: a workload holds no pages");
+    assert!(routed_blocks > 0 && container_pages > 0, "denominator: a workload holds no pages");
 
     // In the routed store the two terms are within a whisker of each other, because there is one
     // block per bucket and the block entry IS most of the node.
     println!(
         "\n  routed    : the page entry is {:.1}% of the node's own total",
-        100.0 * routed_pages_bytes as f64 / routed_nodes as f64
+        100.0 * routed_blocks_bytes as f64 / routed_nodes as f64
     );
     println!(
         "  container : the page entry is {:.1}x the node total",
-        container_pages_bytes as f64 / container_nodes as f64
+        container_blocks_bytes as f64 / container_nodes as f64
     );
     assert!(
-        container_pages_bytes > container_nodes * 10,
-        "the container store's page entries are {container_pages_bytes} B against \
+        container_blocks_bytes > container_nodes * 10,
+        "the container store's page entries are {container_blocks_bytes} B against \
          {container_nodes} B of node; if the page entry no longer dominates there, the next term \
          named here is wrong"
     );

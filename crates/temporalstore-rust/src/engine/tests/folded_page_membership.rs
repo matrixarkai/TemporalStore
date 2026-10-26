@@ -89,7 +89,7 @@ fn write(engine: &TemporalEngine, command: Command) {
 
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_folded_pages_membership_now_states_the_member_the_live_index_no_longer_names() {
+fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_names() {
     // THE FIXTURE'S SERVED SIDE IS THE RESIDENT MAP, NOT THE PAGE INDEX. This comment predicted
     // the red rather than fixing it: "THE FIXTURE COUNTS MEMBERS THE LIVE INDEX NAMES, which is
     // zero once entries name pages instead of elements -- its floor says the removal did not do

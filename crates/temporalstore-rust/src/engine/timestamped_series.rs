@@ -12,7 +12,7 @@
 //! type out for six different kinds.
 //!
 //! The consequence was recorded in the tree before this module existed, in
-//! `the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none`: the six "cannot be
+//! `the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none`: the six "cannot be
 //! adopted for one of them alone", so any change of representation was all six or none. That is
 //! not a reviewable change. This trait is the seam that makes them independent -- one kind can move
 //! to a different series representation while the other seven keep theirs, because the helpers now

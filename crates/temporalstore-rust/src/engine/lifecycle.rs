@@ -19,7 +19,7 @@ impl Default for TemporalEngine {
 /// These replace a single function that handed out `&mut HashMap<String, BTreeMap<u64, _>>` for
 /// six kinds. That shape was one place, which is what its note said it was for -- but it was one
 /// place that named a CONTAINER, so the six could not be narrowed one at a time: the tree recorded
-/// exactly that in `the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none`,
+/// exactly that in `the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none`,
 /// where it was a compile-time proof rather than a remark.
 ///
 /// Dispatching the OPERATION instead keeps the single place and removes the coupling. Each arm
@@ -426,7 +426,7 @@ impl OutcomePageElements {
     ///
     /// If the page names elements and the outcome's component is not among them, then the page in
     /// hand is not the page this outcome is about -- which is the `object_id` pairing defect
-    /// recorded in `the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_discriminate`
+    /// recorded in `the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate`
     /// arriving with evidence. Installing the page's names would file this element's address under
     /// another element's name; installing the component's would file another page's bytes under
     /// this one. Both are corruption, so neither is chosen and the load is refused.
@@ -1733,7 +1733,7 @@ impl TemporalEngine {
     ///
     ///   * the record is a `HashMultiSet` of several fields of ONE key, so it carries several pages
     ///     under one `object_id` and the carried page cannot be matched to this outcome -- the
-    ///     pairing defect `the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_discriminate`
+    ///     pairing defect `the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate`
     ///     records, arriving in the wild rather than in a fixture;
     ///   * and that test runs with ASYNC STORAGE on, so the block the address names was still
     ///     buffered and the store did not have it.
@@ -1774,7 +1774,7 @@ impl TemporalEngine {
     /// THE ADDRESS SECOND, WHICH IS EXACT AND COSTS A READ. `item.address` names one page and no
     /// other, so reading it can never pick the wrong one. It is the fallback rather than the rule
     /// because a read per replayed record is recovery time, and recovery time is a product
-    /// property: `durable_outranks_derived::what_resolving_the_element_from_the_page_costs_a_replay`
+    /// property: `durable_outranks_derived::what_resolving_the_element_from_the_block_costs_a_replay`
     /// prices both arms. AND IT CAN FAIL: an asynchronous write leaves its block buffered, so the
     /// address can name bytes the block store does not have yet, which is one of the ways this
     /// answers `Unreadable` rather than naming anything.

@@ -46,7 +46,7 @@
 //! ## An old page could stop reading
 //!
 //! No version stamp moves in this stage, and the only thing standing behind that is the magic
-//! discriminating. `a_page_written_without_a_frame_still_reads_through_the_funnel` installs bare
+//! discriminating. `a_block_written_without_a_frame_still_reads_through_the_funnel` installs bare
 //! bytes into a slab, files an index entry that names them, and reads them back through the product
 //! path -- so the compatibility claim is exercised rather than argued.
 //!
@@ -182,7 +182,7 @@ fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> St
 ///
 /// rust-internal: exercises the page framing directly
 #[test]
-fn a_component_survives_the_round_trip_to_a_page_key_for_every_spelling() {
+fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
     let widths = [0usize, 1, 8, 16, 64, 255, 256];
     let mut checked = 0usize;
     println!("\n=== component -> key -> component, every spelling ===");
@@ -787,8 +787,8 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     huge_key[CONTAINER_PAGE_MAGIC.len() + 2] = 0x7f;
     mutants.push(("key length beyond the payload", huge_key));
     // A value offset past the end of its key.
-    let offset_page = encode_container_page(ElementKeySpelling::Utf8, &[(&key, b"")]);
-    let mut bad_offset = offset_page.clone();
+    let offset_block = encode_container_page(ElementKeySpelling::Utf8, &[(&key, b"")]);
+    let mut bad_offset = offset_block.clone();
     let last = bad_offset.len() - 1;
     bad_offset[last] = 0x7f;
     mutants.push(("value offset past the key", bad_offset));
@@ -868,7 +868,7 @@ fn bytes_with_no_magic_are_not_a_frame() {
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
+fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     // IT FETCHES THE PAGE BY COMPONENT, which is the ungated identity. Under one entry a page a
     // live set entry carries no element name, so the fetch answers `None` and this panics BEFORE
     // comparing any value -- the instrument fails, not the readback. That the values are whole
@@ -1146,7 +1146,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_page() {
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_framed_page_reads_back_after_a_reload() {
+fn a_framed_block_reads_back_after_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
     let pages = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
@@ -1348,7 +1348,7 @@ fn a_framed_page_reads_back_after_a_reload() {
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_page_written_without_a_frame_still_reads_through_the_funnel() {
+fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

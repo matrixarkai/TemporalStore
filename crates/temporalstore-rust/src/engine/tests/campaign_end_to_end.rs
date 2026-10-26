@@ -46,7 +46,7 @@
 //!
 //! # THE CONTROL
 //!
-//! `the_range_buys_nothing_for_a_store_whose_pages_share_one_object_key` is the workload where the
+//! `the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key` is the workload where the
 //! column effect's mechanism predicts NOTHING: routing takes the object key and never the
 //! component, so one key's many component pages sit in one bucket at every range. If the column
 //! effect showed up there too, the explanation attributed to it here would be wrong.
@@ -479,7 +479,7 @@ impl Cell {
         (self.nodes * node_width) as f64 / self.records as f64
     }
     /// The per-PAGE structure's share, per record: one container slot per page.
-    fn page_bytes_per_record(&self, stride: usize) -> f64 {
+    fn block_bytes_per_record(&self, stride: usize) -> f64 {
         (self.pages * stride) as f64 / self.records as f64
     }
 }
@@ -627,7 +627,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
             cell.records,
             range_label(cell.end_routing_bucket),
             cell.node_bytes_per_record(node_width),
-            cell.page_bytes_per_record(stride),
+            cell.block_bytes_per_record(stride),
             hist.mean(),
             cell.records as f64 / cell.occupied.max(1) as f64,
         );
@@ -772,7 +772,7 @@ fn the_arm_a_bucket_sits_in_at_each_range_and_corpus_size() {
 /// behaviour
 #[cfg(feature = "alloc-probe")]
 #[test]
-fn the_range_buys_nothing_for_a_store_whose_pages_share_one_object_key() {
+fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
     const MEMBERS: usize = 2_000;
     /// WIDE, NARROW, NARROW, WIDE. Each arm appears twice, and the second half is the mirror of
     /// the first, so anything that drifts monotonically through the run lands equally on both.

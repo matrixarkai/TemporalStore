@@ -678,15 +678,15 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     );
 
     let mut node_counts: BTreeMap<usize, usize> = BTreeMap::new();
-    let mut page_key_instances = 0usize;
-    let mut page_field_instances = 0usize;
+    let mut block_key_instances = 0usize;
+    let mut block_field_instances = 0usize;
     // THE COMPOSITE AROUND THE CHARACTERS, counted beside them. A page entry is filed under a
     // COMPOSED name -- the kind, the object key and five address terms -- so the key's characters
     // are only part of what naming the page costs. A change replacing the key with a fixed-width
     // stand-in would move the whole composite, not just the characters inside it, and a report
     // counting only the characters would understate it.
-    let mut page_name_bytes = 0usize;
-    let mut page_name_key_chars = 0usize;
+    let mut block_name_bytes = 0usize;
+    let mut block_name_key_chars = 0usize;
     for node in bucket_map.values() {
         *node_counts.entry(reading.instances_in(node)).or_default() += 1;
         let page_index = node
@@ -706,16 +706,16 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
              values and the subtraction below is not a split"
         );
         for name in pages.keys() {
-            page_name_bytes += serde_json::to_vec(name).expect("a name serializes").len();
-            page_name_key_chars += instances(
+            block_name_bytes += serde_json::to_vec(name).expect("a name serializes").len();
+            block_name_key_chars += instances(
                 name.as_bytes(),
                 reading.width,
                 reading.ordinals,
                 reading.shape,
             ) * reading.width;
         }
-        page_field_instances += in_values;
-        page_key_instances += in_whole_map - in_values;
+        block_field_instances += in_values;
+        block_key_instances += in_whole_map - in_values;
         // THE CHARACTERS MOVED RATHER THAN LEFT, PER BUCKET. The entry's copy is gone, so a page
         // index's whole count must now be its KEYS' count -- asserted here, bucket by bucket,
         // because a total asserted once could be satisfied by some buckets holding a field copy and
@@ -734,21 +734,21 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         println!("  {count:>12} {nodes:>14}");
     }
     println!(
-        "  page-entry MAP KEYS       {page_key_instances:>8} instance(s), {:.3} per object",
-        page_key_instances as f64 / reading.keys as f64
+        "  page-entry MAP KEYS       {block_key_instances:>8} instance(s), {:.3} per object",
+        block_key_instances as f64 / reading.keys as f64
     );
     println!(
-        "  page-entry `object_key`   {page_field_instances:>8} instance(s), {:.3} per object",
-        page_field_instances as f64 / reading.keys as f64
+        "  page-entry `object_key`   {block_field_instances:>8} instance(s), {:.3} per object",
+        block_field_instances as f64 / reading.keys as f64
     );
     assert!(
-        page_key_instances > 0,
+        block_key_instances > 0,
         "[CLAUSE each-term-nonzero] the page-entry map keys hold no key characters, so this term \
          is a zero that would have been absorbed into another"
     );
     // AND THIS TERM IS NOW EXACTLY ZERO, WHICH IS A SUBJECT CHANGE AND NOT A RELAXED CLAUSE.
     //
-    // It read `page_field_instances > 0` under `each-term-nonzero`, and it FAILED on the first
+    // It read `block_field_instances > 0` under `each-term-nonzero`, and it FAILED on the first
     // suite run after the page entry stopped writing its own copy of the object key -- which is
     // how the removal was confirmed to have landed where this module says the copy lived. The
     // clause is INVERTED rather than deleted: the term has to be zero now, and a non-zero here
@@ -759,25 +759,25 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     // are that the map KEYS hold them (asserted above) and that the page index's instances are now
     // ENTIRELY in its keys -- the characters moved, they did not leave the index.
     assert_eq!(
-        0, page_field_instances,
-        "[CLAUSE the-entry-holds-no-copy] the page entries hold {page_field_instances} instance(s) \
+        0, block_field_instances,
+        "[CLAUSE the-entry-holds-no-copy] the page entries hold {block_field_instances} instance(s) \
          of an object key's characters. `object_key` left the entry at \
          `SHARD_INDEX_FORMAT_VERSION` 27 because the composite key the entry is filed under \
          already spells it, so a copy on the entry means the field has come back"
     );
     println!(
-        "  page-entry names          {page_name_bytes:>8} B in all, {:.2} B/object as written",
-        page_name_bytes as f64 / reading.keys as f64
+        "  page-entry names          {block_name_bytes:>8} B in all, {:.2} B/object as written",
+        block_name_bytes as f64 / reading.keys as f64
     );
     println!(
-        "    of which the object key's characters are {page_name_key_chars} B ({:.1}%); the rest \
+        "    of which the object key's characters are {block_name_key_chars} B ({:.1}%); the rest \
          is the kind and the five address terms the composite also names",
-        100.0 * page_name_key_chars as f64 / page_name_bytes as f64
+        100.0 * block_name_key_chars as f64 / block_name_bytes as f64
     );
     assert!(
-        page_name_key_chars > 0 && page_name_key_chars < page_name_bytes,
-        "[CLAUSE each-term-nonzero] the page-entry names are {page_name_bytes} B of which \
-         {page_name_key_chars} B are key characters -- a share of none says the composite does not \
+        block_name_key_chars > 0 && block_name_key_chars < block_name_bytes,
+        "[CLAUSE each-term-nonzero] the page-entry names are {block_name_bytes} B of which \
+         {block_name_key_chars} B are key characters -- a share of none says the composite does not \
          name the object, a share of all says it names nothing else, and neither matches a \
          composed name"
     );

@@ -36,8 +36,8 @@
 //! the PAGE count now, and the row that used to say what the fold did not buy says what it does.
 //!
 //! `entry_count_versus_page_count`'s
-//! `one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives the mechanism.
-//! `a_compaction_round_folds_a_containers_pages_and_folds_its_entry_count_with_them` below asserts
+//! `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives the mechanism.
+//! `a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_them` below asserts
 //! it from this module's own fixture, because a reader of this module should not have to go and
 //! find that one to learn what the fold buys.
 //!
@@ -61,7 +61,7 @@
 //! `result.is_err()`. #2026 corrected the comment in `read_block_bytes_for_compaction` that had said
 //! the caller skips.
 //!
-//! `a_container_element_whose_page_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
+//! `a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
 //! drives BOTH halves through the block-read failure seam the compaction tests already use.
 //!
 //! ## The fold could lose an element
@@ -248,7 +248,7 @@ fn seed(engine: &TemporalEngine, object_key: &str, elements: usize) {
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_compaction_round_folds_a_containers_pages_and_folds_its_entry_count_with_them() {
+fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_them() {
     // ENTRIES CONVERGE ON PAGES ON EVERY PATH, because there is no longer a path where they do
     // not. This comment read "THE ENTRY COUNT NOT MOVING IS THE UNGATED INVARIANT ... Gated, the
     // count collapsing to the PAGE count is the whole point", and it named two paths. The
@@ -280,11 +280,11 @@ fn a_compaction_round_folds_a_containers_pages_and_folds_its_entry_count_with_th
         );
         assert_eq!(FOLDABLE_ELEMENTS, *entries);
     }
-    let (string_pages_before, string_entries_before) =
+    let (string_blocks_before, string_entries_before) =
         addresses_and_entries(&engine, "string", "folded-string");
     assert_eq!(
         (1, 1),
-        (string_pages_before, string_entries_before),
+        (string_blocks_before, string_entries_before),
         "the string control must start at one page and one entry"
     );
 
@@ -368,15 +368,15 @@ fn a_compaction_round_folds_a_containers_pages_and_folds_its_entry_count_with_th
     assert_eq!(4, kinds_folded, "every container kind must be covered");
 
     // THE CONTROL, at zero, and exercised: its page was relocated and it still holds one page.
-    let (string_pages_after, string_entries_after) =
+    let (string_blocks_after, string_entries_after) =
         addresses_and_entries(&engine, "string", "folded-string");
     println!(
         "  {:>6}  {:>12}  {:>11}  {:>13}  {:>12}   <- control",
-        "string", string_pages_before, string_pages_after, string_entries_before, string_entries_after
+        "string", string_blocks_before, string_blocks_after, string_entries_before, string_entries_after
     );
     assert_eq!(
         (1, 1),
-        (string_pages_after, string_entries_after),
+        (string_blocks_after, string_entries_after),
         "the string control moved, and a string owns one page and one element so there is nothing \
          for a fold to win"
     );
@@ -473,10 +473,10 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
             "the round wrote {batches} batches folding {folded} pages, so the read-backs below are \
              not reading folded pages"
         );
-        let (page_count, entry_count) = addresses_and_entries(&engine, "hash", "readback");
+        let (block_count, entry_count) = addresses_and_entries(&engine, "hash", "readback");
         // THE FLOOR IS ON PAGES BEING SHARED BY ELEMENTS, NOT BY ENTRIES.
         //
-        // This read `page_count < entry_count` -- one entry per element, so fewer pages than
+        // This read `block_count < entry_count` -- one entry per element, so fewer pages than
         // entries meant elements were sharing a page. The index files one entry per PAGE now, so
         // those two counts are equal by construction and the floor could never hold again. The
         // thing this test needs established is unchanged: that the fold really put several
@@ -484,18 +484,18 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         // distinguishable from a correct one. So the pages are compared against the ELEMENTS
         // written, which is the other source and the one the floor was always about.
         assert!(
-            page_count < FOLDABLE_ELEMENTS,
-            "the hash holds {page_count} pages for {FOLDABLE_ELEMENTS} elements, so no page is \
+            block_count < FOLDABLE_ELEMENTS,
+            "the hash holds {block_count} pages for {FOLDABLE_ELEMENTS} elements, so no page is \
              shared and this test cannot distinguish a correct selector from one that ignores the \
              element"
         );
         assert_eq!(
-            page_count, entry_count,
-            "the index filed {entry_count} entries over {page_count} page(s); one entry a page is \
+            block_count, entry_count,
+            "the index filed {entry_count} entries over {block_count} page(s); one entry a page is \
              what the collapse means, and a mismatch here is a stale or missing entry"
         );
         println!(
-            "\n=== read back after the fold ===\n  hash: {entry_count} entries over {page_count} pages, {batches} batches, {folded} folded"
+            "\n=== read back after the fold ===\n  hash: {entry_count} entries over {block_count} pages, {batches} batches, {folded} folded"
         );
 
         // Before the reload: the resident maps still hold what the writes put there, so this arm
@@ -649,7 +649,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn the_element_cap_binds_so_one_page_never_holds_a_whole_large_container() {
+fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -738,7 +738,7 @@ fn the_element_cap_binds_so_one_page_never_holds_a_whole_large_container() {
 ///
 /// rust-internal: drives the engine's own command surface through a documented failure seam
 #[test]
-fn a_container_element_whose_page_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value()
+fn a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value()
 {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());

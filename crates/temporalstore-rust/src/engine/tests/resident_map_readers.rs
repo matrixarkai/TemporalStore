@@ -109,7 +109,7 @@
 //! `set_index_serde`'s `(member bytes, address)` pairs, being older than the page index it is merged
 //! with -- an input READ off disk. One is a fold ordering bug and it is fixed; the other is a
 //! snapshot-age property of the durable map and `fill_absent_elements` had no filter for it at all.
-//! `both_inputs_to_the_merge_now_answer_the_same_live_page_question` drives the two side by side.
+//! `both_inputs_to_the_merge_now_answer_the_same_live_block_question` drives the two side by side.
 //!
 //! `fill_absent_elements` now asks #2005's question of the persisted map too. That KEEPS #1989's
 //! element and DROPS #2017's, which is what makes it the right question rather than a narrowing:
@@ -149,7 +149,7 @@
 //! whose address matches no live page in the finished index, which trusts the index exactly as far as
 //! this function already trusts it two arms up, where `shard.strings = strings` and
 //! `shard.hashes = hashes` assign the derived view WHOLESALE.
-//! `the_merge_runs_even_when_no_set_page_survived` drives both arms.
+//! `the_merge_runs_even_when_no_set_block_survived` drives both arms.
 //!
 //! # AND STILL NO SCAN SHIPS, FOR A SMALLER REASON THAN THE ONE THIS OPENED WITH
 //!
@@ -171,7 +171,7 @@
 //! # NOT COVERED, stated so the cover is not read as total
 //!
 //! The `zset` and `list` merges take the same new filter and the same two tests exercise the set
-//! arm only for the reader sweep; `both_inputs_to_the_merge_now_answer_the_same_live_page_question`
+//! arm only for the reader sweep; `both_inputs_to_the_merge_now_answer_the_same_live_block_question`
 //! covers all three arms for the filter itself. `hashes` has no durable map and no merge, so it has
 //! no persisted input to filter. The page-read saving is quoted from #2017 and not re-derived here.
 #![allow(clippy::all)]
@@ -1057,7 +1057,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
 ///
 /// rust-internal: calls the engine's own reconcile directly
 #[test]
-fn both_inputs_to_the_merge_now_answer_the_same_live_page_question() {
+fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -1241,7 +1241,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_page_question() {
 ///
 /// rust-internal: calls the engine's own release actuator and reconcile directly
 #[test]
-fn a_bucket_holding_a_container_page_is_never_released() {
+fn a_bucket_holding_a_container_block_is_never_released() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -1278,7 +1278,7 @@ fn a_bucket_holding_a_container_page_is_never_released() {
     engine.flush_shard_index(1);
     let _ = engine.dump_index_catalog(1);
 
-    let (released_count, kind_refusals, set_pages_still_indexed, set_bucket_released) = {
+    let (released_count, kind_refusals, set_blocks_still_indexed, set_bucket_released) = {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
         shard.dirty_objects.clear();
@@ -1318,7 +1318,7 @@ fn a_bucket_holding_a_container_page_is_never_released() {
         "\n=== releasing every bucket, with a set among them ===\n  released \
          {released_count} bucket(s); {kind_refusals} refused on BlockKindNotAddressable\n  the \
          set's own bucket released: {set_bucket_released}; set pages still in `bucket_map`: \
-         {set_pages_still_indexed}"
+         {set_blocks_still_indexed}"
     );
 
     // THE CONTROL. A fixture in which nothing can be released would satisfy the finding below
@@ -1343,8 +1343,8 @@ fn a_bucket_holding_a_container_page_is_never_released() {
          never from `bucket_index.bucket_map`, which does not"
     );
     assert_eq!(
-        4, set_pages_still_indexed,
-        "the index holds {set_pages_still_indexed} live set page(s), not the 4 written, so the \
+        4, set_blocks_still_indexed,
+        "the index holds {set_blocks_still_indexed} live set page(s), not the 4 written, so the \
          release took some after all"
     );
 
@@ -1421,7 +1421,7 @@ fn a_bucket_holding_a_container_page_is_never_released() {
 ///
 /// rust-internal: calls the engine's own reconcile directly, then the command surface
 #[test]
-fn the_merge_runs_even_when_no_set_page_survived() {
+fn the_merge_runs_even_when_no_set_block_survived() {
     for (label, keep_one_member) in [("no set page decoded", false), ("one set page alive", true)] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());

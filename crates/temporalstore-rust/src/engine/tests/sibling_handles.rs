@@ -50,7 +50,7 @@ use crate::engine::state::{block_index_handle, BlockIndex};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
 /// One batched page: every element of the object shares this address.
-fn batched_page_address() -> ElementEntry {
+fn batched_block_address() -> ElementEntry {
     ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None)
 }
 
@@ -74,14 +74,14 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     const OBJECT: &str = "tenant/7/object/000000123";
     const ENTRIES: usize = 40;
 
-    let address = batched_page_address();
-    let at_one_page: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..ENTRIES)
+    let address = batched_block_address();
+    let at_one_block: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..ENTRIES)
         .map(|_| entry_at(OBJECT, address.clone()))
         .collect();
 
     // THE SHAPE IS THE SUBJECT, so it is asserted rather than assumed: every entry must share one
     // address and one object key, or the collision below is not about a batched page.
-    let addresses: std::collections::BTreeSet<String> = at_one_page
+    let addresses: std::collections::BTreeSet<String> = at_one_block
         .iter()
         .map(|(_, page)| format!("{:?}", page.address))
         .collect();
@@ -92,10 +92,10 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
         addresses.len(),
     );
     let keys: std::collections::BTreeSet<&str> =
-        at_one_page.iter().map(|(object_key, _)| &**object_key).collect();
+        at_one_block.iter().map(|(object_key, _)| &**object_key).collect();
     assert_eq!(1, keys.len(), "they must also share one object key");
 
-    let handles: std::collections::BTreeSet<u64> = at_one_page
+    let handles: std::collections::BTreeSet<u64> = at_one_block
         .iter()
         .map(|(object_key, page)| block_index_handle(object_key, page))
         .collect();
@@ -133,7 +133,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
 ///
 /// rust-internal: reads a filing predicate, no product behaviour
 #[test]
-fn every_container_kind_converges_on_the_page_so_no_object_files_two_entries_at_one_address() {
+fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at_one_address() {
     use crate::engine::storage_bucket_internals::index_entry_names_a_page;
 
     let container_kinds = [

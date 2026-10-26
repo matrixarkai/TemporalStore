@@ -66,7 +66,7 @@
 //!
 //! What the re-derivation changes, and what it does not: a STRING still has no component, so for it
 //! deriving is not a second copy of anything and it is still left alone. A HASH now has a durable
-//! copy -- which is why `an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field` below
+//! copy -- which is why `an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field` below
 //! can pass at all, and that test already says so, naming the six-fields-served-as-zero shape as
 //! what the durability fixed. So the hash arm is in the same position as the three spelled kinds:
 //! the derived view decides which elements exist, and the durable map keeps what a name cannot
@@ -632,7 +632,7 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
     // component spells the field name exactly, so a readable name needs no help. What was wrong was
     // the inference that no help was ever needed, because a hash page can name NO field at all, and
     // then the name spells nothing and the durable map is the only record. That case is driven by
-    // `an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field` below.
+    // `an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field` below.
     for element in 0..members.len() {
         let expected = format!("value-{element}").into_bytes();
         assert!(
@@ -1025,7 +1025,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
 ///
 /// rust-internal: reads the engine's own in-memory index, no external surface
 #[test]
-fn an_unnamed_hash_page_is_skipped_and_the_durable_map_keeps_the_field() {
+fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -1730,7 +1730,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 ///
 /// rust-internal: calls the engine's own fold directly, no external surface
 #[test]
-fn a_carried_element_whose_page_the_fold_did_not_keep_is_not_restored() {
+fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -1961,7 +1961,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
 ///      from the payload is a parse. If it does not, it is a BLOCK READ PER RECORD -- and recovery
 ///      time is a product property, so that cost decides whether any of this is worth doing.
 #[test]
-fn what_a_staged_hash_page_says_about_its_own_element_and_what_asking_costs() {
+fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     use crate::engine::container_pages::{
         component_from_element_key, decode_container_page, ContainerPageDecode, ElementKeySpelling,
     };
@@ -2007,7 +2007,7 @@ fn what_a_staged_hash_page_says_about_its_own_element_and_what_asking_costs() {
     let mut framed = 0usize;
     let mut not_framed = 0usize;
     let mut corrupt = 0usize;
-    let mut items_per_page: Vec<usize> = Vec::new();
+    let mut items_per_block: Vec<usize> = Vec::new();
     let mut recovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut spellings: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for record in &records {
@@ -2016,7 +2016,7 @@ fn what_a_staged_hash_page_says_about_its_own_element_and_what_asking_costs() {
                 ContainerPageDecode::Framed { spelling, items, .. } => {
                     framed += 1;
                     spellings.insert(format!("{spelling:?}"));
-                    items_per_page.push(items.len());
+                    items_per_block.push(items.len());
                     for item in &items {
                         if let Some(component) = component_from_element_key(spelling, &item.key) {
                             recovered.insert(component);
@@ -2044,8 +2044,8 @@ fn what_a_staged_hash_page_says_about_its_own_element_and_what_asking_costs() {
     println!(
         "[pay] items per staged page: min={:?} max={:?}; {} distinct components recovered of {} \
          fields written",
-        items_per_page.iter().min(),
-        items_per_page.iter().max(),
+        items_per_block.iter().min(),
+        items_per_block.iter().max(),
         recovered.len(),
         expected.len()
     );
@@ -2133,7 +2133,7 @@ fn what_a_staged_hash_page_says_about_its_own_element_and_what_asking_costs() {
 ///
 /// rust-internal: measurement, no product behaviour
 #[test]
-fn what_resolving_the_element_from_the_page_costs_a_replay() {
+fn what_resolving_the_element_from_the_block_costs_a_replay() {
     const KEY: &str = "cost-hash";
     const FIELDS: usize = 256;
 
@@ -2330,7 +2330,7 @@ fn what_resolving_the_element_from_the_page_costs_a_replay() {
 ///
 /// The first version of this arm drove `install_shared_outcomes_with_blocks`, and it FAILED -- for
 /// a reason that turned out to be a defect in that path rather than in this change, which
-/// `the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_discriminate`
+/// `the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate`
 /// below records in full. The short form: that path pairs a carried page to an outcome by
 /// `object_id`, which is per (kind, key) and NOT per element, so for a record carrying several
 /// pages of one key it attaches the FIRST page's bytes to every outcome. While the outcome carried
@@ -2549,7 +2549,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 ///
 /// rust-internal: records a known defect in the shared-install path, no product behaviour
 #[test]
-fn the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_discriminate() {
+fn the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate() {
     const KEY: &str = "pair-hash";
     let fields = ["one", "two"];
 
@@ -2661,7 +2661,7 @@ fn the_shared_install_pairs_a_carried_page_to_an_outcome_by_an_id_that_cannot_di
 ///
 /// rust-internal: drives the replay fallback, no product behaviour changes
 #[test]
-fn a_replay_whose_page_is_unreachable_installs_from_the_outcomes_own_name() {
+fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     const KEY: &str = "unreachable-hash";
     let fields = ["alpha", "beta", "gamma"];
     let expected: std::collections::BTreeSet<String> =
@@ -2750,7 +2750,7 @@ fn a_replay_whose_page_is_unreachable_installs_from_the_outcomes_own_name() {
         load_version: 1,
         local_node_id: Some(1),
     });
-    let (from_page, from_component, disagreed) =
+    let (from_block, from_component, disagreed) =
         crate::engine::lifecycle::outcome_element_name_sources();
     let held: std::collections::BTreeSet<String> = if response.status.ok {
         let shards = fresh.shards.read().expect("engine lock poisoned");
@@ -2763,7 +2763,7 @@ fn a_replay_whose_page_is_unreachable_installs_from_the_outcomes_own_name() {
         std::collections::BTreeSet::new()
     };
     println!(
-        "[unreachable] load ok={} fields={held:?}; names from page={from_page} from \
+        "[unreachable] load ok={} fields={held:?}; names from page={from_block} from \
          component={from_component} disagreed={disagreed}",
         response.status.ok
     );
@@ -2813,7 +2813,7 @@ fn a_replay_whose_page_is_unreachable_installs_from_the_outcomes_own_name() {
 ///
 /// rust-internal: drives the disagreement refusal, no product behaviour changes
 #[test]
-fn a_page_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
+fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
     const KEY: &str = "disagree-hash";
 
     let source = tempfile::tempdir().unwrap();
@@ -3005,18 +3005,18 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
     // (1) DOES THE PAGE ALREADY NAME ITS POINTS? Decoded through the real feature-block decoder,
     // not by searching bytes, because present is not recoverable.
     let mut pages = 0usize;
-    let mut decoded_pages = 0usize;
-    let mut points_per_page: Vec<usize> = Vec::new();
+    let mut decoded_blocks = 0usize;
+    let mut points_per_block: Vec<usize> = Vec::new();
     let mut recovered: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
-    let mut pages_by_object: std::collections::BTreeMap<u64, usize> =
+    let mut blocks_by_object: std::collections::BTreeMap<u64, usize> =
         std::collections::BTreeMap::new();
     for record in &records {
         for page in &record.staged_blocks {
             pages += 1;
-            *pages_by_object.entry(page.object_id).or_default() += 1;
+            *blocks_by_object.entry(page.object_id).or_default() += 1;
             if let Some(points) = crate::engine::packed_pages::decode_feature_block(&page.bytes) {
-                decoded_pages += 1;
-                points_per_page.push(points.len());
+                decoded_blocks += 1;
+                points_per_block.push(points.len());
                 for point in &points {
                     recovered.insert(point.timestamp_ms);
                 }
@@ -3033,15 +3033,15 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         .collect();
     println!(
         "[tsf] feature append of {POINTS} points: {} records, {} outcomes, {pages} staged pages \
-         ({decoded_pages} decode as feature blocks)",
+         ({decoded_blocks} decode as feature blocks)",
         records.len(),
         outcomes.len()
     );
     println!(
         "[tsf] points per page: min={:?} max={:?}; {} of {POINTS} timestamps recovered FROM THE \
          PAGES",
-        points_per_page.iter().min(),
-        points_per_page.iter().max(),
+        points_per_block.iter().min(),
+        points_per_block.iter().max(),
         recovered.len()
     );
     assert_eq!(
@@ -3050,10 +3050,10 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
          recoverable from it and the refusal stands on its original ground"
     );
     assert_eq!(
-        pages, decoded_pages,
+        pages, decoded_blocks,
         "{} of {pages} staged pages are not feature blocks, so the decode above does not cover \
          the whole write",
-        pages - decoded_pages
+        pages - decoded_blocks
     );
 
     // (3) THE READ COST. A carried page can only be matched to an outcome when exactly one of the
@@ -3061,7 +3061,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
     // several pages. Each of those is a block read a replay would have to perform.
     let ambiguous = outcomes
         .iter()
-        .filter(|item| pages_by_object.get(&item.object_id).copied().unwrap_or(0) > 1)
+        .filter(|item| blocks_by_object.get(&item.object_id).copied().unwrap_or(0) > 1)
         .count();
     println!(
         "[tsf] of {} feature outcomes, {ambiguous} belong to an object whose record carries \
@@ -3154,10 +3154,10 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
                 .find(|item| item.kind == "context_event")
                 .and_then(|item| item.component.clone())
                 .unwrap_or_default();
-            let event_pages: usize = record.staged_blocks.len();
+            let event_blocks: usize = record.staged_blocks.len();
             println!(
                 "[tsf] a context_event record: {e_with} B -> {e_without} B, saving {} B; its \
-                 component is {} chars ({component}); it carries {event_pages} page(s)",
+                 component is {} chars ({component}); it carries {event_blocks} page(s)",
                 e_with - e_without,
                 component.len()
             );

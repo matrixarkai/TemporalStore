@@ -19,7 +19,7 @@
 //!
 //!   1. the tombstone page is REACHABLE from the index -- a gated removal files a page-named
 //!      tombstone entry beside the live entry, which
-//!      `a_gated_removal_leaves_a_tombstone_page_the_index_can_reach` drives;
+//!      `a_gated_removal_leaves_a_tombstone_block_the_index_can_reach` drives;
 //!   2. `container_membership::derive_membership` owns the ORDERING, folding every page of the
 //!      object by `append_position` with a value and a tombstone as the same kind of statement, so
 //!      the later page wins. A hand-rolled loop over the payload lacks exactly that precedence,
@@ -126,7 +126,7 @@ fn seed_fold_remove(engine: &TemporalEngine) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
 
 /// rust-internal: the gated listing folds the pages, and the removed member does not come back
 #[test]
-fn a_gated_listing_folds_the_pages_and_the_removed_member_stays_gone() {
+fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
     // SEPARATE STORES PER ARM. One shared store would let the second arm read the first's cached
     // answer, which has already produced a wrong figure once in this campaign.
     let gated_dir = tempfile::tempdir().expect("tempdir");
@@ -240,7 +240,7 @@ fn a_gated_listing_folds_the_pages_and_the_removed_member_stays_gone() {
 /// then read by a gated one. That is a CROSS-VERSION read, which is exactly the boundary step
 /// nine's reload corpus exists to cover, and it is the reason the fallback is not dead code.
 #[test]
-fn an_unframed_page_makes_the_fold_decline_rather_than_answer_short() {
+fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     use crate::block_store::ElementEntry;
     use crate::engine::container_membership::{append_position, derive_membership};
 

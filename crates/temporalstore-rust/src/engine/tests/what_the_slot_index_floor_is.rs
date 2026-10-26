@@ -522,7 +522,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
 /// nor `dump_index_catalog` clears the flag (`refresh_one_bucket_runtime_flags` ORs it); the
 /// clear-dirty-on-load contract in `persistence.rs` does.
 #[test]
-fn a_released_bucket_keeps_object_ids_that_no_page_beside_it_names() {
+fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     println!("\n=== whether `node/object_index` is rebuildable from the pages of its bucket ===\n");
 
     fn engine_on(root: &std::path::Path) -> TemporalEngine {

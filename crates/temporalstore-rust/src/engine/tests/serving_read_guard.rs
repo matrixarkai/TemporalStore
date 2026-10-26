@@ -74,7 +74,7 @@ fn measured_hash_get_all(
 /// Both arms must read the same pages, which is what stops this from being satisfied by a read
 /// that found everything cached or served nothing.
 #[test]
-fn the_serving_fast_path_reads_pages_after_the_shard_guard_drops() {
+fn the_serving_fast_path_reads_blocks_after_the_shard_guard_drops() {
     let control_dir = tempfile::tempdir().unwrap();
     let control_engine = cold_wide_hash(control_dir.path());
     crate::engine::shard_write_guard::serve_fast_path_under_shard_guard_for_test(true);

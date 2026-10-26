@@ -237,7 +237,7 @@ struct Population {
     component_free_by_object_id: BTreeMap<u64, usize>,
     total_buckets: usize,
     total_pages: usize,
-    pages_without_object_id: usize,
+    blocks_without_object_id: usize,
 }
 
 fn population(engine: &TemporalEngine) -> Population {
@@ -265,7 +265,7 @@ fn population(engine: &TemporalEngine) -> Population {
         }
         for (handle, entry) in &node.block_index {
             let object_key = named.at(node.routing_bucket, *handle);
-            // DERIVED, not read off the address. `pages_without_object_id` is therefore structurally
+            // DERIVED, not read off the address. `blocks_without_object_id` is therefore structurally
             // zero and is left at zero rather than removed from the shape: every page can name its
             // object now, which is the fact that used to be worth counting.
             let id = entry.object_id(1, object_key);
@@ -364,12 +364,12 @@ fn name_pointer_width(_engine: &TemporalEngine) -> usize {
 fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_still_absent_at_the_shipped_range()
 {
     let mut path_lengths: Vec<usize> = Vec::new();
-    let mut widest_bucket_share_of_multi_page_object = 0.0f64;
-    let mut widest_page_share_of_multi_page_object = 0.0f64;
+    let mut widest_bucket_share_of_multi_block_object = 0.0f64;
+    let mut widest_block_share_of_multi_block_object = 0.0f64;
     let mut widest_object_by_id = 0usize;
     let mut widest_object_by_kind_key = 0usize;
     let mut series_max_seen = 0usize;
-    let mut shipped_range_at_scale_multi_page_object: Option<usize> = None;
+    let mut shipped_range_at_scale_multi_block_object: Option<usize> = None;
     let mut shipped_range_at_scale_live_arms: Option<usize> = None;
     let mut stores = 0usize;
 
@@ -399,12 +399,12 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
 
             // --- THE ARM POPULATION, BY BUCKET AND BY PAGE, EACH WITH ITS DENOMINATOR. ---
             let mut arm_buckets = 0usize;
-            let mut arm_pages = 0usize;
+            let mut arm_blocks = 0usize;
             let mut live_arms = 0usize;
             for arm in EVERY_ARM {
                 let (buckets, pages) = pop.arms.get(arm).copied().unwrap_or_default();
                 arm_buckets += buckets;
-                arm_pages += pages;
+                arm_blocks += pages;
                 if buckets > 0 {
                     live_arms += 1;
                 }
@@ -413,22 +413,22 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 } else {
                     buckets as f64 * 100.0 / pop.total_buckets as f64
                 };
-                let page_share = if pop.total_pages == 0 {
+                let block_share = if pop.total_pages == 0 {
                     0.0
                 } else {
                     pages as f64 * 100.0 / pop.total_pages as f64
                 };
                 println!(
-                    "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {pages:>8} pages ({page_share:>7.3}% of {})",
+                    "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {pages:>8} pages ({block_share:>7.3}% of {})",
                     pop.total_buckets, pop.total_pages
                 );
                 if arm == "multi_page_object" {
-                    widest_bucket_share_of_multi_page_object =
-                        widest_bucket_share_of_multi_page_object.max(bucket_share);
-                    widest_page_share_of_multi_page_object =
-                        widest_page_share_of_multi_page_object.max(page_share);
+                    widest_bucket_share_of_multi_block_object =
+                        widest_bucket_share_of_multi_block_object.max(bucket_share);
+                    widest_block_share_of_multi_block_object =
+                        widest_block_share_of_multi_block_object.max(block_share);
                     if records == LARGE && end == NARROW_END {
-                        shipped_range_at_scale_multi_page_object = Some(buckets);
+                        shipped_range_at_scale_multi_block_object = Some(buckets);
                     }
                 }
             }
@@ -442,8 +442,8 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 pop.total_buckets
             );
             assert_eq!(
-                arm_pages, pop.total_pages,
-                "{records}/{end}: arm page rows sum to {arm_pages} against {} pages",
+                arm_blocks, pop.total_pages,
+                "{records}/{end}: arm page rows sum to {arm_blocks} against {} pages",
                 pop.total_pages
             );
             // AND THE STORE HOLDS WHAT THE FIXTURE WROTE, so the denominator is not self-checked.
@@ -475,9 +475,9 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
 
             // --- PAGES PER OBJECT: THE NUMBER THE OBJECT LIST AMORTISES OVER. ---
             assert_eq!(
-                pop.pages_without_object_id, 0,
+                pop.blocks_without_object_id, 0,
                 "{records}/{end}: {} pages carry no object id, so grouping by it would silently merge them under zero",
-                pop.pages_without_object_id
+                pop.blocks_without_object_id
             );
             let (_, max_by_id) = report_group("pages per object_id", &pop.by_object_id);
             let (_, max_by_kind_key) = report_group("pages per (kind, key)", &pop.by_kind_key);
@@ -544,19 +544,19 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     //
     // Either share quoted alone would read as a much bigger or much smaller result than this is.
     assert!(
-        widest_bucket_share_of_multi_page_object > 0.0,
+        widest_bucket_share_of_multi_block_object > 0.0,
         "`multi_page_object` reached no bucket in any store. Since the component left the object \
          id a container key is ONE object holding many pages, which is exactly this arm -- an \
          unreached arm here means the identity did not collapse"
     );
     assert!(
-        widest_page_share_of_multi_page_object > widest_bucket_share_of_multi_page_object,
-        "`multi_page_object` peaks at {widest_bucket_share_of_multi_page_object:.3}% of buckets \
-         and {widest_page_share_of_multi_page_object:.3}% of pages. The whole shape of this arm \
+        widest_block_share_of_multi_block_object > widest_bucket_share_of_multi_block_object,
+        "`multi_page_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of buckets \
+         and {widest_block_share_of_multi_block_object:.3}% of pages. The whole shape of this arm \
          is a FEW buckets holding MANY pages; if the page share is not the larger of the two, \
          the population being read is not the container one"
     );
-    let shipped = shipped_range_at_scale_multi_page_object
+    let shipped = shipped_range_at_scale_multi_block_object
         .expect("the shipped range at scale must have been measured");
     assert_eq!(
         shipped, 0,
@@ -568,7 +568,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         "at 40,000 records on the shipped range {live} layout arms are populated. The finding is stated on exactly ONE being live, which is what makes a five-way dispatch select nothing there"
     );
     println!(
-        "\n  THE ARM: `multi_page_object` peaks at {widest_bucket_share_of_multi_page_object:.3}% of BUCKETS and {widest_page_share_of_multi_page_object:.3}% of PAGES, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
+        "\n  THE ARM: `multi_page_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of BUCKETS and {widest_block_share_of_multi_block_object:.3}% of PAGES, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
         EVERY_ARM.len()
     );
     println!(
@@ -633,7 +633,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             assert!(total_pages > 0, "{records}/{end}: nothing was written");
 
             let mut mixed_buckets = 0usize;
-            let mut pages_in_mixed_buckets = 0usize;
+            let mut blocks_in_mixed_buckets = 0usize;
             // What a PER-BUCKET dispatch can save: one representation for the whole bucket, and it
             // may pick whichever of the two is cheaper for that bucket -- the most generous
             // reading of the proposal.
@@ -641,7 +641,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             // What a PER-KEY decision could save: each key picks for itself.
             let mut per_key_saving: i64 = 0;
             // Pages that a per-bucket dispatch is forced to represent the wrong way.
-            let mut pages_represented_wrongly = 0usize;
+            let mut blocks_represented_wrongly = 0usize;
 
             for keys in &breakdown {
                 let pages: usize = keys.iter().sum();
@@ -650,7 +650,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 let multis = distinct - singles;
                 if singles > 0 && multis > 0 {
                     mixed_buckets += 1;
-                    pages_in_mixed_buckets += pages;
+                    blocks_in_mixed_buckets += pages;
                 }
 
                 let today = (pages * name_width) as i64;
@@ -679,10 +679,10 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 // Under the bucket's single choice, how many pages sit in the wrong arm.
                 if listed <= today {
                     // the whole bucket is listed: every one-page key is paying a list row it loses on
-                    pages_represented_wrongly += singles;
+                    blocks_represented_wrongly += singles;
                 } else {
                     // the whole bucket stays inline: every multi-page key's pages keep a fat name
-                    pages_represented_wrongly +=
+                    blocks_represented_wrongly +=
                         keys.iter().filter(|count| **count > 1).copied().sum::<usize>();
                 }
             }
@@ -695,9 +695,9 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 "\n{records} records of the real kind mix on {width}: {total_buckets} occupied buckets, {total_pages} pages, name pointer {name_width} B read off the field"
             );
             println!(
-                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {pages_in_mixed_buckets} pages ({:.3}% of {total_pages})",
+                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} pages ({:.3}% of {total_pages})",
                 mixed_buckets as f64 * 100.0 / total_buckets as f64,
-                pages_in_mixed_buckets as f64 * 100.0 / total_pages as f64
+                blocks_in_mixed_buckets as f64 * 100.0 / total_pages as f64
             );
             println!(
                 "    per-bucket dispatch (the layout state) saves {per_bucket_saving:>10} B = {:>7.3} B/page",
@@ -716,8 +716,8 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 "    so the layout state captures {captured:.3}% of what the decision is actually worth"
             );
             println!(
-                "    pages a single per-bucket representation must get wrong: {pages_represented_wrongly} ({:.3}% of {total_pages})",
-                pages_represented_wrongly as f64 * 100.0 / total_pages as f64
+                "    pages a single per-bucket representation must get wrong: {blocks_represented_wrongly} ({:.3}% of {total_pages})",
+                blocks_represented_wrongly as f64 * 100.0 / total_pages as f64
             );
 
             // --- THE DISPATCH COST, IN PROBE COUNTS AND NOT IN TIME. ---
@@ -851,10 +851,10 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         );
         // And it is now far closer to the KEY count than to the page count -- the mechanism,
         // stated the same way round as before so the two runs stay comparable.
-        let to_pages = (stored_rows as f64 - pop.total_pages as f64).abs();
+        let to_blocks = (stored_rows as f64 - pop.total_pages as f64).abs();
         let to_keys = (stored_rows as f64 - distinct_keys as f64).abs();
         assert!(
-            to_keys < to_pages,
+            to_keys < to_blocks,
             "the stored object_index row count {stored_rows} is closer to the page count {} than \
              to the distinct-key count {distinct_keys}; the claim that it is keyed per key does \
              not hold here",

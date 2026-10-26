@@ -223,7 +223,7 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) {
 
 /// Pages per object, as object counts keyed by pages held.
 #[derive(Debug, Default, Clone)]
-struct PagesPerObject {
+struct BlocksPerObject {
     histogram: BTreeMap<usize, usize>,
     /// Distinct component names per object, same shape. The term that decides `component`.
     components_per_object: BTreeMap<usize, usize>,
@@ -237,7 +237,7 @@ struct PagesPerObject {
     pages: usize,
 }
 
-impl PagesPerObject {
+impl BlocksPerObject {
     fn objects(&self) -> usize {
         self.histogram.values().copied().sum()
     }
@@ -321,13 +321,13 @@ fn is_hex_spelling_of_numbers(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn pages_per_object(engine: &TemporalEngine) -> PagesPerObject {
+fn pages_per_object(engine: &TemporalEngine) -> BlocksPerObject {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut per_object: BTreeMap<(StoredModelKind, String), (usize, BTreeSet<String>)> =
         BTreeMap::new();
     let named = super::PageObjects::of(&shard.bucket_index);
-    let mut measured = PagesPerObject::default();
+    let mut measured = BlocksPerObject::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
         for (handle, page) in bucket.block_index.iter() {
@@ -379,9 +379,9 @@ fn pages_per_object(engine: &TemporalEngine) -> PagesPerObject {
 /// move at about six bytes a character, which is why no byte figure in this test is a claim.
 #[test]
 #[ignore = "seeds twelve stores up to 40,000 records each; run by name"]
-fn the_pages_of_one_object_are_two_populations_at_both_routing_ranges() {
+fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
     let mut path_lengths: Vec<usize> = Vec::new();
-    let mut arms: Vec<(String, u32, PagesPerObject)> = Vec::new();
+    let mut arms: Vec<(String, u32, BlocksPerObject)> = Vec::new();
 
     for (records_label, records) in [("4,000", 4_000usize), ("40,000", 40_000usize)] {
         for (range_label, end) in [
@@ -431,32 +431,32 @@ fn the_pages_of_one_object_are_two_populations_at_both_routing_ranges() {
     for (label, _, measured) in arms.iter().filter(|(l, _, _)| l.starts_with("routed")) {
         assert_eq!(
             1,
-            PagesPerObject::max(&measured.histogram),
+            BlocksPerObject::max(&measured.histogram),
             "{label}: a routed-key object is supposed to hold exactly one page and the widest \
              holds {}",
-            PagesPerObject::max(&measured.histogram)
+            BlocksPerObject::max(&measured.histogram)
         );
     }
     for (label, _, measured) in arms.iter().filter(|(l, _, _)| l.starts_with("containers")) {
         assert!(
-            PagesPerObject::percentile(&measured.histogram, 0.50) >= 100,
+            BlocksPerObject::percentile(&measured.histogram, 0.50) >= 100,
             "{label}: the container arm exists to hold objects of a hundred pages and its p50 is \
              {}",
-            PagesPerObject::percentile(&measured.histogram, 0.50)
+            BlocksPerObject::percentile(&measured.histogram, 0.50)
         );
     }
     for (label, _, measured) in arms.iter().filter(|(l, _, _)| l.starts_with("mixed")) {
         assert_eq!(
             1,
-            PagesPerObject::percentile(&measured.histogram, 0.50),
+            BlocksPerObject::percentile(&measured.histogram, 0.50),
             "{label}: a mixed corpus is supposed to have a p50 of one -- routed keys outnumber \
              container objects -- and it is {}",
-            PagesPerObject::percentile(&measured.histogram, 0.50)
+            BlocksPerObject::percentile(&measured.histogram, 0.50)
         );
         assert!(
-            PagesPerObject::max(&measured.histogram) >= 100,
+            BlocksPerObject::max(&measured.histogram) >= 100,
             "{label}: and a MAX at the container shape, which is {}",
-            PagesPerObject::max(&measured.histogram)
+            BlocksPerObject::max(&measured.histogram)
         );
     }
 
@@ -535,7 +535,7 @@ struct TableCost {
 
 impl TableCost {
     /// Cumulative chunk bytes a page's share of BUILDING the table cost.
-    fn chunk_per_page(&self) -> f64 {
+    fn chunk_per_block(&self) -> f64 {
         if self.pages == 0 {
             0.0
         } else {
@@ -544,7 +544,7 @@ impl TableCost {
     }
 
     /// What the built table HOLDS, per page. The figure a verdict is taken on.
-    fn resident_per_page(&self) -> f64 {
+    fn resident_per_block(&self) -> f64 {
         if self.pages == 0 {
             0.0
         } else {
@@ -552,7 +552,7 @@ impl TableCost {
         }
     }
 
-    fn entries_per_page(&self) -> f64 {
+    fn entries_per_block(&self) -> f64 {
         self.entries as f64 / self.pages.max(1) as f64
     }
 }
@@ -672,7 +672,7 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
 #[cfg(feature = "alloc-probe")]
 fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     let mut path_lengths: Vec<usize> = Vec::new();
-    let mut rows: Vec<(String, TableCost, PagesPerObject)> = Vec::new();
+    let mut rows: Vec<(String, TableCost, BlocksPerObject)> = Vec::new();
 
     for (range_label, end) in [
         ("whole keyspace", WHOLE_KEYSPACE_END),
@@ -714,14 +714,14 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     );
     for (label, cost, distribution) in &rows {
         let saved = ENTRY_BYTES_A_HANDLE_SAVES as f64;
-        let net = saved - cost.resident_per_page();
+        let net = saved - cost.resident_per_block();
         println!(
             "  {label:<34} {:>7} {:>7} {:>6.2} {:>10.2} {:>10.2} {:>8.2} {:>+8.2}",
             cost.pages,
             cost.entries,
             cost.pages as f64 / distribution.objects().max(1) as f64,
-            cost.chunk_per_page(),
-            cost.resident_per_page(),
+            cost.chunk_per_block(),
+            cost.resident_per_block(),
             saved,
             net
         );
@@ -761,10 +761,10 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
             cost.entries, cost.pages
         );
         assert!(
-            cost.resident_per_page() > ENTRY_BYTES_A_HANDLE_SAVES as f64,
+            cost.resident_per_block() > ENTRY_BYTES_A_HANDLE_SAVES as f64,
             "{label}: the table holds {:.2} B a page against {} B saved, so a handle is supposed \
              to LOSE on this population and it does not",
-            cost.resident_per_page(),
+            cost.resident_per_block(),
             ENTRY_BYTES_A_HANDLE_SAVES
         );
     }
@@ -777,28 +777,28 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
             cost.pages
         );
         assert!(
-            cost.resident_per_page() < ENTRY_BYTES_A_HANDLE_SAVES as f64,
+            cost.resident_per_block() < ENTRY_BYTES_A_HANDLE_SAVES as f64,
             "{label}: the table holds {:.2} B a page against {} B saved, so a handle is supposed \
              to PAY on this population and it does not",
-            cost.resident_per_page(),
+            cost.resident_per_block(),
             ENTRY_BYTES_A_HANDLE_SAVES
         );
     }
 
     let break_even: f64 = {
         // Bytes a table entry HOLDS, from the routed arm where entries == pages exactly.
-        let per_entry = routed[0].1.resident_per_page();
+        let per_entry = routed[0].1.resident_per_block();
         per_entry / ENTRY_BYTES_A_HANDLE_SAVES as f64
     };
     println!(
         "\n  BREAK-EVEN: a table entry holds {:.2} B resident (and about {:.2} B to build, \n\
            cumulatively), so a handle pays above {:.2} pages per object and loses below it. \n\
            Measured p50 pages/object: routed 1, containers {}, mixed {}.",
-        routed[0].1.resident_per_page(),
-        routed[0].1.chunk_per_page(),
+        routed[0].1.resident_per_block(),
+        routed[0].1.chunk_per_block(),
         break_even,
-        PagesPerObject::percentile(&containers[0].2.histogram, 0.50),
-        PagesPerObject::percentile(
+        BlocksPerObject::percentile(&containers[0].2.histogram, 0.50),
+        BlocksPerObject::percentile(
             &rows
                 .iter()
                 .find(|(l, _, _)| l.starts_with("mixed"))
@@ -843,9 +843,9 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
 #[test]
 #[ignore = "alloc-probe only, seeds four stores; run by name with --features alloc-probe"]
 #[cfg(feature = "alloc-probe")]
-fn a_handle_for_the_component_costs_a_table_entry_per_page() {
+fn a_handle_for_the_component_costs_a_table_entry_per_block() {
     let mut path_lengths: Vec<usize> = Vec::new();
-    let mut rows: Vec<(String, TableCost, PagesPerObject)> = Vec::new();
+    let mut rows: Vec<(String, TableCost, BlocksPerObject)> = Vec::new();
 
     for (range_label, end) in [
         ("whole keyspace", WHOLE_KEYSPACE_END),
@@ -883,10 +883,10 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
             "  {label:<40} {:>7} {:>7} {:>9.3} {:>10.2} {:>11.2} {:>+8.2}",
             cost.pages,
             cost.entries,
-            cost.entries_per_page(),
-            cost.chunk_per_page(),
-            cost.resident_per_page(),
-            SAVED - cost.resident_per_page()
+            cost.entries_per_block(),
+            cost.chunk_per_block(),
+            cost.resident_per_block(),
+            SAVED - cost.resident_per_block()
         );
         assert!(
             cost.chunk_bytes >= cost.request_bytes,
@@ -896,11 +896,11 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
     }
 
     // --- BOTH POPULATIONS MUST BE REACHED, or the verdict is decided by the fixture. ---
-    let schema: Vec<&(String, TableCost, PagesPerObject)> = rows
+    let schema: Vec<&(String, TableCost, BlocksPerObject)> = rows
         .iter()
         .filter(|(label, _, _)| label.starts_with("containers of 100"))
         .collect();
-    let content: Vec<&(String, TableCost, PagesPerObject)> = rows
+    let content: Vec<&(String, TableCost, BlocksPerObject)> = rows
         .iter()
         .filter(|(label, _, _)| label.starts_with("one container of 2000"))
         .collect();
@@ -910,7 +910,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
     // --- THE SCHEMA POPULATION: names repeat, so the table is small and the handle PAYS. ---
     for (label, cost, _) in &schema {
         assert!(
-            cost.entries_per_page() < 0.5,
+            cost.entries_per_block() < 0.5,
             "{label}: {} distinct components over {} pages. This arm exists to hold a REPEATED \
              schema -- the same hundred field names across forty objects -- so distinct names are \
              supposed to be far fewer than pages",
@@ -918,17 +918,17 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
             cost.pages
         );
         assert!(
-            cost.resident_per_page() < SAVED,
+            cost.resident_per_block() < SAVED,
             "{label}: the table holds {:.2} B a page against {SAVED} B saved, so a handle is \
              supposed to PAY where the names repeat",
-            cost.resident_per_page()
+            cost.resident_per_block()
         );
     }
 
     // --- THE CONTENT-DERIVED POPULATION: one name per page, and the handle LOSES. ---
     for (label, cost, _) in &content {
         assert!(
-            cost.entries_per_page() > 0.9,
+            cost.entries_per_block() > 0.9,
             "{label}: {} distinct components over {} pages. This arm exists to hold names that do \
              NOT repeat -- one container whose two thousand members are all distinct -- so the \
              table is supposed to hold about one entry per page",
@@ -936,10 +936,10 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
             cost.pages
         );
         assert!(
-            cost.resident_per_page() > SAVED,
+            cost.resident_per_block() > SAVED,
             "{label}: the table holds {:.2} B a page against {SAVED} B saved, so a handle is \
              supposed to LOSE where every name is distinct",
-            cost.resident_per_page()
+            cost.resident_per_block()
         );
     }
 
@@ -949,10 +949,10 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
            member, a timestamped entry -- it holds {:.2} B a page and a handle nets {:+.2}. A \n\
            single blended figure would hide that, and the second population is the one a \n\
            container store is mostly made of.",
-        schema[0].1.resident_per_page(),
-        SAVED - schema[0].1.resident_per_page(),
-        content[0].1.resident_per_page(),
-        SAVED - content[0].1.resident_per_page(),
+        schema[0].1.resident_per_block(),
+        SAVED - schema[0].1.resident_per_block(),
+        content[0].1.resident_per_block(),
+        SAVED - content[0].1.resident_per_block(),
     );
 }
 
@@ -969,7 +969,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_page() {
 #[test]
 #[ignore = "seeds two stores; run by name"]
 fn the_component_name_is_hex_text_for_numbers_and_that_half_is_measured() {
-    let mut rows: Vec<(String, PagesPerObject)> = Vec::new();
+    let mut rows: Vec<(String, BlocksPerObject)> = Vec::new();
     let mut path_lengths: Vec<usize> = Vec::new();
     for (range_label, end) in [
         ("whole keyspace", WHOLE_KEYSPACE_END),
@@ -1210,7 +1210,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
 /// busy off identical code. `PAGE_LOOKUP_ENTRIES_EXAMINED` is the existing counter inside
 /// `find_page`, and the claim is that reading every page's spelling adds NOTHING to it.
 #[test]
-fn resolving_a_model_spelling_examines_no_page_index_entries() {
+fn resolving_a_model_spelling_examines_no_block_index_entries() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = probe_engine(dir.path());
     load_shard_over(&engine, OPERATOR_END);
@@ -1293,7 +1293,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     println!("  fixture: {} candidate buckets, lifecycle ran", candidates.len());
     std::hint::black_box(&lifecycle);
 
-    let before = page_triples(&engine);
+    let before = block_triples(&engine);
     assert!(!before.is_empty(), "the fixture produced no pages to release");
 
     // DRIVEN ON THE FUNCTION ITSELF. `refused_buckets` is one number for eleven different answers,
@@ -1323,7 +1323,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     let released = outcome.released_buckets.clone();
 
     // The released buckets really did lose their pages.
-    let during = page_triples(&engine);
+    let during = block_triples(&engine);
     assert!(
         during.len() < before.len(),
         "the release left {} pages of {} resident, so it did not empty a page list",
@@ -1344,7 +1344,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
         assert!(reloaded, "bucket {routing_bucket} was released and refused to reload");
     }
 
-    let after = page_triples(&engine);
+    let after = block_triples(&engine);
 
     // ELEMENT BY ELEMENT, and the count is asserted too -- but only as well as, never instead of.
     assert_eq!(
@@ -1372,7 +1372,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
 }
 
 /// Every page's three names and its address identity, sorted, so two walks are comparable.
-fn page_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>, u64, u64)> {
+fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>, u64, u64)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut triples: Vec<(String, String, Option<String>, u64, u64)> =
@@ -1555,7 +1555,7 @@ fn the_two_derivations_of_the_report_byte_agree() {
 /// #1970. So the entry's type is the seventeen-element set, and this drives both retired rows
 /// through a decode to prove it.
 #[test]
-fn a_retired_spelling_still_decodes_into_a_page_entry() {
+fn a_retired_spelling_still_decodes_into_a_block_entry() {
     let mut seen = 0usize;
     for spelling in ["sequence", "context_embedding"] {
         // THE SPELLING IS NAMED IN THE KEY, which is where a stored index carries it now. The
@@ -1627,7 +1627,7 @@ fn a_retired_spelling_still_decodes_into_a_page_entry() {
 #[test]
 fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in_memory() {
     // What the entry encoded to when `model_id` was an `Arc<str>`, captured at b8b12d30 by
-    // `page_entry_names::capture_the_stored_spelling_of_a_page_entry`'s shape and re-derived here
+    // `page_entry_names::capture_the_stored_spelling_of_a_block_entry`'s shape and re-derived here
     // from an equal-valued map so the golden is the VALUE, not this type's own impl.
     let page = sample_entry();
 
@@ -1819,18 +1819,18 @@ mod tail_layout {
 
     /// The three flags as one byte behind masks. The shape #1968 took on `BucketNode`.
     #[derive(Debug, Clone, Copy, Default)]
-    pub(super) struct PageFlags(u8);
+    pub(super) struct BlockFlags(u8);
 
-    impl PageFlags {
+    impl BlockFlags {
         pub(super) const DIRTY: u8 = 1 << 0;
         pub(super) const DELETED: u8 = 1 << 1;
         pub(super) const LOG_BACKED: u8 = 1 << 2;
 
         pub(super) fn with(self, mask: u8, value: bool) -> Self {
             if value {
-                PageFlags(self.0 | mask)
+                BlockFlags(self.0 | mask)
             } else {
-                PageFlags(self.0 & !mask)
+                BlockFlags(self.0 & !mask)
             }
         }
 
@@ -1860,7 +1860,7 @@ mod tail_layout {
         pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
-        pub(super) flags: PageFlags,
+        pub(super) flags: BlockFlags,
     }
 
     /// Component as an ordinal.
@@ -1878,7 +1878,7 @@ mod tail_layout {
         pub(super) component: Option<NonZeroU16>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
-        pub(super) flags: PageFlags,
+        pub(super) flags: BlockFlags,
     }
 
     /// Both names as ordinals.
@@ -1896,7 +1896,7 @@ mod tail_layout {
         pub(super) component: Option<NonZeroU16>,
         pub(super) address: [u64; 4],
         pub(super) model: u8,
-        pub(super) flags: PageFlags,
+        pub(super) flags: BlockFlags,
     }
 
     /// The shape while the address was 24: both names as `Arc`s. It was TODAY until `object_id` left
@@ -1917,7 +1917,7 @@ mod tail_layout {
         pub(super) component: Option<Arc<str>>,
         pub(super) address: [u64; 3],
         pub(super) model: u8,
-        pub(super) flags: PageFlags,
+        pub(super) flags: BlockFlags,
     }
 
     /// TODAY: NO NAME AT ALL and the address at 16, after `object_id` stopped being a field and
@@ -1939,7 +1939,7 @@ mod tail_layout {
     pub(super) struct F1 {
         pub(super) address: [u64; 2],
         pub(super) model: u8,
-        pub(super) flags: PageFlags,
+        pub(super) flags: BlockFlags,
     }
 
     /// Both names as ordinals AND the address at 24, which a sibling thread owns.
@@ -1957,7 +1957,7 @@ mod tail_layout {
         pub(super) component: Option<NonZeroU16>,
         pub(super) address: [u64; 3],
         pub(super) model: u8,
-        pub(super) flags: PageFlags,
+        pub(super) flags: BlockFlags,
     }
 }
 
@@ -2055,16 +2055,16 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
     // so this feeds each mask a value set through a DIFFERENT one and requires false back.
     let mut checked = 0usize;
     for (name, set) in [
-        ("DIRTY", PageFlags::DIRTY),
-        ("DELETED", PageFlags::DELETED),
-        ("LOG_BACKED", PageFlags::LOG_BACKED),
+        ("DIRTY", BlockFlags::DIRTY),
+        ("DELETED", BlockFlags::DELETED),
+        ("LOG_BACKED", BlockFlags::LOG_BACKED),
     ] {
-        let flags = PageFlags::default().with(set, true);
+        let flags = BlockFlags::default().with(set, true);
         assert!(flags.get(set), "{name} set through its own mask reads false");
         for (other_name, other) in [
-            ("DIRTY", PageFlags::DIRTY),
-            ("DELETED", PageFlags::DELETED),
-            ("LOG_BACKED", PageFlags::LOG_BACKED),
+            ("DIRTY", BlockFlags::DIRTY),
+            ("DELETED", BlockFlags::DELETED),
+            ("LOG_BACKED", BlockFlags::LOG_BACKED),
         ] {
             if other == set {
                 continue;
@@ -2083,9 +2083,9 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
          would pass this test by checking nothing"
     );
     // The control on the control: a mask that DID alias must be caught. Planted, not assumed.
-    let aliasing = PageFlags::default().with(PageFlags::DIRTY | PageFlags::DELETED, true);
+    let aliasing = BlockFlags::default().with(BlockFlags::DIRTY | BlockFlags::DELETED, true);
     assert!(
-        aliasing.get(PageFlags::DELETED),
+        aliasing.get(BlockFlags::DELETED),
         "the planted aliasing value must read true through the other mask, or the check above \
          cannot fail when the masks really do alias"
     );
@@ -2142,12 +2142,12 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     let shard = shards.get(&1).expect("shard is loaded");
     let mut zero_length_live = 0usize;
     let mut nonzero_length_live = 0usize;
-    let mut deleted_pages = 0usize;
+    let mut deleted_blocks = 0usize;
     let named = super::PageObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, page) in bucket.block_index.iter() {
             if page.deleted {
-                deleted_pages += 1;
+                deleted_blocks += 1;
                 continue;
             }
             if page.address.length() == 0 {
@@ -2166,7 +2166,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     let nonempty_length = shard.string_address("nonempty").map(|address| address.length());
     println!(
         "\n=== is `deleted` derivable from a zero length? ===\n  live zero-length \
-         {zero_length_live}, live non-zero {nonzero_length_live}, delete-marked {deleted_pages}\n  \
+         {zero_length_live}, live non-zero {nonzero_length_live}, delete-marked {deleted_blocks}\n  \
          model-map lengths: empty value {empty_length:?}, 32-byte value {nonempty_length:?}"
     );
 

@@ -203,7 +203,7 @@ fn mip_load(engine: &TemporalEngine, end_routing_bucket: u32) {
 }
 
 /// Pages per bucket, as the shard holds them right now.
-fn pages_by_bucket(engine: &TemporalEngine) -> std::collections::BTreeMap<u32, usize> {
+fn blocks_by_bucket(engine: &TemporalEngine) -> std::collections::BTreeMap<u32, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&MIP_SHARD).expect("shard is loaded");
     shard
@@ -309,7 +309,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         }
         assert_eq!(acked, arm.records, "DENOMINATOR: the seed did not ack every record");
 
-        let before = pages_by_bucket(&engine);
+        let before = blocks_by_bucket(&engine);
         let pages_before: usize = before.values().sum();
         assert!(
             pages_before > 0,
@@ -334,7 +334,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
             );
         }
 
-        let after = pages_by_bucket(&engine);
+        let after = blocks_by_bucket(&engine);
         let tombs = tombstones_by_bucket(&engine);
         let pages_after: usize = after.values().sum();
         let tombs_total: usize = tombs.values().sum();

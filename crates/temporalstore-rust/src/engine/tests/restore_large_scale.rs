@@ -509,7 +509,7 @@ struct Restart {
     /// Page bytes the block store handed back during the restore, and the reads that fetched
     /// them. The fourth named reader, and the one the first draft of this file was missing --
     /// which is what a residual that can be wrong is for.
-    page_bytes_read: u64,
+    block_bytes_read: u64,
     page_reads: u64,
     /// The promotion check's borrow-only walk: how many times it ran, how many of those
     /// REBUILT, and how many live model-map pages it walked. The 4.0 allocations a page and
@@ -517,7 +517,7 @@ struct Restart {
     /// count, and it is what makes them checkable at a size nobody has run them at.
     promote_checks: u64,
     promote_rebuilds: u64,
-    promote_pages: u64,
+    promote_blocks: u64,
     /// Allocations the span made and did not free, and the bytes of them. A restore runs in
     /// a process that has just built the corpus, so the allocator serves most of it out of
     /// memory it already holds and process RSS understates what the restore takes. This is
@@ -564,7 +564,7 @@ impl Restart {
         self.wal_bytes_read
             + self.manifest_bytes_read
             + self.index_log_bytes_read
-            + self.page_bytes_read
+            + self.block_bytes_read
     }
 
     /// THE INDEPENDENT RESIDUAL: what the kernel handed this process during the restore, minus
@@ -625,7 +625,7 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
     let index_log_after = engine.index_log_store().stats(1);
     // BEFORE the probe reads below, which would charge their own page reads to the restore.
     let pages_after = engine.block_store().stats();
-    let (promote_checks, promote_rebuilds, promote_pages) = promote_model_map_check_counts();
+    let (promote_checks, promote_rebuilds, promote_blocks) = promote_model_map_check_counts();
     let mut readable = 0usize;
     let mut probe = 0usize;
     while probe < PROBE_READS {
@@ -656,13 +656,13 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
             .bytes_read
             .saturating_sub(index_log_before.bytes_read),
         index_log_reads: index_log_after.reads.saturating_sub(index_log_before.reads),
-        page_bytes_read: pages_after
+        block_bytes_read: pages_after
             .bytes_read
             .saturating_sub(pages_before.bytes_read),
         page_reads: pages_after.reads.saturating_sub(pages_before.reads),
         promote_checks,
         promote_rebuilds,
-        promote_pages,
+        promote_blocks,
         net_heap_allocs: classified.map(|c| c.total.outstanding()).unwrap_or(0),
         net_heap_bytes: classified
             .map(|c| c.total.alloc_bytes as i64 - c.total.free_bytes as i64)
@@ -822,7 +822,7 @@ fn describe(report: &mut Report, label: &str, restart: &Restart) {
         restart.manifest_file_reads,
         restart.index_log_bytes_read,
         restart.index_log_reads,
-        restart.page_bytes_read,
+        restart.block_bytes_read,
         restart.page_reads,
         restart.read_residual_bytes().unwrap_or(-1),
     ));
@@ -845,8 +845,8 @@ fn describe(report: &mut Report, label: &str, restart: &Restart) {
          live model-map pages -- {:.4} per stored record",
         restart.promote_checks,
         restart.promote_rebuilds,
-        restart.promote_pages,
-        restart.promote_pages as f64 / corpus.records as f64,
+        restart.promote_blocks,
+        restart.promote_blocks as f64 / corpus.records as f64,
     ));
     report.say(format!(
         "  WALK     decoded {} records, {} of them ({:.0}%) already covered by the checkpoint",
@@ -1068,8 +1068,8 @@ fn what_bringing_a_large_shard_back_costs_at_two_corpus_sizes() {
         );
         flat(
             &format!("the promotion check's pages walked ({})", suffix.short()),
-            small.per_record(small.promote_pages),
-            large.per_record(large.promote_pages),
+            small.per_record(small.promote_blocks),
+            large.per_record(large.promote_blocks),
             0.10,
         );
         // THE ENGINE'S OWN VIEW OF WHAT REPLAY READ -- the half of the finding that makes the
@@ -1252,7 +1252,7 @@ fn summarise(report: &mut Report, arms: &[Restart]) {
             large.manifest_checksum_bytes,
         );
         row("index-log bytes read", small.index_log_bytes_read, large.index_log_bytes_read);
-        row("page bytes read", small.page_bytes_read, large.page_bytes_read);
+        row("page bytes read", small.block_bytes_read, large.block_bytes_read);
         row("page reads", small.page_reads, large.page_reads);
         row(
             "bytes read, attributed",
@@ -1267,7 +1267,7 @@ fn summarise(report: &mut Report, arms: &[Restart]) {
             small.corpus.wal_bytes + small.corpus.index_log_bytes,
             large.corpus.wal_bytes + large.corpus.index_log_bytes,
         );
-        row("promotion-check pages walked", small.promote_pages, large.promote_pages);
+        row("promotion-check pages walked", small.promote_blocks, large.promote_blocks);
         row(
             "net heap bytes not freed",
             small.net_heap_bytes.max(0) as u64,

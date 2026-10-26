@@ -2661,7 +2661,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// whose eight parts is the generation. A row already on disk whose handle was omitted under the old
 /// rule therefore rebuilds to a DIFFERENT handle, and the page is then looked up under a key nothing
 /// wrote: a durably acknowledged write reads MISSING. See
-/// `page_entry_names::an_omitted_page_handle_restores_to_a_different_key_under_the_new_generation_rule`.
+/// `page_entry_names::an_omitted_block_handle_restores_to_a_different_key_under_the_new_generation_rule`.
 ///
 /// # THE RESERVATION OF 4 IS VOID, AND IS VOIDED HERE RATHER THAN SILENTLY
 ///
@@ -2836,7 +2836,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 ///     two extra keys are dropped by the named decoder, silently, and the reconstruction reads the
 ///     SAME two values out of the key beside them -- so an old index decodes to exactly the index
 ///     it decoded to before. That is not assumed: `page_entry_names`'s `OLD_STORE_INDEX` is bytes a
-///     pre-change binary wrote, and `an_index_written_before_this_change_loads_page_for_page`
+///     pre-change binary wrote, and `an_index_written_before_this_change_loads_block_for_block`
 ///     compares every page of it field by field against a committed table.
 ///   * AN OLD BINARY READING NEW BYTES IS WHAT THE STAMP IS SPENT ON, and the msgpack container
 ///     refuses on EQUALITY in its header before decoding anything -- so 27 makes that refusal
@@ -6288,7 +6288,7 @@ fn mark_bucket_index_block_deleted_recording(
     // The `retain` matches `page.component.as_deref() == component`, and a page-named entry has no
     // component, so a gated removal matches NOTHING: `removed` stays false, `tombstone_bucket` is
     // never set, and the tombstone page -- already appended, correct and decodable -- is named by
-    // nothing at all. `a_gated_removal_leaves_a_tombstone_page_the_index_can_reach` measured that
+    // nothing at all. `a_gated_removal_leaves_a_tombstone_block_the_index_can_reach` measured that
     // state before this branch existed: one live entry before AND after the removal, zero
     // tombstoned, and a fold of every page the index names still holding the removed member while
     // reporting itself COMPLETE -- because an unreachable page is never read and so is never
@@ -7322,7 +7322,7 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// could be absent, stale, or from somewhere else.
 ///
 /// THE IDENTITY IS DERIVED, NOT READ OFF THE ADDRESS, and the two agree.
-/// `engine::tests::address_footprint::the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it`
+/// `engine::tests::address_footprint::the_object_id_on_a_live_block_entry_is_the_hash_of_fields_beside_it`
 /// walks every live block entry at two corpus sizes and compares the stored id to
 /// `stable_block_object_id(shard, kind, key)`: 2,524 of 2,524 and 20,632 of 20,632 agree, none
 /// differ, none absent. That measurement is what makes taking the derived value here a no-op rather

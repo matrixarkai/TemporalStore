@@ -115,7 +115,7 @@ fn folded_set(object_key: &str) -> (TemporalEngine, tempfile::TempDir) {
 }
 
 /// Distinct page addresses and LIVE index entries this object resolves to, plus tombstoned ones.
-fn page_and_entry_counts(
+fn block_and_entry_counts(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> (usize, usize, usize) {
@@ -150,7 +150,7 @@ fn page_and_entry_counts(
 /// Every element key a live page of this object still states as PRESENT, read off the bytes.
 ///
 /// This is the other source. The point of the absence arm is that it disagrees with the listing.
-fn components_the_pages_still_state(
+fn components_the_blocks_still_state(
     engine: &TemporalEngine,
     object_key: &str,
 ) -> std::collections::BTreeSet<String> {
@@ -194,7 +194,7 @@ fn components_the_pages_still_state(
 
 /// The addresses of this object's LIVE pages, captured so they can still be read after the index
 /// entry that names them is gone.
-fn live_page_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<ElementEntry> {
+fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<ElementEntry> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let named = super::PageObjects::of(&shard.bucket_index);
@@ -217,7 +217,7 @@ fn live_page_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<Element
 /// block store rather than through the index.
 ///
 /// IT HAS TO BYPASS THE INDEX, which is the whole reason it exists beside
-/// `components_the_pages_still_state`: `drop_live_entries` removes the index ENTRY and leaves the
+/// `components_the_blocks_still_state`: `drop_live_entries` removes the index ENTRY and leaves the
 /// block, so a page it un-names cannot be reached through `block_index` at all. Reading addresses
 /// captured beforehand is what lets an arm say the bytes outlived the name.
 fn components_at(
@@ -309,7 +309,7 @@ fn all_members() -> Vec<Vec<u8>> {
 #[test]
 fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     let (engine, _dir) = folded_set("listing/whole");
-    let (pages, live, tombstoned) = page_and_entry_counts(&engine, "listing/whole");
+    let (pages, live, tombstoned) = block_and_entry_counts(&engine, "listing/whole");
     println!(
         "[presence] {pages} distinct page(s), {live} live entr(ies), {tombstoned} tombstoned, \
          for {MEMBERS} members"
@@ -325,7 +325,7 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     // pages. That compares two independent artefacts -- the index's page count, and the bytes
     // inside those pages -- and the UNFOLDED shape FAILS it, at MEMBERS pages stating MEMBERS
     // members, which is what makes this a measurement of the fold rather than a restatement of it.
-    let stated = components_the_pages_still_state(&engine, "listing/whole");
+    let stated = components_the_blocks_still_state(&engine, "listing/whole");
     assert_eq!(
         MEMBERS,
         stated.len(),
@@ -364,7 +364,7 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
 /// A reader enumerating the payload answers with the removed member. A reader taking identity from
 /// the live entries cannot.
 #[test]
-fn a_member_removed_after_the_fold_is_not_listed_even_though_its_page_still_states_it() {
+fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_states_it() {
     let (engine, _dir) = folded_set("listing/removed");
     let victim = member_bytes(2);
     write_to(
@@ -375,14 +375,14 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_page_still_stat
         },
     );
 
-    let (pages, live, tombstoned) = page_and_entry_counts(&engine, "listing/removed");
+    let (pages, live, tombstoned) = block_and_entry_counts(&engine, "listing/removed");
     println!(
         "[absence] after fold+remove: {pages} live page(s), {live} live entr(ies), \
          {tombstoned} tombstoned"
     );
 
     // THE TWO SOURCES MUST DISAGREE, OR THIS ARM PROVES NOTHING.
-    let stated = components_the_pages_still_state(&engine, "listing/removed");
+    let stated = components_the_blocks_still_state(&engine, "listing/removed");
     let victim_component = hex::encode(&victim);
     assert!(
         stated.contains(&victim_component),
@@ -442,7 +442,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
 
     // ONE ENTRY A PAGE IS THE PREMISE, so it is asserted rather than assumed. If a set ever went
     // back to an entry per element this reads MEMBERS and the whole-page reasoning stops applying.
-    let (pages_before, live_before, _) = page_and_entry_counts(&engine, "listing/one-name-gone");
+    let (pages_before, live_before, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
     assert_eq!(
         1, live_before,
         "the folded object holds {live_before} live entr(ies) over {pages_before} page(s). One \
@@ -452,7 +452,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
 
     // Captured BEFORE the drop, because an un-named page is unreachable through the index: the
     // control below has to read these addresses straight off the block store.
-    let addresses = live_page_addresses(&engine, "listing/one-name-gone");
+    let addresses = live_block_addresses(&engine, "listing/one-name-gone");
     assert_eq!(
         pages_before,
         addresses.len(),
@@ -462,7 +462,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
 
     let dropped = drop_live_entries(&engine, "listing/one-name-gone", 1);
     assert_eq!(1, dropped, "the fixture dropped {dropped} entries, not one");
-    let (pages, live, _) = page_and_entry_counts(&engine, "listing/one-name-gone");
+    let (pages, live, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
     assert_eq!(
         (0usize, 0usize),
         (pages, live),
@@ -558,7 +558,7 @@ fn reopened_set(object_key: &str, fold: bool) -> (TemporalEngine, tempfile::Temp
 /// one place a page read past the cache is noted -- and a count is unaffected by the load it was
 /// taken under.
 #[test]
-fn what_the_fold_is_worth_to_a_listing_that_decodes_each_page_once() {
+fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
     println!(
         "\nload average: {}",
         std::fs::read_to_string("/proc/loadavg")
@@ -570,7 +570,7 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_page_once() {
     for (label, fold) in [("unfolded", false), ("folded", true)] {
         let key = format!("cost/{label}");
         let (engine, _dir) = reopened_set(&key, fold);
-        let (pages, live, _) = page_and_entry_counts(&engine, &key);
+        let (pages, live, _) = block_and_entry_counts(&engine, &key);
         let (listed, reads) = page_reads_of(|| listed_members(&engine, &key));
         assert_eq!(
             all_members(),

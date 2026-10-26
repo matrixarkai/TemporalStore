@@ -31,7 +31,7 @@
 //! So the distinction this file was built on -- a ROUTED block, placed by its own address, against an
 //! UNROUTED one, placed by the argument -- has collapsed into one case. Every block is placed by the
 //! argument, and the tests below measure that rather than the difference between two populations
-//! that no longer exist. `neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range`
+//! that no longer exist. `neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range`
 //! is what used to be the asymmetry measurement, inverted.
 //!
 //! # MIGRATION, DRIVEN RATHER THAN ARGUED
@@ -287,7 +287,7 @@ fn page_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
 ///
 /// rust-internal: reads the engine's own rebuilds, no product behaviour
 #[test]
-fn neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range() {
+fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
     let mut observed: BTreeMap<(u32, &str), BTreeMap<u32, Vec<String>>> = BTreeMap::new();
     for rebuild_end in [NARROW_END, WIDE_END] {
         for (rebuild, is_ownership) in [("ownership", true), ("first_index", false)] {
@@ -394,7 +394,7 @@ fn neither_rebuild_can_drop_a_page_because_every_bucket_is_derived_in_range() {
 ///
 /// rust-internal: reads the engine's own write path, no product behaviour
 #[test]
-fn every_page_the_live_write_path_files_lands_inside_the_shards_range() {
+fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
     for end_routing_bucket in [NARROW_END, WIDE_END] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -475,7 +475,7 @@ fn every_page_the_live_write_path_files_lands_inside_the_shards_range() {
 ///
 /// rust-internal: reads the engine's own flush path, no product behaviour
 #[test]
-fn the_production_flush_files_every_page_where_the_shards_own_range_puts_it() {
+fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
     for end_routing_bucket in [NARROW_END, WIDE_END] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -577,7 +577,7 @@ fn the_production_flush_files_every_page_where_the_shards_own_range_puts_it() {
 ///
 /// rust-internal: reads the engine's own rebuild, no product behaviour
 #[test]
-fn every_page_changes_bucket_with_the_range_because_the_range_decides_every_placement() {
+fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_placement() {
     /// Build the fixture, rebuild on `rebuild_end`, and return what each bucket holds.
     fn contents_after(rebuild_end: u32) -> BTreeMap<u32, Vec<String>> {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -696,7 +696,7 @@ fn every_page_changes_bucket_with_the_range_because_the_range_decides_every_plac
 ///
 /// rust-internal: reads the engine's own validation, no product behaviour
 #[test]
-fn the_ownership_report_names_a_page_filed_where_its_key_does_not_route() {
+fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
     use crate::engine::storage_bucket_internals::validate_bucket_ownership_index_from_entries;
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -731,23 +731,23 @@ fn the_ownership_report_names_a_page_filed_where_its_key_does_not_route() {
     let moved_to = (0..=NARROW_END)
         .find(|candidate| !shard.bucket_index.bucket_map.contains_key(candidate) && *candidate != moved_from)
         .expect("some bucket is free");
-    let pages_moved = node.block_index.len();
+    let blocks_moved = node.block_index.len();
     shard.bucket_index.bucket_map.insert(
         moved_to,
         crate::engine::state::BucketNode { routing_bucket: moved_to, ..node },
     );
-    assert!(pages_moved > 0, "the move carried no page");
+    assert!(blocks_moved > 0, "the move carried no page");
 
     let entries = collect_live_block_entries(shard);
     let after = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
     println!(
-        "  moved {pages_moved} page(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
+        "  moved {blocks_moved} page(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
         after.mismatches.len()
     );
     assert_eq!(
-        pages_moved,
+        blocks_moved,
         after.mismatches.len(),
-        "the report named {} of {pages_moved} moved page(s). A page filed where its key does not \
+        "the report named {} of {blocks_moved} moved page(s). A page filed where its key does not \
          route is what this check exists to find, and it is the only comparison on this path with \
          two independent sides.",
         after.mismatches.len()
@@ -790,7 +790,7 @@ fn the_ownership_report_names_a_page_filed_where_its_key_does_not_route() {
 ///
 /// rust-internal: drives the engine's own manifest install, no product behaviour
 #[test]
-fn a_manifest_installed_on_a_narrower_shard_keeps_every_page() {
+fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
     const RECORDS: usize = 200;
 
     let source_dir = tempfile::tempdir().expect("tempdir");

@@ -24,7 +24,7 @@
 //!   * `key-restates-the-entry` is retired and `address-restates-the-key` stands in its place --
 //!     the surviving duplication runs the other way.
 //!   * `the_page_keys_characters_are_not_read_back_by_the_decoder` is
-//!     `the_page_keys_characters_are_read_back_by_the_decoder_now`: a handle-keyed page index is
+//!     `the_block_keys_characters_are_read_back_by_the_decoder_now`: a handle-keyed page index is
 //!     REFUSED where it used to decode byte-identically.
 //!
 //! AND THE THIRD FIELD DID NOT GO. `address` is still written twice and will stay: its five VALUES
@@ -277,7 +277,7 @@ fn key_text(ordinal: usize, width: usize, shape: KeyShape) -> String {
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 enum Scale {
     /// One instance per stored page. The page count is asserted against the object count.
-    PerPage,
+    PerBlock,
     /// One instance per resident bucket.
     PerBucket,
     /// One instance in the whole index.
@@ -287,7 +287,7 @@ enum Scale {
 impl Scale {
     fn label(self) -> &'static str {
         match self {
-            Scale::PerPage => "per-page",
+            Scale::PerBlock => "per-page",
             Scale::PerBucket => "per-bucket",
             Scale::PerShard => "per-shard",
         }
@@ -365,74 +365,74 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("node/page_index/field_name", Scale::PerBucket, Nature::Envelope, ""),
     ("page_index/open_brace", Scale::PerBucket, Nature::Envelope, ""),
     // ---- per-page: the composite map key, split into the eight slots it composes ----
-    ("page/map_key_quotes", Scale::PerPage, Nature::Envelope, ""),
+    ("page/map_key_quotes", Scale::PerBlock, Nature::Envelope, ""),
     // AND THESE TWO STOPPED BEING REDUNDANCY, WHICH IS THE WHOLE OF WHAT THIS MODULE'S HEADLINE
     // PROPOSAL BOUGHT. They were classed `Redundancy` with the entry's own fields named as their
     // reconstructor, because the entry wrote both again. It does not: the decoder parses them out
     // of this key now (`index_log::block_ref_key_parts`), so the key is the ONLY copy and the only
     // copy of a fact a reader needs is `Identity`. A term is only `Redundancy` where a
     // reconstructor is NAMED, and there is nothing left to name.
-    ("page/map_key/kind", Scale::PerPage, Nature::Identity, ""),
-    ("page/map_key/object_key", Scale::PerPage, Nature::Identity, ""),
+    ("page/map_key/kind", Scale::PerBlock, Nature::Identity, ""),
+    ("page/map_key/object_key", Scale::PerBlock, Nature::Identity, ""),
     (
         "page/map_key/component_slot",
-        Scale::PerPage,
+        Scale::PerBlock,
         Nature::Envelope,
         "",
     ),
     (
         "page/map_key/block_slab_id",
-        Scale::PerPage,
+        Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.a` word, high half",
     ),
     (
         "page/map_key/offset",
-        Scale::PerPage,
+        Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.a` word, low half",
     ),
     (
         "page/map_key/length",
-        Scale::PerPage,
+        Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.l` slot",
     ),
     (
         "page/map_key/block_id",
-        Scale::PerPage,
+        Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.pi` slot",
     ),
     (
         "page/map_key/generation",
-        Scale::PerPage,
+        Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.g` slot",
     ),
-    ("page/map_key/separators", Scale::PerPage, Nature::Envelope, ""),
-    ("page/map_key/empty_slot_separator", Scale::PerPage, Nature::Envelope, ""),
-    ("page/map_key_colon", Scale::PerPage, Nature::Envelope, ""),
-    ("page/map_entry_tail", Scale::PerPage, Nature::Envelope, ""),
+    ("page/map_key/separators", Scale::PerBlock, Nature::Envelope, ""),
+    ("page/map_key/empty_slot_separator", Scale::PerBlock, Nature::Envelope, ""),
+    ("page/map_key_colon", Scale::PerBlock, Nature::Envelope, ""),
+    ("page/map_entry_tail", Scale::PerBlock, Nature::Envelope, ""),
     // ---- per-page: the entry the key is filed against ----
-    ("entry/open_brace", Scale::PerPage, Nature::Envelope, ""),
-    ("entry/field_tails", Scale::PerPage, Nature::Envelope, ""),
+    ("entry/open_brace", Scale::PerBlock, Nature::Envelope, ""),
+    ("entry/field_tails", Scale::PerBlock, Nature::Envelope, ""),
     // `entry/object_key` AND `entry/model_id` ARE GONE FROM THIS TABLE BECAUSE THEY ARE GONE FROM
     // THE INDEX. They were 30.0 and 20.0 B/object of stream and the two cheapest halves of the
     // 104.0 this module priced; the entry writes three keys now. Deleted rather than left at zero:
     // `Tally::add` panics on a label the table does not declare, so a term kept here would be a
     // term something could still be charged to, and `the_slot_index_term_table_is_well_formed`
     // asserts every declared term is non-zero except the one named structurally empty.
-    ("entry/address/field_name", Scale::PerPage, Nature::Envelope, ""),
-    ("entry/address/open_brace", Scale::PerPage, Nature::Envelope, ""),
-    ("entry/address/field_tails", Scale::PerPage, Nature::Envelope, ""),
-    ("entry/address/a", Scale::PerPage, Nature::Identity, ""),
-    ("entry/address/l", Scale::PerPage, Nature::Payload, ""),
-    ("entry/address/pi", Scale::PerPage, Nature::Identity, ""),
-    ("entry/address/oi", Scale::PerPage, Nature::Identity, ""),
-    ("entry/address/g", Scale::PerPage, Nature::Identity, ""),
-    ("entry/dirty", Scale::PerPage, Nature::Payload, ""),
-    ("entry/deleted", Scale::PerPage, Nature::Payload, ""),
+    ("entry/address/field_name", Scale::PerBlock, Nature::Envelope, ""),
+    ("entry/address/open_brace", Scale::PerBlock, Nature::Envelope, ""),
+    ("entry/address/field_tails", Scale::PerBlock, Nature::Envelope, ""),
+    ("entry/address/a", Scale::PerBlock, Nature::Identity, ""),
+    ("entry/address/l", Scale::PerBlock, Nature::Payload, ""),
+    ("entry/address/pi", Scale::PerBlock, Nature::Identity, ""),
+    ("entry/address/oi", Scale::PerBlock, Nature::Identity, ""),
+    ("entry/address/g", Scale::PerBlock, Nature::Identity, ""),
+    ("entry/dirty", Scale::PerBlock, Nature::Payload, ""),
+    ("entry/deleted", Scale::PerBlock, Nature::Payload, ""),
 ];
 
 /// The one term that is structurally empty and is asserted EXACTLY zero rather than non-zero.
@@ -525,7 +525,7 @@ impl Tally {
 ///
 /// Named as a list rather than matched by a prefix so that a term added under `page/` later has to
 /// be put in or left out ON PURPOSE. [`Tally::sum_of`] refuses a member that was not charged.
-const PAGE_KEY_TERMS: &[&str] = &[
+const BLOCK_KEY_TERMS: &[&str] = &[
     "page/map_key_quotes",
     "page/map_key/kind",
     "page/map_key/object_key",
@@ -895,7 +895,7 @@ struct Walked {
     /// The bytes of every `page_index` VALUE, summed over buckets and measured directly off the
     /// JSON rather than from the tally. The second, independent identity: a term charged at the
     /// bucket level that belongs at the page level balances the whole and breaks this.
-    page_subtree_bytes: usize,
+    block_subtree_bytes: usize,
     /// Pages whose written key was rebuilt from the entry's own written bytes, character for
     /// character.
     keys_reconstructed: usize,
@@ -959,7 +959,7 @@ fn walk(reading: &Reading) -> Walked {
     );
     tally.add("bucket_map/open_brace", 1, 0);
 
-    let mut page_subtree_bytes = 0usize;
+    let mut block_subtree_bytes = 0usize;
     let mut keys_reconstructed = 0usize;
     let mut slots_reconstructed = 0usize;
     let mut nil_object_id_slots = 0usize;
@@ -1017,7 +1017,7 @@ fn walk(reading: &Reading) -> Walked {
         let page_index = node
             .get("page_index")
             .expect("a bucket node writes `page_index`");
-        page_subtree_bytes += jlen(page_index);
+        block_subtree_bytes += jlen(page_index);
         let pages = page_index.as_object().expect("the page index writes an object");
         assert!(
             !pages.is_empty(),
@@ -1180,7 +1180,7 @@ fn walk(reading: &Reading) -> Walked {
 
     Walked {
         tally,
-        page_subtree_bytes,
+        block_subtree_bytes,
         keys_reconstructed,
         slots_reconstructed,
         buckets_whose_object_index_is_derivable,
@@ -1236,7 +1236,7 @@ fn report(reading: &Reading, walked: &Walked) {
 
     println!();
     println!("  BY SCALE");
-    for scale in [Scale::PerPage, Scale::PerBucket, Scale::PerShard] {
+    for scale in [Scale::PerBlock, Scale::PerBucket, Scale::PerShard] {
         let bytes = tally.at_scale(scale);
         println!(
             "    {:<12} {:>12} B  {:>9.3} B/object  {:>6.2}%",
@@ -1304,9 +1304,9 @@ enum Candidate {
     Control,
     /// The page index is keyed by the handle the LIVE map already keys it by, rendered as a
     /// decimal, in place of the composite.
-    PageKeyBecomesTheHandle,
+    BlockKeyBecomesTheHandle,
     /// The composite loses the slot that is always empty, and the separator that delimits it.
-    PageKeyDropsTheEmptySlot,
+    BlockKeyDropsTheEmptySlot,
     /// The entry loses `address`, whose five values its own map key spells.
     ///
     /// Priced and BLOCKED, and the reason is not a scope decision. The five VALUES are in the key;
@@ -1331,8 +1331,8 @@ impl Candidate {
     fn label(self) -> &'static str {
         match self {
             Candidate::Control => "control: nothing removed",
-            Candidate::PageKeyBecomesTheHandle => "page key -> the live map's handle",
-            Candidate::PageKeyDropsTheEmptySlot => "page key -> drop the always-empty slot",
+            Candidate::BlockKeyBecomesTheHandle => "page key -> the live map's handle",
+            Candidate::BlockKeyDropsTheEmptySlot => "page key -> drop the always-empty slot",
             Candidate::EntryDropsAddress => "entry -> drop `address` (BLOCKED)",
             Candidate::AddressDropsTheAlwaysNilSlot => "address -> drop the always-nil `oi` slot",
         }
@@ -1370,7 +1370,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                     Candidate::Control
                     | Candidate::EntryDropsAddress
                     | Candidate::AddressDropsTheAlwaysNilSlot => page_key.clone(),
-                    Candidate::PageKeyBecomesTheHandle => reading
+                    Candidate::BlockKeyBecomesTheHandle => reading
                         .handles_by_written_key
                         .get(page_key)
                         .unwrap_or_else(|| {
@@ -1380,7 +1380,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                             )
                         })
                         .to_string(),
-                    Candidate::PageKeyDropsTheEmptySlot => {
+                    Candidate::BlockKeyDropsTheEmptySlot => {
                         let slots = split_written_key(page_key);
                         assert!(
                             slots.component.is_empty(),
@@ -1418,8 +1418,8 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                         );
                     }
                     Candidate::Control
-                    | Candidate::PageKeyBecomesTheHandle
-                    | Candidate::PageKeyDropsTheEmptySlot => {}
+                    | Candidate::BlockKeyBecomesTheHandle
+                    | Candidate::BlockKeyDropsTheEmptySlot => {}
                 }
                 assert!(
                     replacement.insert(new_key.clone(), entry).is_none(),
@@ -1485,7 +1485,7 @@ fn the_slot_index_term_table_is_well_formed() {
     }
     assert_eq!(
         declared(STRUCTURALLY_EMPTY).0,
-        Scale::PerPage,
+        Scale::PerBlock,
         "[CLAUSE table-unique] the structurally empty term must be a per-page one, or the \
          exemption below exempts the wrong thing"
     );
@@ -1565,7 +1565,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     // THIS IS THE ONE THAT CATCHES A TERM CHARGED AT THE WRONG LEVEL. `bucket_map` is bucket-keyed
     // and the `page_index` inside it is page-keyed at 7.81 entries a bucket, so a term moved
     // between those two levels is wrong by that factor and the whole still balances.
-    let page_level: usize = tally
+    let block_level: usize = tally
         .rows
         .iter()
         .filter(|entry| {
@@ -1577,11 +1577,11 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         .map(|entry| entry.1.bytes)
         .sum();
     assert_eq!(
-        page_level, walked.page_subtree_bytes,
-        "[CLAUSE part-sum-page-subtree] the page-level terms charge {page_level} B against {} B of \
+        block_level, walked.block_subtree_bytes,
+        "[CLAUSE part-sum-page-subtree] the page-level terms charge {block_level} B against {} B of \
          written page index, so a term is charged at the bucket level that belongs at the page \
          level or the reverse -- the error the bucket-keyed NAME of this structure invites",
-        walked.page_subtree_bytes
+        walked.block_subtree_bytes
     );
 
     // ---- EVERY DECLARED TERM WAS CHARGED, AND EVERY CHARGED TERM IS NON-ZERO ----
@@ -1661,7 +1661,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     // address -- and the reconstruction above was asserted in the direction that matters: the key
     // is rebuildable from the entry. So a page can be written with the key or with the fields, and
     // the two sides are NOT the same price, which is the whole point of pricing them apart.
-    let key_side = tally.sum_of(PAGE_KEY_TERMS);
+    let key_side = tally.sum_of(BLOCK_KEY_TERMS);
     let entry_side = tally.sum_of(ENTRY_RESTATED_TERMS);
     let key_address = tally.sum_of(KEY_ADDRESS_TERMS);
     let entry_address = tally.sum_of(ENTRY_ADDRESS_TERMS);
@@ -1828,7 +1828,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
         for (label, row) in walked.tally.rows.iter() {
             let (scale, ..) = declared(label);
             let expected = match scale {
-                Scale::PerPage => reading.pages,
+                Scale::PerBlock => reading.pages,
                 Scale::PerBucket => reading.buckets,
                 Scale::PerShard => 1,
             };
@@ -1899,7 +1899,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     // ---- THE SLOPE BY SCALE, WHICH IS WHAT THE THREE CLASSES BUY ----
     println!();
     println!("================ THE SLOPE BY SCALE ================");
-    for scale in [Scale::PerPage, Scale::PerBucket, Scale::PerShard] {
+    for scale in [Scale::PerBlock, Scale::PerBucket, Scale::PerShard] {
         let at_small = small_walk.tally.at_scale(scale) as f64;
         let at_large = large_walk.tally.at_scale(scale) as f64;
         let slope = (at_large - at_small) / span;
@@ -1954,7 +1954,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
         "  {:<12} {:>14} {:>14} {:>14}",
         "scale", "lower half", "upper half", "division@top"
     );
-    for scale in [Scale::PerPage, Scale::PerBucket, Scale::PerShard] {
+    for scale in [Scale::PerBlock, Scale::PerBucket, Scale::PerShard] {
         println!(
             "  {:<12} {:>14.3} {:>14.3} {:>14.3}",
             scale.label(),
@@ -1986,12 +1986,12 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
 
     // THE PER-PAGE CLASS IS THE LINE. Its two half-slopes must agree: a per-page term whose cost
     // moved with the store would mean the per-object figure has no single value at all.
-    let page_lower = half_at_scale((small, small_walk), (middle, middle_walk), Scale::PerPage);
-    let page_upper = half_at_scale((middle, middle_walk), (large, large_walk), Scale::PerPage);
+    let block_lower = half_at_scale((small, small_walk), (middle, middle_walk), Scale::PerBlock);
+    let block_upper = half_at_scale((middle, middle_walk), (large, large_walk), Scale::PerBlock);
     assert!(
-        (page_lower - page_upper).abs() / page_upper < 0.05,
-        "[CLAUSE the-per-page-class-is-a-line] the per-page class grows {page_lower:.3} B/object \
-         over the lower half and {page_upper:.3} over the upper, so the class that is supposed to \
+        (block_lower - block_upper).abs() / block_upper < 0.05,
+        "[CLAUSE the-per-page-class-is-a-line] the per-page class grows {block_lower:.3} B/object \
+         over the lower half and {block_upper:.3} over the upper, so the class that is supposed to \
          be one cost per stored page is not"
     );
 
@@ -2028,7 +2028,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     {
         let whole = (high.0.slot_index_entry_bytes() as f64 - low.0.slot_index_entry_bytes() as f64)
             / (high.0.objects - low.0.objects) as f64;
-        let summed: f64 = [Scale::PerPage, Scale::PerBucket, Scale::PerShard]
+        let summed: f64 = [Scale::PerBlock, Scale::PerBucket, Scale::PerShard]
             .into_iter()
             .map(|scale| half_at_scale(low, high, scale))
             .sum();
@@ -2076,8 +2076,8 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
     // see the variant's own note. Pricing a block is what makes it a decision.
     const CANDIDATES: [Candidate; 5] = [
         Candidate::Control,
-        Candidate::PageKeyBecomesTheHandle,
-        Candidate::PageKeyDropsTheEmptySlot,
+        Candidate::BlockKeyBecomesTheHandle,
+        Candidate::BlockKeyDropsTheEmptySlot,
         Candidate::AddressDropsTheAlwaysNilSlot,
         Candidate::EntryDropsAddress,
     ];
@@ -2186,7 +2186,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
             // in the index and it is also the most COMPRESSIBLE one: sorted, sharing long
             // prefixes, and mostly decimal runs that repeat. The handle the live map already keys
             // the page by is a hash, so a stream that looks 19 B/object shorter lands LARGER.
-            if candidate == Candidate::PageKeyBecomesTheHandle {
+            if candidate == Candidate::BlockKeyBecomesTheHandle {
                 assert!(
                     container_saved <= 0,
                     "[CLAUSE the-key-is-free-on-the-artefact] re-keying the page index by its \
@@ -2255,7 +2255,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
         "  TWO THIRDS OF THAT HAS SINCE LANDED, which is why only three candidates are priced \
          above. `object_key` and `model_id` are off the entry at `SHARD_INDEX_FORMAT_VERSION` 27 \
          and the decoder PARSES the key -- the load-path change this module named as the whole \
-         cost. `the_page_keys_characters_are_read_back_by_the_decoder_now` is the same arm as the \
+         cost. `the_block_keys_characters_are_read_back_by_the_decoder_now` is the same arm as the \
          one that measured they were not, with its subject inverted."
     );
     println!(
@@ -2298,7 +2298,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
 /// `slot_index` must MOVE. Under the old behaviour that doctoring changed nothing at all, which is
 /// the whole difference this change makes, measured in one assertion.
 #[test]
-fn the_page_keys_characters_are_read_back_by_the_decoder_now() {
+fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     let reading = reading_on(2_000, PUBLISHED_WIDTH, KeyShape::Padded, SHIPPED_END_BUCKET);
     assert!(
         reading.buckets < reading.objects,
@@ -2342,7 +2342,7 @@ fn the_page_keys_characters_are_read_back_by_the_decoder_now() {
     );
 
     // ---- THE INVERSION: A HANDLE-KEYED PAGE INDEX IS REFUSED, NOT SILENTLY EQUAL ----
-    let rekeyed = try_the_decoder(&doctor(&reading, Candidate::PageKeyBecomesTheHandle));
+    let rekeyed = try_the_decoder(&doctor(&reading, Candidate::BlockKeyBecomesTheHandle));
     let refusal = match rekeyed {
         Ok(bytes) => panic!(
             "[CLAUSE page-key-is-read] re-keying every page index by its handle still DECODES, to \
@@ -2478,7 +2478,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
          ================",
         reading.objects, reading.buckets
     );
-    for scale in [Scale::PerPage, Scale::PerBucket, Scale::PerShard] {
+    for scale in [Scale::PerBlock, Scale::PerBucket, Scale::PerShard] {
         let bytes = walked.tally.at_scale(scale);
         println!(
             "  {:<12} {:>12} B  {:>9.3} B/object  {:>6.2}%",
@@ -2518,7 +2518,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
         "  {:<12} {:>16} {:>16} {:>14}",
         "scale", "0..u32::MAX", "0..1023", "difference"
     );
-    for scale in [Scale::PerPage, Scale::PerBucket, Scale::PerShard] {
+    for scale in [Scale::PerBlock, Scale::PerBucket, Scale::PerShard] {
         println!(
             "  {:<12} {:>16.3} {:>16.3} {:>14.3}",
             scale.label(),
@@ -2543,21 +2543,21 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
     // columns write the same objects in the same order, and a per-page term depends only on the
     // page's own key and address -- so the two totals are not merely close, they are the SAME
     // BYTES, and a tolerance wide enough to survive rounding is wider than drifts worth catching.
-    let page_unbounded_bytes = walked.tally.at_scale(Scale::PerPage);
-    let page_shipped_bytes = shipped_walk.tally.at_scale(Scale::PerPage);
+    let block_unbounded_bytes = walked.tally.at_scale(Scale::PerBlock);
+    let block_shipped_bytes = shipped_walk.tally.at_scale(Scale::PerBlock);
     assert_eq!(
-        page_unbounded_bytes, page_shipped_bytes,
-        "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {page_unbounded_bytes} B \
-         unbounded and {page_shipped_bytes} B on the shipped range for the SAME corpus -- a \
+        block_unbounded_bytes, block_shipped_bytes,
+        "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {block_unbounded_bytes} B \
+         unbounded and {block_shipped_bytes} B on the shipped range for the SAME corpus -- a \
          per-page term depends only on the page's own key and address, so a difference here means \
          one of them does not"
     );
-    let page_unbounded = per_object(page_unbounded_bytes);
-    let page_shipped = per_object(page_shipped_bytes);
+    let block_unbounded = per_object(block_unbounded_bytes);
+    let block_shipped = per_object(block_shipped_bytes);
     assert!(
-        (page_unbounded - page_shipped).abs() / page_shipped < 0.02,
-        "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {page_unbounded:.3} \
-         B/object unbounded and {page_shipped:.3} on the shipped range -- if it moves with the \
+        (block_unbounded - block_shipped).abs() / block_shipped < 0.02,
+        "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {block_unbounded:.3} \
+         B/object unbounded and {block_shipped:.3} on the shipped range -- if it moves with the \
          routing range then the fall between the two published columns is not the one class this \
          arm attributes it to"
     );

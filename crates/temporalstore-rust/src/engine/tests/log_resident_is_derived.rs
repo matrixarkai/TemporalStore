@@ -110,15 +110,15 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
     // THE CONTROL, and it is a REAL control now rather than a tautology. Comparing the accessor
     // against itself would assert nothing, so the control is that the accessor DISTINGUISHES the
     // two addresses -- a stuck `true` fails here.
-    let slab_page = BlockIndex { address: in_slab, ..tombstone.clone() };
+    let slab_block = BlockIndex { address: in_slab, ..tombstone.clone() };
     assert!(
-        !slab_page.log_backed(),
+        !slab_block.log_backed(),
         "a slab-backed block is not log-resident, so the accessor must say so -- and an accessor \
          that returned a constant would have passed the assertion above and fails here",
     );
     assert_ne!(
         tombstone.log_backed(),
-        slab_page.log_backed(),
+        slab_block.log_backed(),
         "the accessor must answer differently for the two addresses, which is what makes the arm \
          above a measurement of the address rather than of a constant",
     );

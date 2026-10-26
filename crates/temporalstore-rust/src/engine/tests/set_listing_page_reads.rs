@@ -61,13 +61,13 @@
 //! ## Serving from `shard.sets`
 //!
 //! The members ARE the keys of that map, resident and ordered, and walking them would read no page.
-//! `the_resident_set_map_and_the_live_page_index_are_not_the_same_population` drove why that was
+//! `the_resident_set_map_and_the_live_block_index_are_not_the_same_population` drove why that was
 //! refused: `reconcile_secondary_views_from_bucket_index` installs
 //! `shard.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
 //! DURABLE ELEMENT THE DERIVED VIEW COULD NOT PRODUCE, and it kept them without asking whether the
 //! page each named was still there. The map held members the page index did not, and a listing served
 //! from it would have returned them. `durable_outranks_derived`'s
-//! `a_carried_element_whose_page_the_fold_did_not_keep_is_not_restored` records the same hazard from
+//! `a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored` records the same hazard from
 //! the fold side and states the consequence in as many words: "It would then be served after being
 //! deleted."
 //!
@@ -246,12 +246,12 @@ fn page_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
 /// THE LISTING MUST BE COLD. `SetMembers` is wrapped in `cached_response`, which stores the whole
 /// answer under `CacheKey::set_members`, so a second listing of the same key reads nothing at all.
 /// Each key is listed exactly once here and
-/// `a_second_set_listing_reads_no_pages_at_all_because_the_answer_is_cached` states the other half
+/// `a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached` states the other half
 /// explicitly, so this module cannot be read as claiming the cost is paid per call.
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_set_listing_reads_one_page_per_member_and_a_zset_listing_reads_none() {
+fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
     let dir = tempfile::tempdir().expect("tempdir");
     let path_len = dir.path().as_os_str().len();
     let engine = engine_on(dir.path());
@@ -419,7 +419,7 @@ fn a_set_listing_reads_one_page_per_member_and_a_zset_listing_reads_none() {
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_second_set_listing_reads_no_pages_at_all_because_the_answer_is_cached() {
+fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -556,7 +556,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
             );
         }
 
-        let from_pages: BTreeSet<Vec<u8>> =
+        let from_blocks: BTreeSet<Vec<u8>> =
             members_returned(&read(&engine, Command::SetMembers { key: key.clone() }))
                 .into_iter()
                 .collect();
@@ -575,10 +575,10 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         // THE DENOMINATOR.
         assert_eq!(
             MEMBERS,
-            from_pages.len(),
+            from_blocks.len(),
             "the listing for {key} returned {} member(s), not the {MEMBERS} written -- an empty \
              or short answer makes the equalities below vacuous",
-            from_pages.len()
+            from_blocks.len()
         );
         assert!(
             pairs >= 1,
@@ -587,12 +587,12 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         );
 
         assert_eq!(
-            written, from_pages,
+            written, from_blocks,
             "the listing for {key} did not return what was written"
         );
         // THE FINDING, FIRST HALF: the bytes are in the payload.
         assert_eq!(
-            from_payload, from_pages,
+            from_payload, from_blocks,
             "the members decoded from the PAGE PAYLOAD differ from the members the listing \
              returns for {key}. The element key an item is filed under is the member in hex, so \
              these are the same bytes twice -- and since the entry stopped naming its element, the \
@@ -723,7 +723,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 ///
 /// rust-internal: calls the engine's own reconcile directly, then the command surface
 #[test]
-fn the_resident_set_map_and_the_live_page_index_are_not_the_same_population() {
+fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

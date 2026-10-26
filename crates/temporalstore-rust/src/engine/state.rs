@@ -1205,7 +1205,7 @@ pub(super) struct PageKeysByPosition<'a> {
     ///
     /// THAT STATE IS NOT HYPOTHETICAL AND IT IS NOT AN ERROR TO SWALLOW. It is precisely what
     /// `validate_bucket_ownership_index_from_entries` exists to find, and
-    /// `bucket_filing_range::the_ownership_report_names_a_page_filed_where_its_key_does_not_route`
+    /// `bucket_filing_range::the_ownership_report_names_a_block_filed_where_its_key_does_not_route`
     /// drives it: a node moved under a bucket its key does not route to must be NAMED, once per
     /// page. A walk that dropped those rows would hand the validator an empty set and the report
     /// would say the index is healthy.
@@ -2258,7 +2258,7 @@ pub(super) enum BlockIndexMap {
     /// allocation over `Many(vec![])` -- and it costs no width either, because it rides in the
     /// vector pointer's niche and the enum is exactly as wide as the list it holds. What it buys is
     /// that "this bucket holds nothing" has a name at every site that tests for it, including the
-    /// one the release lifecycle assigns. `the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep`
+    /// one the release lifecycle assigns. `the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep`
     /// asserts both halves of "free" and the release/reload round trip that depends on it.
     ///
     /// AN ALIAS, NOT A RELEASE MARKER. A released bucket has an empty block index, but what makes it
@@ -2306,9 +2306,9 @@ pub(super) enum BlockIndexMap {
     /// fills them: at 104 bytes a block that is a 1,248-byte node per eleven blocks, and the fill
     /// was measured at 63%. A block list is short, and the operations it actually takes are a
     /// lookup by handle, an ordered walk, and an insert -- none of which needs a tree's
-    /// rebalancing. `the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree` measures
+    /// rebalancing. `the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree` measures
     /// what the node costs against what the list costs at the real length distribution, and
-    /// `the_page_list_length_distribution_is_reported_as_a_histogram` publishes that distribution.
+    /// `the_block_list_length_distribution_is_reported_as_a_histogram` publishes that distribution.
     ///
     /// SORTED BY HANDLE, AND THAT IS NOT AN IMPLEMENTATION DETAIL. A `BTreeMap<u64, _>` iterates
     /// in ascending key order, and readers of this index depend on that: the index-log item
@@ -2319,14 +2319,14 @@ pub(super) enum BlockIndexMap {
     /// `bucket_store` takes the FIRST match. Keeping the list sorted by the same key the tree was
     /// keyed by makes every one of those readers see the identical sequence, which is why this is
     /// a container change and not a behaviour change.
-    /// `an_unsorted_page_list_would_reorder_every_walk_of_this_index` is the control: it builds
+    /// `an_unsorted_block_list_would_reorder_every_walk_of_this_index` is the control: it builds
     /// the same blocks in three different orders and asserts one walk, with a negative control
     /// showing that fill order and handle order genuinely differ.
     ///
     /// DUPLICATES ARE REPLACED, NOT APPENDED. A map deduplicated by construction; a list does
     /// not, so `insert_unaccounted` binary-searches and overwrites in place on a hit, returning
     /// the address it displaced so the live tally can discharge it.
-    /// `a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it` is the guard.
+    /// `a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it` is the guard.
     Many(Vec<(u64, BlockIndex)>),
 }
 
@@ -2540,7 +2540,7 @@ pub(super) fn find_page(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize,
 /// swapped a tree for a doubling vector would have spent the change and bought nothing. Stepping
 /// by four caps the waste at three entries, at the price of a reallocation every four inserts on
 /// a list that is tens of entries long.
-/// `the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement` measures both sides.
+/// `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement` measures both sides.
 ///
 /// FOUR AND NOT EIGHT, because most buckets are short. At 4,000 records on the configured range
 /// the measured distribution is p50 4, p90 6, MAX 8, and a step of eight would have charged a
@@ -3023,8 +3023,8 @@ impl BlockSlabLiveIndex {
     /// separate door rather than an early return in the one above.
     ///
     /// I SHIPPED THE OTHER ARRANGEMENT FIRST and skipped both halves.
-    /// `a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it` and
-    /// `replacing_a_page_discharges_the_address_it_displaced` both went red and named it exactly:
+    /// `a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it` and
+    /// `replacing_a_block_discharges_the_address_it_displaced` both went red and named it exactly:
     /// "a branch that reports none charges without discharging".
     pub(super) fn remove_address_unrecorded(&mut self, address: &ElementEntry) {
         BLOCK_SLAB_LIVE_CHARGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -3456,7 +3456,7 @@ impl BlockIndexMap {
                     // `Vec`'s own first block costs and the step policy is never behind at the
                     // short lengths where most buckets sit. Taking two steps here made a list of
                     // three cost twice what doubling would have;
-                    // `the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement`
+                    // `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement`
                     // is what said so.
                     let mut pages = Vec::with_capacity(PAGE_LIST_GROWTH_STEP);
                     if first_handle < handle {
@@ -3533,7 +3533,7 @@ impl BlockIndexMap {
     ///
     /// ONE TERM PER ARM, AND THE ARMS GENUINELY DIFFER:
     ///
-    ///   * `Empty` owns nothing -- `the_empty_arm_is_an_alias_for_no_pages_and_costs_nothing_to_keep`
+    ///   * `Empty` owns nothing -- `the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep`
     ///     is the standing assertion that this is still true.
     ///   * `One` owns a `Box<BlockIndex>`. The handle rides in the enum, so this allocation is one
     ///     ENTRY wide and the old per-block charge was exactly right for it -- measured 1.0000
@@ -3855,9 +3855,9 @@ impl Serialize for PageIndexAt<'_> {
 /// `SHARD_INDEX_FORMAT_VERSION` 27 is what pays for it.
 ///
 /// THE KEY SET IS OBSERVED, NOT READ OFF THE ATTRIBUTES.
-/// `page_entry_names::capture_the_stored_spelling_of_a_page_entry` prints a real encode of an
+/// `page_entry_names::capture_the_stored_spelling_of_a_block_entry` prints a real encode of an
 /// entry and of a whole index, and
-/// `page_entry_names::the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` pins the three
+/// `page_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins the three
 /// written forms byte for byte.
 pub(super) struct PageEntryAt<'a> {
     pub(super) page: &'a BlockIndex,
@@ -3880,7 +3880,7 @@ pub(super) struct PageEntryAt<'a> {
 /// AND THE TWO THAT LEFT ARE DELIBERATELY NOT `#[serde(default)]` DECOYS: the derive drops a key it
 /// has no field for, so an index written before this change arrives with its `object_key` and
 /// `model_id` dropped and the reconstruction reads the SAME values out of the key beside them.
-/// `page_entry_names::an_index_written_before_this_change_loads_page_for_page` drives that against
+/// `page_entry_names::an_index_written_before_this_change_loads_block_for_block` drives that against
 /// committed bytes, field by field.
 #[derive(Debug, Clone, Deserialize)]
 pub(super) struct StoredPageEntry {
@@ -4080,9 +4080,9 @@ where
         // would inherit the stronger claim from the prose.
         //
         // WHERE THE CLAIM LIVES NOW, and it is a golden rather than a tie:
-        // `page_entry_names::the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` pins
+        // `page_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins
         // the four written forms byte for byte, and
-        // `an_index_written_before_this_change_loads_page_for_page` pins that a row written by a
+        // `an_index_written_before_this_change_loads_block_for_block` pins that a row written by a
         // binary that still had the field decodes.
         entries.push((
             block_index_written_key(beside.object_key, page),
@@ -5983,7 +5983,7 @@ impl BucketNode {
 ///     THIS engine writes will not load in an engine older than this change, which is the whole
 ///     of the break and is why it is stated here rather than discovered;
 ///   * `object_ids`, `deleted_object_ids` and `page_refs` are still accepted as aliases, which is
-///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_page_field_names`
+///     what lets the oldest written index load -- `core_index_loads_legacy_bucket_block_field_names`
 ///     holds that spelling and an alias dropped from here is a store that stops loading;
 ///   * the fields that had `#[serde(default)]` still default when the key is absent, and the ones
 ///     that did not still REFUSE a node that omits them. Presence comes from the wire.
@@ -6407,7 +6407,7 @@ pub(super) struct BlockIndex {
 /// FIVE at 40 and is FIVE at 24. Packing the two flags that remain would reclaim nothing, because
 /// the tail rounds to one word with or without them, and it would still move the stored index,
 /// which spells each of them as its own key. The claim is asserted directly in
-/// `pages_per_bucket::every_byte_of_the_page_index_is_accounted_for` rather than read off the room
+/// `pages_per_bucket::every_byte_of_the_block_index_is_accounted_for` rather than read off the room
 /// beside it.
 ///
 /// AND THE WIRE DID MOVE, IN EXACTLY ONE SLOT. This paragraph said "WHAT DID NOT MOVE IS THE WIRE
@@ -6423,10 +6423,10 @@ pub(super) struct BlockIndex {
 /// decode still cross-checks an old `g` against `block_id.or(object_id)` through it.
 ///
 /// So the stored form moved, `SHARD_INDEX_FORMAT_VERSION` goes to 6 to pay for it, and the guards
-/// are `the_stored_spelling_of_a_page_entry_moved_in_exactly_one_slot` (the four goldens),
-/// `an_index_written_before_this_change_loads_page_for_page` (that an old row still decodes),
+/// are `the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` (the four goldens),
+/// `an_index_written_before_this_change_loads_block_for_block` (that an old row still decodes),
 /// `an_index_written_before_this_change_is_written_back_without_the_key_the_entry_shed` (what this
-/// binary writes back in its place) and `core_index_loads_legacy_bucket_page_field_names` (that
+/// binary writes back in its place) and `core_index_loads_legacy_bucket_block_field_names` (that
 /// the old names still read).
 // FORTY, AND THE NEIGHBOUR BRACKET THAT STOOD HERE IS GONE.
 //
@@ -7557,7 +7557,7 @@ mod component_lookup_tests {
     /// would pass on any insert at all. The half that can still move is asserted instead -- see
     /// [`the_insert_accumulates_an_objects_pages_into_the_one_slot`].
     /// AND THE `object` PARAMETER IS REMOVED RATHER THAN RENAMED `_object`, which is the
-    /// treatment `entry_count_versus_page_count::page_at` already took for a dead `component`
+    /// treatment `entry_count_versus_page_count::block_at` already took for a dead `component`
     /// argument and for the same reason: a caller that still tries to name an object here should
     /// be a compile error and not a silent no-op. The entry has no field for it; the callers pass
     /// the key to `insert_object_block_lookup` themselves.

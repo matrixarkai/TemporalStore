@@ -377,11 +377,11 @@ fn whether_the_reclaim_checks_can_read_the_bucket_node() {
          round left ANOTHER bucket dirty while clearing one -- which is the whole shape this test \
          exists to measure"
     );
-    let any_non_page_backed_mark = phases
+    let any_non_block_backed_mark = phases
         .iter()
         .any(|(_label, state)| state.values().any(|(_dirty, count, _claim)| *count > 0));
     assert!(
-        any_non_page_backed_mark,
+        any_non_block_backed_mark,
         "[clause: regime_set_was_marked] the object-keyed set held nothing in any phase, so there \
          was never a mark for a flag to outlive and the direction below is empty for want of a \
          fixture"

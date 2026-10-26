@@ -116,7 +116,7 @@ fn counter_get(engine: &TemporalEngine, key: &str) {
 }
 
 #[test]
-fn page_and_block_counters_are_one_measurement_under_two_names() {
+fn block_and_block_counters_are_one_measurement_under_two_names() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let mut samples: Vec<CounterSample> = Vec::new();

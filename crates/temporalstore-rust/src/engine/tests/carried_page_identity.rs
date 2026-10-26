@@ -170,7 +170,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 /// element name until the width step removed that field, and was then left handing back a
 /// hardcoded `None::<String>` under a note saying "an entry names a page, not an element -- this
 /// module's subject". That made the two groupings in
-/// `the_element_beside_the_id_makes_every_page_of_a_batch_reachable` the SAME computation: "id
+/// `the_element_beside_the_id_makes_every_block_of_a_batch_reachable` the SAME computation: "id
 /// alone" and "id + element" both grouped on `(id, None)`, so the arm's deliverable compared a
 /// value with itself and reported the hazard row twice.
 ///
@@ -272,7 +272,7 @@ fn carrier(label: &str) -> Command {
 ///
 /// rust-internal: drives the WAL append and the block-in-WAL read directly, no external surface
 #[test]
-fn two_carried_pages_of_one_key_each_serve_their_own_bytes_under_a_component_free_id() {
+fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_free_id() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -349,7 +349,7 @@ fn two_carried_pages_of_one_key_each_serve_their_own_bytes_under_a_component_fre
         );
 
         let mut correct = 0usize;
-        let mut other_pages_bytes = 0usize;
+        let mut other_blocks_bytes = 0usize;
         let mut missing = 0usize;
         for ((object_id, component), want) in
             [(first, &first_bytes), (second, &second_bytes)]
@@ -361,16 +361,16 @@ fn two_carried_pages_of_one_key_each_serve_their_own_bytes_under_a_component_fre
                 component,
             ) {
                 Some(got) if &got == want => correct += 1,
-                Some(_) => other_pages_bytes += 1,
+                Some(_) => other_blocks_bytes += 1,
                 None => missing += 1,
             }
         }
         println!(
-            "  {label:<32} {:>5} {:>8} {other_pages_bytes:>12} {missing:>8}",
+            "  {label:<32} {:>5} {:>8} {other_blocks_bytes:>12} {missing:>8}",
             staged.len(),
             correct
         );
-        results.push((label, correct, other_pages_bytes, missing));
+        results.push((label, correct, other_blocks_bytes, missing));
     }
 
     assert_eq!(
@@ -432,7 +432,7 @@ fn two_carried_pages_of_one_key_each_serve_their_own_bytes_under_a_component_fre
 ///
 /// rust-internal: reads a seeded store's own page entries, no external surface
 #[test]
-fn the_element_beside_the_id_makes_every_page_of_a_batch_reachable() {
+fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -654,10 +654,10 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
 ///
 /// rust-internal: encodes records in memory, no store and no external surface
 #[test]
-fn what_an_element_named_page_adds_to_the_record() {
+fn what_an_element_named_block_adds_to_the_record() {
     use crate::wal::{encode_wal_line_for_test, WriteAheadLogRecord};
 
-    fn page_of(i: usize, component: Option<&str>, payload: usize) -> StagedBlock {
+    fn block_of(i: usize, component: Option<&str>, payload: usize) -> StagedBlock {
         StagedBlock {
             object_id: stable_block_object_id(1, "hash", "hk"),
             component: component.map(std::sync::Arc::from),
@@ -676,7 +676,7 @@ fn what_an_element_named_page_adds_to_the_record() {
                 key: "carrier".to_string(),
             }),
             metadata: None,
-            staged_blocks: (0..pages).map(|i| page_of(i, component, payload)).collect(),
+            staged_blocks: (0..pages).map(|i| block_of(i, component, payload)).collect(),
             outcomes: Vec::new(),
         }
     }
@@ -691,7 +691,7 @@ fn what_an_element_named_page_adds_to_the_record() {
     // record carrying many pages never elides an object id -- which is precisely the record shape
     // this whole module is about.
     fn wire_len(component: Option<&str>, payload: usize) -> usize {
-        crate::raft::wal_proto::staged_block_body_len(&page_of(0, component, payload), None)
+        crate::raft::wal_proto::staged_block_body_len(&block_of(0, component, payload), None)
     }
 
     println!("\n=== what the element identity adds to a carried page ===");
@@ -704,12 +704,12 @@ fn what_an_element_named_page_adds_to_the_record() {
             let bare = disk_len(&record_of(pages, None, 32));
             let named = disk_len(&record_of(pages, component, 32));
             let delta = named as i64 - bare as i64;
-            let per_page = delta as f64 / pages as f64;
+            let per_block = delta as f64 / pages as f64;
             let chunk = crate::alloc_probe::documented_glibc_chunk(wire.unsigned_abs() as usize);
             let share = 100.0 * delta as f64 / bare as f64;
             println!(
                 "  {pages:>5}  {label:<13} {wire:>11} {chunk:>8} {bare:>11} {named:>11} \
-                 {per_page:>11.2} {share:>6.2}%"
+                 {per_block:>11.2} {share:>6.2}%"
             );
             assert!(
                 bare > 0 && named > 0,
@@ -717,7 +717,7 @@ fn what_an_element_named_page_adds_to_the_record() {
                  encode reports every delta below as +0.00%"
             );
             wire_rows.push((label, wire));
-            disk_rows.push((pages, label, per_page));
+            disk_rows.push((pages, label, per_block));
         }
     }
 
@@ -732,11 +732,11 @@ fn what_an_element_named_page_adds_to_the_record() {
             );
         }
     }
-    for (pages, label, per_page) in &disk_rows {
+    for (pages, label, per_block) in &disk_rows {
         if label.starts_with("CONTROL") {
             assert_eq!(
-                *per_page, 0.0,
-                "the control's DISK cost moved by {per_page:.2} B/page at {pages} pages. A record \
+                *per_block, 0.0,
+                "the control's DISK cost moved by {per_block:.2} B/page at {pages} pages. A record \
                  carrying no components must be byte-identical to one written before this field"
             );
         }
@@ -810,7 +810,7 @@ fn what_an_element_named_page_adds_to_the_record() {
 /// rust-internal: stages pages into the thread-local buffer, no store and no external surface
 #[cfg(feature = "alloc-probe")]
 #[test]
-fn what_an_element_named_page_allocates_when_it_is_staged() {
+fn what_an_element_named_block_allocates_when_it_is_staged() {
     use crate::alloc_probe::{AllocClass, ClassSpan};
     const PAGES: usize = 200;
 
@@ -880,7 +880,7 @@ fn what_an_element_named_page_allocates_when_it_is_staged() {
 ///
 /// rust-internal: scans the shard's own log, no external surface
 #[test]
-fn how_many_pages_one_record_carries() {
+fn how_many_blocks_one_record_carries() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -888,7 +888,7 @@ fn how_many_pages_one_record_carries() {
     seed_routed_strings(&engine);
 
     let mut sizes: Vec<usize> = Vec::new();
-    let mut carried_pages = 0usize;
+    let mut carried_blocks = 0usize;
     let (records, truncated) = engine
         .wal_store
         .scan_decoded(1, 0, u64::MAX, u64::MAX)
@@ -900,7 +900,7 @@ fn how_many_pages_one_record_carries() {
     );
     for (_log_id, record) in &records {
         if !record.staged_blocks.is_empty() {
-            carried_pages += record.staged_blocks.len();
+            carried_blocks += record.staged_blocks.len();
             sizes.push(record.staged_blocks.len());
         }
     }
@@ -914,7 +914,7 @@ fn how_many_pages_one_record_carries() {
         "DENOMINATOR: no record in this log carries a page, so every figure below is vacuous"
     );
     println!(
-        "  {:>22} {carried_pages:>6} {:>4} {:>4} {:>4} {:>4} {multi:>21}",
+        "  {:>22} {carried_blocks:>6} {:>4} {:>4} {:>4} {:>4} {multi:>21}",
         sizes.len(),
         percentile(&sizes, 50.0),
         percentile(&sizes, 90.0),
@@ -959,7 +959,7 @@ fn how_many_pages_one_record_carries() {
 ///
 /// rust-internal: encodes and decodes records in memory, no external surface
 #[test]
-fn every_carried_page_keeps_its_bytes_and_gains_an_element_through_both_encoders() {
+fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoders() {
     use crate::wal::{decode_wal_line, encode_wal_line_for_test, WriteAheadLogRecord};
 
     // Deliberately mixed: named elements, a whole-object page, and an EMPTY element name. The
@@ -1053,7 +1053,7 @@ fn every_carried_page_keeps_its_bytes_and_gains_an_element_through_both_encoders
 // reason the module itself gave:
 //
 //   * `a_component_free_identity_collapses_every_page_of_one_key_onto_one_number` measured one
-//     grouping; `the_element_beside_the_id_makes_every_page_of_a_batch_reachable` measures that
+//     grouping; `the_element_beside_the_id_makes_every_block_of_a_batch_reachable` measures that
 //     grouping AND the one this change introduces, off ONE population, and keeps its 96.00% row.
 //   * `two_carried_pages_sharing_an_object_id_serve_one_anothers_bytes` asserted 1/2. That is now
 //     2/2 for two pages of DIFFERENT elements, and its 1/2 survives as the NEGATIVE CONTROL arm of
@@ -1095,7 +1095,7 @@ fn every_carried_page_keeps_its_bytes_and_gains_an_element_through_both_encoders
 ///
 /// rust-internal: drives the engine's own unload/load cycle, no external surface
 #[test]
-fn a_hash_pages_field_name_is_held_beside_the_id_and_survives_a_component_free_identity() {
+fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_identity() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);

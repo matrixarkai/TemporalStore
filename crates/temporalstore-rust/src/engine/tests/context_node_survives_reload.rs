@@ -35,7 +35,7 @@
 //!     that is what proves the filter discriminates rather than waving everything through.
 //!
 //! ONE ASSERTION HERE WAS INVERTED RATHER THAN RE-GOLDENED, and the distinction is the point.
-//! `a_container_only_element_survives_the_reconcile_when_its_page_is_still_live` was first written
+//! `a_container_only_element_survives_the_reconcile_when_its_block_is_still_live` was first written
 //! as `..._is_refused_by_the_reconciles_live_address_filter`, asserting refusal. It failed. The
 //! assertion was changed to the measured behaviour AND THE NAME WAS CHANGED WITH IT. A test that
 //! keeps its name through a semantic inversion is how `wal.rs` once ended up asserting that one
@@ -351,7 +351,7 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
 /// The element is given an object key the index has never heard of, which is what makes it
 /// container-only.
 #[test]
-fn a_container_only_element_survives_the_reconcile_when_its_page_is_still_live() {
+fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live() {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -484,7 +484,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_page_is_still_live()
 /// it does not. The first must be KEPT and the second REFUSED. Either outcome alone would be
 /// unreadable -- all-kept means the filter is inert, all-refused means it ignores liveness.
 #[test]
-fn the_live_filter_keeps_an_unnamed_element_on_a_live_page_for_every_kind() {
+fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
     use std::collections::{BTreeMap, HashMap, HashSet};
 
     let live_address = crate::engine::ElementEntry::from_parts(1, 4_096, 64, None, None);

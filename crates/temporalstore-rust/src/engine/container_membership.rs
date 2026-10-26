@@ -37,7 +37,7 @@
 //! `next_from_current.max(next_from_disk)` where both terms are at least the current id plus one, so
 //! slab ids strictly increase and are NEVER REUSED; within a slab `write_offset` only advances. So
 //! the pair is a strict total order and it equals the order the pages were written in.
-//! `the_fold_orders_pages_by_append_position_and_not_by_the_order_it_was_handed_them` asserts that from the store rather
+//! `the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_them` asserts that from the store rather
 //! than from this comment.
 //!
 //! # A READ THAT FAILS IS NOT AN ELEMENT THAT IS ABSENT
@@ -238,7 +238,7 @@ where
 ///
 /// So: member `m` lives in page A, is removed into tombstone T, and a round folds T into a new page
 /// B while A is not relocated. Drop the tombstone as it goes into B and the pages are A (live m) and
-/// B (silent about m) -- and `derive_membership` puts `m` back. `a_tombstone_dropped_while_an_older_page_survives_resurrects_its_element`
+/// B (silent about m) -- and `derive_membership` puts `m` back. `a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element`
 /// drives exactly that sequence and asserts the resurrection, then asserts this rule declines it.
 ///
 /// # WHAT THE COMPARISON DESIGN DOES, WHICH IS THE SAME ANSWER ARRIVED AT DIFFERENTLY

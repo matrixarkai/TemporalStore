@@ -869,7 +869,7 @@ fn the_object_containers_are_refused_at_eight_by_the_same_one_niche_rule() {
 /// than by the workload, and the range that ships is [`crate::DEFAULT_END_ROUTING_BUCKET`].
 ///
 /// MEASURED IN THIS TREE by `engine::tests::routing_range_default::
-/// the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max`, routed keys at one
+/// the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max`, routed keys at one
 /// page a record, on 0..1023:
 ///
 ///   *  4,000 records: 1,024 occupied buckets over 4,000 pages. mean 3.9062, min 1, p50 4, p90 6,

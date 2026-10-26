@@ -122,7 +122,7 @@
 //! # WHAT THIS CHANGES: NOTHING, DELIBERATELY
 //!
 //! No engine code moves here. The scoped walk lives in this file as a measurement, so the saving
-//! can be priced and the precondition can be watched, and `scoping_is_exact_only_while_every_page_carries_the_shards_own_placement`
+//! can be priced and the precondition can be watched, and `scoping_is_exact_only_while_every_block_carries_the_shards_own_placement`
 //! is the guard that says when it becomes safe to move.
 //!
 //! # WHAT IT SAVES, AND WHAT IT DOES NOT
@@ -383,7 +383,7 @@ fn summarised_buckets(shard: &crate::engine::state::ShardState, start: u32, end:
 /// Scoped the only way a scoped walk can be: straight into `bucket_map` at the dirty bucket ids,
 /// never materialising the rest of the store. The page is still CREDITED the way the full walk
 /// credits it, so the two can differ only in which pages were looked at.
-fn scoped_live_page_summaries(
+fn scoped_live_block_summaries(
     shard: &crate::engine::state::ShardState,
     start: u32,
     end: u32,
@@ -407,7 +407,7 @@ fn scoped_live_page_summaries(
 }
 
 /// What the full walk produces, as the same shape, so the two are comparable element by element.
-fn full_live_page_summaries(
+fn full_live_block_summaries(
     shard: &crate::engine::state::ShardState,
     start: u32,
     end: u32,
@@ -654,7 +654,7 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
 ///
 /// rust-internal: reads the engine's own reconstruct path, no product behaviour
 #[test]
-fn the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_the_filing() {
+fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_the_filing() {
     const RECORDS: usize = 600;
 
     for (label, rebuild_end, expect_disagreement) in [
@@ -799,7 +799,7 @@ fn the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_th
 ///
 /// rust-internal: reads the engine's own dirty index, no product behaviour
 #[test]
-fn scoping_is_exact_only_while_every_page_carries_the_shards_own_placement() {
+fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
     const RECORDS: usize = 600;
 
     for (label, break_it) in [("live write path", false), ("after the replay reconstruct", true)] {
@@ -963,8 +963,8 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
             );
         }
 
-        let full = full_live_page_summaries(shard, start, end);
-        let (scoped, _visits) = scoped_live_page_summaries(shard, start, end);
+        let full = full_live_block_summaries(shard, start, end);
+        let (scoped, _visits) = scoped_live_block_summaries(shard, start, end);
 
         // DIRECTION ONE, THE ONE THAT LOSES DATA: a bucket the dirty set names where the two
         // walks do not agree page for page.
@@ -994,7 +994,7 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
             .filter(|routing_bucket| !scoped.contains_key(routing_bucket))
             .copied()
             .collect();
-        let skipped_pages: u64 = skipped.iter().map(|b| full[b]).sum();
+        let skipped_blocks: u64 = skipped.iter().map(|b| full[b]).sum();
         for routing_bucket in &skipped {
             assert!(
                 !witness.contains(routing_bucket),
@@ -1019,13 +1019,13 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
 
         println!(
             "  {label:<34} witness {:>5}, full {:>5} buckets, scoped {:>5}, skipped {:>5} \
-             buckets / {skipped_pages:>6} pages",
+             buckets / {skipped_blocks:>6} pages",
             witness.len(),
             full.len(),
             scoped.len(),
             skipped.len()
         );
-        skipped_pages
+        skipped_blocks
     }
 
     saved_total += check(&engine, "1: fresh store", &outstanding, true, start, end);
@@ -1091,8 +1091,8 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
         let (start, end) = routing_range(&engine);
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1");
-        let full = full_live_page_summaries(shard, start, end);
-        let (_scoped, visits) = scoped_live_page_summaries(shard, start, end);
+        let full = full_live_block_summaries(shard, start, end);
+        let (_scoped, visits) = scoped_live_block_summaries(shard, start, end);
         assert!(
             visits > 0,
             "before the restart the scoped walk must visit something, or the after-figure is not \
@@ -1123,8 +1123,8 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
          that contract and means nothing without it."
     );
 
-    let full = full_live_page_summaries(shard, start, end);
-    let (scoped, visits) = scoped_live_page_summaries(shard, start, end);
+    let full = full_live_block_summaries(shard, start, end);
+    let (scoped, visits) = scoped_live_block_summaries(shard, start, end);
     assert!(
         !full.is_empty(),
         "the shard came back from the restart holding no live page, so the comparison below is \
@@ -1193,7 +1193,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         // and it is this walk's. Nothing below has to hard-code a line number that drifts.
         crate::engine::reset_live_block_scan_entries();
         crate::engine::reset_live_block_scan_sites();
-        let full = full_live_page_summaries(shard, start, end);
+        let full = full_live_block_summaries(shard, start, end);
         let one_walk = crate::engine::live_block_scan_entries();
         let charged = crate::engine::live_block_scan_sites_snapshot();
         assert_eq!(
@@ -1212,7 +1212,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
 
         // THE SCOPED WALK, and the residual around it.
         crate::engine::reset_live_block_scan_entries();
-        let (scoped, scoped_visits) = scoped_live_page_summaries(shard, start, end);
+        let (scoped, scoped_visits) = scoped_live_block_summaries(shard, start, end);
         let residual = crate::engine::live_block_scan_entries();
         assert_eq!(
             residual, 0,
@@ -1230,7 +1230,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         // different quantities, and the first form of this assertion did exactly that (39,860
         // charged against 20,000 returned). `one_walk` was charged by the SAME call under the
         // SAME shard state a moment ago, so it is the plant this span can recover exactly.
-        let _ = full_live_page_summaries(shard, start, end);
+        let _ = full_live_block_summaries(shard, start, end);
         let recovered = crate::engine::live_block_scan_entries();
         assert_eq!(
             recovered, one_walk,
@@ -1638,7 +1638,7 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
         "the set of rebuild call sites filing pages under `0..u32::MAX` has moved.\n\
          If you FIXED one -- passed the shard's own range, which is what every other caller does \
          -- delete it from WHOLE_RANGE_SITES; that is the change this file exists to make safe, \
-         and `the_two_ranges_still_place_a_page_differently_and_the_summary_walk_follows_the_filing` \
+         and `the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_the_filing` \
          is the measurement that says it works.\n\
          If you ADDED one, it is a new path on which a page can be filed under a bucket the dirty \
          set does not name, and a walk scoped to the dirty set would silently miss it."

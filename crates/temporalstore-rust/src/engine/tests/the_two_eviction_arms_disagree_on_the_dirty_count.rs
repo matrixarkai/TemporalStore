@@ -76,7 +76,7 @@ fn seeded(dir: &std::path::Path) -> Arc<TemporalEngine> {
 }
 
 /// Dirty pages and dirty objects per bucket, read straight off the shard.
-fn pages_and_objects(
+fn blocks_and_objects(
     engine: &TemporalEngine,
 ) -> (
     std::collections::BTreeMap<u32, u64>,
@@ -109,7 +109,7 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
     // ---- THE REGIME, asserted before anything is compared. ----
     let regime_dir = tempfile::tempdir().expect("tempdir");
     let regime = seeded(regime_dir.path());
-    let (pages, objects) = pages_and_objects(&regime);
+    let (pages, objects) = blocks_and_objects(&regime);
     println!("dirty pages per bucket:   {pages:?}");
     println!("dirty objects per bucket: {objects:?}");
     let total_pages: u64 = pages.values().sum();

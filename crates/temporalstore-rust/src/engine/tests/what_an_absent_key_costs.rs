@@ -695,7 +695,7 @@ fn a_present_key_still_descends_a_tier_and_still_fills_the_cache() {
 }
 
 #[test]
-fn a_present_key_still_reads_its_page_off_the_block_store() {
+fn a_present_key_still_reads_its_block_off_the_block_store() {
     let (_dir, engine) = fixture(PROBE_KEYS, NARROW_START, NARROW_END);
     let work = measure_present(&engine, "present/control", Route::Durable, PROBE_KEYS);
     assert!(

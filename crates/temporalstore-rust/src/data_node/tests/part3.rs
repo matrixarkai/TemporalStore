@@ -6813,7 +6813,7 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// MODEL, not to the shard. Their compactor asks one per object and skips on an empty answer:
 ///
 ///     auto res = ModelManager::CompactPagesHint(model_id, object_blocks[object_id]);
-///     if (page_indexes.empty()) { continue; }   // no need compaction
+///     if (block_indexes.empty()) { continue; }   // no need compaction
 ///
 /// and a single-page model answers empty unconditionally -- their string model's whole
 /// implementation is `return {};` with the comment "we keep data in single page, so no need do

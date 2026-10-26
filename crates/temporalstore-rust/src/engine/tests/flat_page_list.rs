@@ -17,16 +17,16 @@
 //! WHAT THE LIST MUST NOT CHANGE, and what each guard here covers:
 //!
 //!   * ORDER. A `BTreeMap<u64, _>` walks in ascending key order and FIVE production readers take
-//!     that order as given -- see `an_unsorted_page_list_would_reorder_every_walk_of_this_index`,
+//!     that order as given -- see `an_unsorted_block_list_would_reorder_every_walk_of_this_index`,
 //!     which names them. The list is kept sorted by the same handle, so every walk yields the
 //!     identical sequence. This is the central risk of the change and it is answered by the
 //!     representation, not by a sort at each reader.
 //!   * DUPLICATES. A map deduplicated by construction; a list does not.
-//!     `a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it` drives the
+//!     `a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it` drives the
 //!     rewrite that would otherwise file a page twice, on both arms.
 //!   * THE STORED SHAPE. `BlockIndexMap` serializes as the same map of rendered string keys, in
 //!     the same string order, that it always did.
-//!     `the_stored_page_index_is_byte_for_byte_what_the_tree_wrote` holds that with an injection
+//!     `the_stored_block_index_is_byte_for_byte_what_the_tree_wrote` holds that with an injection
 //!     control.
 //!
 //! WHAT THE FIXTURE HAS TO REACH. `TemporalEngine::load_shard` defaults the end routing bucket to
@@ -224,7 +224,7 @@ fn arms(engine: &TemporalEngine) -> (usize, usize, usize) {
 /// rust-internal: measures the engine's own bucket index, no product behaviour
 #[test]
 #[ignore = "seeds four stores up to 40,000 records each; run by name"]
-fn the_page_list_length_distribution_is_reported_as_a_histogram() {
+fn the_block_list_length_distribution_is_reported_as_a_histogram() {
     let mut narrow_reached_many = 0usize;
     let mut widest_seen = 0usize;
     for records in [SMALL, LARGE] {
@@ -373,7 +373,7 @@ fn walk(index: &BlockIndexMap) -> Vec<u64> {
 ///
 /// rust-internal: page index ordering, no product behaviour
 #[test]
-fn an_unsorted_page_list_would_reorder_every_walk_of_this_index() {
+fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
     let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..24)
         .map(|i| page("bag", Some(&format!("f{i}")), 1, i as u64 * 64))
         .collect();
@@ -479,7 +479,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
 ///
 /// rust-internal: page index insert semantics, no product behaviour
 #[test]
-fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
+fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() {
     let mut live = BlockSlabLiveIndex::default();
 
     // --- The One arm, whose entry is now behind a pointer. A rewrite of the same page replaces the
@@ -599,7 +599,7 @@ fn a_second_insert_of_the_same_page_replaces_it_rather_than_adding_beside_it() {
 ///
 /// rust-internal: page index accounting, no product behaviour
 #[test]
-fn replacing_a_page_discharges_the_address_it_displaced() {
+fn replacing_a_block_discharges_the_address_it_displaced() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
     let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..6)
@@ -959,7 +959,7 @@ fn span_counts_both(body: impl FnOnce()) -> (u64, u64, u64) {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "seeds two stores of up to 40,000 records; run by name"]
-fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
+fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
     let mut path_lengths: Vec<usize> = Vec::new();
     println!(
         "  {:>8} {:>8} {:>9} {:>12} {:>12} {:>12} {:>12} {:>9}",
@@ -1107,7 +1107,7 @@ fn the_page_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "the counting allocator is process-wide; run by name"]
-fn the_page_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
+fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     println!(
         "  {:>7} {:>14} {:>12} {:>14} {:>12} {:>9}",
         "length", "doubling B", "doubling alc", "stepped B", "stepped alc", "B saved"
@@ -1413,14 +1413,14 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     // crossover ever falls below it, the inline entry has started paying for itself at the shipped
     // default -- a node that narrowed further, or a page entry that widened -- and this change
     // should be reconsidered rather than the assertion relaxed.
-    const WORST_SHIPPED_SINGLE_PAGE_FRACTION: f64 = 0.04510;
+    const WORST_SHIPPED_SINGLE_BLOCK_FRACTION: f64 = 0.04510;
     assert!(
-        crossover > WORST_SHIPPED_SINGLE_PAGE_FRACTION,
+        crossover > WORST_SHIPPED_SINGLE_BLOCK_FRACTION,
         "the inline entry pays for itself in bytes below {:.3}% single-page occupancy, and the \
          shipped routing range measures {:.3}% at its worst corpus size. On this reading boxing \
          the entry is a LOSS at the default the operator runs, and the change should be reconsidered",
         100.0 * crossover,
-        100.0 * WORST_SHIPPED_SINGLE_PAGE_FRACTION
+        100.0 * WORST_SHIPPED_SINGLE_BLOCK_FRACTION
     );
 }
 
@@ -1440,7 +1440,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
 ///
 /// rust-internal: page index wire shape, no product behaviour
 #[test]
-fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
+fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     let (object_key, pages) = sorted_list(24);
 
     let mut list = BlockIndexMap::default();
@@ -1528,7 +1528,7 @@ fn the_stored_page_index_is_byte_for_byte_what_the_tree_wrote() {
 /// rust-internal: measures the engine's own read path, no product behaviour
 #[test]
 #[ignore = "seeds two stores of 4,000 records; run by name"]
-fn a_read_examines_entries_only_where_a_page_list_exists() {
+fn a_read_examines_entries_only_where_a_block_list_exists() {
     let mut charged: BTreeMap<u32, (u64, usize)> = BTreeMap::new();
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1595,7 +1595,7 @@ fn a_read_examines_entries_only_where_a_page_list_exists() {
 /// rust-internal: measures the engine's own bucket index, no product behaviour
 #[test]
 #[ignore = "seeds a store of 4,000 records; run by name"]
-fn every_written_page_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
+fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);

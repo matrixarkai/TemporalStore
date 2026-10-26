@@ -1598,7 +1598,7 @@ enum MirrorInlineBlockIndexMap {
 /// The node as it was before the single-page entry was boxed: every field the same, and the page index
 /// still holding a whole entry inline.
 #[allow(dead_code)]
-struct MirrorInlinePage {
+struct MirrorInlineBlock {
     routing_bucket: u32,
     layout: BucketLayoutState,
     flags: BucketFlags,
@@ -1617,7 +1617,7 @@ struct MirrorInlinePage {
 }
 
 #[allow(dead_code)]
-struct MirrorBoxedPage {
+struct MirrorBoxedBlock {
     routing_bucket: u32,
     layout: BucketLayoutState,
     flags: BucketFlags,
@@ -1687,8 +1687,8 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     let loose = size_of::<MirrorLooseFlags>();
     let packed = size_of::<MirrorPackedFlags>();
     let hoisted = size_of::<MirrorHoistedClaims>();
-    let boxed = size_of::<MirrorBoxedPage>();
-    let inline_page = size_of::<MirrorInlinePage>();
+    let boxed = size_of::<MirrorBoxedBlock>();
+    let inline_block = size_of::<MirrorInlineBlock>();
 
     println!("\n=== what each shape makes the node ===");
     println!("  {:<44} {:>5} {:>9}", "shape", "bytes", "vs live");
@@ -1699,7 +1699,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         ("with the countdown back at two words as well", wide_ttl),
         ("the packed-flag mirror, which must equal the live shape", packed),
         ("with the two transient log claims hoisted out", hoisted),
-        ("with the page entry held INLINE again (before)", inline_page),
+        ("with the page entry held INLINE again (before)", inline_block),
         ("with a single-page arm re-added, behind a pointer", boxed),
     ] {
         println!(
@@ -1810,32 +1810,32 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // 112. It is a FLOOR that is wanted here, and it is printed rather than added to a struct width,
     // because the pair arithmetic that used to consume it was pricing a proposal that has since been
     // taken.
-    const ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY: usize =
+    const ALLOCATOR_CHUNK_FOR_A_BLOCK_ENTRY: usize =
         if size_of::<BlockIndex>() + 8 < 32 { 32 } else { (size_of::<BlockIndex>() + 8 + 15) / 16 * 16 };
     assert!(
-        ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY >= size_of::<BlockIndex>(),
-        "the derived chunk floor is {ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY} B for a {} B entry, which is \
+        ALLOCATOR_CHUNK_FOR_A_BLOCK_ENTRY >= size_of::<BlockIndex>(),
+        "the derived chunk floor is {ALLOCATOR_CHUNK_FOR_A_BLOCK_ENTRY} B for a {} B entry, which is \
          below the entry itself and would under-price every boxed arm",
         size_of::<BlockIndex>()
     );
     assert_eq!(
-        inline_page - live,
+        inline_block - live,
         size_of::<MirrorInlineBlockIndexMap>() - size_of::<BlockIndexMap>(),
         "the node's saving must be exactly the page index's: it is {} B against the index's {} B, \
          so something other than the arm moved between these two mirrors",
-        inline_page - live,
+        inline_block - live,
         size_of::<MirrorInlineBlockIndexMap>() - size_of::<BlockIndexMap>()
     );
     assert!(
-        inline_page > live,
-        "the node with the entry held inline is {inline_page} B against the shipped {live} B; if \
+        inline_block > live,
+        "the node with the entry held inline is {inline_block} B against the shipped {live} B; if \
          the two are equal the inline entry was never costing width and the change that boxed it \
          bought nothing"
     );
     println!(
-        "\n  boxing the inline entry took the node {inline_page} -> {live} B ({:+} B a bucket), \
+        "\n  boxing the inline entry took the node {inline_block} -> {live} B ({:+} B a bucket), \
          which is exactly the page index's own {} -> {} B",
-        live as i64 - inline_page as i64,
+        live as i64 - inline_block as i64,
         size_of::<MirrorInlineBlockIndexMap>(),
         size_of::<BlockIndexMap>()
     );
@@ -1847,8 +1847,8 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
          is no longer describing why the two were decided on the heap instead"
     );
     assert!(
-        boxed < inline_page,
-        "a boxed arm is {boxed} B against {inline_page} B held inline; boxing is supposed to \
+        boxed < inline_block,
+        "a boxed arm is {boxed} B against {inline_block} B held inline; boxing is supposed to \
          recover the width, which is what made it a candidate at all"
     );
     println!(
@@ -1859,7 +1859,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     );
     println!(
         "  the page entry is {} B and its derived chunk FLOOR is \
-         {ALLOCATOR_CHUNK_FOR_A_PAGE_ENTRY} B; what a chunk holding one actually costs is READ from \
+         {ALLOCATOR_CHUNK_FOR_A_BLOCK_ENTRY} B; what a chunk holding one actually costs is READ from \
          the allocator in `inline_arm_trade.rs`, over the real bucket population, rather than \
          assumed here -- a carried chunk figure is how a published byte table in this campaign got \
          its sign wrong",
@@ -2914,7 +2914,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
         let engine = budget_engine(dir.path());
         objside_seed(&engine, scale, true);
 
-        let (live_rows, tombstone_rows, page_indexes, page_arms) = {
+        let (live_rows, tombstone_rows, block_indexes, page_arms) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let (live, dead) = object_id_rows(shard);
@@ -3098,10 +3098,10 @@ fn what_the_object_side_of_the_bucket_node_costs() {
         // decides how many buckets hold exactly one page. `inline_arm_trade.rs` is that
         // measurement. The census and the allocator reading below are still the right place for the
         // NEXT change to start, and they are measured here rather than assumed.
-        let page_charge = clone_alloc_bytes(&page_indexes);
-        let page_spine = spine(size_of::<BlockIndexMap>());
-        let page_heap = page_charge.saturating_sub(page_spine);
-        let page_multi = page_arms[2];
+        let block_charge = clone_alloc_bytes(&block_indexes);
+        let block_spine = spine(size_of::<BlockIndexMap>());
+        let page_heap = block_charge.saturating_sub(block_spine);
+        let block_multi = page_arms[2];
         assert_eq!(
             buckets,
             page_arms.iter().sum::<usize>(),
@@ -3109,28 +3109,28 @@ fn what_the_object_side_of_the_bucket_node_costs() {
             page_arms.iter().sum::<usize>()
         );
         println!(
-            "  NEXT TERM -- the page index: {} B of field x {buckets} = {page_spine} B, plus \
+            "  NEXT TERM -- the page index: {} B of field x {buckets} = {block_spine} B, plus \
              {page_heap} B on the heap ({:.2} B/bucket), {:.1}% of the node's width",
             size_of::<BlockIndexMap>(),
             page_heap as f64 / buckets as f64,
             100.0 * size_of::<BlockIndexMap>() as f64 / size_of::<BucketNode>() as f64
         );
         println!(
-            "    its arms: {} buckets hold no page, {} hold exactly one (inline), {page_multi} \
+            "    its arms: {} buckets hold no page, {} hold exactly one (inline), {block_multi} \
              hold several (a map) -- {:.2}% on the map arm",
             page_arms[0],
             page_arms[1],
-            100.0 * page_multi as f64 / buckets as f64
+            100.0 * block_multi as f64 / buckets as f64
         );
-        if page_multi > 0 {
+        if block_multi > 0 {
             println!(
                 "    the map arm alone charges {:.1} B a bucket that is on it",
-                page_heap as f64 / page_multi as f64
+                page_heap as f64 / block_multi as f64
             );
         }
 
         std::hint::black_box((&tiered, &sorted, &always, &inline, &tomb_tiered, &tomb_absent));
-        std::hint::black_box((&declared_live, &declared_tomb, &page_indexes));
+        std::hint::black_box((&declared_live, &declared_tomb, &block_indexes));
     }
 
     assert_eq!(2, path_lengths.len(), "both arms must have run");

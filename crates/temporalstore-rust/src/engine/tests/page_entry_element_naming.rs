@@ -782,7 +782,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 ///
 /// rust-internal: drives the engine's own derive over its own index, no external surface
 #[test]
-fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_kept() {
+fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_kept() {
     use std::collections::BTreeSet;
 
     use crate::engine::hashing::{block_routing_bucket, stable_block_object_id};
@@ -1090,13 +1090,13 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
 
         // THE CONTROL'S DENOMINATOR, read before the derive runs: how many string pages this derive
         // will actually walk. A control over an empty set reports success.
-        let string_pages_exercised = collect_bucket_index_live_block_entries(shard)
+        let string_blocks_exercised = collect_bucket_index_live_block_entries(shard)
             .into_iter()
             .filter(|entry| entry.kind.as_str() == "string" && !entry.deleted)
             .count();
         assert!(
-            string_pages_exercised >= 1,
-            "[{arm}] the control walked {string_pages_exercised} string page(s), so it is a control \
+            string_blocks_exercised >= 1,
+            "[{arm}] the control walked {string_blocks_exercised} string page(s), so it is a control \
              over nothing"
         );
 
@@ -1178,7 +1178,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
         println!(
             "[leg C/{arm}] the derive minted nothing for `{nameless_key}` or `{empty_key}` -- no \
              phantom, and no real name either, because an entry names no element; control: \
-             {string_pages_exercised} string page(s) exercised, 0 lost, 0.00%"
+             {string_blocks_exercised} string page(s) exercised, 0 lost, 0.00%"
         );
     }
 
@@ -1235,7 +1235,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     // proof it reads the MAP and not the index -- which is exactly what this section was built to
     // pin, and what the old floor could only approach. Revert the collapse so `HashLen` counts
     // entries again and it answers 2 against a cleared map, which reddens both halves below.
-    let indexed_pages_after = {
+    let indexed_blocks_after = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         collect_bucket_index_live_block_entries(shard)
@@ -1249,15 +1249,15 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     };
     // THE DENOMINATOR: the two structures must hold DIFFERENT numbers, or the gap proves nothing.
     assert_eq!(
-        2, indexed_pages_after,
-        "`{nameless_key}` carries {indexed_pages_after} live hash page entries, not the two this \
+        2, indexed_blocks_after,
+        "`{nameless_key}` carries {indexed_blocks_after} live hash page entries, not the two this \
          stage needs -- one named page and the one nameless page leg B filed. Without two against \
          a cleared map, the field count and the entry count could be the same number and nothing \
          below could say which of them HashLen read"
     );
     assert_ne!(
-        indexed_pages_after, hash_len_after,
-        "HashLen answered {hash_len_after} and the index holds {indexed_pages_after} live page \
+        indexed_blocks_after, hash_len_after,
+        "HashLen answered {hash_len_after} and the index holds {indexed_blocks_after} live page \
          entries for this key. They must DIFFER: the map was cleared and the index was not, so a \
          HashLen that matches the entry count is counting index entries rather than fields -- and \
          the nameless page is then being counted as a field, which is this module's defect"
@@ -1265,7 +1265,7 @@ fn a_hash_page_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_ke
     println!(
         "[counts after] HashLen={hash_len_after} (was {hash_len_before}), HashGetAll listed \
          {listed_after} (was {listed_before}). HashLen reads the CLEARED `shard.hashes` and \
-         answers {hash_len_after} against {indexed_pages_after} live page entries in the index, so \
+         answers {hash_len_after} against {indexed_blocks_after} live page entries in the index, so \
          the gap names the structure it read rather than being a coincidence"
     );
 }
@@ -1337,7 +1337,7 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
 ///
 /// rust-internal: drives the engine's own fold over its own index, no external surface
 #[test]
-fn the_stored_page_handle_decides_nothing_the_fold_files() {
+fn the_stored_block_handle_decides_nothing_the_fold_files() {
     use crate::engine::hashing::{block_routing_bucket, stable_block_object_id};
     use crate::engine::state::CoreIndex;
     use std::collections::BTreeSet;

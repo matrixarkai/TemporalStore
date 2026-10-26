@@ -63,7 +63,7 @@ fn load_on(engine: &TemporalEngine) {
 }
 
 /// Distinct page addresses, and the block ids on them, for one set object.
-fn pages_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
+fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let keys = crate::engine::state::PageKeysByPosition::from_lookup(
@@ -151,7 +151,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
-    let (pages, ordinals) = pages_and_ordinals(&engine, "ord/set");
+    let (pages, ordinals) = blocks_and_ordinals(&engine, "ord/set");
     // How many members the resident map holds, so a row cannot be read as correct because the
     // object vanished.
     let resident = {
@@ -437,7 +437,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 
 
 /// Distinct block ids currently live for this hash object, over EVERY field -- the hash analogue
-/// of the `ordinals` half of `pages_and_ordinals`. A single-field fixture is deliberately read at
+/// of the `ordinals` half of `blocks_and_ordinals`. A single-field fixture is deliberately read at
 /// object granularity rather than filtered to one field, so a planted entry the filing path failed
 /// to retire would show up as a second ordinal rather than being filtered out of sight.
 fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {

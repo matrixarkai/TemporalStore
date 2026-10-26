@@ -631,7 +631,7 @@ fn reading_any_kind_hands_back_borrows_and_not_copies() {
 /// is a string -- so a set's map stopped surviving a reload, `set_index_serde` was left referenced
 /// only from comments, and three reload tests failed:
 /// `conformance_random_sequences_never_panic_and_survive_reload`,
-/// `container_page_element_key::a_framed_page_reads_back_after_a_reload` and
+/// `container_page_element_key::a_framed_block_reads_back_after_a_reload` and
 /// `container_page_ordinal::a_reloaded_container_still_reads_every_element`.
 ///
 /// Those three caught it, and they are the right kind of guard to have -- but they caught it

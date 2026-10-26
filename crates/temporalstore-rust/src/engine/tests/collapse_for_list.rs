@@ -692,7 +692,7 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
 /// and ZSET reach this path for the first time with this change, which is what makes driving it
 /// per kind worth the engine starts.
 #[test]
-fn a_write_after_a_fold_supersedes_one_page_and_not_the_objects_siblings() {
+fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
     for (model_id, object_key) in [("list", LIST_KEY), ("hash", HASH_KEY), ("zset", ZSET_KEY)] {
         println!("\n=== {model_id}: one more element written after the fold ===");
         let dir = tempfile::tempdir().expect("tempdir");

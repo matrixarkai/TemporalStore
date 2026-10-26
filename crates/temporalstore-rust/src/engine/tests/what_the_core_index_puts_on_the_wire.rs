@@ -203,7 +203,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
     // walk that used to do that afterwards reads each page's identity off the entry and the entry
     // is about to have none. This fixture's two buckets hold no pages, so there is nothing to file
     // and it comes back empty -- which makes this assertion a statement about the FIXTURE now and
-    // not about the field. `a_decode_files_every_page_into_the_object_lookup` is where the filling
+    // not about the field. `a_decode_files_every_block_into_the_object_lookup` is where the filling
     // is asserted, on an index that has pages.
     assert!(
         after.object_block_lookup.is_empty(),
@@ -289,7 +289,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 // longer held at a distance. `index_log::block_ref_key_parts` cuts the six right-hand fields from
 // the RIGHT and the kind from the LEFT, so an object key keeps every colon it arrived with --
 // `{collection_key}:{entity_hash}` included -- and
-// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus`
+// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus`
 // asserts the component slot EMPTY and the parse exact on all 8,000 pages of two key shapes, rather
 // than relying on it.
 //
@@ -319,7 +319,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 /// asserted to carry the characters, which is the half that has to stay true for the decoder's
 /// parse to have a source at all.
 #[test]
-fn a_page_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
+fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     use crate::engine::state::{BlockIndex, BlockSlabLiveIndex};
 
     let mut bucket = BucketNode::default();
@@ -389,7 +389,7 @@ fn a_page_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
 }
 
 #[test]
-fn the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
+fn the_stored_block_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
     use crate::index_log::block_ref_key_from_parts;
 
     // TWO DIFFERENT IDENTITIES, ONE KEY. The separator is a bare colon and both the object key and
@@ -445,7 +445,7 @@ fn the_stored_page_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
 /// here. A lookup ref that names a handle the map does not hold is a ref pointing at nothing,
 /// which is the failure a counter-assigned handle produced on this structure once already.
 #[test]
-fn a_decode_files_every_page_into_the_object_lookup() {
+fn a_decode_files_every_block_into_the_object_lookup() {
     use crate::block_store::ElementEntry;
     use crate::engine::state::BlockIndex;
     use crate::engine::storage_bucket_internals::stored_model_kind;
@@ -456,7 +456,7 @@ fn a_decode_files_every_page_into_the_object_lookup() {
 
     // THE `object` PARAMETER IS GONE, NOT RENAMED `_object`. The entry has no field for it, and a
     // caller that still tries to name an object through this builder should stop compiling rather
-    // than be ignored -- the treatment `entry_count_versus_page_count::page_at` took for its own
+    // than be ignored -- the treatment `entry_count_versus_page_count::block_at` took for its own
     // dead `component` argument. The object each page belongs to is named where it is filed.
     fn page(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
         BlockIndex {
@@ -610,7 +610,7 @@ fn a_decode_files_every_page_into_the_object_lookup() {
 /// THE FIRST ASSERTION IS THE CONTROL. Without it a tombstone could be in the lookup after all,
 /// and the row would be a second copy of an identity already available rather than the only one.
 #[test]
-fn the_identity_beside_a_deleted_page_is_its_tombstone_row_and_it_composes_the_same_stored_key() {
+fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_same_stored_key() {
     use crate::block_store::ElementEntry;
     use crate::engine::state::BlockIndex;
     use crate::engine::storage_bucket_internals::stored_model_kind;
@@ -739,7 +739,7 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
     // with no other symptom: everything still compiles, the round trip above still passes, because
     // a round trip only ever writes the CURRENT spelling and reads it back.
     //
-    // `core_index_loads_legacy_bucket_page_field_names` does cover this today. Relying on it means
+    // `core_index_loads_legacy_bucket_block_field_names` does cover this today. Relying on it means
     // the guard that sits beside the impl does not assert the thing the impl is most likely to
     // break, so the coverage is restated here where the destructuring and the key set already are.
     //

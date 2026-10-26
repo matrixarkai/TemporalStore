@@ -106,7 +106,7 @@ fn seed_series(engine: &TemporalEngine, key: &str) {
 /// Truncate every file under the store's page directory to zero bytes, so `block_store.read` fails
 /// for real. Returns how many files it tore, which is a DENOMINATOR: tearing nothing leaves the
 /// fault arm reading a healthy store.
-fn tear_the_pages(dir: &std::path::Path) -> usize {
+fn tear_the_blocks(dir: &std::path::Path) -> usize {
     let mut torn = 0usize;
     let mut stack = vec![dir.join("pages")];
     while let Some(path) = stack.pop() {
@@ -148,7 +148,7 @@ fn rebuilt_points(shard: &ShardState, key: &str) -> usize {
 
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_clean_view_rebuild_reports_zero_unreadable_pages_over_a_store_that_has_some() {
+fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_some() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -198,7 +198,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_pages_over_a_store_that_has_some
 
 /// rust-internal: drives the engine's own command surface
 #[test]
-fn a_torn_page_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
+fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -223,7 +223,7 @@ fn a_torn_page_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     let clean_points = rebuilt_points(shard, "torn");
 
     // ARM B -- tear the slab files and rebuild from the same index.
-    let torn = tear_the_pages(dir.path());
+    let torn = tear_the_blocks(dir.path());
     assert!(
         torn > 0,
         "DENOMINATOR: {torn} page files torn, so arm B read a healthy store and is arm A again"

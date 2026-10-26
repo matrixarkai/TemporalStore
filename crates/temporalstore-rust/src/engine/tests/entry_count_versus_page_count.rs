@@ -16,7 +16,7 @@
 //! handles and the page index held two entries -- one page, two entries. `BlockIndex` has no
 //! element-name field any more: the handle is the model spelling, the object key and the address,
 //! two elements over one page hash ALIKE, and the entry count is the PAGE count.
-//! `one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives exactly that,
+//! `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives exactly that,
 //! and it is the whole of the mechanism.
 //!
 //! THE INVERSION IS WHY THIS HEADER IS RESTATED RATHER THAN RE-NUMBERED. A reader who took the old
@@ -77,7 +77,7 @@
 //! as flat while the kernel saw 6.70x. A batched page is built with the engine's OWN encoder
 //! (`packed_pages::encode_feature_block`) at several batch widths and its length read off the
 //! bytes, so the amplification below is two measurements and no arithmetic.
-//! `what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch` reports it.
+//! `what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch` reports it.
 //!
 //! THE CONTROL IS THE STRING KIND, at 0.00%. A string key owns exactly one page and one entry
 //! already, so batching predicts no change for it and a measurement that moved it would be
@@ -260,7 +260,7 @@ fn seed_all_kinds(engine: &TemporalEngine, elements: usize) -> Vec<(&'static str
 /// Entries are counted off the page index itself and pages off the physical identity of the
 /// addresses those entries hold, so "one page, two entries" is visible as the two numbers
 /// disagreeing rather than having to be inferred.
-fn entries_and_pages(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
+fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     // THE OBJECT A PAGE BELONGS TO COMES FROM THE LOOKUP BESIDE IT, not off the page. The
@@ -295,18 +295,18 @@ fn entries_and_pages(engine: &TemporalEngine, kind: &str, object_key: &str) -> (
 
 /// THE BATCHING ARITHMETIC THE WHOLE MODULE IS ABOUT, IN ONE FUNCTION.
 ///
-/// If a page held `elements_per_page` elements and each page were filed as one entry -- the shape
+/// If a page held `elements_per_block` elements and each page were filed as one entry -- the shape
 /// the timestamped kinds already run, described in this module's header -- an object of
 /// `elements_per_object` elements would file this many entries. It is the projection the prize rows
 /// above talk about, written once so the control below checks the SAME arithmetic the module
 /// claims rather than a restatement of it.
-fn projected_entries_per_object(elements_per_object: usize, elements_per_page: usize) -> usize {
+fn projected_entries_per_object(elements_per_object: usize, elements_per_block: usize) -> usize {
     assert!(
-        elements_per_page > 0,
+        elements_per_block > 0,
         "a page holding no elements is not a batching scheme, and the division below would be \
          undefined"
     );
-    elements_per_object.div_ceil(elements_per_page)
+    elements_per_object.div_ceil(elements_per_block)
 }
 
 /// THE CONTROL'S ASSERTION, AND IT HAS TO BE ABLE TO FAIL.
@@ -428,9 +428,9 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                      means nothing"
                 );
                 let mut entry_hist = Hist::default();
-                let mut page_hist = Hist::default();
+                let mut block_hist = Hist::default();
                 for key in keys {
-                    let (entries, pages) = entries_and_pages(&engine, kind, key);
+                    let (entries, pages) = entries_and_blocks(&engine, kind, key);
                     assert!(
                         entries > 0,
                         "denominator: kind {kind} key {key} holds no live page entry at \
@@ -438,14 +438,14 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                          from it below is a zero presented as a measurement"
                     );
                     entry_hist.add(entries);
-                    page_hist.add(pages);
+                    block_hist.add(pages);
                     per_range
                         .entry((end_routing_bucket, elements, kind))
                         .or_default()
                         .push(entries);
                 }
                 entry_hist.print(&format!("{kind}: index entries/object"));
-                page_hist.print(&format!("{kind}: distinct pages/object"));
+                block_hist.print(&format!("{kind}: distinct pages/object"));
 
                 match *kind {
                     // ELEMENT-SCALED. One page and one entry per element, uncapped.
@@ -463,7 +463,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                              population is mixed and the row above is not the shape claimed"
                         );
                         assert_eq!(
-                            page_hist.max(),
+                            block_hist.max(),
                             elements,
                             "{kind} holds fewer distinct pages than elements, so something \
                              already batches it and this module's premise is stale for it"
@@ -481,7 +481,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         );
                         assert_eq!(
                             entry_hist.max(),
-                            page_hist.max(),
+                            block_hist.max(),
                             "the series entry count is not its page count, so the deduplication \
                              in `sync_bucket_index_object_blocks_with_mode` is not what is being \
                              measured here"
@@ -533,14 +533,14 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 ///
 /// THIS TOOK A `component: Option<&str>` AND THE ARGUMENT WAS DEAD. The struct literal below
 /// stopped setting an element name when the field was removed from `BlockIndex`, so the parameter
-/// decided nothing: `page_at(Some("field-a"), ..)` and `page_at(Some("field-b"), ..)` returned the
+/// decided nothing: `block_at(Some("field-a"), ..)` and `block_at(Some("field-b"), ..)` returned the
 /// SAME value, which is what quietly turned the old control into a comparison of a value with
 /// itself. It is REMOVED rather than renamed to `_component`, so a caller that still tries to name
 /// an element here is a compile error and not a silent no-op.
 ///
 /// AND IT HANDS THE OBJECT KEY BESIDE THE PAGE, for the same reason: the identity is leaving the
 /// entry, and a fixture that handed back a bare page would make every caller read it off.
-fn page_at(slab: u64, offset: u64, length: u64) -> (std::sync::Arc<str>, BlockIndex) {
+fn block_at(slab: u64, offset: u64, length: u64) -> (std::sync::Arc<str>, BlockIndex) {
     (
         std::sync::Arc::from("one-object"),
         BlockIndex {
@@ -559,13 +559,13 @@ fn page_at(slab: u64, offset: u64, length: u64) -> (std::sync::Arc<str>, BlockIn
 }
 
 /// The same page shape under a different object key, for the object-key control below.
-fn page_at_for_object(
+fn block_at_for_object(
     object_key: &str,
     slab: u64,
     offset: u64,
     length: u64,
 ) -> (std::sync::Arc<str>, BlockIndex) {
-    let (_, page) = page_at(slab, offset, length);
+    let (_, page) = block_at(slab, offset, length);
     (
         std::sync::Arc::from(object_key),
         BlockIndex {
@@ -606,13 +606,13 @@ fn page_at_for_object(
 /// `block_index_handle`; the second tests `BlockIndexMap`'s keying. A map that ignored the handle
 /// and always replaced would satisfy every handle assertion here and fail every count.
 #[test]
-fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
+fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     let shared_slab = 7u64;
     let shared_offset = 4_096u64;
     let shared_length = 512u64;
 
-    let (first_key, first) = page_at(shared_slab, shared_offset, shared_length);
-    let (second_key, second) = page_at(shared_slab, shared_offset, shared_length);
+    let (first_key, first) = block_at(shared_slab, shared_offset, shared_length);
+    let (second_key, second) = block_at(shared_slab, shared_offset, shared_length);
 
     // Same page, byte for byte. The premise, kept: without it the arm is not about a shared page.
     assert_eq!(
@@ -649,7 +649,7 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
 
     // CONTROL ONE: a DIFFERENT page is still a second entry.
     let (elsewhere_key, elsewhere) =
-        page_at(shared_slab, shared_offset + shared_length, shared_length);
+        block_at(shared_slab, shared_offset + shared_length, shared_length);
     assert_ne!(
         block_index_handle(&first_key, &first),
         block_index_handle(&elsewhere_key, &elsewhere),
@@ -669,7 +669,7 @@ fn one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
 
     // CONTROL TWO: the same page shape under a different object key stays apart.
     let (other_object_key, other_object) =
-        page_at_for_object("another-object", shared_slab, shared_offset, shared_length);
+        block_at_for_object("another-object", shared_slab, shared_offset, shared_length);
     assert_ne!(
         block_index_handle(&first_key, &first),
         block_index_handle(&other_object_key, &other_object),
@@ -878,7 +878,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
 /// names one width so the column is one number again, and this paragraph is why the padding may not
 /// be removed.
 #[test]
-fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
+fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -1019,7 +1019,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_page_would_fetch() {
 /// representation.
 ///
 /// BOTH SIDES COME OFF THE RUN, WHICH IS THE POINT. The measured side is entries per object
-/// counted off the engine's page index by `entries_and_pages`; the projected side is
+/// counted off the engine's page index by `entries_and_blocks`; the projected side is
 /// `projected_entries_per_object` applied to the elements this fixture actually wrote, at the
 /// widest batch width the module prices. Two literals divided by each other would print the same
 /// `+0.00%` on a run where the string kind had started filing ten entries an object, because
@@ -1051,7 +1051,7 @@ fn the_string_control_has_nothing_for_batching_to_win() {
     let mut total_entries = 0usize;
     for k in 0..KEYS_PER_KIND {
         let key = format!("s{k}");
-        let (entries, pages) = entries_and_pages(&engine, "string", &key);
+        let (entries, pages) = entries_and_blocks(&engine, "string", &key);
         assert_eq!(
             pages, 1,
             "a string key must hold its value over one page; {key} holds {pages}"
@@ -1120,7 +1120,7 @@ fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
             .collect(),
     );
 
-    let (entries, _pages) = entries_and_pages(&engine, "hash", "control-perturbed");
+    let (entries, _pages) = entries_and_blocks(&engine, "hash", "control-perturbed");
     assert_eq!(
         entries, SMALL_ELEMENTS,
         "the perturbation fixture filed {entries} entries for {SMALL_ELEMENTS} fields, so it is \
@@ -1169,7 +1169,7 @@ fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
 /// `shard.zsets` -- so its cardinality is asserted to stay right while its entry count is the same
 /// shape as the hash's. An instrument that moved both arms together would be measuring the fixture.
 #[test]
-fn three_readers_take_the_page_index_entry_count_for_the_element_count() {
+fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -1195,9 +1195,9 @@ fn three_readers_take_the_page_index_entry_count_for_the_element_count() {
 
     // The entry count each kind actually holds, so the readers below are checked against a measured
     // denominator and not against the constant they were seeded with.
-    let (hash_entries, hash_pages) = entries_and_pages(&engine, "hash", "rd-h");
-    let (set_entries, set_pages) = entries_and_pages(&engine, "set", "rd-t");
-    let (zset_entries, zset_pages) = entries_and_pages(&engine, "zset", "rd-z");
+    let (hash_entries, hash_pages) = entries_and_blocks(&engine, "hash", "rd-h");
+    let (set_entries, set_pages) = entries_and_blocks(&engine, "set", "rd-t");
+    let (zset_entries, zset_pages) = entries_and_blocks(&engine, "zset", "rd-z");
     assert_eq!(
         (hash_entries, set_entries, zset_entries),
         (LARGE_ELEMENTS, LARGE_ELEMENTS, LARGE_ELEMENTS),

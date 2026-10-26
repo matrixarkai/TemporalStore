@@ -195,21 +195,21 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     engine
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
-    let (folded_live, folded_pages, _) = entry_census(&engine);
+    let (folded_live, folded_blocks, _) = entry_census(&engine);
     println!(
         "\n=== after the fold: {folded_live} live entr(ies), \
          {} distinct page(s)",
-        folded_pages.len()
+        folded_blocks.len()
     );
 
     // FLOOR: THE FIXTURE ACTUALLY FOLDED. Without this, "one entry per page" is trivially true
     // because every element is still its own page and the gate is doing nothing.
     assert_eq!(
         1,
-        folded_pages.len(),
+        folded_blocks.len(),
         "the {FIRST_BATCH} members resolve to {} distinct pages after the fold, so they never came \
          to share one and this test has no collapse to observe",
-        folded_pages.len()
+        folded_blocks.len()
     );
     // RESTATED TO THE ONE TERM THAT CAN STILL VARY. This was `(1, 0) == (folded_live,
     // folded_named)`, pairing the entry count with the number of entries naming an element. The
@@ -222,7 +222,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
         1, folded_live,
         "after the fold the projection filed {folded_live} entr(ies) over {} distinct page(s); it \
          must file exactly one per page",
-        folded_pages.len()
+        folded_blocks.len()
     );
 
     // ---- NOW A WRITE AFTER THAT DERIVATION. This is the only thing that can see the two
@@ -335,7 +335,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
 /// repair has to be handed the superseded address as well -- and the write path already reads it,
 /// to compute the ordinal.
 #[test]
-fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
+fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -346,13 +346,13 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
     engine
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
-    let (_, folded_pages, _) = entry_census(&engine);
+    let (_, folded_blocks, _) = entry_census(&engine);
     // FLOOR: the fixture folded, or "one entry per page" below is trivially true.
     assert_eq!(
         1,
-        folded_pages.len(),
+        folded_blocks.len(),
         "the members resolve to {} pages after the fold, so there is no shared page to rewrite off",
-        folded_pages.len()
+        folded_blocks.len()
     );
 
     // REWRITE a member that is already on the folded page.
@@ -407,7 +407,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_page_today() {
 /// every one of these writes. Measured here so the repair's condition is derived from behaviour
 /// rather than from a list of kind names someone remembers.
 #[test]
-fn a_component_less_kind_rewritten_still_resolves_to_one_page() {
+fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -685,13 +685,13 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
 
         // FLOOR: THE MEMBERS SHARE ONE PAGE. Without the fold each is its own page, the gated arm
         // is not what runs, and this test would be about the ungated path wearing a gated label.
-        let (_, folded_pages, _) = entry_census(&engine);
+        let (_, folded_blocks, _) = entry_census(&engine);
         assert_eq!(
             1,
-            folded_pages.len(),
+            folded_blocks.len(),
             "the {CROWD} members resolve to {} pages after the fold, so no page holds more than \
              one member and the removal arm under test is not the one that runs",
-            folded_pages.len()
+            folded_blocks.len()
         );
 
         remove(&engine, doomed.clone());
@@ -784,8 +784,8 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
         .expect("the fold round must succeed");
 
     // FLOOR: one page, so the gated arm is what runs.
-    let (_, folded_pages, _) = entry_census(&engine);
-    assert_eq!(1, folded_pages.len(), "the fixture did not fold");
+    let (_, folded_blocks, _) = entry_census(&engine);
+    assert_eq!(1, folded_blocks.len(), "the fixture did not fold");
 
     // THE SAME ELEMENT REMOVED SEVERAL TIMES must not file several tombstones: only the first
     // removal removes anything.
@@ -837,7 +837,7 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
 
 /// THE PAGE AN ELEMENT WAS ALONE ON, which is the half the landing address cannot reach.
 ///
-/// `a_rewrite_after_a_fold_leaves_one_entry_per_page_today` above measures the OTHER half: a
+/// `a_rewrite_after_a_fold_leaves_one_entry_per_block_today` above measures the OTHER half: a
 /// rewrite off a page SIBLINGS are still on, where the page stays live and its entry must stay
 /// with it. This one is the case that strands an entry. The member is alone on its page, the
 /// rewrite is written to a NEW address, and keyed on the landing page alone the supersede matches
@@ -855,7 +855,7 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
 /// the tree before `ReplacedPage` existed. That reddens the one-to-one assertion here and leaves
 /// the fold arm above green, which is what says the two arms are about different halves.
 #[test]
-fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
+fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -863,7 +863,7 @@ fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
     add(&engine, member_bytes(0));
     add(&engine, member_bytes(1));
 
-    let before = member_page(&engine, &member_bytes(0));
+    let before = member_block(&engine, &member_bytes(0));
     let (live_before, pages_before, _) = entry_census(&engine);
     // FLOOR 1: each member is on its OWN page, or there is no alone-on-a-page case to rewrite off
     // and this test would be measuring the fold arm's situation instead.
@@ -881,7 +881,7 @@ fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
 
     // REWRITE the member that is alone on its page.
     add(&engine, member_bytes(0));
-    let after = member_page(&engine, &member_bytes(0));
+    let after = member_block(&engine, &member_bytes(0));
     // FLOOR 2: the rewrite actually RELOCATED. If a rewrite landed back on its own page the
     // landing key would supersede the entry by itself and there would be nothing here to fix.
     assert_ne!(
@@ -954,7 +954,7 @@ fn a_rewrite_off_a_page_the_element_was_alone_on_retires_that_pages_entry() {
 /// READ FROM THE RESIDENT MAP and not from the index, deliberately: the index is the thing under
 /// test here, so taking the before-and-after page from it would compare two values derived from
 /// the same accessor -- a shape that has already passed over broken code in this campaign.
-fn member_page(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
+fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let address = shard

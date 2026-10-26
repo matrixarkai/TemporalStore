@@ -166,7 +166,7 @@ fn both_sources(
 ///
 /// rust-internal: reads the engine's own resident maps after a reload, no external surface
 #[test]
-fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_pages_derive() {
+fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_derive() {
     const KEY: &str = "fold-hash";
     const FIELDS: usize = 6;
 
@@ -350,7 +350,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_pages_deri
 ///
 /// rust-internal: reads the engine's own resident maps after a reload, no external surface
 #[test]
-fn a_field_whose_page_the_fold_removed_is_in_neither_source() {
+fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
     const KEY: &str = "fold-hash-gone";
 
     let dir = tempfile::tempdir().unwrap();
@@ -439,7 +439,7 @@ fn a_field_whose_page_the_fold_removed_is_in_neither_source() {
 /// The removal's silence is not a gap and the reason is stated where it is decided: an element is
 /// restored only if the finished fold still holds a block at the address it was carried with, so a
 /// removal needs to say nothing -- taking the block away is already the whole answer.
-/// `a_field_whose_page_the_fold_removed_is_in_neither_source` drives exactly that.
+/// `a_field_whose_block_the_fold_removed_is_in_neither_source` drives exactly that.
 ///
 /// So every INSTALL path reports, and the one non-reporter is a removal whose safety is the merge's
 /// `live` gate. That is the bound: there is no hash write that puts a page in the index without

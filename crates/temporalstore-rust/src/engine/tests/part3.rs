@@ -2532,7 +2532,7 @@ fn recovery_reconciles_model_views_from_bucket_index_authority() {
 
 // shared-corpus: storage_dump_load_recovery
 #[test]
-fn core_index_loads_legacy_bucket_page_field_names() {
+fn core_index_loads_legacy_bucket_block_field_names() {
     let legacy_json = r#"{
         "slots": {
             "7": {
@@ -3216,7 +3216,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
         "premise: the block stream returns a non-empty window at offset zero"
     );
 
-    let page_here = engine.scan_stream(ScanStreamRequest {
+    let block_here = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
         block_slab_id: 0,
@@ -3224,9 +3224,9 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
         end_offset: 64,
         max_bytes: u64::MAX,
     });
-    assert!(page_here.status.ok);
+    assert!(block_here.status.ok);
     assert_eq!(
-        page_here.records.len(),
+        block_here.records.len(),
         1,
         "premise: the page stream holds bytes at offset zero"
     );
@@ -3269,7 +3269,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
         block_past.end_of_stream
     );
 
-    let page_past = engine.scan_stream(ScanStreamRequest {
+    let block_past = engine.scan_stream(ScanStreamRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
         block_slab_id: 0,
@@ -3277,18 +3277,18 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
         end_offset: PAST + 64,
         max_bytes: u64::MAX,
     });
-    assert!(page_past.status.ok, "a read past the end is not an error");
+    assert!(block_past.status.ok, "a read past the end is not an error");
     assert_eq!(
-        page_past.records.len(),
+        block_past.records.len(),
         0,
         "premise: nothing lives at {PAST} in the page stream"
     );
     assert!(
-        page_past.end_of_stream,
+        block_past.end_of_stream,
         "a page scan returned {} records at offset {PAST} and said end_of_stream={}, so a \
          caller walking `while !end_of_stream` could never advance past it",
-        page_past.records.len(),
-        page_past.end_of_stream
+        block_past.records.len(),
+        block_past.end_of_stream
     );
 
     let index_past = engine.scan_stream(ScanStreamRequest {

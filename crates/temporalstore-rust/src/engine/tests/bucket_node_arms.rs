@@ -670,10 +670,10 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // every bucket in the map and at the shipped routing range almost none holds exactly one block.
     // So a single block costs one allocation here, deliberately, and the object and tombstone
     // indexes are the two members whose simple spelling is still free.
-    let simple_page = BlockIndexMap::Many(vec![(7, page_fixture())]);
-    assert_eq!(1, simple_page.len(), "a one-entry page list holds exactly one page");
+    let simple_block = BlockIndexMap::Many(vec![(7, page_fixture())]);
+    assert_eq!(1, simple_block.len(), "a one-entry page list holds exactly one page");
     assert!(
-        simple_page.get(&7).is_some(),
+        simple_block.get(&7).is_some(),
         "a one-entry page list must answer for the handle it holds"
     );
 
@@ -1536,7 +1536,7 @@ fn lines_touched(node_address: usize, address_address: usize) -> usize {
 /// rust-internal: measures the engine's own bucket map, no product behaviour
 #[test]
 #[ignore = "seeds two stores of 4,000 records; run by name"]
-fn a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_it_does_not() {
+fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows_it_does_not() {
     // --- THE INSTRUMENT'S OWN CONTROLS, BEFORE IT IS USED FOR ANYTHING. ---
     //
     // This test's finding is that BOTH arms touch two lines, and the assertions below say so as
@@ -2199,7 +2199,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
         "  SO THE READ COST IS NOT IN ANY COLUMN ABOVE. The counting allocator reads it as 0.000 \
          because nothing is allocated, exactly as a resident-only change predicts. The whole of \
          the read cost is the +0.4800 cache lines a page read measured in \
-         `a_tagged_simple_arm_adds_a_line_to_every_page_read_and_the_general_arm_shows_it_does_not`."
+         `a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows_it_does_not`."
     );
 }
 

@@ -186,7 +186,7 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
 /// The COUNT per key, not merely which keys are present. Evicting too much is data loss and it is
 /// silent, so the direction guard compares this map element by element against the same map taken
 /// before the round: a key that kept its entry but lost a page would pass a presence check.
-fn live_pages_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
+fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut counts = BTreeMap::new();
@@ -200,7 +200,7 @@ fn live_pages_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
 ///
 /// A release empties a bucket's RESIDENT page list and deliberately keeps its `object_index` --
 /// that is what keeps a released bucket countable and distinguishes it from one that genuinely
-/// holds nothing. The model maps do not record it, so [`live_pages_by_key`] cannot see it go; a
+/// holds nothing. The model maps do not record it, so [`live_blocks_by_key`] cannot see it go; a
 /// release that dropped it would be silent everywhere else in this file.
 fn objects_by_bucket(engine: &TemporalEngine) -> BTreeMap<u32, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -214,7 +214,7 @@ fn objects_by_bucket(engine: &TemporalEngine) -> BTreeMap<u32, usize> {
 }
 
 /// Slab ids the shard's live pages actually sit on, and how many pages sit on each.
-fn live_pages_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
+fn live_blocks_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let mut by_slab = BTreeMap::new();
@@ -361,12 +361,12 @@ fn ratio(small: u64, large: u64) -> f64 {
 ///   4. the round chooses FEWER victims than there are buckets, which is what makes "per victim"
 ///      and "per record" different denominators at all.
 #[test]
-fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_pages() {
+fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_blocks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = evict_engine(dir.path());
     seed_with_a_slab_roll(&engine, GUARD_LARGE);
 
-    let by_slab = live_pages_by_slab(&engine);
+    let by_slab = live_blocks_by_slab(&engine);
     // The ids, not only the count: clause 3 below needs the set a SCAN-ordered selection would
     // reach, and `bucket_map` is ordered, so its leading entries are exactly that set.
     let all_buckets: Vec<u32> = {
@@ -612,13 +612,13 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
 /// victim and one releases them. A release drops RESIDENT entries and keeps the model maps
 /// whole -- that is what makes it reversible -- so the live-page map must be identical across it.
 #[test]
-fn an_eviction_round_leaves_every_live_key_and_page_exactly_where_it_was() {
+fn an_eviction_round_leaves_every_live_key_and_block_exactly_where_it_was() {
     for dump in [false, true] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, GUARD_SMALL);
 
-        let before = live_pages_by_key(&engine);
+        let before = live_blocks_by_key(&engine);
         let buckets_before = objects_by_bucket(&engine);
         assert_eq!(
             before.len(),
@@ -628,7 +628,7 @@ fn an_eviction_round_leaves_every_live_key_and_page_exactly_where_it_was() {
             before.len()
         );
         let cost = one_round(&engine, GUARD_SMALL, BATCH, dump);
-        let after = live_pages_by_key(&engine);
+        let after = live_blocks_by_key(&engine);
 
         assert!(
             cost.victims > 0,
@@ -1463,8 +1463,8 @@ fn an_eviction_round_cannot_keep_up_with_the_store_it_is_draining() {
 const PLANTED_MARKERS: usize = 37;
 
 /// Live model-map pages the shard holds, counted by a DIFFERENT walk from the one under test.
-fn live_pages_total(engine: &TemporalEngine) -> u64 {
-    live_pages_by_key(engine).values().map(|n| *n as u64).sum()
+fn live_blocks_total(engine: &TemporalEngine) -> u64 {
+    live_blocks_by_key(engine).values().map(|n| *n as u64).sum()
 }
 
 /// Write `count` extra live string keys under a prefix the corpus does not use.
@@ -1512,7 +1512,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
     plant_markers(&engine, PLANTED_MARKERS);
 
     // Taken BEFORE the measured window: this walk charges the same counter.
-    let live_pages = live_pages_total(&engine);
+    let live_pages = live_blocks_total(&engine);
 
     let releasing = one_round(&engine, GUARD_SMALL, BATCH, true);
 
@@ -1584,7 +1584,7 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, records);
-        let live_pages = live_pages_total(&engine);
+        let live_pages = live_blocks_total(&engine);
         let releasing = one_round(&engine, records, BATCH, true);
         (refusing, releasing, live_pages)
     }
@@ -1908,7 +1908,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 .expect("candidate bucket present");
             blocks.insert(routing_bucket, bucket.block_index.len());
             objects.insert(routing_bucket, bucket.object_index.object_count());
-            let pages_clean = bucket
+            let blocks_clean = bucket
                 .block_index
                 .values()
                 .all(|page| !page.dirty && !page.deleted);
@@ -1916,7 +1916,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 && !bucket.loading()
                 && !bucket.deleted()
                 && !bucket.block_index.is_empty()
-                && pages_clean
+                && blocks_clean
             {
                 if bucket.dirty() {
                     dirty.push(routing_bucket);
@@ -1930,7 +1930,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         (released, dirty, blocks, objects)
     };
 
-    let pages_before = live_pages_by_key(&engine);
+    let pages_before = live_blocks_by_key(&engine);
 
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
@@ -1940,7 +1940,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         release_bucket_blocks(shard, &candidates)
     };
     let derivations = crate::engine::bucket_release_model_derivations();
-    let pages_after = live_pages_by_key(&engine);
+    let pages_after = live_blocks_by_key(&engine);
 
     println!(
         "  mixed batch: {} candidates, oracle says release {:?} and refuse {} on dirt; the \

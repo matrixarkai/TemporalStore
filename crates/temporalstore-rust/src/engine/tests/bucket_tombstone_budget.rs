@@ -84,7 +84,7 @@
 //!   1. `what_removing_the_tombstone_index_would_make_the_node` -- the arithmetic, per field, with
 //!      every width read FROM THE FIELD via `field_width` and every offset from `offset_of!`, the
 //!      live mirror as the control, and the reconstruction asserted rather than the total. 88 -> 80.
-//!   2. `a_tombstone_outlives_every_page_that_could_have_carried_it` -- the refutation, DRIVEN. It
+//!   2. `a_tombstone_outlives_every_block_that_could_have_carried_it` -- the refutation, DRIVEN. It
 //!      finds a bucket in the state above, ENFORCES that the state is the one described (id held,
 //!      no page carrying it, bucket not itself deleted), then PERTURBS the tombstone away and
 //!      asserts the published count falls by exactly one. The control is the unperturbed report on
@@ -412,7 +412,7 @@ fn tomb_load(engine: &TemporalEngine, end_routing_bucket: u32) {
 /// count that was already wrong for an unrelated reason would read as this edit's doing.
 #[test]
 #[ignore = "seeds 4,000 records and deletes a quarter of them; run by name"]
-fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
+fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = tomb_engine(dir.path());
     tomb_load(&engine, CONFIGURED_END_BUCKET);
@@ -465,7 +465,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
         buckets_with_tombstone,
         buckets_outliving,
         ids_outliving,
-        buckets_outliving_with_pages,
+        buckets_outliving_with_blocks,
         buckets_outliving_not_deleted,
         buckets_outliving_in_object_index,
         ids_unreachable,
@@ -477,7 +477,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
         let mut buckets_with_tombstone = 0usize;
         let mut buckets_outliving = 0usize;
         let mut ids_outliving = 0usize;
-        let mut with_pages = 0usize;
+        let mut with_blocks = 0usize;
         let mut not_deleted = 0usize;
         let mut in_object_index = 0usize;
         let mut ids_unreachable = 0usize;
@@ -503,7 +503,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             buckets_outliving += 1;
             ids_outliving += orphaned.len();
             if !bucket.block_index.is_empty() {
-                with_pages += 1;
+                with_blocks += 1;
             }
             if !bucket.deleted() {
                 not_deleted += 1;
@@ -539,7 +539,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
             buckets_with_tombstone,
             buckets_outliving,
             ids_outliving,
-            with_pages,
+            with_blocks,
             not_deleted,
             in_object_index,
             ids_unreachable,
@@ -556,7 +556,7 @@ fn a_tombstone_outlives_every_page_that_could_have_carried_it() {
     );
     println!("  such ids in total                                          {ids_outliving}");
     println!("\n  of those {buckets_outliving} buckets, how many satisfy each further clause:");
-    println!("    still hold OTHER pages (block_index non-empty)             {buckets_outliving_with_pages}");
+    println!("    still hold OTHER pages (block_index non-empty)             {buckets_outliving_with_blocks}");
     println!("    are NOT themselves marked deleted                          {buckets_outliving_not_deleted}");
     println!("    hold the orphaned id in object_index                        {buckets_outliving_in_object_index}");
     println!(

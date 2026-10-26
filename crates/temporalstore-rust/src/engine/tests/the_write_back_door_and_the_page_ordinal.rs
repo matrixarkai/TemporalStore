@@ -39,7 +39,7 @@ fn entry_with_ordinal(ordinal: Option<u64>) -> ElementEntry {
 /// be accepted -- and accepted means the address actually lands, not merely that no error came
 /// back.
 #[test]
-fn the_write_back_door_refuses_a_page_ordinal_it_cannot_hold() {
+fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
     let mut record = ObjectRecord::default();
 
     let refusal = record

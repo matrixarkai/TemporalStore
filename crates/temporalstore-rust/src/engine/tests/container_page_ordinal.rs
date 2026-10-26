@@ -168,7 +168,7 @@ fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> 
 /// than re-goldened -- the two arms below are about WHICH element a removal is recorded against,
 /// and that question still has an answer; what moved is where the answer is kept. Reading the
 /// entry here instead would make both of them assert `None == None`.
-fn tombstone_pages_of(
+fn tombstone_blocks_of(
     engine: &TemporalEngine,
     kind: &str,
     key: &str,
@@ -331,7 +331,7 @@ fn seed_one_of_each_kind(engine: &TemporalEngine) -> Vec<(&'static str, String)>
 ///
 /// rust-internal: drives four command arms through the engine, no external surface
 #[test]
-fn every_container_page_carries_its_own_ordinal_rather_than_zero() {
+fn every_container_block_carries_its_own_ordinal_rather_than_zero() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -386,7 +386,7 @@ fn every_container_page_carries_its_own_ordinal_rather_than_zero() {
 ///
 /// rust-internal: drives StringSet, no external surface
 #[test]
-fn a_string_page_is_left_at_zero_which_is_the_control() {
+fn a_string_block_is_left_at_zero_which_is_the_control() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
@@ -596,7 +596,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
          is two, the retirement has landed and this is the assertion to come and restate"
     );
     // AND THE TOMBSTONE KEPT THE NUMBER, which is the fact the old mechanism had no way to express.
-    let tombstoned_after_delete = tombstone_pages_of(&engine, "zset", key);
+    let tombstoned_after_delete = tombstone_blocks_of(&engine, "zset", key);
     assert_eq!(
         1,
         tombstoned_after_delete.len(),
@@ -676,7 +676,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     // This assertion read `1 == at_two_live` over the live INDEX and would now fail at 2. Changing
     // the number alone would have recorded the cost as if it were the invariant; the invariant has
     // moved to the line above instead, where it is still 1.
-    let tombstoned = tombstone_pages_of(&engine, "zset", key);
+    let tombstoned = tombstone_blocks_of(&engine, "zset", key);
     let resident_at_two = resident_ordinals_of(&engine, "zset", key)
         .into_iter()
         .filter(|ordinal| *ordinal == Some(2))
@@ -838,7 +838,7 @@ fn deletion_still_finds_its_element_by_component() {
     // The new half of "deletion still finds its row": it has to find the right row to REMOVE and the
     // right row to RECORD, and a delete that matched the wrong component would now be wrong twice --
     // once in the live set and once in the pages. Asserting only the live count would miss the second.
-    let tombstoned = tombstone_pages_of(&engine, "set", key);
+    let tombstoned = tombstone_blocks_of(&engine, "set", key);
     println!("  tombstone entries after the delete: {tombstoned:?}");
     assert_eq!(
         1,

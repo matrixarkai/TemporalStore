@@ -29,7 +29,7 @@
 //!
 //! AND IT DOES NOT HAVE TO, because the identity does not have to be STORED to be available.
 //! Nothing bounds the objects in a routing bucket at 256, so an eight-bit identity is not on offer
-//! -- but `the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it` measures the other
+//! -- but `the_object_id_on_a_live_block_entry_is_the_hash_of_fields_beside_it` measures the other
 //! shape the arithmetic allows, the field GONE, and finds the stored id is
 //! `stable_block_object_id(shard, kind, key)` on 2,524 of 2,524 live block entries and on
 //! 20,632 of 20,632, differing on none. So the question the width turns on is not how narrow an
@@ -1207,7 +1207,7 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
 /// THE NUMBER CANDIDATE A TURNS ON: matching against differing, with a denominator.
 #[test]
 #[ignore = "seeds 80,000 records; run by name"]
-fn a_model_map_address_and_the_bucket_index_address_for_one_page_are_not_the_same_value() {
+fn a_model_map_address_and_the_bucket_index_address_for_one_block_are_not_the_same_value() {
     for (label, strings_n, series_keys, series_points) in [
         ("8,000 records", 4_000usize, 4usize, 1_000usize),
         ("80,000 records", 40_000usize, 40usize, 1_000usize),
@@ -1569,10 +1569,10 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
         long_table.iter().all(|(map, _)| map.len() == LONG_POINTS),
         "denominator: every table arm really holds {LONG_POINTS} entries"
     );
-    let distinct_pages: usize = long_table.iter().map(|(_, pages)| pages.len()).sum();
+    let distinct_blocks: usize = long_table.iter().map(|(_, pages)| pages.len()).sum();
     assert!(
-        distinct_pages < long_entries,
-        "denominator: the table arm must actually be sharing -- {distinct_pages} distinct pages \
+        distinct_blocks < long_entries,
+        "denominator: the table arm must actually be sharing -- {distinct_blocks} distinct pages \
          over {long_entries} entries"
     );
 
@@ -1593,7 +1593,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     println!("  BTreeMap<u64, ElementEntry>:          {long_btree_per:.1} bytes/entry");
     println!(
         "  BTreeMap<u64, u32> + per-series pages: {long_table_per:.1} bytes/entry \
-         ({distinct_pages} distinct pages over {long_entries} entries)"
+         ({distinct_blocks} distinct pages over {long_entries} entries)"
     );
     println!(
         "  the per-series page table saves {:.1} bytes/entry ({:.1}%) on a coalescing series",
@@ -1697,7 +1697,7 @@ fn the_feature_workload_has_no_short_series_for_the_one_shape_to_help() {
 /// fires the first assert. Changing any one of the six map types fires the second as a compile error
 /// rather than a failure.
 #[test]
-fn the_bucket_index_holds_one_page_out_of_line_and_the_series_maps_hold_none() {
+fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() {
     use crate::engine::state::{BlockIndex, BlockIndexMap};
 
     // (1) The split shape is no wider than the CONTAINER HEADER it has to carry anyway, and a
@@ -2000,7 +2000,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     let mut blocks_per_object: BTreeMap<u64, usize> = BTreeMap::new();
     let mut model_ids: std::collections::BTreeSet<String> = Default::default();
     let mut max_length = 0u64;
-    let mut max_page_id = 0u64;
+    let mut max_block_id = 0u64;
     let mut live_zero_length: Vec<(String, String)> = Vec::new();
     let mut deleted_zero_length = 0usize;
     let mut live_blocks = 0usize;
@@ -2030,7 +2030,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
                 });
             *blocks_per_object.entry(page.object_id(1, &named_key)).or_default() += 1;
             max_length = max_length.max(page.address.length());
-            max_page_id = max_page_id.max(page.address.block_id().unwrap_or(0));
+            max_block_id = max_block_id.max(page.address.block_id().unwrap_or(0));
             longest.push((page.address.length(), named_key.to_string()));
             if named_key.as_ref() == "big_value" || named_key.as_ref() == "empty_value" {
                 named.insert(named_key.to_string(), (page.address.length(), page.deleted));
@@ -2122,8 +2122,8 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         65535.0 / max_blocks_in_an_object.max(1) as f64
     );
     println!(
-        "  max page_id observed: {max_page_id}  (16-bit ceiling 65535, headroom {:.1}x)",
-        65535.0 / max_page_id.max(1) as f64
+        "  max page_id observed: {max_block_id}  (16-bit ceiling 65535, headroom {:.1}x)",
+        65535.0 / max_block_id.max(1) as f64
     );
     println!(
         "  max block length: {max_length} bytes  (32-bit ceiling 4294967295, headroom {:.1}x)",
@@ -2239,7 +2239,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
 ///
 /// rust-internal: reads the engine's own cache keys, no product behaviour
 #[test]
-fn the_warm_page_is_found_under_the_key_the_other_side_wrote() {
+fn the_warm_block_is_found_under_the_key_the_other_side_wrote() {
     let dir = tempfile::tempdir().expect("tempdir");
     const KEYS: usize = 16;
     let keys: Vec<String> = (0..KEYS).map(|index| format!("bucket-arg-{index:03}")).collect();
@@ -2924,7 +2924,7 @@ impl DerivationCensus {
 /// two callers are retired together rather than rewritten into that shape.
 ///
 /// THE NON-CIRCULAR FORM SURVIVES, in
-/// `shard_carried_identity::the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pages`:
+/// `shard_carried_identity::the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blocks`:
 /// it derives from each shard's own stamp and checks the answer against `bucket.object_index`,
 /// which the WRITE PATH populated from the id it actually used. Two independent answers, and it
 /// outlives the field.
@@ -2952,7 +2952,7 @@ const HASH_FIELDS: usize = 8;
 /// address has shed it, so the measurement cannot be repeated and does not need to be.
 #[test]
 #[ignore = "retired: the stored side of this census no longer exists"]
-fn the_object_id_on_a_live_page_entry_is_the_hash_of_fields_beside_it() {
+fn the_object_id_on_a_live_block_entry_is_the_hash_of_fields_beside_it() {
     println!("retired: see the_stored_against_derived_census_is_retired_because_its_other_side_is_gone");
 }
 
@@ -2993,7 +2993,7 @@ fn the_derivation_census_reports_a_differing_id_when_one_exists() {
 /// AND the key. Both are printed with their own denominator rather than divided into each other.
 #[test]
 #[ignore = "seeds a shard and reads process-wide counters; run by name"]
-fn what_deriving_the_page_identity_costs_at_the_read_path() {
+fn what_deriving_the_block_identity_costs_at_the_read_path() {
     const RECORDS: usize = 2_000;
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = new_engine(dir.path());
@@ -3099,7 +3099,7 @@ fn the_identity_a_read_builds_is_the_id_the_address_held() {
 ///
 /// rust-internal: reads this crate's own source text, no product behaviour
 #[test]
-fn the_page_identity_has_no_constructor_that_takes_an_id() {
+fn the_block_identity_has_no_constructor_that_takes_an_id() {
     const HASHING: &str = include_str!("../hashing.rs");
     assert!(
         HASHING.len() > 3_000,

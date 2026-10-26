@@ -24,7 +24,7 @@
 //! in a slot of its own". #1959's fixture calls `engine.load_shard(1)`, which is that default.
 //!
 //! The documented production setting is `TS_SHARD_END_ROUTING_BUCKET=1023`, and at 1,024 buckets
-//! the SAME routed workload fills them. `the_pages_a_bucket_holds_are_decided_by_the_routing_range`
+//! the SAME routed workload fills them. `the_blocks_a_bucket_holds_are_decided_by_the_routing_range`
 //! reports both widths at two corpus sizes as histograms with counts.
 //!
 //! AND THE CONTAINER STORE IS NOT A DIFFERENT ROUTING CALL, A DIFFERENT RANGE OR A DIFFERENT KEY
@@ -32,7 +32,7 @@
 //! component; the block HANDLE is `state::block_index_handle`, which hashes the component, and does.
 //! So a hash's hundred fields are a hundred distinct handles under one object key, and one object
 //! key is one bucket at any range.
-//! `routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bucket` asserts
+//! `routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_bucket` asserts
 //! both halves against the functions themselves.
 //!
 //! WHAT THIS MODULE DOES NOT CLAIM. It does not propose a code change, and it does not recommend
@@ -350,7 +350,7 @@ fn total<T>(contents: &BTreeMap<u32, BTreeSet<T>>) -> usize {
 /// rust-internal: reads the engine's own bucket index, no product behaviour
 #[test]
 #[ignore = "seeds four stores up to 40,000 records each; run by name"]
-fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
+fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut observed: BTreeMap<(usize, u32), BlocksPerBucket> = BTreeMap::new();
 
@@ -496,7 +496,7 @@ fn the_pages_a_bucket_holds_are_decided_by_the_routing_range() {
 /// rust-internal: reads the engine's own placement functions, no product behaviour
 #[test]
 #[ignore = "seeds a container store; run by name"]
-fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bucket() {
+fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_bucket() {
     // --- Against the functions themselves, at both widths. ---
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let key = "bag-000000";
@@ -639,7 +639,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_pages_share_one_bu
 /// rust-internal: reads the engine's own bucket index, no product behaviour
 #[test]
 #[ignore = "seeds two stores of 4,000 records; run by name"]
-fn the_narrow_range_holds_the_same_pages_the_wide_one_does_bucket_for_bucket() {
+fn the_narrow_range_holds_the_same_blocks_the_wide_one_does_bucket_for_bucket() {
     let mut key_sets: BTreeMap<u32, BTreeMap<u32, BTreeSet<String>>> = BTreeMap::new();
     let mut handle_sets: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
     let mut written: Vec<String> = Vec::new();
@@ -765,7 +765,7 @@ fn the_narrow_range_holds_the_same_pages_the_wide_one_does_bucket_for_bucket() {
 /// rust-internal: drives the engine's own restart, no product behaviour
 #[test]
 #[ignore = "seeds and restarts two stores; run by name"]
-fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
+fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
     const RECORDS: usize = 2_000;
     let mut grouped: BTreeMap<&str, usize> = BTreeMap::new();
 
@@ -842,7 +842,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
             .copied()
             .filter(|routing_bucket| *routing_bucket > to_end)
             .collect();
-        let pages_outside: usize = outside
+        let blocks_outside: usize = outside
             .iter()
             .filter_map(|routing_bucket| after.get(routing_bucket))
             .map(|handles| handles.len())
@@ -856,7 +856,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
         println!(
             "  {direction} 0..{from_end} -> 0..{to_end}: {readable}/{RECORDS} readable, \
              {entries} live pages, {buckets_before} buckets -> {} buckets, {} buckets holding \
-             {pages_outside} pages above the shard's end",
+             {blocks_outside} pages above the shard's end",
             after.len(),
             outside.len()
         );
@@ -877,9 +877,9 @@ fn a_store_reopened_on_the_other_range_keeps_every_page_in_both_directions() {
             // before the first ingest" warning from `docs/runtime_tuning.md`, which is the only
             // thing standing between an operator and this state today.
             assert_eq!(
-                pages_outside,
+                blocks_outside,
                 RECORDS,
-                "{direction} from 0..{from_end} to 0..{to_end}: {pages_outside} of {RECORDS} pages \
+                "{direction} from 0..{from_end} to 0..{to_end}: {blocks_outside} of {RECORDS} pages \
                  came back filed above the shard's end, not all of them. The engine does not \
                  re-file a page whose address carries an explicit bucket, so either every page is \
                  outside or the write path has stopped stamping one -- a partial count means the \
@@ -1021,7 +1021,7 @@ fn the_clone_instrument_used_here_recovers_a_planted_megabyte_exactly() {
 #[cfg(feature = "alloc-probe")]
 #[test]
 #[ignore = "seeds four stores up to 40,000 records each; run by name"]
-fn filling_a_bucket_trades_a_node_a_page_for_a_map_node_a_bucket_and_the_fill_decides_the_sign() {
+fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_decides_the_sign() {
     let mut path_lengths: Vec<usize> = Vec::new();
     let mut observed: BTreeMap<(usize, u32), Arm> = BTreeMap::new();
 
@@ -1093,8 +1093,8 @@ fn filling_a_bucket_trades_a_node_a_page_for_a_map_node_a_bucket_and_the_fill_de
             },
             row.buckets,
             row.pages,
-            row.bytes_per_page(),
-            row.allocs_per_page(),
+            row.bytes_per_block(),
+            row.allocs_per_block(),
             row.arms.0,
             row.arms.1,
             row.arms.2
@@ -1139,12 +1139,12 @@ fn filling_a_bucket_trades_a_node_a_page_for_a_map_node_a_bucket_and_the_fill_de
         println!(
             "  {records} records: allocations a page {:.4} -> {:.4} ({:+.1}%); bytes a page \
              {:.1} -> {:.1} ({:+.1}%); page index arms One {} -> {}, Many {} -> {}",
-            wide.allocs_per_page(),
-            narrow.allocs_per_page(),
-            100.0 * (narrow.allocs_per_page() - wide.allocs_per_page()) / wide.allocs_per_page(),
-            wide.bytes_per_page(),
-            narrow.bytes_per_page(),
-            100.0 * (narrow.bytes_per_page() - wide.bytes_per_page()) / wide.bytes_per_page(),
+            wide.allocs_per_block(),
+            narrow.allocs_per_block(),
+            100.0 * (narrow.allocs_per_block() - wide.allocs_per_block()) / wide.allocs_per_block(),
+            wide.bytes_per_block(),
+            narrow.bytes_per_block(),
+            100.0 * (narrow.bytes_per_block() - wide.bytes_per_block()) / wide.bytes_per_block(),
             wide.arms.1,
             narrow.arms.1,
             wide.arms.2,
@@ -1160,8 +1160,8 @@ fn filling_a_bucket_trades_a_node_a_page_for_a_map_node_a_bucket_and_the_fill_de
     let small_narrow = observed.get(&(SMALL, NARROW_END)).expect("small narrow");
     let large_wide = observed.get(&(LARGE, WIDE_END)).expect("large wide");
     let large_narrow = observed.get(&(LARGE, NARROW_END)).expect("large narrow");
-    let small_ratio = small_narrow.allocs_per_page() / small_wide.allocs_per_page();
-    let large_ratio = large_narrow.allocs_per_page() / large_wide.allocs_per_page();
+    let small_ratio = small_narrow.allocs_per_block() / small_wide.allocs_per_block();
+    let large_ratio = large_narrow.allocs_per_block() / large_wide.allocs_per_block();
     println!(
         "  the fill deepens from {:.2} to {:.2} pages a bucket between the two corpus sizes, and \
          the allocation ratio moves from {small_ratio:.3} to {large_ratio:.3}",
@@ -1190,11 +1190,11 @@ struct Arm {
 
 #[cfg(feature = "alloc-probe")]
 impl Arm {
-    fn bytes_per_page(&self) -> f64 {
+    fn bytes_per_block(&self) -> f64 {
         self.bytes as f64 / self.pages as f64
     }
 
-    fn allocs_per_page(&self) -> f64 {
+    fn allocs_per_block(&self) -> f64 {
         self.allocs as f64 / self.pages as f64
     }
 }

@@ -391,7 +391,7 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
 /// own bucket is attributed by that bucket whichever expression is used, so the control must come
 /// out identical and does. The subject arm must differ on every page, and does.
 #[test]
-fn a_reader_attributes_a_reconstructed_page_to_the_bucket_it_is_actually_filed_under() {
+fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_under() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -483,7 +483,7 @@ fn a_reader_attributes_a_reconstructed_page_to_the_bucket_it_is_actually_filed_u
 /// Measured as a BAND, not a bound: a round that dropped everything would pass a floor, and a
 /// round that dropped nothing passes a ceiling. Both ends are named.
 #[test]
-fn an_eviction_round_over_reconstructed_pages_drops_the_objects_it_chose() {
+fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -691,7 +691,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
 // writers' 32 production call sites -- and so this test failed, exactly as it was written to.
 //
 // IT IS NOT DELETED, IT IS INVERTED, and it moved to the change that inverted it:
-// `shard_carried_range::the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range`
+// `shard_carried_range::the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range`
 // keeps the same fixture and the same two bucket numbers, asserting the page IS in 398 and is
 // NOT in 1,422,005,296 -- and it drives the SECOND site too, which the version here did not.
 
@@ -904,7 +904,7 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
     /// ONE LEFT, and it is the record field no reader consults -- see
     /// `the_delete_outcomes_routing_bucket_is_a_record_field_no_reader_consults`. The two that
     /// FILE a page left this list by leaving the list above: they read the shard's own range now.
-    /// `shard_carried_range::the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range`
+    /// `shard_carried_range::the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range`
     /// is what holds that, with both buckets named.
     const STILL_GUESSING: &[&str] = &["engine.rs :: block_routing_bucket x1"];
 

@@ -200,7 +200,7 @@ pub(super) const CONTAINER_PAGE_MAGIC: &[u8] = b"TSCPG1\n";
 /// has never emitted it and `an_empty_value_and_a_removal_of_the_same_element_are_different_bytes` has driven that
 /// since #2022. So a live suffix item is byte-identical between the two shapes, and a live inline
 /// item is the same width except where `n - 1` and `n - 2` fall either side of a varint boundary.
-/// `a_live_suffix_page_is_the_same_bytes_under_either_shape` prices both against the first.
+/// `a_live_suffix_block_is_the_same_bytes_under_either_shape` prices both against the first.
 ///
 /// # WHY EVERY NEW PAGE TAKES IT, INCLUDING ONE WITH NO REMOVAL IN IT
 ///
@@ -272,7 +272,7 @@ pub(super) enum ContainerElementRead {
     /// so an older page still may; `Removed` says this page states it is gone, which is what makes a
     /// page-derived membership possible at all. A reader that only wants a value treats both as no
     /// value, and the read funnel does; a derivation must not, and
-    /// `an_older_page_is_not_outranked_by_a_page_that_merely_does_not_mention_the_element` drives
+    /// `an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_element` drives
     /// exactly that difference.
     Removed,
     /// The frame could not be walked.
@@ -786,7 +786,7 @@ pub(super) fn single_element_page(kind: &str, component: &str, value: &[u8]) -> 
 /// framed must write NOTHING and say so, rather than write something that decodes as a resurrection.
 ///
 /// `None` therefore means the caller must not treat the removal as durable in the pages. Every
-/// caller counts it; `a_removal_that_cannot_be_framed_is_counted_and_writes_no_page` drives the
+/// caller counts it; `a_removal_that_cannot_be_framed_is_counted_and_writes_no_block` drives the
 /// count, and the four kinds all frame, so a nonzero count is a defect and not a tolerance.
 pub(super) fn encode_tombstone_page(kind: &str, component: &str) -> Option<Vec<u8>> {
     let spelling = ElementKeySpelling::for_kind(kind)?;

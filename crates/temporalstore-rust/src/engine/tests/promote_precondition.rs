@@ -33,7 +33,7 @@
 //!
 //! IS THE POSITIVE ARM REACHABLE AT ALL? It has to be, or this is a precondition nobody can test
 //! and "none is ever missing" is a property of the code rather than of two measured corpora.
-//! `a_page_only_the_model_maps_know_about_is_found_and_filed` constructs it, out of the same
+//! `a_block_only_the_model_maps_know_about_is_found_and_filed` constructs it, out of the same
 //! `upsert_bucket_index_block` a live write files through. `a_restore_says_which_arm_it_took`
 //! then reports which arm a real restart takes over a store-sized denominator -- the negative
 //! one, which is precisely why the vector was pure cost there.
@@ -163,7 +163,7 @@ fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BT
 ///
 /// Every arm below turns on ONE question -- is the address the model-map walk hands out the same
 /// address the bucket index was filed with -- and when the answer is no they fail in four separate
-/// places, none of which names an address. `an_empty_bucket_index_under_live_model_pages_is_rebuilt_whole`
+/// places, none of which names an address. `an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole`
 /// read `left: 0, right: 32`: thirty-two rows in the maps and not one of them named by an index
 /// rebuilt from those same rows. That reads like a broken rebuild and was a one-field narrowing.
 ///
@@ -282,7 +282,7 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
 /// The bucket index is NOT empty, which is what makes this the arm under test: an implementation
 /// that answered from the index rather than from the maps would go the other way.
 #[test]
-fn a_shard_with_no_live_model_page_establishes_nothing() {
+fn a_shard_with_no_live_model_block_establishes_nothing() {
     let mut shard = shard_with(8, None);
     shard.strings_mut().clear();
     assert!(
@@ -330,7 +330,7 @@ fn a_shard_with_no_live_model_page_establishes_nothing() {
 /// per-page `any()` would find every page "missing" and reach the same `true`, which is why the
 /// cheaper arm is read first and why removing it has to be visible.
 #[test]
-fn an_empty_bucket_index_under_live_model_pages_is_rebuilt_whole() {
+fn an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole() {
     let mut shard = shard_with(32, None);
     shard.bucket_index.bucket_map.clear();
     shard.bucket_index.object_block_lookup.clear();
@@ -369,7 +369,7 @@ fn an_empty_bucket_index_under_live_model_pages_is_rebuilt_whole() {
 ///
 /// The answer every measured restore gets, and the reason the vector was pure cost.
 #[test]
-fn an_index_that_names_every_live_page_rebuilds_nothing() {
+fn an_index_that_names_every_live_block_rebuilds_nothing() {
     let mut shard = shard_with(64, None);
     let before: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
 
@@ -412,7 +412,7 @@ fn an_index_that_names_every_live_page_rebuilds_nothing() {
 ///     implementation that tested only the first or the last page it was offered would fail this
 ///     most of the time rather than never.
 #[test]
-fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
+fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
     let mut shard = shard_with(64, None);
     let orphan = 64u64;
     let orphan_bucket = bucket_of(orphan);
@@ -502,7 +502,7 @@ fn a_page_only_the_model_maps_know_about_is_found_and_filed() {
 /// one execute: the first command after a release finds every released page unnamed, rebuilds the
 /// whole shard, and undoes it.
 #[test]
-fn a_page_in_a_released_bucket_is_not_a_missing_page() {
+fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     // ONE GROUP OF KEYS, and the buckets they route to. The fixture used to name a bucket id and
     // stamp it; the bucket is derived from the key now, so the group is selected by key and the
     // buckets it lands in are read back out.
@@ -517,7 +517,7 @@ fn a_page_in_a_released_bucket_is_not_a_missing_page() {
     reset_promote_model_map_check_counts();
     let control_promoted =
         promote_model_maps_to_bucket_index_authority(SHARD, &mut control, 0, END);
-    let (_, control_rebuilds, control_pages) = promote_model_map_check_counts();
+    let (_, control_rebuilds, control_blocks) = promote_model_map_check_counts();
     assert!(
         control_promoted,
         "CONTROL: with {released_buckets:?}'s pages unfiled and NOT recorded as released, they are \
@@ -525,7 +525,7 @@ fn a_page_in_a_released_bucket_is_not_a_missing_page() {
          page at all and the exemption below proves nothing"
     );
     assert_eq!(
-        (control_rebuilds, control_pages),
+        (control_rebuilds, control_blocks),
         (1, 64),
         "control: rebuilt, 64 pages walked"
     );
@@ -559,7 +559,7 @@ fn a_page_in_a_released_bucket_is_not_a_missing_page() {
 /// TWO SIZES ten times apart, because one size cannot tell a per-page cost from a fixed one.
 #[cfg(feature = "alloc-probe")]
 #[test]
-fn the_check_does_not_allocate_per_page_it_walks() {
+fn the_check_does_not_allocate_per_block_it_walks() {
     fn cost(count: u64) -> (u64, u64) {
         let mut shard = shard_with(count, None);
         reset_promote_model_map_check_counts();
@@ -617,14 +617,14 @@ fn the_check_does_not_allocate_per_page_it_walks() {
 #[test]
 fn a_restore_says_which_arm_it_took() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages_dir = dir.path().join("pages");
+    let blocks_dir = dir.path().join("pages");
     let indexes_dir = dir.path().join("indexes");
     let records = 200usize;
 
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-a"),
-        &pages_dir,
+        &blocks_dir,
         &indexes_dir,
     );
     engine.load_shard(SHARD);
@@ -652,7 +652,7 @@ fn a_restore_says_which_arm_it_took() {
     let restarted = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-b"),
-        &pages_dir,
+        &blocks_dir,
         &indexes_dir,
     );
     reset_promote_model_map_check_counts();

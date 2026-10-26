@@ -129,7 +129,7 @@ fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usi
 /// reader is consulted. Without it this would be an agreement test, and a presence-only guard
 /// cannot see a resurrection -- a listing with a working source-proof and a working negative
 /// control still served a removed member earlier in this campaign.
-fn components_the_named_pages_state(engine: &TemporalEngine) -> BTreeSet<String> {
+fn components_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String> {
     let (addresses, _, _) = addresses_the_index_names(engine);
     let mut stated = BTreeSet::new();
     for address in &addresses {
@@ -157,7 +157,7 @@ fn components_the_named_pages_state(engine: &TemporalEngine) -> BTreeSet<String>
 
 /// rust-internal: a gated removal must leave a tombstone page the index actually names
 #[test]
-fn a_gated_removal_leaves_a_tombstone_page_the_index_can_reach() {
+fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -195,7 +195,7 @@ fn a_gated_removal_leaves_a_tombstone_page_the_index_can_reach() {
     let (addresses, live_after, tombstoned_after) = addresses_the_index_names(&engine);
 
     // 2. THE PAGES THE INDEX NAMES STILL STATE THE MEMBER -- the disagreement, observed.
-    let stated = components_the_named_pages_state(&engine);
+    let stated = components_the_named_blocks_state(&engine);
 
     // 3. WHAT A FOLD OF THOSE PAGES CONCLUDES. `derive_membership` owns the ordering and the
     //    precedence; it is handed exactly the pages the index names, which is the whole question.

@@ -37,7 +37,7 @@
 //! was computed by the write path from the shard id the engine was routing that write to, long
 //! before this field existed. Re-deriving those ids from the shard's OWN stamp and comparing them
 //! is a check the stamp cannot pass by being self-consistent:
-//! `the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pages`.
+//! `the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blocks`.
 //!
 //! Both run over a MULTI-SHARD engine, on deliberately non-contiguous ids, and both print their
 //! denominator. Shard 0 is in the fixture on purpose and so are four shards that are not 0: a stamp
@@ -279,14 +279,14 @@ fn every_served_shard_carries_the_id_its_owner_routes_it_under() {
 /// computed from a `&ShardState` and NOTHING ELSE, which is precisely what the four functions named
 /// in this module's header could not do.
 #[test]
-fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pages() {
+fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blocks() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = multi_shard_engine(dir.path());
     let shards = engine.shards.read().expect("engine lock poisoned");
 
     let mut checked = 0usize;
     let mut without_stored_id = 0usize;
-    let mut shards_with_pages = 0usize;
+    let mut shards_with_blocks = 0usize;
     let mut differed = Vec::new();
 
     for (routed_under, state) in shards.iter() {
@@ -296,7 +296,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
             .shard_id()
             .expect("a served shard carries its id; part 1 of this module holds that");
         let named = super::PageObjects::of(&state.bucket_index);
-        let mut pages_here = 0usize;
+        let mut blocks_here = 0usize;
         for bucket in state.bucket_index.bucket_map.values() {
             for (handle, page) in bucket.block_index.iter() {
                 let object_key = named.at(bucket.routing_bucket, *handle);
@@ -310,7 +310,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
                     page.model_id.as_str(),
                     object_key,
                 );
-                pages_here += 1;
+                blocks_here += 1;
                 checked += 1;
                 if !bucket.object_index.contains(&derived) {
                     without_stored_id += 1;
@@ -323,14 +323,14 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
                 }
             }
         }
-        if pages_here > 0 {
-            shards_with_pages += 1;
+        if blocks_here > 0 {
+            shards_with_blocks += 1;
         }
     }
 
     println!(
         "  derived from the shard's own id on {checked} live page entries across \
-         {shards_with_pages} shards ({without_stored_id} not held by their bucket's object index), \
+         {shards_with_blocks} shards ({without_stored_id} not held by their bucket's object index), \
          {} differed",
         differed.len()
     );
@@ -346,8 +346,8 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_pag
     );
     assert_eq!(
         SHARD_IDS.len(),
-        shards_with_pages,
-        "only {shards_with_pages} of {} shards contributed a page entry, so the derivation was \
+        shards_with_blocks,
+        "only {shards_with_blocks} of {} shards contributed a page entry, so the derivation was \
          never exercised on the other shards' ids -- which is where a wrong id shows up",
         SHARD_IDS.len()
     );

@@ -87,7 +87,7 @@ fn dirty_key_set_arm(set: &crate::engine::state::DirtyKeySet) -> &'static str {
 // The `component: Option<&str>` parameter this took was DEAD and is gone: it was accepted and
 // never mentioned in the `BlockIndex` below, because the field it used to fill came off the entry.
 // Two call sites were passing a value that decided nothing.
-fn probe_page(object: &str, slot: u64) -> (Arc<str>, BlockIndex) {
+fn probe_block(object: &str, slot: u64) -> (Arc<str>, BlockIndex) {
     (
         Arc::from(object),
         BlockIndex {
@@ -160,7 +160,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            let (object_key, entry) = probe_page("o", slot);
+            let (object_key, entry) = probe_block("o", slot);
             handles.push(map.insert(&object_key, entry, &mut live));
         }
         if map.len() != FILL as usize {
@@ -188,7 +188,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         let mut map = BlockIndexMap::default();
         let mut handles: Vec<u64> = Vec::new();
         for slot in 0..FILL {
-            let (object_key, entry) = probe_page("o", slot);
+            let (object_key, entry) = probe_block("o", slot);
             handles.push(map.insert(&object_key, entry, &mut live));
         }
         let mut remaining = FILL as usize;
@@ -729,7 +729,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         let series_map_keys = shard.features().len();
         let live_keys = string_keys + series_map_keys;
         let feature_points: usize = shard.features().values().map(|s| s.len()).sum();
-        let bucket_pages: usize = shard
+        let bucket_blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
@@ -745,7 +745,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             "denominator: the feature series hold every point seeded"
         );
         assert!(
-            bucket_pages > 0,
+            bucket_blocks > 0,
             "denominator: the bucket index must hold pages, or its footprint is a zero that means \
              nothing"
         );
@@ -809,7 +809,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         println!("=== {label}: {live_keys} live keys, {live_addresses} live addresses ===");
         println!(
             "  strings {string_keys}, feature series {series_map_keys} x {series_points} points, \
-             bucket-index pages {bucket_pages}, distinct shared strings {arc_count}"
+             bucket-index pages {bucket_blocks}, distinct shared strings {arc_count}"
         );
         println!(
             "  dirty index: {} keys, {} buckets, {dirty_arc_count} distinct Arc<str>, \
@@ -1278,7 +1278,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             let feature_points: usize = shard.features().values().map(|s| s.len()).sum();
             let live_addresses = string_keys + feature_points;
             let bucket_count = shard.bucket_index.bucket_map.values().count();
-            let bucket_pages: usize = shard
+            let bucket_blocks: usize = shard
                 .bucket_index
                 .bucket_map
                 .values()
@@ -1289,7 +1289,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 series_keys, series_map_keys,
                 "denominator: the feature map holds every series seeded"
             );
-            assert!(bucket_pages > 0, "denominator: the bucket index must hold pages");
+            assert!(bucket_blocks > 0, "denominator: the bucket index must hold pages");
             assert!(
                 bucket_count > 0 && bucket_count <= (SHIPPED_END as usize + 1),
                 "denominator: {bucket_count} buckets is not a 0..{SHIPPED_END} population -- the \\
@@ -1322,7 +1322,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
 
             println!(
                 "=== {label} on 0..{SHIPPED_END}: {live_keys} live keys, {live_addresses} live \\
-                 addresses, {bucket_count} buckets, {bucket_pages} pages ==="
+                 addresses, {bucket_count} buckets, {bucket_blocks} pages ==="
             );
             println!(
                 "  distinct shared strings: bucket index {arc_count}, dirty index {dirty_arc_count}"
@@ -1404,7 +1404,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             deep_heap_bytes(&shards.get(&1).expect("shard").bucket_index.bucket_map)
         };
         let resident_before = engine.bucket_index_resident_bytes(1);
-        let (released_buckets, released_pages, refused) =
+        let (released_buckets, released_blocks, refused) =
             engine.release_all_releasable_bucket_index_blocks(1);
         let bucket_map_after = {
             let shards = engine.shards.read().expect("engine lock poisoned");
@@ -1429,7 +1429,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
 
         println!(
             "  RELEASE on {label}: {released_buckets} of {buckets} buckets released, \\
-             {released_pages} pages, {refused} refused"
+             {released_blocks} pages, {refused} refused"
         );
         println!(
             "    bucket_map heap  {bucket_map_before} -> {bucket_map_after} B  \
@@ -1718,7 +1718,7 @@ struct BucketMapDecomposition {
     tombstone_rows: usize,
     single_page_buckets: usize,
     multi_page_buckets: usize,
-    pages_in_list_arm: usize,
+    blocks_in_list_arm: usize,
     /// Slots the page lists have RESERVED, which a clone cannot see.
     ///
     /// A `Vec` clones to its LENGTH, so every figure the clone probe reports omits spare capacity
@@ -1772,13 +1772,13 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
     let mut tombstone_rows = 0usize;
     let mut single_page_buckets = 0usize;
     let mut multi_page_buckets = 0usize;
-    let mut pages_in_list_arm = 0usize;
+    let mut blocks_in_list_arm = 0usize;
     let mut list_capacity = 0usize;
 
-    let mut boxed_page_req = 0u64;
-    let mut boxed_page_chunk = 0u64;
-    let mut page_list_req = 0u64;
-    let mut page_list_chunk = 0u64;
+    let mut boxed_block_req = 0u64;
+    let mut boxed_block_chunk = 0u64;
+    let mut block_list_req = 0u64;
+    let mut block_list_chunk = 0u64;
     let mut object_index_req = 0u64;
     let mut object_index_chunk = 0u64;
     let mut deleted_req = 0u64;
@@ -1804,15 +1804,15 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
             BlockIndexMap::Empty => {}
             BlockIndexMap::One(..) => {
                 single_page_buckets += 1;
-                boxed_page_req += req;
-                boxed_page_chunk += chunk;
+                boxed_block_req += req;
+                boxed_block_chunk += chunk;
             }
             BlockIndexMap::Many(list) => {
                 multi_page_buckets += 1;
-                pages_in_list_arm += list.len();
+                blocks_in_list_arm += list.len();
                 list_capacity += list.capacity();
-                page_list_req += req;
-                page_list_chunk += chunk;
+                block_list_req += req;
+                block_list_chunk += chunk;
             }
         }
 
@@ -1839,16 +1839,16 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
         },
         BucketMapTerm {
             name: "block_index One: Box<BlockIndex>",
-            req: boxed_page_req,
-            chunk: boxed_page_chunk,
+            req: boxed_block_req,
+            chunk: boxed_block_chunk,
             count: single_page_buckets,
             unit: "single-page buckets",
         },
         BucketMapTerm {
             name: "block_index Many: Vec<(u64, BlockIndex)>",
-            req: page_list_req,
-            chunk: page_list_chunk,
-            count: pages_in_list_arm,
+            req: block_list_req,
+            chunk: block_list_chunk,
+            count: blocks_in_list_arm,
             unit: "pages in a list",
         },
         BucketMapTerm {
@@ -1884,7 +1884,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
         tombstone_rows,
         single_page_buckets,
         multi_page_buckets,
-        pages_in_list_arm,
+        blocks_in_list_arm,
         list_capacity,
         total_req,
         total_chunk,
@@ -1925,8 +1925,8 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
     /// The end bucket the shipped default routes on, and what an operator is told to set.
     const SHIPPED_END: u32 = 1023;
 
-    let mut per_page_container: Vec<(&'static str, f64)> = Vec::new();
-    let mut bucket_to_page: Vec<(&'static str, f64)> = Vec::new();
+    let mut per_block_container: Vec<(&'static str, f64)> = Vec::new();
+    let mut bucket_to_block: Vec<(&'static str, f64)> = Vec::new();
 
     for (label, shipped, strings_n, series_keys, series_points) in [
         ("legacy whole-u32, 8,000 records", false, 4_000usize, 4usize, 1_000usize),
@@ -1983,7 +1983,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         println!(
             "  arms: {} single-page buckets, {} list buckets holding {} pages, {} multi-object \
              buckets",
-            d.single_page_buckets, d.multi_page_buckets, d.pages_in_list_arm, d.multi_object_buckets
+            d.single_page_buckets, d.multi_page_buckets, d.blocks_in_list_arm, d.multi_object_buckets
         );
         println!(
             "  pages per bucket {:.2}, keys per bucket {:.2}",
@@ -2047,18 +2047,18 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         // so the two numbers answer different questions and the band between them belongs in the
         // open rather than inside either one.
         let pair = std::mem::size_of::<(u64, BlockIndex)>();
-        let spare_slots = d.list_capacity.saturating_sub(d.pages_in_list_arm);
+        let spare_slots = d.list_capacity.saturating_sub(d.blocks_in_list_arm);
         println!(
             "  spare page-list capacity: {} slots for {} pages = {spare_slots} spare, {} B \
              the clone cannot see ({:.1} B/page, {:.2}x on the list term)",
             d.list_capacity,
-            d.pages_in_list_arm,
+            d.blocks_in_list_arm,
             spare_slots * pair,
             (spare_slots * pair) as f64 / d.pages as f64,
-            if d.pages_in_list_arm == 0 {
+            if d.blocks_in_list_arm == 0 {
                 f64::NAN
             } else {
-                d.list_capacity as f64 / d.pages_in_list_arm as f64
+                d.list_capacity as f64 / d.blocks_in_list_arm as f64
             }
         );
 
@@ -2082,24 +2082,24 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
             d.total_req
         );
 
-        per_page_container.push((label, container as f64 / d.pages as f64));
-        bucket_to_page.push((label, d.buckets as f64 / d.pages as f64));
+        per_block_container.push((label, container as f64 / d.pages as f64));
+        bucket_to_block.push((label, d.buckets as f64 / d.pages as f64));
         drop(shards);
     }
 
     // --- THE REGIME CONTROL. Both ranges must have been measured, and they must differ. ---
-    assert_eq!(4, bucket_to_page.len(), "all four fixtures must have been measured");
+    assert_eq!(4, bucket_to_block.len(), "all four fixtures must have been measured");
     println!("=== buckets per page, by fixture (THE REGIME CONTROL) ===");
-    for (label, ratio) in &bucket_to_page {
+    for (label, ratio) in &bucket_to_block {
         println!("  {label:<34} {ratio:.4} buckets per page");
     }
     println!("=== the container term per PAGE, by fixture ===");
-    for (label, bpp) in &per_page_container {
+    for (label, bpp) in &per_block_container {
         println!("  {label:<34} {bpp:>8.1} B/page");
     }
     // Index 2 is the legacy 80,000-record fixture, index 3 the shipped one.
-    let (legacy_label, legacy_ratio) = bucket_to_page[2];
-    let (shipped_label, shipped_ratio) = bucket_to_page[3];
+    let (legacy_label, legacy_ratio) = bucket_to_block[2];
+    let (shipped_label, shipped_ratio) = bucket_to_block[3];
     assert!(
         legacy_ratio > 0.5,
         "{legacy_label} produced {legacy_ratio:.4} buckets per page. The legacy range is supposed \
@@ -2605,12 +2605,12 @@ fn how_many_structures_hold_an_entry_for_one_object() {
             let deadline_n = shard.expiry_by_deadline.len();
             let wal_n = shard.wal_resident_blocks.len();
             let buckets_now = shard.bucket_index.bucket_map.values().count();
-            let pages_now: usize =
+            let blocks_now: usize =
                 shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum();
             let live_keys = strings_n + features_n + hashes_n;
             println!(
                 "  --- STEADY STATE, each structure over ITS OWN denominator ({buckets_now} \
-                 buckets, {pages_now} pages, {strings_n} strings, {features_n} series, {hashes_n} \
+                 buckets, {blocks_now} pages, {strings_n} strings, {features_n} series, {hashes_n} \
                  containers, {dirty_n} dirty) ---"
             );
             for (name, bytes) in &rows {
@@ -2618,7 +2618,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
                     "strings" => (strings_n, "string object"),
                     "features" => (features_n, "series object"),
                     "hashes" => (hashes_n, "container object"),
-                    "bucket_index.bucket_map" => (pages_now, "PAGE"),
+                    "bucket_index.bucket_map" => (blocks_now, "PAGE"),
                     "bucket_index.object_block_lookup" => (lookup_n, "lookup row"),
                     "bucket_index, the rest of CoreIndex" => (buckets_now, "BUCKET"),
                     "dirty_objects" => (dirty_n, "dirty object"),
@@ -2899,7 +2899,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     let series_map_keys = shard.features().len();
     let feature_points: usize = shard.features().values().map(|s| s.len()).sum();
     let bucket_count = shard.bucket_index.bucket_map.values().count();
-    let bucket_pages: usize = shard
+    let bucket_blocks: usize = shard
         .bucket_index
         .bucket_map
         .values()
@@ -2936,7 +2936,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
          this bracket is only valid on the shipped 0..{SHIPPED_END}",
         string_keys + series_map_keys
     );
-    assert!(bucket_pages > 0, "denominator: the bucket index holds no pages");
+    assert!(bucket_blocks > 0, "denominator: the bucket index holds no pages");
 
     // --- THE NUMERATOR: the whole live heap the shard index holds. The clone counts shared
     // --- payloads ONCE, so the two `Arc` terms are added back explicitly rather than being
@@ -2968,7 +2968,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
 
     println!(
         "=== footprint bracket on 0..{SHIPPED_END}: {total_index_heap_bytes} B over {live_keys} \
-         live keys and {live_addresses} live addresses, {bucket_count} buckets, {bucket_pages} \
+         live keys and {live_addresses} live addresses, {bucket_count} buckets, {bucket_blocks} \
          pages ==="
     );
     println!("  {bytes_per_live_key:.1} B/key   (bracket {FLOOR_B_PER_KEY}..={CEILING_B_PER_KEY})");
@@ -3997,11 +3997,11 @@ fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
 ///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 ///
-///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_key_with_one_page_costs -- --ignored --nocapture
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_key_with_one_block_costs -- --ignored --nocapture
 #[test]
 #[cfg(feature = "alloc-probe")]
 #[ignore = "seeds 40,000 single-page records then bounds the index; run by name"]
-fn what_one_key_with_one_page_costs() {
+fn what_one_key_with_one_block_costs() {
     const SHIPPED_END: u32 = 1023;
     const KEYS: usize = 40_000;
 
@@ -4212,7 +4212,7 @@ fn what_one_key_with_one_page_costs() {
 /// WHAT THE DEFAULT CONFIGURATION ACTUALLY DOES TO A 40,000-KEY SHARD, which is not the same
 /// question as what the bound delivers when it fires.
 ///
-/// `what_one_key_with_one_page_costs` fires the bound DIRECTLY, at half the shard's own resident
+/// `what_one_key_with_one_block_costs` fires the bound DIRECTLY, at half the shard's own resident
 /// index, and measures 90.0 B/key afterwards (76.8 when that figure was first written; its own doc
 /// comment carries the per-structure comparison that says which map moved). That is what the
 /// mechanism is worth. It is NOT what
@@ -5351,17 +5351,17 @@ fn the_series_dedup_keeps_one_of_each_distinct_entry() {
     // One page -- same slab, offset and length -- carrying two different block ids, and the first
     // id seen again at a later timestamp. Under the sort these three compare Equal to each other,
     // which is the whole point.
-    let page_a_id5 = ElementEntry::from_parts(7, 4_096, 64, Some(5), None);
-    let page_a_id9 = ElementEntry::from_parts(7, 4_096, 64, Some(9), None);
+    let block_a_id5 = ElementEntry::from_parts(7, 4_096, 64, Some(5), None);
+    let block_a_id9 = ElementEntry::from_parts(7, 4_096, 64, Some(9), None);
     assert_ne!(
-        page_a_id5, page_a_id9,
+        block_a_id5, block_a_id9,
         "the fixture needs two DISTINCT entries on one page, or it tests nothing"
     );
 
     let mut series = OwnedTimestampedSeries::default();
-    series.insert(1_787_270_070_001, page_a_id5.clone());
-    series.insert(1_787_270_070_002, page_a_id9.clone());
-    series.insert(1_787_270_070_003, page_a_id5.clone());
+    series.insert(1_787_270_070_001, block_a_id5.clone());
+    series.insert(1_787_270_070_002, block_a_id9.clone());
+    series.insert(1_787_270_070_003, block_a_id5.clone());
 
     let unique = unique_timestamped_kv_block_addresses(&series);
 
@@ -5387,11 +5387,11 @@ fn the_series_dedup_keeps_one_of_each_distinct_entry() {
         unique.len()
     );
     assert!(
-        unique.iter().any(|entry| *entry == page_a_id5),
+        unique.iter().any(|entry| *entry == block_a_id5),
         "the entry with block id 5 is missing: {unique:?}"
     );
     assert!(
-        unique.iter().any(|entry| *entry == page_a_id9),
+        unique.iter().any(|entry| *entry == block_a_id9),
         "the entry with block id 9 is missing: {unique:?}"
     );
 

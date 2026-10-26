@@ -214,7 +214,7 @@ fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
 /// any element was named "f0", which could only ever answer no. A helper whose name promises
 /// identity and whose body yields blanks is worse than a missing helper, so it returns the count it
 /// actually computes. Element identity is `resident_fields` below.
-fn live_page_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
+fn live_block_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let named = super::PageObjects::of(&shard.bucket_index);
@@ -276,7 +276,7 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 ///
 /// rust-internal: reads the engine's own bucket index, no external surface
 #[test]
-fn the_object_index_holds_one_row_per_key_rather_than_one_per_page() {
+fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
@@ -343,10 +343,10 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_page() {
     // than a mean, because the whole question is the tail.
     let mut per_key: Vec<usize> = Vec::new();
     for key in &hash_keys {
-        per_key.push(live_page_count(&engine, "hash", key));
+        per_key.push(live_block_count(&engine, "hash", key));
     }
     for key in &string_keys {
-        per_key.push(live_page_count(&engine, "string", key));
+        per_key.push(live_block_count(&engine, "string", key));
     }
     per_key.sort();
     println!(
@@ -421,7 +421,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     }
     let object_id = stable_block_object_id(1, "hash", KEY);
     assert_eq!(
-        live_page_count(&engine, "hash", KEY),
+        live_block_count(&engine, "hash", KEY),
         FIELDS,
         "DENOMINATOR: the seed did not file {FIELDS} pages, so nothing below is being observed"
     );
@@ -441,7 +441,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
             field: "f0".to_string(),
         },
     );
-    let after_one = live_page_count(&engine, "hash", KEY);
+    let after_one = live_block_count(&engine, "hash", KEY);
     let resident_after_one = resident_fields(&engine, KEY);
     let tombstoned_after_one = tombstone_holds(&engine, object_id);
     println!(
@@ -522,7 +522,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
             },
         );
     }
-    let after_all = live_page_count(&engine, "hash", KEY);
+    let after_all = live_block_count(&engine, "hash", KEY);
     let resident_after_all = resident_fields(&engine, KEY);
     let tombstoned_after_all = tombstone_holds(&engine, object_id);
     println!(
@@ -607,7 +607,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
         crate::types::CommandResponse::Integer { value } => value,
         other => panic!("HashLen answered {other:?}"),
     };
-    let listed = live_page_count(&engine, "hash", KEY);
+    let listed = live_block_count(&engine, "hash", KEY);
     let resident = resident_fields(&engine, KEY);
     println!(
         "\n=== HLEN === answered {answered}, pages {listed}, resident fields {}, fields written {FIELDS}",

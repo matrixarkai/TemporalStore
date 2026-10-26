@@ -503,7 +503,7 @@ fn distinct_addresses_per_raw_key(
 ///
 ///   cargo test -p temporalstore-rust --lib how_many_allocations_the_page_index -- --nocapture
 #[test]
-fn how_many_allocations_the_page_index_itself_holds() {
+fn how_many_allocations_the_block_index_itself_holds() {
     const T0: u64 = 1_787_270_070_000;
     // Every kind this fixture can reach with one key, and the command that files it there.
     const KINDS: &[&str] = &["string", "feature", "control_state", "hash", "set", "zset", "list"];

@@ -717,7 +717,7 @@ pub struct WalOutcomeItem {
     ///
     /// WHAT IT COSTS TO KEEP, MEASURED, so the trade is a number rather than a shrug. On the four
     /// kinds that no longer read it, it is dead weight on the wire --
-    /// `durable_outranks_derived::what_resolving_the_element_from_the_page_costs_a_replay` prices it
+    /// `durable_outranks_derived::what_resolving_the_element_from_the_block_costs_a_replay` prices it
     /// at 24 B of a 114 B hash record and 85 B of a 182 B set record carrying a 20-byte member,
     /// counting both this field and the carried page's own copy. That is what a later narrowing
     /// would collect, and narrowing is what is available: the field cannot go, and for four kinds

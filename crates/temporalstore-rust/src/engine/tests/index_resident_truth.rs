@@ -98,7 +98,7 @@ pub(super) struct IndexWalk {
     /// Summed `capacity()` over `Many` arms -- what the buffer was allocated at.
     pub(super) list_capacity: u64,
     /// Request bytes of the page-list buffers and the boxed single entries.
-    pub(super) page_heap_request: u64,
+    pub(super) block_heap_request: u64,
     /// Distinct heap allocations behind `object_key`, counted by data pointer.
     pub(super) key_allocs: u64,
     /// Request bytes of those distinct key allocations.
@@ -184,14 +184,14 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
             BlockIndexMap::One(_, _) => {
                 out.arm_one += 1;
                 // The handle rides in the enum; the allocation is one entry wide.
-                out.page_heap_request += entry_width;
+                out.block_heap_request += entry_width;
                 out.alloc_sizes.push(entry_width as usize);
             }
             BlockIndexMap::Many(pages) => {
                 out.arm_many += 1;
                 out.list_len += pages.len() as u64;
                 out.list_capacity += pages.capacity() as u64;
-                out.page_heap_request += pages.capacity() as u64 * pair_stride;
+                out.block_heap_request += pages.capacity() as u64 * pair_stride;
                 if pages.capacity() > 0 {
                     out.alloc_sizes
                         .push(pages.capacity() * pair_stride as usize);
@@ -258,7 +258,7 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
 ///
 /// Returns `(free_bytes, frees)` with the carrier vector's own free already discharged.
 #[cfg(feature = "alloc-probe")]
-pub(super) fn freed_by_dropping_page_indexes(engine: &TemporalEngine) -> (u64, u64) {
+pub(super) fn freed_by_dropping_block_indexes(engine: &TemporalEngine) -> (u64, u64) {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard 1 is loaded");
     let buckets = shard.bucket_index.bucket_map.len();
@@ -486,17 +486,17 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 println!(
                     "  nodes inline {} B, page heap at capacity {} B, out of line {} B",
                     seen.node_inline_request(),
-                    seen.page_heap_request,
+                    seen.block_heap_request,
                     seen.out_of_line_request()
                 );
                 // THE SHIPPED PAGE TERM ON ITS OWN. The whole-report ratio mixes in the node term,
                 // which is INLINE in the bucket map and is not freed by the drop below -- comparing
                 // the two would be comparing different populations and reading the difference as an
                 // error. This is the term the change actually moves.
-                let shipped_page_term = seen
+                let shipped_block_term = seen
                     .pages
                     .saturating_mul(std::mem::size_of::<BlockIndex>() as u64);
-                let (freed_bytes, frees) = freed_by_dropping_page_indexes(&engine);
+                let (freed_bytes, frees) = freed_by_dropping_block_indexes(&engine);
                 assert!(
                     freed_bytes > 0 && frees > 0,
                     "{shape:?}/{records}/{end_routing_bucket}: the drop instrument returned \
@@ -504,33 +504,33 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                      not the index being free"
                 );
                 println!(
-                    "  whole report {reported} B (nodes {} + pages {shipped_page_term})",
+                    "  whole report {reported} B (nodes {} + pages {shipped_block_term})",
                     seen.node_inline_request()
                 );
                 println!(
-                    "  PAGE TERM shipped {shipped_page_term} B | walked at capacity {} B | \
+                    "  PAGE TERM shipped {shipped_block_term} B | walked at capacity {} B | \
                      allocator returned {freed_bytes} B in {frees} frees",
-                    seen.page_heap_request
+                    seen.block_heap_request
                 );
                 println!(
                     "    shipped/returned {:.4}   shortfall {} B, {:.2} B a page",
-                    shipped_page_term as f64 / freed_bytes as f64,
-                    freed_bytes as i64 - shipped_page_term as i64,
-                    (freed_bytes as i64 - shipped_page_term as i64) as f64 / seen.pages as f64
+                    shipped_block_term as f64 / freed_bytes as f64,
+                    freed_bytes as i64 - shipped_block_term as i64,
+                    (freed_bytes as i64 - shipped_block_term as i64) as f64 / seen.pages as f64
                 );
                 println!(
                     "    walked/returned  {:.4}   difference {} B",
-                    seen.page_heap_request as f64 / freed_bytes as f64,
-                    freed_bytes as i64 - seen.page_heap_request as i64
+                    seen.block_heap_request as f64 / freed_bytes as f64,
+                    freed_bytes as i64 - seen.block_heap_request as i64
                 );
                 // THE CHUNK COLUMN, over this index's own allocation size distribution.
                 let (replayed_request, replayed_chunk) = chunk_for_sizes(&seen.alloc_sizes);
                 assert_eq!(
-                    replayed_request, seen.page_heap_request,
+                    replayed_request, seen.block_heap_request,
                     "{shape:?}/{records}/{end_routing_bucket}: the replay asked for \
                      {replayed_request} B where the walk accounts for {} B, so the chunk column \
                      below is not this index's size distribution",
-                    seen.page_heap_request
+                    seen.block_heap_request
                 );
                 println!(
                     "    CHUNK over {} allocations: request {replayed_request} B, allocator set \
@@ -542,8 +542,8 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 );
                 println!(
                     "    shipped/chunk    {:.4}   fixed/chunk {:.4}",
-                    shipped_page_term as f64 / replayed_chunk as f64,
-                    seen.page_heap_request as f64 / replayed_chunk as f64
+                    shipped_block_term as f64 / replayed_chunk as f64,
+                    seen.block_heap_request as f64 / replayed_chunk as f64
                 );
                 assert!(
                     replayed_chunk >= replayed_request,
@@ -555,22 +555,22 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 // the allocator. If these ever stop agreeing, the shipped figure has acquired an
                 // error nobody measured -- which is the state this module exists to leave behind.
                 assert_eq!(
-                    seen.page_heap_request, freed_bytes,
+                    seen.block_heap_request, freed_bytes,
                     "{shape:?}/{records}/{end_routing_bucket}: the walk accounts for {} B of page \
                      index and the allocator returned {freed_bytes} B. The fixed report ships this \
                      walk, so a difference here is the shipped figure's error and not the test's",
-                    seen.page_heap_request
+                    seen.block_heap_request
                 );
                 // AND THE SHIPPED FUNCTION IS THE WALK. Everything above calibrates an
                 // arithmetic; this is the assertion that the arithmetic calibrated is the one the
                 // engine publishes, at every one of the eight arms rather than at a chosen one.
                 assert_eq!(
                     reported,
-                    seen.node_inline_request() + seen.page_heap_request,
+                    seen.node_inline_request() + seen.block_heap_request,
                     "{shape:?}/{records}/{end_routing_bucket}: the engine published {reported} B \
                      where the walk this module calibrated against the allocator accounts for \
                      {} B. The calibration is then of something other than the shipped figure",
-                    seen.node_inline_request() + seen.page_heap_request
+                    seen.node_inline_request() + seen.block_heap_request
                 );
                 // AND THE NAMES ARE NOT THIS INDEX'S TO CHARGE. The drop above returned the page
                 // buffers and NOTHING ELSE: every shared name survived it, because something other
@@ -614,7 +614,7 @@ enum Shape {
 /// the widths as arguments lets the same arithmetic be run with a width that is WRONG, and
 /// `perturbing_any_width_the_index_report_reads_makes_the_reconstruction_disagree` requires the
 /// disagreement that proves each term is genuinely read.
-pub(super) fn reconstruct_page_heap(seen: &IndexWalk, entry_width: u64, pair_stride: u64) -> u64 {
+pub(super) fn reconstruct_block_heap(seen: &IndexWalk, entry_width: u64, pair_stride: u64) -> u64 {
     seen.arm_one
         .saturating_mul(entry_width)
         .saturating_add(seen.list_capacity.saturating_mul(pair_stride))
@@ -708,7 +708,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
     );
 
     let reconstructed =
-        reconstruct_nodes(&seen, node_width) + reconstruct_page_heap(&seen, entry_width, pair_stride);
+        reconstruct_nodes(&seen, node_width) + reconstruct_block_heap(&seen, entry_width, pair_stride);
     let reported = engine.bucket_index_resident_bytes(1);
     println!(
         "  {} buckets ({} boxed, {} lists holding {} entries in {} of capacity), {} pages",
@@ -758,11 +758,11 @@ fn perturbing_any_width_the_index_report_reads_makes_the_reconstruction_disagree
 
     let cases: [(&str, u64, u64); 3] = [
         ("the node width", reconstruct_nodes(&seen, node_width + STEP)
-            + reconstruct_page_heap(&seen, entry_width, pair_stride), seen.buckets),
+            + reconstruct_block_heap(&seen, entry_width, pair_stride), seen.buckets),
         ("the entry width", reconstruct_nodes(&seen, node_width)
-            + reconstruct_page_heap(&seen, entry_width + STEP, pair_stride), seen.arm_one),
+            + reconstruct_block_heap(&seen, entry_width + STEP, pair_stride), seen.arm_one),
         ("the pair stride", reconstruct_nodes(&seen, node_width)
-            + reconstruct_page_heap(&seen, entry_width, pair_stride + STEP), seen.list_capacity),
+            + reconstruct_block_heap(&seen, entry_width, pair_stride + STEP), seen.list_capacity),
     ];
     for (name, perturbed, population) in cases {
         println!(
@@ -801,7 +801,7 @@ fn perturbing_any_width_the_index_report_reads_makes_the_reconstruction_disagree
 /// +0.00% and "not exercised" wears the face of "did not move". Both terms are required non-zero
 /// and both are printed.
 #[test]
-fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_page() {
+fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_block() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, WIDE_END);
@@ -819,17 +819,17 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_page
     let entry_width = std::mem::size_of::<BlockIndex>() as u64;
     let old_arithmetic = seen.buckets * node_width + seen.pages * entry_width;
     let reported = engine.bucket_index_resident_bytes(1);
-    let page_term = seen.pages * entry_width;
+    let block_term = seen.pages * entry_width;
     println!(
         "  CONTROL: {reported} B published, {old_arithmetic} B under the arithmetic this \
-         replaced, +0.00% over {} buckets and {} pages (node term {} B, page term {page_term} B)",
+         replaced, +0.00% over {} buckets and {} pages (node term {} B, page term {block_term} B)",
         seen.buckets,
         seen.pages,
         seen.buckets * node_width
     );
     assert!(
-        page_term > 0 && seen.buckets * node_width > 0,
-        "the control exercised a node term of {} B and a page term of {page_term} B; a control \
+        block_term > 0 && seen.buckets * node_width > 0,
+        "the control exercised a node term of {} B and a page term of {block_term} B; a control \
          that reads zero bytes reports no movement because there was nothing to move",
         seen.buckets * node_width
     );
@@ -856,7 +856,7 @@ fn the_published_floor_is_the_node_term_of_the_published_total() {
     let total = stats.storage.bucket_index_resident_bytes;
     println!(
         "  floor {floor} B, total {total} B, page heap {} B over {} buckets",
-        seen.page_heap_request, seen.buckets
+        seen.block_heap_request, seen.buckets
     );
     assert!(
         floor > 0 && total > 0,
@@ -872,11 +872,11 @@ fn the_published_floor_is_the_node_term_of_the_published_total() {
     );
     assert_eq!(
         total - floor,
-        seen.page_heap_request,
+        seen.block_heap_request,
         "the published total less the published floor is {} B, where the page indexes hold {} B. \
          The floor has stopped being the total's own node term",
         total - floor,
-        seen.page_heap_request
+        seen.block_heap_request
     );
     assert!(
         total > floor,

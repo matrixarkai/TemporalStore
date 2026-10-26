@@ -561,7 +561,7 @@ impl TemporalEngine {
         //
         // This function walked the whole live-page set THREE times: here for the addresses it
         // probes, again inside `validate_shard_block_ownership`, again inside
-        // `storage_object_lifecycle_report`. `a_round_walks_the_live_page_set_a_constant_number_of_times`
+        // `storage_object_lifecycle_report`. `a_round_walks_the_live_block_set_a_constant_number_of_times`
         // counts all three, and they were three of the whole-store passes one periodic
         // round makes.
         //

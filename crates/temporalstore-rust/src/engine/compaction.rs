@@ -768,7 +768,7 @@ pub(super) struct ContainerElementRef<'a> {
 /// It changes the PAGE count and the ENTRY count falls with it. Several elements come to share one
 /// address, and `block_index_handle` hashes the model spelling, the object key and that address and
 /// nothing per-element, so entries converge on pages -- `entry_count_versus_page_count`'s
-/// `one_page_is_one_entry_because_the_handle_can_no_longer_name_an_element` holds the mechanism and
+/// `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` holds the mechanism and
 /// `container_pages_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
 /// count_with_them` measures it through a round, 40 entries over 40 pages before and 1 over 1 after.
 ///
@@ -817,7 +817,7 @@ pub(super) struct ContainerElementRef<'a> {
 /// Whatever was already flushed stays flushed and its addresses stay moved -- that IS the consistent
 /// partial the handler commits. The batch under construction when the read failed is dropped
 /// unwritten, so its elements keep their own pages.
-/// `a_container_element_whose_page_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
+/// `a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
 /// drives it.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn compact_container_pages_batched<'a>(

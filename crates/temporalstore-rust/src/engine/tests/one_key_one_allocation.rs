@@ -263,7 +263,7 @@ fn a_key_held_by_several_maps_is_one_allocation() {
 ///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 #[test]
-fn every_adopted_context_map_holds_the_page_index_own_key() {
+fn every_adopted_context_map_holds_the_block_index_own_key() {
     use crate::types::{
         ContextChildRef, ContextCompressionEvent, ContextEntity, ContextEvent, ContextIndexRef,
         ContextNode, ContextPackAudit, ContextSummary,

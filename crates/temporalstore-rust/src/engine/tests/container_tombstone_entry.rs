@@ -618,7 +618,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     //
     // Pinned against the folded PAGE count rather than a literal 1, so a fixture that folds
     // differently cannot make this vacuous -- and so that it still reads as "one entry a page".
-    let live_pages_folded = {
+    let live_blocks_folded = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let named = super::PageObjects::of(&shard.bucket_index);
@@ -648,14 +648,14 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
             .len()
     };
     assert!(
-        live_pages_folded < MEMBERS - REMOVED,
-        "DENOMINATOR: the survivors resolve to {live_pages_folded} live page(s) for {} members, so \
+        live_blocks_folded < MEMBERS - REMOVED,
+        "DENOMINATOR: the survivors resolve to {live_blocks_folded} live page(s) for {} members, so \
          nothing folded and 'one entry a page' is the same number as one entry an element here",
         MEMBERS - REMOVED
     );
     assert_eq!(
-        live_pages_folded, live_folded,
-        "the rebuild produced {live_folded} live entries over {live_pages_folded} live page(s). It \
+        live_blocks_folded, live_folded,
+        "the rebuild produced {live_folded} live entries over {live_blocks_folded} live page(s). It \
          emits at most one per distinct page, so these must agree -- more means the stale entries a \
          removal left over its vacated pages survived the round, which is the retained-entry cost \
          this module prices and which the round is what clears"

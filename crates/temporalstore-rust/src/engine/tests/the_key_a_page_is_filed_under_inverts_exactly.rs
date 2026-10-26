@@ -88,7 +88,7 @@
 //!
 //! # CORRECTNESS, WHICH IS THE REAL RISK IN DELETING STORED DATA
 //!
-//! `the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus` compares the
+//! `the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus` compares the
 //! reconstruction field by field against the LIVE value the encoder was handed, on all 8,000 pages
 //! -- not against a re-render of itself, and not on a sample. `a_reload_reads_every_object_back`
 //! writes a corpus, drops the engine, reloads from the same directories and reads every object
@@ -116,7 +116,7 @@ const PAD_BYTE: u8 = b'q';
 /// The bucket count the shipped range saturates at, and the denominator of the regime assertion.
 const SHIPPED_BUCKETS: usize = 1_024;
 /// The floor the amortised regime is asserted against: #2350 measured 7.81 objects a bucket.
-const REGIME_FLOOR_PAGES_PER_BUCKET: f64 = 7.0;
+const REGIME_FLOOR_BLOCKS_PER_BUCKET: f64 = 7.0;
 
 /// What a fixture key's leading bytes are made of -- #2350's two shapes, kept identical so the
 /// figures are comparable.
@@ -318,9 +318,9 @@ impl Surfaces {
         );
         let per_bucket = self.pages as f64 / self.buckets as f64;
         assert!(
-            per_bucket >= REGIME_FLOOR_PAGES_PER_BUCKET,
+            per_bucket >= REGIME_FLOOR_BLOCKS_PER_BUCKET,
             "[CLAUSE amortised-regime] the fixture holds {per_bucket:.3} page(s) a bucket, under \
-             the {REGIME_FLOOR_PAGES_PER_BUCKET} this regime is defined by -- every per-object \
+             the {REGIME_FLOOR_BLOCKS_PER_BUCKET} this regime is defined by -- every per-object \
              figure below would be dominated by the per-bucket class instead of amortising it"
         );
         assert_eq!(
@@ -434,7 +434,7 @@ fn no_stored_model_spelling_holds_the_separator() {
 ///
 /// rust-internal: measures this crate's own index codec, no product behaviour
 #[test]
-fn the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus() {
+fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus() {
     for shape in [KeyShape::Padded, KeyShape::Scattered] {
         let seeded = seed(HEADLINE_KEYS, PUBLISHED_WIDTH, shape, SHIPPED_END_BUCKET);
         seeded.surfaces().assert_amortised_regime();
@@ -852,8 +852,8 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 
     // THE THREE STATES, each built through the constructor the state it represents comes from.
     let log_resident = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, None, None);
-    let first_page_in_a_slab = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, Some(0), None);
-    let first_page_with_no_generation =
+    let first_block_in_a_slab = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, Some(0), None);
+    let first_block_with_no_generation =
         ElementEntry::try_from_wire_parts(SLAB, OFFSET, LENGTH, Some(0), false)
             .expect("the wire constructor accepts a present block id with no generation");
 
@@ -865,33 +865,33 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     );
     assert_eq!(
         Some(0),
-        first_page_in_a_slab.block_id(),
+        first_block_in_a_slab.block_id(),
         "[CLAUSE presence-is-not-in-the-key] the slab-backed fixture is not the FIRST page, so the \
          collision this arm is about is not the one being measured"
     );
     assert_eq!(
         Some(0),
-        first_page_in_a_slab.generation(),
+        first_block_in_a_slab.generation(),
         "[CLAUSE presence-is-not-in-the-key] the slab-backed fixture has no generation, so the \
          third state below is not distinct from it"
     );
     assert_eq!(
         None,
-        first_page_with_no_generation.generation(),
+        first_block_with_no_generation.generation(),
         "[CLAUSE presence-is-not-in-the-key] the generation-free fixture carries one"
     );
     assert_ne!(
-        log_resident, first_page_in_a_slab,
+        log_resident, first_block_in_a_slab,
         "[CLAUSE presence-is-not-in-the-key] two of the three states compare EQUAL, so there is no \
          information for a key to lose"
     );
     assert_ne!(
-        first_page_in_a_slab, first_page_with_no_generation,
+        first_block_in_a_slab, first_block_with_no_generation,
         "[CLAUSE presence-is-not-in-the-key] two of the three states compare EQUAL"
     );
 
     // AND THE THREE RENDER ONE KEY.
-    let keys: Vec<String> = [&log_resident, &first_page_in_a_slab, &first_page_with_no_generation]
+    let keys: Vec<String> = [&log_resident, &first_block_in_a_slab, &first_block_with_no_generation]
         .iter()
         .map(|address| {
             let page = crate::engine::state::BlockIndex {
@@ -925,12 +925,12 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 
     // THE CONTROL: the renderer is not simply constant. An address whose block id is non-zero must
     // render a DIFFERENT key, or the three equalities above say nothing.
-    let later_page = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, Some(3), None);
+    let later_block = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, Some(3), None);
     let later_key = crate::engine::state::block_index_written_key(
         "k",
         &crate::engine::state::BlockIndex {
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-            address: later_page,
+            address: later_block,
             dirty: false,
             deleted: false,
         },
@@ -943,15 +943,15 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 
     // AND THE TWO COLLIDING STATES ARE NOT INTERCHANGEABLE, which is what makes the collision a
     // data-loss bug rather than a representation detail.
-    let as_page = |address: &ElementEntry| crate::engine::state::BlockIndex {
+    let as_block = |address: &ElementEntry| crate::engine::state::BlockIndex {
         model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
         address: address.clone(),
         dirty: false,
         deleted: false,
     };
     assert_ne!(
-        as_page(&log_resident).log_backed(),
-        as_page(&first_page_in_a_slab).log_backed(),
+        as_block(&log_resident).log_backed(),
+        as_block(&first_block_in_a_slab).log_backed(),
         "[CLAUSE presence-is-not-in-the-key] the two states that render one key answer the SAME \
          log-residency, so nothing downstream could tell them apart and the loss would be free"
     );
@@ -971,9 +971,9 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     // it is nonetheless load-bearing where it CAN be seen, so this is not an argument for dropping
     // it either.
     let handle_with_generation =
-        crate::engine::state::block_index_handle("k", &as_page(&first_page_in_a_slab));
+        crate::engine::state::block_index_handle("k", &as_block(&first_block_in_a_slab));
     let handle_without =
-        crate::engine::state::block_index_handle("k", &as_page(&first_page_with_no_generation));
+        crate::engine::state::block_index_handle("k", &as_block(&first_block_with_no_generation));
     println!(
         "  generation bit at block id 0: handle {handle_with_generation} with it, \
          {handle_without} without -- it reaches neither the key nor the handle THERE"
@@ -990,15 +990,15 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     let later_without = ElementEntry::try_from_wire_parts(SLAB, OFFSET, LENGTH, Some(3), false)
         .expect("the wire constructor accepts a present block id with no generation");
     assert_ne!(
-        crate::engine::state::block_index_written_key("k", &as_page(&later_with)),
-        crate::engine::state::block_index_written_key("k", &as_page(&later_without)),
+        crate::engine::state::block_index_written_key("k", &as_block(&later_with)),
+        crate::engine::state::block_index_written_key("k", &as_block(&later_without)),
         "[CLAUSE presence-is-not-in-the-key] the generation presence bit reaches no key at ANY \
          block id, which would make it unobservable everywhere -- it reaches the key at a non-zero \
          block id, which is what makes it a stored fact rather than a leftover"
     );
     assert_ne!(
-        crate::engine::state::block_index_handle("k", &as_page(&later_with)),
-        crate::engine::state::block_index_handle("k", &as_page(&later_without)),
+        crate::engine::state::block_index_handle("k", &as_block(&later_with)),
+        crate::engine::state::block_index_handle("k", &as_block(&later_without)),
         "[CLAUSE presence-is-not-in-the-key] the generation presence bit reaches no handle at any \
          block id"
     );

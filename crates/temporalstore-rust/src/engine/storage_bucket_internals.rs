@@ -325,7 +325,7 @@ pub(super) struct LiveBlockEntry {
     /// LIVE BLOCK. This struct aligns to 8 -- three `Arc` pointers and a `BlockAddress` -- so its
     /// three flags sat in three bytes with five of tail padding. A `u32` and a fourth flag fit
     /// that padding; an `Option<u32>` is eight bytes of its own and took the struct from 104 to
-    /// 112. `a_live_page_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak` caught
+    /// 112. `a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak` caught
     /// that, and it is the guard on a walk that materializes EVERY live block in the shard, so the
     /// right answer was to stop paying the eight bytes rather than to widen the bound.
     ///
@@ -3408,7 +3408,7 @@ impl std::fmt::Display for StoredModelKind {
 /// POSITIONALLY -- a plain `rmp_serde::Serializer`, no field names -- so every field after a
 /// changed one shifts, and a store written by an older engine would mis-parse. Keeping the
 /// spelling on the wire means there is no migration to get wrong, no decoy field to pay for, and
-/// `core_index_loads_legacy_bucket_page_field_names` keeps asserting what it always asserted.
+/// `core_index_loads_legacy_bucket_block_field_names` keeps asserting what it always asserted.
 impl serde::Serialize for StoredModelKind {
     fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error>
     where
@@ -5084,7 +5084,7 @@ fn upsert_bucket_index_block_inner(
         // answered `None` here and allocated the key text again. Measured: a key written as a
         // string, a feature, a counter, a hash, a set, a zset and a list was filed under seven
         // kinds and held in SEVEN allocations, while the twenty model maps that adopt from this
-        // index all converged on one of them -- `how_many_allocations_the_page_index_itself_holds`.
+        // index all converged on one of them -- `how_many_allocations_the_block_index_itself_holds`.
         //
         // The scan costs nothing on the path that used to succeed: it runs only where the old code
         // was about to allocate, and it is bounded by the KIND count rather than the object count,
@@ -5608,7 +5608,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     //
     // AND BORROWED FROM THE INDEX BEFORE IT IS MINTED. Hoisting took this from one allocation per
     // address to one per call; asking the index first takes the common case to NONE. This site is
-    // why `how_many_allocations_the_page_index_itself_holds` measured two allocations rather than
+    // why `how_many_allocations_the_block_index_itself_holds` measured two allocations rather than
     // one after the upsert path started borrowing: six kinds shared and `string` did not, because
     // it arrives through here and this line minted unconditionally.
     //

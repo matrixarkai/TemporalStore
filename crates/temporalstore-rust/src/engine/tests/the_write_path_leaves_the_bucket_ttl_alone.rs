@@ -49,7 +49,7 @@ use crate::engine::storage_bucket_internals::{
 /// fixture whose expiry has already passed would assert nothing at all.
 const FAR_FUTURE_MS: u64 = u64::MAX / 2;
 
-fn a_bucket_holding_one_page(routing_bucket: u32, object_key: &str) -> BucketNode {
+fn a_bucket_holding_one_block(routing_bucket: u32, object_key: &str) -> BucketNode {
     let mut bucket = BucketNode::default();
     bucket.routing_bucket = routing_bucket;
     bucket.set_meta_loaded(true);
@@ -71,11 +71,11 @@ fn a_bucket_holding_one_page(routing_bucket: u32, object_key: &str) -> BucketNod
 }
 
 /// A shard with `buckets` buckets, each holding one page, and an expiry on every one of them.
-fn a_shard_with_expiring_pages(buckets: u32) -> ShardState {
+fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
     let mut shard = ShardState::default();
     for routing_bucket in 0..buckets {
         let object_key = format!("expiring-{routing_bucket}");
-        let bucket = a_bucket_holding_one_page(routing_bucket, &object_key);
+        let bucket = a_bucket_holding_one_block(routing_bucket, &object_key);
         // THE PLACED PAGES, READ OUT BEFORE THE BUCKET IS HANDED OVER, so the lookup can be filed
         // from the same (handle, page) pairs the map keyed them under.
         let placed: Vec<(u64, BlockIndex)> = bucket
@@ -122,7 +122,7 @@ fn the_write_path_leaves_the_bucket_ttl_alone_where_it_takes_the_sweep() {
     // ONE bucket pending of one, so `pending * 2 >= bucket_count` and the pending refresh hands its
     // work to the full sweep. This is the arm production takes, and it is the one that would have
     // been missed by gating on the traversal instead of on the parameter.
-    let mut shard = a_shard_with_expiring_pages(1);
+    let mut shard = a_shard_with_expiring_blocks(1);
     note_bucket_flags_stale(&mut shard, 0);
     refresh_pending_bucket_runtime_flags(&mut shard);
     assert_eq!(
@@ -145,7 +145,7 @@ fn the_write_path_leaves_the_bucket_ttl_alone_where_it_takes_the_sweep() {
 fn the_write_path_leaves_the_bucket_ttl_alone_where_it_takes_the_targeted_loop() {
     // THREE buckets, ONE pending, so `1 * 2 >= 3` is false and the pending refresh walks only the
     // touched bucket. The other arm of the same decision.
-    let mut shard = a_shard_with_expiring_pages(3);
+    let mut shard = a_shard_with_expiring_blocks(3);
     note_bucket_flags_stale(&mut shard, 1);
     refresh_pending_bucket_runtime_flags(&mut shard);
     assert_eq!(

@@ -11,7 +11,7 @@
 //! `the_dump_threshold_counts_log_records_not_dirty_objects` already established the mechanism
 //! mx#1934 misread -- a write BATCH is one log record however many objects it carries, so a
 //! batched corpus sits on the delayed side of `min_undumped_wal_records` and "the dirty set never
-//! drains" -- and `an_idle_round_still_walks_the_live_page_set` already established that a round
+//! drains" -- and `an_idle_round_still_walks_the_live_block_set` already established that a round
 //! with an empty dirty set walks the store anyway. Neither finding is new here. What this file
 //! adds is set equality against a witness from outside the engine, the restart argument, and both
 //! of those established results carried up to mx#1934's own fixture and sizes.
@@ -46,7 +46,7 @@
 //!
 //! SO WHAT IS THE DEFECT? THE ROUND'S COST NEVER CONSULTS ANY OF IT. With the dump firing and the
 //! dirty set drained to EMPTY -- no pending work of any kind, nothing to dump, nothing to retire
-//! -- a round still walks the whole live page set. This is `an_idle_round_still_walks_the_live_page_set`
+//! -- a round still walks the whole live page set. This is `an_idle_round_still_walks_the_live_block_set`
 //! carried to the two sizes above the 100,000-record line, where it can be scaled rather than
 //! stated, and set beside a fixed backlog so the two terms can be separated:
 //!

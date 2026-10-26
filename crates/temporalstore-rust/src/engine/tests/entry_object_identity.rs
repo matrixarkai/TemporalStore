@@ -229,7 +229,7 @@ fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockInd
 ///
 /// rust-internal: reads declarations and a seeded store, no product behaviour
 #[test]
-fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
+fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     // --- 1. FROM THE AUTHORITY, WITH THE EXPECTATION DERIVED. ---
     let components: Vec<String> = (0..MEMBERS_PER_KEY).map(|f| format!("f{f}")).collect();
     assert!(
@@ -303,7 +303,7 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     // at 0.9983 rows per page. The count below is what it becomes: one row per key, whatever the
     // key's element count.
     let mut keys_holding_many_ids = 0usize;
-    let mut pages_total = 0usize;
+    let mut blocks_total = 0usize;
     let mut ids_total = 0usize;
     for (object_key, ids) in &by_key {
         let distinct: BTreeSet<u64> = ids.iter().copied().collect();
@@ -328,7 +328,7 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
             ids.len(),
             distinct.len()
         );
-        pages_total += ids.len();
+        blocks_total += ids.len();
         ids_total += distinct.len();
         if distinct.len() > 1 {
             keys_holding_many_ids += 1;
@@ -341,9 +341,9 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
         by_key.len()
     );
     println!(
-        "  TOTAL pages={pages_total} object-index rows={ids_total} ({:.4} rows per page, was \
+        "  TOTAL pages={blocks_total} object-index rows={ids_total} ({:.4} rows per page, was \
          1.0000 when the id named the page)",
-        ids_total as f64 / pages_total as f64
+        ids_total as f64 / blocks_total as f64
     );
     assert_eq!(
         ids_total,
@@ -353,8 +353,8 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
         by_key.len()
     );
     assert!(
-        pages_total > ids_total,
-        "DENOMINATOR: {pages_total} pages and {ids_total} rows. A fixture whose keys held one page \
+        blocks_total > ids_total,
+        "DENOMINATOR: {blocks_total} pages and {ids_total} rows. A fixture whose keys held one page \
          each would satisfy every assertion above while measuring nothing"
     );
 
@@ -416,7 +416,7 @@ fn the_page_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
 ///
 /// rust-internal: reads declarations, no product behaviour
 #[test]
-fn the_written_key_of_a_page_spells_its_object_key_so_an_id_cannot_render_it() {
+fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() {
     let object_key = "container";
     let (page_key, page) = entry_named(object_key, Some("body"));
     let written = crate::engine::state::block_index_written_key(&page_key, &page);

@@ -149,7 +149,7 @@ const ROUTED_KEYS: usize = 200;
 /// on the identity grounds it always had PLUS the observation that there is nothing left to buy.
 ///
 /// Derived below and asserted against the derivation, never read as this literal.
-const CLAIMED_SAVING_PER_PAGE: usize = 0;
+const CLAIMED_SAVING_PER_BLOCK: usize = 0;
 
 // =================================================================================================
 // HARNESS
@@ -265,7 +265,7 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 }
 
 /// The pages one `(kind, key)` holds, counted off the bucket index.
-fn pages_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
+fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = 0usize;
@@ -456,9 +456,9 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
         "the two ordinal widths no longer share a stride"
     );
     assert_eq!(
-        saving, CLAIMED_SAVING_PER_PAGE,
+        saving, CLAIMED_SAVING_PER_BLOCK,
         "the arithmetic this module refutes on OTHER grounds has itself moved: the stride saving \
-         is {saving}, not {CLAIMED_SAVING_PER_PAGE}. The per-arm trade is quoted against \
+         is {saving}, not {CLAIMED_SAVING_PER_BLOCK}. The per-arm trade is quoted against \
          this number and must be recomputed"
     );
     println!(
@@ -803,15 +803,15 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // What one row of the list that would have to exist costs: a shared pointer to the name.
     let row_cost = size_of::<Arc<str>>();
 
-    let net_per_page = |pages: usize, rows: usize| -> f64 {
+    let net_per_block = |pages: usize, rows: usize| -> f64 {
         if pages == 0 {
             return 0.0;
         }
         (saving as f64 * pages as f64 - row_cost as f64 * rows as f64) / pages as f64
     };
 
-    let hash_net = net_per_page(hash_pages, hash_rows);
-    let string_net = net_per_page(string_pages, string_rows);
+    let hash_net = net_per_block(hash_pages, hash_rows);
+    let string_net = net_per_block(string_pages, string_rows);
 
     println!("\n=== the trade, per arm, never averaged -- A CEILING ON THE PRIZE ===");
     println!("  saving {saving} B/page of stride, name row {row_cost} B");
@@ -871,7 +871,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     //
     // They read `hash_net > 0.0` and `hash_net < saving as f64`, where
     // `hash_net = (saving * pages - row_cost * rows) / pages`. The stride saving an ordinal would
-    // buy is now nothing -- `CLAIMED_SAVING_PER_PAGE` carries why -- so `hash_net` is the row cost
+    // buy is now nothing -- `CLAIMED_SAVING_PER_BLOCK` carries why -- so `hash_net` is the row cost
     // with a minus sign, and a ceiling expressed as a fraction of a zero saving is not a ceiling.
     //
     // THE FIRST ONE'S OWN MESSAGE SAYS WHAT TO CONCLUDE: "If containers have stopped paying,
@@ -902,10 +902,10 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // histogram rather than a mean, because the whole question is the tail.
     let mut per_key: Vec<usize> = Vec::new();
     for key in &hash_keys {
-        per_key.push(pages_of_key(&engine, "hash", key));
+        per_key.push(blocks_of_key(&engine, "hash", key));
     }
     for key in &string_keys {
-        per_key.push(pages_of_key(&engine, "string", key));
+        per_key.push(blocks_of_key(&engine, "string", key));
     }
     per_key.sort();
     let single: usize = per_key.iter().filter(|pages| **pages <= 1).count();

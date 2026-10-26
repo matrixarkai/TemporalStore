@@ -95,7 +95,7 @@
 //!     dependency; and `dump_and_reclaim_index_logs_with_min_reclaimable` gives the log back once
 //!     a dump has made the base index authoritative, so it is not durable past a dump either.
 //!
-//! `the_page_entry_is_the_only_durable_home_of_an_object_keys_characters` drives that, with both
+//! `the_block_entry_is_the_only_durable_home_of_an_object_keys_characters` drives that, with both
 //! controls: a key that IS in the store must be found (or the scan is vacuous) and a key of the
 //! same shape that is NOT must be found nowhere (or the matcher matches anything). MEASURED: of
 //! the twelve members a stored `BucketNode` writes, the key's characters are in `page_index` and
@@ -972,7 +972,7 @@ const ABSENT_KEY: &str = "zq7-sole-home-key-absent-zq7";
 
 /// rust-internal: serializes this crate's own bucket node and reads its own index log file
 #[test]
-fn the_page_entry_is_the_only_durable_home_of_an_object_keys_characters() {
+fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, "sole-home", 1);
@@ -1166,13 +1166,13 @@ fn the_page_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     // THE MATCHER'S POSITIVE CONTROL, over the same code path, against text that DOES hold the
     // key: without it "not found in the log" is indistinguishable from a matcher that never finds
     // anything.
-    let page_index_text = serde_json::to_string(
+    let block_index_text = serde_json::to_string(
         members
             .get("page_index")
             .expect("APPARATUS: a stored node has no `page_index` member"),
     )
     .expect("the page rows serialize");
-    let haystack = page_index_text.as_bytes();
+    let haystack = block_index_text.as_bytes();
     assert!(
         needle.len() <= haystack.len()
             && haystack

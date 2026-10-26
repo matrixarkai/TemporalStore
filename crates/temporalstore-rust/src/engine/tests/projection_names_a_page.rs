@@ -154,14 +154,14 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // second. That is a real failure mode, it is what this fixture is already shaped to
         // measure, and it is asserted below.
         rederive(&engine);
-        let (first_pages, first_entries, _) = pages_and_entries(&engine, &key);
+        let (first_blocks, first_entries, _) = pages_and_entries(&engine, &key);
 
         rederive(&engine);
-        let (second_pages, second_entries, second_tombs) = pages_and_entries(&engine, &key);
+        let (second_blocks, second_entries, second_tombs) = pages_and_entries(&engine, &key);
 
         println!(
-            "  {occupancy:>9}  {first_pages:>6}  {first_entries:>7}  \
-             {second_pages:>6}  {second_entries:>7}  {second_tombs:>6}  \
+            "  {occupancy:>9}  {first_blocks:>6}  {first_entries:>7}  \
+             {second_blocks:>6}  {second_entries:>7}  {second_tombs:>6}  \
              (batches {batches}, folded {folded})"
         );
 
@@ -205,8 +205,8 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // FLOOR: the object survived both re-derivations, so the equalities below are not
         // between absences.
         assert!(
-            first_pages > 0 && first_entries > 0,
-            "occupancy {occupancy}: the first re-derivation left {first_pages} page(s) and \
+            first_blocks > 0 && first_entries > 0,
+            "occupancy {occupancy}: the first re-derivation left {first_blocks} page(s) and \
              {first_entries} entr(ies), so every comparison below holds over nothing"
         );
 
@@ -215,10 +215,10 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // A compaction sweep re-derives twice. A projection that emitted a different entry set on
         // the second pass would collapse and then un-collapse inside one sweep.
         assert_eq!(
-            (first_pages, first_entries),
-            (second_pages, second_entries),
-            "occupancy {occupancy}: re-deriving twice moved the projection -- {first_pages} \
-             page(s)/{first_entries} entr(ies) then {second_pages}/{second_entries}. A sweep \
+            (first_blocks, first_entries),
+            (second_blocks, second_entries),
+            "occupancy {occupancy}: re-deriving twice moved the projection -- {first_blocks} \
+             page(s)/{first_entries} entr(ies) then {second_blocks}/{second_entries}. A sweep \
              re-derives twice, so a projection that is not idempotent undoes itself mid-sweep"
         );
 
@@ -228,9 +228,9 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // against the measured page count and not against a literal, so a fixture that folds
         // differently cannot make it vacuous.
         assert_eq!(
-            second_pages, second_entries,
+            second_blocks, second_entries,
             "occupancy {occupancy}: the projection emitted {second_entries} entries for \
-             {second_pages} page(s). The page IS the identity, so the count must be the page count"
+             {second_blocks} page(s). The page IS the identity, so the count must be the page count"
         );
 
         // AND THE "NONE NAMED" HALF IS STRUCTURAL NOW. This block also asserted `0 == on_named`

@@ -57,7 +57,7 @@
 //! # THE CONTROL ON THE EXPLANATION
 //!
 //! The mechanism claimed is that the RANGE WIDTH is the modulus, so narrowing it groups keys.
-//! `narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_key` is the
+//! `narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object_key` is the
 //! workload where that mechanism predicts NO effect: routing takes the object key and never the
 //! component, so a single key's many component blocks sit in one bucket at every range. If the
 //! sweep's effect showed up there too, the explanation would be wrong.
@@ -347,7 +347,7 @@ fn store_path_length(dir: &std::path::Path) -> usize {
 /// rust-internal: reads the engine's own bucket index, no product behaviour
 #[test]
 #[ignore = "seeds ten stores up to 40,000 records each; run by name"]
-fn the_pages_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
+fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
     let mut observed: BTreeMap<(usize, u32), BlocksPerBucket> = BTreeMap::new();
     let mut path_lengths: BTreeSet<usize> = BTreeSet::new();
 
@@ -1004,7 +1004,7 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
 /// rust-internal: reads the engine's own dirty index and release pass, no product behaviour
 #[test]
 #[ignore = "seeds ten stores of 40,000 records each; run by name"]
-fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
+fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
     let mut observed: BTreeMap<u32, (usize, usize, usize, usize)> = BTreeMap::new();
 
     for end_routing_bucket in swept_ranges() {
@@ -1067,7 +1067,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
         // `bucket.dirty() | any_page_dirty`, an OR that never clears. What does clear it is the
         // clear-dirty-on-load contract in `persistence.rs` -- a reloaded block comes back
         // `dirty = false` -- so the store is written, flushed, dropped and reopened.
-        let pages_released = {
+        let blocks_released = {
             let dir = tempfile::tempdir().expect("tempdir");
             {
                 let engine = engine_on(dir.path());
@@ -1115,11 +1115,11 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
         println!(
             "  {label:<24} fill p50 {fill_p50:>4} MAX {fill_max:>4} | {dirty_buckets_len} dirty \
              buckets over {dirty_keys} dirty keys | a one-bucket dump drains {drained} keys | a \
-             one-bucket release frees {pages_released} pages",
+             one-bucket release frees {blocks_released} pages",
         );
         observed.insert(
             end_routing_bucket,
-            (drained, pages_released, dirty_buckets_len, fill_max),
+            (drained, blocks_released, dirty_buckets_len, fill_max),
         );
     }
 
@@ -1193,7 +1193,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_pages_a_bucket_holds() {
 /// rust-internal: reads the engine's own placement functions, no product behaviour
 #[test]
 #[ignore = "seeds five container stores; run by name"]
-fn narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_key() {
+fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object_key() {
     const MEMBERS: usize = 2_000;
     let mut observed: BTreeMap<u32, (usize, usize, usize)> = BTreeMap::new();
 
@@ -1233,10 +1233,10 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_
 
     // NON-VACUITY FIRST: the fixture has to have written blocks, or "no effect" is the effect of
     // an empty store.
-    let (_, wide_pages, wide_max) = *observed.get(&WIDE_END).expect("the wide arm ran");
+    let (_, wide_blocks, wide_max) = *observed.get(&WIDE_END).expect("the wide arm ran");
     assert!(
-        wide_pages >= MEMBERS,
-        "the container arm wrote {wide_pages} pages for {MEMBERS} components; an absent effect \
+        wide_blocks >= MEMBERS,
+        "the container arm wrote {wide_blocks} pages for {MEMBERS} components; an absent effect \
          over an empty store is not a control"
     );
     assert!(
@@ -1249,17 +1249,17 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_pages_share_one_object_
     for end_routing_bucket in swept_ranges() {
         let (buckets, pages, max) = *observed.get(&end_routing_bucket).expect("arm ran");
         assert_eq!(
-            (1, wide_pages, wide_max),
+            (1, wide_blocks, wide_max),
             (buckets, pages, max),
             "on 0..{end_routing_bucket} a store of one object key occupied {buckets} buckets \
              holding {pages} pages with a widest of {max}, against the shipped default's 1 \
-             bucket, {wide_pages} pages, widest {wide_max}. Routing takes the object key and \
+             bucket, {wide_blocks} pages, widest {wide_max}. Routing takes the object key and \
              never the component, so the range cannot split one key -- if it did here, the \
              mechanism every figure in this module is attributed to is not the mechanism"
         );
     }
     println!(
-        "  the control holds: one object key is one bucket holding {wide_pages} pages at all {} \
+        "  the control holds: one object key is one bucket holding {wide_blocks} pages at all {} \
          ranges, so the sweep's effect is the modulus over OBJECT KEYS and nothing else",
         swept_ranges().len()
     );
@@ -2133,7 +2133,7 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
 /// rust-internal: reads the engine's own counters, no product behaviour
 #[test]
 #[ignore = "reads process-wide counters; run by name"]
-fn a_command_that_names_no_page_derives_no_bucket_and_a_read_derives_two() {
+fn a_command_that_names_no_block_derives_no_bucket_and_a_read_derives_two() {
     const RECORDS: usize = 500;
 
     let dir = tempfile::tempdir().expect("tempdir");

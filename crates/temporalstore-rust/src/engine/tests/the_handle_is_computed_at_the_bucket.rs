@@ -198,7 +198,7 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
 ///
 /// rust-internal: drives this crate's own serde impls, no external surface
 #[test]
-fn the_written_page_index_is_the_same_map_it_was_before_the_hoist() {
+fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     let mut bucket = BucketNode::default();
     let mut live = BlockSlabLiveIndex::default();
     for (object_key, entry) in fixture() {

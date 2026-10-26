@@ -74,7 +74,7 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
          would be read by the old rule as an empty live value"
     );
     // And they differ in exactly one byte, which is what makes the rewrite in
-    // `a_live_suffix_page_is_the_same_bytes_under_either_shape` a magic swap and not a reshaping.
+    // `a_live_suffix_block_is_the_same_bytes_under_either_shape` a magic swap and not a reshaping.
     let differing = CONTAINER_PAGE_MAGIC
         .iter()
         .zip(CONTAINER_PAGE_MAGIC_V2.iter())
@@ -90,7 +90,7 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
 
 /// rust-internal: operates on the page codec directly
 #[test]
-fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_page() {
+fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     crate::engine::container_pages::reset_unframed_container_removal_count();
 
     // A kind with no element-key spelling: its page is its whole object, so there is no element to
@@ -197,7 +197,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_page() {
 
 /// rust-internal: drives the page-derived membership fold
 #[test]
-fn an_older_page_is_not_outranked_by_a_page_that_merely_does_not_mention_the_element() {
+fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_element() {
     // THE DISTINCTION THE WHOLE DESIGN TURNS ON. A later page that SAYS NOTHING about an element must
     // leave the earlier page's statement standing; only a page that says REMOVED may overrule it. Get
     // this wrong in the permissive direction and every fold silently empties the containers it did
@@ -341,7 +341,7 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
 
 /// rust-internal: operates on the page codec directly
 #[test]
-fn a_live_suffix_page_is_the_same_bytes_under_either_shape() {
+fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
     // A set member: the element key IS the member and so is the value, which is the suffix case --
     // and the case that covers the two kinds whose pages dominate the store.
     let member = b"member-0007".to_vec();
@@ -396,7 +396,7 @@ fn a_live_suffix_page_is_the_same_bytes_under_either_shape() {
 
 /// rust-internal: drives the page-derived membership fold
 #[test]
-fn the_fold_orders_pages_by_append_position_and_not_by_the_order_it_was_handed_them() {
+fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_them() {
     let member = b"m".to_vec();
     let live = encode_container_page_items(
         ElementKeySpelling::Hex,
@@ -468,7 +468,7 @@ fn the_fold_orders_pages_by_append_position_and_not_by_the_order_it_was_handed_t
 
 /// rust-internal: drives the page-derived membership fold
 #[test]
-fn a_tombstone_dropped_while_an_older_page_survives_resurrects_its_element() {
+fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let member = b"m".to_vec();
     let component = hex::encode(&member);
     let other = b"n".to_vec();

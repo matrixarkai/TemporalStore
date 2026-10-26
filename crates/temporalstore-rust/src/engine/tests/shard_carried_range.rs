@@ -34,7 +34,7 @@
 //!   only to INSERT.
 //!
 //! So narrowing them moves where an unrouted page lands and can drop nothing.
-//! `narrowing_the_writers_removes_no_page_that_was_already_filed` drives that rather than reading
+//! `narrowing_the_writers_removes_no_block_that_was_already_filed` drives that rather than reading
 //! it off the source, and `a_store_written_on_one_range_still_reads_back_whole_on_the_other`
 //! drives the cross-range restore in BOTH directions, because both are silent when they fail.
 //!
@@ -310,7 +310,7 @@ fn a_loaded_shard_carries_the_routing_range_it_was_loaded_on() {
 /// address carrying no bucket of its own. An address carries none, so that half is structural and the
 /// round trip below is kept only to show the wire key is inert.
 #[test]
-fn the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range() {
+fn the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range() {
     for (label, sync_path) in [("upsert_bucket_index_block", false), ("sync_bucket_index_object_blocks", true)] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -480,7 +480,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
 /// rebuild files them on the shard's range; then one page is re-published through each writer.
 /// Every other page must be exactly where it was.
 #[test]
-fn narrowing_the_writers_removes_no_page_that_was_already_filed() {
+fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
@@ -673,7 +673,7 @@ fn the_routing_range_field_changes_no_serialized_byte() {
 /// AND IT IS NOW A REFUSAL -- the cross-range reopen this test drove is no longer reachable.
 ///
 /// What this test established is not deleted, it is INVERTED, the same way
-/// `the_two_sites_that_file_a_page_now_file_it_under_the_shards_own_range` inverted mx#1949's
+/// `the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range` inverted mx#1949's
 /// measurement rather than removing it. It showed that a store written on one range reads back
 /// whole on the other -- true, and the reason the hazard was silent: every record read while every
 /// page sat in a bucket the reopened shard did not hold. `routing_range_stamp.rs` records the range
