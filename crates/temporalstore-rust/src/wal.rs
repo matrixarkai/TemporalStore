@@ -6725,6 +6725,761 @@ mod tests {
                  compression is not running and the first test's payload choice is unnecessary"
             );
         }
+
+        /// EVERY BYTE OF ONE RECORD, ATTRIBUTED TO THE FIELD THAT OWNS IT.
+        ///
+        /// # WHY A WIRE WALK AND NOT A CLEAR-AND-RE-ENCODE
+        ///
+        /// `where_one_local_wal_records_envelope_goes` prices a field by clearing it and
+        /// re-encoding. That answers "what does this field cost" only when the field was
+        /// populated: clear one the record never filled and the probe reports 0 B while the
+        /// bytes it was looking for sit in some other term. This store has already been bitten
+        /// by exactly that -- a term probe cleared a digest field a frame did not populate,
+        /// reported `digest 0 B`, and the five real bytes were absorbed into the residue, with
+        /// the accounting identity still holding, because a remainder takes up whatever the
+        /// named terms miss.
+        ///
+        /// So this walks the wire instead. Every byte is attributed to a field by its own tag,
+        /// an UNKNOWN TAG IS A PANIC rather than a skip, and there is no residue term for
+        /// anything to hide in: the sum of the named terms is asserted equal to the framed
+        /// record, so a byte that is not named is a failure rather than a rounding.
+        ///
+        /// # THE SURFACE, NAMED
+        ///
+        /// This is the LOCAL log's record: `encode_wal_payload` (a hand-written and generated
+        /// protobuf of `EngineWalRecord`, marker byte first) inside `log_framing::encode_record`
+        /// (a marker, a varint length and a CRC32C). It is NOT the shared store's log frame,
+        /// which `one_append_amplification_report` measures over two objects, and it is not the
+        /// `TSIDX` container, whose byte figure is a compressed size and cannot name a field.
+        mod every_byte_named {
+            use super::*;
+
+            /// Which message a stretch of bytes belongs to. The walk needs this because a
+            /// protobuf field's bytes mean nothing without the message that declares its tags.
+            #[derive(Clone, Copy, PartialEq, Eq, Debug)]
+            enum Schema {
+                Record,
+                Command,
+                StringSet,
+                HashSet,
+                Metadata,
+                Item,
+                BlockAddress,
+                StagedBlock,
+            }
+
+            /// The tag table, transcribed from `proto/temporalstore/v1/temporalstore.proto`.
+            ///
+            /// `None` as the nested schema means the field's value bytes are a leaf and are
+            /// named as one term. `Some` means the walk descends and names the fields inside.
+            fn field(schema: Schema, tag: u32) -> Option<(&'static str, Option<Schema>)> {
+                Some(match (schema, tag) {
+                    // EngineWalRecord
+                    (Schema::Record, 1) => ("shard_id", None),
+                    (Schema::Record, 2) => ("sequence", None),
+                    (Schema::Record, 3) => ("command", Some(Schema::Command)),
+                    (Schema::Record, 4) => ("metadata", Some(Schema::Metadata)),
+                    (Schema::Record, 5) => ("item", Some(Schema::Item)),
+                    (Schema::Record, 6) => ("staged_block", Some(Schema::StagedBlock)),
+                    // WalCommand
+                    (Schema::Command, 1) => ("string_set", Some(Schema::StringSet)),
+                    (Schema::Command, 2) => ("hash_set", Some(Schema::HashSet)),
+                    (Schema::Command, 99) => ("verbatim", None),
+                    // StringSet
+                    (Schema::StringSet, 1) => ("key", None),
+                    (Schema::StringSet, 2) => ("value", None),
+                    (Schema::StringSet, 3) => ("ttl_ms", None),
+                    // HashSet
+                    (Schema::HashSet, 1) => ("key", None),
+                    (Schema::HashSet, 2) => ("field", None),
+                    (Schema::HashSet, 3) => ("value", None),
+                    // EngineWalMetadata
+                    (Schema::Metadata, 1) => ("version", None),
+                    (Schema::Metadata, 2) => ("timestamp_ms", None),
+                    (Schema::Metadata, 3) => ("item", Some(Schema::Item)),
+                    (Schema::Metadata, 4) => ("batch_id", None),
+                    (Schema::Metadata, 5) => ("batch_size", None),
+                    (Schema::Metadata, 6) => ("batch_index", None),
+                    // EngineWalItem
+                    (Schema::Item, 1) => ("item_kind", None),
+                    (Schema::Item, 2) => ("model", None),
+                    (Schema::Item, 3) => ("object_key", None),
+                    (Schema::Item, 4) => ("bucket_id", None),
+                    (Schema::Item, 5) => ("object_id", None),
+                    (Schema::Item, 6) => ("block_id", None),
+                    (Schema::Item, 7) => ("ttl_ms", None),
+                    (Schema::Item, 8) => ("deleted", None),
+                    (Schema::Item, 9) => ("meta_log", None),
+                    (Schema::Item, 10) => ("block_log", None),
+                    (Schema::Item, 11) => ("component", None),
+                    (Schema::Item, 12) => ("block", Some(Schema::BlockAddress)),
+                    (Schema::Item, 13) => ("value", None),
+                    (Schema::Item, 14) => ("kind_name", None),
+                    (Schema::Item, 15) => ("routing_bucket", None),
+                    (Schema::Item, 16) => ("timestamp_ms", None),
+                    (Schema::Item, 17) => ("entry_id", None),
+                    (Schema::Item, 18) => ("object_deleted", None),
+                    (Schema::Item, 19) => ("kind_code", None),
+                    // WalBlockAddress
+                    (Schema::BlockAddress, 1) => ("block_slab_id", None),
+                    (Schema::BlockAddress, 2) => ("offset", None),
+                    (Schema::BlockAddress, 3) => ("length", None),
+                    (Schema::BlockAddress, 4) => ("block_id", None),
+                    (Schema::BlockAddress, 5) => ("object_id", None),
+                    (Schema::BlockAddress, 6) => ("routing_bucket", None),
+                    (Schema::BlockAddress, 7) => ("generation", None),
+                    (Schema::BlockAddress, 8) => ("slab_id", None),
+                    (Schema::BlockAddress, 9) => ("checksum", None),
+                    (Schema::BlockAddress, 10) => ("checksum_raw", None),
+                    // WalStagedBlock
+                    (Schema::StagedBlock, 1) => ("object_id", None),
+                    (Schema::StagedBlock, 2) => ("block", None),
+                    (Schema::StagedBlock, 3) => ("routing_bucket", None),
+                    (Schema::StagedBlock, 4) => ("component", None),
+                    _ => return None,
+                })
+            }
+
+            fn varint(bytes: &[u8], at: &mut usize) -> u64 {
+                let mut value = 0u64;
+                let mut shift = 0u32;
+                loop {
+                    let byte = *bytes
+                        .get(*at)
+                        .unwrap_or_else(|| panic!("a varint ran off the end at byte {}", *at));
+                    *at += 1;
+                    value |= u64::from(byte & 0x7f) << shift;
+                    if byte & 0x80 == 0 {
+                        return value;
+                    }
+                    shift += 7;
+                    assert!(shift < 64, "a varint longer than ten bytes at byte {}", *at);
+                }
+            }
+
+            /// Name every byte of one message, descending into the messages inside it.
+            fn attribute(body: &[u8], schema: Schema, path: &str, out: &mut Vec<(String, usize)>) {
+                let mut at = 0usize;
+                while at < body.len() {
+                    let key_at = at;
+                    let key = varint(body, &mut at);
+                    let tag = (key >> 3) as u32;
+                    let wire = key & 0x7;
+                    let (name, nested) = field(schema, tag).unwrap_or_else(|| {
+                        panic!(
+                            "UNCLASSIFIED FIELD: tag {tag} of {schema:?} at byte {key_at} under \
+                             {path:?}. Every byte of this record must be attributable to a named \
+                             field. A tag with no name here means this tag table is behind the \
+                             message it transcribes -- add the field rather than letting its \
+                             bytes fall into a remainder, which is how a decomposition comes to \
+                             be wrong in a term and still sum to the whole"
+                        )
+                    });
+                    out.push((format!("{path}{name} tag"), at - key_at));
+                    match wire {
+                        0 => {
+                            let value_at = at;
+                            varint(body, &mut at);
+                            out.push((format!("{path}{name} value"), at - value_at));
+                        }
+                        1 => {
+                            out.push((format!("{path}{name} value"), 8));
+                            at += 8;
+                        }
+                        5 => {
+                            out.push((format!("{path}{name} value"), 4));
+                            at += 4;
+                        }
+                        2 => {
+                            let len_at = at;
+                            let len = varint(body, &mut at) as usize;
+                            out.push((format!("{path}{name} length"), at - len_at));
+                            match nested {
+                                Some(inner) => {
+                                    let before = out.len();
+                                    attribute(
+                                        &body[at..at + len],
+                                        inner,
+                                        &format!("{path}{name}."),
+                                        out,
+                                    );
+                                    let named: usize = out[before..].iter().map(|term| term.1).sum();
+                                    assert_eq!(
+                                        named, len,
+                                        "the walk of {path}{name} named {named} B of its own {len} B"
+                                    );
+                                }
+                                None => out.push((format!("{path}{name} value"), len)),
+                            }
+                            at += len;
+                        }
+                        other => {
+                            panic!("wire type {other} is not one this walk reads, at {path}{name}")
+                        }
+                    }
+                }
+                assert_eq!(at, body.len(), "the walk of {path} overran its message");
+            }
+
+            /// Bytes the binary frame's own length varint occupies over a payload of this size.
+            fn frame_varint_len(payload_len: usize) -> usize {
+                match payload_len {
+                    0..=127 => 1,
+                    128..=16_383 => 2,
+                    _ => 3,
+                }
+            }
+
+            /// Every byte of one framed record, named. The sum is asserted equal to the frame.
+            fn terms_of(record: &WriteAheadLogRecord) -> (Vec<(String, usize)>, usize) {
+                let (payload, framed) = encoded(record);
+                assert_eq!(
+                    payload.first().copied(),
+                    Some(crate::wal_proto::RAW_PAYLOAD_MARKER),
+                    "this walk names protobuf fields, so it is only meaningful on the \
+                     uncompressed branch; this payload went through the compressor"
+                );
+                let mut terms = vec![("payload marker".to_string(), 1usize)];
+                attribute(&payload[1..], Schema::Record, "record.", &mut terms);
+                let named: usize = terms.iter().map(|term| term.1).sum();
+                assert_eq!(
+                    named,
+                    payload.len(),
+                    "the walk named {named} B of a {} B payload, so some of the payload is \
+                     unaccounted for",
+                    payload.len()
+                );
+
+                // The binary frame around it, which is three terms and not one.
+                let varint_len = frame_varint_len(payload.len());
+                assert_eq!(
+                    framed - payload.len(),
+                    1 + varint_len + 4,
+                    "the binary frame costs {} B over a {}-byte payload, not the marker, \
+                     {varint_len}-byte varint and four CRC bytes this names",
+                    framed - payload.len(),
+                    payload.len()
+                );
+                terms.push(("frame marker".to_string(), 1));
+                terms.push(("frame length varint".to_string(), varint_len));
+                terms.push(("frame crc32c".to_string(), 4));
+
+                let total: usize = terms.iter().map(|term| term.1).sum();
+                assert_eq!(
+                    total, framed,
+                    "the named terms sum to {total} B against a {framed} B framed record. There \
+                     is deliberately no remainder term for the difference to live in"
+                );
+                (terms, framed)
+            }
+
+            /// A record carrying ONE OUTCOME and no operation -- the shape this log writes by
+            /// default. The batch append path builds exactly this: no command, because the items
+            /// say what the batch did.
+            ///
+            /// # THE OBJECT ID IS THE DERIVED ONE, AND THAT IS NOT A DETAIL
+            ///
+            /// `item_object_id_to_write` writes the id ONLY when it differs from
+            /// `stable_block_object_id(shard, kind, key)`, so a record whose id is the derived one
+            /// omits nine bytes -- a `fixed64` and its tag. An invented id is therefore not a
+            /// smaller version of a real one, it is a DIFFERENT SHAPE: the first draft of this
+            /// fixture used `1_000` and reported an outcome envelope 9 B larger than the one this
+            /// log actually writes, which would have made the default shape look like the
+            /// expensive one. The id is derived here for that reason, and
+            /// `the_fixture_writes_the_object_id_the_store_would_derive` asserts the omission
+            /// rather than trusting this comment.
+            fn outcome_record_of(value: Vec<u8>) -> WriteAheadLogRecord {
+                WriteAheadLogRecord {
+                    shard_id: 1,
+                    sequence: 1,
+                    command: None,
+                    metadata: Some(WriteAheadLogRecordMetadata {
+                        version: WRITE_AHEAD_LOG_FORMAT_VERSION,
+                        timestamp_ms: 1_787_270_070_192,
+                        items: Vec::new(),
+                        batch_id: None,
+                        batch_size: None,
+                        batch_index: None,
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: vec![WalOutcomeItem {
+                        kind: "string".to_string(),
+                        object_key: KEY.to_string(),
+                        component: None,
+                        object_id: crate::engine::hashing::stable_block_object_id(
+                            1, "string", KEY,
+                        ),
+                        routing_bucket: 7,
+                        address: None,
+                        value: Some(value),
+                        ttl: None,
+                        deleted: false,
+                        meta: false,
+                    }],
+                }
+            }
+
+            /// THE FIXTURE'S OWN PRECONDITION: the outcome item names the object the way the store
+            /// does, so the record under measurement is the shape the store writes.
+            ///
+            /// Without this the sweep would still produce a line, a residual and a ceiling -- all
+            /// of them about a record no append produces. A fixture that is wrong in a way the
+            /// encoder has an omission rule for does not look wrong; it looks expensive.
+            #[test]
+            fn the_fixture_writes_the_object_id_the_store_would_derive() {
+                let (terms, _) = terms_of(&outcome_record_of(incompressible_seeded(32, 32)));
+                let named: usize = terms
+                    .iter()
+                    .filter(|(name, _)| name.starts_with("record.item.object_id"))
+                    .map(|(_, bytes)| bytes)
+                    .sum();
+                assert_eq!(
+                    0, named,
+                    "this fixture's outcome item spends {named} B stating its object id, so the \
+                     id it carries is not `stable_block_object_id(1, \"string\", {KEY:?})` and \
+                     every outcome figure here is about a record this store does not write"
+                );
+                // AND THE CONTROL, so a zero above cannot mean the walk stopped finding the
+                // field: an item whose id is NOT the derived one does spend those bytes.
+                let mut invented = outcome_record_of(incompressible_seeded(32, 32));
+                invented.outcomes[0].object_id = invented.outcomes[0].object_id.wrapping_add(1);
+                let (control, _) = terms_of(&invented);
+                let control_named: usize = control
+                    .iter()
+                    .filter(|(name, _)| name.starts_with("record.item.object_id"))
+                    .map(|(_, bytes)| bytes)
+                    .sum();
+                assert_eq!(
+                    9, control_named,
+                    "an item whose object id is NOT the derived one spent {control_named} B on \
+                     it, not a tag and a fixed64, so the zero above is not evidence of an \
+                     omission"
+                );
+            }
+
+            fn report(label: &str, terms: &[(String, usize)], framed: usize, user: usize) {
+                let mut rows: Vec<(String, usize)> = terms.to_vec();
+                rows.sort_by(|left, right| right.1.cmp(&left.1).then(left.0.cmp(&right.0)));
+                println!();
+                println!("  {label}: {framed} B framed, {user} B of it the caller's own");
+                for (name, bytes) in &rows {
+                    println!("    {bytes:>7} B   {name}");
+                }
+                println!(
+                    "    {:>7} B   = ENVELOPE (framed minus the caller's own)",
+                    framed - user
+                );
+            }
+
+            /// Bytes the caller's key and value occupy, found by name rather than by subtraction.
+            fn callers_own(terms: &[(String, usize)], size: usize) -> usize {
+                let key = terms
+                    .iter()
+                    .find(|(name, _)| {
+                        name == "record.command.string_set.key value"
+                            || name == "record.item.object_key value"
+                    })
+                    .expect("no term holds the caller's key");
+                assert_eq!(
+                    key.1,
+                    KEY.len(),
+                    "the key term {:?} is {} B for a {}-character key",
+                    key.0,
+                    key.1,
+                    KEY.len()
+                );
+                if size == 0 {
+                    return key.1;
+                }
+                let value = terms
+                    .iter()
+                    .find(|(name, _)| {
+                        name == "record.command.string_set.value value"
+                            || name == "record.item.value value"
+                    })
+                    .expect("no term holds the caller's value");
+                assert_eq!(
+                    value.1, size,
+                    "the value term {:?} is {} B for a {size}-byte value",
+                    value.0, value.1
+                );
+                key.1 + value.1
+            }
+
+            /// THE DECOMPOSITION, with every term named, every term non-zero, and no remainder.
+            ///
+            /// Run at 512 bytes deliberately: the terms are all populated there, so "every term
+            /// non-zero" is a statement about the encoding rather than about a fixture that
+            /// happened to leave a field empty.
+            #[test]
+            fn every_byte_of_one_record_has_a_name() {
+                const SIZE: usize = 512;
+                let value = incompressible_seeded(SIZE, SIZE as u64);
+
+                for (label, record) in [
+                    ("a record carrying an OPERATION", record_of(value.clone())),
+                    (
+                        "a record carrying an OUTCOME (the shape this log writes by default)",
+                        outcome_record_of(value.clone()),
+                    ),
+                ] {
+                    let (terms, framed) = terms_of(&record);
+                    let user = callers_own(&terms, SIZE);
+                    report(label, &terms, framed, user);
+
+                    // EACH TERM IS A TERM. A zero-byte term is a field written with no content,
+                    // which is a finding rather than a rounding.
+                    for (name, bytes) in &terms {
+                        assert!(
+                            *bytes > 0,
+                            "{label}: the term {name:?} is 0 B, so this walk is naming a field \
+                             that carries nothing"
+                        );
+                    }
+
+                    // THE TERMS EVERY RECORD OF THIS LOG OWES, asserted by name and non-zero.
+                    // Without this the walk could name a record correctly and say nothing about
+                    // whether the fields that make it a log record are there at all.
+                    for owed in [
+                        "payload marker",
+                        "frame marker",
+                        "frame length varint",
+                        "frame crc32c",
+                        "record.shard_id value",
+                        "record.sequence value",
+                    ] {
+                        let bytes: usize = terms
+                            .iter()
+                            .filter(|(name, _)| name == owed)
+                            .map(|(_, bytes)| bytes)
+                            .sum();
+                        assert!(
+                            bytes > 0,
+                            "{label}: the term {owed:?} is absent or 0 B. Every record of this \
+                             log carries a frame, a payload marker, a shard and a sequence"
+                        );
+                    }
+                }
+            }
+
+            /// WHAT THE LEADER CLOCK STAMP COSTS, AND WHICH SHAPE READS IT.
+            ///
+            /// See `wal_proto::leader_stamp_has_a_reader` for the whole argument. BOTH ARMS are
+            /// asserted here, because dropping the stamp from the shape that reads it would lose
+            /// a deadline and dropping it from neither would save nothing.
+            #[test]
+            fn only_the_shape_that_re_executes_carries_the_leader_stamp() {
+                const SIZE: usize = 512;
+                let value = incompressible_seeded(SIZE, SIZE as u64);
+
+                let (operation_terms, operation_framed) = terms_of(&record_of(value.clone()));
+                let (outcome_terms, outcome_framed) = terms_of(&outcome_record_of(value));
+
+                let stamp = |terms: &[(String, usize)]| -> usize {
+                    terms
+                        .iter()
+                        .filter(|(name, _)| name.starts_with("record.metadata.timestamp_ms"))
+                        .map(|(_, bytes)| bytes)
+                        .sum()
+                };
+
+                let on_operation = stamp(&operation_terms);
+                let on_outcome = stamp(&outcome_terms);
+                println!();
+                println!(
+                    "  record.metadata.timestamp_ms: {on_operation} B on a record carrying an \
+                     operation ({operation_framed} B framed), {on_outcome} B on one carrying an \
+                     outcome ({outcome_framed} B framed)"
+                );
+
+                assert!(
+                    on_operation >= 7,
+                    "a record that will be RE-EXECUTED on replay carries {on_operation} B of \
+                     leader stamp. Replay resolves its relative TTL deadlines against that \
+                     stamp, and without one every deadline in it is extended to the restart \
+                     clock -- see `wal_replay_reads_an_unstamped_record_against_the_live_clock`"
+                );
+                assert_eq!(
+                    0, on_outcome,
+                    "a record carrying outcomes spends {on_outcome} B on a leader stamp the \
+                     replay loop never reads: it installs the recorded items and continues above \
+                     `set_replay_clock_ms`. If replay has started reading the stamp on that \
+                     branch then `wal_proto::leader_stamp_has_a_reader` is the thing to change, \
+                     not this assertion"
+                );
+            }
+
+            /// THE ENVELOPE AS A LINE, for both record shapes, over a payload sweep.
+            ///
+            /// A per-record figure quoted at one payload size is mostly the envelope divided by
+            /// that size, so the size is swept and `framed = rate * payload + envelope` fitted,
+            /// with the worst residual printed beside it.
+            #[test]
+            fn the_envelope_is_a_line_on_both_record_shapes() {
+                println!();
+                println!(
+                    "    payload   user B   operation framed   outcome framed   operation env   outcome env"
+                );
+                let mut operation: Vec<(f64, f64)> = Vec::new();
+                let mut outcome: Vec<(f64, f64)> = Vec::new();
+                for size in SWEEP {
+                    let value = incompressible_seeded(size, size as u64);
+                    let (operation_terms, operation_framed) = terms_of(&record_of(value.clone()));
+                    let (outcome_terms, outcome_framed) = terms_of(&outcome_record_of(value));
+                    let operation_user = callers_own(&operation_terms, size);
+                    let outcome_user = callers_own(&outcome_terms, size);
+                    assert_eq!(
+                        operation_user, outcome_user,
+                        "the two shapes carry different amounts of the caller's own bytes at \
+                         {size}, so their envelopes are not comparable"
+                    );
+                    println!(
+                        "    {size:>7}   {operation_user:>6}   {operation_framed:>16}   {outcome_framed:>14}   {:>13}   {:>11}",
+                        operation_framed - operation_user,
+                        outcome_framed - outcome_user,
+                    );
+                    operation.push((size as f64, operation_framed as f64));
+                    outcome.push((size as f64, outcome_framed as f64));
+                }
+
+                let (operation_rate, operation_env, operation_resid) = fit(&operation);
+                let (outcome_rate, outcome_env, outcome_resid) = fit(&outcome);
+                println!();
+                println!("  carrying an operation = {operation_rate:.4} * payload + {operation_env:.1}      worst residual {operation_resid:.1} B");
+                println!("  carrying an outcome   = {outcome_rate:.4} * payload + {outcome_env:.1}      worst residual {outcome_resid:.1} B");
+                println!(
+                    "  outcome shape: at {:>5} B payload the envelope alone is {:>6.2}x of the caller's bytes",
+                    SWEEP[1],
+                    outcome_env / (KEY.len() + SWEEP[1]) as f64
+                );
+                println!(
+                    "  outcome shape: at {:>5} B payload the envelope alone is {:>6.2}x of the caller's bytes",
+                    SWEEP[SWEEP.len() - 1],
+                    outcome_env / (KEY.len() + SWEEP[SWEEP.len() - 1]) as f64
+                );
+
+                // THE FITS HAVE TO BE FITS, the same rule every other line on this surface is
+                // held to: a line quoted over points that do not lie on one summarises nothing.
+                for (label, rate, env, resid) in [
+                    ("operation", operation_rate, operation_env, operation_resid),
+                    ("outcome", outcome_rate, outcome_env, outcome_resid),
+                ] {
+                    assert!(
+                        resid < env.abs().max(1.0),
+                        "the {label} fit leaves a residual of {resid:.1} B against an envelope of \
+                         {env:.1} B, so `rate * payload + envelope` is not the shape of this cost"
+                    );
+                    assert!(
+                        rate >= 1.0,
+                        "the {label} marginal rate is {rate:.4}, under 1.0 -- an uncompressed \
+                         record cannot store less than it was given"
+                    );
+                }
+
+                // THE CEILING FOLLOWS THE ENVELOPE DOWN. A bound left where it was after the
+                // envelope dropped would admit the whole of the saving being handed back.
+                //
+                // Both shapes get one, and they are different numbers because they are different
+                // records: the operation shape pays a leader stamp and two levels of command
+                // nesting, the outcome shape pays a kind code, a routing bucket and the item's
+                // own tag and length. Quoting either as "the" per-record envelope is the
+                // confusion these two bounds exist to make impossible.
+                assert!(
+                    operation_env < 38.0,
+                    "the per-record envelope of a record carrying an OPERATION is \
+                     {operation_env:.1} B, over the 38 B ceiling. Every byte of it is named by \
+                     `every_byte_of_one_record_has_a_name` -- re-price it term by term before \
+                     raising this"
+                );
+                assert!(
+                    outcome_env < 34.0,
+                    "the per-record envelope of a record carrying an OUTCOME is \
+                     {outcome_env:.1} B, over the 34 B ceiling. Every byte of it is named by \
+                     `every_byte_of_one_record_has_a_name`. The leader stamp came off this shape \
+                     for seven of those bytes -- re-price it term by term before raising this"
+                );
+                // AND THE DEFAULT SHAPE MUST BE THE CHEAPER ONE. It was not: with the stamp on
+                // it, the shape this log writes by default cost MORE per record than the
+                // command-carrying shape the published figure was measured on.
+                assert!(
+                    outcome_env < operation_env,
+                    "the outcome shape's envelope is {outcome_env:.1} B against the operation \
+                     shape's {operation_env:.1} B. The outcome shape carries no command and no \
+                     leader stamp, so it cannot be the more expensive of the two"
+                );
+            }
+
+            /// THE IDLE CONTROL for a surface with no store in it: the same record encoded twice
+            /// is the same bytes.
+            ///
+            /// Without it no byte figure above is attributable. A wall clock, a counter or an
+            /// address that leaked into the encoding would move the total between two encodings
+            /// of an identical record, and every term in the table would be a measurement of
+            /// when it was taken rather than of what the record holds.
+            #[test]
+            fn the_same_record_encodes_to_the_same_bytes_twice() {
+                let value = incompressible_seeded(512, 512);
+                for record in [record_of(value.clone()), outcome_record_of(value)] {
+                    let (first, first_framed) = encoded(&record);
+                    let (second, second_framed) = encoded(&record);
+                    assert_eq!(
+                        first, second,
+                        "one record encoded twice produced different payloads, so something \
+                         outside the record is reaching the bytes"
+                    );
+                    assert_eq!(
+                        first_framed, second_framed,
+                        "the frame length moved between two encodings of one record"
+                    );
+                }
+            }
+
+            /// ONE OUTCOME RECORD OF THE SHAPE THIS BUILD NO LONGER WRITES, AS BYTES.
+            ///
+            /// A payload: the raw-payload marker, then an `EngineWalRecord` carrying one outcome
+            /// item AND the leader stamp beside it. `the_payload_an_older_writer_produced` builds
+            /// the same thing from the generated encoder and this literal is asserted equal to
+            /// it, so the literal is a record rather than a string someone typed.
+            /// ```text
+            ///   b8                             the raw-payload marker
+            ///   08 01                          shard_id 1
+            ///   10 09                          sequence 9
+            ///   22 07  10 b0ffe38c8234         metadata { timestamp_ms 1787270070192 }
+            ///   2a 12                          one item, 18 bytes of it:
+            ///          1a 07 616d702d6b6579      object_key "amp-key"
+            ///          6a 02 7676                value "vv"
+            ///          78 07                     routing_bucket 7
+            ///          980101                    kind_code 1
+            /// ```
+            ///
+            /// No `object_id`: it is the one the shard derives, so the writer omitted it then and
+            /// omits it now. The stamp inside `metadata` is the field this build no longer states
+            /// on this shape, and it is the whole of the difference.
+            const AN_OUTCOME_RECORD_THAT_STATES_ITS_LEADER_STAMP: &str =
+                "b808011009220710b0ffe38c82342a121a07616d702d6b65796a0276767807980101";
+
+            /// The bytes a writer produced before this build stopped stating the stamp on this
+            /// shape, built with the GENERATED encoder rather than the hand-written one under
+            /// change -- so the two halves of this test cannot be wrong together.
+            fn the_payload_an_older_writer_produced() -> Vec<u8> {
+                use prost::Message as _;
+                let record = stamped_outcome_record();
+                let message = crate::sdk::v1::EngineWalRecord {
+                    shard_id: record.shard_id,
+                    sequence: record.sequence,
+                    command: None,
+                    metadata: Some(crate::sdk::v1::EngineWalMetadata {
+                        // Absent means current, which is what the writer wrote then and now.
+                        version: 0,
+                        timestamp_ms: record
+                            .metadata
+                            .as_ref()
+                            .expect("the fixture carries metadata")
+                            .timestamp_ms,
+                        items: Vec::new(),
+                        batch_id: None,
+                        batch_size: None,
+                        batch_index: None,
+                    }),
+                    items: record
+                        .outcomes
+                        .iter()
+                        .map(|item| {
+                            crate::wal_proto::item_to_proto(item, record.shard_id, None, None)
+                        })
+                        .collect(),
+                    staged_blocks: Vec::new(),
+                };
+                let mut out = vec![crate::wal_proto::RAW_PAYLOAD_MARKER];
+                message.encode(&mut out).expect("the message encodes");
+                out
+            }
+
+            /// The record the literal above is: one outcome, a short value, and a leader stamp.
+            fn stamped_outcome_record() -> WriteAheadLogRecord {
+                let mut record = outcome_record_of(b"vv".to_vec());
+                record.sequence = 9;
+                record
+            }
+
+            /// A RECORD WRITTEN BEFORE THIS CHANGE STILL HANDS BACK ITS LEADER STAMP.
+            ///
+            /// # WHY A COMMITTED LITERAL AND NOT A ROUND TRIP
+            ///
+            /// A round trip writes and reads with the same build, so both halves can be wrong
+            /// together and agree. These bytes are committed in this file: they do not come from
+            /// the encoder this change touched, and if the decoder's reading of them moves, this
+            /// fails whether or not the encoder moved with it.
+            ///
+            /// Three things are asserted, and the third is the one that makes the first two mean
+            /// something: the literal IS a record an older writer produced, the production
+            /// decoder reads the stamp out of it, and this build does NOT produce those bytes --
+            /// a literal that matched the current encoder would prove nothing about an old shape.
+            #[test]
+            fn an_old_outcome_record_still_hands_back_its_leader_stamp() {
+                let built = the_payload_an_older_writer_produced();
+                let printed = hex::encode(&built);
+                println!();
+                println!("  the old shape, as this build would have written it: {printed}");
+                assert_eq!(
+                    AN_OUTCOME_RECORD_THAT_STATES_ITS_LEADER_STAMP, printed,
+                    "the literal committed in this file is not the payload an older writer \
+                     produced for this record. Either the message definition moved -- in which \
+                     case a record already on disk is being read by a changed decoder and that is \
+                     the thing to check -- or the literal needs replacing with the line printed \
+                     above"
+                );
+
+                let bytes = hex::decode(AN_OUTCOME_RECORD_THAT_STATES_ITS_LEADER_STAMP)
+                    .expect("the committed literal is hex");
+                let old = crate::wal_proto::decode(&bytes).expect("the old shape still decodes");
+                assert_eq!(1, old.shard_id);
+                assert_eq!(9, old.sequence);
+                assert_eq!(
+                    1,
+                    old.outcomes.len(),
+                    "the old record's outcome did not come back, so this is not reading the \
+                     record it claims to"
+                );
+                assert_eq!("amp-key", old.outcomes[0].object_key);
+                assert_eq!(
+                    Some(1_787_270_070_192),
+                    old.metadata.as_ref().map(|metadata| metadata.timestamp_ms),
+                    "a record written before this build stopped stating the stamp must still hand \
+                     it back: replay resolves that record's deadlines against it"
+                );
+
+                // AND THIS BUILD WRITES SOMETHING ELSE FOR THE SAME RECORD, with the stamp the
+                // only difference. Asserted field by field rather than by a length, so a second
+                // change that happened to cost seven bytes could not hide in it.
+                let now = crate::wal_proto::encode(&stamped_outcome_record())
+                    .expect("the record encodes");
+                assert_ne!(
+                    now, bytes,
+                    "this build produces exactly the old bytes for this record, so the literal \
+                     above is not an older shape and this test is checking nothing"
+                );
+                let current = crate::wal_proto::decode(&now).expect("what this build wrote decodes");
+                assert_eq!(
+                    0,
+                    current
+                        .metadata
+                        .as_ref()
+                        .map(|metadata| metadata.timestamp_ms)
+                        .expect("the metadata survives"),
+                    "this build still states a leader stamp on a record carrying outcomes"
+                );
+                assert_eq!(old.shard_id, current.shard_id);
+                assert_eq!(old.sequence, current.sequence);
+                assert_eq!(old.command, current.command);
+                assert_eq!(old.staged_blocks, current.staged_blocks);
+                assert_eq!(
+                    old.outcomes, current.outcomes,
+                    "the outcome items differ between the two shapes, so more than the stamp \
+                     changed"
+                );
+            }
+        }
     }
 
     /// A record that ENDS inside a block's footer slot, in a log written without footers.

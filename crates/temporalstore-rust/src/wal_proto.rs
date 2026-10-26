@@ -783,7 +783,44 @@ pub(crate) fn item_from_proto(
     }
 }
 
-fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::EngineWalMetadata, String> {
+/// WHETHER THIS RECORD'S LEADER CLOCK STAMP HAS A READER.
+///
+/// `metadata.timestamp_ms` is the leader's wall clock at the moment of the write, and on the
+/// branch that RE-EXECUTES a command it is load-bearing. `engine::lifecycle`'s replay loop pins
+/// the thread clock to it before executing, so a relative TTL in the command resolves to the
+/// deadline the leader logged rather than to one extended by the restart clock -- the comment on
+/// that line calls it "resolve-then-log", and `wal_replay_reads_an_unstamped_record_against_the_live_clock`
+/// holds both halves of the rule.
+///
+/// A RECORD CARRYING OUTCOMES NEVER REACHES THAT LINE. The same loop installs the recorded items
+/// and `continue`s above `set_replay_clock_ms`, because an installed outcome already carries the
+/// absolute deadline the leader resolved; nothing about it is re-derived from a clock. So on the
+/// shape this log writes by default -- `append_outcomes_locked` sets no command at all, "the items
+/// say what the batch did" -- the stamp was six or seven fsynced bytes per append with no reader.
+///
+/// # WHY THIS NEEDS NO FORMAT MARKER AND NO MIGRATION
+///
+/// Absence already has a defined meaning that is already implemented. The decoder copies this
+/// field verbatim, so an omitted stamp arrives as zero, and the replay loop reads a zero as "this
+/// record never carried one, leave the live clock in charge" -- `.filter(|stamp| *stamp > 0)`,
+/// added for records written before the log carried a stamp. A record written by this build is
+/// therefore read correctly by a build that predates this change, and one written before it keeps
+/// its stamp and is read as it always was.
+///
+/// # WHAT WOULD MAKE THIS WRONG
+///
+/// Replay starting to resolve anything against the clock on the OUTCOME branch. The guard for
+/// that is `only_the_shape_that_re_executes_carries_the_leader_stamp`, which asserts both arms:
+/// the stamp present where it is read and absent where it is not. If that test fails because
+/// replay has changed, this function is the thing to change, not the test.
+pub(crate) fn leader_stamp_has_a_reader(record: &WriteAheadLogRecord) -> bool {
+    record.outcomes.is_empty()
+}
+
+fn metadata_to_proto(
+    metadata: &WriteAheadLogRecordMetadata,
+    stamp_has_a_reader: bool,
+) -> Result<v1::EngineWalMetadata, String> {
     // The descriptive item list travels verbatim rather than field by field. It is off by default,
     // every field of it is derived from the command beside it, and modelling it would risk losing
     // one for no measurable saving.
@@ -822,7 +859,13 @@ fn metadata_to_proto(metadata: &WriteAheadLogRecordMetadata) -> Result<v1::Engin
         } else {
             metadata.version
         },
-        timestamp_ms: metadata.timestamp_ms,
+        // Written only where replay reads it. See [`leader_stamp_has_a_reader`]: a plain proto3
+        // field, so a zero is not written at all, and a zero is already read as "no stamp".
+        timestamp_ms: if stamp_has_a_reader {
+            metadata.timestamp_ms
+        } else {
+            0
+        },
         items,
         batch_id: metadata.batch_id,
         batch_size: metadata.batch_size,
@@ -886,7 +929,7 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         metadata: record
             .metadata
             .as_ref()
-            .map(metadata_to_proto)
+            .map(|metadata| metadata_to_proto(metadata, leader_stamp_has_a_reader(record)))
             .transpose()?,
         // Written by hand below, from the outcomes themselves, for the reason the staged blocks
         // are: filling this copied every outcome's `value` into a proto message before the encoder
@@ -1354,7 +1397,7 @@ mod tests {
             metadata: record
                 .metadata
                 .as_ref()
-                .map(metadata_to_proto)
+                .map(|metadata| metadata_to_proto(metadata, leader_stamp_has_a_reader(record)))
                 .transpose()
                 .unwrap(),
             items: record
