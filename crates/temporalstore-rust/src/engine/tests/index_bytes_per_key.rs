@@ -3950,6 +3950,51 @@ fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
 /// No feature series at all, so every live key owns exactly one page: `live_keys == pages`, which
 /// is asserted rather than assumed because the whole figure divides by it.
 ///
+/// # WHICH SURFACE, AND WHAT THE FIGURE HAS DONE
+///
+/// RESIDENT bytes, over live keys, after the bound has fired. Not the stored index: that is
+/// `what_the_slot_index_floor_is`, on the `TSIDX` container, and 29.42 B/object there is not
+/// comparable to anything here.
+///
+/// This test reported 76.8 B/key when it was written and now reports 90.0 -- 17% worse, across a
+/// run of changes each meant to shrink this index. It drifted silently because nothing here
+/// asserted a level: "the total fell", "the keys survived" and "the reads answer" are all true at
+/// any level. The per-structure census and the two bounds at the end of this function are what
+/// close that, and the census says where the figure lives: about three quarters of it is the
+/// `strings` map, whose entry is a `ModelKey` plus an `ObjectSlot`.
+///
+/// # THE WHOLE OF THE 13.2 B/KEY IS ONE MAP, MEASURED AT BOTH ENDS
+///
+/// Run with this census at the commit that recorded 76.8 and at the commit that records 90.0, the
+/// two tables differ in ONE row to two decimal places:
+///
+/// ```text
+///                                           76.8 era    90.0 era     delta
+///   strings                                    54.07       67.17    +13.10
+///   bucket_index.bucket_map                    20.70       20.70     +0.00
+///   bucket_recency                              0.87        0.87     +0.00
+///   bucket_index, the rest of CoreIndex         0.31        0.32     +0.01
+///   the rest of ShardState, unnamed above       0.87        0.88     +0.01
+///   WHOLE ShardState clone                     76.81       89.95    +13.14
+/// ```
+///
+/// AND THE ROW IS ARITHMETIC, not a mystery. The string map's value went from a bare
+/// `ElementEntry` to an `ObjectSlot` -- 16 bytes to 24 -- so the entry went 32 to 40, and the
+/// table charges one control byte per slot on top. At 40,000 keys the table holds 65,536 slots in
+/// both eras, and `65_536 * 33 / 40_000` is 54.07 while `65_536 * 41 / 40_000` is 67.17. Both
+/// measured figures fall out of the entry width and the load factor exactly, which is also the
+/// statement of where a saving here would have to come from: the entry, or the slack.
+///
+/// WHAT THE EIGHT BYTES BUY is the owned-element array that lets one map hold the kinds that have
+/// several elements per object. An object with exactly one element carries the pointer and leaves
+/// it `None`, so on a corpus of single-page objects -- this one -- the eight bytes are paid and
+/// nothing hangs off them, and the table's own slack turns the eight into thirteen.
+///
+/// IT IS STILL RUN BY NOTHING. This test is `#[ignore]`d and behind `alloc-probe`, so the bounds
+/// below bite only when someone runs the command in this doc comment. That is the shape of every
+/// measurement in this file and it is why the figures in them rot; a bound that is not run is a
+/// record of what was true, not a gate.
+///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 ///
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_key_with_one_page_costs -- --ignored --nocapture
@@ -3997,6 +4042,7 @@ fn what_one_key_with_one_page_costs() {
     };
 
     let (before, keys0, pages0) = total(&engine);
+    let census_before = snapshot_census(&engine);
     let read0 = readable(&engine);
     assert_eq!(KEYS, keys0, "denominator: the fixture did not seed the corpus it reports");
     assert_eq!(
@@ -4023,6 +4069,7 @@ fn what_one_key_with_one_page_costs() {
     assert!(report.skipped_reason.is_empty(), "the bound did not open: {:?}", report.skipped_reason);
 
     let (after, keys1, pages1) = total(&engine);
+    let census_after = snapshot_census(&engine);
     let read1 = readable(&engine);
 
     println!();
@@ -4039,16 +4086,136 @@ fn what_one_key_with_one_page_costs() {
     );
     println!("    reads {read0} of {} before, {read1} after", probe_keys.len());
 
+    // WHERE THE PER-KEY FIGURE LIVES, STRUCTURE BY STRUCTURE.
+    //
+    // A single per-key number can only be compared against another single per-key number, which
+    // says that something moved and never what. These rows say which structure it was.
+    //
+    // THE ROWS THAT ARE NOT PARTS OF THE WHOLE ARE SEPARATED, because they are added to it rather
+    // than contained in it: a clone probe cannot see an `Arc` payload, so the two `Arc<str>` rows
+    // are weighed on their own and the total is `whole + payloads`. Whatever the named structures
+    // do not cover inside the whole is printed as its own row rather than left implicit -- an
+    // unnamed remainder takes up precisely what the named terms miss, which is how a
+    // decomposition comes to be wrong in a term and still add up.
+    let outside = ["bucket-index Arc<str> payloads", "dirty-index Arc<str> payloads"];
+    let whole_row = "WHOLE ShardState clone";
+    println!();
+    println!("    PER STRUCTURE, over {keys0} keys           before      after      delta  (B/key)");
+    let per_key = |bytes: u64| bytes as f64 / keys0 as f64;
+    let mut structures_before = 0u64;
+    let mut structures_after = 0u64;
+    let mut payloads_before = 0u64;
+    let mut payloads_after = 0u64;
+    let mut whole_before = 0u64;
+    let mut whole_after = 0u64;
+    for ((name, was), (also, now)) in census_before.iter().zip(census_after.iter()) {
+        assert_eq!(name, also, "the two censuses are not in the same order");
+        if *name == whole_row {
+            whole_before = *was;
+            whole_after = *now;
+        } else if outside.contains(name) {
+            payloads_before += was;
+            payloads_after += now;
+        } else {
+            structures_before += was;
+            structures_after += now;
+        }
+        println!(
+            "      {name:<38} {:>8.2}   {:>8.2}   {:>+8.2}",
+            per_key(*was),
+            per_key(*now),
+            per_key(*now) - per_key(*was)
+        );
+    }
+    println!(
+        "      {:<38} {:>8.2}   {:>8.2}   {:>+8.2}",
+        "the rest of ShardState, unnamed above",
+        per_key(whole_before.saturating_sub(structures_before)),
+        per_key(whole_after.saturating_sub(structures_after)),
+        per_key(whole_after.saturating_sub(structures_after))
+            - per_key(whole_before.saturating_sub(structures_before))
+    );
+
+    // THE ACCOUNTING IDENTITY, so the rows above are this figure and not another one.
+    assert_eq!(
+        before,
+        whole_before + payloads_before,
+        "the before total is {before} B but the census says {} + {payloads_before}",
+        whole_before
+    );
+    assert_eq!(
+        after,
+        whole_after + payloads_after,
+        "the after total is {after} B but the census says {} + {payloads_after}",
+        whole_after
+    );
+    assert!(
+        structures_before <= whole_before,
+        "the named structures weigh {structures_before} B inside a {whole_before} B clone, so a \
+         row above is being counted twice and every share is wrong"
+    );
+    // AND THE ROWS THIS FIXTURE MUST POPULATE, each asserted non-zero: a decomposition whose
+    // terms are all zero still sums to the whole.
+    for owed in ["strings", "bucket_index.bucket_map", "bucket-index Arc<str> payloads"] {
+        let bytes = census_before
+            .iter()
+            .find(|(name, _)| *name == owed)
+            .map(|(_, bytes)| *bytes)
+            .unwrap_or_else(|| panic!("the census has no {owed} row"));
+        assert!(
+            bytes > 0,
+            "the {owed} row is 0 B on a 40,000-key single-page shard, so this census is weighing \
+             something other than the index this test reports"
+        );
+    }
+
     assert_eq!(probe_keys.len(), read1, "the bound made keys unreadable");
     assert_eq!(keys0, keys1, "the key count moved, which is data loss rather than reclaim");
     assert!(after < before, "the total did not fall ({before} -> {after})");
+
+    // THE LEVEL, BOUNDED. This test printed 76.8 B/key when it was written and asserted NOTHING
+    // about that number: the only assertions were that the total fell, that the keys survived and
+    // that the reads still answered. All three hold at any level, so the figure drifted to 90.0
+    // across a run of changes each intended to shrink this index, and every one of them was green.
+    // A measurement with no bound on its level is a printout.
+    //
+    // THE SURFACE, so this bound cannot be read against a figure from a different one. These are
+    // RESIDENT bytes -- a clone-probe walk of `ShardState` plus the `Arc<str>` payloads a clone
+    // cannot see -- over the LIVE KEY count, after the resident bound has fired. It is not the
+    // stored index. `what_the_slot_index_floor_is` measures that, on the `TSIDX` container, and
+    // reports 29.42 B/object at 8,000 padded keys; the container is a zstd frame and its figure
+    // cannot name a field. Neither number bounds the other in either direction.
+    let after_per_key = after as f64 / keys0 as f64;
+    assert!(
+        after_per_key < 95.0,
+        "one key with one page costs {after_per_key:.1} B of RESIDENT index after the bound \
+         fires, over the 95 B bound. The per-structure table printed above says which structure \
+         moved -- take the bound down with it rather than up to meet it"
+    );
+    // AND THE TERM THAT DOMINATES IT IS BOUNDED BY NAME, so the next drift lands on a structure
+    // instead of on a total. Three quarters of the figure is one map.
+    let strings_after = census_after
+        .iter()
+        .find(|(name, _)| *name == "strings")
+        .map(|(_, bytes)| *bytes)
+        .expect("the census has no strings row");
+    let strings_per_key = strings_after as f64 / keys0 as f64;
+    assert!(
+        strings_per_key < 72.0,
+        "the string map weighs {strings_per_key:.1} B/key resident, over the 72 B bound, and it \
+         is about three quarters of the whole per-key figure. Its entry is a `ModelKey` and an \
+         `ObjectSlot` -- 16 B and 24 B -- and a hash table carrying 40 B of entry at its own load \
+         factor charges about 67. That is where a per-key saving on this corpus has to come from"
+    );
 }
 
 /// WHAT THE DEFAULT CONFIGURATION ACTUALLY DOES TO A 40,000-KEY SHARD, which is not the same
 /// question as what the bound delivers when it fires.
 ///
 /// `what_one_key_with_one_page_costs` fires the bound DIRECTLY, at half the shard's own resident
-/// index, and measures 76.8 B/key afterwards. That is what the mechanism is worth. It is NOT what
+/// index, and measures 90.0 B/key afterwards (76.8 when that figure was first written; its own doc
+/// comment carries the per-structure comparison that says which map moved). That is what the
+/// mechanism is worth. It is NOT what
 /// a deployment running defaults sees, and conflating the two would be the more flattering of the
 /// two readings -- so this runs the default cycle, untouched, and records the verdict.
 ///
