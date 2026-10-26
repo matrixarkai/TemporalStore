@@ -326,6 +326,48 @@ fn wal_resident_block_limit() -> usize {
     crate::env_flag::env_number_first(&["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"], 4096)
 }
 
+#[cfg(test)]
+mod wal_resident_env_name_tests {
+    /// The previous spelling of this bound must keep configuring it.
+    ///
+    /// Nothing errors when a variable stops being read. `TS_WAL_RESIDENT_PAGES` sets a CEILING on
+    /// how far behind the dump may fall, and the default is deliberately generous -- so a
+    /// deployment that lowered it on purpose and then silently got 4096 back would hold far more
+    /// in the log than it asked to, with no message anywhere. The value asserted is 64, which
+    /// differs from the default, because reading the previous name has to be distinguishable from
+    /// falling through to it.
+    #[test]
+    fn the_previous_wal_resident_env_name_still_bounds_the_set() {
+        let keys = ["TS_WAL_RESIDENT_BLOCKS", "TS_WAL_RESIDENT_PAGES"];
+        for key in keys {
+            std::env::remove_var(key);
+        }
+        let default_limit = super::wal_resident_block_limit();
+
+        std::env::set_var("TS_WAL_RESIDENT_PAGES", "64");
+        assert_eq!(
+            super::wal_resident_block_limit(),
+            64,
+            "the previous spelling must still bound the resident set, not fall back to the default"
+        );
+        assert_ne!(
+            super::wal_resident_block_limit(), default_limit,
+            "a value read from the previous name must differ from the default, or this proves              nothing"
+        );
+
+        std::env::set_var("TS_WAL_RESIDENT_BLOCKS", "128");
+        assert_eq!(
+            super::wal_resident_block_limit(),
+            128,
+            "the current spelling must win when both are set, or a deployment mid-migration gets              whichever the lookup tried first"
+        );
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
+    }
+}
+
 /// How far below the limit a sweep goes, so a shard sitting exactly at the ceiling does not
 /// materialise on every single append.
 fn wal_resident_block_floor(limit: usize) -> usize {

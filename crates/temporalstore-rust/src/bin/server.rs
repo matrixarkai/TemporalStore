@@ -113,9 +113,7 @@ fn main() {
     // `TS_BLOCK_STORE_DIR` is the name; `TS_PAGE_STORE_DIR` is the previous spelling and is
     // still read. The DEFAULT is deliberately left where it was: changing it would move where
     // an operator who sets neither name keeps their blocks.
-    let block_store_dir =
-        temporalstore_rust::env_flag::env_value_any(&["TS_BLOCK_STORE_DIR", "TS_PAGE_STORE_DIR"])
-            .unwrap_or_else(|| "target/temporalstore-pages".to_string());
+    let block_store_dir = block_store_dir_from_env();
     // Directory for the streamed attachment/blob tier (POST/GET /blob/<key>);
     // computed here so it does not outlive the move of `block_store_dir`.
     let blob_store_dir =
@@ -2501,6 +2499,20 @@ fn raft_config_from_env() -> RaftConfig {
     }
 }
 
+/// Where the data blocks live.
+///
+/// `TS_BLOCK_STORE_DIR` is the name and `TS_PAGE_STORE_DIR` is the previous spelling, read when
+/// the current one is unset. Extracted from `main` so the test below reads THIS list rather than
+/// a copy of it: a test that retypes the names proves `env_value_any` works and says nothing
+/// about what the server asks for.
+///
+/// The DEFAULT is deliberately left where it was. Moving it would move where an operator who
+/// sets neither name keeps their blocks.
+fn block_store_dir_from_env() -> String {
+    temporalstore_rust::env_flag::env_value_any(&["TS_BLOCK_STORE_DIR", "TS_PAGE_STORE_DIR"])
+        .unwrap_or_else(|| "target/temporalstore-pages".to_string())
+}
+
 fn block_store_options_from_env() -> BlockStoreOptions {
     let defaults = BlockStoreOptions::default();
     BlockStoreOptions {
@@ -3396,6 +3408,91 @@ mod tests {
         assert_eq!(response.report.authoritative_topology_version, 44);
         assert_eq!(response.report.mismatch_count, 0);
         assert_eq!(response.report.loaded_shards, vec![9]);
+    }
+
+    /// THE FAILURE THIS GUARDS, AND WHY NOTHING ELSE CATCHES IT.
+    ///
+    /// Four variables were renamed from `TS_PAGE_*` to `TS_BLOCK_*` and the page spelling was
+    /// kept as a fallback. Nothing errors when a variable stops being read: the knob turns off,
+    /// the default applies, and a deployment that configured it keeps running on settings it did
+    /// not choose. So each one is asserted in BOTH directions -- the previous name still
+    /// configures the knob, AND the current name wins when both are set -- because an alias with
+    /// undefined precedence hands a deployment mid-migration whichever name the lookup tried
+    /// first.
+    ///
+    /// Each assertion also checks the value DIFFERS from the default, or reading the previous
+    /// name would be indistinguishable from falling through to the default and the test would
+    /// pass over a variable nothing reads.
+    #[test]
+    fn the_previous_block_store_dir_env_name_still_selects_the_directory() {
+        let keys = ["TS_BLOCK_STORE_DIR", "TS_PAGE_STORE_DIR"];
+        for key in keys {
+            std::env::remove_var(key);
+        }
+        let default_dir = block_store_dir_from_env();
+
+        std::env::set_var("TS_PAGE_STORE_DIR", "/tmp/previous-spelling");
+        assert_eq!(
+            block_store_dir_from_env(),
+            "/tmp/previous-spelling",
+            "the previous spelling must still select the directory, not fall back to the default"
+        );
+        assert_ne!(
+            block_store_dir_from_env(), default_dir,
+            "a value read from the previous name must differ from the default, or this proves              nothing"
+        );
+
+        std::env::set_var("TS_BLOCK_STORE_DIR", "/tmp/current-spelling");
+        assert_eq!(
+            block_store_dir_from_env(),
+            "/tmp/current-spelling",
+            "the current spelling must win when both are set, or a deployment mid-migration gets              whichever the lookup tried first"
+        );
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
+    }
+
+    #[test]
+    fn the_current_compression_env_names_win_over_the_previous_ones() {
+        let keys = [
+            "TS_BLOCK_STORE_COMPRESSION_ENABLED",
+            "TS_BLOCK_STORE_COMPRESSION_MIN_BYTES",
+            "TS_BLOCK_STORE_COMPRESSION_LEVEL",
+            "TS_PAGE_STORE_COMPRESSION_ENABLED",
+            "TS_PAGE_STORE_COMPRESSION_MIN_BYTES",
+            "TS_PAGE_STORE_COMPRESSION_LEVEL",
+        ];
+        for key in keys {
+            std::env::remove_var(key);
+        }
+
+        // The previous spelling alone configures all three. (The sibling test above asserts the
+        // same thing; this one exists for the half it does NOT cover.)
+        std::env::set_var("TS_PAGE_STORE_COMPRESSION_ENABLED", "false");
+        std::env::set_var("TS_PAGE_STORE_COMPRESSION_MIN_BYTES", "4096");
+        std::env::set_var("TS_PAGE_STORE_COMPRESSION_LEVEL", "7");
+        let previous = block_store_options_from_env();
+        assert!(!previous.compression_enabled);
+        assert_eq!(previous.compression_min_bytes, 4096);
+        assert_eq!(previous.compression_level, 7);
+
+        // And the current spelling wins over it, per knob.
+        std::env::set_var("TS_BLOCK_STORE_COMPRESSION_ENABLED", "true");
+        std::env::set_var("TS_BLOCK_STORE_COMPRESSION_MIN_BYTES", "8192");
+        std::env::set_var("TS_BLOCK_STORE_COMPRESSION_LEVEL", "9");
+        let current = block_store_options_from_env();
+        assert!(
+            current.compression_enabled,
+            "the current spelling must win: the previous one says false"
+        );
+        assert_eq!(current.compression_min_bytes, 8192);
+        assert_eq!(current.compression_level, 9);
+
+        for key in keys {
+            std::env::remove_var(key);
+        }
     }
 
     #[test]
