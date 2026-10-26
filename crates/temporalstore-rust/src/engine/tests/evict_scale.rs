@@ -231,9 +231,9 @@ fn slabs_spanned_by(engine: &TemporalEngine, buckets: &BTreeSet<u32>) -> BTreeSe
     let mut slabs = BTreeSet::new();
     for routing_bucket in buckets {
         if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
-            for page in bucket.block_index.values() {
-                if !page.deleted {
-                    slabs.insert(page.address.block_slab_id());
+            for block in bucket.block_index.values() {
+                if !block.deleted {
+                    slabs.insert(block.address.block_slab_id());
                 }
             }
         }
@@ -403,10 +403,10 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
          this: {by_slab:?}",
         by_slab.len()
     );
-    for (slab, pages) in &by_slab {
+    for (slab, blocks) in &by_slab {
         assert!(
-            *pages > 0,
-            "slab {slab} holds {pages} live pages; a slab counted from the directory rather than \
+            *blocks > 0,
+            "slab {slab} holds {blocks} live pages; a slab counted from the directory rather than \
              from its records would pass here on an empty file"
         );
     }
@@ -1911,7 +1911,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             let blocks_clean = bucket
                 .block_index
                 .values()
-                .all(|page| !page.dirty && !page.deleted);
+                .all(|block| !block.dirty && !block.deleted);
             if bucket.in_memory()
                 && !bucket.loading()
                 && !bucket.deleted()

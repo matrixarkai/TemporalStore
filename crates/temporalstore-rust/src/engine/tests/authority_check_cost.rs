@@ -135,11 +135,11 @@ fn one_check_under(gate_on: bool) -> (u64, u64, u64, bool) {
     crate::engine::storage_bucket_internals::reset_promote_model_map_check_counts();
     let promoted = crate::engine::storage_bucket_internals::
         promote_model_maps_to_bucket_index_authority(1, shard, start, end);
-    let (checks, rebuilds, pages) =
+    let (checks, rebuilds, blocks) =
         crate::engine::storage_bucket_internals::promote_model_map_check_counts();
     drop(shards);
     drop(engine);
-    (checks, rebuilds, pages, promoted)
+    (checks, rebuilds, blocks, promoted)
 }
 
 #[test]
@@ -152,21 +152,21 @@ fn what_the_authority_check_answers_under_each_projection() {
 
     let mut rows: Vec<(&str, u64, u64, u64, bool)> = Vec::new();
     for (label, gate_on) in [("off", false), ("on", true)] {
-        let (checks, rebuilds, pages, promoted) = one_check_under(gate_on);
-        println!("  {label:>5}  {checks:>7}  {rebuilds:>9}  {pages:>7}  {promoted:>9}");
-        rows.push((label, checks, rebuilds, pages, promoted));
+        let (checks, rebuilds, blocks, promoted) = one_check_under(gate_on);
+        println!("  {label:>5}  {checks:>7}  {rebuilds:>9}  {blocks:>7}  {promoted:>9}");
+        rows.push((label, checks, rebuilds, blocks, promoted));
     }
 
     // THE FLOOR, and it has already earned its place: an earlier fixture here reached the check
     // zero times and the comparison below would have passed over nothing.
-    for (label, checks, _, pages, _) in &rows {
+    for (label, checks, _, blocks, _) in &rows {
         assert_eq!(
             1, *checks,
             "gate {label}: the check ran {checks} times where exactly one call was made"
         );
         assert!(
-            *pages > 0,
-            "gate {label}: the check walked {pages} model-map blocks, so it was cheap because it \
+            *blocks > 0,
+            "gate {label}: the check walked {blocks} model-map blocks, so it was cheap because it \
              visited nothing rather than because it answered quickly"
         );
     }

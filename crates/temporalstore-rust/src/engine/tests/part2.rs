@@ -4392,7 +4392,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
 fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
     let engine = TemporalEngine::default();
     engine.load_shard(1);
-    let page = PackedFeatureBlock {
+    let block = PackedFeatureBlock {
         version: 2,
         points: vec![FeaturePoint {
             timestamp_ms: 10,
@@ -4400,7 +4400,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
         }],
     };
     let mut bytes = FEATURE_BLOCK_MAGIC.to_vec();
-    bytes.extend_from_slice(&serde_json::to_vec(&page).unwrap());
+    bytes.extend_from_slice(&serde_json::to_vec(&block).unwrap());
     let address = engine
         .block_store()
         .append_with_block_metadata(
@@ -5840,7 +5840,7 @@ fn what_one_control_state_increment_costs_as_the_counter_grows() {
         });
         let counts = probe.stop();
         assert!(out.status.ok, "{:?}", out.status);
-        let pages = engine.block_store().stats().writes - writes_before;
+        let blocks = engine.block_store().stats().writes - writes_before;
 
         // The counter must actually hold what was put in it, or the cost above is the cost of
         // doing nothing. Every increment was 1, and there are points + 1 of them.
@@ -5865,7 +5865,7 @@ fn what_one_control_state_increment_costs_as_the_counter_grows() {
             "the counter must hold every increment, or this measures the cost of doing nothing"
         );
 
-        (counts.allocs as u64, counts.alloc_bytes as u64, pages as u64)
+        (counts.allocs as u64, counts.alloc_bytes as u64, blocks as u64)
     };
 
     println!(

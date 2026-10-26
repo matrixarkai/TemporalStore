@@ -638,11 +638,11 @@ fn entries_naming(engine: &TemporalEngine, routing_bucket: u32, object_id: u64) 
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     let mut tombstoned = 0usize;
-    for (handle, page) in &bucket.block_index {
-        if page.object_id(SHARD, named.at(routing_bucket, *handle)) != object_id {
+    for (handle, block) in &bucket.block_index {
+        if block.object_id(SHARD, named.at(routing_bucket, *handle)) != object_id {
             continue;
         }
-        if page.deleted {
+        if block.deleted {
             tombstoned += 1;
         } else {
             live += 1;

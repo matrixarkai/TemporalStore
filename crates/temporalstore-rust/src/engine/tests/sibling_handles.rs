@@ -83,7 +83,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     // address and one object key, or the collision below is not about a batched page.
     let addresses: std::collections::BTreeSet<String> = at_one_block
         .iter()
-        .map(|(_, page)| format!("{:?}", page.address))
+        .map(|(_, block)| format!("{:?}", block.address))
         .collect();
     assert_eq!(
         1,
@@ -97,7 +97,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
 
     let handles: std::collections::BTreeSet<u64> = at_one_block
         .iter()
-        .map(|(object_key, page)| block_index_handle(object_key, page))
+        .map(|(object_key, block)| block_index_handle(object_key, block))
         .collect();
     println!(
         "[sibling-handles] {ENTRIES} entries of one object at one address -> {} distinct handle(s)",

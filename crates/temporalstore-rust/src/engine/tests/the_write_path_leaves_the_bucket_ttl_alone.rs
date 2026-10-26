@@ -81,7 +81,7 @@ fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
         let placed: Vec<(u64, BlockIndex)> = bucket
             .block_index
             .iter()
-            .map(|(handle, page)| (*handle, page.clone()))
+            .map(|(handle, block)| (*handle, block.clone()))
             .collect();
         shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
         // AND THE LOOKUP IS FILED, AS EVERY PRODUCTION PLACEMENT FILES IT.
@@ -92,10 +92,10 @@ fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
         // still compute the minimum" -- failed. That is the fixture being unlike production, not
         // the rollup being broken: it is the same shape the page-index encoder refuses outright.
         let key: std::sync::Arc<str> = std::sync::Arc::from(object_key.as_str());
-        for (handle, page) in &placed {
+        for (handle, block) in &placed {
             shard
                 .bucket_index
-                .insert_object_block_lookup(routing_bucket, *handle, &key, page);
+                .insert_object_block_lookup(routing_bucket, *handle, &key, block);
         }
         crate::engine::set_expiry(&mut shard, object_key, FAR_FUTURE_MS);
     }

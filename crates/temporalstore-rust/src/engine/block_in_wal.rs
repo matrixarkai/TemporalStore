@@ -255,12 +255,12 @@ pub(super) fn register_record(
         return;
     }
     if let Ok(mut map) = registry().lock() {
-        for page in staged_blocks {
+        for block in staged_blocks {
             map.insert(
                 (
                     block_store.store_id(),
                     shard_id,
-                    (page.object_id, page.component.clone()),
+                    (block.object_id, block.component.clone()),
                 ),
                 (store.clone(), log_id, sequence),
             );
@@ -337,7 +337,7 @@ pub(super) fn oldest_registered_objects(
     let mut entries: Vec<(u64, BlockKey)> = map
         .iter()
         .filter(|((store_id, shard, _), _)| *store_id == owner && *shard == shard_id)
-        .map(|((_, _, page), (_, _, sequence))| (*sequence, page.clone()))
+        .map(|((_, _, block), (_, _, sequence))| (*sequence, block.clone()))
         .collect();
     entries.sort_unstable();
     entries
@@ -414,12 +414,12 @@ pub(super) fn read_block(
     if let Ok(cache) = record_lru().lock() {
         // Keyed by (log identity, shard, log id) -- a log id is a byte offset within ONE log,
         // so the same number names unrelated records in different engines' logs.
-        if let Some((_, _, _, pages)) = cache
+        if let Some((_, _, _, blocks)) = cache
             .iter()
             .find(|(s, shard, l, _)| *shard == shard_id && *l == log_id && s.same_log(&store))
         {
-            if let Some(page) = pages.iter().find(|page| names_block(page, object_id, component)) {
-                return Some(page.bytes.clone());
+            if let Some(block) = blocks.iter().find(|block| names_block(block, object_id, component)) {
+                return Some(block.bytes.clone());
             }
         }
     }
@@ -446,17 +446,17 @@ pub(super) fn read_block(
         }
     }
     let record = record?;
-    let pages = record.staged_blocks;
+    let blocks = record.staged_blocks;
     if let Ok(mut cache) = record_lru().lock() {
         if cache.len() >= 8 {
             cache.remove(0);
         }
-        cache.push((store.clone(), shard_id, log_id, pages.clone()));
+        cache.push((store.clone(), shard_id, log_id, blocks.clone()));
     }
-    pages
+    blocks
         .into_iter()
-        .find(|page| names_block(&page, object_id, component))
-        .map(|page| page.bytes)
+        .find(|block| names_block(&block, object_id, component))
+        .map(|block| block.bytes)
 }
 
 /// Whether this carried page is the one the read asked for.
@@ -469,8 +469,8 @@ pub(super) fn read_block(
 ///
 /// Written once and used at both sites deliberately. The two were separate copies of a one-line
 /// predicate, which is how one of them would come to test one term while the other tested two.
-fn names_block(page: &StagedBlock, object_id: u64, component: Option<&str>) -> bool {
-    page.object_id == object_id && page.component.as_deref() == component
+fn names_block(block: &StagedBlock, object_id: u64, component: Option<&str>) -> bool {
+    block.object_id == object_id && block.component.as_deref() == component
 }
 
 /// Decoded staged pages of recently read records, keyed by (log identity, shard, log id).

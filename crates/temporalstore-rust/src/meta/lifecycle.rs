@@ -211,7 +211,7 @@ impl SingleNodeMeta {
         // The map is kept in shard order, so this walks from the cursor rather
         // than over everything above it: a page costs the page. It used to cost
         // the cluster, which made paging through one quadratic.
-        let mut page = Vec::new();
+        let mut block = Vec::new();
         let mut next_after_shard_id = None;
         for (shard_id, location) in state
             .shards
@@ -224,18 +224,18 @@ impl SingleNodeMeta {
             if !request.server_addr.is_empty() && location.server_addr != request.server_addr {
                 continue;
             }
-            if page.len() == limit {
+            if block.len() == limit {
                 // A full page and at least one more match: hand back where to
                 // resume rather than silently truncating.
-                next_after_shard_id = page.last().map(|(shard_id, _): &(ShardId, &ShardLocation)| *shard_id);
+                next_after_shard_id = block.last().map(|(shard_id, _): &(ShardId, &ShardLocation)| *shard_id);
                 break;
             }
-            page.push((shard_id, location));
+            block.push((shard_id, location));
         }
 
         // The page is sorted and a table's shards are a contiguous range, so
         // the entries of the page that belong to a table are a slice of it.
-        let block_ids = page.iter().map(|(shard_id, _)| *shard_id).collect::<Vec<_>>();
+        let block_ids = block.iter().map(|(shard_id, _)| *shard_id).collect::<Vec<_>>();
         let mut shard_tables: BTreeMap<ShardId, (String, String)> = BTreeMap::new();
         for table in state.tables.values() {
             let first = table.info.first_shard_id;
@@ -256,7 +256,7 @@ impl SingleNodeMeta {
         }
 
         let mut shards = Vec::new();
-        for (shard_id, location) in page {
+        for (shard_id, location) in block {
             let (namespace, table_name) = shard_tables.get(&shard_id).cloned().unwrap_or_default();
             // What the owner says about this shard, when it says anything at
             // all. A server that has never reported its shard states cannot be

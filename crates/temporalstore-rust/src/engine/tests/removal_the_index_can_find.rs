@@ -106,18 +106,18 @@ fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usi
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != KEY
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstoned += 1;
             } else {
                 live += 1;
             }
-            addresses.push(page.address.clone());
+            addresses.push(block.address.clone());
         }
     }
     (addresses, live, tombstoned)

@@ -212,7 +212,7 @@ fn sizes_of(shard: &ShardState, form: StructForm) -> Sizes {
 #[derive(Clone, Copy, Debug)]
 struct Regime {
     objects: usize,
-    pages: usize,
+    blocks: usize,
     buckets: usize,
 }
 
@@ -269,19 +269,19 @@ fn with_seeded_shard<R>(
         shard.strings().len()
     );
     let buckets = shard.bucket_index.bucket_map.len();
-    let pages: usize = shard
+    let blocks: usize = shard
         .bucket_index
         .bucket_map
         .values()
         .map(|node| node.block_index.len())
         .sum();
     assert_eq!(
-        pages, keys,
-        "[CLAUSE one-page-an-object] the fixture holds {pages} page(s) for {keys} object(s), so a \
+        blocks, keys,
+        "[CLAUSE one-page-an-object] the fixture holds {blocks} page(s) for {keys} object(s), so a \
          per-object figure taken off it is not a per-page figure and the two classes cannot be \
          separated"
     );
-    f(shard, Regime { objects: keys, pages, buckets })
+    f(shard, Regime { objects: keys, blocks, buckets })
 }
 
 /// Bytes per object, to three places, as a DIVISION at this corpus size.
@@ -379,7 +379,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
                 shape.label(),
                 regime.objects,
                 regime.buckets,
-                regime.pages,
+                regime.blocks,
                 per_object(named.payload, regime.objects),
                 per_object(named.container, regime.objects),
                 d_payload,

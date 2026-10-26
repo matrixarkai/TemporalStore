@@ -235,18 +235,18 @@ fn blocks_and_index_rows(
         .collect();
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     let mut rows: BTreeSet<u64> = BTreeSet::new();
-    for (_routing_bucket, _handle, object_key, page) in
+    for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if page.deleted || page.model_id.as_str() != kind {
+        if block.deleted || block.model_id.as_str() != kind {
             continue;
         }
         if !keys.contains(&*object_key) {
             continue;
         }
-        pages += 1;
+        blocks += 1;
     }
     for bucket in shard.bucket_index.bucket_map.values() {
         for object_id in &bucket.object_index {
@@ -255,7 +255,7 @@ fn blocks_and_index_rows(
             }
         }
     }
-    (pages, rows.len())
+    (blocks, rows.len())
 }
 
 fn percentile(sorted: &[usize], p: f64) -> usize {
@@ -269,10 +269,10 @@ fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = 0usize;
-    for (_routing_bucket, _handle, object_key, page) in
+    for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if !page.deleted && page.model_id.as_str() == kind && &*object_key == key {
+        if !block.deleted && block.model_id.as_str() == kind && &*object_key == key {
             held += 1;
         }
     }
@@ -509,17 +509,17 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
             let _: &u64 = _id;
             rows_seen += 1;
         }
-        for (handle, page) in &bucket.block_index {
+        for (handle, block) in &bucket.block_index {
             // Only the kind this fixture seeded, so an incidental page of another kind cannot
             // decide the assertion below.
-            if page.deleted || page.model_id.as_str() != "hash" {
+            if block.deleted || block.model_id.as_str() != "hash" {
                 continue;
             }
             blocks_seen += 1;
             let object_key = ordinal_names.at(bucket.routing_bucket, *handle);
             // What the entry can answer WITHOUT an ordinal, from the address alone.
-            let from_address = page.object_id(1, object_key);
-            let recomputed = stable_block_object_id(1, page.model_id.as_str(), object_key);
+            let from_address = block.object_id(1, object_key);
+            let recomputed = stable_block_object_id(1, block.model_id.as_str(), object_key);
             if from_address == recomputed {
                 id_already_answered += 1;
             }
@@ -803,11 +803,11 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // What one row of the list that would have to exist costs: a shared pointer to the name.
     let row_cost = size_of::<Arc<str>>();
 
-    let net_per_block = |pages: usize, rows: usize| -> f64 {
-        if pages == 0 {
+    let net_per_block = |blocks: usize, rows: usize| -> f64 {
+        if blocks == 0 {
             return 0.0;
         }
-        (saving as f64 * pages as f64 - row_cost as f64 * rows as f64) / pages as f64
+        (saving as f64 * blocks as f64 - row_cost as f64 * rows as f64) / blocks as f64
     };
 
     let hash_net = net_per_block(hash_blocks, hash_rows);
@@ -817,13 +817,13 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     println!("  saving {saving} B/page of stride, name row {row_cost} B");
     println!("  the list's own allocation is NOT charged, so every row below is optimistic");
     println!("  arm       keys  pages  rows  rows/page  ceiling B/page");
-    for (arm, keys, pages, rows, net) in [
+    for (arm, keys, blocks, rows, net) in [
         ("hash", hash_keys.len(), hash_blocks, hash_rows, hash_net),
         ("string", string_keys.len(), string_blocks, string_rows, string_net),
     ] {
         println!(
-            "  {arm:<8} {keys:>5} {pages:>6} {rows:>5}   {:>8.4}  {net:>+10.2}",
-            rows as f64 / pages as f64
+            "  {arm:<8} {keys:>5} {blocks:>6} {rows:>5}   {:>8.4}  {net:>+10.2}",
+            rows as f64 / blocks as f64
         );
     }
 
@@ -908,7 +908,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
         per_key.push(blocks_of_key(&engine, "string", key));
     }
     per_key.sort();
-    let single: usize = per_key.iter().filter(|pages| **pages <= 1).count();
+    let single: usize = per_key.iter().filter(|blocks| **blocks <= 1).count();
     println!(
         "  pages per (kind,key) over {} keys: p50={} p90={} p99={} MAX={}",
         per_key.len(),

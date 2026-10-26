@@ -420,14 +420,14 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
         // exercised inside ONE frame.
         let first_value = bytes_of(24, 9);
         let second_value = second_key.clone();
-        let page = encode_container_block(
+        let block = encode_container_block(
             spelling,
             &[
                 (&first_key, first_value.as_slice()),
                 (&second_key, second_value.as_slice()),
             ],
         );
-        match decode_container_block(&page) {
+        match decode_container_block(&block) {
             ContainerBlockDecode::Framed {
                 spelling: seen,
                 shape,
@@ -621,7 +621,7 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
 fn a_one_item_frame_is_exactly_its_parts() {
     let key = b"field-0001";
     let value = bytes_of(40, 1);
-    let page = encode_container_block(ElementKeySpelling::Utf8, &[(key.as_slice(), &value)]);
+    let block = encode_container_block(ElementKeySpelling::Utf8, &[(key.as_slice(), &value)]);
     let expected = CONTAINER_BLOCK_MAGIC.len()
         + 1
         + varint_len(1)
@@ -631,7 +631,7 @@ fn a_one_item_frame_is_exactly_its_parts() {
         + value.len();
     assert_eq!(
         expected,
-        page.len(),
+        block.len(),
         "a one-item frame is the magic, the spelling byte, the count, the key and the value"
     );
     println!(
@@ -642,7 +642,7 @@ fn a_one_item_frame_is_exactly_its_parts() {
         key.len(),
         varint_len(value.len() as u64 + 1),
         value.len(),
-        page.len()
+        block.len()
     );
 }
 
@@ -676,7 +676,7 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
         let second_value = bytes_of(20, 2);
         assert_ne!(first_value, second_value);
 
-        let page = encode_container_block(
+        let block = encode_container_block(
             spelling,
             &[
                 (&first_key, first_value.as_slice()),
@@ -685,18 +685,18 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
         );
         assert_eq!(
             ContainerElementRead::Found(first_value.clone()),
-            select_container_element(&page, &first_component),
+            select_container_element(&block, &first_component),
             "{spelling:?} did not answer for its first element"
         );
         assert_eq!(
             ContainerElementRead::Found(second_value.clone()),
-            select_container_element(&page, &second_component),
+            select_container_element(&block, &second_component),
             "{spelling:?} did not answer for its second element -- a selector that returns the \
              first item would pass every one-item test in this file"
         );
         assert_eq!(
             ContainerElementRead::Absent,
-            select_container_element(&page, &absent_component),
+            select_container_element(&block, &absent_component),
             "{spelling:?} answered for an element it does not hold"
         );
         covered += 1;
@@ -718,23 +718,23 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
 fn a_frame_asked_for_a_component_its_spelling_cannot_name_answers_absent() {
     let member = bytes_of(16, 1);
     // A set page: its keys are raw members and its components are hex.
-    let page = encode_container_block(ElementKeySpelling::Hex, &[(&member, member.as_slice())]);
+    let block = encode_container_block(ElementKeySpelling::Hex, &[(&member, member.as_slice())]);
     // A hash-shaped component, which is not hex.
     assert_eq!(
         ContainerElementRead::Absent,
-        select_container_element(&page, "field-0001"),
+        select_container_element(&block, "field-0001"),
         "a hex-spelled page answered for a component that is not hex"
     );
     // And the hex component of a DIFFERENT member, which is well formed and not present.
     let other = bytes_of(16, 2);
     assert_eq!(
         ContainerElementRead::Absent,
-        select_container_element(&page, &hex::encode(&other))
+        select_container_element(&block, &hex::encode(&other))
     );
     // The control that this fixture is not simply always-absent.
     assert_eq!(
         ContainerElementRead::Found(member.clone()),
-        select_container_element(&page, &hex::encode(&member))
+        select_container_element(&block, &hex::encode(&member))
     );
 }
 
@@ -1148,7 +1148,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
 #[test]
 fn a_framed_block_reads_back_after_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     println!(
         "\n=== framed pages across a reload ===\n  store path {} characters",
@@ -1163,7 +1163,7 @@ fn a_framed_block_reads_back_after_a_reload() {
 
     {
         let engine =
-            TemporalEngine::with_local_dirs(64 * 1024 * 1024, dir.path().join("cache"), &pages, &indexes);
+            TemporalEngine::with_local_dirs(64 * 1024 * 1024, dir.path().join("cache"), &blocks, &indexes);
         load_on(&engine);
         crate::engine::container_blocks::reset_unframed_container_write_count();
         for (field, value) in &fields {
@@ -1219,7 +1219,7 @@ fn a_framed_block_reads_back_after_a_reload() {
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
-        &pages,
+        &blocks,
         &indexes,
     );
     crate::engine::reset_corrupt_container_block_count();

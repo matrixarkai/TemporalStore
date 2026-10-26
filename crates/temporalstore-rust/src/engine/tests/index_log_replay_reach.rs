@@ -71,10 +71,10 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     let _rolling = RollingThreshold;
 
     let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
     engine.load_shard(SHARD);
 
     // Everything below the base first, so the pieces these writes seal name anchors the base
@@ -168,7 +168,7 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     let reader_default = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-default"),
-        &pages,
+        &blocks,
         &indexes,
     );
     restore_stale_base();
@@ -181,7 +181,7 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     let reader_checked = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-checked"),
-        &pages,
+        &blocks,
         &indexes,
     );
     restore_stale_base();
@@ -330,9 +330,9 @@ fn base_with_deadlines_and_anchor_less_deltas(
     keys: usize,
     with_content: usize,
 ) -> AnchorLessFixture {
-    let pages = dir.join("pages");
+    let blocks = dir.join("pages");
     let indexes = dir.join("indexes");
-    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.join("cache"), &pages, &indexes);
+    let engine = TemporalEngine::with_local_dirs(1 << 20, dir.join("cache"), &blocks, &indexes);
     engine.load_shard(SHARD);
 
     for index in 0..keys {

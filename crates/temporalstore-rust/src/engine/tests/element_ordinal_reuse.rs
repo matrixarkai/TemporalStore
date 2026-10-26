@@ -385,14 +385,14 @@ fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Stri
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = Vec::new();
-    for (_routing_bucket, _handle, object_key, page) in
+    for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if page.deleted {
+        if block.deleted {
             continue;
         }
-        if page.model_id.as_str() == kind && &*object_key == key {
-            held.push((None::<String>, page.address.block_id()));
+        if block.model_id.as_str() == kind && &*object_key == key {
+            held.push((None::<String>, block.address.block_id()));
         }
     }
     held.sort();
@@ -412,11 +412,11 @@ fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<
     // all, and a walk that asked it would come back empty and read as "no tombstone kept an
     // ordinal", which is the claim this exists to refute.
     let mut held = Vec::new();
-    for (_routing_bucket, _handle, object_key, page) in
+    for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if page.deleted && page.model_id.as_str() == kind && &*object_key == key {
-            held.push(page.address.block_id());
+        if block.deleted && block.model_id.as_str() == kind && &*object_key == key {
+            held.push(block.address.block_id());
         }
     }
     held.sort();
@@ -428,10 +428,10 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut count = 0usize;
-    for (_routing_bucket, _handle, object_key, page) in
+    for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if page.model_id.as_str() == kind && &*object_key == key && page.deleted {
+        if block.model_id.as_str() == kind && &*object_key == key && block.deleted {
             count += 1;
         }
     }
@@ -1313,16 +1313,16 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             let mut live = 0usize;
             {
-                for (_routing_bucket, _handle, object_key, page) in
+                for (_routing_bucket, _handle, object_key, block) in
                     super::blocks_with_identity(&shard.bucket_index)
                 {
-                    if page.model_id.as_str() == kind && &*object_key == key {
-                        if !page.deleted {
+                    if block.model_id.as_str() == kind && &*object_key == key {
+                        if !block.deleted {
                             live += 1;
                         }
                         // TOMBSTONES INCLUDED, so the fold sees every statement about the object
                         // and a removal cannot read as an absence.
-                        addresses.push(page.address.clone());
+                        addresses.push(block.address.clone());
                     }
                 }
             }
@@ -1871,11 +1871,11 @@ fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usiz
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut rows = Vec::new();
-    for (_routing_bucket, _handle, object_key, page) in
+    for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
         rows.push((
-            page.model_id.as_str().to_string(),
+            block.model_id.as_str().to_string(),
             object_key.to_string(),
             None::<usize>,
         ));
@@ -2013,15 +2013,15 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
                 counts.alloc_bytes
             );
 
-            let pages = named.len() as f64;
-            let mean_name = named.iter().sum::<usize>() as f64 / pages;
+            let blocks = named.len() as f64;
+            let mean_name = named.iter().sum::<usize>() as f64 / blocks;
             println!(
                 "    containers  {range_label:<20} {size_label:<14} pages={:<6} name len mean \
                  {mean_name:>5.1}\n                  ALLOC_BYTES {:>8.2} B a name   \
                  ALLOC_CHUNK_BYTES {:>8.2} B a name   in-struct {} -> {} B",
                 named.len(),
-                counts.alloc_bytes as f64 / pages,
-                counts.chunk_bytes as f64 / pages,
+                counts.alloc_bytes as f64 / blocks,
+                counts.chunk_bytes as f64 / blocks,
                 component_field_bytes,
                 ordinal_field_bytes
             );

@@ -458,16 +458,16 @@ pub(crate) fn record_command(
 /// asked at batch granularity again.
 pub(crate) fn every_result_can_be_found_again(
     outcomes: &[WalOutcomeItem],
-    pages: &[StagedBlock],
+    blocks: &[StagedBlock],
 ) -> bool {
     outcomes.iter().all(|item| {
         item.deleted
             || item.ttl.is_some()
             || item.value.as_ref().map(|value| !value.is_empty()).unwrap_or(false)
-            || pages.iter().any(|page| {
-                page.object_id == item.object_id
-                    && (page.component.as_deref() == item.component.as_deref()
-                        || page.component.is_none())
+            || blocks.iter().any(|block| {
+                block.object_id == item.object_id
+                    && (block.component.as_deref() == item.component.as_deref()
+                        || block.component.is_none())
             })
     })
 }
@@ -510,16 +510,16 @@ mod every_result_can_be_found_again_tests {
     fn a_batch_is_not_recoverable_because_a_sibling_carried_a_block() {
         let covered = names_only_an_address(1, "a");
         let uncovered = names_only_an_address(2, "b");
-        let pages = vec![block_for(1, "a")];
+        let blocks = vec![block_for(1, "a")];
         // THE REGIME FIRST, so the `false` below is about the uncovered result and not about a
         // page set this helper failed to build: the covered result is covered on its own.
         assert!(
-            every_result_can_be_found_again(std::slice::from_ref(&covered), &pages),
+            every_result_can_be_found_again(std::slice::from_ref(&covered), &blocks),
             "a result whose own page IS staged must be covered, or the mixed case says nothing"
         );
         // THE CONCLUSION.
         assert!(
-            !every_result_can_be_found_again(&[covered, uncovered], &pages),
+            !every_result_can_be_found_again(&[covered, uncovered], &blocks),
             "a result whose own page was never staged is not recoverable because a SIBLING's was"
         );
     }
@@ -10862,7 +10862,7 @@ mod tests {
         // A byte vector serializes as an array of numbers -- about 5 bytes of log per byte of
         // page -- which is what kept this from being on by default. Encoded, the record should
         // be close to the page it carries.
-        let page = vec![b'x'; 4096];
+        let block = vec![b'x'; 4096];
         let record = WriteAheadLogRecord {
             shard_id: 1,
             sequence: 1,
@@ -10874,22 +10874,22 @@ mod tests {
             staged_blocks: vec![StagedBlock {
                 object_id: 7,
                 component: None,
-                bytes: page.clone(),
+                bytes: block.clone(),
             }],
             outcomes: Vec::new(),
         };
         let encoded = serde_json::to_vec(&record).unwrap();
-        let overhead = encoded.len() as f64 / page.len() as f64;
+        let overhead = encoded.len() as f64 / block.len() as f64;
         assert!(
             overhead < 1.6,
             "a staged page should cost about a third over its contents, got {overhead:.2}x              ({} bytes of record for {} bytes of page)",
             encoded.len(),
-            page.len()
+            block.len()
         );
 
         // And it round-trips.
         let decoded: WriteAheadLogRecord = serde_json::from_slice(&encoded).unwrap();
-        assert_eq!(decoded.staged_blocks[0].bytes, page);
+        assert_eq!(decoded.staged_blocks[0].bytes, block);
     }
 
     #[test]

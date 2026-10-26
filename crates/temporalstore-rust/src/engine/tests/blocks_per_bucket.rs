@@ -109,12 +109,12 @@ impl BlocksPerBucket {
         self.counts.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
-    fn holding(&self, pages: usize) -> usize {
-        self.counts.get(&pages).copied().unwrap_or_default()
+    fn holding(&self, blocks: usize) -> usize {
+        self.counts.get(&blocks).copied().unwrap_or_default()
     }
 
     /// Buckets holding strictly more than one block.
@@ -135,7 +135,7 @@ impl BlocksPerBucket {
         if buckets == 0 {
             return 0.0;
         }
-        self.pages() as f64 / buckets as f64
+        self.blocks() as f64 / buckets as f64
     }
 
     fn single_block_fraction(&self) -> f64 {
@@ -151,7 +151,7 @@ impl BlocksPerBucket {
         println!(
             "  buckets={} pages={} mean={:.4} widest bucket={} page(s)",
             self.buckets(),
-            self.pages(),
+            self.blocks(),
             self.mean(),
             self.widest()
         );
@@ -374,7 +374,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
             "denominator: no routing buckets, so every fraction below is a zero that means nothing"
         );
         assert!(
-            hist.pages() > 0,
+            hist.blocks() > 0,
             "denominator: no page entries, so the structure this module is about is absent"
         );
     }
@@ -1213,13 +1213,13 @@ fn mirror_boxed_node(node: &BucketNode) -> MirrorNode<MirrorBoxedBlockIndex> {
     let entries: Vec<(u64, BlockIndex)> = node
         .block_index
         .iter()
-        .map(|(handle, page)| (*handle, page.clone()))
+        .map(|(handle, block)| (*handle, block.clone()))
         .collect();
     let block_index = match entries.len() {
         0 => MirrorBoxedBlockIndex::Empty,
         1 => {
-            let (handle, page) = entries.into_iter().next().expect("length is one");
-            MirrorBoxedBlockIndex::One(handle, Box::new(page))
+            let (handle, block) = entries.into_iter().next().expect("length is one");
+            MirrorBoxedBlockIndex::One(handle, Box::new(block))
         }
         _ => MirrorBoxedBlockIndex::Many(entries.into_iter().collect()),
     };
@@ -1398,7 +1398,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
     println!("  store path length held at {path_length} characters");
     println!(
         "  buckets={buckets}  single-page={single_block}  pages={}",
-        hist.pages()
+        hist.blocks()
     );
     println!(
         "  {:<40} {:>12} {:>12} {:>12} {:>22}",
@@ -1641,15 +1641,15 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     let inline: Vec<(u64, MirrorInlineBlockIndex)> = listed
         .iter()
         .map(|(handle, index)| {
-            let page = index.get(handle).expect("the page is there").clone();
-            (*handle, MirrorInlineBlockIndex::One(*handle, page))
+            let block = index.get(handle).expect("the page is there").clone();
+            (*handle, MirrorInlineBlockIndex::One(*handle, block))
         })
         .collect();
     let boxed: Vec<(u64, MirrorBoxedBlockIndex)> = listed
         .iter()
         .map(|(handle, index)| {
-            let page = index.get(handle).expect("the page is there").clone();
-            (*handle, MirrorBoxedBlockIndex::One(*handle, Box::new(page)))
+            let block = index.get(handle).expect("the page is there").clone();
+            (*handle, MirrorBoxedBlockIndex::One(*handle, Box::new(block)))
         })
         .collect();
 
@@ -1676,9 +1676,9 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     let read_inline = || {
         let mut sum = 0u64;
         for (handle, index) in &inline {
-            if let MirrorInlineBlockIndex::One(held, page) = index {
+            if let MirrorInlineBlockIndex::One(held, block) = index {
                 if held == handle {
-                    sum = sum.wrapping_add(page.address.block_slab_id());
+                    sum = sum.wrapping_add(block.address.block_slab_id());
                 }
             }
         }
@@ -1687,8 +1687,8 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     let read_listed = || {
         let mut sum = 0u64;
         for (handle, index) in &listed {
-            if let Some(page) = index.get(handle) {
-                sum = sum.wrapping_add(page.address.block_slab_id());
+            if let Some(block) = index.get(handle) {
+                sum = sum.wrapping_add(block.address.block_slab_id());
             }
         }
         sum
@@ -1696,9 +1696,9 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     let read_boxed = || {
         let mut sum = 0u64;
         for (handle, index) in &boxed {
-            if let MirrorBoxedBlockIndex::One(held, page) = index {
+            if let MirrorBoxedBlockIndex::One(held, block) = index {
                 if held == handle {
-                    sum = sum.wrapping_add(page.address.block_slab_id());
+                    sum = sum.wrapping_add(block.address.block_slab_id());
                 }
             }
         }
@@ -1894,9 +1894,9 @@ fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &Bloc
 /// The whole block set, as an ordered list of handle-and-entry, compared element by element.
 fn assert_same_block_set(context: &str, left: &BlockIndexMap, right: &BlockIndexMap) {
     let left_entries: Vec<(u64, &BlockIndex)> =
-        left.iter().map(|(handle, page)| (*handle, page)).collect();
+        left.iter().map(|(handle, block)| (*handle, block)).collect();
     let right_entries: Vec<(u64, &BlockIndex)> =
-        right.iter().map(|(handle, page)| (*handle, page)).collect();
+        right.iter().map(|(handle, block)| (*handle, block)).collect();
     assert_eq!(
         left_entries.len(),
         right_entries.len(),
@@ -2067,7 +2067,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
         "four pages are not in a map"
     );
     let keep = retained_handles[2];
-    retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _page| *handle == keep);
+    retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _block| *handle == keep);
     assert_eq!(1, retained.len(), "retain should have left exactly one page");
     assert!(
         matches!(retained, BlockIndexMap::One(..)),
@@ -2079,7 +2079,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     assert_same_block("the page retain kept", keep, &block_for(12).1, survivor);
 
     // --- And retain the last block away, which is the collapse that DOES still happen. ---
-    retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _page| false);
+    retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _block| false);
     assert_eq!(0, retained.len(), "retain should have left nothing");
     assert!(
         matches!(retained, BlockIndexMap::Empty),
@@ -2104,7 +2104,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
         matches!(emptied, BlockIndexMap::Many(_)),
         "four pages are not in a map, so the case below is not the case it is named for"
     );
-    emptied.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _page| false);
+    emptied.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _block| false);
     assert_eq!(0, emptied.len(), "retain should have left nothing");
     assert!(
         emptied.is_empty(),
@@ -2375,9 +2375,9 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         rows.push((
             "keys that route one to a bucket",
             hist.buckets(),
-            hist.pages(),
+            hist.blocks(),
             size_of::<BucketNode>() * hist.buckets(),
-            size_of::<BlockIndex>() * hist.pages(),
+            size_of::<BlockIndex>() * hist.blocks(),
         ));
     }
     {
@@ -2390,9 +2390,9 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         rows.push((
             "container keys",
             hist.buckets(),
-            hist.pages(),
+            hist.blocks(),
             size_of::<BucketNode>() * hist.buckets(),
-            size_of::<BlockIndex>() * hist.pages(),
+            size_of::<BlockIndex>() * hist.blocks(),
         ));
     }
 
@@ -2406,8 +2406,8 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         "  {:<34} {:>9} {:>9} {:>16} {:>16}",
         "workload", "buckets", "pages", "BucketNode x n", "BlockIndex x n"
     );
-    for (name, buckets, pages, node_bytes, block_bytes) in &rows {
-        println!("  {name:<34} {buckets:>9} {pages:>9} {node_bytes:>16} {block_bytes:>16}");
+    for (name, buckets, blocks, node_bytes, block_bytes) in &rows {
+        println!("  {name:<34} {buckets:>9} {blocks:>9} {node_bytes:>16} {block_bytes:>16}");
     }
 
     let (_, routed_buckets, routed_blocks, routed_nodes, routed_blocks_bytes) = rows[0];

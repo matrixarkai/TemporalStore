@@ -760,7 +760,7 @@ pub fn reset_unframed_container_write_count() {
 /// function exists to remove.
 pub(super) fn single_element_block(kind: &str, component: &str, value: &[u8]) -> Vec<u8> {
     match encode_single_element_block(kind, component, value) {
-        Some(page) => page,
+        Some(block) => block,
         None => {
             UNFRAMED_CONTAINER_WRITES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             value.to_vec()
@@ -822,7 +822,7 @@ pub fn reset_unframed_container_removal_count() {
 /// bytes for exactly the reason in [`encode_tombstone_block`]: there is no degraded form of "gone".
 pub(super) fn tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
     match encode_tombstone_block(kind, component) {
-        Some(page) => Some(page),
+        Some(block) => Some(block),
         None => {
             UNFRAMED_CONTAINER_REMOVALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             None

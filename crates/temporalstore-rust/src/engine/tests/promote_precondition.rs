@@ -292,7 +292,7 @@ fn a_shard_with_no_live_model_block_establishes_nothing() {
 
     reset_promote_model_map_check_counts();
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
-    let (checks, rebuilds, pages) = promote_model_map_check_counts();
+    let (checks, rebuilds, blocks) = promote_model_map_check_counts();
 
     assert!(
         !promoted,
@@ -300,7 +300,7 @@ fn a_shard_with_no_live_model_block_establishes_nothing() {
          -- the per-execute fast-skip in engine.rs latches on this answer"
     );
     assert_eq!(
-        (checks, rebuilds, pages),
+        (checks, rebuilds, blocks),
         (1, 0, 0),
         "one check, no rebuild, no page offered"
     );
@@ -312,13 +312,13 @@ fn a_shard_with_no_live_model_block_establishes_nothing() {
     let mut fresh = ShardState::default();
     reset_promote_model_map_check_counts();
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut fresh, 0, END);
-    let (_, rebuilds, pages) = promote_model_map_check_counts();
+    let (_, rebuilds, blocks) = promote_model_map_check_counts();
     assert!(
         !promoted,
         "an empty shard has no model-map page, and that must be answered before `bucket_map` is \
          asked whether it is empty -- it is"
     );
-    assert_eq!((rebuilds, pages), (0, 0), "empty shard: no rebuild, no page offered");
+    assert_eq!((rebuilds, blocks), (0, 0), "empty shard: no rebuild, no page offered");
 }
 
 /// ARM 3 OF 5, THE OTHER HALF OF THE MISSING-PAGE TEST: an EMPTY bucket index under live model pages.
@@ -341,14 +341,14 @@ fn an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole() {
 
     reset_promote_model_map_check_counts();
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
-    let (checks, rebuilds, pages) = promote_model_map_check_counts();
+    let (checks, rebuilds, blocks) = promote_model_map_check_counts();
 
     assert!(
         promoted,
         "an index naming nothing cannot already name 32 live model-map pages"
     );
     assert_eq!((checks, rebuilds), (1, 1), "one check, and it rebuilt");
-    assert_eq!(pages, 32, "VACUITY: the walk must still have been offered every page");
+    assert_eq!(blocks, 32, "VACUITY: the walk must still have been offered every page");
     let mut named = 0u64;
     let mut index = 0u64;
     while index < 32 {
@@ -375,7 +375,7 @@ fn an_index_that_names_every_live_block_rebuilds_nothing() {
 
     reset_promote_model_map_check_counts();
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
-    let (checks, rebuilds, pages) = promote_model_map_check_counts();
+    let (checks, rebuilds, blocks) = promote_model_map_check_counts();
 
     assert!(
         !promoted,
@@ -384,7 +384,7 @@ fn an_index_that_names_every_live_block_rebuilds_nothing() {
     );
     assert_eq!((checks, rebuilds), (1, 0), "one check, no rebuild");
     assert_eq!(
-        pages, 64,
+        blocks, 64,
         "VACUITY: the check must have been offered all 64 pages -- a walk that saw none reaches \
          the same `false` for the wrong reason"
     );
@@ -444,7 +444,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
 
     reset_promote_model_map_check_counts();
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
-    let (checks, rebuilds, pages) = promote_model_map_check_counts();
+    let (checks, rebuilds, blocks) = promote_model_map_check_counts();
 
     // "It noticed" is asserted before, and apart from, "the rebuild put the page back". They are
     // two claims, and a change that quietly stopped noticing would otherwise be reported here as
@@ -456,7 +456,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
     );
     assert_eq!((checks, rebuilds), (1, 1), "one check, and it rebuilt");
     assert_eq!(
-        pages, 65,
+        blocks, 65,
         "VACUITY: the walk must still have been offered every page, orphan included"
     );
     assert!(
@@ -537,14 +537,14 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     }
     reset_promote_model_map_check_counts();
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
-    let (_, rebuilds, pages) = promote_model_map_check_counts();
+    let (_, rebuilds, blocks) = promote_model_map_check_counts();
     assert!(
         !promoted,
         "a page routing to a released bucket is absent on purpose and must not count as missing \
          -- counting it makes the first command after a release rebuild the whole shard"
     );
     assert_eq!(
-        (rebuilds, pages),
+        (rebuilds, blocks),
         (0, 64),
         "the arm: no rebuild, and the same 64 pages walked"
     );
@@ -567,17 +567,17 @@ fn the_check_does_not_allocate_per_block_it_walks() {
         let promoted =
             promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
         let after = crate::alloc_probe::counted_now().expect("built with `alloc-probe`");
-        let (_, rebuilds, pages) = promote_model_map_check_counts();
+        let (_, rebuilds, blocks) = promote_model_map_check_counts();
         assert!(
             !promoted && rebuilds == 0,
             "this arm must take the negative path -- the positive one rebuilds the shard, and \
              what would then be measured is the rebuild"
         );
         assert_eq!(
-            pages, count,
+            blocks, count,
             "VACUITY: a check offered no pages is cheap for the wrong reason"
         );
-        (after.0 - before.0, pages)
+        (after.0 - before.0, blocks)
     }
 
     let (small_allocs, small_blocks) = cost(500);

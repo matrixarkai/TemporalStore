@@ -79,9 +79,9 @@ fn durable_lengths_path(root: &Path) -> PathBuf {
 }
 
 fn record_durable_slab_lengths(root: &Path) {
-    let pages = root.join("pages");
+    let blocks = root.join("pages");
     let mut lines = String::new();
-    if let Ok(entries) = fs::read_dir(&pages) {
+    if let Ok(entries) = fs::read_dir(&blocks) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) == Some("seg") {

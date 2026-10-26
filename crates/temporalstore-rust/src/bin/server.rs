@@ -1457,13 +1457,13 @@ fn gather_result_blocks(
     shard_id: ShardId,
     outcomes: &[temporalstore_rust::wal::WalOutcomeItem],
 ) -> Vec<temporalstore_rust::wal::StagedBlock> {
-    let mut pages = Vec::new();
+    let mut blocks = Vec::new();
     for item in outcomes {
         let Some(address) = item.resolved_address() else {
             continue;
         };
         if let Ok(bytes) = engine.block_store().read(&address) {
-            pages.push(temporalstore_rust::wal::StagedBlock {
+            blocks.push(temporalstore_rust::wal::StagedBlock {
                 object_id: item.object_id,
                 component: item.component.as_deref().map(std::sync::Arc::from),
                 bytes,
@@ -1471,7 +1471,7 @@ fn gather_result_blocks(
         }
     }
     let _ = shard_id;
-    pages
+    blocks
 }
 
 

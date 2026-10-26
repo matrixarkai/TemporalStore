@@ -237,7 +237,7 @@ struct ArmHistogram {
     /// Bucket counts keyed by the arm `classify_bucket_layout` puts them in.
     arms: BTreeMap<&'static str, usize>,
     /// Blocks held, one entry per OCCUPIED bucket, so a percentile is over buckets that exist.
-    pages: Vec<usize>,
+    blocks: Vec<usize>,
     /// Objects held, one entry per occupied bucket.
     objects: Vec<usize>,
 }
@@ -268,11 +268,11 @@ impl ArmHistogram {
     }
 
     fn occupied(&self) -> usize {
-        self.pages.len()
+        self.blocks.len()
     }
 
     fn total_blocks(&self) -> usize {
-        self.pages.iter().sum()
+        self.blocks.iter().sum()
     }
 
     fn count(&self, arm: &str) -> usize {
@@ -306,8 +306,8 @@ impl ArmHistogram {
     }
 
     fn report(&self, label: &str) {
-        let mut pages = self.pages.clone();
-        pages.sort_unstable();
+        let mut blocks = self.blocks.clone();
+        blocks.sort_unstable();
         let mut objects = self.objects.clone();
         objects.sort_unstable();
         println!(
@@ -325,10 +325,10 @@ impl ArmHistogram {
         }
         println!(
             "    pages/bucket   p50 {:>6}  p90 {:>6}  p99 {:>6}  MAX {:>6}",
-            Self::percentile(&pages, 0.50),
-            Self::percentile(&pages, 0.90),
-            Self::percentile(&pages, 0.99),
-            pages.last().copied().unwrap_or_default()
+            Self::percentile(&blocks, 0.50),
+            Self::percentile(&blocks, 0.90),
+            Self::percentile(&blocks, 0.99),
+            blocks.last().copied().unwrap_or_default()
         );
         println!(
             "    objects/bucket p50 {:>6}  p90 {:>6}  p99 {:>6}  MAX {:>6}",
@@ -350,14 +350,14 @@ fn arm_histogram(engine: &TemporalEngine) -> ArmHistogram {
         hist.arms.insert(arm, 0);
     }
     for node in shard.bucket_index.bucket_map.values() {
-        let pages = node.block_index.len();
+        let blocks = node.block_index.len();
         let objects = node.object_index.object_count();
         *hist
             .arms
-            .entry(arm_name(classify_bucket_layout(objects, pages)))
+            .entry(arm_name(classify_bucket_layout(objects, blocks)))
             .or_default() += 1;
-        if pages > 0 {
-            hist.pages.push(pages);
+        if blocks > 0 {
+            hist.blocks.push(blocks);
             hist.objects.push(objects);
         }
     }
@@ -529,11 +529,11 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     // key and `classify_bucket_layout(1, many)` answers `MultiBlockObject`. So the arm the
     // container workload lands in has moved, and `multi_page_object` -- which this module used to
     // report as reached by nothing -- is now exactly what a container reaches.
-    for (pages, hist) in &container {
+    for (blocks, hist) in &container {
         assert_every_claimed_arm_has_samples(
             &["multi_page_object"],
             hist,
-            &format!("{pages} container pages on the whole keyspace"),
+            &format!("{blocks} container pages on the whole keyspace"),
         );
         assert!(
             hist.occupied_fraction("single_page_object") < 0.01,
@@ -585,7 +585,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     // reaching an arm rather than the rule not having one.
     let distinguished: std::collections::BTreeSet<&str> = [(0, 0), (1, 0), (1, 1), (1, 4), (3, 9)]
         .into_iter()
-        .map(|(objects, pages)| arm_name(classify_bucket_layout(objects, pages)))
+        .map(|(objects, blocks)| arm_name(classify_bucket_layout(objects, blocks)))
         .collect();
     assert_eq!(
         EVERY_ARM.len(),
@@ -597,7 +597,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 
     // --- THE MAXIMUM, WHICH A MEAN HIDES. ---
     let narrow_large = routed.get(&(LARGE, NARROW_END)).expect("narrow large");
-    let widest = narrow_large.pages.iter().copied().max().unwrap_or_default();
+    let widest = narrow_large.blocks.iter().copied().max().unwrap_or_default();
     assert!(
         widest > 11,
         "the widest bucket on 0..{NARROW_END} at {LARGE} records holds {widest} pages; below \
@@ -775,7 +775,7 @@ fn tag(raw: usize, kind: usize) -> usize {
 struct SimpleLayout {
     object_id: u64,
     handle: u64,
-    page: BlockIndex,
+    block: BlockIndex,
 }
 
 /// The general arm's payload, out of line: everything the node holds today.
@@ -826,9 +826,9 @@ impl TaggedLayout {
     }
 
     /// The block entry a read has to reach, whichever arm holds it.
-    fn page(&self, handle: u64) -> Option<&BlockIndex> {
+    fn block(&self, handle: u64) -> Option<&BlockIndex> {
         if let Some(simple) = self.as_simple() {
-            return (simple.handle == handle).then_some(&simple.page);
+            return (simple.handle == handle).then_some(&simple.block);
         }
         self.as_general()
             .and_then(|general| general.block_index.get(&handle))
@@ -843,7 +843,7 @@ impl Clone for TaggedLayout {
                 TaggedLayout::simple(SimpleLayout {
                     object_id: held.object_id,
                     handle: held.handle,
-                    page: held.page.clone(),
+                    block: held.block.clone(),
                 })
             }
             KIND_GENERAL => {
@@ -915,25 +915,25 @@ struct LiveNodeMirror {
 
 /// Rebuild one live node in the tagged shape, arm chosen by the engine's OWN classifier.
 fn retag(node: &BucketNode) -> TaggedNode {
-    let pages = node.block_index.len();
+    let blocks = node.block_index.len();
     let objects = node.object_index.object_count();
     let simple = matches!(
-        classify_bucket_layout(objects, pages),
+        classify_bucket_layout(objects, blocks),
         BucketLayoutState::SingleBlockObject
     ) && node.deleted_object_index.is_empty();
-    let payload = if pages == 0 && objects == 0 {
+    let payload = if blocks == 0 && objects == 0 {
         TaggedLayout::empty()
     } else if simple {
-        let (handle, page) = node
+        let (handle, block) = node
             .block_index
             .iter()
             .next()
-            .map(|(handle, page)| (*handle, page.clone()))
+            .map(|(handle, block)| (*handle, block.clone()))
             .expect("the simple arm holds exactly one page");
         TaggedLayout::simple(SimpleLayout {
             object_id: node.object_index.iter().next().copied().unwrap_or_default(),
             handle,
-            page,
+            block,
         })
     } else {
         TaggedLayout::general(GeneralLayout {
@@ -1591,9 +1591,9 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
             continue;
         }
         simple_buckets += 1;
-        let (handle, page) = node.block_index.iter().next().expect("the inline arm holds one page");
+        let (handle, block) = node.block_index.iter().next().expect("the inline arm holds one page");
         let node_at = node as *const BucketNode as usize;
-        let address_at = &page.address as *const _ as usize;
+        let address_at = &block.address as *const _ as usize;
         offsets.insert(address_at - node_at);
         node_starts.insert(node_at % 64);
         live_lines += lines_touched(node_at, address_at);
@@ -1601,7 +1601,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
         let tagged = tagged_map.get(routing_bucket).expect("every simple bucket was retagged");
         let reached = tagged
             .payload
-            .page(*handle)
+            .block(*handle)
             .expect("the tagged simple arm must answer its own handle");
         tagged_lines += lines_touched(
             tagged as *const TaggedNode as usize,
@@ -1761,13 +1761,13 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
             continue;
         }
         general_buckets += 1;
-        let (handle, page) = node.block_index.iter().next().expect("a general arm holds pages");
+        let (handle, block) = node.block_index.iter().next().expect("a general arm holds pages");
         control_live += lines_touched(
             node as *const BucketNode as usize,
-            &page.address as *const _ as usize,
+            &block.address as *const _ as usize,
         );
         let tagged = general_map.get(routing_bucket).expect("every general bucket was retagged");
-        let reached = tagged.payload.page(*handle).expect("the tagged general arm must answer");
+        let reached = tagged.payload.block(*handle).expect("the tagged general arm must answer");
         control_tagged += lines_touched(
             tagged as *const TaggedNode as usize,
             &reached.address as *const _ as usize,
@@ -1861,7 +1861,7 @@ fn the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
     let boxed = Box::new(SimpleLayout {
         object_id: 1,
         handle: 7,
-        page: block_fixture(),
+        block: block_fixture(),
     });
     let chunk = crate::alloc_probe::chunk_behind(&boxed);
     let request = size_of::<SimpleLayout>();
@@ -2179,7 +2179,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
     let handle = *handle;
 
     let probe = Probe::start();
-    let reached = tagged.payload.page(handle).expect("the tagged arm answers");
+    let reached = tagged.payload.block(handle).expect("the tagged arm answers");
     let counts = probe.stop();
     std::hint::black_box(&reached.address);
     println!(

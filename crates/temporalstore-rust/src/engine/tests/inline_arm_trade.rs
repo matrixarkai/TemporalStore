@@ -170,7 +170,7 @@ impl ArmCensus {
         self.declared_buckets
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.held.iter().map(|(held, count)| held * count).sum()
     }
 
@@ -250,7 +250,7 @@ impl ArmCensus {
         println!(
             "  {label}: {buckets} buckets / {} pages | would-be arms Empty {empty} ({:.3}%) One \
              {one} ({:.3}%) Many {many} ({:.3}%)",
-            self.pages(),
+            self.blocks(),
             pct(empty),
             pct(one),
             pct(many)
@@ -307,8 +307,8 @@ fn one_real_block(engine: &TemporalEngine) -> BlockIndex {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     for bucket in shard.bucket_index.bucket_map.values() {
-        for page in bucket.block_index.values() {
-            return page.clone();
+        for block in bucket.block_index.values() {
+            return block.clone();
         }
     }
     panic!("a seeded store holds a page");
@@ -383,25 +383,25 @@ impl ShapeCost {
 ///
 /// `first_block` is the capacity taken for the first entry, which is the only thing the shapes below
 /// disagree about: the shipped policy takes a whole step, and the exact variant takes one entry.
-fn grow_list(held: usize, page: &BlockIndex, first_block: usize) -> Vec<(u64, BlockIndex)> {
-    let mut pages: Vec<(u64, BlockIndex)> = Vec::new();
+fn grow_list(held: usize, block: &BlockIndex, first_block: usize) -> Vec<(u64, BlockIndex)> {
+    let mut blocks: Vec<(u64, BlockIndex)> = Vec::new();
     for entry in 0..held {
-        if pages.len() == pages.capacity() {
-            let want = if pages.is_empty() {
+        if blocks.len() == blocks.capacity() {
+            let want = if blocks.is_empty() {
                 first_block
             } else {
-                (pages.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP
+                (blocks.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP
             };
-            pages.reserve_exact(want - pages.len());
+            blocks.reserve_exact(want - blocks.len());
         }
-        pages.push((entry as u64, page.clone()));
+        blocks.push((entry as u64, block.clone()));
     }
-    pages
+    blocks
 }
 
 /// The shipped first block: one whole step of the growth policy.
-fn block_list(held: usize, page: &BlockIndex) -> Vec<(u64, BlockIndex)> {
-    grow_list(held, page, BLOCK_LIST_GROWTH_STEP)
+fn block_list(held: usize, block: &BlockIndex) -> Vec<(u64, BlockIndex)> {
+    grow_list(held, block, BLOCK_LIST_GROWTH_STEP)
 }
 
 #[cfg(feature = "alloc-probe")]
@@ -425,7 +425,7 @@ fn measure<T>(inline_width: usize, buckets: usize, build: impl FnOnce() -> T) ->
 /// The spine is a `BTreeMap<u32, Shape>` -- the container the real `bucket_map` is -- so the
 /// per-slot amortisation this comparison turns on is the engine's own and not a model of it.
 #[cfg(feature = "alloc-probe")]
-fn priced_population(census: &ArmCensus, page: &BlockIndex) -> Vec<(&'static str, ShapeCost)> {
+fn priced_population(census: &ArmCensus, block: &BlockIndex) -> Vec<(&'static str, ShapeCost)> {
     let buckets = census.buckets();
 
     // Held OUTSIDE every span: building the plan must not be charged to any shape.
@@ -448,8 +448,8 @@ fn priced_population(census: &ArmCensus, page: &BlockIndex) -> Vec<(&'static str
                 at as u32,
                 match *held {
                     0 => ShapeKeep::Empty,
-                    1 => ShapeKeep::One(0, page.clone()),
-                    n => ShapeKeep::Many(block_list(n, page)),
+                    1 => ShapeKeep::One(0, block.clone()),
+                    n => ShapeKeep::Many(block_list(n, block)),
                 },
             );
         }
@@ -463,7 +463,7 @@ fn priced_population(census: &ArmCensus, page: &BlockIndex) -> Vec<(&'static str
                 at as u32,
                 match *held {
                     0 => ShapeDrop::Empty,
-                    n => ShapeDrop::Many(block_list(n, page)),
+                    n => ShapeDrop::Many(block_list(n, block)),
                 },
             );
         }
@@ -482,7 +482,7 @@ fn priced_population(census: &ArmCensus, page: &BlockIndex) -> Vec<(&'static str
                 at as u32,
                 match *held {
                     0 => ShapeDrop::Empty,
-                    n => ShapeDrop::Many(grow_list(n, page, 1)),
+                    n => ShapeDrop::Many(grow_list(n, block, 1)),
                 },
             );
         }
@@ -496,8 +496,8 @@ fn priced_population(census: &ArmCensus, page: &BlockIndex) -> Vec<(&'static str
                 at as u32,
                 match *held {
                     0 => ShapeBox::Empty,
-                    1 => ShapeBox::One(0, Box::new(page.clone())),
-                    n => ShapeBox::Many(block_list(n, page)),
+                    1 => ShapeBox::One(0, Box::new(block.clone())),
+                    n => ShapeBox::Many(block_list(n, block)),
                 },
             );
         }
@@ -694,10 +694,10 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
             census.assert_denominators(&label);
             assert_eq!(
                 keys.len(),
-                census.pages(),
+                census.blocks(),
                 "{label}: the census holds {} pages for {} keys, so its denominator is not the \
                  fixture's",
-                census.pages(),
+                census.blocks(),
                 keys.len()
             );
             observed.insert((records, end_routing_bucket), census);
@@ -834,8 +834,8 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
                 format!("{records} records, 0..{end_routing_bucket} (SHIPPED)")
             };
             census.assert_denominators(&label);
-            let page = one_real_block(&engine);
-            let rows = priced_population(&census, &page);
+            let block = one_real_block(&engine);
+            let rows = priced_population(&census, &block);
             compare_shapes(&label, &rows);
             report_shapes(&label, &rows);
 
@@ -849,7 +849,7 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
             let save_request = keep.total_request_per_bucket() - dropped.total_request_per_bucket();
             // THE PAY, per single-block bucket, measured on its own.
             let single = census.single_block_buckets();
-            let pay = pay_per_single_block_bucket(&page);
+            let pay = pay_per_single_block_bucket(&block);
 
             println!(
                 "  {label}: SAVE {save_chunk:+.2} B/bucket chunk ({save_request:+.2} B request) \
@@ -943,8 +943,8 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
 /// What ONE single-block bucket's block list costs that an inline entry did not: one allocation, at
 /// the shipped growth step, measured on its own rather than divided out of a population.
 #[cfg(feature = "alloc-probe")]
-fn pay_per_single_block_bucket(page: &BlockIndex) -> ShapeCost {
-    measure(0, 1, || block_list(1, page))
+fn pay_per_single_block_bucket(block: &BlockIndex) -> ShapeCost {
+    measure(0, 1, || block_list(1, block))
 }
 
 // =============================================================================================
@@ -980,7 +980,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             load_on(&engine, end_routing_bucket);
             seed_routed(&engine, records);
             let census = arm_census(&engine);
-            let page = one_real_block(&engine);
+            let block = one_real_block(&engine);
             let label = if end_routing_bucket == WIDE_END {
                 format!("{records:>6} records, whole keyspace")
             } else {
@@ -989,7 +989,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             census.assert_denominators(&label);
 
             // DROPPING the arm: a one-entry list, whose first block is a whole growth step.
-            let listed = pay_per_single_block_bucket(&page);
+            let listed = pay_per_single_block_bucket(&block);
             assert_eq!(
                 1, listed.allocs,
                 "{label}: a one-entry page list took {} allocations, not one. #1964's case rests \
@@ -998,7 +998,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             );
 
             // BOXING the arm -- THE SHIPPED SHAPE: one allocation too, sized for the entry.
-            let boxed = measure(0, 1, || ShapeBox::One(0, Box::new(page.clone())));
+            let boxed = measure(0, 1, || ShapeBox::One(0, Box::new(block.clone())));
             assert_eq!(
                 1, boxed.allocs,
                 "{label}: the boxed arm took {} allocations, not one. A box IS an allocation, and \
@@ -1023,7 +1023,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             );
 
             // An INLINE entry takes NONE. The control on the claim, in the same process.
-            let inline = measure(0, 1, || ShapeKeep::One(0, page.clone()));
+            let inline = measure(0, 1, || ShapeKeep::One(0, block.clone()));
             assert_eq!(
                 0, inline.allocs,
                 "{label}: holding a page INLINE took {} allocations; the inline entry's whole case \
@@ -1133,8 +1133,8 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
     let engine = engine_on(dir.path());
     load_on(&engine, NARROW_END);
     seed_routed(&engine, 16);
-    let page = one_real_block(&engine);
-    let single = block_list(1, &page);
+    let block = one_real_block(&engine);
+    let single = block_list(1, &block);
     crate::engine::state::reset_block_lookup_entries_examined();
     let found = crate::engine::state::find_block(&single, &single[0].0);
     let one_entry = crate::engine::state::block_lookup_entries_examined();
@@ -1551,34 +1551,34 @@ enum MirrorShippedArm<E> {
 /// Grow one bucket's arm exactly as the shipped shape does: empty, boxed single, or a list grown one
 /// entry at a time in whole growth steps.
 #[cfg(feature = "alloc-probe")]
-fn mirror_arm<E: Clone>(held: usize, page: &E) -> MirrorShippedArm<E> {
+fn mirror_arm<E: Clone>(held: usize, block: &E) -> MirrorShippedArm<E> {
     match held {
         0 => MirrorShippedArm::Empty,
-        1 => MirrorShippedArm::One(0, Box::new(page.clone())),
+        1 => MirrorShippedArm::One(0, Box::new(block.clone())),
         _ => {
-            let mut pages: Vec<(u64, E)> = Vec::new();
+            let mut blocks: Vec<(u64, E)> = Vec::new();
             for entry in 0..held {
-                if pages.len() == pages.capacity() {
-                    let want = if pages.is_empty() {
+                if blocks.len() == blocks.capacity() {
+                    let want = if blocks.is_empty() {
                         BLOCK_LIST_GROWTH_STEP
                     } else {
-                        (pages.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP
+                        (blocks.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP
                     };
-                    pages.reserve_exact(want - pages.len());
+                    blocks.reserve_exact(want - blocks.len());
                 }
-                pages.push((entry as u64, page.clone()));
+                blocks.push((entry as u64, block.clone()));
             }
-            MirrorShippedArm::Many(pages)
+            MirrorShippedArm::Many(blocks)
         }
     }
 }
 
 /// One whole bucket population in the shipped shape, on the spine the engine uses.
 #[cfg(feature = "alloc-probe")]
-fn mirror_population<E: Clone>(plan: &[usize], page: &E) -> BTreeMap<u32, MirrorShippedArm<E>> {
+fn mirror_population<E: Clone>(plan: &[usize], block: &E) -> BTreeMap<u32, MirrorShippedArm<E>> {
     let mut spine: BTreeMap<u32, MirrorShippedArm<E>> = BTreeMap::new();
     for (index, held) in plan.iter().enumerate() {
-        spine.insert(index as u32, mirror_arm(*held, page));
+        spine.insert(index as u32, mirror_arm(*held, block));
     }
     spine
 }
@@ -1729,7 +1729,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         seed_routed(&engine, records);
         let census = arm_census(&engine);
         census.assert_denominators(&format!("{label} @ {records}"));
-        let page = one_real_block(&engine);
+        let block = one_real_block(&engine);
         // THE MIRROR'S KEY IS NAMED HERE BECAUSE THE PAGE HAS NONE. The mirror models the entry as
         // it was WHEN IT WAS WIDE, and the term it is modelling is a sixteen-byte shared pointer:
         // what the pointer points AT decides nothing about the width or the heap this arm
@@ -1737,7 +1737,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         // pretending to recover the one this page belongs to.
         let wide_block = MirrorWideEntry {
             object_key: std::sync::Arc::from("mirror-of-a-wide-entry"),
-            model_id: page.model_id,
+            model_id: block.model_id,
             // The MIRROR models the entry as it was WHEN IT WAS WIDE, so it keeps the slot and
             // fills it with the absence a real entry no longer has a field for.
             component: None,
@@ -1749,9 +1749,9 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
                 routing_bucket: 0,
                 present: 0,
             },
-            dirty: page.dirty,
-            deleted: page.deleted,
-            log_backed: page.log_backed(),
+            dirty: block.dirty,
+            deleted: block.deleted,
+            log_backed: block.log_backed(),
         };
 
         let plan = census_plan(&census);
@@ -1760,7 +1760,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
 
         // THE WHOLE POPULATION, both shapes, one instrument.
         let now = measure(size_of::<BlockIndexMap>(), buckets, || {
-            mirror_population(&plan, &page)
+            mirror_population(&plan, &block)
         });
         let before = measure(size_of::<BlockIndexMap>(), buckets, || {
             mirror_population(&plan, &wide_block)
@@ -1768,7 +1768,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
 
         // AND THE SINGLE-BLOCK ARM ON ITS OWN, which is where the rounding is predicted to eat it.
         let single_plan: Vec<usize> = std::iter::repeat(1).take(one_arms.max(1)).collect();
-        let one_now = measure(0, one_arms.max(1), || mirror_population(&single_plan, &page));
+        let one_now = measure(0, one_arms.max(1), || mirror_population(&single_plan, &block));
         let one_before = measure(0, one_arms.max(1), || {
             mirror_population(&single_plan, &wide_block)
         });
@@ -1776,7 +1776,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         // AND THE MANY ARM ON ITS OWN.
         let many_plan: Vec<usize> = plan.iter().copied().filter(|held| *held > 1).collect();
         let many_count = many_plan.len().max(1);
-        let many_now = measure(0, many_count, || mirror_population(&many_plan, &page));
+        let many_now = measure(0, many_count, || mirror_population(&many_plan, &block));
         let many_before = measure(0, many_count, || mirror_population(&many_plan, &wide_block));
 
         println!(
@@ -1858,10 +1858,10 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
                 n => (n.div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP) as u64,
             })
             .sum();
-        let pages = census.pages() as u64;
+        let blocks = census.blocks() as u64;
         assert!(
-            slots >= pages,
-            "{label} @ {records}: {slots} entry slots for {pages} pages, which cannot be -- the \
+            slots >= blocks,
+            "{label} @ {records}: {slots} entry slots for {blocks} pages, which cannot be -- the \
              slot arithmetic does not describe the lists the builder grew"
         );
         if slots > 0 {
@@ -1869,13 +1869,13 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
                 per_slot * slots,
                 before.request_bytes - now.request_bytes,
                 "{label} @ {records}: the request column saved {} B over {slots} entry slots \
-                 ({pages} pages), not {per_slot} a slot. Either the mirror is not the former shape \
+                 ({blocks} pages), not {per_slot} a slot. Either the mirror is not the former shape \
                  or the two populations were not built to the same growth ladder",
                 before.request_bytes - now.request_bytes
             );
             println!(
                 "    the request column saves {per_slot} B on every one of {slots} entry slots \
-                 holding {pages} pages = {} B, all of it real; what the chunk column keeps of it is \
+                 holding {blocks} pages = {} B, all of it real; what the chunk column keeps of it is \
                  the line above",
                 per_slot * slots
             );

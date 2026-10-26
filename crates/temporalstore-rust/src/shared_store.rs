@@ -1230,7 +1230,7 @@ where
         if materialised > 0 {
             tracing::info!(
                 shard_id,
-                pages = materialised,
+                blocks = materialised,
                 "materialised in-process-only pages so the checkpoint index can travel"
             );
         }
@@ -3197,10 +3197,10 @@ fn encode_wal_proto_frame(
         staged_blocks: entry
             .staged_blocks
             .iter()
-            .map(|page| SharedStoreStagedBlockProto {
-                object_id: page.object_id,
-                bytes: page.bytes.clone(),
-                component: page.component.as_deref().map(str::to_string),
+            .map(|block| SharedStoreStagedBlockProto {
+                object_id: block.object_id,
+                bytes: block.bytes.clone(),
+                component: block.component.as_deref().map(str::to_string),
             })
             .collect(),
         items: entry
@@ -3387,12 +3387,12 @@ fn decode_wal_proto_frame_exact(
         staged_blocks: frame
             .staged_blocks
             .into_iter()
-            .map(|page| crate::wal::StagedBlock {
-                object_id: page.object_id,
+            .map(|block| crate::wal::StagedBlock {
+                object_id: block.object_id,
                 // Never defaulted: an absent element MEANS a whole-object page, and
                 // inventing one would make a string page claim to be an element.
-                component: page.component.map(std::sync::Arc::from),
-                bytes: page.bytes,
+                component: block.component.map(std::sync::Arc::from),
+                bytes: block.bytes,
             })
             .collect(),
     })
@@ -4930,11 +4930,11 @@ mod tests {
     #[test]
     fn delete_read_miss_survives_wal_replay_recovery() {
         let dir = tempfile::tempdir().unwrap();
-        let pages = dir.path().join("pages");
+        let blocks = dir.path().join("pages");
         let indexes = dir.path().join("indexes");
 
         let engine =
-            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &pages, &indexes);
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
         engine.load_shard(1);
         for (key, value) in [("keep", b"keep-value".to_vec()), ("gone", b"gone-value".to_vec())] {
             engine.execute(ExecuteRequest {
@@ -4967,7 +4967,7 @@ mod tests {
 
         // Fresh engine, same pages/index dirs, different cache -> genuine WAL-replay recovery.
         let reopened =
-            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &blocks, &indexes);
         reopened.load_shard(1);
         assert_eq!(
             reopened

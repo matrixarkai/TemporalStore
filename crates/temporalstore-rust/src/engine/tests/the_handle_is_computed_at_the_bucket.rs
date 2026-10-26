@@ -38,7 +38,7 @@ use crate::engine::state::{
 use crate::engine::storage_bucket_internals::stored_model_kind;
 use std::sync::Arc;
 
-fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
+fn block(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
     BlockIndex {
         model_id: stored_model_kind("hash"),
         address: ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
@@ -58,10 +58,10 @@ fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u
 /// Two share an object and differ by component; the rest differ by address.
 fn fixture() -> Vec<(Arc<str>, BlockIndex)> {
     vec![
-        (Arc::from("tenant/1/obj/aaa"), page("tenant/1/obj/aaa", Some("f-1"), 7, 0, 64)),
-        (Arc::from("tenant/1/obj/aaa"), page("tenant/1/obj/aaa", Some("f-2"), 7, 64, 64)),
-        (Arc::from("tenant/1/obj/bbb"), page("tenant/1/obj/bbb", None, 9, 128, 32)),
-        (Arc::from("tenant/1/obj/ccc"), page("tenant/1/obj/ccc", Some("f-1"), 9, 160, 48)),
+        (Arc::from("tenant/1/obj/aaa"), block("tenant/1/obj/aaa", Some("f-1"), 7, 0, 64)),
+        (Arc::from("tenant/1/obj/aaa"), block("tenant/1/obj/aaa", Some("f-2"), 7, 64, 64)),
+        (Arc::from("tenant/1/obj/bbb"), block("tenant/1/obj/bbb", None, 9, 128, 32)),
+        (Arc::from("tenant/1/obj/ccc"), block("tenant/1/obj/ccc", Some("f-1"), 9, 160, 48)),
     ]
 }
 

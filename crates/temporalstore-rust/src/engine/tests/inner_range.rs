@@ -232,7 +232,7 @@ fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Ve
         let mut keys: Vec<String> = bucket
             .block_index
             .iter()
-            .map(|(handle, _page)| named.at(*routing_bucket, *handle).to_string())
+            .map(|(handle, _block)| named.at(*routing_bucket, *handle).to_string())
             .collect();
         if keys.is_empty() {
             continue;
@@ -259,11 +259,11 @@ fn reader_attribution(
         .iter()
         .flat_map(|(bucket_id, bucket)| {
             let filed_names = &filed_names;
-            bucket.block_index.iter().map(move |(handle, page)| {
+            bucket.block_index.iter().map(move |(handle, block)| {
                 (
                     (
                         filed_names.at(*bucket_id, *handle).to_string(),
-                        page.address.offset(),
+                        block.address.offset(),
                     ),
                     *bucket_id,
                 )
@@ -644,19 +644,19 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
              {status:?}"
         );
         let readable = read_back(&engine, &keys);
-        let (pages, outside) = {
+        let (blocks, outside) = {
             let shards = engine.shards.read().expect("shards lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
             let contents = bucket_contents(shard);
-            let pages: usize = contents.values().map(Vec::len).sum();
+            let blocks: usize = contents.values().map(Vec::len).sum();
             let outside = contents
                 .keys()
                 .filter(|bucket_id| **bucket_id > wrote_on)
                 .count();
-            (pages, outside)
+            (blocks, outside)
         };
         println!(
-            "  reopened on 0..{wrote_on}: {readable}/{} records, {pages} pages, {outside} buckets \
+            "  reopened on 0..{wrote_on}: {readable}/{} records, {blocks} pages, {outside} buckets \
              outside the range",
             keys.len()
         );
@@ -667,9 +667,9 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
             keys.len()
         );
         assert_eq!(
-            pages,
+            blocks,
             keys.len(),
-            "reopened on 0..{wrote_on}: {pages} of {} pages survived the restore",
+            "reopened on 0..{wrote_on}: {blocks} of {} pages survived the restore",
             keys.len()
         );
         assert_eq!(

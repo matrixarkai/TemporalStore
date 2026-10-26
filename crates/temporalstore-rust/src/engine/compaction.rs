@@ -1298,8 +1298,8 @@ pub(super) fn compaction_relocation_hint_per_object(
     let mut relocatable_object_count = 0_u64;
     let mut relocatable_block_refs = 0_u64;
     let mut by_model: BTreeMap<String, u64> = BTreeMap::new();
-    for ((model_id, _object_key), pages) in &object_blocks {
-        let hint = compaction_object_block_hint(model_id, pages, &drain_block_slab_ids);
+    for ((model_id, _object_key), blocks) in &object_blocks {
+        let hint = compaction_object_block_hint(model_id, blocks, &drain_block_slab_ids);
         if hint.is_empty() {
             continue;
         }

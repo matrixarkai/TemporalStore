@@ -458,7 +458,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // caller that still tries to name an object through this builder should stop compiling rather
     // than be ignored -- the treatment `entry_count_versus_block_count::block_at` took for its own
     // dead `component` argument. The object each page belongs to is named where it is filed.
-    fn page(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
+    fn block(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
         BlockIndex {
             model_id: stored_model_kind(KIND),
             address: ElementEntry::from_parts(slab, offset, 16, Some(offset / 16 + 1), None),
@@ -476,9 +476,9 @@ fn a_decode_files_every_block_into_the_object_lookup() {
         index.bucket_map.insert(routing_bucket, node);
     }
     let placed: Vec<(u32, Arc<str>, BlockIndex)> = vec![
-        (3, Arc::from(LIVE_OBJECT), page(1, 0, false)),
-        (3, Arc::from(LIVE_OBJECT), page(1, 16, false)),
-        (11, Arc::from(DEAD_OBJECT), page(2, 0, true)),
+        (3, Arc::from(LIVE_OBJECT), block(1, 0, false)),
+        (3, Arc::from(LIVE_OBJECT), block(1, 16, false)),
+        (11, Arc::from(DEAD_OBJECT), block(2, 0, true)),
     ];
     {
         let CoreIndex {
@@ -556,7 +556,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
         .flat_map(|(routing_bucket, node)| {
             node.block_index
                 .iter()
-                .filter(|(_, page)| !page.deleted)
+                .filter(|(_, block)| !block.deleted)
                 .map(move |(handle, _)| (*routing_bucket, *handle))
         })
         .collect();
@@ -708,25 +708,25 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     };
 
     let encoded = serde_json::to_value(&index).expect("a core index serializes");
-    let pages = encoded
+    let blocks = encoded
         .get("bucket_map")
         .and_then(|buckets| buckets.get("7"))
         .and_then(|node| node.get("page_index"))
-        .and_then(|pages| pages.as_object())
+        .and_then(|blocks| blocks.as_object())
         .expect("the bucket writes a page index")
         .clone();
 
     assert_eq!(
         2,
-        pages.len(),
+        blocks.len(),
         "the encode must write BOTH pages, or the deleted one is not on the wire at all: {:?}",
-        pages.keys().collect::<Vec<_>>()
+        blocks.keys().collect::<Vec<_>>()
     );
     assert!(
-        pages.contains_key(&row_key),
+        blocks.contains_key(&row_key),
         "the key the TOMBSTONE ROW composes must be one the encode wrote, or the row is not a \
          source for this page: row composed {row_key}, encode wrote {:?}",
-        pages.keys().collect::<Vec<_>>()
+        blocks.keys().collect::<Vec<_>>()
     );
 }
 

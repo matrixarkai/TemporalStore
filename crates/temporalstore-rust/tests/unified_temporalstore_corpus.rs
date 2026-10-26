@@ -4436,18 +4436,18 @@ fn verify_random_size_reopen_scan() {
         );
     }
 
-    let page = reopened.read_stream(StreamReadRequest {
+    let block = reopened.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
         block_slab_id: 0,
         offset: 0,
         size: 1024 * 1024,
     });
-    assert_stream_ok(&page, "random_size_reopen_scan/page");
-    assert!(!page.data.is_empty());
+    assert_stream_ok(&block, "random_size_reopen_scan/page");
+    assert!(!block.data.is_empty());
     for (_, value) in expected.iter().take(8) {
         assert!(
-            page.data.windows(value.len()).any(|window| window == value),
+            block.data.windows(value.len()).any(|window| window == value),
             "page stream should contain deterministic value of len {}",
             value.len()
         );

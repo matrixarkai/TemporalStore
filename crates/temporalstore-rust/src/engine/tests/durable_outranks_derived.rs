@@ -1055,8 +1055,8 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut entries = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, page) in &bucket.block_index {
-                if page.model_id.as_str() == "hash"
+            for (handle, block) in &bucket.block_index {
+                if block.model_id.as_str() == "hash"
                     && &**named.at(bucket.routing_bucket, *handle) == "un-hash"
                 {
                     entries += 1;
@@ -1249,11 +1249,11 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
             let named = super::BlockObjects::of(&shard.bucket_index);
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             for bucket in shard.bucket_index.bucket_map.values() {
-                for (handle, page) in &bucket.block_index {
-                    if page.model_id.as_str() == "zset"
+                for (handle, block) in &bucket.block_index {
+                    if block.model_id.as_str() == "zset"
                         && &**named.at(bucket.routing_bucket, *handle) == "mt-zset"
                     {
-                        addresses.push(page.address.clone());
+                        addresses.push(block.address.clone());
                     }
                 }
             }
@@ -1768,7 +1768,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         .bucket_index
         .bucket_map
         .values()
-        .map(|bucket| bucket.block_index.values().filter(|page| !page.deleted).count())
+        .map(|bucket| bucket.block_index.values().filter(|block| !block.deleted).count())
         .sum();
     assert!(
         live_blocks >= 1,
@@ -2011,8 +2011,8 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     let mut recovered: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     let mut spellings: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for record in &records {
-        for page in &record.staged_blocks {
-            match decode_container_block(&page.bytes) {
+        for block in &record.staged_blocks {
+            match decode_container_block(&block.bytes) {
                 ContainerBlockDecode::Framed { spelling, items, .. } => {
                     framed += 1;
                     spellings.insert(format!("{spelling:?}"));
@@ -2271,8 +2271,8 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
         for item in stripped.outcomes.iter_mut() {
             item.component = None;
         }
-        for page in stripped.staged_blocks.iter_mut() {
-            page.component = None;
+        for block in stripped.staged_blocks.iter_mut() {
+            block.component = None;
         }
         let without = crate::wal::encode_wal_line_for_test(&stripped)
             .expect("the stripped record frames")
@@ -2416,14 +2416,14 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
                 for item in record.outcomes.iter_mut() {
                     item.component = None;
                 }
-                for page in record.staged_blocks.iter_mut() {
-                    page.component = None;
+                for block in record.staged_blocks.iter_mut() {
+                    block.component = None;
                 }
             }
             if break_the_frame {
-                for page in record.staged_blocks.iter_mut() {
-                    if !page.bytes.is_empty() {
-                        page.bytes[0] ^= 0xFF;
+                for block in record.staged_blocks.iter_mut() {
+                    if !block.bytes.is_empty() {
+                        block.bytes[0] ^= 0xFF;
                     }
                 }
             }
@@ -2588,7 +2588,7 @@ fn the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_d
     // id between them. Without this the arm is about some other arrangement.
     assert_eq!(2, outcomes.len(), "the fixture produced {} outcomes", outcomes.len());
     assert_eq!(2, blocks.len(), "the fixture produced {} pages", blocks.len());
-    let ids: std::collections::BTreeSet<u64> = blocks.iter().map(|page| page.object_id).collect();
+    let ids: std::collections::BTreeSet<u64> = blocks.iter().map(|block| block.object_id).collect();
     assert_eq!(
         1,
         ids.len(),
@@ -2699,8 +2699,8 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     // Without it this arm is about a shape it does not reproduce.
     let ambiguous = records.iter().any(|record| {
         let mut seen: std::collections::BTreeMap<u64, usize> = std::collections::BTreeMap::new();
-        for page in &record.staged_blocks {
-            *seen.entry(page.object_id).or_default() += 1;
+        for block in &record.staged_blocks {
+            *seen.entry(block.object_id).or_default() += 1;
         }
         seen.values().any(|count| *count > 1)
     });
@@ -3004,17 +3004,17 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
 
     // (1) DOES THE PAGE ALREADY NAME ITS POINTS? Decoded through the real feature-block decoder,
     // not by searching bytes, because present is not recoverable.
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     let mut decoded_blocks = 0usize;
     let mut points_per_block: Vec<usize> = Vec::new();
     let mut recovered: std::collections::BTreeSet<u64> = std::collections::BTreeSet::new();
     let mut blocks_by_object: std::collections::BTreeMap<u64, usize> =
         std::collections::BTreeMap::new();
     for record in &records {
-        for page in &record.staged_blocks {
-            pages += 1;
-            *blocks_by_object.entry(page.object_id).or_default() += 1;
-            if let Some(points) = crate::engine::packed_blocks::decode_feature_block(&page.bytes) {
+        for block in &record.staged_blocks {
+            blocks += 1;
+            *blocks_by_object.entry(block.object_id).or_default() += 1;
+            if let Some(points) = crate::engine::packed_blocks::decode_feature_block(&block.bytes) {
                 decoded_blocks += 1;
                 points_per_block.push(points.len());
                 for point in &points {
@@ -3032,7 +3032,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         .map(|index| 1_787_270_070_000 + index as u64 * 1_000)
         .collect();
     println!(
-        "[tsf] feature append of {POINTS} points: {} records, {} outcomes, {pages} staged pages \
+        "[tsf] feature append of {POINTS} points: {} records, {} outcomes, {blocks} staged pages \
          ({decoded_blocks} decode as feature blocks)",
         records.len(),
         outcomes.len()
@@ -3050,10 +3050,10 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
          recoverable from it and the refusal stands on its original ground"
     );
     assert_eq!(
-        pages, decoded_blocks,
-        "{} of {pages} staged pages are not feature blocks, so the decode above does not cover \
+        blocks, decoded_blocks,
+        "{} of {blocks} staged pages are not feature blocks, so the decode above does not cover \
          the whole write",
-        pages - decoded_blocks
+        blocks - decoded_blocks
     );
 
     // (3) THE READ COST. A carried page can only be matched to an outcome when exactly one of the

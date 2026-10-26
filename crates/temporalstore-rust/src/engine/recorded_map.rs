@@ -897,7 +897,7 @@ pub(super) trait AddressedElementMap: ElementMap {
     ///
     /// Compared by PAGE KEY -- slab, offset and length -- and not by the whole address, because
     /// that triple is what an index entry's identity is under the gate.
-    fn any_element_other_than_at(&self, skip: &Self::Element, page: &ElementEntry) -> bool;
+    fn any_element_other_than_at(&self, skip: &Self::Element, block: &ElementEntry) -> bool;
 }
 
 // =============================================================================================
@@ -1204,14 +1204,14 @@ impl AddressedElementMap for super::hash_field_map::HashFieldMap {
         self.get(&element[..])
     }
 
-    fn any_element_other_than_at(&self, skip: &super::hash_field_map::FieldName, page: &ElementEntry) -> bool {
-        let page = super::live_block_key(page);
+    fn any_element_other_than_at(&self, skip: &super::hash_field_map::FieldName, block: &ElementEntry) -> bool {
+        let block = super::live_block_key(block);
         // COMPARED BY TEXT, NOT BY HANDLE. Two handles for one field name are equal strings
         // and unequal pointers, and `Arc<str>`'s `PartialEq` compares the strings -- but an
         // explicit slice comparison says so at the site rather than relying on the reader
         // knowing which of the two it is.
         self.iter().any(|(field, address)| {
-            field[..] != skip[..] && super::live_block_key(address) == page
+            field[..] != skip[..] && super::live_block_key(address) == block
         })
     }
 }
@@ -1231,11 +1231,11 @@ where
         self.get(element).map(super::CarriedValue::carried_address)
     }
 
-    fn any_element_other_than_at(&self, skip: &E, page: &ElementEntry) -> bool {
-        let page = super::live_block_key(page);
+    fn any_element_other_than_at(&self, skip: &E, block: &ElementEntry) -> bool {
+        let block = super::live_block_key(block);
         self.iter().any(|(element, value)| {
             element != skip
-                && super::live_block_key(super::CarriedValue::carried_address(value)) == page
+                && super::live_block_key(super::CarriedValue::carried_address(value)) == block
         })
     }
 }

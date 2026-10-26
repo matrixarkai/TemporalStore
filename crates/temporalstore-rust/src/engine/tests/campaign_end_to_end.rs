@@ -184,7 +184,7 @@ impl BlocksPerBucket {
         self.counts.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
@@ -193,7 +193,7 @@ impl BlocksPerBucket {
         if buckets == 0 {
             return 0.0;
         }
-        self.pages() as f64 / buckets as f64
+        self.blocks() as f64 / buckets as f64
     }
 
     fn max(&self) -> usize {
@@ -227,7 +227,7 @@ impl BlocksPerBucket {
             "    {label:<40} buckets {:>6} pages {:>6} | mean {:>8.3} min {:>4} p50 {:>4} \
              p90 {:>4} p99 {:>4} MAX {:>4}",
             self.buckets(),
-            self.pages(),
+            self.blocks(),
             self.mean(),
             self.min(),
             self.percentile(0.50),
@@ -457,7 +457,7 @@ struct Cell {
     chunk_bytes: u64,
     freed_bytes: u64,
     nodes: usize,
-    pages: usize,
+    blocks: usize,
     occupied: usize,
 }
 
@@ -480,7 +480,7 @@ impl Cell {
     }
     /// The per-PAGE structure's share, per record: one container slot per page.
     fn block_bytes_per_record(&self, stride: usize) -> f64 {
-        (self.pages * stride) as f64 / self.records as f64
+        (self.blocks * stride) as f64 / self.records as f64
     }
 }
 
@@ -511,10 +511,10 @@ fn measure_cell(arm: usize, records: usize, end_routing_bucket: u32) -> (Cell, B
     let hist = blocks_per_bucket(&engine);
     let nodes = node_count(&engine);
     assert!(
-        hist.pages() >= records,
+        hist.blocks() >= records,
         "the cell on 0..{end_routing_bucket} at {records} records filed {} pages; the fixture did \
          not reach the population it claims",
-        hist.pages()
+        hist.blocks()
     );
 
     // THE POPULATION THE RANGE IS SUPPOSED TO PRODUCE, ASSERTED. A fixture that put every key in
@@ -552,7 +552,7 @@ fn measure_cell(arm: usize, records: usize, end_routing_bucket: u32) -> (Cell, B
         chunk_bytes: counts.chunk_bytes,
         freed_bytes: counts.free_bytes,
         nodes,
-        pages: hist.pages(),
+        blocks: hist.blocks(),
         occupied: hist.buckets(),
     };
     drop(engine);
@@ -610,7 +610,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
             cell.retained_per_record(),
             cell.allocs_per_record(),
             cell.occupied,
-            cell.pages,
+            cell.blocks,
             cell.nodes,
         );
     }
@@ -686,11 +686,11 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
             wide.nodes
         );
         assert_eq!(
-            wide.pages, narrow.pages,
+            wide.blocks, narrow.blocks,
             "the two ranges filed {} and {} pages for the same {records} records; the range is \
              supposed to move where a page is filed and never how many there are, and a row \
              comparison over two different page counts is not one",
-            wide.pages, narrow.pages
+            wide.blocks, narrow.blocks
         );
     }
 }
@@ -804,7 +804,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
             runs.len() + 1,
             range_label(end_routing_bucket),
             hist.buckets(),
-            hist.pages(),
+            hist.blocks(),
             hist.max(),
             counts.alloc_bytes,
             counts.chunk_bytes,
@@ -813,7 +813,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         runs.push((
             end_routing_bucket,
             hist.buckets(),
-            hist.pages(),
+            hist.blocks(),
             hist.max(),
             counts.alloc_bytes,
             counts.chunk_bytes,
@@ -825,10 +825,10 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
 
     // NON-VACUITY BEFORE ANYTHING ELSE. "No effect" over a store that wrote nothing is the
     // cheapest false control available, and so is one whose components never shared a bucket.
-    for (range, buckets, pages, widest, ..) in &runs {
+    for (range, buckets, blocks, widest, ..) in &runs {
         assert!(
-            *pages >= MEMBERS,
-            "an arm on 0..{range} filed {pages} pages for {MEMBERS} components"
+            *blocks >= MEMBERS,
+            "an arm on 0..{range} filed {blocks} pages for {MEMBERS} components"
         );
         assert_eq!(
             1, *buckets,
@@ -957,7 +957,7 @@ fn rss_cell(arm: usize, records: usize, end_routing_bucket: u32) {
         after_hwm,
         1024.0 * (after_hwm as f64 - baseline_hwm as f64) / records as f64,
         hist.buckets(),
-        hist.pages(),
+        hist.blocks(),
     );
     assert!(
         after_hwm >= baseline_hwm,

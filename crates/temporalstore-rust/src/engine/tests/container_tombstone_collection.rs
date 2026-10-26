@@ -135,9 +135,9 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
         ("list", format!("{:016x}", 7u64)),
     ];
     for (kind, component) in &components {
-        let page = crate::engine::container_blocks::tombstone_block(kind, component);
-        assert!(page.is_some(), "{kind} could not frame a removal of {component}");
-        match decode_container_block(page.as_ref().expect("framed")) {
+        let block = crate::engine::container_blocks::tombstone_block(kind, component);
+        assert!(block.is_some(), "{kind} could not frame a removal of {component}");
+        match decode_container_block(block.as_ref().expect("framed")) {
             ContainerBlockDecode::Framed { items, shape, .. } => {
                 assert_eq!(ContainerBlockShape::WithRemovals, shape, "{kind}: wrong shape");
                 assert_eq!(1, items.len(), "{kind}: wrong item count");
@@ -232,7 +232,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         move |address: &ElementEntry| -> Option<Vec<u8>> {
             set.iter()
                 .find(|(candidate, _)| append_position(candidate) == append_position(address))
-                .map(|(_, page)| page.clone())
+                .map(|(_, block)| block.clone())
         }
     };
 
@@ -345,23 +345,23 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
     // A set member: the element key IS the member and so is the value, which is the suffix case --
     // and the case that covers the two kinds whose pages dominate the store.
     let member = b"member-0007".to_vec();
-    let page = encode_container_block_items(
+    let block = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&member, &member)],
     );
-    assert!(page.starts_with(CONTAINER_BLOCK_MAGIC_V2));
+    assert!(block.starts_with(CONTAINER_BLOCK_MAGIC_V2));
 
     // The SAME BYTES with the magic rewritten. If the two shapes disagreed anywhere in the body for
     // a live suffix item, this would not decode, or would decode to different items.
-    let mut as_first_shape = page.clone();
+    let mut as_first_shape = block.clone();
     as_first_shape[..CONTAINER_BLOCK_MAGIC.len()].copy_from_slice(CONTAINER_BLOCK_MAGIC);
     assert_eq!(
-        page.len(),
+        block.len(),
         as_first_shape.len(),
         "rewriting the magic changed the length, which it cannot"
     );
 
-    let second = decode_container_block(&page);
+    let second = decode_container_block(&block);
     let first = decode_container_block(&as_first_shape);
     println!("second shape: {second:?}");
     println!("first shape:  {first:?}");
@@ -492,7 +492,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let tomb_at = at(1, 200, tomb.len() as u32);
     let folded_at = at(1, 300, folded_without_tombstone.len() as u32);
 
-    let pages = vec![
+    let blocks = vec![
         (older_at.clone(), older.clone()),
         (tomb_at.clone(), tomb.clone()),
         (folded_at.clone(), folded_without_tombstone.clone()),
@@ -509,7 +509,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let before = derive_membership(
         "set",
         vec![older_at.clone(), tomb_at.clone()],
-        read_from(pages.clone()),
+        read_from(blocks.clone()),
     );
     println!(
         "with the tombstone:    {} live, {} removed, {} pages",
@@ -529,7 +529,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let after = derive_membership(
         "set",
         vec![older_at.clone(), folded_at.clone()],
-        read_from(pages.clone()),
+        read_from(blocks.clone()),
     );
     println!(
         "tombstone dropped:     {} live, {} removed, {} pages; member live again = {}",

@@ -195,7 +195,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         while remaining > 0 {
             remaining -= 1;
             let doomed = handles[remaining];
-            map.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _page| *handle != doomed);
+            map.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _block| *handle != doomed);
             steps += 1;
             let want = expected_arm(remaining);
             let got = block_index_map_arm(&map);
@@ -560,7 +560,7 @@ fn walk_bucket_index_strings(
 ) -> u64 {
     let mut bytes = 0u64;
     for bucket in bucket_index.bucket_map.values() {
-        for (_handle, _page) in bucket.block_index.iter() {
+        for (_handle, _block) in bucket.block_index.iter() {
             // THE ENTRY'S OWN KEY LINE IS GONE AND THE TOTAL DID NOT MOVE, which is the one case
             // in this change where that is true rather than argued. It read
             // `arc_str_bytes(seen, &page.object_key)`, and `seen` is shared with the lookup walk
@@ -1710,7 +1710,7 @@ struct BucketMapTerm {
 #[cfg(feature = "alloc-probe")]
 struct BucketMapDecomposition {
     buckets: usize,
-    pages: usize,
+    blocks: usize,
     objects: usize,
     slots: usize,
     multi_object_buckets: usize,
@@ -1764,7 +1764,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
     drop(shape);
 
     // --- Every heap-owning field of the node, bucket by bucket, split by ARM. ---
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     let mut objects = 0usize;
     let mut slots = 0usize;
     let mut multi_object_buckets = 0usize;
@@ -1787,7 +1787,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
     let mut tombstone_chunk = 0u64;
 
     for bucket in map.values() {
-        pages += bucket.block_index.len();
+        blocks += bucket.block_index.len();
         objects += bucket.object_index.object_count();
         slots += bucket.object_index.slot_count();
         if bucket.object_index.object_count() > 1 {
@@ -1876,7 +1876,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
 
     BucketMapDecomposition {
         buckets,
-        pages,
+        blocks,
         objects,
         slots,
         multi_object_buckets,
@@ -1956,7 +1956,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
 
         // --- DENOMINATORS FIRST, each asserted populated. A zero here reads as "free". ---
         assert!(d.buckets > 0, "denominator: {label} produced no buckets");
-        assert!(d.pages > 0, "denominator: {label} produced no pages");
+        assert!(d.blocks > 0, "denominator: {label} produced no pages");
         assert!(d.objects > 0, "denominator: {label} produced no objects");
 
         // --- The container floor: the tree holds every key and value INLINE, so it cannot be
@@ -1978,7 +1978,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         println!(
             "  DENOMINATORS: {live_keys} live keys, {} pages, {} buckets, {} objects, {} object \
              slots, {} tombstone rows in {} buckets",
-            d.pages, d.buckets, d.objects, d.slots, d.tombstone_rows, d.tombstone_buckets
+            d.blocks, d.buckets, d.objects, d.slots, d.tombstone_rows, d.tombstone_buckets
         );
         println!(
             "  arms: {} single-page buckets, {} list buckets holding {} pages, {} multi-object \
@@ -1987,7 +1987,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         );
         println!(
             "  pages per bucket {:.2}, keys per bucket {:.2}",
-            d.pages as f64 / d.buckets as f64,
+            d.blocks as f64 / d.buckets as f64,
             live_keys as f64 / d.buckets as f64
         );
         println!(
@@ -1995,7 +1995,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
              {:.1} B/key -- three different denominators, all printed)",
             d.total_req,
             d.total_chunk,
-            d.total_req as f64 / d.pages as f64,
+            d.total_req as f64 / d.blocks as f64,
             d.total_req as f64 / d.buckets as f64,
             d.total_req as f64 / live_keys as f64
         );
@@ -2035,7 +2035,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
                 term.unit,
                 per_unit,
                 per_unit_chunk,
-                term.req as f64 / d.pages as f64,
+                term.req as f64 / d.blocks as f64,
                 term.req as f64 / d.buckets as f64
             );
         }
@@ -2054,7 +2054,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
             d.list_capacity,
             d.blocks_in_list_arm,
             spare_slots * pair,
-            (spare_slots * pair) as f64 / d.pages as f64,
+            (spare_slots * pair) as f64 / d.blocks as f64,
             if d.blocks_in_list_arm == 0 {
                 f64::NAN
             } else {
@@ -2082,8 +2082,8 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
             d.total_req
         );
 
-        per_block_container.push((label, container as f64 / d.pages as f64));
-        bucket_to_block.push((label, d.buckets as f64 / d.pages as f64));
+        per_block_container.push((label, container as f64 / d.blocks as f64));
+        bucket_to_block.push((label, d.buckets as f64 / d.blocks as f64));
         drop(shards);
     }
 
@@ -2501,12 +2501,12 @@ fn how_many_structures_hold_an_entry_for_one_object() {
         probe_seed(&engine, base_strings, base_series, 1_000, 0);
 
         // --- DENOMINATORS FIRST, ASSERTED, because every figure below divides by one. ---
-        let (base_keys, buckets, pages) = {
+        let (base_keys, buckets, blocks) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let keys = shard.strings().len() + shard.features().len();
             let buckets = shard.bucket_index.bucket_map.values().count();
-            let pages: usize =
+            let blocks: usize =
                 shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum();
             assert_eq!(
                 base_strings,
@@ -2518,7 +2518,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
                 shard.features().len(),
                 "denominator: the feature map does not hold the base population"
             );
-            assert!(pages > 0, "denominator: the bucket index must hold pages");
+            assert!(blocks > 0, "denominator: the bucket index must hold pages");
             assert!(
                 buckets > 0 && buckets <= (SHIPPED_END as usize + 1),
                 "denominator: {buckets} buckets is not a 0..{SHIPPED_END} population -- the fixture \
@@ -2530,11 +2530,11 @@ fn how_many_structures_hold_an_entry_for_one_object() {
                 "denominator: {buckets} buckets for {keys} keys is one bucket per key, which is the \
                  LEGACY range -- a per-bucket structure would read as a per-key one"
             );
-            (keys, buckets, pages)
+            (keys, buckets, blocks)
         };
         println!(
             "=== {arm}-record base on 0..{SHIPPED_END}: {base_keys} live keys, {buckets} BUCKETS, \
-             {pages} pages (scale {scale}x; every population scales together so the two arms hold \
+             {blocks} pages (scale {scale}x; every population scales together so the two arms hold \
              the same mix) ==="
         );
 
@@ -4032,13 +4032,13 @@ fn what_one_key_with_one_block_costs() {
         let whole = deep_heap_bytes(shard);
         let (arc, _n) = arc_payload_bytes(&shard.bucket_index);
         let (dirty_arc, _m, _s) = dirty_arc_payload_bytes(shard);
-        let pages: usize = shard
+        let blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
             .map(|b| b.block_index.len())
             .sum();
-        (whole + arc + dirty_arc, shard.strings().len(), pages)
+        (whole + arc + dirty_arc, shard.strings().len(), blocks)
     };
 
     let (before, keys0, pages0) = total(&engine);
@@ -7941,10 +7941,10 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
 
     // --- DENOMINATOR: the walk this prices reads live pages, so the corpus has to have produced
     // --- them. Two rungs that both held nothing would print a flat zero and read as "free".
-    for (rung, pages, _, _) in &measured {
+    for (rung, blocks, _, _) in &measured {
         assert!(
-            *pages >= *rung,
-            "corpus {rung} left only {pages} live pages, so the walk had nothing to read and the \
+            *blocks >= *rung,
+            "corpus {rung} left only {blocks} live pages, so the walk had nothing to read and the \
              figures above are not measurements of it"
         );
     }

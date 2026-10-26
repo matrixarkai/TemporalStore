@@ -69,29 +69,29 @@ fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec
     let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
         &shard.bucket_index.object_block_lookup,
     );
-    let mut pages = std::collections::BTreeSet::new();
+    let mut blocks = std::collections::BTreeSet::new();
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || !keys
                     .live_identity(bucket.routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == object_key)
-                || page.deleted
+                || block.deleted
             {
                 continue;
             }
-            pages.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+            blocks.insert((
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
-            if let Some(block_id) = page.address.block_id() {
+            if let Some(block_id) = block.address.block_id() {
                 ordinals.insert(block_id);
             }
         }
     }
-    (pages.len(), ordinals.into_iter().collect())
+    (blocks.len(), ordinals.into_iter().collect())
 }
 
 /// Every live set entry of this object, as (component, slab, offset, length, block_id), so a
@@ -107,21 +107,21 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     );
     let mut rows = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || !keys
-                    .identity_of(bucket, *handle, page)
+                    .identity_of(bucket, *handle, block)
                     .is_some_and(|beside| &**beside.object_key == object_key)
             {
                 continue;
             }
             rows.push(format!(
                 "deleted={} component=None slab={} off={} len={} block_id={:?}",
-                page.deleted,
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
-                page.address.block_id()
+                block.deleted,
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
+                block.address.block_id()
             ));
         }
     }
@@ -151,7 +151,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
-    let (pages, ordinals) = blocks_and_ordinals(&engine, "ord/set");
+    let (blocks, ordinals) = blocks_and_ordinals(&engine, "ord/set");
     // How many members the resident map holds, so a row cannot be read as correct because the
     // object vanished.
     let resident = {
@@ -161,7 +161,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
     };
     let rows_detail = entry_rows(&engine, "ord/set");
     drop(engine);
-    (pages, ordinals, resident, rows_detail)
+    (blocks, ordinals, resident, rows_detail)
 }
 
 #[test]
@@ -171,23 +171,23 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
 
     let mut rows: Vec<(&str, usize, Vec<u64>, usize)> = Vec::new();
     for (label, gate_on) in [("off", false), ("on", true)] {
-        let (pages, ordinals, resident, rows_detail) = rewrites_under(gate_on);
-        println!("  {label:>5}  {pages:>6}  {resident:>9}  {ordinals:>24?}");
+        let (blocks, ordinals, resident, rows_detail) = rewrites_under(gate_on);
+        println!("  {label:>5}  {blocks:>6}  {resident:>9}  {ordinals:>24?}");
         for row in &rows_detail {
             println!("          {row}");
         }
-        rows.push((label, pages, ordinals, resident));
+        rows.push((label, blocks, ordinals, resident));
     }
 
     // FLOORS, on each arm, on the reaching of the path: the object has to exist and be named.
-    for (label, pages, _ordinals, resident) in &rows {
+    for (label, blocks, _ordinals, resident) in &rows {
         assert_eq!(
             1, *resident,
             "gate {label}: the resident map holds {resident} member(s) after rewriting ONE member \
              {REWRITES} times, so this row is not measuring an overwrite"
         );
         assert!(
-            *pages > 0,
+            *blocks > 0,
             "gate {label}: no page is filed for the object at all, so the count below compares \
              absences"
         );
@@ -201,7 +201,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     // [0, 1]. The position now comes from `shard.sets[key][member].block_id()`: the map that is
     // keyed by the member, holding the address it currently occupies, which IS its position.
     // Authoritative rather than derived, and no page read.
-    for (label, _pages, ordinals, _resident) in &rows {
+    for (label, _blocks, ordinals, _resident) in &rows {
         assert_eq!(
             vec![0u64],
             *ordinals,
@@ -305,7 +305,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             4_096, 8_192, 48, Some(7), None,
         );
         let planted_key: std::sync::Arc<str> = std::sync::Arc::from("heal/set");
-        let page = crate::engine::state::BlockIndex {
+        let block = crate::engine::state::BlockIndex {
             model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
             address: orphan,
             dirty: false,
@@ -324,14 +324,14 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         // obligation `fold_delta_block_items` carries a note about -- so a plant that files one is
         // planting a state this engine does not produce, and the test would have been measuring
         // that instead of the stale entry it is about.
-        let handle = crate::engine::state::block_index_handle(&planted_key, &page);
+        let handle = crate::engine::state::block_index_handle(&planted_key, &block);
         let bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the object's bucket exists after the writes above");
         let assigned =
-            bucket.insert_block(&planted_key, page.clone(), &mut shard.bucket_index.block_slab_live);
+            bucket.insert_block(&planted_key, block.clone(), &mut shard.bucket_index.block_slab_live);
         assert_eq!(
             handle, assigned,
             "the handle the bucket filed the plant under is not the one composed from the \
@@ -339,7 +339,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         );
         shard
             .bucket_index
-            .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &page);
+            .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &block);
     }
 
     let before = entry_rows(&engine, "heal/set");
@@ -448,16 +448,16 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     );
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "hash"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "hash"
                 || !keys
                     .live_identity(bucket.routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == object_key)
-                || page.deleted
+                || block.deleted
             {
                 continue;
             }
-            if let Some(block_id) = page.address.block_id() {
+            if let Some(block_id) = block.address.block_id() {
                 ordinals.insert(block_id);
             }
         }
@@ -631,14 +631,14 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
                 bucket
                     .block_index
                     .iter()
-                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
-            .filter(|(routing_bucket, handle, page)| {
-                page.model_id.as_str() == "hash"
+            .filter(|(routing_bucket, handle, block)| {
+                block.model_id.as_str() == "hash"
                     && keys
                         .live_identity(*routing_bucket, *handle)
                         .is_some_and(|(_, named)| &**named == KEY)
-                    && !page.deleted
+                    && !block.deleted
             })
             .count()
     };
@@ -720,9 +720,9 @@ fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
             bucket
                 .block_index
                 .iter()
-                .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
         })
-        .filter(|(routing_bucket, handle, page)| {
+        .filter(|(routing_bucket, handle, block)| {
             // THE `component.is_some()` TERM IS GONE and this counter is structurally zero. An
             // entry has no element name, so "how many hash entries name a field" has one answer
             // for every fixture. It is left as a counter rather than deleted because the arms
@@ -733,8 +733,8 @@ fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
             // other walks in this file. It decides nothing while `false` stands beside it, and
             // it is kept exactly so that this walk does not read as a different kind of walk
             // from its siblings if the `false` ever comes out.
-            !page.deleted
-                && page.model_id.as_str() == "hash"
+            !block.deleted
+                && block.model_id.as_str() == "hash"
                 && keys
                     .live_identity(*routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == key)

@@ -171,18 +171,18 @@ fn blocks_and_index_rows(
         .collect();
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut rows: BTreeSet<u64> = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted || page.model_id.as_str() != kind {
+        for (handle, block) in &bucket.block_index {
+            if block.deleted || block.model_id.as_str() != kind {
                 continue;
             }
             if !keys.contains(&**named.at(bucket.routing_bucket, *handle)) {
                 continue;
             }
-            pages += 1;
+            blocks += 1;
         }
         for object_id in &bucket.object_index {
             if wanted.contains(object_id) {
@@ -190,7 +190,7 @@ fn blocks_and_index_rows(
             }
         }
     }
-    (pages, rows.len())
+    (blocks, rows.len())
 }
 
 fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
@@ -220,9 +220,9 @@ fn live_block_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if !page.deleted
-                && page.model_id.as_str() == kind
+        for (handle, block) in &bucket.block_index {
+            if !block.deleted
+                && block.model_id.as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 held += 1;
@@ -291,13 +291,13 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
 
     println!("\n=== bucket.object_index rows against live pages ===");
     println!("  kind     keys  pages  rows  rows/page");
-    for (kind, keys, pages, rows) in [
+    for (kind, keys, blocks, rows) in [
         ("hash", hash_keys.len(), hash_blocks, hash_rows),
         ("string", string_keys.len(), string_blocks, string_rows),
     ] {
         println!(
-            "  {kind:<7} {keys:>5} {pages:>6} {rows:>5}   {:>8.4}",
-            rows as f64 / pages as f64
+            "  {kind:<7} {keys:>5} {blocks:>6} {rows:>5}   {:>8.4}",
+            rows as f64 / blocks as f64
         );
     }
 

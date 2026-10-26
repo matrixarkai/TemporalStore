@@ -209,13 +209,13 @@ fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != kind
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != kind
                 || &**named.at(bucket.routing_bucket, *handle) != key
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstoned += 1;
             } else {
                 live += 1;
@@ -232,15 +232,15 @@ fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTre
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted
-                && page.model_id.as_str() == kind
+        for (handle, block) in &bucket.block_index {
+            if block.deleted
+                && block.model_id.as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
                 // it is read -- the element a tombstone is about is recorded in the bucket's
                 // `tombstone_elements` rows, not on the entry.
-                let _ = page;
+                let _ = block;
             }
         }
     }
@@ -630,18 +630,18 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
                 bucket
                     .block_index
                     .iter()
-                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
-            .filter(|(routing_bucket, handle, page)| {
-                !page.deleted
-                    && page.model_id.as_str() == "set"
+            .filter(|(routing_bucket, handle, block)| {
+                !block.deleted
+                    && block.model_id.as_str() == "set"
                     && &**named.at(*routing_bucket, *handle) == key
             })
-            .map(|(_, _, page)| {
+            .map(|(_, _, block)| {
                 (
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
                 )
             })
             .collect::<BTreeSet<_>>()

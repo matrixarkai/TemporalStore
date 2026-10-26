@@ -93,7 +93,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             };
         }
         let identities = shard.bucket_index.block_identities();
-        for (handle, page) in bucket.block_index.iter() {
+        for (handle, block) in bucket.block_index.iter() {
             // THE OBJECT COMES FROM BESIDE THE PAGE, AND A LIVE PAGE NOTHING BESIDE IT NAMES IS
             // NO LONGER SKIPPED.
             //
@@ -133,9 +133,9 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             // the durability path -- a row it cannot key is a row it omits, where the ENCODER in
             // the same state refuses outright -- and the `debug_assert!` keeps the skip inside the
             // one window that explains it: the lookup names no position at all.
-            let object_key = match identities.identity_of(bucket, *handle, page) {
+            let object_key = match identities.identity_of(bucket, *handle, block) {
                 Some(beside) => beside.object_key,
-                None if page.deleted => continue,
+                None if block.deleted => continue,
                 None => {
                     debug_assert!(
                         identities.names_no_position(),
@@ -152,10 +152,10 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             // exist before a container removal started leaving an entry behind: `deleted: true` was
             // constructed in exactly one place, on a whole-object path where every entry carried it,
             // so counting all entries and counting the live ones were the same number.
-            if !page.deleted {
+            if !block.deleted {
                 live_block_ref_count = live_block_ref_count.saturating_add(1);
             }
-            let block_object_id = page.object_id(shard_id, object_key);
+            let block_object_id = block.object_id(shard_id, object_key);
             object_ids.insert(block_object_id);
             *object_ref_counts.entry(block_object_id).or_default() += 1;
             // `missing_object_owner_refs` STOOD HERE AND HAS BEEN RETIRED, not zeroed. It counted
@@ -182,7 +182,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                     ttl_ms: None,
                 });
             object.block_ref_count = object.block_ref_count.saturating_add(1);
-            object.dirty |= page.dirty || bucket.dirty();
+            object.dirty |= block.dirty || bucket.dirty();
             // ONE PAGE'S DELETION IS NOT THE OBJECT'S, and separating the two is the whole of this
             // change here. `page.deleted` still makes this a deleted BLOCK REF -- it is one -- but it
             // no longer makes the OBJECT deleted, because a container removal now leaves a tombstone
@@ -196,9 +196,9 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             let object_deleted =
                 bucket.deleted() || bucket.deleted_object_index.contains(&block_object_id);
             object.deleted |= object_deleted;
-            if page.deleted || object_deleted {
+            if block.deleted || object_deleted {
                 object.deleted_block_ref_count = object.deleted_block_ref_count.saturating_add(1);
-            } else if bucket.in_memory() && !page.log_backed() {
+            } else if bucket.in_memory() && !block.log_backed() {
                 object.hot_block_ref_count = object.hot_block_ref_count.saturating_add(1);
             } else {
                 object.cold_block_ref_count = object.cold_block_ref_count.saturating_add(1);
@@ -213,8 +213,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             if !object.object_keys.contains(&object_key.to_string()) {
                 object.object_keys.push(object_key.to_string());
             }
-            if !object.model_ids.contains(&page.model_id.to_string()) {
-                object.model_ids.push(page.model_id.clone().to_string());
+            if !object.model_ids.contains(&block.model_id.to_string()) {
+                object.model_ids.push(block.model_id.clone().to_string());
             }
         }
     }

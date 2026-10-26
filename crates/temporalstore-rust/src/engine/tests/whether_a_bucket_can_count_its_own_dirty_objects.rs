@@ -135,10 +135,10 @@ fn authority(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
 /// entry carries `dirty` but no key, so a per-bucket walk cannot count objects without it.
 fn derived_distinct_objects(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-    for (routing_bucket, _handle, object_key, page) in
+    for (routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if page.dirty {
+        if block.dirty {
             per_bucket
                 .entry(routing_bucket)
                 .or_default()
@@ -170,7 +170,7 @@ fn node_state(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, (bool, 
 fn derived_dirty_blocks(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, u64> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        let dirty = bucket.block_index.values().filter(|page| page.dirty).count() as u64;
+        let dirty = bucket.block_index.values().filter(|block| block.dirty).count() as u64;
         if dirty > 0 {
             per_bucket.insert(*routing_bucket, dirty);
         }
@@ -319,7 +319,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // How many pages the busiest dirty object holds, so "not every object is single-page" is a
     // measured property of this fixture rather than an expectation about the write path.
     let mut blocks_per_object: BTreeMap<String, u64> = BTreeMap::new();
-    for (_bucket, _handle, object_key, _page) in super::blocks_with_identity(&shard.bucket_index) {
+    for (_bucket, _handle, object_key, _block) in super::blocks_with_identity(&shard.bucket_index) {
         *blocks_per_object.entry(object_key.to_string()).or_default() += 1;
     }
     let widest_object = blocks_per_object.values().copied().max().unwrap_or(0);
@@ -368,12 +368,12 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     for bucket in &every_bucket {
         let set_count = by_set.get(bucket).copied().unwrap_or(0);
         let (node_dirty, node_gen) = by_node.get(bucket).copied().unwrap_or((false, 0));
-        let pages = by_blocks.get(bucket).copied().unwrap_or(0);
+        let blocks = by_blocks.get(bucket).copied().unwrap_or(0);
         println!(
-            "    {bucket:>6} {set_count:>5} {:>6} {:>11} {:>7} {:>9} {pages:>6} {node_gen:>10} {:>9}",
+            "    {bucket:>6} {set_count:>5} {:>6} {:>11} {:>7} {:>9} {blocks:>6} {node_gen:>10} {:>9}",
             set_count > 0,
             node_dirty,
-            pages > 0,
+            blocks > 0,
             by_objects.get(bucket).copied().unwrap_or(0),
             produced_summaries.get(bucket).map(|(_, gen)| *gen).unwrap_or(0),
         );

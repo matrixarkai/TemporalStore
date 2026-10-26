@@ -178,7 +178,7 @@ impl Fill {
         self.counts.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
@@ -209,7 +209,7 @@ impl Fill {
         println!(
             "  {label:<44} occupied {buckets:>6} | pages {:>6} | p50 {:>4} p90 {:>4} p99 {:>4} \
              MAX {:>4}",
-            self.pages(),
+            self.blocks(),
             self.percentile(0.50),
             self.percentile(0.90),
             self.percentile(0.99),
@@ -409,10 +409,10 @@ fn a_fixed_bucket_count_cannot_reproduce_the_fills_the_range_produces() {
                  measurement"
             );
             assert_eq!(
-                fill.pages(),
+                fill.blocks(),
                 keys.len(),
                 "0..{end} at {records} records accounted for {} pages over {} keys",
-                fill.pages(),
+                fill.blocks(),
                 keys.len()
             );
             p50s.push(fill.percentile(0.50));
@@ -457,9 +457,9 @@ fn the_fill_instrument_reproduces_the_published_figure() {
     fill.line("0..1023 at 40,000 records");
     assert_eq!(
         LARGE,
-        fill.pages(),
+        fill.blocks(),
         "the instrument accounted for {} pages over {LARGE} keys",
-        fill.pages()
+        fill.blocks()
     );
     assert_eq!(
         OPERATOR_COUNT as usize,

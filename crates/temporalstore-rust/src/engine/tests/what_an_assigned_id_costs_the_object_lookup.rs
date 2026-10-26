@@ -423,14 +423,14 @@ fn both_consumers_of_the_characters_take_a_str_and_not_an_id() {
     let bucket = routing("tenant/1/object/00000000", 0, 64);
     assert!(bucket < 64, "the routing bucket must land inside the range it was given");
 
-    let page = crate::engine::state::BlockIndex {
+    let block = crate::engine::state::BlockIndex {
         model_id: crate::engine::storage_bucket_internals::stored_model_kind("string"),
         address: ElementEntry::from_parts(1, 64, 32, Some(9), Some(11)),
         dirty: false,
         deleted: false,
     };
-    let first = handle("tenant/1/object/00000000", &page);
-    let second = handle("tenant/1/object/00000001", &page);
+    let first = handle("tenant/1/object/00000000", &block);
+    let second = handle("tenant/1/object/00000001", &block);
     assert_ne!(
         first, second,
         "the handle is decided by the characters, which is the whole content of this pin: two \

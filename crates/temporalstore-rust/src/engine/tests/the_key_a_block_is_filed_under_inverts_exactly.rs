@@ -217,7 +217,7 @@ fn seed(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u32) -> 
 /// The three surfaces of a seeded store, with the regime it was taken in asserted first.
 struct Surfaces {
     objects: usize,
-    pages: usize,
+    blocks: usize,
     buckets: usize,
     shape: KeyShape,
     stream: usize,
@@ -272,7 +272,7 @@ impl Seeded {
             shard.strings().len()
         );
         let buckets = shard.bucket_index.bucket_map.len();
-        let pages: usize = shard
+        let blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
@@ -291,7 +291,7 @@ impl Seeded {
             .expect("the core index is written under `slot_index`");
         Surfaces {
             objects: self.objects,
-            pages,
+            blocks,
             buckets,
             shape: self.shape,
             stream: json.len(),
@@ -316,7 +316,7 @@ impl Surfaces {
              the shipped range did not saturate and this is not the regime a deployment runs",
             self.buckets, SHIPPED_BUCKETS
         );
-        let per_bucket = self.pages as f64 / self.buckets as f64;
+        let per_bucket = self.blocks as f64 / self.buckets as f64;
         assert!(
             per_bucket >= REGIME_FLOOR_BLOCKS_PER_BUCKET,
             "[CLAUSE amortised-regime] the fixture holds {per_bucket:.3} page(s) a bucket, under \
@@ -324,11 +324,11 @@ impl Surfaces {
              figure below would be dominated by the per-bucket class instead of amortising it"
         );
         assert_eq!(
-            self.objects, self.pages,
+            self.objects, self.blocks,
             "[CLAUSE amortised-regime] the fixture holds {} page(s) for {} object(s); a string \
              object is one page here, and a figure divided by objects over a corpus where it is \
              not would not be a per-page figure at all",
-            self.pages, self.objects
+            self.blocks, self.objects
         );
     }
 
@@ -340,7 +340,7 @@ impl Surfaces {
             self.shape.label(),
             self.objects,
             self.buckets,
-            self.pages as f64 / self.buckets as f64
+            self.blocks as f64 / self.buckets as f64
         );
         println!("  stream           (json)            {:>12} B  {:>9.3} B/obj", self.stream, self.stream as f64 / n);
         println!("  stream slot_index                  {:>12} B  {:>9.3} B/obj", self.slot_index_stream, self.slot_index_stream as f64 / n);
@@ -440,17 +440,17 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
         seeded.surfaces().assert_amortised_regime();
         let shards = seeded.engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&SHARD).expect("shard is loaded");
-        let pages = super::blocks_with_identity(&shard.bucket_index);
+        let blocks = super::blocks_with_identity(&shard.bucket_index);
         assert_eq!(
             HEADLINE_KEYS,
-            pages.len(),
+            blocks.len(),
             "[CLAUSE every-page-inverts] the walk reached {} page(s) of {HEADLINE_KEYS}; a \
              reconstruction claim over a subset is not the claim this change needs",
-            pages.len()
+            blocks.len()
         );
         let mut checked = 0usize;
-        for (_, _, object_key, page) in &pages {
-            let key = crate::engine::state::block_index_written_key(object_key, page);
+        for (_, _, object_key, block) in &blocks {
+            let key = crate::engine::state::block_index_written_key(object_key, block);
             let parts = crate::index_log::block_ref_key_parts(&key)
                 .unwrap_or_else(|error| panic!("[CLAUSE every-page-inverts] {error}"));
             assert_eq!(
@@ -460,14 +460,14 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
                 parts.object_key, &**object_key
             );
             assert_eq!(
-                Some(page.model_id),
+                Some(block.model_id),
                 crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                     parts.kind
                 ),
                 "[CLAUSE every-page-inverts] the kind read back out of {key:?} is {:?} and the \
                  page holds {:?}",
                 parts.kind,
-                page.model_id.as_str()
+                block.model_id.as_str()
             );
             assert_eq!(
                 "", parts.component,
@@ -477,27 +477,27 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
                 parts.component
             );
             assert_eq!(
-                page.address.block_slab_id(),
+                block.address.block_slab_id(),
                 parts.block_slab_id,
                 "[CLAUSE every-page-inverts] the slab id slot of {key:?} disagrees with the address"
             );
             assert_eq!(
-                page.address.offset(),
+                block.address.offset(),
                 parts.offset,
                 "[CLAUSE every-page-inverts] the offset slot of {key:?} disagrees with the address"
             );
             assert_eq!(
-                page.address.length(),
+                block.address.length(),
                 parts.length,
                 "[CLAUSE every-page-inverts] the length slot of {key:?} disagrees with the address"
             );
             assert_eq!(
-                page.address.block_id().unwrap_or_default(),
+                block.address.block_id().unwrap_or_default(),
                 parts.block_id,
                 "[CLAUSE every-page-inverts] the block id slot of {key:?} disagrees with the address"
             );
             assert_eq!(
-                page.address.generation().unwrap_or_default(),
+                block.address.generation().unwrap_or_default(),
                 parts.generation,
                 "[CLAUSE every-page-inverts] the generation slot of {key:?} disagrees with the \
                  address"
@@ -514,8 +514,8 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
         );
 
         // --- THE CONTROL. The comparison must be able to FAIL. ---
-        let (_, _, object_key, page) = &pages[0];
-        let key = crate::engine::state::block_index_written_key(object_key, page);
+        let (_, _, object_key, block) = &blocks[0];
+        let key = crate::engine::state::block_index_written_key(object_key, block);
         let mut doctored = key.clone();
         let at = doctored.find('-').expect("a fixture key holds its ordinal tail");
         doctored.replace_range(at..at + 1, "_");
@@ -737,11 +737,11 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     );
 
     // ---- EVERY PAGE, AND THE IDENTITY IT CAME BACK WITH ----
-    let pages = super::blocks_with_identity(&decoded.bucket_index);
-    let mut rebuilt: Vec<(String, String)> = pages
+    let blocks = super::blocks_with_identity(&decoded.bucket_index);
+    let mut rebuilt: Vec<(String, String)> = blocks
         .iter()
-        .map(|(_, _, object_key, page)| {
-            (object_key.to_string(), page.model_id.as_str().to_string())
+        .map(|(_, _, object_key, block)| {
+            (object_key.to_string(), block.model_id.as_str().to_string())
         })
         .collect();
     rebuilt.sort();
@@ -894,13 +894,13 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     let keys: Vec<String> = [&log_resident, &first_block_in_a_slab, &first_block_with_no_generation]
         .iter()
         .map(|address| {
-            let page = crate::engine::state::BlockIndex {
+            let block = crate::engine::state::BlockIndex {
                 model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
                 address: (*address).clone(),
                 dirty: false,
                 deleted: false,
             };
-            crate::engine::state::block_index_written_key("k", &page)
+            crate::engine::state::block_index_written_key("k", &block)
         })
         .collect();
     println!("\n=== three distinct addresses, one rendered key ===");
@@ -1210,7 +1210,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let cache = dir.path().join("cache");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
 
     let index_path = indexes.join(format!("shard-{SHARD}.index.json"));
@@ -1221,7 +1221,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     let mut identities_before: BTreeMap<u64, (String, String)> = BTreeMap::new();
     {
         let engine =
-            TemporalEngine::with_local_dirs(64, cache.clone(), pages.clone(), indexes.clone());
+            TemporalEngine::with_local_dirs(64, cache.clone(), blocks.clone(), indexes.clone());
         let response = engine.load_shard_with(crate::control::LoadShardRequest {
             shard_id: SHARD,
             table_name: "the-key-a-page-is-filed-under".to_string(),
@@ -1248,10 +1248,10 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&SHARD).expect("shard is loaded");
-            for (_, handle, object_key, page) in super::blocks_with_identity(&shard.bucket_index) {
+            for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
                 identities_before.insert(
                     handle,
-                    (object_key.to_string(), page.model_id.as_str().to_string()),
+                    (object_key.to_string(), block.model_id.as_str().to_string()),
                 );
             }
         }
@@ -1281,7 +1281,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
 
     // --- THE RELOAD: a second engine on the same directories. ---
     reset_index_load_path_counts();
-    let engine = TemporalEngine::with_local_dirs(64, cache, pages, indexes);
+    let engine = TemporalEngine::with_local_dirs(64, cache, blocks, indexes);
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: SHARD,
         table_name: "the-key-a-page-is-filed-under".to_string(),
@@ -1320,10 +1320,10 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
              through the same door every reader goes through",
         );
         let mut at_the_decode: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for (_, handle, object_key, page) in super::blocks_with_identity(&decoded.bucket_index) {
+        for (_, handle, object_key, block) in super::blocks_with_identity(&decoded.bucket_index) {
             at_the_decode.insert(
                 handle,
-                (object_key.to_string(), page.model_id.as_str().to_string()),
+                (object_key.to_string(), block.model_id.as_str().to_string()),
             );
         }
         println!(
@@ -1375,10 +1375,10 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&SHARD).expect("shard is loaded");
         let mut after: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for (_, handle, object_key, page) in super::blocks_with_identity(&shard.bucket_index) {
+        for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
             after.insert(
                 handle,
-                (object_key.to_string(), page.model_id.as_str().to_string()),
+                (object_key.to_string(), block.model_id.as_str().to_string()),
             );
         }
         assert_eq!(

@@ -70,7 +70,7 @@ fn by_block_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
         .bucket_map
         .iter()
         .filter_map(|(id, bucket)| {
-            let dirty = bucket.dirty() || bucket.block_index.values().any(|page| page.dirty);
+            let dirty = bucket.dirty() || bucket.block_index.values().any(|block| block.dirty);
             dirty.then_some(*id)
         })
         .collect()
@@ -155,7 +155,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     let via_objects = by_object_set(&engine);
     let via_blocks = by_block_bit(&engine);
 
-    let (object_count, bucket_count, pages) = {
+    let (object_count, bucket_count, blocks) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1");
         (
@@ -175,7 +175,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     println!();
     println!("    dirty objects in the set      {object_count:>5}");
     println!("    buckets in the map            {bucket_count:>5}");
-    println!("    pages across those buckets    {pages:>5}");
+    println!("    pages across those buckets    {blocks:>5}");
     println!("    dirty buckets via the SET     {:>5}", via_objects.len());
     println!("    dirty buckets via the PAGE    {:>5}", via_blocks.len());
     println!();

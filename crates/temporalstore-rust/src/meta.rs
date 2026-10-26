@@ -4824,7 +4824,7 @@ mod tests {
     fn the_last_block_does_not_offer_a_cursor() {
         // Otherwise a caller loops forever on an empty page.
         let meta = placed_shards();
-        let page = listed(
+        let block = listed(
             &meta,
             ListShardsRequest {
                 limit: 2,
@@ -4833,13 +4833,13 @@ mod tests {
             },
         );
         assert_eq!(
-            page.shards
+            block.shards
                 .iter()
                 .map(|entry| entry.shard_id)
                 .collect::<Vec<_>>(),
             vec![99]
         );
-        assert_eq!(page.next_after_shard_id, None);
+        assert_eq!(block.next_after_shard_id, None);
     }
 
     #[test]

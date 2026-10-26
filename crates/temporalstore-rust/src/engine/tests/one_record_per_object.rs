@@ -1642,7 +1642,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
     seed(&engine, 1_000_000, COHORT);
     let after = weigh(&engine);
 
-    let (buckets, pages, objects) = {
+    let (buckets, blocks, objects) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         (
@@ -1670,9 +1670,9 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
          {BASE} ==="
     );
     println!(
-        "    denominators: {objects} control-state objects, {buckets} buckets, {pages} pages \
+        "    denominators: {objects} control-state objects, {buckets} buckets, {blocks} pages \
          ({:.2} pages per bucket)",
-        pages as f64 / buckets as f64
+        blocks as f64 / buckets as f64
     );
 
     let mut holders = 0usize;

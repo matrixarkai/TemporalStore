@@ -145,14 +145,14 @@ fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>>
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted {
+        for (handle, block) in &bucket.block_index {
+            if block.deleted {
                 continue;
             }
-            if page.model_id.as_str() == kind
+            if block.model_id.as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
-                held.push(page.address.block_id());
+                held.push(block.address.block_id());
             }
         }
     }
@@ -178,16 +178,16 @@ fn tombstone_blocks_of(
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted
-                && page.model_id.as_str() == kind
+        for (handle, block) in &bucket.block_index {
+            if block.deleted
+                && block.model_id.as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 held.push((
                     bucket
-                        .tombstone_element_at(&page.address)
+                        .tombstone_element_at(&block.address)
                         .map(|row| row.component.to_string()),
-                    page.address.block_id(),
+                    block.address.block_id(),
                 ));
             }
         }
@@ -917,16 +917,16 @@ fn hash_len_still_answers_the_entry_count() {
         crate::types::CommandResponse::Integer { value } => value,
         other => panic!("HashLen answered {other:?}"),
     };
-    let pages = blocks_of(&engine, "hash", key).len() as i64;
-    println!("\n=== HLEN === answered {answered}, pages {pages}, fields written {FIELDS}");
+    let blocks = blocks_of(&engine, "hash", key).len() as i64;
+    println!("\n=== HLEN === answered {answered}, pages {blocks}, fields written {FIELDS}");
     assert_eq!(
         answered, FIELDS,
         "HLEN answered {answered} for {FIELDS} distinct fields. The ordinal assignment must not \
          change the entry COUNT, which is what this reader returns"
     );
     assert_eq!(
-        pages, FIELDS,
-        "the page count is {pages} for {FIELDS} fields, so HLEN and the index disagree"
+        blocks, FIELDS,
+        "the page count is {blocks} for {FIELDS} fields, so HLEN and the index disagree"
     );
 }
 

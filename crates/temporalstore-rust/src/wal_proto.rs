@@ -964,10 +964,10 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         + record
             .staged_blocks
             .iter()
-            .map(|page| {
+            .map(|block| {
                 crate::raft::wal_proto::len_delimited_len(
                     6,
-                    staged_block_body_len(page, implied_staged_object_id(record)),
+                    staged_block_body_len(block, implied_staged_object_id(record)),
                 )
             })
             .sum::<usize>();
@@ -993,8 +993,8 @@ impl RecordParts<'_> {
             put_wal_item(5, item, derived, out);
         }
         let implied = implied_staged_object_id(record);
-        for page in &record.staged_blocks {
-            crate::raft::wal_proto::put_staged_block(6, page, implied, out);
+        for block in &record.staged_blocks {
+            crate::raft::wal_proto::put_staged_block(6, block, implied, out);
         }
         Ok(())
     }
@@ -1018,8 +1018,8 @@ pub(crate) fn implied_staged_object_id(record: &WriteAheadLogRecord) -> Option<u
 /// This length reserves the buffer the writer then fills, so if the two ever disagree the record
 /// is written into the wrong number of bytes -- and they did disagree, because this was a
 /// separate copy that still measured a varint after the writer had moved to a fixed field.
-fn staged_block_body_len(page: &crate::wal::StagedBlock, implied: Option<u64>) -> usize {
-    crate::raft::wal_proto::staged_block_body_len(page, implied)
+fn staged_block_body_len(block: &crate::wal::StagedBlock, implied: Option<u64>) -> usize {
+    crate::raft::wal_proto::staged_block_body_len(block, implied)
 }
 
 /// A record measured but not yet written.
@@ -1415,16 +1415,16 @@ mod tests {
             staged_blocks: record
                 .staged_blocks
                 .iter()
-                .map(|page| v1::WalStagedBlock {
+                .map(|block| v1::WalStagedBlock {
                     // The same rule the borrowing encoder applies, so the two agree byte for
                     // byte: a block drops the object id the record already says once.
                     object_id: crate::raft::wal_proto::staged_block_object_id(
-                        page,
+                        block,
                         implied_staged_object_id(record),
                     ),
-                    block: page.bytes.clone(),
+                    block: block.bytes.clone(),
                     routing_bucket: None,
-                    component: page.component.as_deref().map(str::to_string),
+                    component: block.component.as_deref().map(str::to_string),
                 })
                 .collect(),
         };

@@ -65,13 +65,13 @@ use std::collections::BTreeMap;
 /// Resident set size of this process, in bytes. Field 2 of `/proc/self/statm` is resident pages.
 fn resident_bytes() -> u64 {
     let statm = std::fs::read_to_string("/proc/self/statm").expect("procfs is mounted");
-    let pages: u64 = statm
+    let blocks: u64 = statm
         .split_whitespace()
         .nth(1)
         .expect("statm has a resident field")
         .parse()
         .expect("resident field is a number");
-    pages * 4096
+    blocks * 4096
 }
 
 /// Every live address in a shard, counted by where it lives and by what it carries.
@@ -378,8 +378,8 @@ fn census(engine: &TemporalEngine, shard_id: ShardId) -> AddressCensus {
     {
         let before = c.total;
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (_, page) in bucket.block_index.iter() {
-                c.observe(&page.address);
+            for (_, block) in bucket.block_index.iter() {
+                c.observe(&block.address);
             }
         }
         c.note("bucket_index (BlockIndex.address)", c.total - before);
@@ -1197,8 +1197,8 @@ fn duplication_census(engine: &TemporalEngine, shard_id: ShardId) -> Duplication
         }
     }
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            d.observe_bucket(&page.address);
+        for (_, block) in bucket.block_index.iter() {
+            d.observe_bucket(&block.address);
         }
     }
     d
@@ -1547,20 +1547,20 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     let long_table_before = resident_bytes();
     let long_table: Vec<(BTreeMap<u64, u32>, Vec<ElementEntry>)> = (0..LONG_SERIES as u64)
         .map(|s| {
-            let mut pages: Vec<ElementEntry> = Vec::new();
+            let mut blocks: Vec<ElementEntry> = Vec::new();
             let mut map = BTreeMap::new();
             for t in 0..LONG_POINTS as u64 {
                 let wanted = address(s * 16 + t / 500);
-                let slot = match pages.iter().position(|held| *held == wanted) {
+                let slot = match blocks.iter().position(|held| *held == wanted) {
                     Some(slot) => slot,
                     None => {
-                        pages.push(wanted);
-                        pages.len() - 1
+                        blocks.push(wanted);
+                        blocks.len() - 1
                     }
                 };
                 map.insert(t, slot as u32);
             }
-            (map, pages)
+            (map, blocks)
         })
         .collect();
     let long_table_after = resident_bytes();
@@ -1569,7 +1569,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
         long_table.iter().all(|(map, _)| map.len() == LONG_POINTS),
         "denominator: every table arm really holds {LONG_POINTS} entries"
     );
-    let distinct_blocks: usize = long_table.iter().map(|(_, pages)| pages.len()).sum();
+    let distinct_blocks: usize = long_table.iter().map(|(_, blocks)| blocks.len()).sum();
     assert!(
         distinct_blocks < long_entries,
         "denominator: the table arm must actually be sharing -- {distinct_blocks} distinct pages \
@@ -1704,11 +1704,11 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     // single block costs one allocation of the entry rather than a node sized for eleven.
     let split = std::mem::size_of::<BlockIndexMap>();
     let map = std::mem::size_of::<BTreeMap<u64, ElementEntry>>();
-    let page = std::mem::size_of::<BlockIndex>();
+    let block = std::mem::size_of::<BlockIndex>();
     let list = std::mem::size_of::<Vec<(u64, BlockIndex)>>();
     println!(
         "BlockIndexMap is {split} B, BTreeMap<u64, ElementEntry> is {map} B, a page list header is \
-         {list} B, BlockIndex is {page} B"
+         {list} B, BlockIndex is {block} B"
     );
     assert_eq!(
         list, split,
@@ -1734,7 +1734,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     let pair = std::mem::size_of::<(u64, BlockIndex)>();
     assert!(
         split < pair,
-        "BlockIndexMap must NOT be able to hold a handle and a whole {page}-byte BlockIndex inline \
+        "BlockIndexMap must NOT be able to hold a handle and a whole {block}-byte BlockIndex inline \
          any more; that pair is {pair} B and the map is {split} B. If it has grown to fit one, the \
          inline arm has come back and every node in the bucket map is paying for it"
     );
@@ -1765,7 +1765,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     assert!(
         !(inline == list && inline < pair),
         "the control must FAIL the predicate the real shape passes ({inline} B inline, {list} B \
-         list header, {pair} B pair, {page} B page)"
+         list header, {pair} B pair, {block} B page)"
     );
 
     // (2) INVERTED. This block used to prove that the six timestamped series maps share one
@@ -2017,30 +2017,30 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     for bucket in shard.bucket_index.bucket_map.values() {
         max_objects_in_a_bucket = max_objects_in_a_bucket.max(bucket.object_index.object_count());
         let mut blocks_here = 0usize;
-        for (handle, page) in bucket.block_index.iter() {
+        for (handle, block) in bucket.block_index.iter() {
             blocks_here += 1;
-            model_ids.insert(page.model_id.to_string());
+            model_ids.insert(block.model_id.to_string());
             let named_key = keys
-                .identity_of(bucket, *handle, page)
+                .identity_of(bucket, *handle, block)
                 .map(|beside| std::sync::Arc::clone(beside.object_key))
                 .unwrap_or_else(|| {
                     panic!(
                         "the page at handle {handle} is named by nothing beside it, so this                          footprint report has no object to attribute it to"
                     )
                 });
-            *blocks_per_object.entry(page.object_id(1, &named_key)).or_default() += 1;
-            max_length = max_length.max(page.address.length());
-            max_block_id = max_block_id.max(page.address.block_id().unwrap_or(0));
-            longest.push((page.address.length(), named_key.to_string()));
+            *blocks_per_object.entry(block.object_id(1, &named_key)).or_default() += 1;
+            max_length = max_length.max(block.address.length());
+            max_block_id = max_block_id.max(block.address.block_id().unwrap_or(0));
+            longest.push((block.address.length(), named_key.to_string()));
             if named_key.as_ref() == "big_value" || named_key.as_ref() == "empty_value" {
-                named.insert(named_key.to_string(), (page.address.length(), page.deleted));
+                named.insert(named_key.to_string(), (block.address.length(), block.deleted));
             }
-            if !page.deleted {
+            if !block.deleted {
                 live_blocks += 1;
-                if page.address.length() == 0 {
-                    live_zero_length.push((page.model_id.to_string(), named_key.to_string()));
+                if block.address.length() == 0 {
+                    live_zero_length.push((block.model_id.to_string(), named_key.to_string()));
                 }
-            } else if page.address.length() == 0 {
+            } else if block.address.length() == 0 {
                 deleted_zero_length += 1;
             }
         }
@@ -2777,13 +2777,13 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
         let placed: Vec<(u64, BlockIndex)> = bucket
             .block_index
             .iter()
-            .map(|(handle, page)| (*handle, page.clone()))
+            .map(|(handle, block)| (*handle, block.clone()))
             .collect();
         shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
-        for (handle, page) in &placed {
+        for (handle, block) in &placed {
             shard
                 .bucket_index
-                .insert_object_block_lookup(routing_bucket, *handle, &key, page);
+                .insert_object_block_lookup(routing_bucket, *handle, &key, block);
         }
     }
 

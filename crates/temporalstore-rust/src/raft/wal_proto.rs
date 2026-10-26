@@ -211,23 +211,23 @@ pub(crate) fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
 /// Write a staged page as field `tag`, its bytes borrowed straight into `out`.
 pub(crate) fn put_staged_block(
     tag: u32,
-    page: &crate::wal::StagedBlock,
+    block: &crate::wal::StagedBlock,
     implied_object_id: Option<u64>,
     out: &mut Vec<u8>,
 ) {
-    let object_id = staged_block_object_id(page, implied_object_id);
-    let body = staged_block_body_len(page, implied_object_id);
+    let object_id = staged_block_object_id(block, implied_object_id);
+    let body = staged_block_body_len(block, implied_object_id);
     prost::encoding::encode_key(tag, prost::encoding::WireType::LengthDelimited, out);
     prost::encoding::encode_varint(body as u64, out);
     if let Some(object_id) = object_id {
         put_fixed64_field(1, object_id, out);
     }
-    put_len_delimited(2, &page.bytes, out);
+    put_len_delimited(2, &block.bytes, out);
     // Ascending field order, the order prost would have written them, which is the property
     // `the_borrowing_encoder_writes_the_same_bytes` checks. Written unconditionally when present
     // rather than elided against an implied value the way the object id is: there is no second
     // copy of the component anywhere in the record to imply it from.
-    if let Some(component) = page.component.as_deref() {
+    if let Some(component) = block.component.as_deref() {
         // NOT `put_len_delimited`, which skips an empty payload. This field is `optional` in the
         // schema, so prost writes it for `Some("")` and omits it only for `None` -- and the
         // difference is load-bearing rather than cosmetic: a component that decoded back as `None`
@@ -246,20 +246,20 @@ pub(crate) fn put_staged_block(
 /// It is omitted only when there is exactly one of each and the two agree, so a reader never
 /// has to guess which outcome an unlabelled block belongs to.
 pub(crate) fn staged_block_object_id(
-    page: &crate::wal::StagedBlock,
+    block: &crate::wal::StagedBlock,
     implied_object_id: Option<u64>,
 ) -> Option<u64> {
-    if implied_object_id == Some(page.object_id) {
+    if implied_object_id == Some(block.object_id) {
         return None;
     }
-    Some(page.object_id)
+    Some(block.object_id)
 }
 
 pub(crate) fn staged_block_body_len(
-    page: &crate::wal::StagedBlock,
+    block: &crate::wal::StagedBlock,
     implied_object_id: Option<u64>,
 ) -> usize {
-    let id_len = match staged_block_object_id(page, implied_object_id) {
+    let id_len = match staged_block_object_id(block, implied_object_id) {
         Some(_) => fixed64_field_len(1),
         None => 0,
     };
@@ -268,12 +268,12 @@ pub(crate) fn staged_block_body_len(
     // they disagreed once before, when this measured a varint after the writer had moved to a
     // fixed field. Every arm here mirrors a line there.
     id_len
-        + if page.bytes.is_empty() {
+        + if block.bytes.is_empty() {
             0
         } else {
-            len_delimited_len(2, page.bytes.len())
+            len_delimited_len(2, block.bytes.len())
         }
-        + match page.component.as_deref() {
+        + match block.component.as_deref() {
             // Counted for `Some("")` as well, because the writer above emits it: an `optional`
             // field is present or absent, not empty or absent.
             Some(component) => len_delimited_len(4, component.len()),

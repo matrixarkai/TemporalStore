@@ -423,10 +423,10 @@ pub(super) fn decode_feature_block_strict(bytes: &[u8]) -> PackedFeatureBlockDec
         // A page written before the byte format. Kept so a store that already exists keeps
         // reading; nothing writes this shape any more, and this arm goes when those stores do.
         return match serde_json::from_slice::<PackedFeatureBlock>(payload) {
-            Ok(page) if page.version == 1 => PackedFeatureBlockDecode::Packed(page.points),
-            Ok(page) => PackedFeatureBlockDecode::Corrupt(format!(
+            Ok(block) if block.version == 1 => PackedFeatureBlockDecode::Packed(block.points),
+            Ok(block) => PackedFeatureBlockDecode::Corrupt(format!(
                 "unsupported packed feature page version {}",
-                page.version
+                block.version
             )),
             Err(err) => PackedFeatureBlockDecode::Corrupt(format!(
                 "invalid packed feature page payload: {err}"
@@ -618,9 +618,9 @@ mod block_encoding_tests {
         let mut json_bytes = 0usize;
         for _ in 0..rounds {
             let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
-            let mut page = FEATURE_BLOCK_MAGIC.to_vec();
-            page.append(&mut serde_json::to_vec(&owned).expect("serialises"));
-            json_bytes = page.len();
+            let mut block = FEATURE_BLOCK_MAGIC.to_vec();
+            block.append(&mut serde_json::to_vec(&owned).expect("serialises"));
+            json_bytes = block.len();
         }
         let json_encode_ns = started.elapsed().as_nanos();
 

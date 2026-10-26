@@ -244,7 +244,7 @@ fn write_context_node(
     // door with that field as its component. Leaving this one site unframed would leave the node
     // the single hash element a later load could not recover from its block, which is the element
     // #2016 already recorded as the one whose absence reads as the node not existing at all.
-    let page = crate::engine::container_blocks::single_element_block(
+    let block = crate::engine::container_blocks::single_element_block(
         "hash",
         CONTEXT_NODE_FIELD,
         &context_bytes(node),
@@ -253,7 +253,7 @@ fn write_context_node(
         cache,
         block_store,
         shard_id,
-        &page,
+        &block,
         Some(object_id),
         // The field this node is filed under -- the same argument the object id above was
         // derived with. A context node is a hash FIELD, not a whole object.
@@ -368,7 +368,7 @@ pub(super) fn remove_container_element(
 ) -> bool {
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
     let tombstone = crate::engine::container_blocks::tombstone_block(model_id, component).and_then(
-        |page| {
+        |block| {
             // THE ORDINAL IS THE ELEMENT'S OWN, exactly as it is on the write path: the element
             // already has a position in this object and the tombstone is another page AT that
             // position, not a new one. Computed before the append because the append stamps it into
@@ -384,7 +384,7 @@ pub(super) fn remove_container_element(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(stable_block_object_id(shard_id, model_id, key)),
                 Some(component),
                 Some(routing_bucket),
@@ -923,12 +923,12 @@ pub(crate) fn execute_on_shard(
             );
             // The block STATES which field it is, rather than leaving that to the entry that names
             // it. Same value, one frame around it -- see `container_blocks`.
-            let page = crate::engine::container_blocks::single_element_block("hash", &field, &value);
+            let block = crate::engine::container_blocks::single_element_block("hash", &field, &value);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block, and since the frame
@@ -1055,13 +1055,13 @@ pub(crate) fn execute_on_shard(
                 );
                 // The block STATES which field it is -- see `container_blocks`. Built per entry
                 // because the frame carries the field, so one frame cannot stand for two.
-                let page =
+                let block =
                     crate::engine::container_blocks::single_element_block("hash", &field, &value);
                 if let Ok(address) = append_value_of_object(
                     cache,
                     block_store,
                     shard_id,
-                    &page,
+                    &block,
                     Some(object_id),
                     // The element this block holds -- the SAME expression that derived the ordinal
                     // above and the object id beside it. All three name one block.
@@ -1142,7 +1142,7 @@ pub(crate) fn execute_on_shard(
                 &field,
             );
             // The block STATES which field it is -- see `container_blocks`.
-            let page = crate::engine::container_blocks::single_element_block(
+            let block = crate::engine::container_blocks::single_element_block(
                 "hash",
                 &field,
                 value.to_string().as_bytes(),
@@ -1151,7 +1151,7 @@ pub(crate) fn execute_on_shard(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(stable_block_object_id(shard_id, "hash", &key)),
                 // The element this block holds -- the same expression that derived the ordinal
                 // above, and now also the key INSIDE the block. The object id beside it no longer
@@ -1419,7 +1419,7 @@ pub(crate) fn execute_on_shard(
             // The block STATES which member it is -- see `container_blocks`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
-            let page = crate::engine::container_blocks::single_element_block(
+            let block = crate::engine::container_blocks::single_element_block(
                 "set",
                 &member_component,
                 &member,
@@ -1428,7 +1428,7 @@ pub(crate) fn execute_on_shard(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
@@ -1499,13 +1499,13 @@ pub(crate) fn execute_on_shard(
             // The block STATES which element it is -- see `container_blocks`. A zset's element key is
             // its biased score followed by its member, and the value IS that member, so the frame
             // stores the member once and says where inside the key it starts.
-            let page =
+            let block =
                 crate::engine::container_blocks::single_element_block("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
@@ -1865,13 +1865,13 @@ pub(crate) fn execute_on_shard(
                 &component,
             );
             // The block STATES which element it is -- see `container_blocks`.
-            let page =
+            let block =
                 crate::engine::container_blocks::single_element_block("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.
@@ -2015,13 +2015,13 @@ pub(crate) fn execute_on_shard(
             // The block STATES which element it is -- see `container_blocks`. A list's element key is
             // its biased sequence word, which is eight bytes and is NOT the value beside it, so
             // this is the one container kind whose frame carries both in full.
-            let page =
+            let block =
                 crate::engine::container_blocks::single_element_block("list", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
                 shard_id,
-                &page,
+                &block,
                 Some(object_id),
                 // The element this block holds -- the SAME expression that derived the ordinal
                 // above and the object id beside it. All three name one block.

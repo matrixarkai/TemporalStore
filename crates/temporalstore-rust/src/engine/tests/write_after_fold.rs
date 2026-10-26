@@ -126,25 +126,25 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
     // second guard: `block_index_written_key` renders the stored spelling, and a name on an entry
     // would show up in it.
     let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut pages = std::collections::BTreeSet::new();
+    let mut blocks = std::collections::BTreeSet::new();
     let mut written = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
+        for (handle, block) in &bucket.block_index {
             let object_key = named.at(bucket.routing_bucket, *handle);
-            if page.deleted || page.model_id.as_str() != "set" || &**object_key != KEY {
+            if block.deleted || block.model_id.as_str() != "set" || &**object_key != KEY {
                 continue;
             }
             live += 1;
-            pages.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+            blocks.insert((
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
-            written.push(crate::engine::state::block_index_written_key(object_key, page));
+            written.push(crate::engine::state::block_index_written_key(object_key, block));
         }
     }
     written.sort();
-    (live, pages, written)
+    (live, blocks, written)
 }
 
 /// What the durable model map holds -- the authority for existence, independent of any entry.
@@ -228,13 +228,13 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // ---- NOW A WRITE AFTER THAT DERIVATION. This is the only thing that can see the two
     //      filers disagree: it is the write path filing beside what the projection just filed. ----
     add(&engine, member_bytes(FIRST_BATCH));
-    let (live, pages, written) = entry_census(&engine);
+    let (live, blocks, written) = entry_census(&engine);
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
         "  after one more write: {live} live entr(ies), \
          {} distinct page(s); durable holds {}, the listing serves {}",
-        pages.len(),
+        blocks.len(),
         durable.len(),
         listed.len()
     );
@@ -262,12 +262,12 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // Compared against the number of distinct page addresses rather than a constant, so a fixture
     // that folds differently cannot make this vacuous.
     assert_eq!(
-        pages.len(),
+        blocks.len(),
         live,
         "the write path filed {live} entr(ies) for {} distinct page(s). Under this gate the page \
          IS the identity, so a write after a derivation must converge on the page's existing entry \
          rather than add one of its own",
-        pages.len()
+        blocks.len()
     );
     // THE `named == 0` ARM IS DELETED, AND ITS SUBJECT IS STILL GUARDED -- by arm 3 below.
     //
@@ -313,7 +313,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
         "the re-derivation filed nothing, so the key comparison below would hold vacuously"
     );
     assert_eq!(
-        pages, dpages,
+        blocks, dpages,
         "the two routes disagree about WHICH pages are live, so comparing their written keys is \
          comparing different populations"
     );
@@ -357,13 +357,13 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
 
     // REWRITE a member that is already on the folded page.
     add(&engine, member_bytes(0));
-    let (live, pages, _) = entry_census(&engine);
+    let (live, blocks, _) = entry_census(&engine);
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
         "\n=== rewrite after a fold: {live} live entr(ies), \
          {} distinct page(s); durable {}, listing serves {}",
-        pages.len(),
+        blocks.len(),
         durable.len(),
         listed.len()
     );
@@ -389,13 +389,13 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
     // member's OLD page was superseded. If this holds today, it holds BECAUSE the convergence is
     // component-keyed, and an address-keyed replacement must be given the old address too.
     assert_eq!(
-        pages.len(),
+        blocks.len(),
         live,
         "{live} live entr(ies) for {} distinct page(s) after a rewrite. Recorded as the state an \
          address-keyed convergence has to reproduce: if this is one-to-one today, the superseded \
          page's entry is being removed by the COMPONENT match, and keying on the new address alone \
          would leave it behind naming a dead page",
-        pages.len()
+        blocks.len()
     );
 }
 
@@ -424,34 +424,34 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
         assert!(response.status.ok, "write failed: {response:?}");
     }
 
-    let (live, pages) = {
+    let (live, blocks) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut live = 0usize;
-        let mut pages = std::collections::BTreeSet::new();
+        let mut blocks = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, page) in &bucket.block_index {
-                if page.deleted
-                    || page.model_id.as_str() != "string"
+            for (handle, block) in &bucket.block_index {
+                if block.deleted
+                    || block.model_id.as_str() != "string"
                     || &**named.at(bucket.routing_bucket, *handle) != key
                 {
                     continue;
                 }
                 live += 1;
-                pages.insert((
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
+                blocks.insert((
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
                 ));
             }
         }
-        (live, pages)
+        (live, blocks)
     };
     println!(
         "  a string rewritten 3 times: {live} live entr(ies), \
          {} distinct page(s)",
-        pages.len()
+        blocks.len()
     );
 
     // FLOOR: the object is filed at all.
@@ -473,7 +473,7 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
          the state a component-keyed convergence produces, and it is why the address-keyed repair \
          must apply to the gated container arm ONLY: applied here it would leave two stale entries \
          naming dead pages",
-        pages.len()
+        blocks.len()
     );
 }
 
@@ -499,14 +499,14 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut out = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted
-                && page.model_id.as_str() == "set"
+        for (handle, block) in &bucket.block_index {
+            if block.deleted
+                && block.model_id.as_str() == "set"
                 && &**named.at(bucket.routing_bucket, *handle) == KEY
             {
                 out.push(
                     bucket
-                        .tombstone_element_at(&page.address)
+                        .tombstone_element_at(&block.address)
                         .map(|row| row.component.to_string()),
                 );
             }
@@ -547,7 +547,7 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
 #[test]
 fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let victim = member_bytes(1);
     let survivor = member_bytes(2);
@@ -558,7 +558,7 @@ fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            &pages,
+            &blocks,
             &indexes,
         );
         load_on(&engine);
@@ -591,7 +591,7 @@ fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
-        &pages,
+        &blocks,
         &indexes,
     );
     load_on(&reloaded);
@@ -663,7 +663,7 @@ const CROWD: usize = 12;
 #[test]
 fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let doomed = member_bytes(3);
     let rewritten = member_bytes(5);
@@ -672,7 +672,7 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            &pages,
+            &blocks,
             &indexes,
         );
         load_on(&engine);
@@ -713,7 +713,7 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
-        &pages,
+        &blocks,
         &indexes,
     );
     load_on(&reloaded);
@@ -890,14 +890,14 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
          entry it supersedes and this test asserts nothing about a vacated page"
     );
 
-    let (live, pages, _) = entry_census(&engine);
+    let (live, blocks, _) = entry_census(&engine);
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
         "\n=== rewrite off a page the element was alone on: {live} live entr(ies), \
          {} distinct page(s); vacated {before:?} -> {after:?}; durable {}, listing \
          serves {}",
-        pages.len(),
+        blocks.len(),
         durable.len(),
         listed.len()
     );
@@ -927,11 +927,11 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     // occupied, which is an independent statement of which pages exist.
     let occupied = occupied_blocks(&engine);
     assert_eq!(
-        occupied, pages,
+        occupied, blocks,
         "the index names {} live page(s) and the durable map holds its members on {}. The \
          difference is an entry over a page nothing is on -- and under this gate a live entry IS a \
          claim of membership, so it serves a member that is not there",
-        pages.len(),
+        blocks.len(),
         occupied.len()
     );
     assert_eq!(
@@ -942,7 +942,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
         occupied.len()
     );
     assert!(
-        !pages.contains(&before),
+        !blocks.contains(&before),
         "the vacated page {before:?} is still named by a live entry. The member moved to \
          {after:?} and nothing else was on {before:?}, so that entry stands for a page with \
          nothing on it"

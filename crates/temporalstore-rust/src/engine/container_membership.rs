@@ -132,7 +132,7 @@ pub(super) fn append_position(address: &ElementEntry) -> (u64, u64) {
 /// a guard measures the fold with -- #2028's own check deduplicated for exactly this reason.
 pub(super) fn derive_membership<F>(
     kind: &str,
-    pages: impl IntoIterator<Item = ElementEntry>,
+    blocks: impl IntoIterator<Item = ElementEntry>,
     mut read_block: F,
 ) -> DerivedMembership
 where
@@ -149,7 +149,7 @@ where
 
     // ORDER FIRST, THEN READ. The sort is over addresses and costs nothing per page; doing it after
     // reading would mean holding every page's bytes at once.
-    let mut ordered: Vec<ElementEntry> = pages.into_iter().collect();
+    let mut ordered: Vec<ElementEntry> = blocks.into_iter().collect();
     ordered.sort_by_key(append_position);
     ordered.dedup_by_key(|address| append_position(address));
 

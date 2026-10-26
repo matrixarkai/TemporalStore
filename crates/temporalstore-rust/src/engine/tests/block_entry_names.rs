@@ -83,7 +83,7 @@ impl NameSpread {
         self.blocks_held.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.blocks_held.iter().map(|(held, n)| held * n).sum()
     }
 
@@ -100,7 +100,7 @@ impl NameSpread {
         println!(
             "  buckets={} pages={} widest bucket={} page(s)",
             self.buckets(),
-            self.pages(),
+            self.blocks(),
             Self::widest(&self.blocks_held)
         );
         for (name, map) in [
@@ -147,10 +147,10 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
         let mut models: BTreeSet<&str> = BTreeSet::new();
         let mut components: BTreeSet<Option<&str>> = BTreeSet::new();
         let mut held = 0usize;
-        for (handle, page) in bucket.block_index.iter() {
+        for (handle, block) in bucket.block_index.iter() {
             held += 1;
             keys.insert(named.at(bucket.routing_bucket, *handle));
-            models.insert(page.model_id.as_str());
+            models.insert(block.model_id.as_str());
             // Every entry's name is the same absence, so this set holds one member for any
             // non-empty bucket. The histogram it feeds is restated where it is read.
             components.insert(None::<&str>);
@@ -350,7 +350,7 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
         .chain(narrow_container.iter())
     {
         assert!(spread.buckets() > 0, "denominator: no routing buckets in this arm");
-        assert!(spread.pages() > 0, "denominator: no page entries in this arm");
+        assert!(spread.blocks() > 0, "denominator: no page entries in this arm");
     }
 
     // --- 1. `component` is a PER-PAGE fact, in both ranges. ---
@@ -458,7 +458,7 @@ struct KeyAllocationCensus {
     /// Objects keyed by how many distinct model-id allocations their pages hold.
     model_id: BTreeMap<usize, usize>,
     objects: usize,
-    pages: usize,
+    blocks: usize,
     /// Sum over objects of (distinct allocations - 1), i.e. copies that carry no new information.
     surplus_object_key_allocations: usize,
     /// Bytes those surplus copies hold: the text plus an `Arc` header of two words.
@@ -476,7 +476,7 @@ impl KeyAllocationCensus {
 
     fn report(&self, label: &str) {
         println!("\n=== {label} ===");
-        println!("  objects={} pages={}", self.objects, self.pages);
+        println!("  objects={} pages={}", self.objects, self.blocks);
         println!(
             "  object_key : objects holding >1 allocation = {} , widest = {}",
             Self::objects_holding_more_than_one(&self.object_key),
@@ -490,16 +490,16 @@ impl KeyAllocationCensus {
         println!(
             "  surplus object-key allocations = {} ({:.4} a page), {} B ({:.2} B a page)",
             self.surplus_object_key_allocations,
-            if self.pages == 0 {
+            if self.blocks == 0 {
                 0.0
             } else {
-                self.surplus_object_key_allocations as f64 / self.pages as f64
+                self.surplus_object_key_allocations as f64 / self.blocks as f64
             },
             self.surplus_object_key_bytes,
-            if self.pages == 0 {
+            if self.blocks == 0 {
                 0.0
             } else {
-                self.surplus_object_key_bytes as f64 / self.pages as f64
+                self.surplus_object_key_bytes as f64 / self.blocks as f64
             }
         );
     }
@@ -529,23 +529,23 @@ fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
     // duplication this change removed.
     let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in bucket.block_index.iter() {
+        for (handle, block) in bucket.block_index.iter() {
             let object_key = named.at(bucket.routing_bucket, *handle);
             let slot = by_object
-                .entry((page.model_id.to_string(), object_key.to_string()))
+                .entry((block.model_id.to_string(), object_key.to_string()))
                 .or_default();
             slot.0.insert(object_key.as_ptr() as usize);
             // The spelling is a `&'static str` off the registry now, not an allocation: one
             // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
             // rather than because a pool happened to be consulted. Kept as the control it was.
-            slot.1.insert(page.model_id.as_str().as_ptr() as usize);
+            slot.1.insert(block.model_id.as_str().as_ptr() as usize);
             slot.2 += 1;
         }
     }
     let mut census = KeyAllocationCensus::default();
-    for ((_, object_key), (key_ptrs, model_ptrs, pages)) in by_object.iter() {
+    for ((_, object_key), (key_ptrs, model_ptrs, blocks)) in by_object.iter() {
         census.objects += 1;
-        census.pages += pages;
+        census.blocks += blocks;
         *census.object_key.entry(key_ptrs.len()).or_default() += 1;
         *census.model_id.entry(model_ptrs.len()).or_default() += 1;
         let surplus = key_ptrs.len().saturating_sub(1);
@@ -611,14 +611,14 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
     // --- The fixture must reach the many-page object, or every claim below is free. ---
     for (index, census) in containers.iter().enumerate() {
         assert!(
-            census.objects > 0 && census.pages > 0,
+            census.objects > 0 && census.blocks > 0,
             "container arm {index}: nothing censused"
         );
         assert!(
-            census.pages / census.objects >= 100,
+            census.blocks / census.objects >= 100,
             "container arm {index}: {} pages over {} objects; this arm exists to hold objects of \
              a hundred pages and it does not reach them",
-            census.pages,
+            census.blocks,
             census.objects
         );
     }
@@ -632,7 +632,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
              {} surplus copies across {} pages, {} B",
             KeyAllocationCensus::widest(&census.object_key),
             census.surplus_object_key_allocations,
-            census.pages,
+            census.blocks,
             census.surplus_object_key_bytes
         );
         assert_eq!(
@@ -676,7 +676,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     use crate::block_store::ElementEntry;
     use crate::engine::state::{BucketLayoutState, BucketNode, CoreIndex};
 
-    fn page(
+    fn block(
         key: &str,
         model: &str,
         component: Option<&str>,
@@ -704,24 +704,24 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     // slots and the decoder reads them back out of it, so the wrapper writes three keys and the
     // bytes printed here are two keys lighter than they were.
     fn encoded(entry: &BlockIndex) -> String {
-        serde_json::to_string(&crate::engine::state::BlockEntryAt { page: entry }).unwrap()
+        serde_json::to_string(&crate::engine::state::BlockEntryAt { block: entry }).unwrap()
     }
 
     println!(
         "PLAIN          = {}",
-        encoded(&page("k", "string", None, 1, 2, 3, (false, false, true)))
+        encoded(&block("k", "string", None, 1, 2, 3, (false, false, true)))
     );
     println!(
         "WITH_COMPONENT = {}",
-        encoded(&page("k", "string", Some("f0"), 1, 2, 3, (false, false, true)))
+        encoded(&block("k", "string", Some("f0"), 1, 2, 3, (false, false, true)))
     );
     println!(
         "ALL_FLAGS      = {}",
-        encoded(&page("k", "string", None, 1, 2, 3, (true, true, true)))
+        encoded(&block("k", "string", None, 1, 2, 3, (true, true, true)))
     );
     println!(
         "OVER_WIDE      = {}",
-        encoded(&page("k", "string", None, 1, 2, u64::MAX, (false, false, true)))
+        encoded(&block("k", "string", None, 1, 2, u64::MAX, (false, false, true)))
     );
 
     // A whole index: one bucket, five pages of one object (one with a component) and a second
@@ -746,25 +746,25 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     //
     // THE BYTES DID NOT MOVE. `INDEX` below is character-for-character the 1,125 bytes this test
     // printed before the identity became a neighbour, which is the whole claim of the step.
-    let pages: Vec<(Arc<str>, BlockIndex)> = (0..4u64)
+    let blocks: Vec<(Arc<str>, BlockIndex)> = (0..4u64)
         .map(|offset| {
             (
                 Arc::from("k"),
-                page("k", "string", None, 1, offset, 3, (false, false, true)),
+                block("k", "string", None, 1, offset, 3, (false, false, true)),
             )
         })
         .chain(std::iter::once((
             Arc::from("k"),
-            page("k", "hash", Some("f0"), 1, 9, 3, (true, false, false)),
+            block("k", "hash", Some("f0"), 1, 9, 3, (true, false, false)),
         )))
         .chain(std::iter::once((
             Arc::from("other"),
-            page("other", "string", None, 2, 1, 5, (false, false, true)),
+            block("other", "string", None, 2, 1, 5, (false, false, true)),
         )))
         .collect();
 
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
-    for (object_key, entry) in &pages {
+    for (object_key, entry) in &blocks {
         node.block_index.insert(object_key, entry.clone(), &mut live);
     }
 
@@ -772,7 +772,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     index.bucket_map.insert(7, node);
     // ONE FILING PER PLACED PAGE, through the same door the engine files through, with the handle
     // computed from the same terms the map keyed the page under.
-    for (object_key, entry) in &pages {
+    for (object_key, entry) in &blocks {
         let handle = crate::engine::state::block_index_handle(object_key, entry);
         index.insert_object_block_lookup(7, handle, object_key, entry);
     }
@@ -997,15 +997,15 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
     // entry writes neither the object key nor the kind now, so the wrapper takes the page alone and
     // the three goldens below are two keys lighter.
     let plain = serde_json::to_string(&crate::engine::state::BlockEntryAt {
-        page: &block_fixture(3, (false, false)),
+        block: &block_fixture(3, (false, false)),
     })
     .expect("a page entry serializes");
     let all_flags = serde_json::to_string(&crate::engine::state::BlockEntryAt {
-        page: &block_fixture(3, (true, true)),
+        block: &block_fixture(3, (true, true)),
     })
     .expect("a page entry serializes");
     let over_wide = serde_json::to_string(&crate::engine::state::BlockEntryAt {
-        page: &block_fixture(u64::MAX, (false, false)),
+        block: &block_fixture(u64::MAX, (false, false)),
     })
     .expect("a page entry serializes");
 
@@ -1173,16 +1173,16 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     let mut loaded: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool)> =
         super::blocks_with_identity(&index)
             .into_iter()
-            .map(|(_, _, object_key, page)| {
+            .map(|(_, _, object_key, block)| {
             (
                 object_key.to_string(),
-                page.model_id.to_string(),
+                block.model_id.to_string(),
                 None::<String>,
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
-                page.dirty,
-                page.deleted,
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
+                block.dirty,
+                block.deleted,
             )
         })
         .collect();
@@ -1244,7 +1244,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     // stored bytes really do contain an element name for the decode to drop. So it is asked of the
     // fixture, in both of the places the name appears in a stored row.
     assert!(
-        OLD_STORE_BLOCKS.iter().any(|page| page.2.is_some()),
+        OLD_STORE_BLOCKS.iter().any(|block| block.2.is_some()),
         "no row of the stored page table carries an element name, so dropping it in the \
          derivation above changes nothing and this arm tests no shed key"
     );
@@ -1261,12 +1261,12 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     // AND NOTHING THAT LOADED CARRIES ONE, which is the other half of the same statement: the
     // decode is tolerant of the key and drops it rather than failing or keeping it.
     assert!(
-        loaded.iter().all(|page| page.2.is_none()),
+        loaded.iter().all(|block| block.2.is_none()),
         "a loaded page carries an element name; the entry has no field for one, so this would mean \
          the field has come back"
     );
     assert!(
-        loaded.iter().filter(|page| page.0 == "k").count() > 1,
+        loaded.iter().filter(|block| block.0 == "k").count() > 1,
         "no object in the fixture holds more than one page, so the axis this change is about is \
          not covered by this golden"
     );
@@ -1609,30 +1609,30 @@ fn what_a_container_store_charges_the_allocator_a_block() {
         let counts = probe.stop();
 
         let census = key_allocation_census(&engine);
-        assert!(census.pages > 0, "denominator: nothing seeded");
+        assert!(census.blocks > 0, "denominator: nothing seeded");
         assert!(
-            census.pages / census.objects >= 100,
+            census.blocks / census.objects >= 100,
             "{label}: {} pages over {} objects; the container case is not reached",
-            census.pages,
+            census.blocks,
             census.objects
         );
         println!(
             "\n=== {label} (store path {path_length} chars) ===\n  pages={} objects={}\n  \
              alloc calls={} ({:.4} a page)\n  alloc bytes={} ({:.2} B a page)\n  widest object-key \
              allocation count={}",
-            census.pages,
+            census.blocks,
             census.objects,
             counts.allocs,
-            counts.allocs as f64 / census.pages as f64,
+            counts.allocs as f64 / census.blocks as f64,
             counts.alloc_bytes,
-            counts.alloc_bytes as f64 / census.pages as f64,
+            counts.alloc_bytes as f64 / census.blocks as f64,
             KeyAllocationCensus::widest(&census.object_key)
         );
         assert!(
             counts.allocs > 0,
             "the probe reported zero allocations for a seed of {} pages, which reads as a path \
              that does not allocate",
-            census.pages
+            census.blocks
         );
     }
 }
@@ -1711,11 +1711,11 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
     );
 
     // And the page's own side of it: one byte, no string, nothing to pool.
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        pages += bucket.block_index.iter().count();
+        blocks += bucket.block_index.iter().count();
     }
-    assert!(pages > 0, "no pages were recorded; nothing was measured");
+    assert!(blocks > 0, "no pages were recorded; nothing was measured");
     assert_eq!(
         1,
         std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
@@ -1964,25 +1964,25 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
 fn block_tuples(
     shard: &crate::engine::state::ShardState,
 ) -> Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> {
-    let mut pages: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> =
+    let mut blocks: Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> =
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
-            .map(|(_, _, object_key, page)| {
+            .map(|(_, _, object_key, block)| {
             (
                 object_key.to_string(),
-                page.model_id.to_string(),
+                block.model_id.to_string(),
                 None::<String>,
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
-                page.dirty,
-                page.deleted,
-                page.log_backed(),
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
+                block.dirty,
+                block.deleted,
+                block.log_backed(),
             )
         })
         .collect();
-    pages.sort();
-    pages
+    blocks.sort();
+    blocks
 }
 
 
@@ -2222,37 +2222,37 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         .expect("the checked load must not refuse this log")
         .expect("the checked load must return a shard state");
 
-    let pages = super::blocks_with_identity(&folded.bucket_index);
-    println!("=== after the fold: {} page(s) ===", pages.len());
-    for (_, _, object_key, page) in &pages {
+    let blocks = super::blocks_with_identity(&folded.bucket_index);
+    println!("=== after the fold: {} page(s) ===", blocks.len());
+    for (_, _, object_key, block) in &blocks {
         println!(
             "  key={:?} kind={} slab={} off={} len={} log_backed={}",
             object_key,
-            page.model_id.as_str(),
-            page.address.block_slab_id(),
-            page.address.offset(),
-            page.address.length(),
-            page.log_backed()
+            block.model_id.as_str(),
+            block.address.block_slab_id(),
+            block.address.offset(),
+            block.address.length(),
+            block.log_backed()
         );
     }
 
-    let omitted_block = pages
+    let omitted_block = blocks
         .iter()
         .find(|(_, _, object_key, _)| object_key.as_ref() == KEY)
-        .map(|(_, _, _, page)| *page)
+        .map(|(_, _, _, block)| *block)
         .unwrap_or_else(|| {
             panic!(
                 "THE OMITTED-HANDLE PAGE IS MISSING AFTER THE FOLD. If this ever fires, the \
                  rebuilt composite handle HAS become the name the page is filed under, and this \
                  change needs a migration for records already on disk -- a stamp cannot cover it, \
                  because the stamp is what routes load down this path. {} page(s) came back.",
-                pages.len()
+                blocks.len()
             )
         });
-    let nonsense_block = pages
+    let nonsense_block = blocks
         .iter()
         .find(|(_, _, object_key, _)| object_key.as_ref() == WRONG_KEY)
-        .map(|(_, _, _, page)| *page)
+        .map(|(_, _, _, block)| *block)
         .expect(
             "the page whose stored handle is not any derivation is missing, so the stored handle \
              IS consulted somewhere on this path",
@@ -2260,15 +2260,15 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
 
     // The page has to come back INTACT, not merely present: a page filed under the right name
     // carrying the wrong address would satisfy a presence check and still serve the wrong bytes.
-    for (label, page) in [("omitted", omitted_block), ("nonsense", nonsense_block)] {
-        assert_eq!(SLAB, page.address.block_slab_id(), "{label}: slab moved");
-        assert_eq!(OFFSET, page.address.offset(), "{label}: offset moved");
-        assert_eq!(LENGTH, page.address.length(), "{label}: length moved");
+    for (label, block) in [("omitted", omitted_block), ("nonsense", nonsense_block)] {
+        assert_eq!(SLAB, block.address.block_slab_id(), "{label}: slab moved");
+        assert_eq!(OFFSET, block.address.offset(), "{label}: offset moved");
+        assert_eq!(LENGTH, block.address.length(), "{label}: length moved");
         assert!(
-            page.log_backed(),
+            block.log_backed(),
             "{label}: the page must come back WAL-resident, which is the shape the hazard is about"
         );
-        assert!(!page.deleted, "{label}: the page must not come back deleted");
+        assert!(!block.deleted, "{label}: the page must not come back deleted");
     }
 
     // And the object is named by the bucket that holds it, which is what a per-object read
@@ -2369,14 +2369,14 @@ fn an_ungated_store_is_refused_before_it_is_served() {
     let container_entries: Vec<(String, String, Option<String>)> =
         super::blocks_with_identity(&decoded.bucket_index)
             .into_iter()
-            .filter(|(_, _, _, page)| {
-                matches!(page.model_id.as_str(), "hash" | "zset" | "set" | "list")
+            .filter(|(_, _, _, block)| {
+                matches!(block.model_id.as_str(), "hash" | "zset" | "set" | "list")
             })
-            .map(|(_, _, object_key, page)| {
+            .map(|(_, _, object_key, block)| {
                 (
                     object_key.to_string(),
-                    page.model_id.as_str().to_string(),
-                    element_name_of(page),
+                    block.model_id.as_str().to_string(),
+                    element_name_of(block),
                 )
             })
             .collect();
@@ -2511,6 +2511,6 @@ fn an_ungated_store_is_refused_before_it_is_served() {
 /// above into `None == None`. When the field goes this answers `None` for every entry, which is
 /// precisely the silent drop arm 1 is about -- and the assertion above compares against the golden's
 /// own recorded names rather than against whatever this returns.
-fn element_name_of(page: &BlockIndex) -> Option<String> {
+fn element_name_of(block: &BlockIndex) -> Option<String> {
     None::<String>
 }

@@ -489,7 +489,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
             let paged: std::collections::BTreeSet<u64> = bucket
                 .block_index
                 .iter()
-                .map(|(handle, page)| page.object_id(1, named.at(*routing_bucket, *handle)))
+                .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
                 .collect();
             let orphaned: Vec<u64> = bucket
                 .deleted_object_index
@@ -617,8 +617,8 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
             bucket
                 .block_index
                 .iter()
-                .filter(|(handle, page)| {
-                    page.object_id(1, named.at(routing_bucket, **handle)) == object_id
+                .filter(|(handle, block)| {
+                    block.object_id(1, named.at(routing_bucket, **handle)) == object_id
                 })
                 .count(),
             bucket.deleted(),
@@ -635,8 +635,8 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
             bucket
                 .block_index
                 .iter()
-                .filter(|(handle, page)| {
-                    page.object_id(1, named.at(routing_bucket, **handle)) == object_id
+                .filter(|(handle, block)| {
+                    block.object_id(1, named.at(routing_bucket, **handle)) == object_id
                 })
                 .count(),
             "a page in bucket {routing_bucket} still carries object {object_id}, so a per-page \

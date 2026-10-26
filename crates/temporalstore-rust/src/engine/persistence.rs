@@ -404,8 +404,8 @@ impl TemporalEngine {
         // resurrecting a stale persisted dirty flag.
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.set_dirty(false);
-            for page in bucket.block_index.blocks_mut_unaccounted() {
-                page.dirty = false;
+            for block in bucket.block_index.blocks_mut_unaccounted() {
+                block.dirty = false;
             }
         }
         refresh_bucket_runtime_flags(&mut shard);

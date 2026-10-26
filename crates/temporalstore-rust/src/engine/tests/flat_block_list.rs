@@ -130,7 +130,7 @@ impl Lengths {
         self.counts.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
@@ -164,7 +164,7 @@ impl Lengths {
         if self.buckets() == 0 {
             0.0
         } else {
-            self.pages() as f64 / self.buckets() as f64
+            self.blocks() as f64 / self.buckets() as f64
         }
     }
 
@@ -172,7 +172,7 @@ impl Lengths {
         println!(
             "  {label}: {} buckets, {} pages | p50 {} p90 {} p99 {} MAX {} | mean {:.4}",
             self.buckets(),
-            self.pages(),
+            self.blocks(),
             self.percentile(0.50),
             self.percentile(0.90),
             self.percentile(0.99),
@@ -313,7 +313,7 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
 /// and `block_index_handle` all take the identity as a PARAMETER, because the entry is losing its
 /// own copy. A fixture handing back a bare entry would force each caller to read the key off the
 /// page, which is the one thing this change removes.
-fn page(
+fn block(
     object_key: &str,
     component: Option<&str>,
     slab: u64,
@@ -336,10 +336,10 @@ fn page(
     )
 }
 
-fn built_from(pages: &[(std::sync::Arc<str>, BlockIndex)]) -> BlockIndexMap {
+fn built_from(blocks: &[(std::sync::Arc<str>, BlockIndex)]) -> BlockIndexMap {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    for (object_key, entry) in pages {
+    for (object_key, entry) in blocks {
         index.insert(object_key, entry.clone(), &mut live);
     }
     index
@@ -374,15 +374,15 @@ fn walk(index: &BlockIndexMap) -> Vec<u64> {
 /// rust-internal: page index ordering, no product behaviour
 #[test]
 fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
-    let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..24)
-        .map(|i| page("bag", Some(&format!("f{i}")), 1, i as u64 * 64))
+    let blocks: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..24)
+        .map(|i| block("bag", Some(&format!("f{i}")), 1, i as u64 * 64))
         .collect();
 
-    let forwards = walk(&built_from(&pages));
-    let mut backwards_input = pages.clone();
+    let forwards = walk(&built_from(&blocks));
+    let mut backwards_input = blocks.clone();
     backwards_input.reverse();
     let backwards = walk(&built_from(&backwards_input));
-    let mut shuffled_input = pages.clone();
+    let mut shuffled_input = blocks.clone();
     // A fixed permutation, not a random one: this has to fail the same way every run.
     shuffled_input
         .sort_by_key(|(object_key, entry)| block_index_handle(object_key, entry).rotate_left(29));
@@ -390,10 +390,10 @@ fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
 
     assert_eq!(
         forwards.len(),
-        pages.len(),
+        blocks.len(),
         "the fixture filed {} of {} pages, so the walk below is not over the set it claims",
         forwards.len(),
-        pages.len()
+        blocks.len()
     );
     assert_eq!(
         forwards, backwards,
@@ -432,14 +432,14 @@ fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
 fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..32)
-        .map(|i| page("bag", Some(&format!("g{i}")), 2, i as u64 * 64))
+    let blocks: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..32)
+        .map(|i| block("bag", Some(&format!("g{i}")), 2, i as u64 * 64))
         .collect();
-    for (object_key, entry) in &pages {
+    for (object_key, entry) in &blocks {
         index.insert(object_key, entry.clone(), &mut live);
     }
     let mut removed_any = false;
-    for (object_key, entry) in pages.iter().step_by(3) {
+    for (object_key, entry) in blocks.iter().step_by(3) {
         let handle = block_index_handle(object_key, entry);
         if index.remove(&handle, &mut live, crate::engine::state::StaleCause::Removed).is_some() {
             removed_any = true;
@@ -447,7 +447,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     }
     assert!(removed_any, "the fixture removed nothing, so nothing was exercised");
     for i in 32..48 {
-        let (object_key, entry) = page("bag", Some(&format!("g{i}")), 2, i as u64 * 64);
+        let (object_key, entry) = block("bag", Some(&format!("g{i}")), 2, i as u64 * 64);
         index.insert(&object_key, entry, &mut live);
     }
     let handles = walk(&index);
@@ -499,7 +499,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
     // displaced address charges without discharging and DOUBLE-COUNTS the page. One page filed twice
     // must leave one live ref, not two, and that is what this asserts.
     let mut index = BlockIndexMap::default();
-    let (only_key, only) = page("solo", None, 5, 128);
+    let (only_key, only) = block("solo", None, 5, 128);
     let first = index.insert(&only_key, only.clone(), &mut live);
     assert_eq!(
         1,
@@ -539,10 +539,10 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         // campaign keeps finding in a different costume, so the counter is scoped to what it counts.
         let mut live = BlockSlabLiveIndex::default();
         let mut index = BlockIndexMap::default();
-        let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..length)
-            .map(|i| page("bag", Some(&format!("h{i}")), 9, i as u64 * 64))
+        let blocks: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..length)
+            .map(|i| block("bag", Some(&format!("h{i}")), 9, i as u64 * 64))
             .collect();
-        for (object_key, entry) in &pages {
+        for (object_key, entry) in &blocks {
             index.insert(object_key, entry.clone(), &mut live);
         }
         assert_eq!(length, index.len(), "the fixture filed the wrong number of pages");
@@ -550,7 +550,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
             matches!(index, BlockIndexMap::Many(_)),
             "a list of {length} did not reach the Many arm"
         );
-        let (target_key, target) = &pages[length / 2];
+        let (target_key, target) = &blocks[length / 2];
         let handle = index.insert(target_key, target.clone(), &mut live);
         assert_eq!(
             length,
@@ -602,10 +602,10 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
 fn replacing_a_block_discharges_the_address_it_displaced() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    let pages: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..6)
-        .map(|i| page("bag", Some(&format!("k{i}")), 4, i as u64 * 64))
+    let blocks: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..6)
+        .map(|i| block("bag", Some(&format!("k{i}")), 4, i as u64 * 64))
         .collect();
-    for (object_key, entry) in &pages {
+    for (object_key, entry) in &blocks {
         index.insert(object_key, entry.clone(), &mut live);
     }
     let before = live.tally(4);
@@ -614,7 +614,7 @@ fn replacing_a_block_discharges_the_address_it_displaced() {
         "the fixture charged {} pages to slab 4, not the six it filed",
         before.block_refs
     );
-    let (replayed_key, replayed) = &pages[3];
+    let (replayed_key, replayed) = &blocks[3];
     index.insert(replayed_key, replayed.clone(), &mut live);
     let after = live.tally(4);
     assert_eq!(
@@ -636,14 +636,14 @@ fn replacing_a_block_discharges_the_address_it_displaced() {
 /// folded into the element would widen the very thing being measured and move both columns.
 fn sorted_list(length: usize) -> (std::sync::Arc<str>, Vec<(u64, BlockIndex)>) {
     let object_key: std::sync::Arc<str> = std::sync::Arc::from("bag");
-    let mut pages: Vec<(u64, BlockIndex)> = (0..length)
+    let mut blocks: Vec<(u64, BlockIndex)> = (0..length)
         .map(|i| {
-            let (_, entry) = page("bag", Some(&format!("m{i}")), 3, i as u64 * 64);
+            let (_, entry) = block("bag", Some(&format!("m{i}")), 3, i as u64 * 64);
             (block_index_handle(&object_key, &entry), entry)
         })
         .collect();
-    pages.sort_by_key(|(handle, _)| *handle);
-    (object_key, pages)
+    blocks.sort_by_key(|(handle, _)| *handle);
+    (object_key, blocks)
 }
 
 /// BOTH STRATEGIES ANSWER IDENTICALLY, AT EVERY LENGTH, ON EVERY KEY.
@@ -663,33 +663,33 @@ fn the_walk_and_the_bisection_answer_identically_at_every_length() {
     let mut hits = 0usize;
     let mut misses = 0usize;
     for length in 0..=48 {
-        let (_, pages) = sorted_list(length);
-        for (handle, _) in &pages {
+        let (_, blocks) = sorted_list(length);
+        for (handle, _) in &blocks {
             assert_eq!(
-                scan_block(&pages, handle),
-                bisect_block(&pages, handle),
+                scan_block(&blocks, handle),
+                bisect_block(&blocks, handle),
                 "the two strategies disagreed on a present handle at length {length}"
             );
             assert_eq!(
-                find_block(&pages, handle),
-                scan_block(&pages, handle),
+                find_block(&blocks, handle),
+                scan_block(&blocks, handle),
                 "the shipped lookup disagreed with the walk on a present handle at length {length}"
             );
             checked += 1;
             hits += 1;
         }
         for absent in [0u64, 1, u64::MAX, u64::MAX / 2, 0x5555_5555_5555_5555] {
-            if pages.iter().any(|(handle, _)| *handle == absent) {
+            if blocks.iter().any(|(handle, _)| *handle == absent) {
                 continue;
             }
             assert_eq!(
-                scan_block(&pages, &absent),
-                bisect_block(&pages, &absent),
+                scan_block(&blocks, &absent),
+                bisect_block(&blocks, &absent),
                 "the two strategies disagreed on an absent handle at length {length}"
             );
             assert_eq!(
-                find_block(&pages, &absent),
-                bisect_block(&pages, &absent),
+                find_block(&blocks, &absent),
+                bisect_block(&blocks, &absent),
                 "the shipped lookup disagreed with the bisection on an absent handle at length \
                  {length}"
             );
@@ -735,17 +735,17 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
     let mut rows = 0usize;
     let mut at_thirty_nine: Option<(f64, f64)> = None;
     for length in [1usize, 2, 3, 4, 6, 8, 12, 16, 24, 32, 39, 50, 64] {
-        let (_, pages) = sorted_list(length);
-        assert_eq!(length, pages.len(), "the fixture built a list of the wrong length");
+        let (_, blocks) = sorted_list(length);
+        assert_eq!(length, blocks.len(), "the fixture built a list of the wrong length");
         let walk_entries = counted(|| {
-            for (handle, _) in &pages {
-                let _ = std::hint::black_box(scan_block(&pages, handle));
+            for (handle, _) in &blocks {
+                let _ = std::hint::black_box(scan_block(&blocks, handle));
             }
         }) as f64
             / length as f64;
         let bisect_entries = counted(|| {
-            for (handle, _) in &pages {
-                let _ = std::hint::black_box(bisect_block(&pages, handle));
+            for (handle, _) in &blocks {
+                let _ = std::hint::black_box(bisect_block(&blocks, handle));
             }
         }) as f64
             / length as f64;
@@ -849,10 +849,10 @@ fn counted(body: impl FnOnce()) -> u64 {
 #[test]
 fn the_entry_counter_recovers_a_planted_walk_exactly() {
     const PLANTED: usize = 37;
-    let (_, pages) = sorted_list(PLANTED);
-    assert_eq!(PLANTED, pages.len(), "the fixture built the wrong list");
+    let (_, blocks) = sorted_list(PLANTED);
+    assert_eq!(PLANTED, blocks.len(), "the fixture built the wrong list");
     let touched = counted(|| {
-        let _ = std::hint::black_box(scan_block(&pages, &u64::MAX));
+        let _ = std::hint::black_box(scan_block(&blocks, &u64::MAX));
     });
     assert_eq!(
         PLANTED as u64, touched,
@@ -861,7 +861,7 @@ fn the_entry_counter_recovers_a_planted_walk_exactly() {
     // And the counter must move at all under the shipped door, or the production path is not the
     // path being counted.
     let through_the_door = counted(|| {
-        let _ = std::hint::black_box(find_block(&pages, &u64::MAX));
+        let _ = std::hint::black_box(find_block(&blocks, &u64::MAX));
     });
     assert!(
         through_the_door > 0,
@@ -994,24 +994,24 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
                     bucket
                         .block_index
                         .iter()
-                        .map(|(handle, page)| {
+                        .map(|(handle, block)| {
                             let key = named.get(handle).unwrap_or_else(|| {
                                 panic!(
                                     "the page at handle {handle} is named by nothing beside it,                                      so this fixture cannot hand it on"
                                 )
                             });
-                            (std::sync::Arc::clone(key), page.clone())
+                            (std::sync::Arc::clone(key), block.clone())
                         })
                         .collect()
                 })
-                .filter(|pages: &Vec<(std::sync::Arc<str>, BlockIndex)>| !pages.is_empty())
+                .filter(|blocks: &Vec<(std::sync::Arc<str>, BlockIndex)>| !blocks.is_empty())
                 .collect()
         };
-        let pages: usize = by_bucket.iter().map(|b| b.len()).sum();
+        let blocks: usize = by_bucket.iter().map(|b| b.len()).sum();
         assert_eq!(
-            pages,
+            blocks,
             keys.len(),
-            "{records}: the index holds {pages} pages for {} written keys, so the per-record \
+            "{records}: the index holds {blocks} pages for {} written keys, so the per-record \
              divisor below is not the fixture's",
             keys.len()
         );
@@ -1025,8 +1025,8 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let (tree_bytes, tree_allocs) = span_counts(|| {
             for bucket in &by_bucket {
                 let mut tree: BTreeMap<u64, BlockIndex> = BTreeMap::new();
-                for (object_key, page) in bucket {
-                    tree.insert(block_index_handle(object_key, page), page.clone());
+                for (object_key, block) in bucket {
+                    tree.insert(block_index_handle(object_key, block), block.clone());
                 }
                 trees.push(tree);
             }
@@ -1036,8 +1036,8 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let (list_bytes, list_allocs) = span_counts(|| {
             for bucket in &by_bucket {
                 let mut list = BlockIndexMap::default();
-                for (object_key, page) in bucket {
-                    list.insert_released(object_key, page.clone());
+                for (object_key, block) in bucket {
+                    list.insert_released(object_key, block.clone());
                 }
                 lists.push(list);
             }
@@ -1058,12 +1058,12 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let ratio = list_bytes as f64 / tree_bytes as f64;
         let alloc_ratio = list_allocs as f64 / tree_allocs as f64;
         println!(
-            "  {records:>8} {:>8} {pages:>9} {:>12.2} {:>12.4} {:>12.2} {:>12.4} {ratio:>9.3}",
+            "  {records:>8} {:>8} {blocks:>9} {:>12.2} {:>12.4} {:>12.2} {:>12.4} {ratio:>9.3}",
             by_bucket.len(),
-            tree_bytes as f64 / pages as f64,
-            tree_allocs as f64 / pages as f64,
-            list_bytes as f64 / pages as f64,
-            list_allocs as f64 / pages as f64
+            tree_bytes as f64 / blocks as f64,
+            tree_allocs as f64 / blocks as f64,
+            list_bytes as f64 / blocks as f64,
+            list_allocs as f64 / blocks as f64
         );
         ratios.push((records, ratio, alloc_ratio));
         std::hint::black_box(&trees);
@@ -1115,20 +1115,20 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     let mut rows = 0usize;
     let mut worst = 0.0f64;
     for length in [3usize, 8, 12, 20, 33, 39, 50, 65] {
-        let (object_key, pages) = sorted_list(length);
+        let (object_key, blocks) = sorted_list(length);
 
         // What `Vec`'s own growth leaves: push one at a time, no reserve.
         let mut doubling: Vec<(u64, BlockIndex)> = Vec::new();
         let (doubling_bytes, doubling_allocs) = span_counts(|| {
-            for entry in &pages {
+            for entry in &blocks {
                 doubling.push(entry.clone());
             }
         });
 
         let mut stepped = BlockIndexMap::default();
         let (stepped_bytes, stepped_allocs) = span_counts(|| {
-            for (_, page) in &pages {
-                stepped.insert_released(&object_key, page.clone());
+            for (_, block) in &blocks {
+                stepped.insert_released(&object_key, block.clone());
             }
         });
 
@@ -1168,10 +1168,10 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     // THE SLACK ITSELF, off the live list rather than a clone: `Vec::clone` takes exactly `len`
     // capacity, so a clone cannot see the thing this policy exists to bound.
     for length in [3usize, 12, 20, 33, 39, 50, 65] {
-        let (object_key, pages) = sorted_list(length);
+        let (object_key, blocks) = sorted_list(length);
         let mut list = BlockIndexMap::default();
-        for (_, page) in &pages {
-            list.insert_released(&object_key, page.clone());
+        for (_, block) in &blocks {
+            list.insert_released(&object_key, block.clone());
         }
         let slack = match &list {
             BlockIndexMap::Many(entries) => entries.capacity() - entries.len(),
@@ -1180,7 +1180,7 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
         // What `Vec`'s doubling would have left at the same length -- the value this band must
         // EXCLUDE, or it is a band around nothing.
         let mut doubling: Vec<(u64, BlockIndex)> = Vec::new();
-        for entry in &pages {
+        for entry in &blocks {
             doubling.push(entry.clone());
         }
         let doubling_slack = doubling.capacity() - doubling.len();
@@ -1258,8 +1258,8 @@ enum MirrorInlineArm {
 #[ignore = "the counting allocator is process-wide; run by name"]
 fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it_would() {
     // --- What the inline entry SAVED a bucket that holds one page: the whole heap cost of it. ---
-    let (object_key, pages) = sorted_list(1);
-    let single = pages[0].1.clone();
+    let (object_key, blocks) = sorted_list(1);
+    let single = blocks[0].1.clone();
     let mut listed = BlockIndexMap::default();
     listed.insert_released(&object_key, single.clone());
     assert!(
@@ -1441,11 +1441,11 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
 /// rust-internal: page index wire shape, no product behaviour
 #[test]
 fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
-    let (object_key, pages) = sorted_list(24);
+    let (object_key, blocks) = sorted_list(24);
 
     let mut list = BlockIndexMap::default();
     let mut live = BlockSlabLiveIndex::default();
-    for (_, entry) in &pages {
+    for (_, entry) in &blocks {
         list.insert(&object_key, entry.clone(), &mut live);
     }
     // ONE OBJECT NAMES THE WHOLE LIST: `sorted_list` builds components of `bag`.
@@ -1460,7 +1460,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     // Filled in a different order, it must write the identical bytes -- which is the on-disk face
     // of the ordering guard above.
     let mut backwards = BlockIndexMap::default();
-    for (_, entry) in pages.iter().rev() {
+    for (_, entry) in blocks.iter().rev() {
         backwards.insert(&object_key, entry.clone(), &mut live);
     }
     let written_backwards =
@@ -1488,7 +1488,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
 
     // INJECTION CONTROL: a single altered page must move the bytes.
     let mut injected = BlockIndexMap::default();
-    for (at, (_, entry)) in pages.iter().enumerate() {
+    for (at, (_, entry)) in blocks.iter().enumerate() {
         let mut entry = entry.clone();
         if at == 7 {
             entry.deleted = true;
@@ -1616,7 +1616,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         let mut object_keys = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             let named = crate::engine::state::block_identities_in(bucket, &keys);
-            for (handle, _page) in &bucket.block_index {
+            for (handle, _block) in &bucket.block_index {
                 handles.insert(*handle);
                 object_keys.insert(
                     named
@@ -1662,9 +1662,9 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
             );
             let mut found = None;
             for bucket in shard.bucket_index.bucket_map.values() {
-                if let Some((handle, page)) = bucket.block_index.iter().next() {
+                if let Some((handle, block)) = bucket.block_index.iter().next() {
                     let beside = keys
-                        .identity_of(bucket, *handle, page)
+                        .identity_of(bucket, *handle, block)
                         .expect("the page the index holds is named beside it");
                     found =
                         Some((bucket.routing_bucket, *handle, beside.object_key.to_string()));

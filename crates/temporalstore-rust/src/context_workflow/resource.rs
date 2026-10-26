@@ -739,8 +739,8 @@ fn ceil_char_boundary(value: &str, mut index: usize) -> usize {
 }
 
 fn context_resource_source_ref(raw_uri: &str, metadata: &BTreeMap<String, String>) -> String {
-    let mut suffix = if let Some(page) = metadata.get("page") {
-        format!("page={page}")
+    let mut suffix = if let Some(block) = metadata.get("page") {
+        format!("page={block}")
     } else if let Some(heading_slug) = metadata.get("heading_slug") {
         format!("heading={heading_slug}")
     } else if let Some(paragraph_index) = metadata.get("paragraph_index") {

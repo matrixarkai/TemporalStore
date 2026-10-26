@@ -163,18 +163,18 @@ fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) 
     let mut addresses = BTreeSet::new();
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted
-                || page.model_id.as_str() != kind
+        for (handle, block) in &bucket.block_index {
+            if block.deleted
+                || block.model_id.as_str() != kind
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
             entries += 1;
             addresses.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
         }
     }
@@ -268,14 +268,14 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     let before: Vec<(&str, usize, usize)> = ["hash", "set", "zset", "list"]
         .into_iter()
         .map(|kind| {
-            let (pages, entries) = addresses_and_entries(&engine, kind, "folded");
-            (kind, pages, entries)
+            let (blocks, entries) = addresses_and_entries(&engine, kind, "folded");
+            (kind, blocks, entries)
         })
         .collect();
-    for (kind, pages, entries) in &before {
+    for (kind, blocks, entries) in &before {
         assert_eq!(
-            FOLDABLE_ELEMENTS, *pages,
-            "{kind} started with {pages} pages for {FOLDABLE_ELEMENTS} elements, so the fixture is \
+            FOLDABLE_ELEMENTS, *blocks,
+            "{kind} started with {blocks} pages for {FOLDABLE_ELEMENTS} elements, so the fixture is \
              not the one-page-per-element shape this test folds"
         );
         assert_eq!(FOLDABLE_ELEMENTS, *entries);
@@ -397,7 +397,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
 #[test]
 fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let fields: Vec<(String, Vec<u8>)> = (0..FOLDABLE_ELEMENTS)
         .map(|index| (format!("f{index:04}"), bytes_of(VALUE_WIDTH, index)))
@@ -419,7 +419,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            &pages,
+            &blocks,
             &indexes,
         );
         load_on(&engine);
@@ -524,7 +524,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
-        &pages,
+        &blocks,
         &indexes,
     );
     crate::engine::reset_corrupt_container_block_count();
@@ -919,20 +919,20 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
             let mut seen = BTreeSet::new();
             let mut total = 0u64;
             for bucket in shard.bucket_index.bucket_map.values() {
-                for (handle, page) in &bucket.block_index {
-                    if page.deleted
-                        || page.model_id.as_str() != kind
+                for (handle, block) in &bucket.block_index {
+                    if block.deleted
+                        || block.model_id.as_str() != kind
                         || &**named.at(bucket.routing_bucket, *handle) != "priced"
                     {
                         continue;
                     }
                     let identity = (
-                        page.address.block_slab_id(),
-                        page.address.offset(),
-                        page.address.length(),
+                        block.address.block_slab_id(),
+                        block.address.offset(),
+                        block.address.length(),
                     );
                     if seen.insert(identity) {
-                        total += page.address.length();
+                        total += block.address.length();
                     }
                 }
             }

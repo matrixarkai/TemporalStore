@@ -812,7 +812,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         deleted: false,
     };
     let encoded = serde_json::to_string(&crate::engine::state::BlockEntryAt {
-        page: &nameless_entry,
+        block: &nameless_entry,
     })
     .expect("a page entry serializes");
     assert!(
@@ -1410,7 +1410,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
         let named = super::BlockObjects::of(&index);
         let mut rows = Vec::new();
         for bucket in index.bucket_map.values() {
-            for (allocated, page) in bucket.block_index.iter() {
+            for (allocated, block) in bucket.block_index.iter() {
                 rows.push((
                     // FROM THE NODE, WHICH IS WHERE THE BUCKET LIVES. This read
                     // `page.routing_bucket` until that field left the entry in
@@ -1418,12 +1418,12 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
                     // that still holds it, so the census row is unchanged. The object
                     // key is the same move one field later.
                     bucket.routing_bucket,
-                    page.model_id.as_str().to_string(),
+                    block.model_id.as_str().to_string(),
                     named.at(bucket.routing_bucket, *allocated).as_ref().to_string(),
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
-                    page.deleted,
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                    block.deleted,
                     *allocated,
                 ));
             }

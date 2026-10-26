@@ -86,11 +86,11 @@ fn write_corpus(engine: &TemporalEngine) {
 #[test]
 fn a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names() {
     let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
 
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
     engine.load_shard(SHARD);
     write_corpus(&engine);
 
@@ -122,7 +122,7 @@ fn a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_inde
     // file was ever materialized (no unload, no compaction), so the base watermark is 0 and the
     // durable manifest above is newer -- which is the arm being measured.
     let restarted =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &blocks, &indexes);
     restarted.load_shard(SHARD);
 
     let strings_after = readable_strings(&restarted);

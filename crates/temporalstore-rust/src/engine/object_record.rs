@@ -548,7 +548,7 @@ impl ObjectRecord {
             ),
         };
         let layout = BlockLayout {
-            pages: vec![StoredBlock {
+            blocks: vec![StoredBlock {
                 address: address.address_word(),
                 length: page_size,
                 block_id: block_id.unwrap_or_default(),
@@ -589,15 +589,15 @@ impl ObjectRecord {
             BlockAddress::Many(handle) => {
                 let layout =
                     layout.ok_or(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })?;
-                let page = layout
-                    .pages
+                let block = layout
+                    .blocks
                     .first()
                     .ok_or(ObjectRecordRefusal::LayoutHandleWithNoLayout { handle })?;
                 (
-                    page.address,
-                    u64::from(page.length),
-                    page.has_block_id.then_some(u64::from(page.block_id)),
-                    page.has_generation,
+                    block.address,
+                    u64::from(block.length),
+                    block.has_block_id.then_some(u64::from(block.block_id)),
+                    block.has_generation,
                 )
             }
         };
@@ -616,16 +616,17 @@ impl ObjectRecord {
 /// The pages of a multi-page object, named by a record whose address word is a handle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct BlockLayout {
-    pages: Vec<StoredBlock>,
+    #[serde(rename = "pages")]
+    blocks: Vec<StoredBlock>,
 }
 
 impl BlockLayout {
     pub(super) fn len(&self) -> usize {
-        self.pages.len()
+        self.blocks.len()
     }
 
     pub(super) fn is_empty(&self) -> bool {
-        self.pages.is_empty()
+        self.blocks.is_empty()
     }
 }
 

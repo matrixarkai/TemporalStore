@@ -186,18 +186,18 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     let mut tombstone_entries = 0usize;
     let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != "folded"
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstone_entries += 1;
             } else {
                 live_entries += 1;
             }
-            addresses.push(page.address.clone());
+            addresses.push(block.address.clone());
         }
     }
 

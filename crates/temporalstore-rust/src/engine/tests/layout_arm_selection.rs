@@ -249,18 +249,18 @@ fn population(engine: &TemporalEngine) -> Population {
         out.arms.insert(arm, (0, 0));
     }
     for node in shard.bucket_index.bucket_map.values() {
-        let pages = node.block_index.len();
+        let blocks = node.block_index.len();
         let objects = node.object_index.object_count();
         let slot = out
             .arms
-            .entry(arm_name(classify_bucket_layout(objects, pages)))
+            .entry(arm_name(classify_bucket_layout(objects, blocks)))
             .or_default();
         slot.0 += 1;
-        slot.1 += pages;
+        slot.1 += blocks;
         out.total_buckets += 1;
-        out.total_blocks += pages;
-        if pages > 0 {
-            out.blocks_per_bucket.push(pages);
+        out.total_blocks += blocks;
+        if blocks > 0 {
+            out.blocks_per_bucket.push(blocks);
             out.objects_per_bucket.push(objects);
         }
         for (handle, entry) in &node.block_index {
@@ -402,9 +402,9 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             let mut arm_blocks = 0usize;
             let mut live_arms = 0usize;
             for arm in EVERY_ARM {
-                let (buckets, pages) = pop.arms.get(arm).copied().unwrap_or_default();
+                let (buckets, blocks) = pop.arms.get(arm).copied().unwrap_or_default();
                 arm_buckets += buckets;
-                arm_blocks += pages;
+                arm_blocks += blocks;
                 if buckets > 0 {
                     live_arms += 1;
                 }
@@ -416,10 +416,10 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 let block_share = if pop.total_blocks == 0 {
                     0.0
                 } else {
-                    pages as f64 * 100.0 / pop.total_blocks as f64
+                    blocks as f64 * 100.0 / pop.total_blocks as f64
                 };
                 println!(
-                    "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {pages:>8} pages ({block_share:>7.3}% of {})",
+                    "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {blocks:>8} pages ({block_share:>7.3}% of {})",
                     pop.total_buckets, pop.total_blocks
                 );
                 if arm == "multi_page_object" {
@@ -644,18 +644,18 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             let mut blocks_represented_wrongly = 0usize;
 
             for keys in &breakdown {
-                let pages: usize = keys.iter().sum();
+                let blocks: usize = keys.iter().sum();
                 let distinct = keys.len();
                 let singles = keys.iter().filter(|count| **count == 1).count();
                 let multis = distinct - singles;
                 if singles > 0 && multis > 0 {
                     mixed_buckets += 1;
-                    blocks_in_mixed_buckets += pages;
+                    blocks_in_mixed_buckets += blocks;
                 }
 
-                let today = (pages * name_width) as i64;
+                let today = (blocks * name_width) as i64;
                 let listed =
-                    (distinct * name_width + pages * ORDINAL + LIST_HEADER) as i64;
+                    (distinct * name_width + blocks * ORDINAL + LIST_HEADER) as i64;
                 let bucket_best = today.min(listed);
                 per_bucket_saving += today - bucket_best;
 

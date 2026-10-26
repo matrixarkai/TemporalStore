@@ -1413,27 +1413,27 @@ impl TemporalEngine {
         let mut out = String::new();
         let identities = shard.bucket_index.block_identities();
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (block_ref_key, page) in &bucket.block_index {
+            for (block_ref_key, block) in &bucket.block_index {
                 // A page whose neighbours do not name an object prints an empty key and a zero
                 // id, which is what this shape has to say about a page nothing names.
-                let beside = identities.identity_of(bucket, *block_ref_key, page);
+                let beside = identities.identity_of(bucket, *block_ref_key, block);
                 let object_key = beside
                     .as_ref()
                     .map_or("", |beside| beside.object_key.as_ref());
                 let object_id = beside
                     .as_ref()
-                    .map_or(0, |beside| page.object_id(shard_id, beside.object_key));
+                    .map_or(0, |beside| block.object_id(shard_id, beside.object_key));
                 out.push_str(&format!(
                     "bucket={routing_bucket} ref={block_ref_key} kind={} key={} object_id={} slab={} off={} len={} deleted={} log_backed={}
 ",
-                    page.model_id,
+                    block.model_id,
                     object_key,
                     object_id,
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
-                    page.deleted,
-                    page.log_backed(),
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                    block.deleted,
+                    block.log_backed(),
                 ));
             }
         }
@@ -1656,9 +1656,9 @@ impl TemporalEngine {
         let mut localised = Vec::with_capacity(outcomes.len());
         for item in outcomes {
             let mut item = item.clone();
-            if let (Some(address), Some(page)) = (
+            if let (Some(address), Some(block)) = (
                 item.resolved_address(),
-                carried.iter().find(|page| page.object_id == item.object_id),
+                carried.iter().find(|block| block.object_id == item.object_id),
             ) {
                 if self.block_store.read(&address).is_err() {
                     // The bytes are not here, and the entry brought them. Write them and install
@@ -1667,12 +1667,12 @@ impl TemporalEngine {
                         &self.cache,
                         &self.block_store,
                         shard_id,
-                        &page.bytes,
+                        &block.bytes,
                         Some(item.object_id),
                         // Taken off the carried block rather than re-derived: this arm is
                         // installing the block the record carried, so the element it is
                         // installing is the one the record says it is.
-                        page.component.as_deref(),
+                        block.component.as_deref(),
                         Some(item.routing_bucket),
                         false,
                     ) {
@@ -1791,7 +1791,7 @@ impl TemporalEngine {
         };
         let mut of_this_object = carried
             .iter()
-            .filter(|page| page.object_id == item.object_id);
+            .filter(|block| block.object_id == item.object_id);
         let bytes = match (of_this_object.next(), of_this_object.next()) {
             (Some(only), None) => only.bytes.clone(),
             // READ THROUGH THE STORE AND NOT THE READ FUNNEL, deliberately. The funnel resolves a
@@ -1903,9 +1903,9 @@ impl TemporalEngine {
         // RESOLVED BEFORE THE SHARD LOCK IS TAKEN, because it can read the block store and holding
         // the shard write guard across an I/O would serialise every reader of the shard behind a
         // replay. The arms below need no lock to decide they do not want it.
-        let page = self.elements_the_outcome_block_holds(item, carried);
-        let live = page.element_names(item, false);
-        let removed = page.element_names(item, true);
+        let block = self.elements_the_outcome_block_holds(item, carried);
+        let live = block.element_names(item, false);
+        let removed = block.element_names(item, true);
         let mut shards = self.shards.write().expect("engine lock poisoned");
         let Some(shard) = shards.get_mut(&shard_id) else {
             return false;
@@ -2716,8 +2716,8 @@ impl TemporalEngine {
             }
         }
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
-                check(&page.address);
+            for block in bucket.block_index.values() {
+                check(&block.address);
             }
         }
         count
@@ -2778,17 +2778,17 @@ impl TemporalEngine {
         }
         let identities = shard.bucket_index.block_identities();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, page) in bucket.block_index.iter() {
-                if page.deleted {
+            for (handle, block) in bucket.block_index.iter() {
+                if block.deleted {
                     continue;
                 }
                 // A LIVE page is named by the object lookup, which the decode fills -- so the
                 // `else` here is the window between a decode and that filing, which no longer
                 // exists on any path that reaches this.
-                let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+                let Some(beside) = identities.identity_of(bucket, *handle, block) else {
                     continue;
                 };
-                let object_id = page.object_id(shard_id, beside.object_key);
+                let object_id = block.object_id(shard_id, beside.object_key);
                 // `None`: an entry names a page, not an element. See this function's doc for what
                 // that skips and why skipping is the safe direction.
                 let component = None;
@@ -3035,15 +3035,15 @@ impl TemporalEngine {
                         );
                         // The same fact written where it survives this process, so a later reload
                         // rehydrates it instead of rediscovering that it cannot.
-                        wal_resident_updates.extend(record.staged_blocks.iter().map(|page| {
+                        wal_resident_updates.extend(record.staged_blocks.iter().map(|block| {
                             (
                                 // The record says which element each block is, so replay files one
                                 // entry PER BLOCK. Keyed on the object alone, a record carrying
                                 // several elements of one key would file one entry and the blocks
                                 // that lost would be unreachable after the next reload.
                                 super::block_in_wal::wal_resident_key(
-                                    page.object_id,
-                                    page.component.as_deref(),
+                                    block.object_id,
+                                    block.component.as_deref(),
                                 ),
                                 crate::engine::state::WalResidentBlock {
                                     log_id,
@@ -3088,7 +3088,7 @@ impl TemporalEngine {
                             // RESOLVED A SECOND TIME, DELIBERATELY. It costs a page read on a path
                             // that is about to refuse the whole load, and the alternative is
                             // threading a diagnostic out of eighteen `false` returns.
-                            let page = self
+                            let block = self
                                 .elements_the_outcome_block_holds(item, &record.staged_blocks)
                                 .why()
                                 .to_string();
@@ -3099,7 +3099,7 @@ impl TemporalEngine {
                                     item.kind,
                                     record.sequence,
                                     if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },
-                                    page,
+                                    block,
                                     component
                                 ),
                             ));

@@ -191,7 +191,7 @@ impl BlocksPerBucket {
         self.counts.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
@@ -200,7 +200,7 @@ impl BlocksPerBucket {
         if buckets == 0 {
             return 0.0;
         }
-        self.pages() as f64 / buckets as f64
+        self.blocks() as f64 / buckets as f64
     }
 
     fn max(&self) -> usize {
@@ -247,7 +247,7 @@ impl BlocksPerBucket {
         println!(
             "  {label}: {buckets} occupied buckets over {} pages | mean {:.4} min {} p50 {} \
              p90 {} p99 {} MAX {} | buckets holding >1 page: {} of {buckets}",
-            self.pages(),
+            self.blocks(),
             self.mean(),
             self.min(),
             self.percentile(0.50),
@@ -276,7 +276,7 @@ impl BlocksPerBucket {
             "  {label:<34} buckets {:>6} pages {:>6} | mean {:>8.3} p50 {:>5} p90 {:>5} \
              p99 {:>5} MAX {:>5}",
             self.buckets(),
-            self.pages(),
+            self.blocks(),
             self.mean(),
             self.percentile(0.50),
             self.percentile(0.90),
@@ -369,10 +369,10 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
             let arms = block_index_arms(&engine);
             assert_eq!(
                 records,
-                hist.pages(),
+                hist.blocks(),
                 "on 0..{end_routing_bucket} at {records} records the index holds {} pages for \
                  {records} one-page records; the denominator is not what it is read as",
-                hist.pages()
+                hist.blocks()
             );
             let label = if end_routing_bucket == WIDE_END {
                 "0..u32::MAX (shipped default)".to_string()
@@ -791,7 +791,7 @@ struct Arm {
     chunk_bytes: u64,
     allocs: u64,
     buckets: usize,
-    pages: usize,
+    blocks: usize,
     records: usize,
     arms: (usize, usize, usize),
     fill_p50: usize,
@@ -870,7 +870,7 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
                     chunk_bytes,
                     allocs,
                     buckets: hist.buckets(),
-                    pages: hist.pages(),
+                    blocks: hist.blocks(),
                     records,
                     arms,
                     fill_p50: hist.percentile(0.50),
@@ -900,11 +900,11 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
         for end_routing_bucket in swept_ranges() {
             let arm = observed.get(&(records, end_routing_bucket)).expect("arm ran");
             assert_eq!(
-                arm.pages, arm.records,
+                arm.blocks, arm.records,
                 "on 0..{end_routing_bucket} at {records} records the index holds {} pages for \
                  {records} records; a per-record figure over a different page count is two \
                  questions",
-                arm.pages
+                arm.blocks
             );
             let label = if end_routing_bucket == WIDE_END {
                 "0..u32::MAX (shipped)".to_string()
@@ -1221,14 +1221,14 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
         println!(
             "  {label:<24} {} occupied buckets, {} pages, p50 {} MAX {} | arms E{} O{} M{}",
             hist.buckets(),
-            hist.pages(),
+            hist.blocks(),
             hist.percentile(0.50),
             hist.max(),
             arms.0,
             arms.1,
             arms.2
         );
-        observed.insert(end_routing_bucket, (hist.buckets(), hist.pages(), hist.max()));
+        observed.insert(end_routing_bucket, (hist.buckets(), hist.blocks(), hist.max()));
     }
 
     // NON-VACUITY FIRST: the fixture has to have written blocks, or "no effect" is the effect of
@@ -1247,12 +1247,12 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
 
     // AND THE PREDICTION: identical at every range, element for element.
     for end_routing_bucket in swept_ranges() {
-        let (buckets, pages, max) = *observed.get(&end_routing_bucket).expect("arm ran");
+        let (buckets, blocks, max) = *observed.get(&end_routing_bucket).expect("arm ran");
         assert_eq!(
             (1, wide_blocks, wide_max),
-            (buckets, pages, max),
+            (buckets, blocks, max),
             "on 0..{end_routing_bucket} a store of one object key occupied {buckets} buckets \
-             holding {pages} pages with a widest of {max}, against the shipped default's 1 \
+             holding {blocks} pages with a widest of {max}, against the shipped default's 1 \
              bucket, {wide_blocks} pages, widest {wide_max}. Routing takes the object key and \
              never the component, so the range cannot split one key -- if it did here, the \
              mechanism every figure in this module is attributed to is not the mechanism"

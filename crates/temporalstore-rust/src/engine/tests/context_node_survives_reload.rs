@@ -268,13 +268,13 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
     let mut index_entries_for_node = Vec::new();
     let mut index_entries_for_control = 0usize;
     for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, page) in &bucket.block_index {
+        for (handle, block) in &bucket.block_index {
             let object_key = named.at(*bucket_id, *handle);
             if object_key.as_ref() == node_key {
                 index_entries_for_node.push((
-                    page.model_id.to_string(),
+                    block.model_id.to_string(),
                     None::<String>,
-                    page.deleted,
+                    block.deleted,
                 ));
             }
             if object_key.as_ref() == "control-hash" {
@@ -392,7 +392,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut index_names_orphan = false;
     for (bucket_id, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, _page) in &bucket.block_index {
+        for (handle, _block) in &bucket.block_index {
             if named.at(*bucket_id, *handle).as_ref() == "orphan-object" {
                 index_names_orphan = true;
             }

@@ -269,13 +269,13 @@ fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> 
         &shard.bucket_index.object_block_lookup,
     );
     let mut entries = 0usize;
-    let mut pages: BTreeSet<(u64, u64, u64)> = BTreeSet::new();
+    let mut blocks: BTreeSet<(u64, u64, u64)> = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted {
+        for (handle, block) in &bucket.block_index {
+            if block.deleted {
                 continue;
             }
-            if page.model_id.as_str() != kind {
+            if block.model_id.as_str() != kind {
                 continue;
             }
             match keys.live_identity(bucket.routing_bucket, *handle) {
@@ -283,14 +283,14 @@ fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> 
                 _ => continue,
             }
             entries += 1;
-            pages.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+            blocks.insert((
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
         }
     }
-    (entries, pages.len())
+    (entries, blocks.len())
 }
 
 /// THE BATCHING ARITHMETIC THE WHOLE MODULE IS ABOUT, IN ONE FUNCTION.
@@ -430,7 +430,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                 let mut entry_hist = Hist::default();
                 let mut block_hist = Hist::default();
                 for key in keys {
-                    let (entries, pages) = entries_and_blocks(&engine, kind, key);
+                    let (entries, blocks) = entries_and_blocks(&engine, kind, key);
                     assert!(
                         entries > 0,
                         "denominator: kind {kind} key {key} holds no live page entry at \
@@ -438,7 +438,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                          from it below is a zero presented as a measurement"
                     );
                     entry_hist.add(entries);
-                    block_hist.add(pages);
+                    block_hist.add(blocks);
                     per_range
                         .entry((end_routing_bucket, elements, kind))
                         .or_default()
@@ -565,11 +565,11 @@ fn block_at_for_object(
     offset: u64,
     length: u64,
 ) -> (std::sync::Arc<str>, BlockIndex) {
-    let (_, page) = block_at(slab, offset, length);
+    let (_, block) = block_at(slab, offset, length);
     (
         std::sync::Arc::from(object_key),
         BlockIndex {
-            ..page
+            ..block
         },
     )
 }
@@ -793,11 +793,11 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
                 bucket
                     .block_index
                     .iter()
-                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
-            .filter(|(routing_bucket, handle, page)| {
-                !page.deleted
-                    && page.model_id.as_str() == kind
+            .filter(|(routing_bucket, handle, block)| {
+                !block.deleted
+                    && block.model_id.as_str() == kind
                     && keys
                         .live_identity(*routing_bucket, *handle)
                         .is_some_and(|(_, named)| &**named == key)
@@ -817,11 +817,11 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
             bucket
                 .block_index
                 .iter()
-                .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
         })
-        .filter(|(routing_bucket, handle, page)| {
-            !page.deleted
-                && page.model_id.as_str() == "feature"
+        .filter(|(routing_bucket, handle, block)| {
+            !block.deleted
+                && block.model_id.as_str() == "feature"
                 && keys
                     .live_identity(*routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == "fold-f")
@@ -907,16 +907,16 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
                 bucket
                     .block_index
                     .iter()
-                    .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                    .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
-            .filter(|(routing_bucket, handle, page)| {
-                !page.deleted
-                    && page.model_id.as_str() == "hash"
+            .filter(|(routing_bucket, handle, block)| {
+                !block.deleted
+                    && block.model_id.as_str() == "hash"
                     && keys
                         .live_identity(*routing_bucket, *handle)
                         .is_some_and(|(_, named)| &**named == "read-h")
             })
-            .map(|(_, _, page)| page.address.length())
+            .map(|(_, _, block)| block.address.length())
             .collect::<Vec<_>>();
         assert_eq!(
             lengths.len(),
@@ -1051,10 +1051,10 @@ fn the_string_control_has_nothing_for_batching_to_win() {
     let mut total_entries = 0usize;
     for k in 0..KEYS_PER_KIND {
         let key = format!("s{k}");
-        let (entries, pages) = entries_and_blocks(&engine, "string", &key);
+        let (entries, blocks) = entries_and_blocks(&engine, "string", &key);
         assert_eq!(
-            pages, 1,
-            "a string key must hold its value over one page; {key} holds {pages}"
+            blocks, 1,
+            "a string key must hold its value over one page; {key} holds {blocks}"
         );
         total_entries += entries;
         rows += 1;
@@ -1120,7 +1120,7 @@ fn the_control_assertion_goes_red_when_the_projection_moves_the_row() {
             .collect(),
     );
 
-    let (entries, _pages) = entries_and_blocks(&engine, "hash", "control-perturbed");
+    let (entries, _blocks) = entries_and_blocks(&engine, "hash", "control-perturbed");
     assert_eq!(
         entries, SMALL_ELEMENTS,
         "the perturbation fixture filed {entries} entries for {SMALL_ELEMENTS} fields, so it is \

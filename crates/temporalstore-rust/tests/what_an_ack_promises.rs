@@ -214,12 +214,12 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
         }
         counts.blocks_in_the_record += record.staged_blocks.len();
         // Which pages this record carries, keyed as the page itself spells its identity.
-        let mut pages: HashMap<(u64, Option<String>), usize> = HashMap::new();
-        for page in &record.staged_blocks {
-            *pages
+        let mut blocks: HashMap<(u64, Option<String>), usize> = HashMap::new();
+        for block in &record.staged_blocks {
+            *blocks
                 .entry((
-                    page.object_id,
-                    page.component.as_ref().map(|c| c.to_string()),
+                    block.object_id,
+                    block.component.as_ref().map(|c| c.to_string()),
                 ))
                 .or_default() += 1;
         }
@@ -244,8 +244,8 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
             }
             // Nothing in the result says what the value is and there is no operation to re-run,
             // so the only way back is a page for THIS result inside THIS record.
-            let carried = pages.contains_key(&(item.object_id, item.component.clone()))
-                || pages.contains_key(&(item.object_id, None));
+            let carried = blocks.contains_key(&(item.object_id, item.component.clone()))
+                || blocks.contains_key(&(item.object_id, None));
             if !carried {
                 counts.results_with_no_way_back += 1;
             }

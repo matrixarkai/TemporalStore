@@ -207,14 +207,14 @@ fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<Strin
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted || page.model_id.as_str() != kind {
+        for (handle, block) in &bucket.block_index {
+            if block.deleted || block.model_id.as_str() != kind {
                 continue;
             }
             let at = (
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             );
             held.push((
                 named.at(bucket.routing_bucket, *handle).to_string(),
@@ -443,15 +443,15 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     println!("  kind    grouped by        pages  groups  p50  p90  p99  MAX  unreachable   share");
     let mut rows: Vec<(&str, &str, usize, usize)> = Vec::new();
     for kind in ["hash", "string"] {
-        let pages = live_blocks(&engine, kind);
+        let blocks = live_blocks(&engine, kind);
         assert!(
-            !pages.is_empty(),
+            !blocks.is_empty(),
             "DENOMINATOR: no {kind} pages were exercised, so every share below is 0.00% for the \
              wrong reason"
         );
         for grouping in ["id alone", "id + element"] {
             let mut groups: BTreeMap<(u64, Option<String>), usize> = BTreeMap::new();
-            for (object_key, component) in &pages {
+            for (object_key, component) in &blocks {
                 let id = stable_block_object_id(1, kind, object_key);
                 let term = if grouping == "id alone" {
                     None
@@ -463,10 +463,10 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
             let mut sizes: Vec<usize> = groups.values().copied().collect();
             sizes.sort();
             let unreachable: usize = sizes.iter().map(|size| size.saturating_sub(1)).sum();
-            let share = 100.0 * unreachable as f64 / pages.len() as f64;
+            let share = 100.0 * unreachable as f64 / blocks.len() as f64;
             println!(
                 "  {kind:<6}  {grouping:<16} {:>5} {:>7} {:>4} {:>4} {:>4} {:>4} {:>12} {share:>6.2}%",
-                pages.len(),
+                blocks.len(),
                 sizes.len(),
                 percentile(&sizes, 50.0),
                 percentile(&sizes, 90.0),
@@ -474,7 +474,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
                 sizes.last().copied().unwrap_or(0),
                 unreachable
             );
-            rows.push((kind, grouping, pages.len(), unreachable));
+            rows.push((kind, grouping, blocks.len(), unreachable));
         }
     }
 
@@ -585,13 +585,13 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
         let mut with_ordinal = 0usize;
         let mut durable = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
-            for page in bucket.block_index.values() {
-                if page.deleted || page.model_id.as_str() != "hash" {
+            for block in bucket.block_index.values() {
+                if block.deleted || block.model_id.as_str() != "hash" {
                     continue;
                 }
-                if crate::wal_record::is_wal_resident(page.address.block_slab_id()) {
+                if crate::wal_record::is_wal_resident(block.address.block_slab_id()) {
                     resident += 1;
-                    if page.address.block_id().is_some() {
+                    if block.address.block_id().is_some() {
                         with_ordinal += 1;
                     }
                 } else {
@@ -668,7 +668,7 @@ fn what_an_element_named_block_adds_to_the_record() {
         }
     }
 
-    fn record_of(pages: usize, component: Option<&str>, payload: usize) -> WriteAheadLogRecord {
+    fn record_of(blocks: usize, component: Option<&str>, payload: usize) -> WriteAheadLogRecord {
         WriteAheadLogRecord {
             shard_id: 1,
             sequence: 7,
@@ -676,7 +676,7 @@ fn what_an_element_named_block_adds_to_the_record() {
                 key: "carrier".to_string(),
             }),
             metadata: None,
-            staged_blocks: (0..pages).map(|i| block_of(i, component, payload)).collect(),
+            staged_blocks: (0..blocks).map(|i| block_of(i, component, payload)).collect(),
             outcomes: Vec::new(),
         }
     }
@@ -698,26 +698,26 @@ fn what_an_element_named_block_adds_to_the_record() {
     println!("  pages  element        wire B/page  chunk B   disk bare  disk named  disk B/page   share");
     let mut wire_rows: Vec<(&str, i64)> = Vec::new();
     let mut disk_rows: Vec<(usize, &str, f64)> = Vec::new();
-    for pages in [25usize, 200usize] {
+    for blocks in [25usize, 200usize] {
         for (label, component) in [("hash field f7", Some("f7")), ("CONTROL: none", None)] {
             let wire = wire_len(component, 32) as i64 - wire_len(None, 32) as i64;
-            let bare = disk_len(&record_of(pages, None, 32));
-            let named = disk_len(&record_of(pages, component, 32));
+            let bare = disk_len(&record_of(blocks, None, 32));
+            let named = disk_len(&record_of(blocks, component, 32));
             let delta = named as i64 - bare as i64;
-            let per_block = delta as f64 / pages as f64;
+            let per_block = delta as f64 / blocks as f64;
             let chunk = crate::alloc_probe::documented_glibc_chunk(wire.unsigned_abs() as usize);
             let share = 100.0 * delta as f64 / bare as f64;
             println!(
-                "  {pages:>5}  {label:<13} {wire:>11} {chunk:>8} {bare:>11} {named:>11} \
+                "  {blocks:>5}  {label:<13} {wire:>11} {chunk:>8} {bare:>11} {named:>11} \
                  {per_block:>11.2} {share:>6.2}%"
             );
             assert!(
                 bare > 0 && named > 0,
-                "NOT EXERCISED: encoded {bare} and {named} bytes at {pages} pages; a zero-byte \
+                "NOT EXERCISED: encoded {bare} and {named} bytes at {blocks} pages; a zero-byte \
                  encode reports every delta below as +0.00%"
             );
             wire_rows.push((label, wire));
-            disk_rows.push((pages, label, per_block));
+            disk_rows.push((blocks, label, per_block));
         }
     }
 
@@ -732,11 +732,11 @@ fn what_an_element_named_block_adds_to_the_record() {
             );
         }
     }
-    for (pages, label, per_block) in &disk_rows {
+    for (blocks, label, per_block) in &disk_rows {
         if label.starts_with("CONTROL") {
             assert_eq!(
                 *per_block, 0.0,
-                "the control's DISK cost moved by {per_block:.2} B/page at {pages} pages. A record \
+                "the control's DISK cost moved by {per_block:.2} B/page at {blocks} pages. A record \
                  carrying no components must be byte-identical to one written before this field"
             );
         }
@@ -966,7 +966,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
     // empty one is not decoration -- `put_len_delimited` skips an empty payload, so an encoder
     // that reused it here would turn `Some("")` into `None` and make an element page read as its
     // key's whole-object page.
-    let pages: Vec<StagedBlock> = [
+    let blocks: Vec<StagedBlock> = [
         (Some("f0"), b"zero".to_vec()),
         (Some("f1"), b"one".to_vec()),
         (None, b"whole object".to_vec()),
@@ -987,7 +987,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
             key: "carrier".to_string(),
         }),
         metadata: None,
-        staged_blocks: pages.clone(),
+        staged_blocks: blocks.clone(),
         outcomes: Vec::new(),
     };
 
@@ -1004,13 +1004,13 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
     println!("  page  element        bytes in  bytes out  element out");
     assert_eq!(
         decoded.staged_blocks.len(),
-        pages.len(),
+        blocks.len(),
         "the record carried {} pages in and {} out. This change may only ADD to what a record \
          says; a page that does not come back is the refusal condition",
-        pages.len(),
+        blocks.len(),
         decoded.staged_blocks.len()
     );
-    for (i, (before, after)) in pages.iter().zip(decoded.staged_blocks.iter()).enumerate() {
+    for (i, (before, after)) in blocks.iter().zip(decoded.staged_blocks.iter()).enumerate() {
         println!(
             "  {i:>4}  {:<13} {:>9} {:>10}  {:?}",
             format!("{:?}", before.component.as_deref()),
@@ -1036,7 +1036,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
             "page {i}'s object id did not survive the round trip"
         );
     }
-    println!("  VERDICT: {} pages in, {} out, bytes and elements identical. Nothing the record guaranteed was traded away.", pages.len(), decoded.staged_blocks.len());
+    println!("  VERDICT: {} pages in, {} out, bytes and elements identical. Nothing the record guaranteed was traded away.", blocks.len(), decoded.staged_blocks.len());
 }
 
 // =================================================================================================
@@ -1117,11 +1117,11 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
     let mut total_recovered = 0usize;
     for k in 0..CONTAINER_KEYS {
         let key = format!("h{k}");
-        let (pages, recovered) = {
+        let (blocks, recovered) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1 is loaded");
             let named = super::BlockObjects::of(&shard.bucket_index);
-            let pages = shard
+            let blocks = shard
                 .bucket_index
                 .bucket_map
                 .values()
@@ -1129,11 +1129,11 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
                     bucket
                         .block_index
                         .iter()
-                        .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                        .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
                 })
-                .filter(|(routing_bucket, handle, page)| {
-                    !page.deleted
-                        && page.model_id.as_str() == "hash"
+                .filter(|(routing_bucket, handle, block)| {
+                    !block.deleted
+                        && block.model_id.as_str() == "hash"
                         && &**named.at(*routing_bucket, *handle) == key
                 })
                 .count();
@@ -1142,11 +1142,11 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
                 .get(&key)
                 .map(|fields| fields.keys().map(|name| name.to_string()).collect())
                 .unwrap_or_default();
-            (pages, recovered)
+            (blocks, recovered)
         };
-        println!("  {key:<10} {pages:>5}  {:>15}", recovered.len());
+        println!("  {key:<10} {blocks:>5}  {:>15}", recovered.len());
         assert!(
-            pages > 0,
+            blocks > 0,
             "DENOMINATOR: key {key} holds no live page entries after the reload, so a full set of \
              recovered names below would be saying nothing about pages"
         );

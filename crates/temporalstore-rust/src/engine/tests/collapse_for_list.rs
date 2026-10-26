@@ -64,10 +64,10 @@ const ZSET_KEY: &str = "collapse/zset";
 
 fn engine_on(
     cache: &std::path::Path,
-    pages: &std::path::Path,
+    blocks: &std::path::Path,
     indexes: &std::path::Path,
 ) -> TemporalEngine {
-    TemporalEngine::with_local_dirs(64 * 1024 * 1024, cache, pages, indexes)
+    TemporalEngine::with_local_dirs(64 * 1024 * 1024, cache, blocks, indexes)
 }
 
 fn load_request() -> crate::control::LoadShardRequest {
@@ -164,9 +164,9 @@ fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> us
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted
-                || page.model_id.as_str() != model_id
+        for (handle, block) in &bucket.block_index {
+            if block.deleted
+                || block.model_id.as_str() != model_id
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
@@ -189,13 +189,13 @@ fn live_and_tombstoned(
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != model_id
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != model_id
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstoned += 1;
             } else {
                 live += 1;
@@ -351,10 +351,10 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
 fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
     println!("\n=== list, gate on, popped, then reopened ===");
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     {
-        let engine = engine_on(&dir.path().join("cache"), &pages, &indexes);
+        let engine = engine_on(&dir.path().join("cache"), &blocks, &indexes);
         load_on(&engine);
         write_list(&engine);
         fold(&engine);
@@ -373,7 +373,7 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
     }
     // ITS OWN CACHE, so every byte served comes off disk through the index just decoded rather
     // than out of pages the writer left warm.
-    let reloaded = engine_on(&dir.path().join("cache-reloaded"), &pages, &indexes);
+    let reloaded = engine_on(&dir.path().join("cache-reloaded"), &blocks, &indexes);
     load_on(&reloaded);
 
     let length = list_len(&reloaded);
@@ -426,10 +426,10 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
 fn a_gated_list_comes_back_through_wal_replay() {
     println!("\n=== a gated list through WAL replay, no index file ===");
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     {
-        let engine = engine_on(&dir.path().join("cache-writer"), &pages, &indexes);
+        let engine = engine_on(&dir.path().join("cache-writer"), &blocks, &indexes);
         load_on(&engine);
         write_list(&engine);
         // THE FLOOR BEFORE THE RELOAD: the writer really holds them, so a short answer after the
@@ -443,7 +443,7 @@ fn a_gated_list_comes_back_through_wal_replay() {
     }
 
     crate::engine::persistence::reset_index_load_path_counts();
-    let reloaded = engine_on(&dir.path().join("cache-reloaded"), &pages, &indexes);
+    let reloaded = engine_on(&dir.path().join("cache-reloaded"), &blocks, &indexes);
     let response = reloaded.load_shard_with(load_request());
     let (accepted, refused_stale, absent, undecodable) =
         crate::engine::persistence::index_load_path_counts();

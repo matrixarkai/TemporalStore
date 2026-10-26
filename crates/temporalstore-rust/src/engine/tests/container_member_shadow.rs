@@ -182,13 +182,13 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut pages = Vec::new();
+    let mut blocks = Vec::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, page) in bucket.block_index.iter() {
-            if page.model_id.as_str() != "zset" {
+        for (handle, block) in bucket.block_index.iter() {
+            if block.model_id.as_str() != "zset" {
                 continue;
             }
-            pages.push(ZsetBlock {
+            blocks.push(ZsetBlock {
                 routing_bucket: *routing_bucket,
                 object_key: named.at(*routing_bucket, *handle).to_string(),
                 // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
@@ -199,14 +199,14 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 // field is carried as the empty string and the arms that priced that redundancy
                 // are restated where they are read.
                 component: String::new(),
-                address: page.address.clone(),
-                dirty: page.dirty,
-                deleted: page.deleted,
-                log_backed: page.log_backed(),
+                address: block.address.clone(),
+                dirty: block.dirty,
+                deleted: block.deleted,
+                log_backed: block.log_backed(),
             });
         }
     }
-    pages
+    blocks
 }
 
 /// The members of one zset, as the model map holds them: raw bytes and a numeric score.
@@ -287,10 +287,10 @@ impl Histogram {
     }
 }
 
-fn zset_blocks_per_bucket(pages: &[ZsetBlock]) -> Histogram {
+fn zset_blocks_per_bucket(blocks: &[ZsetBlock]) -> Histogram {
     let mut per_bucket: BTreeMap<u32, usize> = BTreeMap::new();
-    for page in pages {
-        *per_bucket.entry(page.routing_bucket).or_default() += 1;
+    for block in blocks {
+        *per_bucket.entry(block.routing_bucket).or_default() += 1;
     }
     let mut hist = Histogram::default();
     for held in per_bucket.values() {
@@ -588,12 +588,12 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     load_on(&engine, NARROW_END);
     let keys = seed_zsets(&engine);
 
-    let pages = zset_blocks(&engine);
+    let blocks = zset_blocks(&engine);
     assert_eq!(
-        pages.len(),
+        blocks.len(),
         CONTAINER_KEYS * MEMBERS,
         "the fixture did not reach one page per member: {} pages for {} keys x {} members",
-        pages.len(),
+        blocks.len(),
         CONTAINER_KEYS,
         MEMBERS
     );
@@ -618,9 +618,9 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     // satisfy "the score is not spelled here" while losing the member entirely.
     let mut blocks_per_key: BTreeMap<String, usize> = BTreeMap::new();
     let mut stored_lengths: BTreeSet<usize> = BTreeSet::new();
-    for page in &pages {
-        *blocks_per_key.entry(page.object_key.clone()).or_default() += 1;
-        stored_lengths.insert(page.address.length() as usize);
+    for block in &blocks {
+        *blocks_per_key.entry(block.object_key.clone()).or_default() += 1;
+        stored_lengths.insert(block.address.length() as usize);
     }
 
     // THE STORED LENGTH IS THE MEMBER PLUS PER-MEMBER RECORD FRAMING, and the framing is what a
@@ -964,9 +964,9 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         load_on(&engine, end_routing_bucket);
         let keys = seed_zsets(&engine);
 
-        let pages = zset_blocks(&engine);
+        let blocks = zset_blocks(&engine);
         assert_eq!(
-            pages.len(),
+            blocks.len(),
             CONTAINER_KEYS * MEMBERS,
             "the fixture at 0..{end_routing_bucket} did not reach one page per member"
         );
@@ -978,13 +978,13 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         );
 
         // The component NAME bytes, measured off the real names rather than computed.
-        let name_bytes: usize = pages.iter().map(|page| page.component.len()).sum();
-        let spelling_bytes: usize = pages
+        let name_bytes: usize = blocks.iter().map(|block| block.component.len()).sum();
+        let spelling_bytes: usize = blocks
             .iter()
-            .map(|page| page.component.len() - (8 + MEMBER_WIDTH))
+            .map(|block| block.component.len() - (8 + MEMBER_WIDTH))
             .sum();
 
-        let hist = zset_blocks_per_bucket(&pages);
+        let hist = zset_blocks_per_bucket(&blocks);
         hist.report(&format!("0..{end_routing_bucket}, zset pages per bucket"));
         assert!(
             hist.buckets() > 0,
@@ -1117,11 +1117,11 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     // was, because it cannot match a page the write did not create.
     let before_addresses: BTreeSet<(u64, u64, u64)> = zset_blocks(&engine)
         .iter()
-        .map(|page| {
+        .map(|block| {
             (
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             )
         })
         .collect();
@@ -1143,12 +1143,12 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     );
     let added: Vec<&ZsetBlock> = after
         .iter()
-        .filter(|page| {
-            page.object_key == key
+        .filter(|block| {
+            block.object_key == key
                 && !before_addresses.contains(&(
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
                 ))
         })
         .collect();

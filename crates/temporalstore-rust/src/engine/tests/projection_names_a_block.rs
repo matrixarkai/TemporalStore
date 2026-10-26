@@ -61,29 +61,29 @@ fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usiz
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut pages = std::collections::BTreeSet::new();
+    let mut blocks = std::collections::BTreeSet::new();
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstoned += 1;
                 continue;
             }
             live += 1;
-            pages.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+            blocks.insert((
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
         }
     }
-    (pages.len(), live, tombstoned)
+    (blocks.len(), live, tombstoned)
 }
 
 /// Every member the set listing answers with.

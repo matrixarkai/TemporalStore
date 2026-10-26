@@ -42,8 +42,8 @@ fn filing_by_object_key(shard: &ShardState) -> HashMap<Arc<str>, u32> {
     // map keyed by object cannot state an entry for an object it cannot name.
     let identities = shard.bucket_index.block_identities();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        for (handle, page) in bucket.block_index.iter() {
-            let Some(beside) = identities.identity_of(bucket, *handle, page) else {
+        for (handle, block) in bucket.block_index.iter() {
+            let Some(beside) = identities.identity_of(bucket, *handle, block) else {
                 continue;
             };
             filed.insert(Arc::clone(beside.object_key), *routing_bucket);
@@ -365,23 +365,23 @@ pub(super) fn physical_address_word(address: &ElementEntry) -> u64 {
 }
 
 pub(super) fn native_packed_block_index_bytes(
-    page: &StoragePhysicalBlockIndex,
+    block: &StoragePhysicalBlockIndex,
 ) -> [u8; NATIVE_PACKED_BLOCK_INDEX_SIZE] {
     let mut bytes = [0u8; NATIVE_PACKED_BLOCK_INDEX_SIZE];
-    bytes[0] = page.object_id.unwrap_or_default() as u8;
-    bytes[1] = model_report_code(page.model_id.as_str());
-    bytes[2..4].copy_from_slice(&(page.block_id.unwrap_or_default() as u16).to_le_bytes());
-    bytes[4] = u8::from(page.dirty) | (u8::from(page.log_backed) << 1);
-    let page_size = if page.deleted { 0 } else { page.length as u32 };
+    bytes[0] = block.object_id.unwrap_or_default() as u8;
+    bytes[1] = model_report_code(block.model_id.as_str());
+    bytes[2..4].copy_from_slice(&(block.block_id.unwrap_or_default() as u16).to_le_bytes());
+    bytes[4] = u8::from(block.dirty) | (u8::from(block.log_backed) << 1);
+    let page_size = if block.deleted { 0 } else { block.length as u32 };
     bytes[5..9].copy_from_slice(&page_size.to_le_bytes());
-    let address = physical_address_word(&ElementEntry::from_parts(page.block_slab_id, page.offset, page.length, page.block_id, page.object_id));
+    let address = physical_address_word(&ElementEntry::from_parts(block.block_slab_id, block.offset, block.length, block.block_id, block.object_id));
     bytes[9..17].copy_from_slice(&address.to_le_bytes());
     bytes
 }
 
 pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode) -> [u8; NATIVE_PACKED_BUCKET_NODE_SIZE] {
     let mut bytes = [0u8; NATIVE_PACKED_BUCKET_NODE_SIZE];
-    let block_in_log = bucket.block_indexes.iter().any(|page| page.log_backed);
+    let block_in_log = bucket.block_indexes.iter().any(|block| block.log_backed);
     let trivial_block = bucket.block_ref_count <= 1;
     let block_deleted = bucket.block_ref_count == 0;
     let mut flags = 0u32;
@@ -403,14 +403,14 @@ pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode
     let model_code = bucket
         .block_indexes
         .first()
-        .map(|page| model_report_code(page.model_id.as_str()))
+        .map(|block| model_report_code(block.model_id.as_str()))
         .unwrap_or_default();
     bytes[7] = model_code;
     bytes[8..16].copy_from_slice(&bucket.ttl_ms.unwrap_or_default().to_le_bytes());
     let address = bucket
         .block_indexes
         .first()
-        .map(|page| page.block_slab_id.wrapping_shl(32) | (page.offset & u32::MAX as u64))
+        .map(|block| block.block_slab_id.wrapping_shl(32) | (block.offset & u32::MAX as u64))
         .unwrap_or_default();
     bytes[16..24].copy_from_slice(&address.to_le_bytes());
     bytes
@@ -538,29 +538,29 @@ pub(super) fn storage_physical_index_report(
         // figure is not reconstructible from the newest manifest alone, and it was not readable
         // by anything that decided anything.
         let identities = shard.bucket_index.block_identities();
-        for (handle, page) in runtime_bucket.block_index.iter() {
+        for (handle, block) in runtime_bucket.block_index.iter() {
             // THE ROW NAMES AN OBJECT, so a page whose neighbours do not name one cannot produce a
             // row. The one such page is a tombstone whose removal named no element.
-            let Some(beside) = identities.identity_of(runtime_bucket, *handle, page) else {
+            let Some(beside) = identities.identity_of(runtime_bucket, *handle, block) else {
                 continue;
             };
             let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == beside.object_key.as_ref()
-                    && existing.model_id.as_str() == page.model_id.as_str()
+                    && existing.model_id.as_str() == block.model_id.as_str()
                     // THE COMPONENT TERM IS DROPPED AS A TAUTOLOGY. It compared
                     // `existing.component` against `page.component`; the report row's component
                     // is filled from an index entry and an index entry has no element name, so
                     // both sides were `None` for every row and the term decided nothing. What
                     // identifies a row here is (key, kind, slab, offset) and that has not moved.
-                    && existing.block_slab_id == page.address.block_slab_id()
-                    && existing.offset == page.address.offset()
+                    && existing.block_slab_id == block.address.block_slab_id()
+                    && existing.offset == block.address.offset()
             });
             if already_present {
                 continue;
             }
             let mut block_index = StoragePhysicalBlockIndex {
                 object_key: beside.object_key.to_string(),
-                model_id: page.model_id.clone().to_string(),
+                model_id: block.model_id.clone().to_string(),
                 // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::component` is
                 // a PUBLIC field of a serialized report, so retiring it is a schema change and not
                 // part of a width step; it is filled from an index entry, and an index entry names
@@ -568,16 +568,16 @@ pub(super) fn storage_physical_index_report(
                 // every row this arm produced.
                 component: None,
                 routing_bucket: *routing_bucket,
-                block_slab_id: page.address.block_slab_id(),
-                offset: page.address.offset(),
-                length: page.address.length(),
-                block_id: page.address.block_id(),
-                object_id: Some(page.object_id(shard_id, beside.object_key)),
-                stored_slab_id: page.address.slab_id(),
+                block_slab_id: block.address.block_slab_id(),
+                offset: block.address.offset(),
+                length: block.address.length(),
+                block_id: block.address.block_id(),
+                object_id: Some(block.object_id(shard_id, beside.object_key)),
+                stored_slab_id: block.address.slab_id(),
                 checksum: None,
-                dirty: page.dirty,
-                deleted: page.deleted,
-                log_backed: page.log_backed(),
+                dirty: block.dirty,
+                deleted: block.deleted,
+                log_backed: block.log_backed(),
                 native_packed_block_index_len: NATIVE_PACKED_BLOCK_INDEX_SIZE,
                 native_packed_block_index_hex: String::new(),
             };
@@ -599,7 +599,7 @@ pub(super) fn storage_physical_index_report(
             let object_count = bucket
                 .block_indexes
                 .iter()
-                .filter_map(|page| page.object_id)
+                .filter_map(|block| block.object_id)
                 .collect::<BTreeSet<_>>()
                 .len();
             bucket.layout =
@@ -619,15 +619,15 @@ pub(super) fn storage_physical_index_report(
         .collect::<Vec<_>>();
     let missing_object_id_count = block_indexes
         .iter()
-        .filter(|page| page.object_id.is_none())
+        .filter(|block| block.object_id.is_none())
         .count();
     let missing_block_id_count = block_indexes
         .iter()
-        .filter(|page| page.block_id.is_none())
+        .filter(|block| block.block_id.is_none())
         .count();
     let missing_checksum_count = block_indexes
         .iter()
-        .filter(|page| page.checksum.is_none())
+        .filter(|block| block.checksum.is_none())
         .count();
     StoragePhysicalIndexReport {
         shard_id,

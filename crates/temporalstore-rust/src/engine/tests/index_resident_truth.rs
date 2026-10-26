@@ -89,7 +89,7 @@ pub(super) fn arc_str_request(len: usize) -> usize {
 #[derive(Debug, Default, Clone)]
 pub(super) struct IndexWalk {
     pub(super) buckets: u64,
-    pub(super) pages: u64,
+    pub(super) blocks: u64,
     pub(super) arm_empty: u64,
     pub(super) arm_one: u64,
     pub(super) arm_many: u64,
@@ -134,7 +134,7 @@ impl IndexWalk {
     /// What the SHIPPED report answers: nodes by node width plus pages by ENTRY width.
     pub(super) fn reported_before(&self) -> u64 {
         self.node_inline_request().saturating_add(
-            self.pages
+            self.blocks
                 .saturating_mul(std::mem::size_of::<BlockIndex>() as u64),
         )
     }
@@ -187,20 +187,20 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
                 out.block_heap_request += entry_width;
                 out.alloc_sizes.push(entry_width as usize);
             }
-            BlockIndexMap::Many(pages) => {
+            BlockIndexMap::Many(blocks) => {
                 out.arm_many += 1;
-                out.list_len += pages.len() as u64;
-                out.list_capacity += pages.capacity() as u64;
-                out.block_heap_request += pages.capacity() as u64 * pair_stride;
-                if pages.capacity() > 0 {
+                out.list_len += blocks.len() as u64;
+                out.list_capacity += blocks.capacity() as u64;
+                out.block_heap_request += blocks.capacity() as u64 * pair_stride;
+                if blocks.capacity() > 0 {
                     out.alloc_sizes
-                        .push(pages.capacity() * pair_stride as usize);
+                        .push(blocks.capacity() * pair_stride as usize);
                 }
-                *out.list_lengths.entry(pages.len()).or_insert(0) += 1;
+                *out.list_lengths.entry(blocks.len()).or_insert(0) += 1;
             }
         }
-        for (_handle, _page) in bucket.block_index.iter() {
-            out.pages += 1;
+        for (_handle, _block) in bucket.block_index.iter() {
+            out.blocks += 1;
             // NO KEY REQUEST PER ENTRY EITHER, AND THIS CENSUS IS THE PAGE INDEX'S OWN BYTES.
             //
             // This asked the allocator-request model what one entry's `Arc<str>` of key text
@@ -437,10 +437,10 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 };
                 let seen = walk(&engine);
                 assert_eq!(
-                    seen.pages, seeded as u64,
+                    seen.blocks, seeded as u64,
                     "{shape:?}/{records}/{end_routing_bucket}: the index holds {} pages for a seed \
                      of {seeded}, so the per-record divisor below is not this fixture's",
-                    seen.pages
+                    seen.blocks
                 );
                 assert!(
                     seen.buckets > 0,
@@ -460,7 +460,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     seen.arm_empty,
                     seen.arm_one,
                     seen.arm_many,
-                    seen.pages,
+                    seen.blocks,
                     seen.list_len,
                     seen.list_capacity,
                     seen.percentile(0.50),
@@ -474,7 +474,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                      components {} ({} B once per allocation, {} B once per entry), {} held \
                      outside",
                     seen.key_allocs,
-                    seen.pages,
+                    seen.blocks,
                     seen.key_request,
                     seen.key_request_per_entry,
                     seen.keys_held_outside,
@@ -494,7 +494,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 // the two would be comparing different populations and reading the difference as an
                 // error. This is the term the change actually moves.
                 let shipped_block_term = seen
-                    .pages
+                    .blocks
                     .saturating_mul(std::mem::size_of::<BlockIndex>() as u64);
                 let (freed_bytes, frees) = freed_by_dropping_block_indexes(&engine);
                 assert!(
@@ -516,7 +516,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     "    shipped/returned {:.4}   shortfall {} B, {:.2} B a page",
                     shipped_block_term as f64 / freed_bytes as f64,
                     freed_bytes as i64 - shipped_block_term as i64,
-                    (freed_bytes as i64 - shipped_block_term as i64) as f64 / seen.pages as f64
+                    (freed_bytes as i64 - shipped_block_term as i64) as f64 / seen.blocks as f64
                 );
                 println!(
                     "    walked/returned  {:.4}   difference {} B",
@@ -538,7 +538,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     seen.alloc_sizes.len(),
                     replayed_chunk as f64 / replayed_request as f64,
                     replayed_chunk - replayed_request,
-                    (replayed_chunk - replayed_request) as f64 / seen.pages as f64
+                    (replayed_chunk - replayed_request) as f64 / seen.blocks as f64
                 );
                 println!(
                     "    shipped/chunk    {:.4}   fixed/chunk {:.4}",
@@ -638,10 +638,10 @@ fn both_arms() -> (tempfile::TempDir, TemporalEngine, IndexWalk) {
     let keys = seed_routed(&engine, SMALL);
     let seen = walk(&engine);
     assert_eq!(
-        seen.pages,
+        seen.blocks,
         keys.len() as u64,
         "the fixture holds {} pages for {} seeded keys",
-        seen.pages,
+        seen.blocks,
         keys.len()
     );
     (dir, engine, seen)
@@ -712,7 +712,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
     let reported = engine.bucket_index_resident_bytes(1);
     println!(
         "  {} buckets ({} boxed, {} lists holding {} entries in {} of capacity), {} pages",
-        seen.buckets, seen.arm_one, seen.arm_many, seen.list_len, seen.list_capacity, seen.pages
+        seen.buckets, seen.arm_one, seen.arm_many, seen.list_len, seen.list_capacity, seen.blocks
     );
     println!("  published {reported} B, reconstructed {reconstructed} B");
     assert_eq!(
@@ -721,7 +721,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
          reconstruct to {reconstructed} B"
     );
 
-    let old_arithmetic = reconstruct_nodes(&seen, node_width) + seen.pages * entry_width;
+    let old_arithmetic = reconstruct_nodes(&seen, node_width) + seen.blocks * entry_width;
     println!(
         "  the arithmetic this replaced: {old_arithmetic} B, {} B lower ({:.2}% of the published \
          figure)",
@@ -807,7 +807,7 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_bloc
     load_on(&engine, WIDE_END);
     let keys = seed_routed(&engine, SMALL);
     let seen = walk(&engine);
-    assert_eq!(seen.pages, keys.len() as u64, "the fixture's page population moved");
+    assert_eq!(seen.blocks, keys.len() as u64, "the fixture's page population moved");
     assert_eq!(
         seen.arm_one, seen.buckets,
         "{} of {} buckets are single-page. This control is only a control while the whole \
@@ -817,14 +817,14 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_bloc
     );
     let node_width = std::mem::size_of::<BucketNode>() as u64;
     let entry_width = std::mem::size_of::<BlockIndex>() as u64;
-    let old_arithmetic = seen.buckets * node_width + seen.pages * entry_width;
+    let old_arithmetic = seen.buckets * node_width + seen.blocks * entry_width;
     let reported = engine.bucket_index_resident_bytes(1);
-    let block_term = seen.pages * entry_width;
+    let block_term = seen.blocks * entry_width;
     println!(
         "  CONTROL: {reported} B published, {old_arithmetic} B under the arithmetic this \
          replaced, +0.00% over {} buckets and {} pages (node term {} B, page term {block_term} B)",
         seen.buckets,
-        seen.pages,
+        seen.blocks,
         seen.buckets * node_width
     );
     assert!(

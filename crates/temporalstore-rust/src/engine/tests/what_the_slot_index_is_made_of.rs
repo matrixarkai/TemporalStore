@@ -629,7 +629,7 @@ fn klen(name: &str) -> usize {
 /// One store's reading: the shard's three surfaces, and the structures the decomposition walks.
 struct Reading {
     objects: usize,
-    pages: usize,
+    blocks: usize,
     buckets: usize,
     width: usize,
     shape: KeyShape,
@@ -691,7 +691,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     );
 
     let buckets = shard.bucket_index.bucket_map.len();
-    let pages: usize = shard
+    let blocks: usize = shard
         .bucket_index
         .bucket_map
         .values()
@@ -710,7 +710,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     let mut handles_by_written_key = BTreeMap::new();
     for node in shard.bucket_index.bucket_map.values() {
         let identities = crate::engine::state::block_identities_in(node, &identity_keys);
-        for (handle, page) in node.block_index.iter() {
+        for (handle, block) in node.block_index.iter() {
             let object_key = identities.get(handle).unwrap_or_else(|| {
                 panic!(
                     "[CLAUSE join-total] the page at handle {handle} in bucket {} has no identity \
@@ -718,7 +718,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
                     node.routing_bucket
                 )
             });
-            let written = crate::engine::state::block_index_written_key(object_key, page);
+            let written = crate::engine::state::block_index_written_key(object_key, block);
             assert!(
                 handles_by_written_key.insert(written.clone(), *handle).is_none(),
                 "[CLAUSE join-total] two pages render the written key `{written}`, so a key is not \
@@ -728,8 +728,8 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     }
     assert_eq!(
         handles_by_written_key.len(),
-        pages,
-        "[CLAUSE join-total] the join names {} page(s) against {pages} resident",
+        blocks,
+        "[CLAUSE join-total] the join names {} page(s) against {blocks} resident",
         handles_by_written_key.len()
     );
 
@@ -740,7 +740,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
 
     Reading {
         objects: keys,
-        pages,
+        blocks,
         buckets,
         width,
         shape,
@@ -1018,9 +1018,9 @@ fn walk(reading: &Reading) -> Walked {
             .get("page_index")
             .expect("a bucket node writes `page_index`");
         block_subtree_bytes += jlen(page_index);
-        let pages = page_index.as_object().expect("the page index writes an object");
+        let blocks = page_index.as_object().expect("the page index writes an object");
         assert!(
-            !pages.is_empty(),
+            !blocks.is_empty(),
             "[CLAUSE no-empty-page-index] bucket `{bucket_key}` writes an EMPTY page index, and \
              this walk charges one separator byte per entry -- an empty object's second brace has \
              no entry to be charged to, so the partition identity would be off by one per such \
@@ -1028,7 +1028,7 @@ fn walk(reading: &Reading) -> Walked {
         );
         tally.add("page_index/open_brace", 1, 0);
 
-        for (block_key, entry_value) in pages.iter() {
+        for (block_key, entry_value) in blocks.iter() {
             blocks_seen += 1;
             // QUOTES AND NOTHING ELSE. `klen` is the JSON rendering, so this difference is the two
             // quotes plus any escaping; the fixture's keys hold none, and the assertion is what
@@ -1173,9 +1173,9 @@ fn walk(reading: &Reading) -> Walked {
     }
 
     assert_eq!(
-        blocks_seen, reading.pages,
+        blocks_seen, reading.blocks,
         "[CLAUSE part-sum] the walk saw {blocks_seen} written page(s) against {} resident",
-        reading.pages
+        reading.blocks
     );
 
     Walked {
@@ -1538,11 +1538,11 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
          over the wrong denominator"
     );
     assert_eq!(
-        reading.pages, reading.objects,
+        reading.blocks, reading.objects,
         "[CLAUSE one-page-an-object] the fixture holds {} page(s) for {} object(s), so a per-PAGE \
          term and a per-OBJECT term are different quantities here and every B/object figure below \
          would silently be a B/page figure",
-        reading.pages, reading.objects
+        reading.blocks, reading.objects
     );
 
     let walked = walk(&reading);
@@ -1628,10 +1628,10 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
 
     // ---- THE TWO RECONSTRUCTIONS, COUNTED ----
     assert_eq!(
-        walked.keys_reconstructed, reading.pages,
+        walked.keys_reconstructed, reading.blocks,
         "[CLAUSE address-restates-the-key] {} of {} page(s) write an address whose five values are \
          exactly the five decimals in the key they are filed under",
-        walked.keys_reconstructed, reading.pages
+        walked.keys_reconstructed, reading.blocks
     );
     assert_eq!(
         walked.slots_reconstructed, reading.buckets,
@@ -1707,12 +1707,12 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
 
     // ---- A SLOT THE WRITER FILLS WITH A LITERAL `None`, ON EVERY PAGE ----
     assert_eq!(
-        walked.nil_object_id_slots, reading.pages,
+        walked.nil_object_id_slots, reading.blocks,
         "[CLAUSE the-nil-slot-is-always-nil] {} of {} stored address(es) write `oi` as null; \
          `impl From<ElementEntry> for BlockAddressWire` fills it from a LITERAL `None`, so a page \
          carrying a value there means that literal has stopped being one and this term is no \
          longer a hole",
-        walked.nil_object_id_slots, reading.pages
+        walked.nil_object_id_slots, reading.blocks
     );
     println!(
         "  THE `oi` SLOT IS NULL ON ALL {} PAGES and costs {:.3} B/object. The writer fills it \
@@ -1735,7 +1735,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     );
     println!(
         "  {} object(s) in {} bucket(s) = {occupancy:.2} per bucket; {} page(s), one an object.",
-        reading.objects, reading.buckets, reading.pages
+        reading.objects, reading.buckets, reading.blocks
     );
     println!(
         "  THE PAGE ENTRY'S MAP KEY is {:.3} B/object of it, and every character of it was rebuilt \
@@ -1752,7 +1752,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
             + tally.bytes_of("page/map_key/separators")
             + tally.bytes_of("page/map_key/empty_slot_separator")) as f64
             / reading.objects as f64,
-        reading.pages
+        reading.blocks
     );
     println!(
         "  msgpack_payload {:.2} B/object and shipped container {:.2} B/object, NEITHER of which \
@@ -1801,7 +1801,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
             reading.objects,
             reading.buckets,
             reading.objects as f64 / reading.buckets as f64,
-            reading.pages,
+            reading.blocks,
             reading.slot_index_entry_bytes(),
             reading.slot_index_entry_bytes() as f64 / reading.objects as f64,
             reading.json_len as f64 / reading.objects as f64
@@ -1811,9 +1811,9 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     // ---- FIXTURE REGIME, AT EVERY POINT ----
     for reading in readings.iter() {
         assert_eq!(
-            reading.pages, reading.objects,
+            reading.blocks, reading.objects,
             "[CLAUSE one-page-an-object] {} object(s) hold {} page(s)",
-            reading.objects, reading.pages
+            reading.objects, reading.blocks
         );
     }
     let large = readings.last().expect("a largest reading");
@@ -1828,7 +1828,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
         for (label, row) in walked.tally.rows.iter() {
             let (scale, ..) = declared(label);
             let expected = match scale {
-                Scale::PerBlock => reading.pages,
+                Scale::PerBlock => reading.blocks,
                 Scale::PerBucket => reading.buckets,
                 Scale::PerShard => 1,
             };
@@ -2379,12 +2379,12 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
             if touched > 0 {
                 break;
             }
-            let pages = node
+            let blocks = node
                 .get_mut("page_index")
                 .expect("page_index")
                 .as_object_mut()
                 .expect("an object");
-            let Some(was) = pages.keys().next().cloned() else { continue };
+            let Some(was) = blocks.keys().next().cloned() else { continue };
             let slots = split_written_key(&was);
             let mut object_key = slots.object_key.clone();
             assert!(
@@ -2405,8 +2405,8 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
                 slots.generation
             );
             assert_ne!(now, was, "the tamper must change the key");
-            let entry = pages.remove(&was).expect("the key was just read from this map");
-            pages.insert(now, entry);
+            let entry = blocks.remove(&was).expect("the key was just read from this map");
+            blocks.insert(now, entry);
             touched += 1;
         }
     }
@@ -2428,7 +2428,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     println!(
         "  {} object(s), {} page(s), {} bucket(s), baseline `slot_index` {} B.",
         reading.objects,
-        reading.pages,
+        reading.blocks,
         reading.buckets,
         baseline.len()
     );

@@ -122,29 +122,29 @@ fn block_and_entry_counts(
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut pages = std::collections::BTreeSet::new();
+    let mut blocks = std::collections::BTreeSet::new();
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstoned += 1;
                 continue;
             }
             live += 1;
-            pages.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+            blocks.insert((
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
         }
     }
-    (pages.len(), live, tombstoned)
+    (blocks.len(), live, tombstoned)
 }
 
 /// Every element key a live page of this object still states as PRESENT, read off the bytes.
@@ -159,13 +159,13 @@ fn components_the_blocks_still_state(
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            let Ok(bytes) = engine.block_store.read(&page.address) else {
+            let Ok(bytes) = engine.block_store.read(&block.address) else {
                 continue;
             };
             if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
@@ -200,14 +200,14 @@ fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<Elemen
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut addresses = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || page.deleted
+                || block.deleted
             {
                 continue;
             }
-            addresses.push(page.address.clone());
+            addresses.push(block.address.clone());
         }
     }
     addresses
@@ -267,10 +267,10 @@ fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize)
             .retain(
                 &mut shard.bucket_index.block_slab_live,
                 crate::engine::state::StaleCause::Removed,
-                |handle, page| {
-                let mine = page.model_id.as_str() == "set"
+                |handle, block| {
+                let mine = block.model_id.as_str() == "set"
                     && &**named.at(routing_bucket, *handle) == object_key
-                    && !page.deleted;
+                    && !block.deleted;
                 if mine && dropped < how_many {
                     dropped += 1;
                     return false;
@@ -309,9 +309,9 @@ fn all_members() -> Vec<Vec<u8>> {
 #[test]
 fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     let (engine, _dir) = folded_set("listing/whole");
-    let (pages, live, tombstoned) = block_and_entry_counts(&engine, "listing/whole");
+    let (blocks, live, tombstoned) = block_and_entry_counts(&engine, "listing/whole");
     println!(
-        "[presence] {pages} distinct page(s), {live} live entr(ies), {tombstoned} tombstoned, \
+        "[presence] {blocks} distinct page(s), {live} live entr(ies), {tombstoned} tombstoned, \
          for {MEMBERS} members"
     );
     // RE-ATTRIBUTED, BECAUSE `pages < live` BECAME UNREACHABLE RATHER THAN FALSE. All four
@@ -334,8 +334,8 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
         stated.len()
     );
     assert!(
-        pages < stated.len(),
-        "the members did not come to share a page: {pages} page(s) stating {} member(s), so \
+        blocks < stated.len(),
+        "the members did not come to share a page: {blocks} page(s) stating {} member(s), so \
          nothing here is exercising a page read that used to happen several times",
         stated.len()
     );
@@ -375,9 +375,9 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
         },
     );
 
-    let (pages, live, tombstoned) = block_and_entry_counts(&engine, "listing/removed");
+    let (blocks, live, tombstoned) = block_and_entry_counts(&engine, "listing/removed");
     println!(
-        "[absence] after fold+remove: {pages} live page(s), {live} live entr(ies), \
+        "[absence] after fold+remove: {blocks} live page(s), {live} live entr(ies), \
          {tombstoned} tombstoned"
     );
 
@@ -462,11 +462,11 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
 
     let dropped = drop_live_entries(&engine, "listing/one-name-gone", 1);
     assert_eq!(1, dropped, "the fixture dropped {dropped} entries, not one");
-    let (pages, live, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
+    let (blocks, live, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
     assert_eq!(
         (0usize, 0usize),
-        (pages, live),
-        "dropping this object's one entry left {pages} page(s) and {live} live entr(ies). The \
+        (blocks, live),
+        "dropping this object's one entry left {blocks} page(s) and {live} live entr(ies). The \
          un-naming is supposed to take a whole page's worth of names with it, because there is one \
          entry a page -- if this ever reads (1, 39) the partial un-naming is representable again \
          and the arm this one replaced should come back"
@@ -570,7 +570,7 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
     for (label, fold) in [("unfolded", false), ("folded", true)] {
         let key = format!("cost/{label}");
         let (engine, _dir) = reopened_set(&key, fold);
-        let (pages, live, _) = block_and_entry_counts(&engine, &key);
+        let (blocks, live, _) = block_and_entry_counts(&engine, &key);
         let (listed, reads) = block_reads_of(|| listed_members(&engine, &key));
         assert_eq!(
             all_members(),
@@ -579,7 +579,7 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
              wrong answer"
         );
         println!(
-            "  {label:<9} pages={pages:<3} entries={live:<4} reads={reads:<4} reads/member={:.3}",
+            "  {label:<9} pages={blocks:<3} entries={live:<4} reads={reads:<4} reads/member={:.3}",
             reads as f64 / MEMBERS as f64
         );
         reads_by_arm.push((label, reads));

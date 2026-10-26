@@ -405,7 +405,7 @@ fn an_entry_names_its_object_from_its_own_terms() {
         "the shard is a term of the identity, so two shards must not agree"
     );
     // AND IT SURVIVES THE STORED FORM: the id was never written, so nothing about it can be lost.
-    let written = serde_json::to_string(&crate::engine::state::BlockEntryAt { page: &entry })
+    let written = serde_json::to_string(&crate::engine::state::BlockEntryAt { block: &entry })
         .expect("a page entry serializes");
     // AND THE TERMS COME BACK FROM THE KEY, which is where the object key and the kind live now.
     // Rendered by the production renderer rather than hand-written, so the two halves of the round

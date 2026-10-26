@@ -4241,8 +4241,8 @@ fn what_one_add_costs_end_to_end() {
         }
 
         let visits = crate::engine::bucket_visit_sites::snapshot();
-        for (site, pages) in crate::engine::layout_by_caller::snapshot().iter().take(4) {
-            println!("      {adds:>4} adds  {pages:>10} pages  {site}");
+        for (site, blocks) in crate::engine::layout_by_caller::snapshot().iter().take(4) {
+            println!("      {adds:>4} adds  {blocks:>10} pages  {site}");
         }
         let window = 30.min(timings.len() / 3).max(1);
         let mean = |slice: &[f64]| slice.iter().sum::<f64>() / slice.len() as f64;

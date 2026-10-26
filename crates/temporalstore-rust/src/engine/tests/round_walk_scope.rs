@@ -396,7 +396,7 @@ fn scoped_live_block_summaries(
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
             continue;
         };
-        for (handle, _page) in &bucket.block_index {
+        for (handle, _block) in &bucket.block_index {
             visits += 1;
             let credited_to =
                 block_routing_bucket(named.at(bucket.routing_bucket, *handle), start, end);
@@ -732,7 +732,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut misplaced = 0usize;
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (handle, _page) in &bucket.block_index {
+            for (handle, _block) in &bucket.block_index {
                 let credited =
                     block_routing_bucket(named.at(*routing_bucket, *handle), start, end);
                 if credited != *routing_bucket {
@@ -861,7 +861,7 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
         let mut unreachable = 0usize;
         let mut miscredited = 0usize;
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-            for (handle, _page) in &bucket.block_index {
+            for (handle, _block) in &bucket.block_index {
                 let object_key = named.at(*routing_bucket, *handle);
                 if !shard.dirty_objects.contains(object_key) {
                     continue;

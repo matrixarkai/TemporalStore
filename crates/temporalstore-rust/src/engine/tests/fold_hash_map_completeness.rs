@@ -101,11 +101,11 @@ fn both_sources(
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, page) in &bucket.block_index {
-                if page.model_id.as_str() == "hash"
+            for (handle, block) in &bucket.block_index {
+                if block.model_id.as_str() == "hash"
                     && &**named.at(bucket.routing_bucket, *handle) == key
                 {
-                    addresses.push(page.address.clone());
+                    addresses.push(block.address.clone());
                 }
             }
         }
@@ -254,18 +254,18 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     // and fold paths leave behind for a hash of six fields, read off the index rather than argued
     // from the doc: the map is KEYED by the handle, so its keys are the handles.
     // ---------------------------------------------------------------------------------------
-    let pages: Vec<(u64, String, String)> = {
+    let blocks: Vec<(u64, String, String)> = {
         let shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut found = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            for (handle, page) in bucket.block_index.iter() {
+            for (handle, block) in bucket.block_index.iter() {
                 if &**named.at(bucket.routing_bucket, *handle) == KEY {
                     found.push((
                         *handle,
                         "<none>".to_string(),
-                        format!("{:?}", page.address),
+                        format!("{:?}", block.address),
                     ));
                 }
             }
@@ -274,20 +274,20 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         found
     };
 
-    println!("[fold-hash] the {} page entries this object holds:", pages.len());
-    for (handle, component, address) in &pages {
+    println!("[fold-hash] the {} page entries this object holds:", blocks.len());
+    for (handle, component, address) in &blocks {
         println!("    handle {handle:>20}  component {component:<10}  address {address}");
     }
     assert_eq!(
         FIELDS,
-        pages.len(),
+        blocks.len(),
         "the index holds {} entries for this object rather than {FIELDS}, so the reading below is \
          not about the fields this fixture wrote",
-        pages.len(),
+        blocks.len(),
     );
 
-    let handles: std::collections::BTreeSet<u64> = pages.iter().map(|row| row.0).collect();
-    let addresses: std::collections::BTreeSet<&String> = pages.iter().map(|row| &row.2).collect();
+    let handles: std::collections::BTreeSet<u64> = blocks.iter().map(|row| row.0).collect();
+    let addresses: std::collections::BTreeSet<&String> = blocks.iter().map(|row| &row.2).collect();
     println!(
         "[fold-hash] {} distinct handle(s) over {} distinct address(es)",
         handles.len(),
@@ -324,7 +324,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
             "[fold-hash] MEASURED: {} field(s) share {} address(es). These entries have no \
              element name to tell them apart, so entries converge on pages here -- which is the \
              intended shape and is what `container_blocks_are_batched` measures through a round.",
-            pages.len(),
+            blocks.len(),
             addresses.len()
         );
     }

@@ -1199,7 +1199,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
                 bucket
                     .block_index
                     .iter()
-                    .map(move |(handle, _page)| (bucket.routing_bucket, *handle))
+                    .map(move |(handle, _block)| (bucket.routing_bucket, *handle))
             })
             .filter(|(routing_bucket, handle)| {
                 named.at(*routing_bucket, *handle).as_ref() == key
@@ -1210,10 +1210,10 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     let due_key = |index: usize| format!("zzz-due-{index:04}");
 
     let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
     engine.load_shard(1);
 
     let mut seed = Vec::with_capacity(LIVE_KEYS + DUE_KEYS);
@@ -1330,7 +1330,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     let reader = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-control"),
-        &pages,
+        &blocks,
         &indexes,
     );
 
@@ -1571,13 +1571,13 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     /// A copy, so the probe cannot disturb the shard the cycle is still driving, and a fresh
     /// engine, so this is a cold load and not a cache read.
     fn default_load_replay_point(
-        pages: &std::path::Path,
+        blocks: &std::path::Path,
         indexes: &std::path::Path,
         scratch: &std::path::Path,
         label: &str,
     ) -> u64 {
         let root = scratch.join(label.replace(' ', "-"));
-        copy_tree(pages, &root.join("pages"));
+        copy_tree(blocks, &root.join("pages"));
         copy_tree(indexes, &root.join("indexes"));
         crate::engine::lifecycle::LAST_REPLAY_WATERMARK
             .store(NO_LOAD_RECORDED, std::sync::atomic::Ordering::SeqCst);
@@ -1616,11 +1616,11 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let probes = dir.path().join("probes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
     engine.load_shard(1);
 
     let mut seed = Vec::new();
@@ -1663,7 +1663,7 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
         let base_anchor = base_index_anchor(engine);
         let (latest_by_index_log, highest_anchor) = manifest_orderings(&indexes);
         inverted_ordering_states += usize::from(latest_by_index_log < highest_anchor);
-        let load_from = default_load_replay_point(&pages, &indexes, &probes, label);
+        let load_from = default_load_replay_point(&blocks, &indexes, &probes, label);
         if !plan.safe_to_reclaim {
             // A plan that refuses reclaims nothing and so cannot outrun anything. Printed anyway,
             // so a fixture that stopped reaching a reclaiming plan shows up as such below instead
@@ -1877,7 +1877,7 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     let reader = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-reader"),
-        &pages,
+        &blocks,
         &indexes,
     );
     reader.load_shard(1);
@@ -2900,10 +2900,10 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     let persist_key = "persist-target";
 
     let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
     engine.load_shard(1);
 
     // Background keys, so the base index is a real one rather than a three-row curiosity.
@@ -3060,7 +3060,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     let reader = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-control"),
-        &pages,
+        &blocks,
         &indexes,
     );
 

@@ -101,13 +101,13 @@ fn components_the_blocks_state(
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            let Ok(bytes) = engine.block_store.read(&page.address) else {
+            let Ok(bytes) = engine.block_store.read(&block.address) else {
                 continue;
             };
             if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
@@ -142,13 +142,13 @@ fn entry_counts(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let mut live = 0usize;
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            if page.deleted {
+            if block.deleted {
                 tombstoned += 1;
             } else {
                 live += 1;
@@ -161,7 +161,7 @@ fn entry_counts(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
 #[test]
 fn a_gated_removal_stays_removed_across_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let victim = member_bytes(2);
     let victim_component = hex::encode(&victim);
@@ -170,7 +170,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            &pages,
+            &blocks,
             &indexes,
         );
         load_on(&engine);
@@ -250,7 +250,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
-        &pages,
+        &blocks,
         &indexes,
     );
     load_on(&reloaded);

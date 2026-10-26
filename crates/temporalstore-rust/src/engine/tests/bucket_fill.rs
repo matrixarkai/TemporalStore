@@ -190,7 +190,7 @@ impl BlocksPerBucket {
         self.counts.values().copied().sum()
     }
 
-    fn pages(&self) -> usize {
+    fn blocks(&self) -> usize {
         self.counts.iter().map(|(held, count)| held * count).sum()
     }
 
@@ -212,7 +212,7 @@ impl BlocksPerBucket {
         if buckets == 0 {
             return 0.0;
         }
-        self.pages() as f64 / buckets as f64
+        self.blocks() as f64 / buckets as f64
     }
 
     fn single_block_fraction(&self) -> f64 {
@@ -229,7 +229,7 @@ impl BlocksPerBucket {
         println!(
             "{label}: {} buckets, {} pages, mean {:.4}, single-page {:.5}, widest {}, multi-page {}",
             self.buckets(),
-            self.pages(),
+            self.blocks(),
             self.mean(),
             self.single_block_fraction(),
             self.widest(),
@@ -268,7 +268,7 @@ fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
     // It falls out of the walk rather than being tested for: a bucket with no pages yields
     // nothing to group under it.
     let mut contents: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
-    for (routing_bucket, _handle, object_key, _page) in
+    for (routing_bucket, _handle, object_key, _block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
         contents
@@ -372,11 +372,11 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
             // DENOMINATOR: every key really is in the index. A run that wrote nothing would
             // report a clean single-block histogram of zero buckets.
             assert_eq!(
-                hist.pages(),
+                hist.blocks(),
                 keys.len(),
                 "{records}/{end_routing_bucket}: the index holds {} pages for {} written keys; \
                  the histogram below is not over the fixture",
-                hist.pages(),
+                hist.blocks(),
                 keys.len()
             );
             observed.insert((records, end_routing_bucket), hist);
@@ -1037,16 +1037,16 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard 1");
             let buckets = shard.bucket_index.bucket_map.len();
-            let pages: usize = shard
+            let blocks: usize = shard
                 .bucket_index
                 .bucket_map
                 .values()
                 .map(|bucket| bucket.block_index.len())
                 .sum();
             assert_eq!(
-                pages,
+                blocks,
                 keys.len(),
-                "{records}/{end_routing_bucket}: the map holds {pages} pages for {} keys, so the \
+                "{records}/{end_routing_bucket}: the map holds {blocks} pages for {} keys, so the \
                  per-page divisor below is not the fixture's",
                 keys.len()
             );
@@ -1065,7 +1065,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
                     bytes,
                     allocs,
                     buckets,
-                    pages,
+                    blocks,
                     arms,
                 },
             );
@@ -1092,7 +1092,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
                 end_routing_bucket.to_string()
             },
             row.buckets,
-            row.pages,
+            row.blocks,
             row.bytes_per_block(),
             row.allocs_per_block(),
             row.arms.0,
@@ -1106,10 +1106,10 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
         let narrow = observed.get(&(records, NARROW_END)).expect("narrow arm");
 
         assert_eq!(
-            wide.pages, narrow.pages,
+            wide.blocks, narrow.blocks,
             "the two arms at {records} records hold {} and {} pages; a per-page figure over \
              different page counts is two questions",
-            wide.pages, narrow.pages
+            wide.blocks, narrow.blocks
         );
         assert!(
             narrow.buckets < wide.buckets,
@@ -1165,8 +1165,8 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
     println!(
         "  the fill deepens from {:.2} to {:.2} pages a bucket between the two corpus sizes, and \
          the allocation ratio moves from {small_ratio:.3} to {large_ratio:.3}",
-        small_narrow.pages as f64 / small_narrow.buckets as f64,
-        large_narrow.pages as f64 / large_narrow.buckets as f64
+        small_narrow.blocks as f64 / small_narrow.buckets as f64,
+        large_narrow.blocks as f64 / large_narrow.buckets as f64
     );
     assert!(
         large_ratio < small_ratio,
@@ -1183,7 +1183,7 @@ struct Arm {
     bytes: u64,
     allocs: u64,
     buckets: usize,
-    pages: usize,
+    blocks: usize,
     /// `BlockIndexMap` arms as (Empty, One, Many) -- the footprint the byte column cannot explain.
     arms: (usize, usize, usize),
 }
@@ -1191,11 +1191,11 @@ struct Arm {
 #[cfg(feature = "alloc-probe")]
 impl Arm {
     fn bytes_per_block(&self) -> f64 {
-        self.bytes as f64 / self.pages as f64
+        self.bytes as f64 / self.blocks as f64
     }
 
     fn allocs_per_block(&self) -> f64 {
-        self.allocs as f64 / self.pages as f64
+        self.allocs as f64 / self.blocks as f64
     }
 }
 
@@ -1469,7 +1469,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         let shard = shards.get(&1).expect("shard is loaded");
         let mut walk = Walk::default();
         let mut by_bucket: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
-        for (routing_bucket, handle, object_key, _page) in
+        for (routing_bucket, handle, object_key, _block) in
             super::blocks_with_identity(&shard.bucket_index)
         {
             by_bucket
@@ -1703,10 +1703,10 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         // answers for every page, and a disagreement between the two is the finding rather than
         // a missing name.
         let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
-        for (routing_bucket, _handle, object_key, page) in
+        for (routing_bucket, _handle, object_key, block) in
             super::blocks_with_identity(&shard.bucket_index)
         {
-            if page.deleted {
+            if block.deleted {
                 continue;
             }
             verdict.blocks += 1;
@@ -2069,8 +2069,8 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
     let placed = super::blocks_with_identity(&shard.bucket_index);
     let mut blocks = 0usize;
     let mut computed_elsewhere = 0usize;
-    for (routing_bucket, _handle, object_key, page) in &placed {
-        if page.deleted {
+    for (routing_bucket, _handle, object_key, block) in &placed {
+        if block.deleted {
             continue;
         }
         blocks += 1;

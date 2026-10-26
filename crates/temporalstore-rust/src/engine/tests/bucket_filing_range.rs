@@ -249,7 +249,7 @@ fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Ve
         let mut keys: Vec<String> = bucket
             .block_index
             .iter()
-            .map(|(handle, _page)| named.at(*routing_bucket, *handle).to_string())
+            .map(|(handle, _block)| named.at(*routing_bucket, *handle).to_string())
             .collect();
         if keys.is_empty() {
             continue;

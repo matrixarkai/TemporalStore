@@ -75,25 +75,25 @@ fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usiz
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
-    let mut pages = std::collections::BTreeSet::new();
+    let mut blocks = std::collections::BTreeSet::new();
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.model_id.as_str() != "set"
+        for (handle, block) in &bucket.block_index {
+            if block.model_id.as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || page.deleted
+                || block.deleted
             {
                 continue;
             }
             entries += 1;
-            pages.insert((
-                page.address.block_slab_id(),
-                page.address.offset(),
-                page.address.length(),
+            blocks.insert((
+                block.address.block_slab_id(),
+                block.address.offset(),
+                block.address.length(),
             ));
         }
     }
-    (pages.len(), entries)
+    (blocks.len(), entries)
 }
 
 /// Run a whole sweep and report what survived it.
@@ -125,17 +125,17 @@ fn sweep_once() -> (usize, usize, u64, u64) {
         .compact_shard_blocks(1)
         .expect("the sweep must succeed");
     let (batches, folded) = crate::engine::container_batch_counts();
-    let (pages, entries) = blocks_and_entries(&engine, "sweep/set");
+    let (blocks, entries) = blocks_and_entries(&engine, "sweep/set");
     drop(engine);
-    (pages, entries, batches, folded)
+    (blocks, entries, batches, folded)
 }
 
 #[test]
 fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     println!("\n=== after a WHOLE sweep ===");
 
-    let (pages, entries, batches, folded) = sweep_once();
-    println!("  pages {pages}  entries {entries}  batches {batches}  folded {folded}");
+    let (blocks, entries, batches, folded) = sweep_once();
+    println!("  pages {blocks}  entries {entries}  batches {batches}  folded {folded}");
 
     // FLOORS, ON THE REACHING OF THE PATH. `entries == pages` is satisfied by 0 == 0, so a sweep
     // that lost the object entirely would pass the claim below without these.
@@ -145,15 +145,15 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
          fold and the numbers above say nothing about what a sweep leaves behind"
     );
     assert!(
-        pages > 0 && entries > 0,
-        "{pages} page(s) and {entries} entr(ies) after the sweep, so the object did not survive it"
+        blocks > 0 && entries > 0,
+        "{blocks} page(s) and {entries} entr(ies) after the sweep, so the object did not survive it"
     );
     // AND THE FOLD ACTUALLY SHARED A PAGE, which is what makes one-entry-a-page a smaller number
     // than one-entry-an-element rather than the same number by coincidence. Without this, a
     // fixture whose members never folded would satisfy `entries == pages` with one of each.
     assert!(
-        pages < MEMBERS,
-        "the {MEMBERS} members resolve to {pages} page(s) after the sweep, so nothing folded and \
+        blocks < MEMBERS,
+        "the {MEMBERS} members resolve to {blocks} page(s) after the sweep, so nothing folded and \
          `entries == pages` below would hold with or without the collapse"
     );
 
@@ -161,8 +161,8 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     // rebuilds. The derivation is the keystone -- a filing change cannot be undone by the
     // re-derivation, because the re-derivation is the same projection.
     assert_eq!(
-        pages, entries,
-        "the sweep left {entries} entries for {pages} page(s). A sweep calls \
+        blocks, entries,
+        "the sweep left {entries} entries for {blocks} page(s). A sweep calls \
          `rebuild_bucket_first_index` twice, so if the rebuild re-derived one entry per element \
          the collapse would be undone before the sweep returned -- which is exactly the fight this \
          test exists to rule out"
@@ -174,5 +174,5 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     // could only ever read zero. It is enforced by `state.rs`'s pin instead --
     // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` and a field sum equal to the width, so
     // re-adding a name fails const-evaluation rather than being counted here.
-    println!("  => entries after the sweep: {entries} for {pages} page(s)");
+    println!("  => entries after the sweep: {entries} for {blocks} page(s)");
 }

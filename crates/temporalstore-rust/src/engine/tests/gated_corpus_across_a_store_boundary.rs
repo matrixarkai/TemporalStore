@@ -126,8 +126,8 @@ fn field_name(index: usize) -> String {
     format!("f-{index:05}")
 }
 
-fn engine_on(cache: &std::path::Path, pages: &std::path::Path, indexes: &std::path::Path) -> TemporalEngine {
-    TemporalEngine::with_local_dirs(64 * 1024 * 1024, cache, pages, indexes)
+fn engine_on(cache: &std::path::Path, blocks: &std::path::Path, indexes: &std::path::Path) -> TemporalEngine {
+    TemporalEngine::with_local_dirs(64 * 1024 * 1024, cache, blocks, indexes)
 }
 
 fn load_on(engine: &TemporalEngine) {
@@ -283,9 +283,9 @@ fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> us
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            if page.deleted
-                || page.model_id.as_str() != model_id
+        for (handle, block) in &bucket.block_index {
+            if block.deleted
+                || block.model_id.as_str() != model_id
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
@@ -324,12 +324,12 @@ struct Boundary {
 /// new one under `reader` over the same page and index directories.
 fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
     let dir = tempfile::tempdir().expect("tempdir");
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
 
     let set_entries_written;
     {
-        let engine = engine_on(&dir.path().join("cache"), &pages, &indexes);
+        let engine = engine_on(&dir.path().join("cache"), &blocks, &indexes);
         load_on(&engine);
         write_corpus(&engine);
         // Folded, because the shape this gate is about is elements SHARING one page. Without the
@@ -348,7 +348,7 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
 
     // ITS OWN CACHE DIRECTORY. Handed the writer's, this engine answers out of pages the writer
     // left warm and the read says nothing about what the index file holds.
-    let reloaded = engine_on(&dir.path().join("cache-reloaded"), &pages, &indexes);
+    let reloaded = engine_on(&dir.path().join("cache-reloaded"), &blocks, &indexes);
     load_on(&reloaded);
     Boundary {
         serves: served(&reloaded),
@@ -629,7 +629,7 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
 fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let pages: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
+    let blocks: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
         "hash" => shard
             .hashes
             .get(object_key)
@@ -648,5 +648,5 @@ fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) ->
             .unwrap_or_default(),
         other => panic!("occupied_blocks has no arm for {other}"),
     };
-    pages.len()
+    blocks.len()
 }

@@ -244,10 +244,10 @@ fn read_snapshot(engine: &TemporalEngine) -> Vec<String> {
 
 fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
     let dir = tempfile::tempdir().unwrap();
-    let pages = dir.path().join("pages");
+    let blocks = dir.path().join("pages");
     let indexes = dir.path().join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &pages, &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
     engine.load_shard(1);
 
     let mut rng = Rng::new(seed);
@@ -291,7 +291,7 @@ fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
     let mut prior = before.clone();
     for (cycle, cache) in ["cache-b", "cache-c"].into_iter().enumerate() {
         let reloaded =
-            TemporalEngine::with_local_dirs(1 << 20, dir.path().join(cache), &pages, &indexes);
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join(cache), &blocks, &indexes);
         reloaded.load_shard(1);
         let after = read_snapshot(&reloaded);
         if prior != after {
@@ -855,10 +855,10 @@ fn debug_minimize_seed() {
     }
     for prefix_len in 1..=commands.len() {
         let dir = tempfile::tempdir().unwrap();
-        let pages = dir.path().join("pages");
+        let blocks = dir.path().join("pages");
         let indexes = dir.path().join("indexes");
         let engine =
-            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("a"), &pages, &indexes);
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("a"), &blocks, &indexes);
         engine.load_shard(1);
         for command in &commands[..prefix_len] {
             let _ = engine.execute(ExecuteRequest {
@@ -869,7 +869,7 @@ fn debug_minimize_seed() {
         let before = read_snapshot(&engine);
         engine.unload_shard(1);
         let reloaded =
-            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("b"), &pages, &indexes);
+            TemporalEngine::with_local_dirs(1 << 20, dir.path().join("b"), &blocks, &indexes);
         reloaded.load_shard(1);
         let after = read_snapshot(&reloaded);
         if before != after {

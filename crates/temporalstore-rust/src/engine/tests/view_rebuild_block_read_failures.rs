@@ -136,7 +136,7 @@ fn live_blocks(shard: &ShardState) -> usize {
             bucket
                 .block_index
                 .values()
-                .filter(|page| !page.deleted)
+                .filter(|block| !block.deleted)
                 .count()
         })
         .sum()
@@ -157,10 +157,10 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
-    let pages = live_blocks(shard);
+    let blocks = live_blocks(shard);
     assert!(
-        pages > 0,
-        "DENOMINATOR: {pages} live pages, so this control is a zero because nothing was read"
+        blocks > 0,
+        "DENOMINATOR: {blocks} live pages, so this control is a zero because nothing was read"
     );
 
     // What a `skip_serializing` map always looks like on load: empty. So the rebuild below is the
@@ -178,7 +178,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     let rebuilt = rebuilt_points(shard, "clean");
     println!("=== a clean view rebuild ===");
     println!(
-        "  {pages} live pages, {rebuilt} of {POINTS} points rebuilt, \
+        "  {blocks} live pages, {rebuilt} of {POINTS} points rebuilt, \
          {read_failures} unreadable, {decode_failures} undecodable"
     );
     assert_eq!(
@@ -206,8 +206,8 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
 
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
-    let pages = live_blocks(shard);
-    assert!(pages > 0, "DENOMINATOR: {pages} live pages");
+    let blocks = live_blocks(shard);
+    assert!(blocks > 0, "DENOMINATOR: {blocks} live pages");
 
     // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
     // is the SAME fixture rather than a second one that might differ for another reason.

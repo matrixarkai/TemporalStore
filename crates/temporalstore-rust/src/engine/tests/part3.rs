@@ -23,14 +23,14 @@ fn control_api_reads_block_and_index_streams() {
         },
     });
 
-    let page = engine.read_stream(StreamReadRequest {
+    let block = engine.read_stream(StreamReadRequest {
         shard_id: 1,
         stream_kind: StreamKind::Block,
         block_slab_id: 0,
         offset: 0,
         size: 12,
     });
-    assert_eq!(page.data, b"stream-value".to_vec());
+    assert_eq!(block.data, b"stream-value".to_vec());
 
     let index = engine.read_stream(StreamReadRequest {
         shard_id: 1,
@@ -313,11 +313,11 @@ fn control_api_reads_and_scans_index_log_stream() {
             bucket
                 .get("page_index")
                 .or_else(|| bucket.get("p"))
-                .and_then(|pages| pages.as_object())
+                .and_then(|blocks| blocks.as_object())
         })
-        .flat_map(|pages| pages.values())
-        .filter(|page| {
-            let key = page.get("object_key").or_else(|| page.get("k"));
+        .flat_map(|blocks| blocks.values())
+        .filter(|block| {
+            let key = block.get("object_key").or_else(|| block.get("k"));
             key == Some(&serde_json::json!("h"))
         })
         .collect();
@@ -2194,8 +2194,8 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
             // collapse is of the IDENTITY and not of the pages.
             && bucket.object_count == 1
             && bucket.dirty_generation >= 2
-            && bucket.block_indexes.iter().all(|page| {
-                page.model_id == "hash" && page.dirty && !page.deleted && !page.log_backed
+            && bucket.block_indexes.iter().all(|block| {
+                block.model_id == "hash" && block.dirty && !block.deleted && !block.log_backed
             })
     }));
     assert_eq!(
@@ -2607,7 +2607,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
     let bucket = index.bucket_map.get(&7).expect("legacy slot should load");
     assert!(bucket.object_index.contains(&42));
     assert_eq!(bucket.block_index.len(), 1);
-    let page = bucket
+    let block = bucket
         .block_index
         .values()
         .next()
@@ -2616,7 +2616,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
     // it, and where the page IS is the key of the bucket map it was loaded into -- asserted by the
     // `bucket_map.get(&7)` this test already performs above.
     assert_eq!(
-        (page.address.block_slab_id(), page.address.offset()),
+        (block.address.block_slab_id(), block.address.offset()),
         (1, 2),
         "the merged word did not unpack to the slab and offset the split spelling named"
     );

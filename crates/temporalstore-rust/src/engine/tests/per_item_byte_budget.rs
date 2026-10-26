@@ -1397,16 +1397,16 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     // The entry is behind a pointer now, so the page index is a quarter of the node and the widest
     // field is whichever the table says -- asserted to be found rather than named, so a future
     // narrowing moves it instead of leaving this comment describing the wrong one.
-    let page = fields
+    let block = fields
         .iter()
         .find(|field| field.name == "block_index")
         .expect("block_index is a field of BucketNode");
     assert!(
-        page.size * 2 < size,
+        block.size * 2 < size,
         "the page index is {} of {size} bytes. It is supposed to be well under half the structure \
          now that its single-page arm holds a pointer rather than a whole entry; if it is over half \
          again, the inline entry has come back or another payload has joined it",
-        page.size
+        block.size
     );
     let widest = fields
         .iter()
@@ -1417,7 +1417,7 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         widest.name,
         widest.size,
         100.0 * widest.size as f64 / size as f64,
-        page.size
+        block.size
     );
     assert!(
         widest.size * 2 < size,
@@ -2919,7 +2919,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
             let shard = shards.get(&1).expect("shard is loaded");
             let (live, dead) = object_id_rows(shard);
             // THE NEXT TERM, carried out of the same shard so it is the same distribution.
-            let pages: Vec<BlockIndexMap> = shard
+            let blocks: Vec<BlockIndexMap> = shard
                 .bucket_index
                 .bucket_map
                 .values()
@@ -2934,7 +2934,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
                 };
                 arms[at] += 1;
             }
-            (live, dead, pages, arms)
+            (live, dead, blocks, arms)
         };
         let buckets = live_rows.len();
         assert!(buckets > 0, "denominator: no buckets, so every per-bucket figure is nothing");

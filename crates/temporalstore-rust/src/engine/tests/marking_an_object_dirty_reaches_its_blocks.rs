@@ -108,13 +108,13 @@ fn a_shard_holding_one_filed_clean_block(object_key: &str) -> (ShardState, u32) 
         .expect("the fixture bucket must exist")
         .block_index
         .iter()
-        .map(|(handle, page)| (*handle, page.clone()))
+        .map(|(handle, block)| (*handle, block.clone()))
         .collect();
     let key: Arc<str> = Arc::from(object_key);
-    for (handle, page) in &placed {
+    for (handle, block) in &placed {
         shard
             .bucket_index
-            .insert_object_block_lookup(routing_bucket, *handle, &key, page);
+            .insert_object_block_lookup(routing_bucket, *handle, &key, block);
     }
     (shard, routing_bucket)
 }
@@ -127,7 +127,7 @@ fn any_block_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
         .expect("the fixture bucket must exist")
         .block_index
         .values()
-        .any(|page| page.dirty)
+        .any(|block| block.dirty)
 }
 
 #[test]
@@ -393,10 +393,10 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     // --- DENOMINATOR: the fold's input is the pages in the bucket, so the fixture has to have put
     // --- them there. A corpus that did not accumulate makes every number above a measurement of an
     // --- empty bucket, which would read as "the fold is free".
-    for (rung, pages, _) in &measured {
+    for (rung, blocks, _) in &measured {
         assert!(
-            *pages >= (*rung as u64),
-            "corpus {rung} left only {pages} pages resident, so the bucket the fold walks was never \
+            *blocks >= (*rung as u64),
+            "corpus {rung} left only {blocks} pages resident, so the bucket the fold walks was never \
              filled and the visit counts above are not measurements of it"
         );
     }

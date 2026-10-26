@@ -1130,12 +1130,12 @@ impl<'de> Deserialize<'de> for CoreIndex {
                         // carried beside its key, so the entry the lookup records is the entry the
                         // map holds. A page whose handle collided with an earlier one is not in
                         // the map twice and must not be in the lookup twice either.
-                        if let Some(page) = decoded.node.block_index.get(handle) {
+                        if let Some(block) = decoded.node.block_index.get(handle) {
                             index.insert_object_block_lookup(
                                 routing_bucket,
                                 *handle,
                                 object_key,
-                                page,
+                                block,
                             );
                         }
                     }
@@ -1278,11 +1278,11 @@ impl<'a> BlockKeysByPosition<'a> {
         &self,
         node: &'a BucketNode,
         handle: u64,
-        page: &BlockIndex,
+        block: &BlockIndex,
     ) -> Option<BlockObjectIdentity<'a>> {
-        if page.deleted {
+        if block.deleted {
             return node
-                .tombstone_element_at(&page.address)
+                .tombstone_element_at(&block.address)
                 .map(|row| BlockObjectIdentity { object_key: &row.object_key });
         }
         self.live_identity(node.routing_bucket, handle)
@@ -1350,8 +1350,8 @@ pub(super) fn block_identities_in(
 ) -> std::collections::HashMap<u64, Arc<str>> {
     node.block_index
         .iter()
-        .filter_map(|(handle, page)| {
-            keys.identity_of(node, *handle, page)
+        .filter_map(|(handle, block)| {
+            keys.identity_of(node, *handle, block)
                 .map(|beside| (*handle, Arc::clone(beside.object_key)))
         })
         .collect()
@@ -2478,8 +2478,8 @@ fn note_entries_examined(_count: usize) {}
 /// back too. Both therefore answer the identical `Result`, which is what lets
 /// `the_walk_and_the_bisection_answer_identically_at_every_length` run one against the other.
 #[cfg(test)]
-pub(super) fn scan_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
-    for (at, (handle, _)) in pages.iter().enumerate() {
+pub(super) fn scan_block(blocks: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
+    for (at, (handle, _)) in blocks.iter().enumerate() {
         match handle.cmp(key) {
             std::cmp::Ordering::Less => {}
             std::cmp::Ordering::Equal => {
@@ -2492,8 +2492,8 @@ pub(super) fn scan_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize
             }
         }
     }
-    note_entries_examined(pages.len());
-    Err(pages.len())
+    note_entries_examined(blocks.len());
+    Err(blocks.len())
 }
 
 /// Bisect a sorted block list. THE SHIPPED LOOKUP.
@@ -2505,13 +2505,13 @@ pub(super) fn scan_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize
 /// It also has no cliff: the widest list measured holds 50 blocks, and ten times that is four more
 /// probes. A walk at the same length would be five hundred entries, which is the reason a
 /// fallback for the tail is not needed here -- the shipped strategy IS the tail's strategy.
-pub(super) fn bisect_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
-    let (mut low, mut high) = (0usize, pages.len());
+pub(super) fn bisect_block(blocks: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
+    let (mut low, mut high) = (0usize, blocks.len());
     let mut examined = 0usize;
     while low < high {
         let mid = low + (high - low) / 2;
         examined += 1;
-        match pages[mid].0.cmp(key) {
+        match blocks[mid].0.cmp(key) {
             std::cmp::Ordering::Less => low = mid + 1,
             std::cmp::Ordering::Greater => high = mid,
             std::cmp::Ordering::Equal => {
@@ -2530,8 +2530,8 @@ pub(super) fn bisect_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usi
 /// is what makes the entry counter above a reading of the path production runs rather than of a
 /// copy written for the test. It is the bisection because that is what the measurement said --
 /// see [`scan_block`] for the strategy it declined and the counts that declined it.
-pub(super) fn find_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
-    bisect_block(pages, key)
+pub(super) fn find_block(blocks: &[(u64, BlockIndex)], key: &u64) -> Result<usize, usize> {
+    bisect_block(blocks, key)
 }
 
 /// Room for one more block, taken in fixed steps rather than by doubling.
@@ -2549,10 +2549,10 @@ pub(super) fn find_block(pages: &[(u64, BlockIndex)], key: &u64) -> Result<usize
 /// to eight and wins from twelve upward, which is where the large corpus lives.
 pub(super) const BLOCK_LIST_GROWTH_STEP: usize = 4;
 
-fn reserve_one_more(pages: &mut Vec<(u64, BlockIndex)>) {
-    if pages.len() == pages.capacity() {
-        let want = (pages.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP;
-        pages.reserve_exact(want - pages.len());
+fn reserve_one_more(blocks: &mut Vec<(u64, BlockIndex)>) {
+    if blocks.len() == blocks.capacity() {
+        let want = (blocks.len() + 1).div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP;
+        blocks.reserve_exact(want - blocks.len());
     }
 }
 
@@ -2571,7 +2571,7 @@ impl<'a> Iterator for BlockIndexIter<'a> {
             BlockIndexIter::One(once) => once.next(),
             // The list is kept sorted by handle, so this yields the same sequence the tree's
             // iterator did.
-            BlockIndexIter::Many(iter) => iter.next().map(|(handle, page)| (handle, page)),
+            BlockIndexIter::Many(iter) => iter.next().map(|(handle, block)| (handle, block)),
         }
     }
 }
@@ -2588,7 +2588,7 @@ impl<'a> Iterator for BlockIndexValuesMut<'a> {
         match self {
             BlockIndexValuesMut::Empty => None,
             BlockIndexValuesMut::One(once) => once.next(),
-            BlockIndexValuesMut::Many(iter) => iter.next().map(|(_handle, page)| page),
+            BlockIndexValuesMut::Many(iter) => iter.next().map(|(_handle, block)| block),
         }
     }
 }
@@ -3286,17 +3286,17 @@ impl BlockIndexMap {
             // ONE COMPARISON AND ONE POINTER LOAD, not a bisection. The arm does not enter
             // `find_block`, which is why `BLOCK_LOOKUP_ENTRIES_EXAMINED` counts nothing at all for a
             // single-block bucket.
-            BlockIndexMap::One(handle, page) => (handle == key).then_some(&**page),
-            BlockIndexMap::Many(pages) => find_block(pages, key).ok().map(|at| &pages[at].1),
+            BlockIndexMap::One(handle, block) => (handle == key).then_some(&**block),
+            BlockIndexMap::Many(blocks) => find_block(blocks, key).ok().map(|at| &blocks[at].1),
         }
     }
 
     pub(super) fn get_mut(&mut self, key: &u64) -> Option<&mut BlockIndex> {
         match self {
             BlockIndexMap::Empty => None,
-            BlockIndexMap::One(handle, page) => (&*handle == key).then_some(&mut **page),
-            BlockIndexMap::Many(pages) => {
-                find_block(pages, key).ok().map(|at| &mut pages[at].1)
+            BlockIndexMap::One(handle, block) => (&*handle == key).then_some(&mut **block),
+            BlockIndexMap::Many(blocks) => {
+                find_block(blocks, key).ok().map(|at| &mut blocks[at].1)
             }
         }
     }
@@ -3316,8 +3316,8 @@ impl BlockIndexMap {
         cause: StaleCause,
     ) -> Option<BlockIndex> {
         let removed = self.remove_unaccounted(key);
-        if let Some(page) = removed.as_ref() {
-            live.remove_address(&page.address, cause);
+        if let Some(block) = removed.as_ref() {
+            live.remove_address(&block.address, cause);
         }
         removed
     }
@@ -3332,14 +3332,14 @@ impl BlockIndexMap {
                 match std::mem::replace(self, BlockIndexMap::Empty) {
                     // The box is UNWRAPPED rather than cloned out of: the caller is handed the entry
                     // it already owned, and the allocation goes back to the allocator with it.
-                    BlockIndexMap::One(_, page) => Some(*page),
+                    BlockIndexMap::One(_, block) => Some(*block),
                     _ => unreachable!("just matched One"),
                 }
             }
-            BlockIndexMap::Many(pages) => {
-                let removed = find_block(pages, key)
+            BlockIndexMap::Many(blocks) => {
+                let removed = find_block(blocks, key)
                     .ok()
-                    .map(|at| pages.remove(at).1);
+                    .map(|at| blocks.remove(at).1);
                 self.shrink();
                 removed
             }
@@ -3356,11 +3356,11 @@ impl BlockIndexMap {
     pub(super) fn insert_with_handle(
         &mut self,
         handle: u64,
-        page: BlockIndex,
+        block: BlockIndex,
         live: &mut BlockSlabLiveIndex,
     ) -> u64 {
-        let address = page.address.clone();
-        let (handle, displaced) = self.insert_unaccounted(handle, page);
+        let address = block.address.clone();
+        let (handle, displaced) = self.insert_unaccounted(handle, block);
         if let Some(displaced) = displaced {
             // A REWRITE THAT LANDED ON THE SAME ENTRY RETIRED NOTHING, so it is discharged WITHOUT
             // a stale record. Recording it would make the pending-discard figure count bytes the
@@ -3386,8 +3386,8 @@ impl BlockIndexMap {
     /// One caller, and it must stay that way: `reload_released_bucket` re-files the blocks a
     /// release took out of the index, and release never discharged them. Counting them here would
     /// double every released bucket the moment it was touched again.
-    pub(super) fn insert_released_with_handle(&mut self, handle: u64, page: BlockIndex) -> u64 {
-        self.insert_unaccounted(handle, page).0
+    pub(super) fn insert_released_with_handle(&mut self, handle: u64, block: BlockIndex) -> u64 {
+        self.insert_unaccounted(handle, block).0
     }
 
     /// TEST-ONLY DOOR, AND IT DELEGATES RATHER THAN DUPLICATING.
@@ -3401,18 +3401,18 @@ impl BlockIndexMap {
     pub(super) fn insert(
         &mut self,
         object_key: &str,
-        page: BlockIndex,
+        block: BlockIndex,
         live: &mut BlockSlabLiveIndex,
     ) -> u64 {
-        let handle = block_index_handle(object_key, &page);
-        self.insert_with_handle(handle, page, live)
+        let handle = block_index_handle(object_key, &block);
+        self.insert_with_handle(handle, block, live)
     }
 
     /// The other test-only door, delegating for the same reason.
     #[cfg(test)]
-    pub(super) fn insert_released(&mut self, object_key: &str, page: BlockIndex) -> u64 {
-        let handle = block_index_handle(object_key, &page);
-        self.insert_released_with_handle(handle, page)
+    pub(super) fn insert_released(&mut self, object_key: &str, block: BlockIndex) -> u64 {
+        let handle = block_index_handle(object_key, &block);
+        self.insert_released_with_handle(handle, block)
     }
 
     /// The mechanism, with no accounting: the handle it was GIVEN, and the address it displaced.
@@ -3429,7 +3429,7 @@ impl BlockIndexMap {
     /// the same block must compute the same handle or those refs point at nothing, which is what a
     /// counter did silently until a reload lost an object.
     /// `the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute` is the check.
-    fn insert_unaccounted(&mut self, handle: u64, page: BlockIndex) -> (u64, Option<ElementEntry>) {
+    fn insert_unaccounted(&mut self, handle: u64, block: BlockIndex) -> (u64, Option<ElementEntry>) {
         let displaced = match self {
             BlockIndexMap::Empty => {
                 // THE ONE ALLOCATION THE INLINE ENTRY DID NOT TAKE, and it is taken here. ONE ENTRY
@@ -3437,14 +3437,14 @@ impl BlockIndexMap {
                 // That is the whole of boxing's advantage over dropping the arm, which would put the
                 // same page in a list whose first block is four entries -- measured at 482.0 B a
                 // bucket against 178.3 on the whole-keyspace range.
-                *self = BlockIndexMap::One(handle, Box::new(page));
+                *self = BlockIndexMap::One(handle, Box::new(block));
                 None
             }
             BlockIndexMap::One(existing, held) => {
                 if *existing == handle {
                     // A rewrite of the same block: the entry is replaced INSIDE the box it already
                     // has, so a rewrite of a single-block bucket allocates nothing at all.
-                    Some(std::mem::replace(&mut **held, page).address)
+                    Some(std::mem::replace(&mut **held, block).address)
                 } else {
                     // A second block: this bucket has earned a list. Built SORTED, because every
                     // walk of this index reads it in handle order.
@@ -3459,26 +3459,26 @@ impl BlockIndexMap {
                     // three cost twice what doubling would have;
                     // `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement`
                     // is what said so.
-                    let mut pages = Vec::with_capacity(BLOCK_LIST_GROWTH_STEP);
+                    let mut blocks = Vec::with_capacity(BLOCK_LIST_GROWTH_STEP);
                     if first_handle < handle {
-                        pages.push((first_handle, first));
-                        pages.push((handle, page));
+                        blocks.push((first_handle, first));
+                        blocks.push((handle, block));
                     } else {
-                        pages.push((handle, page));
-                        pages.push((first_handle, first));
+                        blocks.push((handle, block));
+                        blocks.push((first_handle, first));
                     }
-                    *self = BlockIndexMap::Many(pages);
+                    *self = BlockIndexMap::Many(blocks);
                     None
                 }
             }
-            BlockIndexMap::Many(pages) => match find_block(pages, &handle) {
+            BlockIndexMap::Many(blocks) => match find_block(blocks, &handle) {
                 // A block with this identity is already filed: overwrite it where it sits. A list
                 // does not deduplicate by construction the way the tree did, so this is the only
                 // thing standing between a rewrite and a bucket holding the same block twice.
-                Ok(at) => Some(std::mem::replace(&mut pages[at].1, page).address),
+                Ok(at) => Some(std::mem::replace(&mut blocks[at].1, block).address),
                 Err(at) => {
-                    reserve_one_more(pages);
-                    pages.insert(at, (handle, page));
+                    reserve_one_more(blocks);
+                    blocks.insert(at, (handle, block));
                     None
                 }
             },
@@ -3496,18 +3496,18 @@ impl BlockIndexMap {
     /// of its life -- which is the cost this type exists to avoid.
     fn shrink(&mut self) {
         let len = match self {
-            BlockIndexMap::Many(pages) => pages.len(),
+            BlockIndexMap::Many(blocks) => blocks.len(),
             _ => return,
         };
         match len {
             0 => *self = BlockIndexMap::Empty,
             1 => {
-                let pages = match std::mem::replace(self, BlockIndexMap::Empty) {
-                    BlockIndexMap::Many(pages) => pages,
+                let blocks = match std::mem::replace(self, BlockIndexMap::Empty) {
+                    BlockIndexMap::Many(blocks) => blocks,
                     _ => unreachable!("just matched Many"),
                 };
-                let (handle, page) = pages.into_iter().next().expect("length is one");
-                *self = BlockIndexMap::One(handle, Box::new(page));
+                let (handle, block) = blocks.into_iter().next().expect("length is one");
+                *self = BlockIndexMap::One(handle, Box::new(block));
             }
             _ => {}
         }
@@ -3517,7 +3517,7 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => 0,
             BlockIndexMap::One(..) => 1,
-            BlockIndexMap::Many(pages) => pages.len(),
+            BlockIndexMap::Many(blocks) => blocks.len(),
         }
     }
 
@@ -3585,10 +3585,10 @@ impl BlockIndexMap {
         match self {
             BlockIndexMap::Empty => 0,
             // `Box<BlockIndex>`: one entry, and the handle is inline in the enum.
-            BlockIndexMap::One(_handle, _page) => std::mem::size_of::<BlockIndex>() as u64,
+            BlockIndexMap::One(_handle, _block) => std::mem::size_of::<BlockIndex>() as u64,
             // `Vec<(u64, BlockIndex)>`: the element is the pair, and the buffer is owned at the
             // capacity it was reserved to rather than the length that is filled.
-            BlockIndexMap::Many(pages) => (pages.capacity() as u64)
+            BlockIndexMap::Many(blocks) => (blocks.capacity() as u64)
                 .saturating_mul(std::mem::size_of::<(u64, BlockIndex)>() as u64),
         }
     }
@@ -3607,15 +3607,15 @@ impl BlockIndexMap {
     pub(super) fn iter(&self) -> BlockIndexIter<'_> {
         match self {
             BlockIndexMap::Empty => BlockIndexIter::Empty,
-            BlockIndexMap::One(handle, page) => {
-                BlockIndexIter::One(std::iter::once((handle, &**page)))
+            BlockIndexMap::One(handle, block) => {
+                BlockIndexIter::One(std::iter::once((handle, &**block)))
             }
-            BlockIndexMap::Many(pages) => BlockIndexIter::Many(pages.iter()),
+            BlockIndexMap::Many(blocks) => BlockIndexIter::Many(blocks.iter()),
         }
     }
 
     pub(super) fn values(&self) -> impl Iterator<Item = &BlockIndex> {
-        self.iter().map(|(_handle, page)| page)
+        self.iter().map(|(_handle, block)| block)
     }
 
     /// Mutable blocks, UNACCOUNTED.
@@ -3636,8 +3636,8 @@ impl BlockIndexMap {
     pub(super) fn blocks_mut_unaccounted(&mut self) -> BlockIndexValuesMut<'_> {
         match self {
             BlockIndexMap::Empty => BlockIndexValuesMut::Empty,
-            BlockIndexMap::One(_, page) => BlockIndexValuesMut::One(std::iter::once(&mut **page)),
-            BlockIndexMap::Many(pages) => BlockIndexValuesMut::Many(pages.iter_mut()),
+            BlockIndexMap::One(_, block) => BlockIndexValuesMut::One(std::iter::once(&mut **block)),
+            BlockIndexMap::Many(blocks) => BlockIndexValuesMut::Many(blocks.iter_mut()),
         }
     }
 
@@ -3657,18 +3657,18 @@ impl BlockIndexMap {
     ) {
         match self {
             BlockIndexMap::Empty => {}
-            BlockIndexMap::One(handle, page) => {
+            BlockIndexMap::One(handle, block) => {
                 let handle = *handle;
-                if !keep(&handle, page) {
-                    live.remove_address(&page.address, cause);
+                if !keep(&handle, block) {
+                    live.remove_address(&block.address, cause);
                     *self = BlockIndexMap::Empty;
                 }
             }
-            BlockIndexMap::Many(pages) => {
-                pages.retain_mut(|(handle, page)| {
-                    let kept = keep(&*handle, page);
+            BlockIndexMap::Many(blocks) => {
+                blocks.retain_mut(|(handle, block)| {
+                    let kept = keep(&*handle, block);
                     if !kept {
-                        live.remove_address(&page.address, cause);
+                        live.remove_address(&block.address, cause);
                     }
                     kept
                 });
@@ -3721,14 +3721,14 @@ impl<'a> IntoIterator for &'a BlockIndexMap {
 /// key in scope already: the decode has it in the stored map key it is iterating, and the
 /// fixtures have it in the page they just built.
 impl FromIterator<(Arc<str>, BlockIndex)> for BlockIndexMap {
-    fn from_iter<I: IntoIterator<Item = (Arc<str>, BlockIndex)>>(pages: I) -> Self {
+    fn from_iter<I: IntoIterator<Item = (Arc<str>, BlockIndex)>>(blocks: I) -> Self {
         // Unaccounted: this is how a ShardState arrives from serde, and the tally is derived
         // AFTER a load by `reconcile_block_slab_live`. Charging blocks here would count a loaded
         // index twice over -- once on the way in, once when the load seeds the tally.
         let mut map = Self::default();
-        for (object_key, page) in pages {
-            let handle = block_index_handle(&object_key, &page);
-            map.insert_unaccounted(handle, page);
+        for (object_key, block) in blocks {
+            let handle = block_index_handle(&object_key, &block);
+            map.insert_unaccounted(handle, block);
         }
         map
     }
@@ -3763,9 +3763,9 @@ fn block_index_and_identities(
     // were thrown away here, which is why #2350 could measure that the characters of a page key
     // are not read back: they reached this loop and were dropped. They are the SOURCE now.
     for (key, stored) in flat {
-        let (object_key, page) = stored.into_parts_from_key(&key)?;
-        let handle = block_index_handle(&object_key, &page);
-        map.insert_unaccounted(handle, page);
+        let (object_key, block) = stored.into_parts_from_key(&key)?;
+        let handle = block_index_handle(&object_key, &block);
+        map.insert_unaccounted(handle, block);
         identities.push((handle, object_key));
     }
     Ok((map, identities))
@@ -3861,7 +3861,7 @@ impl Serialize for BlockIndexAt<'_> {
 /// `block_entry_names::the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot` pins the three
 /// written forms byte for byte.
 pub(super) struct BlockEntryAt<'a> {
-    pub(super) page: &'a BlockIndex,
+    pub(super) block: &'a BlockIndex,
 }
 
 /// THE ENTRY AS IT ARRIVES FROM THE WIRE, AND THE IDENTITY IS NOT ON IT ANY MORE.
@@ -3953,9 +3953,9 @@ impl Serialize for BlockEntryAt<'_> {
         // the decoder reads them back out of it now; the arity is part of the stored shape, which is
         // what the stamp step pays for.
         let mut entry = serializer.serialize_struct("BlockIndex", 3)?;
-        entry.serialize_field("address", &self.page.address)?;
-        entry.serialize_field("dirty", &self.page.dirty)?;
-        entry.serialize_field("deleted", &self.page.deleted)?;
+        entry.serialize_field("address", &self.block.address)?;
+        entry.serialize_field("dirty", &self.block.dirty)?;
+        entry.serialize_field("deleted", &self.block.deleted)?;
         entry.end()
     }
 }
@@ -4047,15 +4047,15 @@ where
     use serde::ser::{Error as _, SerializeMap};
     let mut entries: Vec<(String, BlockEntryAt<'_>)> =
         Vec::with_capacity(node.block_index.len());
-    for (handle, page) in node.block_index.iter() {
+    for (handle, block) in node.block_index.iter() {
         // THROUGH THE ONE DOOR, so the encoder and the readers cannot disagree about where an
         // identity comes from.
-        let Some(beside) = keys.identity_of(node, *handle, page) else {
+        let Some(beside) = keys.identity_of(node, *handle, block) else {
             return Err(S::Error::custom(format!(
                 "bucket {} holds a page whose stored key would name no object, so this index is \
                  not writable: deleted={}, and the inversion {}",
                 node.routing_bucket,
-                page.deleted,
+                block.deleted,
                 if keys.names_no_position() {
                     "names NO position at all, so this is the decode-then-rebuild window and the \
                      encode was taken inside it"
@@ -4086,8 +4086,8 @@ where
         // `an_index_written_before_this_change_loads_block_for_block` pins that a row written by a
         // binary that still had the field decodes.
         entries.push((
-            block_index_written_key(beside.object_key, page),
-            BlockEntryAt { page },
+            block_index_written_key(beside.object_key, block),
+            BlockEntryAt { block },
         ));
     }
     entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -4141,11 +4141,11 @@ impl BlockIndexNamedBy<'_> {
         let paired: Vec<(&str, &BlockIndex)> = self
             .0
             .iter()
-            .map(|(handle, page)| {
+            .map(|(handle, block)| {
                 let at = self
                     .1
                     .iter()
-                    .position(|object| block_index_handle(object, page) == *handle)
+                    .position(|object| block_index_handle(object, block) == *handle)
                     .unwrap_or_else(|| {
                         panic!(
                             "no object named by this fixture is filed at handle {handle}; the                              named objects are {:?}",
@@ -4153,7 +4153,7 @@ impl BlockIndexNamedBy<'_> {
                         )
                     });
                 used[at] = true;
-                (self.1[at], page)
+                (self.1[at], block)
             })
             .collect();
         if let Some(at) = used.iter().position(|hit| !hit) {
@@ -4177,8 +4177,8 @@ impl Serialize for BlockIndexNamedBy<'_> {
         let mut entries: Vec<(String, BlockEntryAt<'_>)> = self
             .pairs()
             .into_iter()
-            .map(|(object_key, page)| {
-                (block_index_written_key(object_key, page), BlockEntryAt { page })
+            .map(|(object_key, block)| {
+                (block_index_written_key(object_key, block), BlockEntryAt { block })
             })
             .collect();
         entries.sort_by(|left, right| left.0.cmp(&right.0));
@@ -4221,10 +4221,10 @@ impl Serialize for NodeNamedBy<'_> {
 /// Hashes exactly the fields [`block_index_written_key`] renders, so the handle and the written
 /// key always name the same block. Equal identity therefore lands on one slot, which is also how
 /// this map keeps a rewrite from accumulating a second entry for the same block.
-pub(super) fn block_index_handle(object_key: &str, page: &BlockIndex) -> u64 {
+pub(super) fn block_index_handle(object_key: &str, block: &BlockIndex) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    page.model_id.hash(&mut hasher);
+    block.model_id.hash(&mut hasher);
     // THE IDENTITY ARRIVES AS A PARAMETER. It was read off the entry, which is the one place it
     // is about to stop being. Same bytes into the same hasher in the same order, so the handle
     // is unchanged -- what moves is WHERE the caller gets the key, and every caller has one.
@@ -4253,17 +4253,17 @@ pub(super) fn block_index_handle(object_key: &str, page: &BlockIndex) -> u64 {
     // is a change to an identity, with its own blast radius, and it is not what a width step is
     // for. Kept constant, the handles this produces are bit-for-bit the ones it produced before.
     None::<&str>.hash(&mut hasher);
-    page.address.block_slab_id().hash(&mut hasher);
-    page.address.offset().hash(&mut hasher);
-    page.address.length().hash(&mut hasher);
-    page.address.block_id().unwrap_or_default().hash(&mut hasher);
-    page.address.generation().unwrap_or_default().hash(&mut hasher);
+    block.address.block_slab_id().hash(&mut hasher);
+    block.address.offset().hash(&mut hasher);
+    block.address.length().hash(&mut hasher);
+    block.address.block_id().unwrap_or_default().hash(&mut hasher);
+    block.address.generation().unwrap_or_default().hash(&mut hasher);
     hasher.finish()
 }
 
-pub(super) fn block_index_written_key(object_key: &str, page: &BlockIndex) -> String {
+pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> String {
     crate::index_log::block_ref_key_from_parts(
-        page.model_id.as_str(),
+        block.model_id.as_str(),
         object_key,
         // `None`, WHICH IS WHAT THIS ALREADY PASSED. The STORED spelling of a page's key is built
         // here, so the value must not move: every entry's component was `None` before the field was
@@ -4271,11 +4271,11 @@ pub(super) fn block_index_written_key(object_key: &str, page: &BlockIndex) -> St
         // was. That is why removing the field costs no `SHARD_INDEX_FORMAT_VERSION` step -- the
         // slot it filled was already absent from the bytes.
         None,
-        page.address.block_slab_id(),
-        page.address.offset(),
-        page.address.length(),
-        page.address.block_id().unwrap_or_default(),
-        page.address.generation().unwrap_or_default(),
+        block.address.block_slab_id(),
+        block.address.offset(),
+        block.address.length(),
+        block.address.block_id().unwrap_or_default(),
+        block.address.generation().unwrap_or_default(),
     )
 }
 /// One entry per OBJECT, holding that object's block refs directly.
@@ -5567,7 +5567,8 @@ pub(super) struct TombstoneElement {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     pub(super) component: Arc<str>,
-    pub(super) page: (u64, u64, u64),
+    #[serde(rename = "page")]
+    pub(super) block: (u64, u64, u64),
 }
 
 /// THE TOMBSTONE ROWS A BUCKET HOLDS, HELD INDIRECTLY SO A BUCKET WITH NO REMOVAL PAYS ONE WORD.
@@ -5779,20 +5780,20 @@ impl BucketNode {
     pub(super) fn insert_block(
         &mut self,
         object_key: &str,
-        page: BlockIndex,
+        block: BlockIndex,
         live: &mut BlockSlabLiveIndex,
     ) -> u64 {
-        let handle = block_index_handle(object_key, &page);
-        self.block_index.insert_with_handle(handle, page, live)
+        let handle = block_index_handle(object_key, &block);
+        self.block_index.insert_with_handle(handle, block, live)
     }
 
     /// Install a block that is ALREADY counted, with the handle computed at this level.
     ///
     /// One caller, and it must stay that way -- see
     /// [`BlockIndexMap::insert_released_with_handle`].
-    pub(super) fn insert_released_block(&mut self, object_key: &str, page: BlockIndex) -> u64 {
-        let handle = block_index_handle(object_key, &page);
-        self.block_index.insert_released_with_handle(handle, page)
+    pub(super) fn insert_released_block(&mut self, object_key: &str, block: BlockIndex) -> u64 {
+        let handle = block_index_handle(object_key, &block);
+        self.block_index.insert_released_with_handle(handle, block)
     }
 
     /// The five lifecycle flags, each read through its own mask and nothing else.
@@ -5871,13 +5872,13 @@ impl BucketNode {
         component: &str,
         address: &ElementEntry,
     ) {
-        let page = tombstone_block_key(address);
+        let block = tombstone_block_key(address);
         if let Some(row) = self.tombstone_elements.iter_mut().find(|row| {
             row.model_id == model_id
                 && &*row.object_key == &**object_key
                 && &*row.component == component
         }) {
-            row.page = page;
+            row.block = block;
             return;
         }
         self.tombstone_elements.push(TombstoneElement {
@@ -5885,7 +5886,7 @@ impl BucketNode {
             object_key: Arc::clone(object_key),
             model_id,
             component: Arc::from(component),
-            page,
+            block,
         });
     }
 
@@ -5903,7 +5904,7 @@ impl BucketNode {
                     && &*row.object_key == object_key
                     && &*row.component == component
             })
-            .map(|row| row.page)
+            .map(|row| row.block)
     }
 
     /// The element the tombstone entry over this page is about.
@@ -5911,8 +5912,8 @@ impl BucketNode {
     /// The other direction, for the two rebuilds: they hold a tombstone ENTRY and have to decide
     /// whether its element is live again, which is a question about the element and not the page.
     pub(super) fn tombstone_element_at(&self, address: &ElementEntry) -> Option<&TombstoneElement> {
-        let page = tombstone_block_key(address);
-        self.tombstone_elements.iter().find(|row| row.page == page)
+        let block = tombstone_block_key(address);
+        self.tombstone_elements.iter().find(|row| row.block == block)
     }
 
     /// Forget one element's tombstone row. Paired with the retain that drops its entry.
@@ -5949,14 +5950,14 @@ impl BucketNode {
         if self.tombstone_elements.is_empty() {
             return;
         }
-        let pages: std::collections::BTreeSet<(u64, u64, u64)> = self
+        let blocks: std::collections::BTreeSet<(u64, u64, u64)> = self
             .block_index
             .values()
-            .filter(|page| page.deleted)
-            .map(|page| tombstone_block_key(&page.address))
+            .filter(|block| block.deleted)
+            .map(|block| tombstone_block_key(&block.address))
             .collect();
         self.tombstone_elements
-            .retain(|row| pages.contains(&row.page));
+            .retain(|row| blocks.contains(&row.block));
     }
 }
 
@@ -6893,9 +6894,9 @@ impl CoreIndex {
         // carrying it, so it arrives from the caller -- which always has it, because filing a page
         // is something done TO an object.
         object_key: &Arc<str>,
-        page: &BlockIndex,
+        block: &BlockIndex,
     ) {
-        if page.deleted {
+        if block.deleted {
             return;
         }
         let added = {
@@ -6905,7 +6906,7 @@ impl CoreIndex {
             // allocates and the reserve in the pool exists for precisely this.
             let kind = crate::engine::state::intern_kind(
                 &mut self.kind_pool,
-                page.model_id.as_str(),
+                block.model_id.as_str(),
             );
             let value = BlockLookupRef {
                 routing_bucket,
@@ -7101,9 +7102,9 @@ impl CoreIndex {
                 self.bucket_map
                     .get(&block_ref.routing_bucket)
                     .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
-                    .map(|page| {
-                        !page.deleted
-                            && page.model_id.as_str() == model_id
+                    .map(|block| {
+                        !block.deleted
+                            && block.model_id.as_str() == model_id
                             // THE IDENTITY IS NOT RE-COMPARED. This read
                             // `&*page.object_key == object_key` against a page reached through
                             // THAT object's own ref list, so it asked whether the lookup was
@@ -7113,7 +7114,7 @@ impl CoreIndex {
                             // `page.component.as_deref() == component` with that constant folded
                             // in, so the kinds this answers for do not move.
                             && component.is_none()
-                            && same_block_address(&page.address, address)
+                            && same_block_address(&block.address, address)
                     })
                     .unwrap_or(false)
             });
@@ -7562,7 +7563,7 @@ mod component_lookup_tests {
     /// argument and for the same reason: a caller that still tries to name an object here should
     /// be a compile error and not a silent no-op. The entry has no field for it; the callers pass
     /// the key to `insert_object_block_lookup` themselves.
-    fn page() -> BlockIndex {
+    fn block() -> BlockIndex {
         BlockIndex {
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
             address: ElementEntry::from_parts(0, 0, 0, None, Some(0)),
@@ -7642,7 +7643,7 @@ mod component_lookup_tests {
     ///
     /// Each page gets its own `(routing_bucket, block_ref_key)` -- `(i, i)` -- so `pages` DISTINCT
     /// refs go in, and a count below is not a count of one ref filed repeatedly.
-    fn core_with(object: &str, pages: u32) -> CoreIndex {
+    fn core_with(object: &str, blocks: u32) -> CoreIndex {
         let index = CoreIndex::default();
         // THE COUNTER IS ESTABLISHED BY THE TYPE NOW, AND THIS FIXTURE USED TO DO IT BY HAND.
         //
@@ -7659,8 +7660,8 @@ mod component_lookup_tests {
         // incremented into a right answer.
         let mut index = index;
         let object_key: Arc<str> = Arc::from(object);
-        for i in 0..pages {
-            let filed = page();
+        for i in 0..blocks {
+            let filed = block();
             index.insert_object_block_lookup(i, u64::from(i), &object_key, &filed);
         }
         index
@@ -7737,7 +7738,7 @@ mod component_lookup_tests {
         // DESCENDING: (3,3), (2,2), (1,1), (0,0).
         let object_key: Arc<str> = Arc::from("k");
         for i in (0..BLOCKS).rev() {
-            let filed = page();
+            let filed = block();
             index.insert_object_block_lookup(i, u64::from(i), &object_key, &filed);
         }
 

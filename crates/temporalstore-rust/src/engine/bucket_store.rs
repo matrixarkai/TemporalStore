@@ -102,7 +102,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> BucketStoreRuntimeReport {
             report.ttl_bucket_count = report.ttl_bucket_count.saturating_add(1);
         }
         report.max_dirty_generation = report.max_dirty_generation.max(bucket.dirty_generation);
-        let deleted_block_ref_count = bucket.block_index.values().filter(|page| page.deleted).count();
+        let deleted_block_ref_count = bucket.block_index.values().filter(|block| block.deleted).count();
         report.deleted_block_ref_count = report
             .deleted_block_ref_count
             .saturating_add(deleted_block_ref_count);
@@ -195,11 +195,11 @@ pub(super) fn bucket_index_block_address(
             let Some(bucket) = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket) else {
                 continue;
             };
-            let Some(page) = bucket.block_index.get(&block_ref.block_ref_key) else {
+            let Some(block) = bucket.block_index.get(&block_ref.block_ref_key) else {
                 continue;
             };
-            if !page.deleted
-                && page.model_id.as_str() == model_id
+            if !block.deleted
+                && block.model_id.as_str() == model_id
                 // THE IDENTITY IS NOT RE-COMPARED -- see the note above this function on why a
                 // page reached through its own object's ref list has already been matched on it.
                 //
@@ -213,7 +213,7 @@ pub(super) fn bucket_index_block_address(
                 // key.
                 && component.is_none()
             {
-                return Some(page.address.clone());
+                return Some(block.address.clone());
             }
         }
         return super::storage_bucket_internals::released_bucket_block_address(
@@ -266,7 +266,7 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
     let mut addresses = Vec::new();
     if let Some(block_refs) = shard.bucket_index.object_block_refs(model_id, object_key) {
         for block_ref in block_refs.iter() {
-            let Some(page) = shard
+            let Some(block) = shard
                 .bucket_index
                 .bucket_map
                 .get(&block_ref.routing_bucket)
@@ -274,8 +274,8 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
             else {
                 continue;
             };
-            if page.model_id.as_str() == model_id {
-                addresses.push(page.address.clone());
+            if block.model_id.as_str() == model_id {
+                addresses.push(block.address.clone());
             }
         }
     }
@@ -287,11 +287,11 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
             // THE ROW NAMES A PAGE BY ITS TRIPLE, so the entry is found by address and not by
             // identity. Bounded by the removals this bucket has seen, against the whole-shard page
             // walk it replaces.
-            if let Some(page) = bucket.block_index.values().find(|page| {
-                page.deleted
-                    && crate::engine::state::tombstone_block_key(&page.address) == row.page
+            if let Some(block) = bucket.block_index.values().find(|block| {
+                block.deleted
+                    && crate::engine::state::tombstone_block_key(&block.address) == row.block
             }) {
-                addresses.push(page.address.clone());
+                addresses.push(block.address.clone());
             }
         }
     }
@@ -308,8 +308,8 @@ pub(super) fn bucket_index_component_block_addresses(
             .iter()
             .filter_map(|block_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)?;
-                let page = bucket.block_index.get(&block_ref.block_ref_key)?;
-                if !page.deleted && page.model_id.as_str() == model_id {
+                let block = bucket.block_index.get(&block_ref.block_ref_key)?;
+                if !block.deleted && block.model_id.as_str() == model_id {
                     // `None` IN THE FIRST SLOT, AND THAT SLOT IS NOW DEAD ON BOTH ARMS -- said
                     // here rather than left to be rediscovered. `released_component_block_addresses`
                     // already hardcodes `(None, address)`, and this arm's `page.component` was
@@ -322,7 +322,7 @@ pub(super) fn bucket_index_component_block_addresses(
                     // gaining a component cannot do it quietly -- and roughly twenty call sites
                     // destructure the pair. Collapsing it is a separate change with that tripwire
                     // to restate, not a side effect of a width step.
-                    Some((None, page.address.clone()))
+                    Some((None, block.address.clone()))
                 } else {
                     None
                 }

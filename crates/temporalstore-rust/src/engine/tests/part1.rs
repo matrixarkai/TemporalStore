@@ -3850,7 +3850,7 @@ fn what_reading_one_summary_actually_costs() {
         let walk_probe = crate::alloc_probe::Probe::start();
         let mut decoded = 0usize;
         for (routing_bucket, object_key, address) in &addresses_with_buckets {
-            if let Some(page) = super::read_block_bytes(
+            if let Some(block) = super::read_block_bytes(
                 &engine.cache,
                 &engine.block_store,
                 1,
@@ -3859,7 +3859,7 @@ fn what_reading_one_summary_actually_costs() {
                 Some(*routing_bucket),
             ) {
                 if let super::state::PackedFeatureBlockDecode::Packed(points) =
-                    super::packed_blocks::decode_feature_block_strict(&page)
+                    super::packed_blocks::decode_feature_block_strict(&block)
                 {
                     decoded += points.len();
                 }
@@ -4338,28 +4338,28 @@ fn deep_compare_the_index_a_reconstruct_produces() {
         let named: std::collections::HashMap<(u32, u64), std::sync::Arc<str>> =
             super::blocks_with_identity(&shard.bucket_index)
                 .into_iter()
-                .map(|(routing_bucket, handle, object_key, _page)| {
+                .map(|(routing_bucket, handle, object_key, _block)| {
                     ((routing_bucket, handle), object_key)
                 })
                 .collect();
         let mut rows: Vec<String> = Vec::new();
         for (routing_bucket, bucket) in shard.bucket_index.bucket_map.iter() {
-            for (field_key, page) in bucket.block_index.iter() {
+            for (field_key, block) in bucket.block_index.iter() {
                 let object_key = named
                     .get(&(*routing_bucket, *field_key))
                     .expect("every page walked above was named beside it");
                 rows.push(format!(
                     "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
                     object_key,
-                    page.model_id,
+                    block.model_id,
                     None::<std::sync::Arc<str>>,
-                    page.object_id(1, object_key),
-                    page.address.block_slab_id(),
-                    page.address.offset(),
-                    page.address.length(),
-                    page.dirty,
-                    page.deleted,
-                    page.log_backed(),
+                    block.object_id(1, object_key),
+                    block.address.block_slab_id(),
+                    block.address.offset(),
+                    block.address.length(),
+                    block.dirty,
+                    block.deleted,
+                    block.log_backed(),
                     bucket.layout as u8 as u32,
                 ));
             }
@@ -9283,7 +9283,7 @@ fn what_each_plan_call_walks() {
             });
             assert!(response.status.ok, "write {index}: {:?}", response.status);
         }
-        let pages: u64 = engine
+        let blocks: u64 = engine
             .bucket_storage_summaries(1)
             .iter()
             .map(|summary| summary.block_ref_count as u64)
@@ -9293,7 +9293,7 @@ fn what_each_plan_call_walks() {
         let walked = crate::engine::live_block_scan_entries();
         eprintln!(
             "  [per-call] {label:<40} {walked:>8} entries = {:>5.1}x the shard",
-            walked as f64 / pages.max(1) as f64,
+            walked as f64 / blocks.max(1) as f64,
         );
     };
 
@@ -9372,8 +9372,8 @@ fn what_a_bounded_bucket_range_saves() {
         let shard = shards.get(&1).expect("loaded shard");
         let buckets = &shard.bucket_index.bucket_map;
         let objects: usize = buckets.values().map(|b| b.object_index.object_count()).sum();
-        let pages: usize = buckets.values().map(|b| b.block_index.len()).sum();
-        (buckets.len(), shard.bucket_recency.len(), objects, pages, live)
+        let blocks: usize = buckets.values().map(|b| b.block_index.len()).sum();
+        (buckets.len(), shard.bucket_recency.len(), objects, blocks, live)
     };
 
     let (wide_buckets, wide_recency, wide_objects, wide_blocks, wide_live) = run(u32::MAX);

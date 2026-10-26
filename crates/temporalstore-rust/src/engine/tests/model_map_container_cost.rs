@@ -1039,7 +1039,7 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
         let mut keys_per_bucket: Vec<usize> = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             let mut in_bucket: std::collections::HashSet<&str> = std::collections::HashSet::new();
-            for (handle, _page) in bucket.block_index.iter() {
+            for (handle, _block) in bucket.block_index.iter() {
                 entries += 1;
                 let object_key = named.at(bucket.routing_bucket, *handle);
                 in_bucket.insert(object_key);

@@ -695,17 +695,17 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
             .get("page_index")
             .expect("a bucket node writes `page_index`");
         let in_whole_map = reading.instances_in(page_index);
-        let pages = page_index
+        let blocks = page_index
             .as_object()
             .expect("the page index writes an object");
-        let in_values: usize = pages.values().map(|entry| reading.instances_in(entry)).sum();
+        let in_values: usize = blocks.values().map(|entry| reading.instances_in(entry)).sum();
         assert!(
             in_whole_map >= in_values,
             "[CLAUSE part-sum] a page index holds {in_whole_map} instance(s) while its entries \
              alone hold {in_values}, so the map's own serialization is not its keys plus its \
              values and the subtraction below is not a split"
         );
-        for name in pages.keys() {
+        for name in blocks.keys() {
             block_name_bytes += serde_json::to_vec(name).expect("a name serializes").len();
             block_name_key_chars += instances(
                 name.as_bytes(),

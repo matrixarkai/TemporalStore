@@ -234,7 +234,7 @@ struct BlocksPerObject {
     /// Component-name bytes that are HEX SPELLINGS OF NUMBERS, so half of them carry nothing.
     hex_component_name_bytes: usize,
     hex_components: usize,
-    pages: usize,
+    blocks: usize,
 }
 
 impl BlocksPerObject {
@@ -269,7 +269,7 @@ impl BlocksPerObject {
         println!(
             "  objects={}  pages={}  (denominator for every row below)",
             self.objects(),
-            self.pages
+            self.blocks
         );
         for (name, map) in [
             ("pages per OBJECT", &self.histogram),
@@ -330,13 +330,13 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
     let mut measured = BlocksPerObject::default();
     for bucket in shard.bucket_index.bucket_map.values() {
         let mut bucket_components: BTreeSet<Option<&str>> = BTreeSet::new();
-        for (handle, page) in bucket.block_index.iter() {
-            measured.pages += 1;
+        for (handle, block) in bucket.block_index.iter() {
+            measured.blocks += 1;
             // One member for any non-empty bucket: every entry carries the same absence.
             bucket_components.insert(None::<&str>);
             let slot = per_object
                 .entry((
-                    page.model_id,
+                    block.model_id,
                     named.at(bucket.routing_bucket, *handle).to_string(),
                 ))
                 .or_default();
@@ -352,8 +352,8 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
             .entry(bucket_components.len())
             .or_default() += 1;
     }
-    for ((_, object_key), (pages, components)) in per_object.iter() {
-        *measured.histogram.entry(*pages).or_default() += 1;
+    for ((_, object_key), (blocks, components)) in per_object.iter() {
+        *measured.histogram.entry(*blocks).or_default() += 1;
         *measured
             .components_per_object
             .entry(components.len())
@@ -422,7 +422,7 @@ fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
     // --- Anti-vacuity: every arm must have censused something. ---
     for (label, _, measured) in &arms {
         assert!(
-            measured.pages > 0 && measured.objects() > 0,
+            measured.blocks > 0 && measured.objects() > 0,
             "{label}: nothing censused, so every row it printed is free"
         );
     }
@@ -526,7 +526,7 @@ impl CandidateTable {
 #[derive(Debug, Clone)]
 struct TableCost {
     entries: usize,
-    pages: usize,
+    blocks: usize,
     chunk_bytes: u64,
     request_bytes: u64,
     allocations: u64,
@@ -536,24 +536,24 @@ struct TableCost {
 impl TableCost {
     /// Cumulative chunk bytes a page's share of BUILDING the table cost.
     fn chunk_per_block(&self) -> f64 {
-        if self.pages == 0 {
+        if self.blocks == 0 {
             0.0
         } else {
-            self.chunk_bytes as f64 / self.pages as f64
+            self.chunk_bytes as f64 / self.blocks as f64
         }
     }
 
     /// What the built table HOLDS, per page. The figure a verdict is taken on.
     fn resident_per_block(&self) -> f64 {
-        if self.pages == 0 {
+        if self.blocks == 0 {
             0.0
         } else {
-            self.resident_bytes as f64 / self.pages as f64
+            self.resident_bytes as f64 / self.blocks as f64
         }
     }
 
     fn entries_per_block(&self) -> f64 {
-        self.entries as f64 / self.pages.max(1) as f64
+        self.entries as f64 / self.blocks.max(1) as f64
     }
 }
 
@@ -587,7 +587,7 @@ const ENTRY_BYTES_A_HANDLE_SAVES: usize = 16;
 fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     // Collected first, so the probe charges the TABLE and not the walk that feeds it.
     //
     // THE NAMES COME FROM THE LOOKUP, WHICH IS WHERE THE ALLOCATION THEY MEASURE NOW LIVES. The
@@ -597,8 +597,8 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut names: Vec<Arc<str>> = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, _page) in bucket.block_index.iter() {
-            pages += 1;
+        for (handle, _block) in bucket.block_index.iter() {
+            blocks += 1;
             names.push(Arc::clone(named.at(bucket.routing_bucket, *handle)));
         }
     }
@@ -614,7 +614,7 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
     std::hint::black_box(&table);
     TableCost {
         entries,
-        pages,
+        blocks,
         chunk_bytes: counts.chunk_bytes,
         request_bytes: counts.alloc_bytes,
         allocations: counts.allocs,
@@ -626,11 +626,11 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
 fn measure_component_table(engine: &TemporalEngine) -> TableCost {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let mut pages = 0usize;
+    let mut blocks = 0usize;
     let mut names: Vec<Arc<str>> = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
-            pages += 1;
+        for (_, block) in bucket.block_index.iter() {
+            blocks += 1;
             // NOTHING TO INTERN. This measured what a candidate intern table for element names
             // would cost, over the names the entries held. The entries hold none, so the table
             // has no input -- and the question it was pricing is settled more cheaply than it
@@ -649,7 +649,7 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
     std::hint::black_box(&table);
     TableCost {
         entries,
-        pages,
+        blocks,
         chunk_bytes: counts.chunk_bytes,
         request_bytes: counts.alloc_bytes,
         allocations: counts.allocs,
@@ -717,9 +717,9 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
         let net = saved - cost.resident_per_block();
         println!(
             "  {label:<34} {:>7} {:>7} {:>6.2} {:>10.2} {:>10.2} {:>8.2} {:>+8.2}",
-            cost.pages,
+            cost.blocks,
             cost.entries,
-            cost.pages as f64 / distribution.objects().max(1) as f64,
+            cost.blocks as f64 / distribution.objects().max(1) as f64,
             cost.chunk_per_block(),
             cost.resident_per_block(),
             saved,
@@ -738,7 +738,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
             "{label}: the table was built without allocating, which reads as a probe that is not \
              installed rather than as a free table"
         );
-        assert!(cost.pages > 0, "{label}: no pages, so every figure on this row is free");
+        assert!(cost.blocks > 0, "{label}: no pages, so every figure on this row is free");
     }
 
     // --- THE VERDICT, PER POPULATION. ---
@@ -755,10 +755,10 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
 
     for (label, cost, _) in &routed {
         assert_eq!(
-            cost.entries, cost.pages,
+            cost.entries, cost.blocks,
             "{label}: a routed key is one page per object, so the table is supposed to hold one \
              entry per page -- {} entries over {} pages",
-            cost.entries, cost.pages
+            cost.entries, cost.blocks
         );
         assert!(
             cost.resident_per_block() > ENTRY_BYTES_A_HANDLE_SAVES as f64,
@@ -770,11 +770,11 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     }
     for (label, cost, _) in &containers {
         assert!(
-            cost.entries * 50 < cost.pages,
+            cost.entries * 50 < cost.blocks,
             "{label}: a container object holds a hundred pages, so the table is supposed to hold \
              far fewer entries than pages -- {} entries over {} pages",
             cost.entries,
-            cost.pages
+            cost.blocks
         );
         assert!(
             cost.resident_per_block() < ENTRY_BYTES_A_HANDLE_SAVES as f64,
@@ -881,7 +881,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
     for (label, cost, _) in &rows {
         println!(
             "  {label:<40} {:>7} {:>7} {:>9.3} {:>10.2} {:>11.2} {:>+8.2}",
-            cost.pages,
+            cost.blocks,
             cost.entries,
             cost.entries_per_block(),
             cost.chunk_per_block(),
@@ -892,7 +892,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
             cost.chunk_bytes >= cost.request_bytes,
             "{label}: chunk column below request column"
         );
-        assert!(cost.pages > 0, "{label}: no pages measured");
+        assert!(cost.blocks > 0, "{label}: no pages measured");
     }
 
     // --- BOTH POPULATIONS MUST BE REACHED, or the verdict is decided by the fixture. ---
@@ -915,7 +915,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
              schema -- the same hundred field names across forty objects -- so distinct names are \
              supposed to be far fewer than pages",
             cost.entries,
-            cost.pages
+            cost.blocks
         );
         assert!(
             cost.resident_per_block() < SAVED,
@@ -933,7 +933,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
              NOT repeat -- one container whose two thousand members are all distinct -- so the \
              table is supposed to hold about one entry per page",
             cost.entries,
-            cost.pages
+            cost.blocks
         );
         assert!(
             cost.resident_per_block() > SAVED,
@@ -1225,9 +1225,9 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
     let mut resolved = 0usize;
     let mut folded = 0u64;
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (_, page) in bucket.block_index.iter() {
+        for (_, block) in bucket.block_index.iter() {
             // The resolution under test, folded so it cannot be optimised away.
-            let spelling = page.model_id.as_str();
+            let spelling = block.model_id.as_str();
             folded = folded
                 .wrapping_mul(31)
                 .wrapping_add(spelling.len() as u64)
@@ -1378,13 +1378,13 @@ fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>
     let mut triples: Vec<(String, String, Option<String>, u64, u64)> =
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
-            .map(|(_, _, object_key, page)| {
+            .map(|(_, _, object_key, block)| {
             (
-                page.model_id.as_str().to_string(),
+                block.model_id.as_str().to_string(),
                 object_key.to_string(),
                 None::<String>,
-                page.address.block_slab_id(),
-                page.address.offset(),
+                block.address.block_slab_id(),
+                block.address.offset(),
             )
         })
         .collect();
@@ -1424,16 +1424,16 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
     // spelling with no row now arrives in the key -- and a plant on a field that no longer exists
     // is not a weaker control, it is none. The key is rendered by the production renderer and only
     // its kind slot is replaced, so this plants exactly the defect and nothing else.
-    let page = sample_entry();
-    let real_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &page);
-    let planted = real_key.replacen(page.model_id.as_str(), "not_a_model_kind", 1);
+    let block = sample_entry();
+    let real_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &block);
+    let planted = real_key.replacen(block.model_id.as_str(), "not_a_model_kind", 1);
     assert_ne!(
         real_key, planted,
         "the plant matched nothing in {real_key:?}, so the refusal below would be about the real \
          spelling"
     );
     let stored = serde_json::from_value::<crate::engine::state::StoredBlockEntry>(
-        serde_json::to_value(&crate::engine::state::BlockEntryAt { page: &page }).expect("encode"),
+        serde_json::to_value(&crate::engine::state::BlockEntryAt { block: &block }).expect("encode"),
     )
     .expect("a real entry decodes");
     let error = stored
@@ -1571,11 +1571,11 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
              live kind instead"
         );
         let stored = serde_json::from_value::<crate::engine::state::StoredBlockEntry>(
-            serde_json::to_value(&crate::engine::state::BlockEntryAt { page: &sample })
+            serde_json::to_value(&crate::engine::state::BlockEntryAt { block: &sample })
                 .expect("encode"),
         )
         .expect("a real entry decodes");
-        let (object_key, page) = stored
+        let (object_key, block) = stored
             .into_parts_from_key(&key)
             .unwrap_or_else(|err| panic!("a store carrying {spelling:?} must still load: {err}"));
         assert_eq!(
@@ -1585,11 +1585,11 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
         );
         assert_eq!(
             spelling,
-            page.model_id.as_str(),
+            block.model_id.as_str(),
             "the spelling came back as something else"
         );
         assert!(
-            page.model_id.is_retired(),
+            block.model_id.is_retired(),
             "{spelling:?} is declared under `retired` and the entry does not say so"
         );
         seen += 1;
@@ -1629,12 +1629,12 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // What the entry encoded to when `model_id` was an `Arc<str>`, captured at b8b12d30 by
     // `block_entry_names::capture_the_stored_spelling_of_a_block_entry`'s shape and re-derived here
     // from an equal-valued map so the golden is the VALUE, not this type's own impl.
-    let page = sample_entry();
+    let block = sample_entry();
 
     // THROUGH THE WRAPPER IN ALL THREE ENCODINGS, and the msgpack pair is why the wrapper counts
     // its fields rather than hard-coding one: `to_vec` writes the entry POSITIONALLY, so a field
     // count or an order that moved would move these bytes and not just the named form's.
-    let at = crate::engine::state::BlockEntryAt { page: &page };
+    let at = crate::engine::state::BlockEntryAt { block: &block };
     let named = rmp_serde::to_vec_named(&at).expect("named encode");
     let positional = rmp_serde::to_vec(&at).expect("positional encode");
     let json = serde_json::to_value(&at).expect("json encode");
@@ -1664,7 +1664,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         "the entry still writes its own copy of the object key, which the composite key already \
          spells: {json}"
     );
-    let stored_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &page);
+    let stored_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &block);
     assert!(
         stored_key.starts_with("string:"),
         "the model spelling is supposed to be written as the string it always was, in the key's \
@@ -1696,7 +1696,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         ("positional", &positional_key, &from_positional),
     ] {
         assert_eq!(
-            page.model_id, decoded.model_id,
+            block.model_id, decoded.model_id,
             "{label}: the spelling did not survive the round trip"
         );
         // THE IDENTITY IS COMPARED AGAINST WHAT THE FIXTURE NAMED, not against a copy on the
@@ -1708,13 +1708,13 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
             "{label}: object_key moved across the round trip"
         );
         // No component on the entry, so there is no such field to survive a round trip.
-        assert_eq!(page.dirty, decoded.dirty, "{label}: dirty moved");
-        assert_eq!(page.deleted, decoded.deleted, "{label}: deleted moved");
+        assert_eq!(block.dirty, decoded.dirty, "{label}: dirty moved");
+        assert_eq!(block.deleted, decoded.deleted, "{label}: deleted moved");
         // NOT a stored field any more, and this is the ONLY address property this loop checks --
         // there is no `address` comparison beside it -- so the accessor comparison still has
         // content: it asserts the block id's PRESENCE survives both encoders.
         assert_eq!(
-            page.log_backed(),
+            block.log_backed(),
             decoded.log_backed(),
             "{label}: the address stopped agreeing about log-residency across the round trip"
         );
@@ -2145,16 +2145,16 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     let mut deleted_blocks = 0usize;
     let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
-        for (handle, page) in bucket.block_index.iter() {
-            if page.deleted {
+        for (handle, block) in bucket.block_index.iter() {
+            if block.deleted {
                 deleted_blocks += 1;
                 continue;
             }
-            if page.address.length() == 0 {
+            if block.address.length() == 0 {
                 zero_length_live += 1;
                 println!(
                     "  live zero-length page: model={} key={}",
-                    page.model_id.as_str(),
+                    block.model_id.as_str(),
                     named.at(bucket.routing_bucket, *handle)
                 );
             } else {

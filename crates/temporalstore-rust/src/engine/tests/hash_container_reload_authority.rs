@@ -130,11 +130,11 @@ fn live_entries(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
             bucket
                 .block_index
                 .iter()
-                .map(move |(handle, page)| (bucket.routing_bucket, *handle, page))
+                .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
         })
-        .filter(|(routing_bucket, handle, page)| {
-            !page.deleted
-                && page.model_id.as_str() == kind
+        .filter(|(routing_bucket, handle, block)| {
+            !block.deleted
+                && block.model_id.as_str() == kind
                 && &**named.at(*routing_bucket, *handle) == key
         })
         .count()

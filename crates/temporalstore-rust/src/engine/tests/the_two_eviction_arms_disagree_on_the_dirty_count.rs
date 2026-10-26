@@ -84,15 +84,15 @@ fn blocks_and_objects(
 ) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&SHARD).expect("shard is loaded");
-    let mut pages: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
+    let mut blocks: std::collections::BTreeMap<u32, u64> = std::collections::BTreeMap::new();
     for (bucket_id, bucket) in shard.bucket_index.bucket_map.iter() {
         let n = bucket
             .block_index
             .values()
-            .filter(|page| !page.deleted && page.dirty)
+            .filter(|block| !block.deleted && block.dirty)
             .count() as u64;
         if n > 0 {
-            pages.insert(*bucket_id, n);
+            blocks.insert(*bucket_id, n);
         }
     }
     let objects: std::collections::BTreeMap<u32, u64> = shard
@@ -101,7 +101,7 @@ fn blocks_and_objects(
         .into_iter()
         .map(|(bucket_id, count)| (bucket_id, count as u64))
         .collect();
-    (pages, objects)
+    (blocks, objects)
 }
 
 #[test]
@@ -109,10 +109,10 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
     // ---- THE REGIME, asserted before anything is compared. ----
     let regime_dir = tempfile::tempdir().expect("tempdir");
     let regime = seeded(regime_dir.path());
-    let (pages, objects) = blocks_and_objects(&regime);
-    println!("dirty pages per bucket:   {pages:?}");
+    let (blocks, objects) = blocks_and_objects(&regime);
+    println!("dirty pages per bucket:   {blocks:?}");
     println!("dirty objects per bucket: {objects:?}");
-    let total_blocks: u64 = pages.values().sum();
+    let total_blocks: u64 = blocks.values().sum();
     let total_objects: u64 = objects.values().sum();
     println!("totals: {total_blocks} dirty pages, {total_objects} dirty objects");
     assert!(

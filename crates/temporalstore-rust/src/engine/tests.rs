@@ -58,7 +58,7 @@ impl BlockObjects {
         Self {
             by_position: blocks_with_identity(index)
                 .into_iter()
-                .map(|(routing_bucket, handle, object_key, _page)| {
+                .map(|(routing_bucket, handle, object_key, _block)| {
                     ((routing_bucket, handle), object_key)
                 })
                 .collect(),
@@ -139,10 +139,10 @@ pub(super) fn blocks_with_identity(
     let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
     let mut out = Vec::new();
     for bucket in index.bucket_map.values() {
-        for (handle, page) in &bucket.block_index {
-            let Some(beside) = keys.identity_of(bucket, *handle, page) else {
+        for (handle, block) in &bucket.block_index {
+            let Some(beside) = keys.identity_of(bucket, *handle, block) else {
                 assert!(
-                    page.deleted,
+                    block.deleted,
                     "the LIVE page at handle {handle} in bucket {} is named by nothing beside \n                     it, and a live page is named by the object lookup unless the index is in \n                     the one window the decoder closed by filing as it decodes",
                     bucket.routing_bucket
                 );
@@ -152,7 +152,7 @@ pub(super) fn blocks_with_identity(
                 bucket.routing_bucket,
                 *handle,
                 std::sync::Arc::clone(beside.object_key),
-                page,
+                block,
             ));
         }
     }
