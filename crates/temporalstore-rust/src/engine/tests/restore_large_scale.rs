@@ -346,7 +346,7 @@ struct Corpus {
     manifest_files: usize,
     manifest_bytes: u64,
     index_log_bytes: u64,
-    page_bytes: u64,
+    block_bytes: u64,
     store_bytes: u64,
     /// The `wal_sequence` each checkpoint anchored at, in the order they were taken. The pick
     /// takes a maximum over exactly this field, so a fixture whose manifests all carried the
@@ -440,7 +440,7 @@ fn build_corpus(
         manifest_files,
         manifest_bytes,
         index_log_bytes: dir_bytes(&index_dir.join("indexlogs")),
-        page_bytes: dir_bytes(&dir.join("pages")),
+        block_bytes: dir_bytes(&dir.join("pages")),
         store_bytes: dir_bytes(dir),
         manifest_anchors,
         slabs_on_disk,
@@ -743,7 +743,7 @@ fn describe(report: &mut Report, label: &str, restart: &Restart) {
         corpus.manifest_files,
         corpus.manifest_bytes,
         corpus.index_log_bytes,
-        corpus.page_bytes,
+        corpus.block_bytes,
         corpus.slabs_on_disk,
         corpus.slabs_holding_live_bytes,
         corpus.store_path_len,

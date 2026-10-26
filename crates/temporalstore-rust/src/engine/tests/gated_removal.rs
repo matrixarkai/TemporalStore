@@ -110,18 +110,18 @@ fn components_the_blocks_state(
             let Ok(bytes) = engine.block_store.read(&page.address) else {
                 continue;
             };
-            if let crate::engine::container_pages::ContainerBlockDecode::Framed {
+            if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
                 spelling,
                 items,
                 ..
-            } = crate::engine::container_pages::decode_container_page(&bytes)
+            } = crate::engine::container_blocks::decode_container_block(&bytes)
             {
                 for item in items {
                     if item.deleted {
                         continue;
                     }
                     if let Some(component) =
-                        crate::engine::container_pages::component_from_element_key(
+                        crate::engine::container_blocks::component_from_element_key(
                             spelling, &item.key,
                         )
                     {

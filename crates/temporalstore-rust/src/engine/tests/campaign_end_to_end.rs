@@ -279,7 +279,7 @@ impl BlocksPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
+fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut hist = BlocksPerBucket::default();
@@ -508,7 +508,7 @@ fn measure_cell(arm: usize, records: usize, end_routing_bucket: u32) -> (Cell, B
          store that does not hold what it claims is not a measurement of holding it"
     );
 
-    let hist = pages_per_bucket(&engine);
+    let hist = blocks_per_bucket(&engine);
     let nodes = node_count(&engine);
     assert!(
         hist.pages() >= records,
@@ -797,7 +797,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         let probe = Probe::start();
         run_batch(&engine, commands);
         let counts = probe.stop();
-        let hist = pages_per_bucket(&engine);
+        let hist = blocks_per_bucket(&engine);
         println!(
             "  run {} on {:<12} buckets {:>4} pages {:>6} MAX {:>6} | request {:>10} B chunk \
              {:>10} B allocations {:>8}",
@@ -946,7 +946,7 @@ fn rss_cell(arm: usize, records: usize, end_routing_bucket: u32) {
     assert_eq!(records, served, "the RSS cell must hold what it claims");
     let after_rss = proc_status_kb("VmRSS");
     let after_hwm = proc_status_kb("VmHWM");
-    let hist = pages_per_bucket(&engine);
+    let hist = blocks_per_bucket(&engine);
     println!(
         "RSS CELL {records} records on {} | baseline VmRSS {baseline_rss} kB VmHWM \
          {baseline_hwm} kB | after VmRSS {after_rss} kB VmHWM {after_hwm} kB | delta RSS {} kB \

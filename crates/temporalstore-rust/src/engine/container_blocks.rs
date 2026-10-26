@@ -76,7 +76,7 @@
 //! whichever it no longer wants to store. If they were merely written consistently at the same
 //! moment by the same call site -- which is how the component and the set payload agree TODAY, and
 //! nothing re-checks them -- then the second spelling would be an unverified copy rather than a
-//! derivation. `container_page_element_key` drives the round trip over every spelling and over the
+//! derivation. `container_block_element_key` drives the round trip over every spelling and over the
 //! edge cases each one has (an empty member, a score of exactly sixteen characters with nothing
 //! after it, a field name that is not valid UTF-8).
 //!
@@ -84,7 +84,7 @@
 //! `ScoreThenMember`'s `component_from_element_key` now drops a key's first eight bytes rather
 //! than rendering them, so `element_key_from_component` cannot get them back and returns a
 //! PLACEHOLDER there instead of the true score. The two are no longer inverses for this one
-//! spelling -- `container_page_element_key` asserts the loss explicitly rather than asserting a
+//! spelling -- `container_block_element_key` asserts the loss explicitly rather than asserting a
 //! round trip that does not hold -- and the reason it is still safe is that nothing resolves a
 //! `ScoreThenMember` key through `element_key_from_component` and then trusts its first eight
 //! bytes: see `select_container_element`'s member-suffix comparison for that spelling.
@@ -92,7 +92,7 @@
 //! # WHAT DOES NOT MOVE
 //!
 //! No stored format is retired and no version stamp is spent. The magic DISCRIMINATES: a page
-//! written before this module has no magic, [`decode_container_page`] answers `NotFramed`, and the
+//! written before this module has no magic, [`decode_container_block`] answers `NotFramed`, and the
 //! read funnel hands the bytes back exactly as it always did. That is the same trade
 //! `encode_feature_block` already makes with `TSFPB1\n` against the JSON pages that came before it,
 //! and it is why this stage does not move `SHARD_INDEX_FORMAT_VERSION` at all: the SHARD INDEX
@@ -374,8 +374,8 @@ impl<'a> ContainerBlockWrite<'a> {
 ///
 /// The shape the four write sites and the fold use: neither produces a removal, so neither should
 /// have to say `false` per item. A removal is written through
-/// [`encode_container_page_items`], which is the only way to produce one.
-pub(super) fn encode_container_page(
+/// [`encode_container_block_items`], which is the only way to produce one.
+pub(super) fn encode_container_block(
     spelling: ElementKeySpelling,
     items: &[(&[u8], &[u8])],
 ) -> Vec<u8> {
@@ -383,7 +383,7 @@ pub(super) fn encode_container_page(
         .iter()
         .map(|(key, value)| ContainerBlockWrite::live(key, value))
         .collect();
-    encode_container_page_items(spelling, &writes)
+    encode_container_block_items(spelling, &writes)
 }
 
 /// Write items as a page payload, each either live or a removal.
@@ -391,7 +391,7 @@ pub(super) fn encode_container_page(
 /// The suffix detection is ONE candidate and not a search: the only offset at which the value can
 /// be the key's tail is `key.len() - value.len()`, so the check is a single slice comparison. It is
 /// not asked at all for a removal -- a removal has no value to place.
-pub(super) fn encode_container_page_items(
+pub(super) fn encode_container_block_items(
     spelling: ElementKeySpelling,
     items: &[ContainerBlockWrite<'_>],
 ) -> Vec<u8> {
@@ -450,7 +450,7 @@ fn suffix_offset_of(key: &[u8], value: &[u8]) -> Option<usize> {
 }
 
 /// Walk a payload, if it is a frame.
-pub(super) fn decode_container_page(bytes: &[u8]) -> ContainerBlockDecode {
+pub(super) fn decode_container_block(bytes: &[u8]) -> ContainerBlockDecode {
     let Some(header) = frame_header(bytes) else {
         return ContainerBlockDecode::NotFramed;
     };
@@ -721,7 +721,7 @@ pub(super) fn element_key_from_component(
 ///
 /// `None` where this kind has no element key, or where the component is not one the kind's spelling
 /// can produce. Neither is reachable from the write path -- every container component is built by
-/// the very function this reverses -- and [`single_element_page`] is what the write sites call, so
+/// the very function this reverses -- and [`single_element_block`] is what the write sites call, so
 /// the unreachable case is counted rather than expressed as an `unwrap`.
 pub(super) fn encode_single_element_block(
     kind: &str,
@@ -730,12 +730,12 @@ pub(super) fn encode_single_element_block(
 ) -> Option<Vec<u8>> {
     let spelling = ElementKeySpelling::for_kind(kind)?;
     let key = element_key_from_component(spelling, component)?;
-    Some(encode_container_page(spelling, &[(&key, value)]))
+    Some(encode_container_block(spelling, &[(&key, value)]))
 }
 
 /// Writes whose page could not be framed, and which therefore stored a bare value.
 ///
-/// A bare value still READS correctly -- `decode_container_page` answers `NotFramed` and the read
+/// A bare value still READS correctly -- `decode_container_block` answers `NotFramed` and the read
 /// funnel hands the payload back -- so this is degradation and not data loss, which is exactly why
 /// it needs a counter. An unframed page is invisible to every reader today and will be invisible to
 /// the load path that later rebuilds from pages, at which point its element is simply not there.
@@ -758,7 +758,7 @@ pub fn reset_unframed_container_write_count() {
 /// Owned rather than borrowed because the framed form is a new allocation either way, and a write
 /// site that had to branch on whether it got one would reintroduce the per-site decision this
 /// function exists to remove.
-pub(super) fn single_element_page(kind: &str, component: &str, value: &[u8]) -> Vec<u8> {
+pub(super) fn single_element_block(kind: &str, component: &str, value: &[u8]) -> Vec<u8> {
     match encode_single_element_block(kind, component, value) {
         Some(page) => page,
         None => {
@@ -777,7 +777,7 @@ pub(super) fn single_element_page(kind: &str, component: &str, value: &[u8]) -> 
 /// So the removal is written the way every other container change is written -- as a new page,
 /// appended -- and it is the LAST page to mention its element, which is what makes it win.
 ///
-/// # THERE IS NO FALLBACK, AND THAT IS THE DIFFERENCE FROM [`single_element_page`]
+/// # THERE IS NO FALLBACK, AND THAT IS THE DIFFERENCE FROM [`single_element_block`]
 ///
 /// A write whose page cannot be framed stores a bare value and counts the miss: the element's value
 /// is still served, because an unframed page IS its element's value, so the degradation costs
@@ -791,7 +791,7 @@ pub(super) fn single_element_page(kind: &str, component: &str, value: &[u8]) -> 
 pub(super) fn encode_tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
     let spelling = ElementKeySpelling::for_kind(kind)?;
     let key = element_key_from_component(spelling, component)?;
-    Some(encode_container_page_items(
+    Some(encode_container_block_items(
         spelling,
         &[ContainerBlockWrite::removed(&key)],
     ))
@@ -818,9 +818,9 @@ pub fn reset_unframed_container_removal_count() {
 
 /// The payload a container removal stores, or `None` with the miss counted.
 ///
-/// The counting twin of [`single_element_page`], and it returns an `Option` where that one returns
+/// The counting twin of [`single_element_block`], and it returns an `Option` where that one returns
 /// bytes for exactly the reason in [`encode_tombstone_block`]: there is no degraded form of "gone".
-pub(super) fn tombstone_page(kind: &str, component: &str) -> Option<Vec<u8>> {
+pub(super) fn tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
     match encode_tombstone_block(kind, component) {
         Some(page) => Some(page),
         None => {

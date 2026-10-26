@@ -41,8 +41,8 @@
 #![allow(clippy::all)]
 use crate::block_store::ElementEntry;
 use crate::engine::container_membership::{append_position, derive_membership, may_drop_tombstones};
-use crate::engine::container_pages::{
-    decode_container_page, encode_container_page_items, ContainerBlockDecode, ContainerBlockShape,
+use crate::engine::container_blocks::{
+    decode_container_block, encode_container_block_items, ContainerBlockDecode, ContainerBlockShape,
     ContainerBlockWrite, ElementKeySpelling, CONTAINER_BLOCK_MAGIC, CONTAINER_BLOCK_MAGIC_V2,
 };
 
@@ -61,7 +61,7 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
     // EVERY CURSOR IN THE CODEC STARTS AT `MAGIC.len() + 1` and there are two magics. If they were
     // ever different lengths, one shape would be read one byte into the wrong field -- and the symptom
     // would be a spelling byte that happens to be a valid spelling, so the page would decode to
-    // plausible nonsense rather than refusing. `container_pages` carries a const assert on this; this
+    // plausible nonsense rather than refusing. `container_blocks` carries a const assert on this; this
     // states it where a reader looking for the guard will find it.
     assert_eq!(
         CONTAINER_BLOCK_MAGIC.len(),
@@ -91,24 +91,24 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
 /// rust-internal: operates on the page codec directly
 #[test]
 fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
-    crate::engine::container_pages::reset_unframed_container_removal_count();
+    crate::engine::container_blocks::reset_unframed_container_removal_count();
 
     // A kind with no element-key spelling: its page is its whole object, so there is no element to
     // tombstone. `string` is such a kind and is not one of the four containers.
-    let none = crate::engine::container_pages::tombstone_page("string", "anything");
+    let none = crate::engine::container_blocks::tombstone_block("string", "anything");
     assert!(
         none.is_none(),
         "a kind whose pages name no element produced a tombstone page, which would be a page nothing \
          can interpret"
     );
     // A component the kind's spelling cannot produce: a set's components are hex, and this is not.
-    let not_hex = crate::engine::container_pages::tombstone_page("set", "zz-not-hex");
+    let not_hex = crate::engine::container_blocks::tombstone_block("set", "zz-not-hex");
     assert!(
         not_hex.is_none(),
         "a component a set's spelling cannot name produced a tombstone page"
     );
 
-    let counted = crate::engine::container_pages::unframed_container_removal_count();
+    let counted = crate::engine::container_blocks::unframed_container_removal_count();
     println!("unframable removals counted: {counted}");
     assert_eq!(
         2, counted,
@@ -126,7 +126,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     // while exercising a component shape the engine no longer produces: the score prefix was being
     // framed as eight leading bytes of the MEMBER. A fixture whose premise has gone stale can keep
     // passing for the wrong reason, and only the round-trip added below would have caught it.
-    crate::engine::container_pages::reset_unframed_container_removal_count();
+    crate::engine::container_blocks::reset_unframed_container_removal_count();
     let components = [
         ("hash", "some-field".to_string()),
         ("set", hex::encode(b"a-member")),
@@ -135,9 +135,9 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
         ("list", format!("{:016x}", 7u64)),
     ];
     for (kind, component) in &components {
-        let page = crate::engine::container_pages::tombstone_page(kind, component);
+        let page = crate::engine::container_blocks::tombstone_block(kind, component);
         assert!(page.is_some(), "{kind} could not frame a removal of {component}");
-        match decode_container_page(page.as_ref().expect("framed")) {
+        match decode_container_block(page.as_ref().expect("framed")) {
             ContainerBlockDecode::Framed { items, shape, .. } => {
                 assert_eq!(ContainerBlockShape::WithRemovals, shape, "{kind}: wrong shape");
                 assert_eq!(1, items.len(), "{kind}: wrong item count");
@@ -154,10 +154,10 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 // back -- deliberately, the resident map is the score's only copy -- so if a
                 // component ever carried a score again this assertion is what reddens, instead of
                 // the score silently becoming eight bytes of somebody's member.
-                let spelling = crate::engine::container_pages::ElementKeySpelling::for_kind(kind)
+                let spelling = crate::engine::container_blocks::ElementKeySpelling::for_kind(kind)
                     .unwrap_or_else(|| panic!("{kind} has no element-key spelling"));
                 let recovered =
-                    crate::engine::container_pages::component_from_element_key(spelling, &items[0].key)
+                    crate::engine::container_blocks::component_from_element_key(spelling, &items[0].key)
                         .unwrap_or_else(|| {
                             panic!("{kind}: the tombstone page's own key did not read back as a component")
                         });
@@ -179,7 +179,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     );
     assert_eq!(
         0,
-        crate::engine::container_pages::unframed_container_removal_count(),
+        crate::engine::container_blocks::unframed_container_removal_count(),
         "one of the four real kinds could not frame a removal"
     );
 
@@ -206,16 +206,16 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     let component = hex::encode(&member);
     let unrelated = b"other".to_vec();
 
-    let older = encode_container_page_items(
+    let older = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&member, &member)],
     );
     // A LATER page that is perfectly well formed and simply holds a different element.
-    let silent = encode_container_page_items(
+    let silent = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&unrelated, &unrelated)],
     );
-    let tomb = encode_container_page_items(
+    let tomb = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::removed(&member)],
     );
@@ -247,7 +247,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         with_silence.live.len(),
         with_silence.removed.len()
     );
-    assert_eq!(2, with_silence.pages_read, "DENOMINATOR: two pages must be read");
+    assert_eq!(2, with_silence.blocks_read, "DENOMINATOR: two pages must be read");
     assert!(with_silence.is_complete());
     assert!(
         with_silence.live.contains_key(&component),
@@ -268,7 +268,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         with_removal.live.len(),
         with_removal.removed.len()
     );
-    assert_eq!(3, with_removal.pages_read, "DENOMINATOR: three pages must be read");
+    assert_eq!(3, with_removal.blocks_read, "DENOMINATOR: three pages must be read");
     assert!(with_removal.is_complete());
     assert!(
         with_removal.removed.contains(&component),
@@ -290,11 +290,11 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
 fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
     let key = b"field-with-no-value".to_vec();
 
-    let empty = encode_container_page_items(
+    let empty = encode_container_block_items(
         ElementKeySpelling::Utf8,
         &[ContainerBlockWrite::live(&key, b"")],
     );
-    let removed = encode_container_page_items(
+    let removed = encode_container_block_items(
         ElementKeySpelling::Utf8,
         &[ContainerBlockWrite::removed(&key)],
     );
@@ -318,7 +318,7 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
     for (bytes, expect_deleted, label) in
         [(&empty, false, "empty value"), (&removed, true, "removal")]
     {
-        match decode_container_page(bytes) {
+        match decode_container_block(bytes) {
             ContainerBlockDecode::Framed { items, shape, .. } => {
                 assert_eq!(ContainerBlockShape::WithRemovals, shape, "{label}: wrong shape");
                 assert_eq!(1, items.len(), "{label}: wrong item count");
@@ -345,7 +345,7 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
     // A set member: the element key IS the member and so is the value, which is the suffix case --
     // and the case that covers the two kinds whose pages dominate the store.
     let member = b"member-0007".to_vec();
-    let page = encode_container_page_items(
+    let page = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&member, &member)],
     );
@@ -361,8 +361,8 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
         "rewriting the magic changed the length, which it cannot"
     );
 
-    let second = decode_container_page(&page);
-    let first = decode_container_page(&as_first_shape);
+    let second = decode_container_block(&page);
+    let first = decode_container_block(&as_first_shape);
     println!("second shape: {second:?}");
     println!("first shape:  {first:?}");
 
@@ -398,11 +398,11 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
 #[test]
 fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_them() {
     let member = b"m".to_vec();
-    let live = encode_container_page_items(
+    let live = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&member, &member)],
     );
-    let tomb = encode_container_page_items(
+    let tomb = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::removed(&member)],
     );
@@ -452,7 +452,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
         forwards.live.len(),
         forwards.removed.len()
     );
-    assert_eq!(2, reversed.pages_read, "DENOMINATOR: both pages must be read");
+    assert_eq!(2, reversed.blocks_read, "DENOMINATOR: both pages must be read");
     assert!(reversed.is_complete() && forwards.is_complete());
     assert!(
         reversed.removed.contains(&component),
@@ -473,17 +473,17 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let component = hex::encode(&member);
     let other = b"n".to_vec();
 
-    let older = encode_container_page_items(
+    let older = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&member, &member)],
     );
-    let tomb = encode_container_page_items(
+    let tomb = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::removed(&member)],
     );
     // What a fold writes when it rewrites the tombstone's page and DROPS the tombstone: a page
     // holding the round's other element and saying nothing about `m`.
-    let folded_without_tombstone = encode_container_page_items(
+    let folded_without_tombstone = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&other, &other)],
     );
@@ -515,9 +515,9 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         "with the tombstone:    {} live, {} removed, {} pages",
         before.live.len(),
         before.removed.len(),
-        before.pages_read
+        before.blocks_read
     );
-    assert_eq!(2, before.pages_read, "DENOMINATOR: two pages must be read");
+    assert_eq!(2, before.blocks_read, "DENOMINATOR: two pages must be read");
     assert!(before.is_complete());
     assert!(
         before.removed.contains(&component),
@@ -535,10 +535,10 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         "tombstone dropped:     {} live, {} removed, {} pages; member live again = {}",
         after.live.len(),
         after.removed.len(),
-        after.pages_read,
+        after.blocks_read,
         after.live.contains_key(&component)
     );
-    assert_eq!(2, after.pages_read, "DENOMINATOR: two pages must be read");
+    assert_eq!(2, after.blocks_read, "DENOMINATOR: two pages must be read");
     assert!(after.is_complete());
     assert!(
         after.live.contains_key(&component),

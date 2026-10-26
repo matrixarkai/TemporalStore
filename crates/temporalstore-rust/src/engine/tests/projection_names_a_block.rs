@@ -57,7 +57,7 @@ fn member_bytes(index: usize) -> Vec<u8> {
 }
 
 /// Distinct live pages, live entries, and tombstoned entries this set object resolves to.
-fn pages_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize, usize) {
+fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
@@ -154,10 +154,10 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // second. That is a real failure mode, it is what this fixture is already shaped to
         // measure, and it is asserted below.
         rederive(&engine);
-        let (first_blocks, first_entries, _) = pages_and_entries(&engine, &key);
+        let (first_blocks, first_entries, _) = blocks_and_entries(&engine, &key);
 
         rederive(&engine);
-        let (second_blocks, second_entries, second_tombs) = pages_and_entries(&engine, &key);
+        let (second_blocks, second_entries, second_tombs) = blocks_and_entries(&engine, &key);
 
         println!(
             "  {occupancy:>9}  {first_blocks:>6}  {first_entries:>7}  \

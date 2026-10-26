@@ -269,7 +269,7 @@ fn the_owned_array_is_eight_bytes_and_two_allocations_where_the_btree_is_twenty_
 ///
 ///   * **A pre-stamp image is refused on every path.** `decode_index_bytes` records that all six of
 ///     its callers read `index_format_version`, and `the_dump_door_reads_the_index_stamp` and
-///     `page_entry_names` drive the refusal on the base-index and manifest doors.
+///     `block_entry_names` drive the refusal on the base-index and manifest doors.
 ///   * **An image at stamp 20 or later does not carry the key.** That is the half this arm drives:
 ///     the event series moved into `objects` at 20, so the encoder emits no such key, and a
 ///     current-stamp image that somehow carried one would be IGNORED rather than folded.

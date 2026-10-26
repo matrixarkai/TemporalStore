@@ -305,7 +305,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     // index" for a write that was recorded. The object holds exactly ONE field, so its page is
     // selected by object key alone -- and the count below is what keeps that selection exact
     // rather than letting it widen to any page of any object.
-    let hash_pages: Vec<&serde_json::Value> = served["slot_index"]["bucket_map"]
+    let hash_blocks: Vec<&serde_json::Value> = served["slot_index"]["bucket_map"]
         .as_object()
         .expect("served index carries the bucket map")
         .values()
@@ -323,11 +323,11 @@ fn control_api_reads_and_scans_index_log_stream() {
         .collect();
     assert_eq!(
         1,
-        hash_pages.len(),
+        hash_blocks.len(),
         "the served index records {} page entries for the one-field hash `h`, not one",
-        hash_pages.len()
+        hash_blocks.len()
     );
-    let hash_block = hash_pages[0];
+    let hash_block = hash_blocks[0];
     // AND NO ELEMENT-NAME SLOT IS WRITTEN, which is the other half of why the selector changed. A
     // `component` or `c` key on a page entry here would mean the element name has come back to the
     // STORED form, which is the thing the width step removed.

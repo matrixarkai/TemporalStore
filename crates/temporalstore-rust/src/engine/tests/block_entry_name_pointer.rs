@@ -147,7 +147,7 @@
 //!     the same error #1994 caught from the other side, where a change was -324.44 B a bucket at one
 //!     range and +0.70 at the other.
 //!   * WHAT IT COSTS IS A HASH PER PROBE, counted and not timed. The list is sorted by the handle and
-//!     `find_page` bisects it, so a recomputed key hashes `model_id`, the key, the component and five
+//!     `find_block` bisects it, so a recomputed key hashes `model_id`, the key, the component and five
 //!     address fields at every probe of every warm page lookup, against zero today. MEASURED probe
 //!     depth: 6 to 7 at the median bucket and up to 9 at the widest, which is **48 to 72 field hashes
 //!     a warm page lookup**, and one of the eight is a 24-character string. The ORDER is safe -- the

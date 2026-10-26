@@ -859,21 +859,21 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         series_occupancy(shard.context_audits()).report("context_audits");
         series_occupancy(shard.context_entities()).report("context_entities");
 
-        let mut pages_per_bucket = Occupancy::default();
+        let mut blocks_per_bucket = Occupancy::default();
         let mut objects_per_bucket = Occupancy::default();
         for bucket in shard.bucket_index.bucket_map.values() {
-            pages_per_bucket.observe(bucket.block_index.len());
+            blocks_per_bucket.observe(bucket.block_index.len());
             objects_per_bucket.observe(bucket.object_index.object_count());
         }
-        pages_per_bucket.report("pages per bucket");
+        blocks_per_bucket.report("pages per bucket");
         objects_per_bucket.report("objects per bucket");
 
 
         // --- Which ARM each shape is actually in, across the whole shard. ---
-        let mut page_arms = [0usize; 3];
+        let mut block_arms = [0usize; 3];
         let mut object_arms = [0usize; 3];
         for bucket in shard.bucket_index.bucket_map.values() {
-            page_arms[arm_slot(block_index_map_arm(&bucket.block_index))] += 1;
+            block_arms[arm_slot(block_index_map_arm(&bucket.block_index))] += 1;
             object_arms[arm_slot(object_index_arm(&bucket.object_index))] += 1;
         }
         // THE `by_component` ARM CENSUS IS GONE AND ITS ONLY REACHABLE BUCKET SAYS WHY. It counted
@@ -890,7 +890,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             }] += 1;
         }
         println!(
-            "  arms Empty/One/Many: block_index {page_arms:?} over {} buckets; object_index \
+            "  arms Empty/One/Many: block_index {block_arms:?} over {} buckets; object_index \
              {object_arms:?}; lookup refs One/Many {ref_arms:?}",
             shard.bucket_index.bucket_map.len()
         );
@@ -1355,14 +1355,14 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             );
 
             // --- THE DISTRIBUTION, because the mean is a quotient and not an observation. ---
-            let mut pages_per_bucket = Occupancy::default();
+            let mut blocks_per_bucket = Occupancy::default();
             let mut objects_per_bucket = Occupancy::default();
             for bucket in shard.bucket_index.bucket_map.values() {
-                pages_per_bucket.observe(bucket.block_index.len());
+                blocks_per_bucket.observe(bucket.block_index.len());
                 objects_per_bucket.observe(bucket.object_index.object_count());
             }
             println!("  what a bucket actually holds on this range:");
-            pages_per_bucket.report("pages per bucket");
+            blocks_per_bucket.report("pages per bucket");
             objects_per_bucket.report("objects per bucket");
 
             (
@@ -1716,8 +1716,8 @@ struct BucketMapDecomposition {
     multi_object_buckets: usize,
     tombstone_buckets: usize,
     tombstone_rows: usize,
-    single_page_buckets: usize,
-    multi_page_buckets: usize,
+    single_block_buckets: usize,
+    multi_block_buckets: usize,
     blocks_in_list_arm: usize,
     /// Slots the page lists have RESERVED, which a clone cannot see.
     ///
@@ -1770,8 +1770,8 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
     let mut multi_object_buckets = 0usize;
     let mut tombstone_buckets = 0usize;
     let mut tombstone_rows = 0usize;
-    let mut single_page_buckets = 0usize;
-    let mut multi_page_buckets = 0usize;
+    let mut single_block_buckets = 0usize;
+    let mut multi_block_buckets = 0usize;
     let mut blocks_in_list_arm = 0usize;
     let mut list_capacity = 0usize;
 
@@ -1803,12 +1803,12 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
         match &bucket.block_index {
             BlockIndexMap::Empty => {}
             BlockIndexMap::One(..) => {
-                single_page_buckets += 1;
+                single_block_buckets += 1;
                 boxed_block_req += req;
                 boxed_block_chunk += chunk;
             }
             BlockIndexMap::Many(list) => {
-                multi_page_buckets += 1;
+                multi_block_buckets += 1;
                 blocks_in_list_arm += list.len();
                 list_capacity += list.capacity();
                 block_list_req += req;
@@ -1841,7 +1841,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
             name: "block_index One: Box<BlockIndex>",
             req: boxed_block_req,
             chunk: boxed_block_chunk,
-            count: single_page_buckets,
+            count: single_block_buckets,
             unit: "single-page buckets",
         },
         BucketMapTerm {
@@ -1882,8 +1882,8 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
         multi_object_buckets,
         tombstone_buckets,
         tombstone_rows,
-        single_page_buckets,
-        multi_page_buckets,
+        single_block_buckets,
+        multi_block_buckets,
         blocks_in_list_arm,
         list_capacity,
         total_req,
@@ -1983,7 +1983,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         println!(
             "  arms: {} single-page buckets, {} list buckets holding {} pages, {} multi-object \
              buckets",
-            d.single_page_buckets, d.multi_page_buckets, d.blocks_in_list_arm, d.multi_object_buckets
+            d.single_block_buckets, d.multi_block_buckets, d.blocks_in_list_arm, d.multi_object_buckets
         );
         println!(
             "  pages per bucket {:.2}, keys per bucket {:.2}",
@@ -6640,7 +6640,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
 ///
 /// The two terms removed by "An append walked the object's whole ref list twice" are not on the
 /// feature path. They are on the path EVERY block-backed write takes: the dirty mark in
-/// `push_object_dirty_onto_its_existing_pages`, which every write calls once per touched object,
+/// `push_object_dirty_onto_its_existing_blocks`, which every write calls once per touched object,
 /// and the publish step's bucket derivation in `sync_bucket_index_object_blocks_with_mode`, which
 /// every kind reaches. Both were sized by the object's page count, so any object with many pages
 /// paid them -- a long feature series was just the easiest one to grow.
@@ -7767,7 +7767,7 @@ fn what_one_stats_read_allocates() {
             assert!(response.status.ok, "corpus write {index}: {:?}", response.status);
         }
 
-        let live_pages: usize = {
+        let live_blocks: usize = {
             let shards = engine.shards.read().expect("shards lock poisoned");
             let shard = shards.get(&1).expect("shard 1 loaded");
             shard
@@ -7901,10 +7901,10 @@ fn what_one_stats_read_allocates() {
         };
 
         println!(
-            "  {rung:>6}   {live_pages:>10}   {:>6}   {:>11}   {:>10.1}   scanned {scanned}",
+            "  {rung:>6}   {live_blocks:>10}   {:>6}   {:>11}   {:>10.1}   scanned {scanned}",
             counted.allocs,
             counted.alloc_bytes,
-            counted.alloc_bytes as f64 / live_pages.max(1) as f64,
+            counted.alloc_bytes as f64 / live_blocks.max(1) as f64,
         );
         for (site, entries) in &sites {
             println!("             {entries:>9} entries  <- {site}");
@@ -7935,8 +7935,8 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
             "             those two: full-file scan {wal_scan_bytes} B, segment walk \
 {wal_segment_bytes} B"
         );
-        measured.push((rung, live_pages, counted.allocs, counted.alloc_bytes));
-        scan_counts.push((rung, live_pages, scans_after.saturating_sub(scans_before), wal_bytes));
+        measured.push((rung, live_blocks, counted.allocs, counted.alloc_bytes));
+        scan_counts.push((rung, live_blocks, scans_after.saturating_sub(scans_before), wal_bytes));
     }
 
     // --- DENOMINATOR: the walk this prices reads live pages, so the corpus has to have produced
@@ -7949,12 +7949,12 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
         );
     }
 
-    let (_, small_pages, _, small_bytes) = measured[0];
-    let (_, large_pages, _, large_bytes) = measured[1];
+    let (_, small_blocks, _, small_bytes) = measured[0];
+    let (_, large_blocks, _, large_bytes) = measured[1];
     println!();
     println!(
         "  pages x{:.1}  ->  alloc_bytes x{:.1}",
-        large_pages as f64 / small_pages.max(1) as f64,
+        large_blocks as f64 / small_blocks.max(1) as f64,
         large_bytes as f64 / small_bytes.max(1) as f64,
     );
     println!("  a ratio near the page ratio means one stats read costs the store's size, every read.");
@@ -7976,8 +7976,8 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
     // --- term that scales.
     assert!(
         (large_bytes as f64) < (small_bytes as f64) * 1.5,
-        "one stats read allocated {small_bytes} B over {small_pages} pages and {large_bytes} B over \
-         {large_pages} -- it is following the store again. `shard_stats` is what a node answers a \
+        "one stats read allocated {small_bytes} B over {small_blocks} pages and {large_bytes} B over \
+         {large_blocks} -- it is following the store again. `shard_stats` is what a node answers a \
          stats request with, so a term that scales is paid on every read: check whether a full-file \
          log scan or a per-bucket collect has come back onto the path."
     );

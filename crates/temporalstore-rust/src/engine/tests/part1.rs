@@ -1585,7 +1585,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
         // WHERE THE BLOCK IS FILED, not what the address claims -- the address carries no bucket.
         // The bucket map's key is the container's answer, and it has to be the key's own bucket.
         // WHICH BUCKET HOLDS A PAGE OF THIS OBJECT, asked of the structures beside the pages.
-        let placed = super::pages_with_identity(&shard.bucket_index);
+        let placed = super::blocks_with_identity(&shard.bucket_index);
         let buckets_holding = |object: &str| -> Vec<u32> {
             let mut found: Vec<u32> = placed
                 .iter()
@@ -2690,7 +2690,7 @@ fn durable_writes_stamp_stable_object_ids_on_block_addresses() {
     // write no longer stamps an id onto the address, so what this asserted is now a property of the
     // entry. The FILING assertions below are the part of this test that still reads the address.
     // The FILING, on a shard loaded 10..20 -- see the note at the string arm above.
-    let placed = super::pages_with_identity(&shard.bucket_index);
+    let placed = super::blocks_with_identity(&shard.bucket_index);
     let buckets_holding = |object: &str| -> Vec<u32> {
         let mut found: Vec<u32> = placed
             .iter()
@@ -3784,7 +3784,7 @@ fn what_reading_one_summary_actually_costs() {
         let decode_probe = crate::alloc_probe::Probe::start();
         let mut points = 0usize;
         for _ in 0..5 {
-            points = match super::packed_pages::decode_feature_block_strict(&bytes) {
+            points = match super::packed_blocks::decode_feature_block_strict(&bytes) {
                 super::state::PackedFeatureBlockDecode::Packed(p) => p.len(),
                 super::state::PackedFeatureBlockDecode::Legacy => 1,
                 super::state::PackedFeatureBlockDecode::Corrupt(_) => 0,
@@ -3859,7 +3859,7 @@ fn what_reading_one_summary_actually_costs() {
                 Some(*routing_bucket),
             ) {
                 if let super::state::PackedFeatureBlockDecode::Packed(points) =
-                    super::packed_pages::decode_feature_block_strict(&page)
+                    super::packed_blocks::decode_feature_block_strict(&page)
                 {
                     decoded += points.len();
                 }
@@ -4336,7 +4336,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
         // bucket because it also emits a row per object-index and per deleted-object-index
         // member, which belong to the bucket and not to any page.
         let named: std::collections::HashMap<(u32, u64), std::sync::Arc<str>> =
-            super::pages_with_identity(&shard.bucket_index)
+            super::blocks_with_identity(&shard.bucket_index)
                 .into_iter()
                 .map(|(routing_bucket, handle, object_key, _page)| {
                     ((routing_bucket, handle), object_key)
@@ -4535,7 +4535,7 @@ fn which_write_primitive_grows_with_the_store() {
 
         // The series primitive, on a fresh key.
         let warm_key = format!("probe:series:warm:{rung}");
-        let _ = super::packed_pages::append_timestamped_kv_blocks(
+        let _ = super::packed_blocks::append_timestamped_kv_blocks(
             &engine.cache,
             &engine.block_store,
             1,
@@ -4552,7 +4552,7 @@ fn which_write_primitive_grows_with_the_store() {
         );
         let key = format!("probe:series:{rung}");
         let probe = crate::alloc_probe::Probe::start();
-        let _ = super::packed_pages::append_timestamped_kv_blocks(
+        let _ = super::packed_blocks::append_timestamped_kv_blocks(
             &engine.cache,
             &engine.block_store,
             1,
@@ -7593,7 +7593,7 @@ fn where_a_record_is_kept_everywhere() {
         ("buckets_pending_flag_refresh", shard.buckets_pending_flag_refresh.len()),
         ("dirty_objects", shard.dirty_objects.len()),
         ("bucket_recency", shard.bucket_recency.len()),
-        ("object_page_layouts", shard.object_page_layouts.len()),
+        ("object_block_layouts", shard.object_block_layouts.len()),
         ("bucket_index.bucket_map", buckets.len()),
         ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
         ("bucket_index.object_page_lookup", shard.bucket_index.object_block_lookup.len()),

@@ -118,7 +118,7 @@ impl BlocksPerBucket {
     }
 
     /// Buckets holding strictly more than one block.
-    fn multi_page(&self) -> usize {
+    fn multi_block(&self) -> usize {
         self.counts
             .iter()
             .filter(|(held, _)| **held > 1)
@@ -138,7 +138,7 @@ impl BlocksPerBucket {
         self.pages() as f64 / buckets as f64
     }
 
-    fn single_page_fraction(&self) -> f64 {
+    fn single_block_fraction(&self) -> f64 {
         let buckets = self.buckets();
         if buckets == 0 {
             return 0.0;
@@ -169,7 +169,7 @@ impl BlocksPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
+fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut hist = BlocksPerBucket::default();
@@ -324,7 +324,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
             path_lengths.push(dir.path().as_os_str().len());
             let engine = probe_engine(dir.path());
             seed_routed_keys(&engine, records, records / 1_000, 1_000);
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             hist.report(&format!("{label}: keys that route one to a bucket"));
             routed.push(hist);
         }
@@ -335,7 +335,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
             path_lengths.push(dir.path().as_os_str().len());
             let engine = probe_engine(dir.path());
             seed_container_keys(&engine, records / 100, 100);
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             hist.report(&format!("{label}: container keys, 100 elements each"));
             container.push(hist);
         }
@@ -347,7 +347,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
             let engine = probe_engine(dir.path());
             seed_routed_keys(&engine, records / 2, records / 2_000, 1_000);
             seed_container_keys(&engine, records / 200, 100);
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             hist.report(&format!("{label}: both shapes in one store"));
             mixed.push(hist);
         }
@@ -382,13 +382,13 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
     // --- The routed arm: overwhelmingly single-block, and it REACHES a multi-block bucket. ---
     for (index, hist) in routed.iter().enumerate() {
         assert!(
-            hist.single_page_fraction() > 0.99,
+            hist.single_block_fraction() > 0.99,
             "routed arm {index}: {:.4} of buckets hold exactly one page; the single-page case is \
              not dominant here and the inline arm would be carrying the rare shape",
-            hist.single_page_fraction()
+            hist.single_block_fraction()
         );
         assert!(
-            hist.multi_page() > 0,
+            hist.multi_block() > 0,
             "routed arm {index}: NO bucket holds more than one page, so this fixture cannot tell \
              a correct `BlockIndexMap` from a constant that always answers One"
         );
@@ -418,11 +418,11 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
     // --- The mixed arm holds BOTH populations at once. ---
     for (index, hist) in mixed.iter().enumerate() {
         assert!(
-            hist.holding(1) > 0 && hist.multi_page() > 0,
+            hist.holding(1) > 0 && hist.multi_block() > 0,
             "mixed arm {index}: holds {} single-page and {} multi-page buckets; it is supposed to \
              be bimodal and it is not",
             hist.holding(1),
-            hist.multi_page()
+            hist.multi_block()
         );
     }
 
@@ -430,23 +430,23 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
     println!("\n=== the two populations, across a tenfold corpus ===");
     println!(
         "  routed    : {:.5} -> {:.5} single-page fraction",
-        routed[0].single_page_fraction(),
-        routed[1].single_page_fraction()
+        routed[0].single_block_fraction(),
+        routed[1].single_block_fraction()
     );
     println!(
         "  container : {:.5} -> {:.5} single-page fraction  (mean {:.2} -> {:.2} pages/bucket)",
-        container[0].single_page_fraction(),
-        container[1].single_page_fraction(),
+        container[0].single_block_fraction(),
+        container[1].single_block_fraction(),
         container[0].mean(),
         container[1].mean()
     );
     println!(
         "  mixed     : {:.5} -> {:.5} single-page fraction",
-        mixed[0].single_page_fraction(),
-        mixed[1].single_page_fraction()
+        mixed[0].single_block_fraction(),
+        mixed[1].single_block_fraction()
     );
     assert!(
-        (routed[0].single_page_fraction() - routed[1].single_page_fraction()).abs() < 0.01,
+        (routed[0].single_block_fraction() - routed[1].single_block_fraction()).abs() < 0.01,
         "the routed arm's single-page fraction moved with the corpus, so it is not a property of \
          the workload"
     );
@@ -455,11 +455,11 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
         "the container arm stopped being multi-page at one of the two sizes"
     );
     assert!(
-        routed[1].single_page_fraction() > container[1].single_page_fraction() + 0.9,
+        routed[1].single_block_fraction() > container[1].single_block_fraction() + 0.9,
         "the two arms are supposed to be the two ends of this distribution and they are not: \
          routed {:.4}, container {:.4}",
-        routed[1].single_page_fraction(),
-        container[1].single_page_fraction()
+        routed[1].single_block_fraction(),
+        container[1].single_block_fraction()
     );
 }
 
@@ -1315,14 +1315,14 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    let hist = pages_per_bucket(&engine);
+    let hist = blocks_per_bucket(&engine);
     hist.report("the store this is measured on");
 
     let buckets = hist.buckets();
     let single_block = hist.holding(1);
     assert!(buckets > 0, "denominator: the shard holds no buckets");
     assert!(
-        hist.multi_page() > 0,
+        hist.multi_block() > 0,
         "the fixture reaches no multi-page bucket, so the Many arm is unexercised on both sides"
     );
     assert!(
@@ -1614,7 +1614,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
 /// list are the SAME indirection here -- one dependent load each -- and they are the same width too.
 /// The two are separated entirely by what they allocate, which is a byte question and is priced in
 /// `inline_arm_trade.rs`. What the read path DOES say is that both keep the single-block lookup out of
-/// `find_page`... for the box only: a list would send it through a bisection. That asymmetry is
+/// `find_block`... for the box only: a list would send it through a bisection. That asymmetry is
 /// counted in `inline_arm_trade::the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_were_dropped`.
 ///
 /// MEASURED ABBA, not A then B: this box runs other work, and a drift between the first and second
@@ -1633,7 +1633,7 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     let mut listed: Vec<(u64, BlockIndexMap)> = Vec::with_capacity(BUCKETS);
     for i in 0..BUCKETS {
         let mut index = BlockIndexMap::default();
-        let (object_key, entry) = page_for(i as u64);
+        let (object_key, entry) = block_for(i as u64);
         let handle = index.insert(&object_key, entry, &mut live);
         listed.push((handle, index));
     }
@@ -1812,7 +1812,7 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
 // THE TRANSITION, IN BOTH DIRECTIONS, ELEMENT BY ELEMENT.
 // ---------------------------------------------------------------------------------------------
 
-fn page_for(seed: u64) -> (Arc<str>, BlockIndex) {
+fn block_for(seed: u64) -> (Arc<str>, BlockIndex) {
     (
         Arc::from(format!("key-{seed}").as_str()),
         BlockIndex {
@@ -1957,7 +1957,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     );
 
     // --- One block, held in the single-block arm, whose entry is behind a pointer. ---
-    let (first_key, first) = page_for(1);
+    let (first_key, first) = block_for(1);
     let first_handle = index.insert(&first_key, first.clone(), &mut live);
     assert!(
         matches!(index, BlockIndexMap::One(..)),
@@ -1970,7 +1970,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // --- Grow to four: the list has to take the blocks in order. ---
     let mut handles = vec![first_handle];
     for seed in 2..=4u64 {
-        let (object_key, entry) = page_for(seed);
+        let (object_key, entry) = block_for(seed);
         handles.push(index.insert(&object_key, entry, &mut live));
     }
     assert!(
@@ -1992,7 +1992,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
         let held = index
             .get(handle)
             .unwrap_or_else(|| panic!("page {handle} (seed {seed}) is not in the grown index"));
-        assert_same_block("in the grown index", *handle, &page_for(seed).1, held);
+        assert_same_block("in the grown index", *handle, &block_for(seed).1, held);
     }
 
     // --- A clone of a four-block index is the same four blocks. ---
@@ -2059,7 +2059,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     let mut retained = BlockIndexMap::default();
     let mut retained_handles = Vec::new();
     for seed in 10..=13u64 {
-        let (object_key, entry) = page_for(seed);
+        let (object_key, entry) = block_for(seed);
         retained_handles.push(retained.insert(&object_key, entry, &mut live));
     }
     assert!(
@@ -2076,7 +2076,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     let survivor = retained
         .get(&keep)
         .expect("the page retain was told to keep is gone");
-    assert_same_block("the page retain kept", keep, &page_for(12).1, survivor);
+    assert_same_block("the page retain kept", keep, &block_for(12).1, survivor);
 
     // --- And retain the last block away, which is the collapse that DOES still happen. ---
     retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _page| false);
@@ -2097,7 +2097,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // this case was added.
     let mut emptied = BlockIndexMap::default();
     for seed in 30..=33u64 {
-        let (object_key, entry) = page_for(seed);
+        let (object_key, entry) = block_for(seed);
         emptied.insert(&object_key, entry, &mut live);
     }
     assert!(
@@ -2137,7 +2137,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // ASSERTED AS THE COLLISION RATHER THAN DELETED, for the reason the original gave for existing
     // at all: nothing else in this module would notice. A length assertion on a single-block
     // fixture passes either way. `sibling_handles` holds the same pair of claims -- that the
-    // collision is real, and that `index_entry_names_a_page` keeps it unreachable -- and this is the
+    // collision is real, and that `index_entry_names_a_block` keeps it unreachable -- and this is the
     // one that sits beside the bucket distribution the loss would have shown up in.
     let mut components = BlockIndexMap::default();
     let (alpha_key, alpha) = component_block(20, "alpha");
@@ -2187,7 +2187,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     // A node that has only ever held one block.
     let mut untouched = BucketNode::default();
     untouched.routing_bucket = 11;
-    let (untouched_key, untouched_block) = page_for(1);
+    let (untouched_key, untouched_block) = block_for(1);
     let handle = untouched
         .block_index
         .insert(&untouched_key, untouched_block, &mut live);
@@ -2199,13 +2199,13 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     // A node that grew to four blocks and shrank back to the same single block.
     let mut round_tripped = BucketNode::default();
     round_tripped.routing_bucket = 11;
-    let (round_tripped_key, round_tripped_block) = page_for(1);
+    let (round_tripped_key, round_tripped_block) = block_for(1);
     round_tripped
         .block_index
         .insert(&round_tripped_key, round_tripped_block, &mut live);
     let mut extra = Vec::new();
     for seed in 2..=4u64 {
-        let (object_key, entry) = page_for(seed);
+        let (object_key, entry) = block_for(seed);
         extra.push(round_tripped.block_index.insert(&object_key, entry, &mut live));
     }
     assert!(
@@ -2223,7 +2223,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
         "the round-tripped node did not drain back to the single-page arm"
     );
 
-    // BOTH NODES HOLD `page_for(1)` AND NOTHING ELSE -- the round-tripped one grew to four and
+    // BOTH NODES HOLD `block_for(1)` AND NOTHING ELSE -- the round-tripped one grew to four and
     // drained back to this one page, which is the whole subject of the comparison.
     let untouched_bytes =
         serde_json::to_string(&crate::engine::state::NodeNamedBy(&untouched, &["key-1"])).expect("a node serializes");
@@ -2243,7 +2243,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     // Without it, two nodes that both serialized to nothing would pass the assertion above.
     let mut different = BucketNode::default();
     different.routing_bucket = 11;
-    let (different_key, different_block) = page_for(2);
+    let (different_key, different_block) = block_for(2);
     different
         .block_index
         .insert(&different_key, different_block, &mut live);
@@ -2309,13 +2309,13 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     let mut many = BucketNode::default();
     many.routing_bucket = 11;
     for seed in 1..=4u64 {
-        let (object_key, entry) = page_for(seed);
+        let (object_key, entry) = block_for(seed);
         many.block_index.insert(&object_key, entry, &mut live);
     }
     let (body_key, body) = component_block(5, "body");
     many.block_index.insert(&body_key, body, &mut live);
     assert_eq!(5, many.block_index.len(), "five pages, five entries");
-    // FIVE PAGES OVER FIVE OBJECTS: four `page_for` keys and the container.
+    // FIVE PAGES OVER FIVE OBJECTS: four `block_for` keys and the container.
     const MANY_OBJECTS: &[&str] = &["key-1", "key-2", "key-3", "key-4", "container"];
     let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&many, MANY_OBJECTS)).expect("a node serializes");
     let read_back: BucketNode = serde_json::from_str(&written).expect("a node deserializes");
@@ -2370,7 +2370,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         path_lengths.push(dir.path().as_os_str().len());
         let engine = probe_engine(dir.path());
         seed_routed_keys(&engine, 40_000, 40, 1_000);
-        let hist = pages_per_bucket(&engine);
+        let hist = blocks_per_bucket(&engine);
         hist.report("keys that route one to a bucket");
         rows.push((
             "keys that route one to a bucket",
@@ -2385,7 +2385,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         path_lengths.push(dir.path().as_os_str().len());
         let engine = probe_engine(dir.path());
         seed_container_keys(&engine, 400, 100);
-        let hist = pages_per_bucket(&engine);
+        let hist = blocks_per_bucket(&engine);
         hist.report("container keys, 100 elements each");
         rows.push((
             "container keys",
@@ -2406,14 +2406,14 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         "  {:<34} {:>9} {:>9} {:>16} {:>16}",
         "workload", "buckets", "pages", "BucketNode x n", "BlockIndex x n"
     );
-    for (name, buckets, pages, node_bytes, page_bytes) in &rows {
-        println!("  {name:<34} {buckets:>9} {pages:>9} {node_bytes:>16} {page_bytes:>16}");
+    for (name, buckets, pages, node_bytes, block_bytes) in &rows {
+        println!("  {name:<34} {buckets:>9} {pages:>9} {node_bytes:>16} {block_bytes:>16}");
     }
 
     let (_, routed_buckets, routed_blocks, routed_nodes, routed_blocks_bytes) = rows[0];
-    let (_, container_buckets, container_pages, container_nodes, container_blocks_bytes) = rows[1];
+    let (_, container_buckets, container_blocks, container_nodes, container_blocks_bytes) = rows[1];
     assert!(routed_buckets > 0 && container_buckets > 0, "denominator: a workload holds no buckets");
-    assert!(routed_blocks > 0 && container_pages > 0, "denominator: a workload holds no pages");
+    assert!(routed_blocks > 0 && container_blocks > 0, "denominator: a workload holds no pages");
 
     // In the routed store the two terms are within a whisker of each other, because there is one
     // block per bucket and the block entry IS most of the node.
@@ -2471,7 +2471,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         "  NEXT STEP, PRICED AND DECLINED: the two NAME POINTERS are {} of the {} bytes and each is \
          a data pointer beside a length. Held one word each the entry is {} B and its list stride \
          {} B -- measured at -16.00 B a page or better on all eight arms in \
-         `page_entry_name_pointer::what_a_one_word_name_slot_is_worth_on_the_chunk_column`, and \
+         `block_entry_name_pointer::what_a_one_word_name_slot_is_worth_on_the_chunk_column`, and \
          DECLINED there: `Arc<str>` cannot be made thin, the safe `Arc<String>` costs more than the \
          entry saves, and a hand-rolled one is an allocation this crate would own outright.",
         object_key + component,

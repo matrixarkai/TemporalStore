@@ -7,7 +7,7 @@
 //! # WHAT CHANGED, STATED FIRST BECAUSE THIS MODULE'S HEADLINE MOVED
 //!
 //! This module was opened as a refutation and its stop condition was one sentence: for a hash the
-//! component is not a second copy of the field name, it is the ONLY one. `container_pages` makes the
+//! component is not a second copy of the field name, it is the ONLY one. `container_blocks` makes the
 //! page carry its own element key, so there is now a second copy, and the refutation below is
 //! recorded as HAVING HELD rather than as holding.
 //!
@@ -45,7 +45,7 @@
 //! `Command::HashGetAll` RETURNS THE COMPONENT AS THE FIELD NAME. So the component was not a second
 //! copy of a hash field name. It was the only one, on the live read path and across a reload alike.
 //!
-//! THAT LAST SENTENCE IS WHAT `container_pages` CHANGED, and only that sentence. Everything else in
+//! THAT LAST SENTENCE IS WHAT `container_blocks` CHANGED, and only that sentence. Everything else in
 //! the table below still holds: the entry still carries the component, the three spelled kinds still
 //! have a durable map and the hash still has none, and `HashGetAll` still names its fields from the
 //! entry rather than from the page.
@@ -207,7 +207,7 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 /// It used to assert that the field came back RENAMED: the swapped component became the field name,
 /// because nothing else held it. That was the refutation, and it was correct at the time.
 ///
-/// `container_pages` puts the element key inside the page. So the index now says `hfield-Z` and the
+/// `container_blocks` puts the element key inside the page. So the index now says `hfield-Z` and the
 /// page still says `hfield-b`, and they disagree. The read funnel resolves the address the index
 /// names and then asks that page for `hfield-Z`, which it does not hold -- so the element answers
 /// MISSING, and `HashGetAll`'s `filter_map` drops it.
@@ -562,7 +562,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // live instance of a decomposition that had stopped describing the type: `65c7fc562` retired
     // both from `BlockIndex` and this sum kept adding their five bytes. It passed because forty and
     // thirty-five both round to forty -- the same rounding that hid the same two fields in four
-    // mirrors in `an_assigned_durable_id_defeats_ground_one_only` and in `pages_per_bucket`'s
+    // mirrors in `an_assigned_durable_id_defeats_ground_one_only` and in `blocks_per_bucket`'s
     // reconstruction. `size_of` steps at a word and a sum does not.
     assert_eq!(
         round_up_to_eight(live_fields),
@@ -1323,7 +1323,7 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
 /// # WHY THE FOLD IS THE RIGHT SUBJECT AND THE ONLY ONE
 ///
 /// `fold_delta_block_items` is the only thing in the crate that turns index-log items into page
-/// entries, and `BucketNode::insert_page` computes the map's key with `block_index_handle`, from
+/// entries, and `BucketNode::insert_block` computes the map's key with `block_index_handle`, from
 /// the page's OWN fields. So the stored handle has no route into the index by construction -- and
 /// a property that holds by construction is exactly the kind that a later change breaks without
 /// anything failing.

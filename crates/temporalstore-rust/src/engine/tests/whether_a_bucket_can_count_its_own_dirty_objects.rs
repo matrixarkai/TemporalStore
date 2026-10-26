@@ -8,7 +8,7 @@
 //! `BucketStorageSummary::dirty_object_count` is populated from exactly one place -- the
 //! `shard.dirty_objects.bucket_counts()` loop at the foot of `bucket_storage_summaries` -- and that
 //! set is object-keyed and grows with the ingest. The dirty-BUCKET question has already stopped
-//! needing it: `the_page_bit_answers_the_dirty_bucket_question` measures the bucket's own `dirty`
+//! needing it: `the_block_bit_answers_the_dirty_bucket_question` measures the bucket's own `dirty`
 //! bit and its pages' bits answering it exactly. The obvious next step is to answer the per-bucket
 //! COUNT the same way, from each bucket's own pages, and retire the set.
 //!
@@ -136,7 +136,7 @@ fn authority(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
 fn derived_distinct_objects(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
     for (routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         if page.dirty {
             per_bucket
@@ -236,7 +236,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // ---- THE FIRST OF TWO MEASUREMENT POINTS, and it is the one that tests the NODE FLAG rather
     // ---- than the page walk. Right after a dump the set is empty, so every node still reading
     // ---- dirty here is reading dirty about nothing: `clear_published_object_dirty_state`
-    // ---- reassigns `set_dirty(any_page_dirty)` only for the buckets that held a PAGE of the
+    // ---- reassigns `set_dirty(any_block_dirty)` only for the buckets that held a PAGE of the
     // ---- published object, while dropping the key from the set unconditionally -- so a bucket
     // ---- whose only dirt was a non-page-backed key is never recomputed.
     let (after_dump, after_dump_nodes_dirty, after_dump_set_buckets) = {
@@ -314,18 +314,18 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         .sum();
     let set_total: u64 = by_set.values().sum();
     let object_total: u64 = by_objects.values().sum();
-    let page_total: u64 = by_blocks.values().sum();
+    let block_total: u64 = by_blocks.values().sum();
 
     // How many pages the busiest dirty object holds, so "not every object is single-page" is a
     // measured property of this fixture rather than an expectation about the write path.
-    let mut pages_per_object: BTreeMap<String, u64> = BTreeMap::new();
-    for (_bucket, _handle, object_key, _page) in super::pages_with_identity(&shard.bucket_index) {
-        *pages_per_object.entry(object_key.to_string()).or_default() += 1;
+    let mut blocks_per_object: BTreeMap<String, u64> = BTreeMap::new();
+    for (_bucket, _handle, object_key, _page) in super::blocks_with_identity(&shard.bucket_index) {
+        *blocks_per_object.entry(object_key.to_string()).or_default() += 1;
     }
-    let widest_object = pages_per_object.values().copied().max().unwrap_or(0);
+    let widest_object = blocks_per_object.values().copied().max().unwrap_or(0);
 
     // How much of the set has no live page anywhere -- the term no page walk can ever reach.
-    let any_block: BTreeSet<String> = super::pages_with_identity(&shard.bucket_index)
+    let any_block: BTreeSet<String> = super::blocks_with_identity(&shard.bucket_index)
         .into_iter()
         .map(|(_, _, object_key, _)| object_key.to_string())
         .collect();
@@ -346,7 +346,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     println!("    buckets with a count, via the PAGES     {:>6}", by_objects.len());
     println!("    total, via the SET (the authority)      {set_total:>6}");
     println!("    total, distinct objects via the PAGES   {object_total:>6}");
-    println!("    total, dirty PAGES                      {page_total:>6}");
+    println!("    total, dirty PAGES                      {block_total:>6}");
     println!("    set members with NO live page at all    {set_members_with_no_block:>6}");
     println!();
     println!("    the producer's loop visited              {producer_visits:>6}  (one per dirty bucket)");
@@ -484,7 +484,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          below"
     );
     assert_ne!(
-        object_total, page_total,
+        object_total, block_total,
         "distinct dirty objects and dirty pages come to the same total ({object_total}), so this \
          fixture cannot distinguish an object count from a page count even though some object \
          holds {widest_object} pages"

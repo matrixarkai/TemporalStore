@@ -60,7 +60,7 @@
 //!     alone, since `update_bucket_layout` filters `!page.deleted`. THE CONTROL caught it: the
 //!     live witness moved too. The ground is wider than a tombstone.
 //!   * DRAFT THREE named a RECONSTRUCT as the branch that renumbered it. THE COUNTER caught it:
-//!     `rebuilds +5, reconstructs +0, list_held_an_object_no_page_names +1` -- the load
+//!     `rebuilds +5, reconstructs +0, list_held_an_object_no_block_names +1` -- the load
 //!     RECONCILED, and the live id moved anyway. The same reading is why no branch is asserted
 //!     now: one load scanned five buckets and these counters are SHARD-WIDE, so a delta of +1 is
 //!     not attributable to the bucket under test.
@@ -707,7 +707,7 @@ fn three_keys_in_one_bucket(prefix: &str) -> (u32, String, String, String) {
 /// DRAFT THREE then named the wrong branch for that, and the COUNTER caught it. It asserted a
 /// RECONSTRUCT -- `reconcile_object_index_with_live_blocks` re-inserting from a `BTreeSet<u64>` in
 /// ascending id order -- and the scan reported `rebuilds +5, reconstructs +0,
-/// list_held_an_object_no_page_names +1`. So the load RECONCILED, and the live id still moved. The
+/// list_held_an_object_no_block_names +1`. So the load RECONCILED, and the live id still moved. The
 /// branch is not asserted now, for a reason the same reading gives: one load scanned five buckets
 /// and these counters are shard-wide, so a +1 is not attributable to the bucket under test.
 ///
@@ -858,12 +858,12 @@ fn no_entrys_slot_survives_an_engine_reload_so_a_stored_ordinal_cannot_name_an_o
     println!("  after the reload:          {after_reload:?}");
     println!("  the victim's entries: {live_after} live, {tombstoned_after} tombstoned");
     println!(
-        "  the scan, across the load: rebuilds +{}, reconstructs +{}, list_held_an_object_no_page_names +{}",
+        "  the scan, across the load: rebuilds +{}, reconstructs +{}, list_held_an_object_no_block_names +{}",
         after.rebuilds.saturating_sub(before.rebuilds),
         after.reconstructs.saturating_sub(before.reconstructs),
         after
-            .list_held_an_object_no_page_names
-            .saturating_sub(before.list_held_an_object_no_page_names)
+            .list_held_an_object_no_block_names
+            .saturating_sub(before.list_held_an_object_no_block_names)
     );
 
     // THE ENTRY IS STILL THERE. Without this a freed slot would be free for honest reasons and
@@ -899,7 +899,7 @@ fn no_entrys_slot_survives_an_engine_reload_so_a_stored_ordinal_cannot_name_an_o
     // AND THE BRANCH IS *NOT* ASSERTED, WHICH IS ITSELF A MEASUREMENT.
     //
     // A draft asserted `reconstructs` moved, on the reasoning that only a reconstruct re-hands
-    // every slot. It read `rebuilds +5, reconstructs +0, list_held_an_object_no_page_names +1`:
+    // every slot. It read `rebuilds +5, reconstructs +0, list_held_an_object_no_block_names +1`:
     // the load took the RECONCILE branch, and one id was dropped somewhere. FIVE BUCKETS WERE
     // SCANNED BY THE ONE LOAD, and these counters are shard-wide, so a delta of +1 cannot be
     // attributed to the bucket under test -- it may have been any of the five. The counters are

@@ -136,16 +136,16 @@ fn components_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String
         let Ok(bytes) = engine.block_store.read(address) else {
             continue;
         };
-        if let crate::engine::container_pages::ContainerBlockDecode::Framed {
+        if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
             spelling, items, ..
-        } = crate::engine::container_pages::decode_container_page(&bytes)
+        } = crate::engine::container_blocks::decode_container_block(&bytes)
         {
             for item in items {
                 if item.deleted {
                     continue;
                 }
                 if let Some(component) =
-                    crate::engine::container_pages::component_from_element_key(spelling, &item.key)
+                    crate::engine::container_blocks::component_from_element_key(spelling, &item.key)
                 {
                     stated.insert(component);
                 }
@@ -216,10 +216,10 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
         stated.contains(&victim_component)
     );
     println!(
-        "  derived from them: {} live, {} removed, pages_read={}, complete={}",
+        "  derived from them: {} live, {} removed, blocks_read={}, complete={}",
         derived.live.len(),
         derived.removed.len(),
-        derived.pages_read,
+        derived.blocks_read,
         derived.is_complete()
     );
 
@@ -234,7 +234,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
          its answer would be empty for a reason that has nothing to do with the removal"
     );
     assert!(
-        derived.pages_read > 0,
+        derived.blocks_read > 0,
         "the fold read no page, so its conclusion is about nothing"
     );
 

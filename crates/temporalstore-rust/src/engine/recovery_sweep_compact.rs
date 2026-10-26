@@ -1629,7 +1629,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             }
         }
         // THE FOUR CONTAINER ARMS BATCH, and each hands over the element's KEY BYTES rather than
-        // its component: `container_pages::component_from_element_key` renders the component from
+        // its component: `container_blocks::component_from_element_key` renders the component from
         // them, so the four inline renderings the write sites spell out are not copied here. That is
         // the second copy `read_block_bytes_for_compaction` documented as the reason these arms
         // could not name their elements at all, and it no longer has to exist.
@@ -1643,7 +1643,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // these four arms is already standing on exactly one, so it says so once.
         for (key, mut addresses) in shard.hashes.element_values_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            compact_container_blocks_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1660,7 +1660,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for (key, mut members) in shard.zsets.element_values_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            compact_container_blocks_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1683,7 +1683,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for (key, mut elements) in shard.lists.element_values_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            compact_container_blocks_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,
@@ -1704,7 +1704,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         }
         for (key, mut addresses) in shard.sets.element_values_mut() {
             let routing_bucket = bucket_of(key);
-            compact_container_pages_batched(
+            compact_container_blocks_batched(
                 &self.block_store,
                 &self.cache,
                 shard_id,

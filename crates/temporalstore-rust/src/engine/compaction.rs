@@ -731,7 +731,7 @@ fn read_block_bytes_for_compaction(
 /// of the container.
 ///
 /// 128 because that is the order the comparison design bounds its own delta chain at, and because
-/// the measured saving is nearly all spent by then: `container_pages`'s ladder puts a set of
+/// the measured saving is nearly all spent by then: `container_blocks`'s ladder puts a set of
 /// eight-byte members at 12 bytes of framing per element at one per page and 3.1 at 128, and the
 /// curve between 32 and 128 is worth half a byte.
 pub const CONTAINER_BATCH_ELEMENT_CAP: usize = 128;
@@ -751,7 +751,7 @@ fn container_batch_target_bytes() -> usize {
 ///
 /// The KEY BYTES and not the component. The component is a rendering of these -- hex for a set,
 /// a score before that hex for a zset, the biased word for a list, the field name itself for a hash
-/// -- and `container_pages::component_from_element_key` is the one renderer for all four. Before it
+/// -- and `container_blocks::component_from_element_key` is the one renderer for all four. Before it
 /// existed, `read_block_bytes_for_compaction` documented at length why this function could not have
 /// the component: "There is no shared renderer to call; each write site spells it out inline.
 /// Re-spelling them here would be a second copy of four rules, free to drift from the four
@@ -767,9 +767,9 @@ pub(super) struct ContainerElementRef<'a> {
 ///
 /// It changes the PAGE count and the ENTRY count falls with it. Several elements come to share one
 /// address, and `block_index_handle` hashes the model spelling, the object key and that address and
-/// nothing per-element, so entries converge on pages -- `entry_count_versus_page_count`'s
+/// nothing per-element, so entries converge on pages -- `entry_count_versus_block_count`'s
 /// `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` holds the mechanism and
-/// `container_pages_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
+/// `container_blocks_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
 /// count_with_them` measures it through a round, 40 entries over 40 pages before and 1 over 1 after.
 ///
 /// THIS PARAGRAPH SAID THE OPPOSITE AND IT WAS TRUE WHEN IT WAS WRITTEN: "It changes the PAGE count
@@ -791,7 +791,7 @@ pub(super) struct ContainerElementRef<'a> {
 ///
 /// # AND IT IS THE MIGRATION OFF UNFRAMED PAGES
 ///
-/// A page written before `container_pages` carries a bare value and no element key. Read through the
+/// A page written before `container_blocks` carries a bare value and no element key. Read through the
 /// funnel with its component it hands that value back, and this function writes it into a frame that
 /// names it. So an old store becomes a framed one as it is compacted, without a migration pass of
 /// its own.
@@ -820,7 +820,7 @@ pub(super) struct ContainerElementRef<'a> {
 /// `a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
 /// drives it.
 #[allow(clippy::too_many_arguments)]
-pub(super) fn compact_container_pages_batched<'a>(
+pub(super) fn compact_container_blocks_batched<'a>(
     block_store: &BlockStore,
     cache: &MultiLayerCache,
     shard_id: ShardId,
@@ -839,7 +839,7 @@ pub(super) fn compact_container_pages_batched<'a>(
     elements: impl IntoIterator<Item = ContainerElementRef<'a>>,
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
-    let Some(spelling) = super::container_pages::ElementKeySpelling::for_kind(model_id) else {
+    let Some(spelling) = super::container_blocks::ElementKeySpelling::for_kind(model_id) else {
         // Not a kind whose pages name an element, so there is nothing to batch by. Never reached
         // from the arms below, which are the four container kinds; stated rather than asserted
         // because a fifth kind added to those arms should degrade to doing nothing, not panic.
@@ -867,7 +867,7 @@ pub(super) fn compact_container_pages_batched<'a>(
         if !rewrite_stats.should_relocate(element.address) {
             continue;
         }
-        let component = match super::container_pages::component_from_element_key(
+        let component = match super::container_blocks::component_from_element_key(
             spelling,
             &element.key,
         ) {
@@ -957,7 +957,7 @@ pub(super) fn compact_container_pages_batched<'a>(
 ///
 /// Through the read funnel WITH THE COMPONENT NAMED IN THE IDENTITY, which is the one thing that
 /// makes this different from `read_block_bytes_for_compaction`: that one builds its identity with
-/// `None` for the component and so gets the whole payload, because until `container_pages` there was
+/// `None` for the component and so gets the whole payload, because until `container_blocks` there was
 /// no renderer to turn a model-map key into a component. There is one now, so this asks for the
 /// element and gets its value whether the stored page is framed or is a bare value from before the
 /// frame existed -- `select_container_element` answers `NotFramed` for the second and the funnel
@@ -997,7 +997,7 @@ fn flush_container_batch(
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    spelling: super::container_pages::ElementKeySpelling,
+    spelling: super::container_blocks::ElementKeySpelling,
     routing_bucket: u32,
     object_id: Option<u64>,
     batch_ordinal: usize,
@@ -1011,7 +1011,7 @@ fn flush_container_batch(
         .iter()
         .map(|(key, value)| (key.as_slice(), value.as_slice()))
         .collect();
-    let bytes = super::container_pages::encode_container_page(spelling, &borrowed);
+    let bytes = super::container_blocks::encode_container_block(spelling, &borrowed);
     // WHICH page of its object this is, and it is the BATCH's ordinal rather than any element's.
     // #2008 threaded this so the record header and the address are built from ONE value, because
     // `decode_block_record` refuses a page whose two copies disagree. A batched page has one

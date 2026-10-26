@@ -3665,7 +3665,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     restored
         .install_bucket_dump_manifest(&manifest)
         .expect("slot dump should install after restart");
-    let page_reads_before = restored.block_store().stats().reads;
+    let block_reads_before = restored.block_store().stats().reads;
     let disk_hits_before = restored.cache().stats().disk_hits;
     let response = restored.execute(ExecuteRequest {
         shard_id: 1,
@@ -3681,7 +3681,7 @@ fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     );
     assert_eq!(
         restored.block_store().stats().reads,
-        page_reads_before,
+        block_reads_before,
         "restored engine should refill from disk block cache before block store"
     );
     assert!(restored.cache().stats().disk_hits > disk_hits_before);
@@ -4605,13 +4605,13 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     let shard = shards.get(&1).expect("shard 1 loaded");
 
     let blocks_marked_dirty: std::collections::BTreeSet<String> =
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .filter(|(_, _, _, page)| page.dirty)
             .map(|(_, _, object_key, _)| object_key.to_string())
             .collect();
     let any_block_at_all: std::collections::BTreeSet<String> =
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(_, _, object_key, _)| object_key.to_string())
             .collect();
@@ -5172,7 +5172,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     //
     // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a page is the lookup's own
     // allocation. Every production reader reaches a page's object through `BlockKeysByPosition`,
-    // which is built by inverting the lookup, and `page_identities_in` hands back
+    // which is built by inverting the lookup, and `block_identities_in` hands back
     // `Arc::clone` of what it found. A clone shares the buffer, so `as_ptr` must equal
     // `key_ptr`'s -- and if the inversion ever started copying the text instead, this reddens.
     // That is a load-bearing property rather than a curiosity: forty walks in this module tree
@@ -5355,7 +5355,7 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
     let after_first: Vec<String> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .filter(|(_, _, object_key, _)| object_key.as_ref() == key)
             .map(|(_, handle, _, _)| handle.to_string())
@@ -5369,7 +5369,7 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
     let after_second: Vec<String> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .filter(|(_, _, object_key, _)| object_key.as_ref() == key)
             .map(|(_, handle, _, _)| handle.to_string())
@@ -6956,7 +6956,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // THE COST IS REAL AND IS NOT A COUNT CHANGE. The collapse this test exists for trades a list
         // buffer sized for a whole growth step for one sized for a single entry, and a bucket with
         // tombstones does not get it until something collects them. Nothing collects them yet --
-        // `compact_container_pages_batched` reads the resident maps, which hold no removed elements --
+        // `compact_container_blocks_batched` reads the resident maps, which hold no removed elements --
         // so for such a bucket the buffer is held until a re-add clears the tombstones or a later
         // stage collects them. That is stated here rather than left to be rediscovered from the
         // per-key ceiling above, which is the assertion that would eventually fail for it.
@@ -8286,13 +8286,13 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         let mut rebuilt = bucket.clone();
         // THE IDENTITIES COME FROM THE SHARD, because the rebuild no longer reads them off the
         // pages. The bucket under test is a CLONE, so the shard is still only borrowed immutably
-        // here and `page_identities` -- which borrows the whole index -- is available; the
+        // here and `block_identities` -- which borrows the whole index -- is available; the
         // production sweeps have to split the two field borrows by hand instead.
-        let page_keys = shard.bucket_index.page_identities();
+        let block_keys = shard.bucket_index.block_identities();
         crate::engine::storage_bucket_internals::update_bucket_layout(
             1,
             &mut rebuilt,
-            &page_keys,
+            &block_keys,
         );
         let after = slots_of(&rebuilt.object_index);
         if before != after {
@@ -13817,7 +13817,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
         .keys()
         .filter(|key| key.contains("ctx") || key.contains("context"))
         .count();
-    let context_blocks_in_index: usize = super::pages_with_identity(&shard.bucket_index)
+    let context_blocks_in_index: usize = super::blocks_with_identity(&shard.bucket_index)
         .into_iter()
         .filter(|(_, _, object_key, _)| {
             object_key.contains("ctx") || object_key.contains("context")
@@ -14217,7 +14217,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     let held: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(bucket, handle, object_key, page)| {
                 (
@@ -14247,7 +14247,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     let rebuilt: std::collections::BTreeMap<(u32, String), (String, String, Option<String>)> = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(bucket, handle, object_key, page)| {
                 (
@@ -15893,7 +15893,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     let snapshot = |engine: &TemporalEngine| -> Vec<String> {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let mut rows: Vec<String> = super::pages_with_identity(&shard.bucket_index)
+        let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(routing_bucket, _handle, object_key, page)| {
                 format!("{routing_bucket}|{}|{}|{}", page.model_id, object_key, "-")
@@ -16004,7 +16004,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     let block_rows = |engine: &TemporalEngine| -> Vec<String> {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
-        let mut rows: Vec<String> = super::pages_with_identity(&shard.bucket_index)
+        let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(routing_bucket, _handle, object_key, page)| {
                 format!("{routing_bucket}|{}|{}|{}", page.model_id, object_key, "-")
@@ -19182,7 +19182,7 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
 
     fn block_listing(engine: &TemporalEngine) -> Vec<(u32, String, String, Option<String>, u64, u64, u64)> {
         let shards = engine.shards.read().expect("shards lock poisoned");
-        let mut rows = super::pages_with_identity(
+        let mut rows = super::blocks_with_identity(
             &shards.get(&1).expect("loaded shard").bucket_index,
         )
         .into_iter()

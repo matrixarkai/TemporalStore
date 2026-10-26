@@ -76,7 +76,7 @@ const END: u32 = SPREAD - 1;
 /// single-page object, so zero is not a convenience: it is the only value the store can keep.
 /// `ObjectRecord::from_object_rows` refuses a nonzero one by name as
 /// `NonZeroBlockOrdinalDoesNotFitInline`, `set_address` coerces it and counts the coercion
-/// (`the_write_back_door_and_the_page_ordinal`), and #2322 corrected the identical datum in
+/// (`the_write_back_door_and_the_block_ordinal`), and #2322 corrected the identical datum in
 /// `model_kind_registry_guards`. So this changes what the fixture says, not what it tests.
 ///
 /// IT IS NOT LEFT TO A LITERAL TO STAY RIGHT. `shard_with_unfiled` reads every row back as it
@@ -176,14 +176,14 @@ fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BT
 /// rust-internal: guards this crate's own fixture against the row width, no product behaviour
 #[test]
 fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
-    const PAGES: u64 = 32;
-    let shard = shard_with(PAGES, None);
+    const BLOCKS: u64 = 32;
+    let shard = shard_with(BLOCKS, None);
 
     let mut held = 0u64;
     let mut round_tripped = 0u64;
     let mut named_by_index = 0u64;
     let mut index = 0u64;
-    while index < PAGES {
+    while index < BLOCKS {
         let filed = address_at(index);
         if let Some(read_back) = shard.string_address(&key_of(index)) {
             held += 1;
@@ -227,7 +227,7 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
         .contains_object_block_address("string", "probe", None, &narrowed);
 
     println!(
-        "\n  WHAT THE MAPS HOLD vs WHAT A READER OF THEM SEES, at {PAGES} string pages\n\
+        "\n  WHAT THE MAPS HOLD vs WHAT A READER OF THEM SEES, at {BLOCKS} string pages\n\
          \n    model-map rows                                      {held}\n\
            .. handing back the address the fixture filed        {round_tripped}\n\
            .. named by the bucket index at THAT address         {named_by_index}\n\
@@ -242,16 +242,16 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
         narrowed.block_id(),
     );
 
-    assert_eq!(held, PAGES, "VACUITY: the fixture filed no string row, so nothing here is compared");
+    assert_eq!(held, BLOCKS, "VACUITY: the fixture filed no string row, so nothing here is compared");
     assert_eq!(
-        round_tripped, PAGES,
-        "{} of {PAGES} model-map rows hand back an address other than the one the fixture filed, \
+        round_tripped, BLOCKS,
+        "{} of {BLOCKS} model-map rows hand back an address other than the one the fixture filed, \
          so the walk and the index in every arm below are being compared on different pages",
-        PAGES - round_tripped,
+        BLOCKS - round_tripped,
     );
     assert_eq!(
-        named_by_index, PAGES,
-        "the bucket index names {named_by_index} of {PAGES} pages at the address the model map \
+        named_by_index, BLOCKS,
+        "the bucket index names {named_by_index} of {BLOCKS} pages at the address the model map \
          hands out, so the promotion check is offered missing pages that are not missing",
     );
 
@@ -580,25 +580,25 @@ fn the_check_does_not_allocate_per_block_it_walks() {
         (after.0 - before.0, pages)
     }
 
-    let (small_allocs, small_pages) = cost(500);
-    let (large_allocs, large_pages) = cost(5_000);
+    let (small_allocs, small_blocks) = cost(500);
+    let (large_allocs, large_blocks) = cost(5_000);
     println!(
-        "  promotion check: {small_allocs} allocation(s) over {small_pages} pages walked, and \
-         {large_allocs} over {large_pages}. The materialising form cost 4.0 per page: {} and {}.",
-        small_pages * 4,
-        large_pages * 4
+        "  promotion check: {small_allocs} allocation(s) over {small_blocks} pages walked, and \
+         {large_allocs} over {large_blocks}. The materialising form cost 4.0 per page: {} and {}.",
+        small_blocks * 4,
+        large_blocks * 4
     );
 
     // Halves, ordered, smaller claim first: a mutant that puts the vector back fails the small
     // arm, and the large arm is still reached and still reported.
     assert!(
-        small_allocs * 2 < small_pages,
-        "the check allocated {small_allocs} time(s) to walk {small_pages} pages; the form this \
+        small_allocs * 2 < small_blocks,
+        "the check allocated {small_allocs} time(s) to walk {small_blocks} pages; the form this \
          replaced cost 4.0 per page and the walk itself needs none"
     );
     assert!(
-        large_allocs * 2 < large_pages,
-        "the check allocated {large_allocs} time(s) to walk {large_pages} pages; the form this \
+        large_allocs * 2 < large_blocks,
+        "the check allocated {large_allocs} time(s) to walk {large_blocks} pages; the form this \
          replaced cost 4.0 per page and the walk itself needs none"
     );
 }

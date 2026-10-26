@@ -668,7 +668,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     restarted_cache.clear_memory_for_test();
     assert_eq!(restarted_cache.get_memory(&target_block_key), None);
     let disk_hits_before = restarted_cache.stats().disk_hits;
-    let page_reads_before = restarted_block_store.stats().reads;
+    let block_reads_before = restarted_block_store.stats().reads;
     let second_read = restarted.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringGet {
@@ -683,7 +683,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     );
     assert_eq!(
         restarted_block_store.stats().reads,
-        page_reads_before,
+        block_reads_before,
         "memory miss after restart should use the disk block cache"
     );
     assert!(

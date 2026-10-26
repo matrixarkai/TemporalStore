@@ -44,7 +44,7 @@
 //! of the five reasons it loses are already measured elsewhere in this tree and are CITED rather
 //! than re-derived here:
 //!
-//!   1. `container_page_ordinal` takes `component: &str` and resolves the ordinal BY looking the
+//!   1. `container_block_ordinal` takes `component: &str` and resolves the ordinal BY looking the
 //!      component up. The ordinal is a projection of the component, so it cannot carry more.
 //!   2. #2008: "`max` FALLS after a delete and the next insert is handed the ordinal just freed...
 //!      a reader that treated the ordinal as naming a particular element would be silently corrupt
@@ -57,7 +57,7 @@
 //! THE FIFTH IS NEW AND IS DRIVEN BELOW, because it is the one that decides the question for THIS
 //! path rather than in general. The mandate asked whether an ordinal is available at STAGE time.
 //! It is -- `block_ordinal` is an argument to `append_value_of_object`, computed by
-//! `container_page_ordinal` immediately before the call. The stage is not where it fails.
+//! `container_block_ordinal` immediately before the call. The stage is not where it fails.
 //! **It fails at READ time**: the asynchronous arm of `append_value_inner` builds its address with
 //! `BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, ticket, len, None, object_id)` -- `block_id`
 //! is `None` -- and that synthetic address is the one `is_wal_resident` sends down this path. So
@@ -183,7 +183,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 /// `ElementEntry` per field and the index entry holds the same address, so the address is what
 /// identifies a page in both. `RecordedMap::block_an_element_vacates` asks this exact question on
 /// the write path, so this is not a fixture-only correspondence.
-fn live_pages(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String>)> {
+fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     // Address -> element name, for the kinds that have elements. `string` has none, which is what
@@ -443,7 +443,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     println!("  kind    grouped by        pages  groups  p50  p90  p99  MAX  unreachable   share");
     let mut rows: Vec<(&str, &str, usize, usize)> = Vec::new();
     for kind in ["hash", "string"] {
-        let pages = live_pages(&engine, kind);
+        let pages = live_blocks(&engine, kind);
         assert!(
             !pages.is_empty(),
             "DENOMINATOR: no {kind} pages were exercised, so every share below is 0.00% for the \
@@ -487,11 +487,11 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     };
 
     // The hazard, unchanged by this PR and reproduced from the BEFORE run.
-    let (hash_pages, hash_id_only) = find("hash", "id alone");
+    let (hash_blocks, hash_id_only) = find("hash", "id alone");
     assert_eq!(
-        hash_pages,
+        hash_blocks,
         CONTAINER_KEYS * MEMBERS_PER_KEY,
-        "the hash arm exercised {hash_pages} pages, not {}",
+        "the hash arm exercised {hash_blocks} pages, not {}",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     assert_eq!(
@@ -506,27 +506,27 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     let (_, hash_with_element) = find("hash", "id + element");
     assert_eq!(
         hash_with_element, 0,
-        "with the element beside the id, {hash_with_element} of {hash_pages} hash pages are still \
+        "with the element beside the id, {hash_with_element} of {hash_blocks} hash pages are still \
          unreachable. Every page of this fixture is a distinct field of a hash, so every group \
          must hold exactly one page"
     );
 
     // THE CONTROL, exercised first and then asserted flat under both groupings.
-    let (string_pages, string_id_only) = find("string", "id alone");
+    let (string_blocks, string_id_only) = find("string", "id alone");
     let (_, string_with_element) = find("string", "id + element");
     assert_eq!(
-        string_pages, ROUTED_KEYS,
-        "CONTROL NOT EXERCISED: {string_pages} string pages, not {ROUTED_KEYS}"
+        string_blocks, ROUTED_KEYS,
+        "CONTROL NOT EXERCISED: {string_blocks} string pages, not {ROUTED_KEYS}"
     );
     assert_eq!(
         (string_id_only, string_with_element),
         (0, 0),
-        "the control lost ({string_id_only}, {string_with_element}) of {string_pages} pages under \
+        "the control lost ({string_id_only}, {string_with_element}) of {string_blocks} pages under \
          the two groupings. A kind whose component is already `None` cannot be moved by putting \
          the component into the key, so both must be zero"
     );
     println!(
-        "  CONTROL: string, {string_pages} pages exercised, 0 unreachable under BOTH groupings, \
+        "  CONTROL: string, {string_blocks} pages exercised, 0 unreachable under BOTH groupings, \
          0.00%.\n  VERDICT: 96.00% -> 0.00% unreachable for hash; the control does not move."
     );
 }
@@ -539,7 +539,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
 ///
 /// The mandate asked whether a page ordinal is available at STAGE time. IT IS, and saying
 /// otherwise would have been wrong: `append_value_of_object` takes `block_ordinal` as an argument
-/// and `container_page_ordinal` computes it immediately before the call. The stage is not where an
+/// and `container_block_ordinal` computes it immediately before the call. The stage is not where an
 /// ordinal fails.
 ///
 /// IT FAILS AT READ TIME. `read_block` is reached from `read_block_bytes`, whose handle is a
@@ -812,12 +812,12 @@ fn what_an_element_named_block_adds_to_the_record() {
 #[test]
 fn what_an_element_named_block_allocates_when_it_is_staged() {
     use crate::alloc_probe::{AllocClass, ClassSpan};
-    const PAGES: usize = 200;
+    const BLOCKS: usize = 200;
 
     let measure = |component: Option<&str>| -> (u64, u64) {
         crate::engine::block_in_wal::begin_write();
         let span = ClassSpan::open();
-        for _ in 0..PAGES {
+        for _ in 0..BLOCKS {
             crate::engine::block_in_wal::stage(7, component, &[b'v'; 32]);
         }
         let counts = span
@@ -831,7 +831,7 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     let (bare_allocs, bare_bytes) = measure(None);
     let (named_allocs, named_bytes) = measure(Some("f7"));
 
-    println!("\n=== carried_page allocations for {PAGES} staged pages ===");
+    println!("\n=== carried_page allocations for {BLOCKS} staged pages ===");
     println!("  element          allocs   bytes   allocs/page   B/page");
     for (label, allocs, bytes) in [
         ("CONTROL: none", bare_allocs, bare_bytes),
@@ -839,19 +839,19 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     ] {
         println!(
             "  {label:<15} {allocs:>7} {bytes:>7} {:>13.2} {:>8.2}",
-            allocs as f64 / PAGES as f64,
-            bytes as f64 / PAGES as f64
+            allocs as f64 / BLOCKS as f64,
+            bytes as f64 / BLOCKS as f64
         );
     }
 
     assert!(
-        bare_allocs >= PAGES as u64,
-        "NOT EXERCISED: {bare_allocs} allocations for {PAGES} staged pages; the page copy alone is \
+        bare_allocs >= BLOCKS as u64,
+        "NOT EXERCISED: {bare_allocs} allocations for {BLOCKS} staged pages; the page copy alone is \
          one each, so a smaller figure means the staging did not run"
     );
     assert!(
         named_allocs > bare_allocs,
-        "naming the element added {} allocations over {PAGES} pages. An `Arc<str>` from a `&str` \
+        "naming the element added {} allocations over {BLOCKS} pages. An `Arc<str>` from a `&str` \
          copies the characters, so it cannot be free -- a zero here means the field is not being \
          filled",
         named_allocs as i64 - bare_allocs as i64
@@ -859,8 +859,8 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     println!(
         "  VERDICT: +{:.2} allocations and +{:.2} bytes per carried page for a two-character \
          element name.",
-        (named_allocs - bare_allocs) as f64 / PAGES as f64,
-        (named_bytes - bare_bytes) as f64 / PAGES as f64
+        (named_allocs - bare_allocs) as f64 / BLOCKS as f64,
+        (named_bytes - bare_bytes) as f64 / BLOCKS as f64
     );
 }
 

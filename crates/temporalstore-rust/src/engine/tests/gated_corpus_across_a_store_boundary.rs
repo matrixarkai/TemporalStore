@@ -28,7 +28,7 @@
 //! per element either way", which was true when the set arm was the whole collapse. `list` is
 //! collapsed now as well, so THE CONTROL IS TWO KINDS RATHER THAN THREE: `hash` and `zset`, both
 //! deliberately held out -- a zset component carries the SCORE, and four hash readers resolve
-//! through the index BY COMPONENT with no resident-map fallback. See `index_entry_names_a_page`
+//! through the index BY COMPONENT with no resident-map fallback. See `index_entry_names_a_block`
 //! for the measured statement of each.
 //!
 //! A kind that is supposed to be unaffected is a CONTROL, and a control that is never read cannot
@@ -356,7 +356,7 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         set_entries_written,
         set_entries_reloaded: live_entries(&reloaded, "set", SET_KEY),
         hash_entries_reloaded: live_entries(&reloaded, "hash", HASH_KEY),
-        hash_blocks_reloaded: occupied_pages(&reloaded, "hash", HASH_KEY),
+        hash_blocks_reloaded: occupied_blocks(&reloaded, "hash", HASH_KEY),
     }
 }
 
@@ -626,7 +626,7 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
 ///
 /// The independent half of the entry-count comparison: the index's own page set is derived from the
 /// entries under test, so it cannot see an entry over a page nothing is on.
-fn occupied_pages(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
+fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let pages: std::collections::BTreeSet<(u64, u64, u64)> = match model_id {
@@ -646,7 +646,7 @@ fn occupied_pages(engine: &TemporalEngine, model_id: &str, object_key: &str) -> 
                     .collect()
             })
             .unwrap_or_default(),
-        other => panic!("occupied_pages has no arm for {other}"),
+        other => panic!("occupied_blocks has no arm for {other}"),
     };
     pages.len()
 }

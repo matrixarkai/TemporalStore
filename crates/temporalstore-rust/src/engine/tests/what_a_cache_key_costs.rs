@@ -139,13 +139,13 @@ fn what_a_cache_key_costs() {
     println!();
 
     let (physical_heap, physical_allocs) = heap_and_allocs(&physical);
-    let page_total = struct_bytes + physical_heap;
+    let block_total = struct_bytes + physical_heap;
     println!("  THE PAGE KEY AGAINST ITS INFORMATION CONTENT");
     println!("    carried as integers     {BLOCK_INFORMATION_BYTES:>5} B   shard+slab+offset+length+bucket, no allocation");
-    println!("    carried as it is        {page_total:>5} B   struct {struct_bytes} + heap {physical_heap}");
+    println!("    carried as it is        {block_total:>5} B   struct {struct_bytes} + heap {physical_heap}");
     println!(
         "    ratio                   {:>5.2}x  and {physical_allocs} allocation(s) per construction",
-        page_total as f64 / BLOCK_INFORMATION_BYTES as f64,
+        block_total as f64 / BLOCK_INFORMATION_BYTES as f64,
     );
     println!();
 
@@ -197,8 +197,8 @@ fn what_a_cache_key_costs() {
     // ---- is a layout detail of another crate and the lengths depend on digit counts. A floor
     // ---- still fails if the representation is ever made compact, which is the point.
     assert!(
-        page_total >= 3 * BLOCK_INFORMATION_BYTES,
-        "a page cache key now costs {page_total} B against {BLOCK_INFORMATION_BYTES} B of \
+        block_total >= 3 * BLOCK_INFORMATION_BYTES,
+        "a page cache key now costs {block_total} B against {BLOCK_INFORMATION_BYTES} B of \
          integers, under 3x. If the five numbers are carried AS numbers now then this arm has \
          served its purpose and should be deleted; check `size_of::<CacheKey>()` first, because a \
          smaller struct holding the same two text fields means the layout moved and not the \

@@ -925,7 +925,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     // sides of it. MEASURED: under the mutation that arm read `3 == 3` and passed while the vacated
     // page was still named. So the live set is compared against the pages the RESIDENT MAP says are
     // occupied, which is an independent statement of which pages exist.
-    let occupied = occupied_pages(&engine);
+    let occupied = occupied_blocks(&engine);
     assert_eq!(
         occupied, pages,
         "the index names {} live page(s) and the durable map holds its members on {}. The \
@@ -974,7 +974,7 @@ fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
 /// The independent half of the comparison above. The index's own page set is derived from the
 /// entries being measured, so it cannot witness an entry over an empty page; this is derived from
 /// the members instead.
-fn occupied_pages(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u64, u64)> {
+fn occupied_blocks(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u64, u64)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     shard

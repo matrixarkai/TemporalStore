@@ -89,9 +89,11 @@ pub struct ObjectIndexDivergenceReport {
     pub reconstructs: u64,
     /// A live page named an object its bucket's list did not hold. The list gains it; nothing
     /// already filed moves.
-    pub pages_named_an_object_the_list_lacked: u64,
+    #[serde(rename = "pages_named_an_object_the_list_lacked")]
+    pub blocks_named_an_object_the_list_lacked: u64,
     /// The list held an object no live page names. The list drops it, leaving a placeholder.
-    pub list_held_an_object_no_page_names: u64,
+    #[serde(rename = "list_held_an_object_no_page_names")]
+    pub list_held_an_object_no_block_names: u64,
     /// How many of those reached the log, which is rate-limited, so a quiet log cannot be mistaken
     /// for a zero count.
     pub divergences_logged: u64,

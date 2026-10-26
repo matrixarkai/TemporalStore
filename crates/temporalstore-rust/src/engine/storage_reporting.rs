@@ -40,7 +40,7 @@ fn filing_by_object_key(shard: &ShardState) -> HashMap<Arc<str>, u32> {
     // for the whole walk, which is the same order as the walk. A page whose neighbours do not name
     // it is skipped: the one such page is a tombstone whose removal named no element, and a filing
     // map keyed by object cannot state an entry for an object it cannot name.
-    let identities = shard.bucket_index.page_identities();
+    let identities = shard.bucket_index.block_identities();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         for (handle, page) in bucket.block_index.iter() {
             let Some(beside) = identities.identity_of(bucket, *handle, page) else {
@@ -537,7 +537,7 @@ pub(super) fn storage_physical_index_report(
         // by the newest one reported the older manifest's WAL sequence and now reports 0. That
         // figure is not reconstructible from the newest manifest alone, and it was not readable
         // by anything that decided anything.
-        let identities = shard.bucket_index.page_identities();
+        let identities = shard.bucket_index.block_identities();
         for (handle, page) in runtime_bucket.block_index.iter() {
             // THE ROW NAMES AN OBJECT, so a page whose neighbours do not name one cannot produce a
             // row. The one such page is a tombstone whose removal named no element.

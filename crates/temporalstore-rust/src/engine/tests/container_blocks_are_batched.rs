@@ -5,7 +5,7 @@
 //!
 //! # THE CLAIM
 //!
-//! A container gives every element its own page. `container_pages` made each of those pages name the
+//! A container gives every element its own page. `container_blocks` made each of those pages name the
 //! element it holds, which is what lets several of them be folded into one: a page holding many
 //! elements is only readable if it says which is which.
 //!
@@ -35,7 +35,7 @@
 //! so the term is gone from the handle and two elements on one page hash ALIKE. The entry count is
 //! the PAGE count now, and the row that used to say what the fold did not buy says what it does.
 //!
-//! `entry_count_versus_page_count`'s
+//! `entry_count_versus_block_count`'s
 //! `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives the mechanism.
 //! `a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_them` below asserts
 //! it from this module's own fixture, because a reader of this module should not have to go and
@@ -254,7 +254,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     // count collapsing to the PAGE count is the whole point", and it named two paths. The
     // one-entry-a-page flag is retired and the entry has no field for an element name, so the
     // ungated half has no off position to be in: the collapsed shape is the only shape.
-    // `projection_names_a_page` holds entries == pages with none named at occupancies 1, 4 and 40,
+    // `projection_names_a_block` holds entries == pages with none named at occupancies 1, 4 and 40,
     // and `gated_corpus_across_a_store_boundary` holds it across a reload.
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
@@ -354,7 +354,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         // `insert_unaccounted` file a fresh handle; making
         // `sync_bucket_index_object_blocks_with_mode`'s retain keep the object's old entries; and
         // adding a real removal to this fixture, which does leave a retained live entry --
-        // `container_page_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it` reads that
+        // `container_block_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it` reads that
         // one -- but not one that survives the round. Whatever collapses the entries here is not
         // any of those five, and it is not attributed.
         assert!(
@@ -527,7 +527,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         &pages,
         &indexes,
     );
-    crate::engine::reset_corrupt_container_page_count();
+    crate::engine::reset_corrupt_container_block_count();
     load_on(&reloaded);
 
     let length = match read(
@@ -632,7 +632,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     }
     assert_eq!(
         0,
-        crate::engine::corrupt_container_page_count(),
+        crate::engine::corrupt_container_block_count(),
         "a read met a folded page it could not walk"
     );
     println!("  reloaded: every hash field, set member and list element read back");

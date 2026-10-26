@@ -19,7 +19,7 @@
 
 use crate::block_store::ElementEntry;
 use crate::engine::object_record::{
-    dropped_nonzero_page_ordinals, reset_dropped_nonzero_page_ordinals, ObjectRecord,
+    dropped_nonzero_block_ordinals, reset_dropped_nonzero_block_ordinals, ObjectRecord,
     ObjectRecordRefusal,
 };
 
@@ -91,7 +91,7 @@ fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
 /// then, and the failure is the prompt to route such an object to its real home.
 #[test]
 fn the_unchanged_door_still_drops_the_value_and_now_says_so() {
-    reset_dropped_nonzero_page_ordinals();
+    reset_dropped_nonzero_block_ordinals();
 
     let mut record = ObjectRecord::default();
     record.set_address(&entry_with_ordinal(Some(7)));
@@ -105,7 +105,7 @@ fn the_unchanged_door_still_drops_the_value_and_now_says_so() {
          ordinal is being written somewhere it cannot be read back from"
     );
     assert_eq!(
-        dropped_nonzero_page_ordinals(),
+        dropped_nonzero_block_ordinals(),
         1,
         "the door dropped a nonzero ordinal and the counter did not see it, so the instrument that \
          replaces the silence is not wired to the thing it instruments"
@@ -113,12 +113,12 @@ fn the_unchanged_door_still_drops_the_value_and_now_says_so() {
 
     // AND IT DOES NOT COUNT WHAT IT DID NOT DROP. A counter that fires on every write would make
     // the assertion above pass while meaning nothing.
-    reset_dropped_nonzero_page_ordinals();
+    reset_dropped_nonzero_block_ordinals();
     let mut record = ObjectRecord::default();
     record.set_address(&entry_with_ordinal(Some(0)));
     record.set_address(&entry_with_ordinal(None));
     assert_eq!(
-        dropped_nonzero_page_ordinals(),
+        dropped_nonzero_block_ordinals(),
         0,
         "the counter fired for an ordinal that fits, so it cannot distinguish a dropped value from \
          an ordinary write"
@@ -135,7 +135,7 @@ fn the_unchanged_door_still_drops_the_value_and_now_says_so() {
 /// A COUNTER NOTHING ASSERTS ON IS A COUNTER NOBODY READS, which is why this exists at all.
 #[test]
 fn no_production_write_hands_the_door_an_ordinal_it_cannot_hold() {
-    reset_dropped_nonzero_page_ordinals();
+    reset_dropped_nonzero_block_ordinals();
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = crate::engine::TemporalEngine::with_local_dirs(
@@ -175,7 +175,7 @@ fn no_production_write_hands_the_door_an_ordinal_it_cannot_hold() {
     assert_eq!(wrote, 64, "the fixture wrote nothing, so this asserts over no writes at all");
 
     assert_eq!(
-        dropped_nonzero_page_ordinals(),
+        dropped_nonzero_block_ordinals(),
         0,
         "a production write handed the write-back door a page ordinal the inline arm cannot hold, \
          so a page ordinal was silently dropped on a real path. That is the condition this counter \

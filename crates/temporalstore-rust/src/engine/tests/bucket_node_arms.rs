@@ -271,7 +271,7 @@ impl ArmHistogram {
         self.pages.len()
     }
 
-    fn total_pages(&self) -> usize {
+    fn total_blocks(&self) -> usize {
         self.pages.iter().sum()
     }
 
@@ -314,7 +314,7 @@ impl ArmHistogram {
             "\n{label}: {} buckets, {} occupied, {} pages",
             self.buckets(),
             self.occupied(),
-            self.total_pages()
+            self.total_blocks()
         );
         for arm in EVERY_ARM {
             println!(
@@ -419,11 +419,11 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
             };
             hist.report(&format!("{records} routed keys on {width}"));
             assert_eq!(
-                hist.total_pages(),
+                hist.total_blocks(),
                 keys.len(),
                 "{records}/{end_routing_bucket}: the index holds {} pages for {} written keys, so \
                  the histogram above is not over the fixture",
-                hist.total_pages(),
+                hist.total_blocks(),
                 keys.len()
             );
             routed.insert((records, end_routing_bucket), hist);
@@ -445,10 +445,10 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
             written.len()
         ));
         assert_eq!(
-            hist.total_pages(),
+            hist.total_blocks(),
             keys * members,
             "the container fixture wrote {} pages for {} expected",
-            hist.total_pages(),
+            hist.total_blocks(),
             keys * members
         );
         container.insert(keys * members, hist);
@@ -670,7 +670,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // every bucket in the map and at the shipped routing range almost none holds exactly one block.
     // So a single block costs one allocation here, deliberately, and the object and tombstone
     // indexes are the two members whose simple spelling is still free.
-    let simple_block = BlockIndexMap::Many(vec![(7, page_fixture())]);
+    let simple_block = BlockIndexMap::Many(vec![(7, block_fixture())]);
     assert_eq!(1, simple_block.len(), "a one-entry page list holds exactly one page");
     assert!(
         simple_block.get(&7).is_some(),
@@ -721,7 +721,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     );
 }
 
-fn page_fixture() -> BlockIndex {
+fn block_fixture() -> BlockIndex {
     BlockIndex {
         // Was `"m"`, a spelling no arm of the walk emits and the registry does not declare.
         // The field's type could not say so when it was a free-form string.
@@ -1261,11 +1261,11 @@ fn what_the_tagged_node_actually_costs_the_allocator() {
             let buckets = live_map.len();
             assert!(buckets > 0, "no buckets to divide by");
             assert_eq!(
-                hist.total_pages(),
+                hist.total_blocks(),
                 keys.len(),
                 "the map holds {} pages for {} keys, so the per-record divisor is not the \
                  fixture's",
-                hist.total_pages(),
+                hist.total_blocks(),
                 keys.len()
             );
 
@@ -1861,7 +1861,7 @@ fn the_bytes_a_tagged_key_saves_are_not_bytes_a_tagged_key_stops_holding() {
     let boxed = Box::new(SimpleLayout {
         object_id: 1,
         handle: 7,
-        page: page_fixture(),
+        page: block_fixture(),
     });
     let chunk = crate::alloc_probe::chunk_behind(&boxed);
     let request = size_of::<SimpleLayout>();
@@ -1983,11 +1983,11 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
             let shard = shards.get(&1).expect("shard 1");
             let live_map = &shard.bucket_index.bucket_map;
             assert_eq!(
-                hist.total_pages(),
+                hist.total_blocks(),
                 keys.len(),
                 "the map holds {} pages for {} keys, so the per-record divisor is not the \
                  fixture's",
-                hist.total_pages(),
+                hist.total_blocks(),
                 keys.len()
             );
 

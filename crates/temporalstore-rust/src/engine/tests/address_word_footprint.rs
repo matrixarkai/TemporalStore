@@ -105,7 +105,7 @@ struct AddressCount {
     buckets: usize,
     page_entries: usize,
     model_map: usize,
-    pages_per_bucket: Vec<usize>,
+    blocks_per_bucket: Vec<usize>,
 }
 
 impl AddressCount {
@@ -115,7 +115,7 @@ impl AddressCount {
 }
 
 fn count_addresses(shard: &crate::engine::state::ShardState) -> AddressCount {
-    let pages_per_bucket: Vec<usize> = shard
+    let blocks_per_bucket: Vec<usize> = shard
         .bucket_index
         .bucket_map
         .values()
@@ -123,9 +123,9 @@ fn count_addresses(shard: &crate::engine::state::ShardState) -> AddressCount {
         .collect();
     AddressCount {
         buckets: shard.bucket_index.bucket_map.len(),
-        page_entries: pages_per_bucket.iter().sum(),
+        page_entries: blocks_per_bucket.iter().sum(),
         model_map: shard.strings().len(),
-        pages_per_bucket,
+        blocks_per_bucket,
     }
 }
 
@@ -222,7 +222,7 @@ fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
                 addresses.model_map,
                 addresses.total()
             );
-            report_histogram("pages per bucket", &addresses.pages_per_bucket);
+            report_histogram("pages per bucket", &addresses.blocks_per_bucket);
 
             let address_bytes = width * addresses.total();
             let per_record = address_bytes as f64 / records as f64;

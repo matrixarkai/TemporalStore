@@ -195,7 +195,7 @@ impl BlocksPerBucket {
     }
 
     /// Buckets holding strictly more than one block -- the anti-constant case.
-    fn multi_page(&self) -> usize {
+    fn multi_block(&self) -> usize {
         self.counts
             .iter()
             .filter(|(held, _)| **held > 1)
@@ -215,7 +215,7 @@ impl BlocksPerBucket {
         self.pages() as f64 / buckets as f64
     }
 
-    fn single_page_fraction(&self) -> f64 {
+    fn single_block_fraction(&self) -> f64 {
         let buckets = self.buckets();
         if buckets == 0 {
             return 0.0;
@@ -231,9 +231,9 @@ impl BlocksPerBucket {
             self.buckets(),
             self.pages(),
             self.mean(),
-            self.single_page_fraction(),
+            self.single_block_fraction(),
             self.widest(),
-            self.multi_page()
+            self.multi_block()
         );
         for (held, count) in &self.counts {
             if *held <= 8 || held % 8 == 0 || *held == self.widest() {
@@ -246,7 +246,7 @@ impl BlocksPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
+fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut hist = BlocksPerBucket::default();
@@ -269,7 +269,7 @@ fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
     // nothing to group under it.
     let mut contents: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
     for (routing_bucket, _handle, object_key, _page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         contents
             .entry(routing_bucket)
@@ -361,7 +361,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
             let engine = engine_on(dir.path());
             load_on(&engine, end_routing_bucket);
             let keys = seed_routed(&engine, records);
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             let width = if end_routing_bucket == WIDE_END {
                 "whole keyspace".to_string()
             } else {
@@ -397,14 +397,14 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 
         // THE WIDE ARM REPRODUCES #1959. One key, one bucket, essentially no collision.
         assert!(
-            wide.single_page_fraction() > 0.99,
+            wide.single_block_fraction() > 0.99,
             "on the whole keyspace {records} routed keys gave a single-page fraction of {:.5}; \
              #1959 measured 0.99900 and this arm is meant to reproduce it",
-            wide.single_page_fraction()
+            wide.single_block_fraction()
         );
         assert_eq!(
             wide.buckets(),
-            records - wide.multi_page(),
+            records - wide.multi_block(),
             "on the whole keyspace the bucket count must be the key count less one for each \
              bucket that took a second key"
         );
@@ -421,18 +421,18 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 
         // THE ANTI-CONSTANT ASSERTION.
         assert!(
-            narrow.multi_page() > 0,
+            narrow.multi_block() > 0,
             "the narrow arm at {records} records reached no bucket holding more than one page, so \
              it cannot tell a correct `BlockIndexMap` from a constant answering `One`"
         );
 
         // AND THE FILL IS THE FINDING. The same keys, the same workload, the same engine.
         assert!(
-            narrow.single_page_fraction() < 0.25,
+            narrow.single_block_fraction() < 0.25,
             "the narrow arm at {records} records is {:.5} single-page; if a production-range shard \
              were still single-page-dominated then #1959's reading would hold at both widths and \
              the range would not be the lever",
-            narrow.single_page_fraction()
+            narrow.single_block_fraction()
         );
         println!(
             "  {records} routed keys: whole keyspace {:.4} pages a bucket over {} buckets, \
@@ -544,7 +544,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
 
         let contents = bucket_key_sets(&engine);
         let handles = bucket_handle_sets(&engine);
-        let hist = pages_per_bucket(&engine);
+        let hist = blocks_per_bucket(&engine);
         hist.report(&format!(
             "{CONTAINERS} containers of {MEMBERS} fields on 0..{end_routing_bucket}"
         ));
@@ -969,7 +969,7 @@ fn clone_counts<T: Clone>(value: &T) -> (u64, u64) {
 /// RUN BY NAME, NOT IN THE SUITE. The counting allocator is PROCESS-WIDE, so under the
 /// suite's default parallelism this span also charges whatever other test threads allocate
 /// while it is open, and the planted figure comes back inflated. The measured clean-main gate
-/// carries the identically-named control in `pages_per_bucket` as a standing failure for
+/// carries the identically-named control in `blocks_per_bucket` as a standing failure for
 /// exactly that reason; this one is `#[ignore]`d instead of joining it.
 ///
 /// rust-internal: measures the harness's own instrument, no product behaviour
@@ -1470,7 +1470,7 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
         let mut walk = Walk::default();
         let mut by_bucket: BTreeMap<u32, Vec<(u64, String)>> = BTreeMap::new();
         for (routing_bucket, handle, object_key, _page) in
-            super::pages_with_identity(&shard.bucket_index)
+            super::blocks_with_identity(&shard.bucket_index)
         {
             by_bucket
                 .entry(routing_bucket)
@@ -1704,7 +1704,7 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         // a missing name.
         let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
         for (routing_bucket, _handle, object_key, page) in
-            super::pages_with_identity(&shard.bucket_index)
+            super::blocks_with_identity(&shard.bucket_index)
         {
             if page.deleted {
                 continue;
@@ -2066,7 +2066,7 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
     );
 
     // --- Does a recomputation on the ADOPTED range find the blocks? ---
-    let placed = super::pages_with_identity(&shard.bucket_index);
+    let placed = super::blocks_with_identity(&shard.bucket_index);
     let mut blocks = 0usize;
     let mut computed_elsewhere = 0usize;
     for (routing_bucket, _handle, object_key, page) in &placed {

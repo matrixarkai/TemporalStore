@@ -98,7 +98,7 @@
 //!
 //! It can, and #2005 already wrote the question. #2005 fixed a resurrection on this same function
 //! by applying the delta fold's carried elements ONCE, after the page index had settled, asking
-//! "is there still a page at the address this element was carried with?" -- `live_page_key` over the
+//! "is there still a page at the address this element was carried with?" -- `live_block_key` over the
 //! finished bucket index. That fix was complete FOR THE CARRY. It left the other input to the same
 //! merge unasked.
 //!
@@ -703,7 +703,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             .sets
             .insert_elements_for_test(&control.key, control.persisted_before_removal.clone());
 
-        let live_pages: usize = shard
+        let live_blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
@@ -716,8 +716,8 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             })
             .sum();
         assert!(
-            live_pages >= 6,
-            "DENOMINATOR: {live_pages} live page(s), so the derived view is too thin for the merge \
+            live_blocks >= 6,
+            "DENOMINATOR: {live_blocks} live page(s), so the derived view is too thin for the merge \
              below to be doing anything"
         );
 
@@ -778,7 +778,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         let map_walk_addresses = crate::snapshot_probe::counts().live_slab_scan_addresses;
         println!(
             "  reader collect_live_block_slab_ids visited {map_walk_addresses} model-map \
-             address(es) over {live_pages} live page(s)"
+             address(es) over {live_blocks} live page(s)"
         );
 
         // -----------------------------------------------------------------------------------------
@@ -1299,7 +1299,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         );
         let outcome =
             crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates);
-        let set_pages: usize = shard
+        let set_blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
@@ -1309,7 +1309,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         (
             outcome.released_buckets.len(),
             outcome.refusals.block_kind_not_addressable,
-            set_pages,
+            set_blocks,
             shard.bucket_index.released_buckets.contains(&set_bucket),
         )
     };
@@ -1413,7 +1413,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 /// DIVERGES, at map 3 against a served 1, because `fill_absent_elements` tests whether a page is
 /// live at the persisted element's ADDRESS and one index entry a page keeps that page alive through
 /// the removal of its element. The #2017 fix's premise was one page per element; the collapse
-/// removed it. `set_listing_page_reads` carries the same finding from the other side.
+/// removed it. `set_listing_block_reads` carries the same finding from the other side.
 ///
 /// So the unconditional merge is asserted where it bites -- on the arm that used to skip -- and the
 /// control's divergence is asserted as a divergence, rather than an equality being re-goldened into

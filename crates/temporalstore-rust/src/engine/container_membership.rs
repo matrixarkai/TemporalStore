@@ -12,7 +12,7 @@
 //! element -- which is exactly the over-complete state #2025 enumerated five readers for and fixed,
 //! arriving from the other side.
 //!
-//! What changed is that a removal is now a WRITTEN ITEM. `container_pages`' second shape carries a
+//! What changed is that a removal is now a WRITTEN ITEM. `container_blocks`' second shape carries a
 //! per-item removal flag, and the removal path appends a page stating it. The page set is therefore
 //! no longer a superset of the membership; it is a LOG of it, and this module is the fold over that
 //! log.
@@ -61,8 +61,8 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use super::container_pages::{
-    component_from_element_key, decode_container_page, ContainerBlockDecode, ContainerBlockShape,
+use super::container_blocks::{
+    component_from_element_key, decode_container_block, ContainerBlockDecode, ContainerBlockShape,
 };
 use crate::block_store::ElementEntry;
 
@@ -76,17 +76,17 @@ pub(super) struct DerivedMembership {
     /// distinguishing "the page names it gone" from "no page mentions it" needs both sides.
     pub(super) removed: BTreeSet<String>,
     /// Distinct page addresses walked.
-    pub(super) pages_read: usize,
+    pub(super) blocks_read: usize,
     /// Pages whose bytes could not be read at all.
     pub(super) read_failures: usize,
     /// Pages whose bytes were read and could not be walked as a frame.
     pub(super) undecodable: usize,
-    /// Pages that were not framed at all -- a bare value from before `container_pages`. The frame is
+    /// Pages that were not framed at all -- a bare value from before `container_blocks`. The frame is
     /// what names the element, so such a page contributes NOTHING here and is counted, never guessed
     /// at from the entry that pointed at it.
     pub(super) unframed: usize,
     /// Pages of the first shape, which cannot state a removal.
-    pub(super) live_only_pages: usize,
+    pub(super) live_only_blocks: usize,
     /// Items whose key its own page's spelling could not render back to a component.
     pub(super) unrenderable_items: usize,
 }
@@ -139,7 +139,7 @@ where
     F: FnMut(&ElementEntry) -> Option<Vec<u8>>,
 {
     let mut derived = DerivedMembership::default();
-    if super::container_pages::ElementKeySpelling::for_kind(kind).is_none() {
+    if super::container_blocks::ElementKeySpelling::for_kind(kind).is_none() {
         // Not a kind whose pages name elements, so there is no membership in them to derive. An
         // empty answer that `is_complete` calls complete, because nothing failed -- the caller asked
         // the wrong question and gets a truthful empty rather than a failure it would have to
@@ -166,15 +166,15 @@ where
             derived.read_failures += 1;
             continue;
         };
-        derived.pages_read += 1;
-        match decode_container_page(&bytes) {
+        derived.blocks_read += 1;
+        match decode_container_block(&bytes) {
             ContainerBlockDecode::Framed {
                 spelling,
                 shape,
                 items,
             } => {
                 if shape == ContainerBlockShape::LiveOnly {
-                    derived.live_only_pages += 1;
+                    derived.live_only_blocks += 1;
                 }
                 for item in items {
                     let Some(component) = component_from_element_key(spelling, &item.key) else {
@@ -230,7 +230,7 @@ where
 /// It is wrong because a fold does NOT see a container's whole page set. Two mechanisms in this tree
 /// leave pages behind, and either is enough:
 ///
-///   * `compact_container_pages_batched` seals a batch at `CONTAINER_BATCH_ELEMENT_CAP` elements or
+///   * `compact_container_blocks_batched` seals a batch at `CONTAINER_BATCH_ELEMENT_CAP` elements or
 ///     at `container_batch_target_bytes()`, so a container larger than one batch is rewritten into
 ///     SEVERAL pages by one round; and
 ///   * it skips any element whose address `CompactionRewriteStats::should_relocate` declines, so a
@@ -251,7 +251,7 @@ where
 ///
 /// # A NOTE ON WHAT THIS TREE'S FOLD CAN CURRENTLY SEE
 ///
-/// `compact_container_pages_batched` takes its elements from the RESIDENT maps (`shard.sets` and the
+/// `compact_container_blocks_batched` takes its elements from the RESIDENT maps (`shard.sets` and the
 /// other three), and a removed element is not in them. So the fold does not visit a tombstone at all
 /// today: it neither collects one nor risks dropping one, and a tombstone survives every round
 /// untouched. That is SAFE and it is not collection -- tombstones accumulate until something walks

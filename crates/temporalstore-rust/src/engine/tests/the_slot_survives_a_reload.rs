@@ -393,24 +393,24 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
         // reads the object lookup and this arm holds the bucket map mutably.
         let index = &mut shard.bucket_index;
-        let page_keys =
+        let block_keys =
             crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
         let bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &page_keys);
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &block_keys);
     }
     let after_plant = engine.object_index_divergence_report();
     println!("  after the planted rebuild: {after_plant:?}");
 
     assert_eq!(
-        before_rebuild.list_held_an_object_no_page_names + 1,
-        after_plant.list_held_an_object_no_page_names,
+        before_rebuild.list_held_an_object_no_block_names + 1,
+        after_plant.list_held_an_object_no_block_names,
         "the planted id was not counted: the counter read {} before the rebuild and {} after. A \
          counter that does not move on a disagreement cannot certify the absence of one",
-        before_rebuild.list_held_an_object_no_page_names,
-        after_plant.list_held_an_object_no_page_names
+        before_rebuild.list_held_an_object_no_block_names,
+        after_plant.list_held_an_object_no_block_names
     );
     let sample = after_plant
         .last_divergence
@@ -459,13 +459,13 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         // SPLIT BY NAMING THE FIELDS, the same way every production sweep does it: the rebuild
         // reads the object lookup and this arm holds the bucket map mutably.
         let index = &mut shard.bucket_index;
-        let page_keys =
+        let block_keys =
             crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
         let bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &page_keys);
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &block_keys);
     }
     let after_clean = engine.object_index_divergence_report();
     println!("  after a clean rebuild of the same bucket: {after_clean:?}");
@@ -474,14 +474,14 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         "the clean arm's rebuild did not run, so its zero is the absence and not an agreement"
     );
     assert_eq!(
-        before_clean.list_held_an_object_no_page_names,
-        after_clean.list_held_an_object_no_page_names,
+        before_clean.list_held_an_object_no_block_names,
+        after_clean.list_held_an_object_no_block_names,
         "a rebuild with nothing planted counted a divergence, so the counter moves on agreement too \
          and arm 1 proved nothing"
     );
     assert_eq!(
-        before_clean.pages_named_an_object_the_list_lacked,
-        after_clean.pages_named_an_object_the_list_lacked,
+        before_clean.blocks_named_an_object_the_list_lacked,
+        after_clean.blocks_named_an_object_the_list_lacked,
         "a rebuild with nothing planted found a page naming an object its list lacked"
     );
     println!(

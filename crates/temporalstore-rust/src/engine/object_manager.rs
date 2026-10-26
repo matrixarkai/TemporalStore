@@ -92,7 +92,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 (existing, None) => existing,
             };
         }
-        let identities = shard.bucket_index.page_identities();
+        let identities = shard.bucket_index.block_identities();
         for (handle, page) in bucket.block_index.iter() {
             // THE OBJECT COMES FROM BESIDE THE PAGE, AND A LIVE PAGE NOTHING BESIDE IT NAMES IS
             // NO LONGER SKIPPED.
@@ -224,7 +224,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             // AN OBJECT EVERY ONE OF WHOSE PAGES IS DELETED IS A DELETED OBJECT, and this is where
             // that is decided now rather than per page. `object.deleted |= page.deleted` used to say
             // it, and said it from ONE page -- correct while the only writer of that flag deleted a
-            // whole object's pages together (`packed_pages`), wrong the moment a single removed
+            // whole object's pages together (`packed_blocks`), wrong the moment a single removed
             // member carries it. This is the same claim quantified over the object instead of
             // existentially over its pages, so the whole-object case still reports deleted and one
             // removed member no longer does.

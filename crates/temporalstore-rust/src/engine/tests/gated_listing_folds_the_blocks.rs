@@ -236,7 +236,7 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
 /// a set **always** frames, and `unframed_container_write_count` is floored at zero over all four
 /// kinds elsewhere.
 ///
-/// It can meet one only in a store written by a binary from before `container_pages` existed and
+/// It can meet one only in a store written by a binary from before `container_blocks` existed and
 /// then read by a gated one. That is a CROSS-VERSION read, which is exactly the boundary step
 /// nine's reload corpus exists to cover, and it is the reason the fallback is not dead code.
 #[test]
@@ -252,11 +252,11 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     let component = hex::encode(&member);
 
     // A real framed page for that member, through the codec rather than hand-assembled.
-    let framed = crate::engine::container_pages::encode_container_page(
-        crate::engine::container_pages::ElementKeySpelling::Hex,
+    let framed = crate::engine::container_blocks::encode_container_block(
+        crate::engine::container_blocks::ElementKeySpelling::Hex,
         &[(member.as_slice(), member.as_slice())],
     );
-    // A bare value, which is what a page written before `container_pages` looks like.
+    // A bare value, which is what a page written before `container_blocks` looks like.
     let bare = b"a bare value from before the frame existed".to_vec();
 
     let framed_at = at(1, 0, framed.len() as u32);

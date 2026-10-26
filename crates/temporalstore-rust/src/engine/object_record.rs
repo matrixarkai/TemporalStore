@@ -307,7 +307,7 @@ impl ObjectRecord {
     }
 
     /// Set the address and its tag bit TOGETHER, so the two cannot disagree.
-    pub(super) fn set_page_address(&mut self, address: BlockAddress) {
+    pub(super) fn set_block_address(&mut self, address: BlockAddress) {
         match address {
             BlockAddress::One(word) => {
                 self.address = word;
@@ -326,7 +326,7 @@ impl ObjectRecord {
         self.page_size
     }
 
-    pub(super) fn set_page_size(&mut self, value: u32) {
+    pub(super) fn set_block_size(&mut self, value: u32) {
         self.page_size = value;
     }
 
@@ -430,7 +430,7 @@ impl ObjectRecord {
     /// records would fail for the wrong reason, and a test that asserted "nothing changed" would
     /// be wrong about the two bits that are supposed to change.
     pub(super) fn set_address(&mut self, address: &ElementEntry) {
-        self.set_page_address(BlockAddress::One(address.address_word()));
+        self.set_block_address(BlockAddress::One(address.address_word()));
         // NOT SATURATED. `ElementEntry::length` is a `u32` field and its accessor widens, so a
         // value that does not fit here cannot exist -- and if one ever does, the honest answer is
         // to say so rather than to record a shorter page than the one that was written. A
@@ -456,7 +456,7 @@ impl ObjectRecord {
         // Not made fatal and not made to skip: the destination for a multi-page object does not
         // exist yet, so a fatal refusal would make a recovery path unopenable and a skip would
         // drop the page's address -- the same loss by another mechanism. See
-        // `dropped_nonzero_page_ordinals` for the whole argument, and `try_set_address` for the
+        // `dropped_nonzero_block_ordinals` for the whole argument, and `try_set_address` for the
         // refusing door the callers move to once such an object has somewhere to go.
         if address.block_id().is_some_and(|block_id| block_id != 0) {
             DROPPED_NONZERO_BLOCK_ORDINALS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -516,7 +516,7 @@ impl ObjectRecord {
             flags: RecordFlags::empty(),
             model_id,
         };
-        record.set_page_address(BlockAddress::One(address.address_word()));
+        record.set_block_address(BlockAddress::One(address.address_word()));
         // `block_id()` is `None` exactly while the block lives in the log, which is the one
         // derivation this type keeps rather than restates: see `ElementEntry::log_resident`. So
         // this ONE BIT carries the ordinal's presence, and the inline arm's ordinal value is zero.
@@ -562,7 +562,7 @@ impl ObjectRecord {
             flags: RecordFlags::empty(),
             model_id,
         };
-        record.set_page_address(BlockAddress::Many(handle));
+        record.set_block_address(BlockAddress::Many(handle));
         record.flags.set(RecordFlags::BLOCK_IN_LOG, block_id.is_none());
         record.flags.set(RecordFlags::BLOCK_GENERATION, address.generation().is_some());
         Ok((record, layout))
@@ -1452,12 +1452,12 @@ static DROPPED_NONZERO_BLOCK_ORDINALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// How many nonzero page ordinals the write-back door has dropped.
-pub(crate) fn dropped_nonzero_page_ordinals() -> u64 {
+pub(crate) fn dropped_nonzero_block_ordinals() -> u64 {
     DROPPED_NONZERO_BLOCK_ORDINALS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Forget the count, so a test measures its own writes rather than the suite before it.
-pub(crate) fn reset_dropped_nonzero_page_ordinals() {
+pub(crate) fn reset_dropped_nonzero_block_ordinals() {
     DROPPED_NONZERO_BLOCK_ORDINALS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 

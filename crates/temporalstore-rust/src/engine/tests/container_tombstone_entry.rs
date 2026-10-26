@@ -90,7 +90,7 @@
 //!                                                                    `context_*`, the timestamped kinds, which have no
 //!                                                                    tombstones. Two high-water derivations over DISJOINT kind
 //!                                                                    sets, so filtering one was the right half to filter.
-//! 19  state.rs:3638 container_page_ordinal                  WRONG, FIXED HERE. No filter, so a tombstone stopped `max` from
+//! 19  state.rs:3638 container_block_ordinal                  WRONG, FIXED HERE. No filter, so a tombstone stopped `max` from
 //!                                                                    falling: the ordinal would climb once per element ever
 //!                                                                    written and a churning container would walk to
 //!                                                                    MAX_ADDRESSABLE_BLOCK_ID and fall off the ceiling
@@ -295,7 +295,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     // fall on a removal, and this fixture's three members are three pages before and after.
     //
     // THE ASYMMETRY IS KNOWN AND RECORDED, not discovered here:
-    // `index_entry_names_a_page`'s doc calls it "a defect of footprint rather than of answers" and
+    // `index_entry_names_a_block`'s doc calls it "a defect of footprint rather than of answers" and
     // names the fix -- ask the resident map whether any sibling is still on the vacated page,
     // which `RecordedMap::block_an_element_vacates` is -- and why a removal cannot reach it, since
     // it enters the index through a door that takes no element type. What this arm still holds is

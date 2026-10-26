@@ -29,7 +29,7 @@
 //!
 //! AND THE THIRD FIELD DID NOT GO. `address` is still written twice and will stay: its five VALUES
 //! are in the key, the two PRESENCE bits beside them are not, and
-//! `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
+//! `the_key_a_block_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
 //! builds the colliding states and asserts the keys identical. Its container price is still
 //! measured here, because pricing a block is what makes it a decision.
 //!
@@ -547,7 +547,7 @@ const BLOCK_KEY_TERMS: &[&str] = &[
 /// first two rows; the entry does not write them any more. What remains restated is the ADDRESS,
 /// and it is restated for good: its five values are in the key, and the two PRESENCE bits beside
 /// them are not, so it cannot be reconstructed. See
-/// `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`.
+/// `the_key_a_block_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`.
 const ENTRY_RESTATED_TERMS: &[&str] = &[
     "entry/address/field_name",
     "entry/address/open_brace",
@@ -709,7 +709,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     );
     let mut handles_by_written_key = BTreeMap::new();
     for node in shard.bucket_index.bucket_map.values() {
-        let identities = crate::engine::state::page_identities_in(node, &identity_keys);
+        let identities = crate::engine::state::block_identities_in(node, &identity_keys);
         for (handle, page) in node.block_index.iter() {
             let object_key = identities.get(handle).unwrap_or_else(|| {
                 panic!(
@@ -964,7 +964,7 @@ fn walk(reading: &Reading) -> Walked {
     let mut slots_reconstructed = 0usize;
     let mut nil_object_id_slots = 0usize;
     let mut buckets_whose_object_index_is_derivable = 0usize;
-    let mut pages_seen = 0usize;
+    let mut blocks_seen = 0usize;
 
     for (bucket_key, node_value) in bucket_map.iter() {
         tally.add("bucket/map_key", klen(bucket_key), 0);
@@ -1028,23 +1028,23 @@ fn walk(reading: &Reading) -> Walked {
         );
         tally.add("page_index/open_brace", 1, 0);
 
-        for (page_key, entry_value) in pages.iter() {
-            pages_seen += 1;
+        for (block_key, entry_value) in pages.iter() {
+            blocks_seen += 1;
             // QUOTES AND NOTHING ELSE. `klen` is the JSON rendering, so this difference is the two
             // quotes plus any escaping; the fixture's keys hold none, and the assertion is what
             // keeps the label honest rather than letting an escape hide inside an envelope term.
             assert_eq!(
-                klen(page_key) - page_key.len(),
+                klen(block_key) - block_key.len(),
                 2,
-                "[CLAUSE map-key-quotes-are-two] the written page key `{page_key}` renders {} B \
+                "[CLAUSE map-key-quotes-are-two] the written page key `{block_key}` renders {} B \
                  wider than its characters, so it carries escaping and this term is not quotes",
-                klen(page_key) - page_key.len()
+                klen(block_key) - block_key.len()
             );
-            tally.add("page/map_key_quotes", klen(page_key) - page_key.len(), 0);
+            tally.add("page/map_key_quotes", klen(block_key) - block_key.len(), 0);
             tally.add("page/map_key_colon", 1, 0);
             tally.add("page/map_entry_tail", 1, 0);
 
-            let slots = split_written_key(page_key);
+            let slots = split_written_key(block_key);
             tally.add("page/map_key/kind", slots.kind.len(), 0);
             tally.add("page/map_key/object_key", slots.object_key.len(), 0);
             tally.add("page/map_key/component_slot", slots.component.len(), 0);
@@ -1140,7 +1140,7 @@ fn walk(reading: &Reading) -> Walked {
                     decoded.block_id().unwrap_or_default().to_string().as_str(),
                     decoded.generation().unwrap_or_default().to_string().as_str(),
                 ),
-                "[CLAUSE address-restates-the-key] the five decimals in the page key {page_key:?} \
+                "[CLAUSE address-restates-the-key] the five decimals in the page key {block_key:?} \
                  are not what the entry's own written address spells, so the address is not a \
                  restatement of them and classing it redundancy would be wrong"
             );
@@ -1173,8 +1173,8 @@ fn walk(reading: &Reading) -> Walked {
     }
 
     assert_eq!(
-        pages_seen, reading.pages,
-        "[CLAUSE part-sum] the walk saw {pages_seen} written page(s) against {} resident",
+        blocks_seen, reading.pages,
+        "[CLAUSE part-sum] the walk saw {blocks_seen} written page(s) against {} resident",
         reading.pages
     );
 
@@ -1314,7 +1314,7 @@ enum Candidate {
     /// `block_id().unwrap_or_default()`, and `ElementEntry::block_id()` is `None` EXACTLY while a
     /// block is log-resident -- so a staged page and the first page of an object in a slab render
     /// ONE key and differ in `log_backed()`, which has production readers.
-    /// `the_key_a_page_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
+    /// `the_key_a_block_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
     /// builds both and asserts the keys identical. Trimming the address slot-wise instead is
     /// blocked independently: `BlockAddressWire` is shared with the index log, which packs it
     /// POSITIONALLY.
@@ -1363,28 +1363,28 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                 .expect("an object")
                 .clone();
             let mut replacement = serde_json::Map::with_capacity(page_index.len());
-            for (page_key, entry_value) in page_index.iter() {
+            for (block_key, entry_value) in page_index.iter() {
                 let mut entry = entry_value.clone();
                 let fields = entry.as_object_mut().expect("a page entry is an object");
                 let new_key = match candidate {
                     Candidate::Control
                     | Candidate::EntryDropsAddress
-                    | Candidate::AddressDropsTheAlwaysNilSlot => page_key.clone(),
+                    | Candidate::AddressDropsTheAlwaysNilSlot => block_key.clone(),
                     Candidate::BlockKeyBecomesTheHandle => reading
                         .handles_by_written_key
-                        .get(page_key)
+                        .get(block_key)
                         .unwrap_or_else(|| {
                             panic!(
-                                "[CLAUSE join-total] the written key `{page_key}` has no handle \
+                                "[CLAUSE join-total] the written key `{block_key}` has no handle \
                                  beside it, so this counterfactual cannot be priced"
                             )
                         })
                         .to_string(),
                     Candidate::BlockKeyDropsTheEmptySlot => {
-                        let slots = split_written_key(page_key);
+                        let slots = split_written_key(block_key);
                         assert!(
                             slots.component.is_empty(),
-                            "[CLAUSE empty-slot-is-empty] the component slot of `{page_key}` holds \
+                            "[CLAUSE empty-slot-is-empty] the component slot of `{block_key}` holds \
                              `{}`, so dropping it would drop a term rather than a hole",
                             slots.component
                         );
@@ -2070,7 +2070,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
     // landed: a counterfactual kept against a shape that no longer exists is a measurement nothing
     // can read. What the landed figure is instead is measured on the production encoder, before
     // and after, by
-    // `the_key_a_page_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container`.
+    // `the_key_a_block_is_filed_under_inverts_exactly::what_the_entry_restating_its_key_costs_the_shipped_container`.
     //
     // `EntryDropsAddress` STAYS, because it has NOT landed and is blocked rather than deferred --
     // see the variant's own note. Pricing a block is what makes it a decision.

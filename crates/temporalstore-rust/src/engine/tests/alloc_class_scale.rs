@@ -17,7 +17,7 @@
 //!   slab_append                  6.00          1,192           1.000
 //!   bucket_index                 5.63            676           1.000
 //!   staged_outcome               2.06            252           1.000
-//!   page_bytes                   2.00          2,115           1.000
+//!   block_bytes                   2.00          2,115           1.000
 //!   dirty_objects                1.31            121           0.999
 //!   index_log_delta              1.26            372           1.013
 //!   carried_page                 1.06          1,065           1.000
@@ -385,7 +385,7 @@ fn the_class_probe_recovers_exactly_the_allocations_planted_in_a_class() {
         assert_eq!(
             0,
             counts.classes.row(*class).allocs,
-            "{} moved during a span that only entered page_bytes",
+            "{} moved during a span that only entered block_bytes",
             class.label()
         );
     }

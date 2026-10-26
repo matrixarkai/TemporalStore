@@ -127,7 +127,7 @@ fn tear_the_blocks(dir: &std::path::Path) -> usize {
 
 /// Live, undeleted pages in the settled index. The DENOMINATOR for every arm: a reconcile over an
 /// empty index rebuilds nothing and would make both a clean control and a fault arm look right.
-fn live_pages(shard: &ShardState) -> usize {
+fn live_blocks(shard: &ShardState) -> usize {
     shard
         .bucket_index
         .bucket_map
@@ -154,10 +154,10 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     load_on(&engine);
     seed_series(&engine, "clean");
 
-    crate::engine::storage_bucket_internals::reset_view_rebuild_page_failure_counts();
+    crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
-    let pages = live_pages(shard);
+    let pages = live_blocks(shard);
     assert!(
         pages > 0,
         "DENOMINATOR: {pages} live pages, so this control is a zero because nothing was read"
@@ -174,7 +174,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     );
 
     let (read_failures, decode_failures) =
-        crate::engine::storage_bucket_internals::view_rebuild_page_failure_counts();
+        crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
     let rebuilt = rebuilt_points(shard, "clean");
     println!("=== a clean view rebuild ===");
     println!(
@@ -206,12 +206,12 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
 
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
-    let pages = live_pages(shard);
+    let pages = live_blocks(shard);
     assert!(pages > 0, "DENOMINATOR: {pages} live pages");
 
     // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
     // is the SAME fixture rather than a second one that might differ for another reason.
-    crate::engine::storage_bucket_internals::reset_view_rebuild_page_failure_counts();
+    crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
     shard.features_mut().clear();
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
@@ -219,7 +219,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
         None,
     );
     let (clean_failures, _) =
-        crate::engine::storage_bucket_internals::view_rebuild_page_failure_counts();
+        crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
     let clean_points = rebuilt_points(shard, "torn");
 
     // ARM B -- tear the slab files and rebuild from the same index.
@@ -228,7 +228,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
         torn > 0,
         "DENOMINATOR: {torn} page files torn, so arm B read a healthy store and is arm A again"
     );
-    crate::engine::storage_bucket_internals::reset_view_rebuild_page_failure_counts();
+    crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
     shard.features_mut().clear();
     crate::engine::storage_bucket_internals::reconcile_secondary_views_from_bucket_index(
         &engine.block_store,
@@ -236,7 +236,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
         None,
     );
     let (torn_failures, torn_decode_failures) =
-        crate::engine::storage_bucket_internals::view_rebuild_page_failure_counts();
+        crate::engine::storage_bucket_internals::view_rebuild_block_failure_counts();
     let torn_points = rebuilt_points(shard, "torn");
     let key_present = shard.features().contains_key("torn");
 

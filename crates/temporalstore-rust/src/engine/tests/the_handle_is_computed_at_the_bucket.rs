@@ -9,7 +9,7 @@
 //! the same position. That pinned every term the handle hashes to the entry -- a term moved off it
 //! into a per-bucket structure would have become unreachable from the one line that needs it.
 //!
-//! It is computed at [`BucketNode::insert_page`] now, where the bucket's own structures are in
+//! It is computed at [`BucketNode::insert_block`] now, where the bucket's own structures are in
 //! scope, and the written key is composed through `BlockIndexAt`, which holds the whole node.
 //!
 //! # WHY VALUE EQUALITY IS THE WHOLE SAFETY ARGUMENT
@@ -50,7 +50,7 @@ fn page(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u
 /// The entries driven, EACH WITH ITS OBJECT KEY BESIDE IT RATHER THAN ON IT.
 ///
 /// The pair is the shape every production site now uses: `block_index_handle` and
-/// `BucketNode::insert_page` both take the identity as a PARAMETER, because the entry is losing
+/// `BucketNode::insert_block` both take the identity as a PARAMETER, because the entry is losing
 /// its own copy. A fixture handing back bare entries would have to read the key off the page to
 /// call either, which is the one thing this change is removing -- so it hands back what the
 /// callers need.
@@ -80,7 +80,7 @@ fn the_hoisted_handle_is_byte_identical_to_the_one_the_map_used_to_compute() {
 
     for (at, (object_key, entry)) in entries.iter().enumerate() {
         let expected = block_index_handle(object_key, entry);
-        let assigned = bucket.insert_page(object_key, entry.clone(), &mut live);
+        let assigned = bucket.insert_block(object_key, entry.clone(), &mut live);
         assert_eq!(
             expected, assigned,
             "entry {at}: the bucket-level door assigned {assigned} where the handle composed from \
@@ -171,8 +171,8 @@ fn the_released_door_assigns_the_same_handle_as_the_charged_one() {
 
     let mut compared = 0usize;
     for (object_key, entry) in &entries {
-        let a = charged.insert_page(object_key, entry.clone(), &mut live);
-        let b = released.insert_released_page(object_key, entry.clone());
+        let a = charged.insert_block(object_key, entry.clone(), &mut live);
+        let b = released.insert_released_block(object_key, entry.clone());
         assert_eq!(
             a, b,
             "the charged door assigned {a} and the released door {b} for one entry; they must \
@@ -202,7 +202,7 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     let mut bucket = BucketNode::default();
     let mut live = BlockSlabLiveIndex::default();
     for (object_key, entry) in fixture() {
-        bucket.insert_page(&object_key, entry, &mut live);
+        bucket.insert_block(&object_key, entry, &mut live);
     }
     // THE THREE OBJECTS `fixture()` WRITES. Two of its four pages are components of the same
     // object, which is why this is a list of three rather than four.

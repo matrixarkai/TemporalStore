@@ -32,7 +32,7 @@
 //! **THE REASON `max` FALLS HAS MOVED TWICE, AND THE CONCLUSION HAS NOT.** It used to fall because
 //! the entry was GONE -- `mark_bucket_index_block_deleted_with` was named for a mark it did not
 //! make, its body a `retain` returning false. A per-element removal then began KEEPING an entry,
-//! and this paragraph said `max` fell because "`container_page_ordinal` FILTERS `deleted`". That
+//! and this paragraph said `max` fell because "`container_block_ordinal` FILTERS `deleted`". That
 //! walk over entries is gone: the allocator asks the RESIDENT MAP, which is keyed by element and
 //! holds exactly the object's live elements, so its high-water mark is over live elements by
 //! construction and needs no filter. A removal drops its element from the map and `max` falls with
@@ -139,7 +139,7 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 /// one of them counted zero stale pages and PASSED for that reason. Dropping the slot makes every
 /// such filter a compile error instead. Element identity is `ordinal_for_component` below, which
 /// asks the authority for it.
-fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
+fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
@@ -198,7 +198,7 @@ fn tombstone_blocks_of(
 
 /// The ordinals this object's LIVE page entries carry, ascending, with absence spelled as `None`.
 fn ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
-    let mut ordinals = pages_of(engine, kind, key);
+    let mut ordinals = blocks_of(engine, kind, key);
     ordinals.sort();
     ordinals
 }
@@ -207,7 +207,7 @@ fn ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64
 ///
 /// NOT THE SAME QUANTITY AS [`ordinals_of`], AND THE DIFFERENCE IS THE POINT. A removal keeps the
 /// live entry over the page its element vacated, so the live INDEX still carries that element's
-/// ordinal while the element itself is gone. `container_page_ordinal` reads the RESIDENT MAP, so
+/// ordinal while the element itself is gone. `container_block_ordinal` reads the RESIDENT MAP, so
 /// this is the set a position claim is actually about, and the two are asserted separately wherever
 /// they part company.
 fn resident_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
@@ -248,10 +248,10 @@ fn resident_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<O
 /// The ordinal the element with exactly this component holds, if the object holds that element.
 ///
 /// RE-ATTRIBUTED TO THE AUTHORITY, AND IT IS THE SAME DOOR THE ALLOCATOR USES. This searched
-/// [`pages_of`] for an entry whose component matched, which answered `None` for every element once
+/// [`blocks_of`] for an entry whose component matched, which answered `None` for every element once
 /// an entry stopped naming one -- so three arms in this module read "no such element" for elements
 /// that were plainly there. `state::resident_component_address` is what
-/// `container_page_ordinal`'s overwrite arm reads, so an element's position and the number the
+/// `container_block_ordinal`'s overwrite arm reads, so an element's position and the number the
 /// allocator would hand it back are one value read one way, and no component spelling is restated
 /// here to drift from the engine's.
 ///
@@ -467,13 +467,13 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
             },
         );
     }
-    let set_pages = pages_of(&engine, "set", "cpo-ow-set");
+    let set_blocks = blocks_of(&engine, "set", "cpo-ow-set");
     assert_eq!(
-        set_pages.len(),
+        set_blocks.len(),
         1,
         "a set of one member rewritten {REWRITES} times holds {} pages, not 1 -- this test is not \
          measuring an overwrite",
-        set_pages.len()
+        set_blocks.len()
     );
     let set_ordinal = ordinal_for_component(&engine, "set", "cpo-ow-set", &component)
         .expect("the member's page is present");
@@ -488,12 +488,12 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
             },
         );
     }
-    let hash_pages = pages_of(&engine, "hash", "cpo-ow-hash");
+    let hash_blocks = blocks_of(&engine, "hash", "cpo-ow-hash");
     assert_eq!(
-        hash_pages.len(),
+        hash_blocks.len(),
         1,
         "a hash of one field rewritten {REWRITES} times holds {} pages, not 1",
-        hash_pages.len()
+        hash_blocks.len()
     );
     let hash_ordinal = ordinal_for_component(&engine, "hash", "cpo-ow-hash", "the-one-field")
         .expect("the field's page is present");
@@ -531,7 +531,7 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
 /// `mark_bucket_index_block_deleted_with` was a `retain` returning false -- and that was why `max`
 /// fell. A removal now KEEPS an entry, pointing at the page that records it and carrying `deleted`,
 /// so that a membership derived from the pages does not resurrect the element. The `max` still falls
-/// for a different reason: `container_page_ordinal` filters `deleted`. So the CLAIM of this test is
+/// for a different reason: `container_block_ordinal` filters `deleted`. So the CLAIM of this test is
 /// unchanged and its MECHANISM moved, which is exactly the case worth spelling out -- a reader who
 /// assumed the old mechanism would expect this test to be red.
 ///
@@ -576,7 +576,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     );
     // THE POSITIONS, READ WHERE POSITIONS LIVE. This read the LIVE INDEX ENTRIES and expected them
     // to fall to [0, 1]; they stay at [0, 1, 2], because a removal keeps the live entry over the
-    // page its element vacated. The message said the fall happens "because `container_page_ordinal`
+    // page its element vacated. The message said the fall happens "because `container_block_ordinal`
     // filters `deleted`" -- that walk is gone. The allocator reads the RESIDENT MAP, which holds
     // exactly the object's live elements, so that is the set a position claim is about and the one
     // that falls. The retained index entry is asserted below, as a cost rather than a position.
@@ -647,8 +647,8 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     // THE REMOVED MEMBER IS GONE FROM THE AUTHORITY, which is what makes the reuse one position
     // refilled rather than two live elements on one number.
     //
-    // THIS WAS A VACUOUS ASSERTION AND IT PASSED. It counted entries in [`pages_of`] whose
-    // component ended in `6d32` -- the hex of `m2` -- and [`pages_of`]'s component column had
+    // THIS WAS A VACUOUS ASSERTION AND IT PASSED. It counted entries in [`blocks_of`] whose
+    // component ended in `6d32` -- the hex of `m2` -- and [`blocks_of`]'s component column had
     // become a hardcoded `None`, so the filter matched nothing and the count was 0 for a reason
     // that had nothing to do with m2. Asked of `shard.zsets` it is a real question.
     let m2_component = crate::engine::execute_on_shard::zset_component(b"m2");
@@ -681,7 +681,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
         .into_iter()
         .filter(|ordinal| *ordinal == Some(2))
         .count();
-    let at_two_live = pages_of(&engine, "zset", key)
+    let at_two_live = blocks_of(&engine, "zset", key)
         .into_iter()
         .filter(|ordinal| *ordinal == Some(2))
         .count();
@@ -772,7 +772,7 @@ fn deletion_still_finds_its_element_by_component() {
             },
         );
     }
-    let before = pages_of(&engine, "set", key);
+    let before = blocks_of(&engine, "set", key);
     assert_eq!(before.len(), 4, "the seed wrote {} pages, not 4", before.len());
 
     let doomed = &members[2];
@@ -790,7 +790,7 @@ fn deletion_still_finds_its_element_by_component() {
         },
     );
 
-    let after = pages_of(&engine, "set", key);
+    let after = blocks_of(&engine, "set", key);
     let resident_after = resident_ordinals_of(&engine, "set", key);
     println!(
         "\n=== deletion === {} live elements before, {} after; {} live index entries after; the \
@@ -810,7 +810,7 @@ fn deletion_still_finds_its_element_by_component() {
     // "a removal now retains a tombstone entry, so counting every entry would report 4 here and
     // that would be the retention rather than a mismatched delete". That accounted for the
     // TOMBSTONE and not for the RETAINED LIVE ENTRY, which is a second entry and is not deleted,
-    // so the live count is four and `pages_of`'s `deleted` filter cannot bring it to three.
+    // so the live count is four and `blocks_of`'s `deleted` filter cannot bring it to three.
     //
     // Both quantities are asserted, because they answer different questions: three live ELEMENTS
     // is the delete finding its row, and four live INDEX ENTRIES is the retention it leaves behind.
@@ -917,7 +917,7 @@ fn hash_len_still_answers_the_entry_count() {
         crate::types::CommandResponse::Integer { value } => value,
         other => panic!("HashLen answered {other:?}"),
     };
-    let pages = pages_of(&engine, "hash", key).len() as i64;
+    let pages = blocks_of(&engine, "hash", key).len() as i64;
     println!("\n=== HLEN === answered {answered}, pages {pages}, fields written {FIELDS}");
     assert_eq!(
         answered, FIELDS,
@@ -1054,7 +1054,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     let key = "cpo-ceiling";
 
     // BUILT ON THE RESIDENT MAP AND NOT ON A HAND-MADE INDEX, which is the restatement this arm
-    // needed rather than a re-goldening. `container_page_ordinal` reads the map that is keyed by
+    // needed rather than a re-goldening. `container_block_ordinal` reads the map that is keyed by
     // the element now: a hand-built `CoreIndex` is no longer an input it consults at all, so the
     // old fixture would have left this test asserting the empty-object answer twice.
     let mut shard = ShardState::default();
@@ -1076,7 +1076,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     // A NEW member of the same object: one past the ceiling.
     let fresh_component = hex::encode(b"a-brand-new-member");
     let assigned =
-        crate::engine::state::container_page_ordinal(&shard, kind, key, &fresh_component);
+        crate::engine::state::container_block_ordinal(&shard, kind, key, &fresh_component);
     println!(
         "\n=== ceiling === a member at {MAX_ADDRESSABLE_BLOCK_ID} is held; the next new member is \
          assigned {assigned} (saturating would say {MAX_ADDRESSABLE_BLOCK_ID})"
@@ -1095,7 +1095,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
 
     // AND THE EXISTING MEMBER STILL ANSWERS ITS OWN ORDINAL, at the ceiling, unharmed.
     let held =
-        crate::engine::state::container_page_ordinal(&shard, kind, key, &resident_component);
+        crate::engine::state::container_block_ordinal(&shard, kind, key, &resident_component);
     assert_eq!(
         u64::from(held),
         MAX_ADDRESSABLE_BLOCK_ID,
@@ -1108,7 +1108,7 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     // The spelling table answers `None` for a name it cannot read rather than defaulting to the
     // empty member -- which is a real member whose ordinal it would otherwise have handed back.
     // Driven here because this is the one arm with a hand-made fixture to drive it on.
-    let unreadable = crate::engine::state::container_page_ordinal(&shard, kind, key, "zz-not-hex");
+    let unreadable = crate::engine::state::container_block_ordinal(&shard, kind, key, "zz-not-hex");
     assert_eq!(
         0, unreadable,
         "a component that is not a hex member resolved to ordinal {unreadable}; an unreadable name \

@@ -37,7 +37,7 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 
 /// THE OBJECT OF EVERY PAGE IN ONE INDEX, KEYED BY THE POSITION THE PAGE IS FILED AT.
 ///
-/// # WHY THIS AND NOT ONLY [`pages_with_identity`]
+/// # WHY THIS AND NOT ONLY [`blocks_with_identity`]
 ///
 /// Half the walks that have to be converted cannot give up their own nesting. They need the
 /// BUCKET as well as the page -- to read a tombstone row out of it, to count its object index, to
@@ -53,10 +53,10 @@ pub(super) struct BlockObjects {
 }
 
 impl BlockObjects {
-    /// Taken in ONE pass over the index, from the same two sources [`pages_with_identity`] reads.
+    /// Taken in ONE pass over the index, from the same two sources [`blocks_with_identity`] reads.
     pub(super) fn of(index: &crate::engine::state::CoreIndex) -> Self {
         Self {
-            by_position: pages_with_identity(index)
+            by_position: blocks_with_identity(index)
                 .into_iter()
                 .map(|(routing_bucket, handle, object_key, _page)| {
                     ((routing_bucket, handle), object_key)
@@ -67,7 +67,7 @@ impl BlockObjects {
 
     /// The object the page at this position belongs to.
     ///
-    /// A PANIC AND NOT AN `Option`, for [`pages_with_identity`]'s reason: a page that nothing
+    /// A PANIC AND NOT AN `Option`, for [`blocks_with_identity`]'s reason: a page that nothing
     /// beside it names is a state the producer refuses, and a caller handed `None` would reach
     /// for a skip. Every caller here is walking the same index this was taken from, so the only
     /// way to miss is to ask at a position that does not exist.
@@ -106,7 +106,7 @@ impl BlockObjects {
 ///
 /// THE SECOND IS NOT A DEFECT, AND `identity_of`'s OWN DOC SAYS SO: a deleted page whose removal
 /// named no element "is the one page in this store whose object nothing beside it states".
-/// Production's `page_identities_in` skips it through a `filter_map`, with the note that in every
+/// Production's `block_identities_in` skips it through a `filter_map`, with the note that in every
 /// caller it means "this page is not the one I am matching".
 ///
 /// `hash_read_union_divergence::an_index_entry_marked_deleted_loses_no_field_and_is_not_counted`
@@ -133,7 +133,7 @@ impl BlockObjects {
 /// now sits in -- so this would panic on the very state that test is driving.
 /// [`BlockKeysByPosition::identity_anywhere`] is the door for that, and
 /// `bucket_fill`'s mis-filing walk uses it directly and says so.
-pub(super) fn pages_with_identity(
+pub(super) fn blocks_with_identity(
     index: &crate::engine::state::CoreIndex,
 ) -> Vec<(u32, u64, std::sync::Arc<str>, &crate::engine::state::BlockIndex)> {
     let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
@@ -275,13 +275,13 @@ mod cache_invalidation_cost;
 mod cache_read_cost;
 mod warm_read_decomposition;
 mod wal_reclaim_frame_boundary;
-mod pages_per_bucket;
+mod blocks_per_bucket;
 mod bucket_fill;
 mod routing_range_default;
 mod context_node_survives_reload;
 mod durable_outranks_derived;
 mod per_item_byte_budget;
-mod flat_page_list;
+mod flat_block_list;
 mod range_free_bucket_id;
 mod container_member_shadow;
 mod element_ordinal_reuse;
@@ -328,8 +328,8 @@ fn bucket_take_arithmetic_with_explicit_clocks() {
     assert!(!allowed);
     assert_eq!(u64::MAX, retry);
 }
-mod page_entry_names;
-mod page_entry_handles;
+mod block_entry_names;
+mod block_entry_handles;
 
 mod bucket_sequence_budget;
 mod bucket_node_arms;
@@ -339,26 +339,26 @@ mod inline_arm_trade;
 mod layout_arm_selection;
 mod entry_object_identity;
 mod bucket_tombstone_budget;
-mod entry_count_versus_page_count;
-mod page_entry_name_pointer;
+mod entry_count_versus_block_count;
+mod block_entry_name_pointer;
 mod bucket_mark_in_place_budget;
 mod bucket_dirty_share_under_dumps;
 mod model_map_container_cost;
-mod container_page_ordinal;
-mod page_entry_element_naming;
+mod container_block_ordinal;
+mod block_entry_element_naming;
 mod index_resident_truth;
-mod carried_page_identity;
+mod carried_block_identity;
 mod campaign_end_to_end;
 mod length_answer_and_listing_agree;
-mod set_listing_page_reads;
+mod set_listing_block_reads;
 mod object_is_a_key_not_an_element;
-mod container_page_element_key;
+mod container_block_element_key;
 mod the_entry_cannot_name_its_object_by_slot;
 mod the_entry_cannot_point_at_the_object_list;
 mod resident_map_readers;
-mod container_pages_are_batched;
-mod view_rebuild_page_read_failures;
-mod folded_page_membership;
+mod container_blocks_are_batched;
+mod view_rebuild_block_read_failures;
+mod folded_block_membership;
 mod container_tombstone_collection;
 mod container_tombstone_entry;
 mod tombstone_reload_path;
@@ -403,17 +403,17 @@ mod hash_read_union_divergence;
 // the arithmetic it fed does not, because the column priced the chain `ObjectBlockRefs ->
 // ComponentList -> ComponentBlocks -> BlockRefs` per object and three of those four are deleted.
 // The 40 is not lost with the file: it is a `const _` beside `BlockIndex` in `state.rs` and is
-// re-asserted in `page_entry_handles`, `pages_per_bucket`, `per_item_byte_budget`,
-// `page_entry_element_naming` and `the_entry_cannot_name_its_object_by_slot`.
+// re-asserted in `block_entry_handles`, `blocks_per_bucket`, `per_item_byte_budget`,
+// `block_entry_element_naming` and `the_entry_cannot_name_its_object_by_slot`.
 mod set_listing_source;
-mod projection_names_a_page;
+mod projection_names_a_block;
 mod authority_check_cost;
 mod sweep_keeps_the_collapse;
 mod ordinal_under_the_gate;
 mod gated_removal;
 mod replay_under_the_gate;
 mod removal_the_index_can_find;
-mod gated_listing_folds_the_pages;
+mod gated_listing_folds_the_blocks;
 mod the_slot_survives_a_reload;
 mod the_handle_is_computed_at_the_bucket;
 mod gated_corpus_across_a_store_boundary;
@@ -426,7 +426,7 @@ mod where_the_characters_are_durable_per_kind;
 mod what_an_assigned_id_costs_the_object_lookup;
 mod what_the_core_index_puts_on_the_wire;
 mod the_write_path_leaves_the_bucket_ttl_alone;
-mod marking_an_object_dirty_reaches_its_pages;
+mod marking_an_object_dirty_reaches_its_blocks;
 mod one_key_one_allocation;
 mod string_keyed_holders;
 mod one_record_per_object;
@@ -441,7 +441,7 @@ mod the_fold_reaching_loaders_stay_gated;
 mod no_signature_names_the_series;
 mod a_field_that_stops_being_written;
 mod one_map_for_both_distinct_shapes;
-mod the_write_back_door_and_the_page_ordinal;
+mod the_write_back_door_and_the_block_ordinal;
 mod what_a_series_representation_costs_per_key;
 mod the_event_series_on_the_owned_array;
 mod the_object_keyed_field_count_is_checked;
@@ -459,7 +459,7 @@ mod the_payload_is_cached_under_one_key;
 mod what_the_two_cache_keys_are;
 mod what_a_cache_key_costs;
 mod what_a_synchronous_write_leaves_pending;
-mod the_page_bit_answers_the_dirty_bucket_question;
+mod the_block_bit_answers_the_dirty_bucket_question;
 mod the_best_candidate_is_at_least_the_average;
 mod the_comparison_counterparts_still_exist;
 mod the_reclaim_path_has_one_participant;
@@ -487,5 +487,5 @@ mod whether_the_reclaim_checks_can_read_the_bucket_node;
 mod the_index_log_retain_floor;
 mod where_an_object_keys_characters_are_written;
 mod what_the_slot_index_is_made_of;
-mod the_key_a_page_is_filed_under_inverts_exactly;
+mod the_key_a_block_is_filed_under_inverts_exactly;
 mod what_the_slot_index_floor_is;

@@ -171,7 +171,7 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 /// DIFFERENT address -- which is what a migration would be for.
 ///
 /// Returns how many pages it round-tripped, so a caller can still assert the fixture was covered.
-fn round_trip_every_page_through_the_wire(
+fn round_trip_every_block_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
     let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
@@ -207,7 +207,7 @@ fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Ve
     contents
 }
 
-fn page_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
+fn block_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
     contents.values().map(Vec::len).sum()
 }
 
@@ -437,10 +437,10 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
         let contents = bucket_contents(shard);
         println!(
             "  stamped 0..{stamp}: {} pages over {} buckets",
-            page_total(&contents),
+            block_total(&contents),
             contents.len()
         );
-        assert!(page_total(&contents) >= keys.len(), "the fixture filed nothing");
+        assert!(block_total(&contents) >= keys.len(), "the fixture filed nothing");
         filings.push(contents);
     }
     // INVERTED. While an address carried its own routing bucket, that bucket won and the stamp was
@@ -488,7 +488,7 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
 
     let mut shards = engine.shards.write().expect("shards lock poisoned");
     let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-    let round_tripped = round_trip_every_page_through_the_wire(shard);
+    let round_tripped = round_trip_every_block_through_the_wire(shard);
     assert_eq!(
         RECORDS, round_tripped,
         "the fixture round-tripped {round_tripped} of {RECORDS} addresses"
@@ -502,9 +502,9 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     let before = bucket_contents(shard);
     assert_eq!(
         RECORDS,
-        page_total(&before),
+        block_total(&before),
         "the fixture starts with {} pages, not {RECORDS}",
-        page_total(&before)
+        block_total(&before)
     );
     assert_eq!(
         0,
@@ -522,14 +522,14 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
 
     println!(
         "  before: {} pages / {} buckets     after: {} pages / {} buckets",
-        page_total(&before),
+        block_total(&before),
         before.len(),
-        page_total(&after),
+        block_total(&after),
         after.len()
     );
     assert_eq!(
-        page_total(&before),
-        page_total(&after),
+        block_total(&before),
+        block_total(&after),
         "a page was lost or duplicated by an upsert that only re-files one key"
     );
     assert_eq!(
@@ -737,7 +737,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
         println!(
             "  reopened on 0..{write_end}: {recovered}/{RECORDS} records, {} pages, {outside} \
              buckets outside the range, stamp {:?}",
-            page_total(&contents),
+            block_total(&contents),
             shard.routing_range()
         );
         assert_eq!(
@@ -745,9 +745,9 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
             "reopened on 0..{write_end}: {recovered} of {RECORDS} records came back"
         );
         assert!(
-            page_total(&contents) >= RECORDS,
+            block_total(&contents) >= RECORDS,
             "reopened on 0..{write_end}: {} pages for {RECORDS} records",
-            page_total(&contents)
+            block_total(&contents)
         );
         assert_eq!(
             0, outside,
@@ -822,7 +822,7 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
     println!(
         "  installed a 0..{WIDE_END} image on a 0..{NARROW_END} shard: {readable}/{RECORDS} \
          records, {} pages, stamp {:?}",
-        page_total(&contents),
+        block_total(&contents),
         shard.routing_range()
     );
     assert_eq!(
@@ -831,9 +831,9 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
          the failure mx#1945 caught when it first narrowed this install's range"
     );
     assert!(
-        page_total(&contents) >= RECORDS,
+        block_total(&contents) >= RECORDS,
         "{} pages for {RECORDS} records after the install",
-        page_total(&contents)
+        block_total(&contents)
     );
     assert_eq!(
         (0, NARROW_END),
@@ -1086,7 +1086,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
     //
     // 112 OF IT WAS ALREADY STALE ON MAIN. The owned-array conversions and the first map migration
     // shrank this struct and nobody moved the pin, so it was red before this change touched it --
-    // the third such pin in this campaign, after the second stamp tripwire in `page_entry_names`
+    // the third such pin in this campaign, after the second stamp tripwire in `block_entry_names`
     // and the fold count in `element_ordinal_reuse`. A width pin only works if something runs it.
     //
     // 96 IS THIS CHANGE: TWO HashMap HEADERS, because three fields became one. The arithmetic below

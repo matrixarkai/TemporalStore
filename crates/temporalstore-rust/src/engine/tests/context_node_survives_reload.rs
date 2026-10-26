@@ -489,11 +489,11 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
 
     let live_address = crate::engine::ElementEntry::from_parts(1, 4_096, 64, None, None);
     let dead_address = crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None);
-    let live: HashSet<(u64, u64, u64)> = [crate::engine::live_page_key(&live_address)]
+    let live: HashSet<(u64, u64, u64)> = [crate::engine::live_block_key(&live_address)]
         .into_iter()
         .collect();
     assert!(
-        !live.contains(&crate::engine::live_page_key(&dead_address)),
+        !live.contains(&crate::engine::live_block_key(&dead_address)),
         "the fixture's two addresses collide in the live set, so nothing here can distinguish \
          kept from refused"
     );

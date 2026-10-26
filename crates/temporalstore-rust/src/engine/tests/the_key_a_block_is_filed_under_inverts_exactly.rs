@@ -93,7 +93,7 @@
 //! -- not against a re-render of itself, and not on a sample. `a_reload_reads_every_object_back`
 //! writes a corpus, drops the engine, reloads from the same directories and reads every object
 //! back, with a key never written asserted ABSENT in the same moment. The old-format reader is
-//! proved against COMMITTED BYTES in `page_entry_names`, whose `OLD_STORE_INDEX` is the index a
+//! proved against COMMITTED BYTES in `block_entry_names`, whose `OLD_STORE_INDEX` is the index a
 //! pre-change binary really wrote.
 //!
 //! rust-internal: measures this crate's own index codec, no product behaviour
@@ -440,7 +440,7 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
         seeded.surfaces().assert_amortised_regime();
         let shards = seeded.engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&SHARD).expect("shard is loaded");
-        let pages = super::pages_with_identity(&shard.bucket_index);
+        let pages = super::blocks_with_identity(&shard.bucket_index);
         assert_eq!(
             HEADLINE_KEYS,
             pages.len(),
@@ -609,7 +609,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
     }
 
     // AND A NON-EMPTY COMPONENT IS CARRIED TOO, because an index written before the element name
-    // left the entry spells one -- `page_entry_names::OLD_STORE_INDEX` holds `hash:k:f0:1:9:3:4:4`
+    // left the entry spells one -- `block_entry_names::OLD_STORE_INDEX` holds `hash:k:f0:1:9:3:4:4`
     // -- and the object key in such a key must still come back whole rather than absorbing it.
     let named = block_ref_key_from_parts("hash", "a:b", Some("f0"), 1, 9, 3, 4, 4);
     let parts = block_ref_key_parts(&named).expect("an element-named key parses");
@@ -677,7 +677,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 /// What has to be proved is that the reconstruction reads what a PREVIOUS binary wrote, and the
 /// only form of a previous binary's output that outlives the field is BYTES.
 ///
-/// `page_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8` is such bytes: a whole shard index a
+/// `block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8` is such bytes: a whole shard index a
 /// pre-change binary really wrote, captured by that module's own capture instrument, whose three
 /// page entries each spell `object_key` and `model_id` as named fields -- and whose composite keys
 /// each spell the same two values. This arm takes it through `decode_index_bytes`, the one door
@@ -696,13 +696,13 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 ///
 /// It is not a claim that such a store is SERVED. A stamp-8 image is refused by `persistence`'s `<`
 /// comparison before anything reads it, which
-/// `page_entry_names::an_ungated_store_is_refused_before_it_is_served` drives. This is a claim
+/// `block_entry_names::an_ungated_store_is_refused_before_it_is_served` drives. This is a claim
 /// about the DECODE, which happens first and which is where a reconstruction can go silently wrong.
 ///
 /// rust-internal: decodes committed bytes through this crate's own door, no product behaviour
 #[test]
 fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carried() {
-    let bytes = super::page_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8;
+    let bytes = super::block_entry_names::UNGATED_STORE_INDEX_AT_STAMP_8;
 
     // ---- THE FIXTURE REALLY CARRIES THE TWO FIELDS, ASSERTED ON THE TEXT ----
     //
@@ -737,7 +737,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     );
 
     // ---- EVERY PAGE, AND THE IDENTITY IT CAME BACK WITH ----
-    let pages = super::pages_with_identity(&decoded.bucket_index);
+    let pages = super::blocks_with_identity(&decoded.bucket_index);
     let mut rebuilt: Vec<(String, String)> = pages
         .iter()
         .map(|(_, _, object_key, page)| {
@@ -1248,7 +1248,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&SHARD).expect("shard is loaded");
-            for (_, handle, object_key, page) in super::pages_with_identity(&shard.bucket_index) {
+            for (_, handle, object_key, page) in super::blocks_with_identity(&shard.bucket_index) {
                 identities_before.insert(
                     handle,
                     (object_key.to_string(), page.model_id.as_str().to_string()),
@@ -1320,7 +1320,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
              through the same door every reader goes through",
         );
         let mut at_the_decode: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for (_, handle, object_key, page) in super::pages_with_identity(&decoded.bucket_index) {
+        for (_, handle, object_key, page) in super::blocks_with_identity(&decoded.bucket_index) {
             at_the_decode.insert(
                 handle,
                 (object_key.to_string(), page.model_id.as_str().to_string()),
@@ -1375,7 +1375,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&SHARD).expect("shard is loaded");
         let mut after: BTreeMap<u64, (String, String)> = BTreeMap::new();
-        for (_, handle, object_key, page) in super::pages_with_identity(&shard.bucket_index) {
+        for (_, handle, object_key, page) in super::blocks_with_identity(&shard.bucket_index) {
             after.insert(
                 handle,
                 (object_key.to_string(), page.model_id.as_str().to_string()),

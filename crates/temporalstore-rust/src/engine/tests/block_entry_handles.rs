@@ -4,7 +4,7 @@
 //! PRICING A HANDLE FOR EACH OF THE THREE NAMES A PAGE ENTRY CARRIES, one name at a time.
 //!
 //! #1959 opened `BlockIndex` at 104 bytes and called the three names "48 bytes, the largest
-//! group". `page_entry_names` then measured the premise under that and found HALF of it false: an
+//! group". `block_entry_names` then measured the premise under that and found HALF of it false: an
 //! object's pages already hold ONE allocation of its key, so the 16 bytes an entry spends on a
 //! name is the FAT POINTER and the payload is already shared. A handle therefore saves at most 12
 //! bytes of field per page, not 16 -- and an interning table COSTS an entry per distinct name,
@@ -78,7 +78,7 @@ const WHOLE_KEYSPACE_END: u32 = u32::MAX;
 /// An `Arc<str>`'s own allocation: the text behind two words of strong/weak count.
 
 // =================================================================================================
-// FIXTURE. The same shapes `page_entry_names` seeds, so the two modules' numbers are comparable.
+// FIXTURE. The same shapes `block_entry_names` seeds, so the two modules' numbers are comparable.
 // =================================================================================================
 
 fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
@@ -321,7 +321,7 @@ fn is_hex_spelling_of_numbers(name: &str) -> bool {
         && name.bytes().all(|b| b.is_ascii_hexdigit())
 }
 
-fn pages_per_object(engine: &TemporalEngine) -> BlocksPerObject {
+fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut per_object: BTreeMap<(StoredModelKind, String), (usize, BTreeSet<String>)> =
@@ -402,7 +402,7 @@ fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
                     1 => seed_container_keys(&engine, records / 100, 100),
                     _ => seed_mixed(&engine, records),
                 }
-                let measured = pages_per_object(&engine);
+                let measured = blocks_per_object(&engine);
                 measured.report(&format!("{records_label} records, {range_label}, {shape}"));
                 arms.push((format!("{shape} @ {records_label}"), end, measured));
             }
@@ -561,7 +561,7 @@ impl TableCost {
 ///
 /// The map's per-slot cost is its key and value plus hashbrown's one control byte a slot. The
 /// `Arc<str>` payloads are NOT counted -- they are clones of allocations the store already holds,
-/// which is the whole finding `page_entry_names` established, and charging them here would price
+/// which is the whole finding `block_entry_names` established, and charging them here would price
 /// the table for bytes it does not add.
 #[cfg(feature = "alloc-probe")]
 fn resident_bytes(table: &CandidateTable) -> usize {
@@ -692,7 +692,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
                 1 => seed_container_keys(&engine, 40, 100),
                 _ => seed_mixed(&engine, 4_000),
             }
-            let distribution = pages_per_object(&engine);
+            let distribution = blocks_per_object(&engine);
             let cost = measure_object_key_table(&engine);
             rows.push((format!("{shape}, {range_label}"), cost, distribution));
         }
@@ -857,7 +857,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
             let engine = probe_engine(dir.path());
             load_shard_over(&engine, end);
             seed_container_keys(&engine, keys, members);
-            let distribution = pages_per_object(&engine);
+            let distribution = blocks_per_object(&engine);
             distribution.report(&format!("{shape}, {range_label}"));
             let cost = measure_component_table(&engine);
             rows.push((format!("{shape}, {range_label}"), cost, distribution));
@@ -983,7 +983,7 @@ fn the_component_name_is_hex_text_for_numbers_and_that_half_is_measured() {
         // text. Both, so the classifier is exercised in both directions in the same store and a
         // predicate that matched everything would fail below.
         seed_wide_members(&engine, 4, 100);
-        let measured = pages_per_object(&engine);
+        let measured = blocks_per_object(&engine);
         measured.report(&format!("hex component census, {range_label}"));
         rows.push((range_label.to_string(), measured));
     }
@@ -1208,7 +1208,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
 ///
 /// COUNTED, not timed -- a timing-ratio instrument in this tree once read 485x idle against 11x
 /// busy off identical code. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is the existing counter inside
-/// `find_page`, and the claim is that reading every page's spelling adds NOTHING to it.
+/// `find_block`, and the claim is that reading every page's spelling adds NOTHING to it.
 #[test]
 fn resolving_a_model_spelling_examines_no_block_index_entries() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1220,8 +1220,8 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
 
-    crate::engine::state::reset_page_lookup_entries_examined();
-    let before = crate::engine::state::page_lookup_entries_examined();
+    crate::engine::state::reset_block_lookup_entries_examined();
+    let before = crate::engine::state::block_lookup_entries_examined();
     let mut resolved = 0usize;
     let mut folded = 0u64;
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -1235,7 +1235,7 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
             resolved += 1;
         }
     }
-    let after = crate::engine::state::page_lookup_entries_examined();
+    let after = crate::engine::state::block_lookup_entries_examined();
 
     println!(
         "\n=== resolving a model spelling ===\n  {resolved} spellings resolved, \
@@ -1376,7 +1376,7 @@ fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut triples: Vec<(String, String, Option<String>, u64, u64)> =
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(_, _, object_key, page)| {
             (
@@ -1627,7 +1627,7 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
 #[test]
 fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in_memory() {
     // What the entry encoded to when `model_id` was an `Arc<str>`, captured at b8b12d30 by
-    // `page_entry_names::capture_the_stored_spelling_of_a_block_entry`'s shape and re-derived here
+    // `block_entry_names::capture_the_stored_spelling_of_a_block_entry`'s shape and re-derived here
     // from an equal-valued map so the golden is the VALUE, not this type's own impl.
     let page = sample_entry();
 

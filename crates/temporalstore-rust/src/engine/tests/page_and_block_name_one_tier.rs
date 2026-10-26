@@ -206,18 +206,18 @@ fn the_published_contract_names_one_type_for_both_address_spellings() {
     // Denominator, printed. Provenance: `PublicStorageContract` declares 17 fields, of which
     // these are the page-spelled ones -- counted at 2701ed26e with
     // `awk '/pub struct PublicStorageContract/,/^}/' engine/reports.rs | grep -c 'pub page_'`.
-    let page_keys: Vec<&String> = encoded
+    let block_keys: Vec<&String> = encoded
         .as_object()
         .expect("the contract must serialize as an object")
         .keys()
         .filter(|key| key.split('_').any(|segment| segment == "page"))
         .collect();
-    println!("contract page-spelled keys: {page_keys:?}");
+    println!("contract page-spelled keys: {block_keys:?}");
     assert_eq!(
-        page_keys.len(),
+        block_keys.len(),
         2,
         "expected exactly two page-spelled keys on the published contract \
-         (page_address, page_index_entry), found {page_keys:?}"
+         (page_address, page_index_entry), found {block_keys:?}"
     );
 }
 

@@ -422,7 +422,7 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
 // That is a reading, same as it was for set, and this module exists because a reading is not
 // where hash's replay safety should rest. Driven below exactly the way set already is.
 //
-// ONE DIFFERENCE FROM THE SET CASE, WORTH BEING HONEST ABOUT: `index_entry_names_a_page`, the
+// ONE DIFFERENCE FROM THE SET CASE, WORTH BEING HONEST ABOUT: `index_entry_names_a_block`, the
 // single authority that decides whether a WRITTEN entry's component is actually suppressed to
 // `None`, lists only `set` and `list` today -- hash is not in it yet (steps 6-7 of this series,
 // held separately). So turning `TS_CONTAINER_ONE_ENTRY_A_PAGE` on does not, today, make a

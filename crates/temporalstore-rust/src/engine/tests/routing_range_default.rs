@@ -50,7 +50,7 @@
 //! # THE READ PATH IS COUNTED, NOT TIMED
 //!
 //! `BLOCK_LOOKUP_ENTRIES_EXAMINED` counts the entries the shipped bisection touches, incremented
-//! inside `find_page`, the one door every `Many`-arm lookup goes through. A deeper fill means a
+//! inside `find_block`, the one door every `Many`-arm lookup goes through. A deeper fill means a
 //! longer list means more probes, and that is the read-path price of the fill. It is a count, so
 //! it does not move with the load on the box.
 //!
@@ -286,7 +286,7 @@ impl BlocksPerBucket {
     }
 }
 
-fn pages_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
+fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let mut hist = BlocksPerBucket::default();
@@ -365,7 +365,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
                 "on 0..{end_routing_bucket} at {records} records the fixture cannot read its own \
                  store back, so the distribution below is over a store that does not work"
             );
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             let arms = block_index_arms(&engine);
             assert_eq!(
                 records,
@@ -483,7 +483,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
             load_on(&engine, candidate);
             let keys = seed_routed(&engine, records);
             assert_eq!(records, read_back(&engine, &keys), "the arm cannot read itself back");
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             fills.insert((records, candidate), (hist.mean(), hist.buckets()));
             println!(
                 "  0..{candidate} at {records} records: p50 {} pages, MAX {} pages over {} \
@@ -590,7 +590,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
 /// WHAT MORE BLOCKS A BUCKET COSTS THE READ PATH, AS ENTRIES EXAMINED PER LOOKUP.
 ///
 /// COUNTED, NOT TIMED. A timing-ratio instrument in this campaign read 485x idle against 11x busy
-/// off identical code. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page` -- the one
+/// off identical code. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_block` -- the one
 /// door every `Many`-arm lookup goes through -- so this counts the entries the shipped bisection
 /// actually touched on the production path.
 ///
@@ -612,11 +612,11 @@ fn the_read_path_entries_examined_a_lookup_grow_with_the_fill_a_candidate_produc
             let engine = engine_on(dir.path());
             load_on(&engine, end_routing_bucket);
             let keys = seed_routed(&engine, records);
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
 
-            crate::engine::state::reset_page_lookup_entries_examined();
+            crate::engine::state::reset_block_lookup_entries_examined();
             let readable = read_back(&engine, &keys);
-            let examined = crate::engine::state::page_lookup_entries_examined();
+            let examined = crate::engine::state::block_lookup_entries_examined();
             assert_eq!(
                 records, readable,
                 "on 0..{end_routing_bucket} at {records} records only {readable} records read \
@@ -643,7 +643,7 @@ fn the_read_path_entries_examined_a_lookup_grow_with_the_fill_a_candidate_produc
     }
 
     // THE SHIPPED DEFAULT EXAMINES NOTHING, because every bucket is on the inline `One` arm and
-    // `find_page` is never reached. This is the denominator of the whole section and it is zero,
+    // `find_block` is never reached. This is the denominator of the whole section and it is zero,
     // so the cost is reported as an absolute count a lookup rather than as a ratio -- a ratio
     // against zero is not a number.
     for records in [SMALL, LARGE] {
@@ -657,7 +657,7 @@ fn the_read_path_entries_examined_a_lookup_grow_with_the_fill_a_candidate_produc
         assert_eq!(
             0.0, wide_per_lookup,
             "the shipped default at {records} records examined {wide_per_lookup} entries a \
-             lookup. The `One` arm holds its page inline and never reaches `find_page`, so a \
+             lookup. The `One` arm holds its page inline and never reaches `find_block`, so a \
              non-zero here means the counter is reading a path other than the one named"
         );
     }
@@ -843,7 +843,7 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
             load_on(&engine, end_routing_bucket);
             let keys = seed_routed(&engine, records);
             assert_eq!(records, read_back(&engine, &keys), "the arm cannot read itself back");
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             let arms = block_index_arms(&engine);
 
             let (request_bytes, chunk_bytes, allocs) = {
@@ -1017,7 +1017,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
             let engine = engine_on(dir.path());
             load_on(&engine, end_routing_bucket);
             let keys = seed_routed(&engine, LARGE);
-            let hist = pages_per_bucket(&engine);
+            let hist = blocks_per_bucket(&engine);
             let mut shards = engine.shards.write().expect("engine lock poisoned");
             let shard = shards.get_mut(&1).expect("shard 1");
 
@@ -1064,7 +1064,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
         //
         // NEITHER `flush_shard_index` NOR `dump_index_catalog` CLEARS IT. Both were tried and both
         // left one `bucket_dirty` refusal: `refresh_one_bucket_runtime_flags` sets the flag as
-        // `bucket.dirty() | any_page_dirty`, an OR that never clears. What does clear it is the
+        // `bucket.dirty() | any_block_dirty`, an OR that never clears. What does clear it is the
         // clear-dirty-on-load contract in `persistence.rs` -- a reloaded block comes back
         // `dirty = false` -- so the store is written, flushed, dropped and reopened.
         let blocks_released = {
@@ -1211,7 +1211,7 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
                 })
                 .collect(),
         );
-        let hist = pages_per_bucket(&engine);
+        let hist = blocks_per_bucket(&engine);
         let arms = block_index_arms(&engine);
         let label = if end_routing_bucket == WIDE_END {
             "0..u32::MAX (shipped)".to_string()

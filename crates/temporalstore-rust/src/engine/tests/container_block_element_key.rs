@@ -5,7 +5,7 @@
 //!
 //! # THE CLAIM THIS MODULE WAS OPENED ON
 //!
-//! A container page used to carry a value and nothing else. `container_pages` puts a frame round it
+//! A container page used to carry a value and nothing else. `container_blocks` puts a frame round it
 //! that names the element, which costs bytes on every container write and changes no answer. This
 //! module is where the cost is measured and where "changes no answer" is asserted rather than
 //! assumed.
@@ -30,7 +30,7 @@
 //! ## The frame could be unreadable, and a reader would serve framing bytes as data
 //!
 //! That is #2016's shape exactly -- an unreadable name becoming a real one -- and it is why
-//! `decode_container_page` has a `Corrupt` arm distinct from `NotFramed` rather than falling back.
+//! `decode_container_block` has a `Corrupt` arm distinct from `NotFramed` rather than falling back.
 //! `a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value` drives eleven separate mutilations of
 //! a real frame and asserts every one of them is refused.
 //!
@@ -62,9 +62,9 @@
 //! directory would read as a heavier representation.
 #![allow(clippy::all)]
 use super::*;
-use crate::engine::container_pages::{
-    component_from_element_key, decode_container_page, element_key_from_component,
-    encode_container_page, select_container_element, varint_len, ContainerElementRead,
+use crate::engine::container_blocks::{
+    component_from_element_key, decode_container_block, element_key_from_component,
+    encode_container_block, select_container_element, varint_len, ContainerElementRead,
     ContainerBlockDecode, ContainerBlockItem, ElementKeySpelling, CONTAINER_BLOCK_MAGIC,
 };
 
@@ -420,14 +420,14 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
         // exercised inside ONE frame.
         let first_value = bytes_of(24, 9);
         let second_value = second_key.clone();
-        let page = encode_container_page(
+        let page = encode_container_block(
             spelling,
             &[
                 (&first_key, first_value.as_slice()),
                 (&second_key, second_value.as_slice()),
             ],
         );
-        match decode_container_page(&page) {
+        match decode_container_block(&page) {
             ContainerBlockDecode::Framed {
                 spelling: seen,
                 shape,
@@ -435,7 +435,7 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
             } => {
                 assert_eq!(spelling, seen, "the frame reports the spelling it was written with");
                 assert_eq!(
-                    crate::engine::container_pages::ContainerBlockShape::WithRemovals,
+                    crate::engine::container_blocks::ContainerBlockShape::WithRemovals,
                     shape,
                     "a page written today takes the shape that CAN say an element was removed, \
                      whether or not this one does -- see CONTAINER_BLOCK_MAGIC_V2 on why there is \
@@ -477,12 +477,12 @@ fn a_value_that_is_the_keys_tail_is_stored_once() {
     let key = bytes_of(32, 3);
 
     // The value IS the key.
-    let shared = encode_container_page(ElementKeySpelling::Hex, &[(&key, key.as_slice())]);
+    let shared = encode_container_block(ElementKeySpelling::Hex, &[(&key, key.as_slice())]);
     // The value is UNRELATED to the key, and the same length.
     let distinct_value = bytes_of(32, 4);
     assert_ne!(key, distinct_value, "the fixture's two values must differ");
     let separate =
-        encode_container_page(ElementKeySpelling::Hex, &[(&key, distinct_value.as_slice())]);
+        encode_container_block(ElementKeySpelling::Hex, &[(&key, distinct_value.as_slice())]);
 
     println!("\n=== the suffix elision, in bytes ===");
     println!("  key 32 bytes, value 32 bytes");
@@ -511,7 +511,7 @@ fn a_value_that_is_the_keys_tail_is_stored_once() {
     );
 
     // An EMPTY value is the tail beginning at the key's end, so it needs no case of its own.
-    let empty = encode_container_page(ElementKeySpelling::Hex, &[(&key, b"")]);
+    let empty = encode_container_block(ElementKeySpelling::Hex, &[(&key, b"")]);
     assert_eq!(
         ContainerElementRead::Found(Vec::new()),
         select_container_element(&empty, &hex::encode(&key)),
@@ -564,7 +564,7 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
             };
 
             let bare = value.len();
-            let framed = encode_container_page(spelling, &[(&key, value.as_slice())]).len();
+            let framed = encode_container_block(spelling, &[(&key, value.as_slice())]).len();
             let second_key = element_key_from_component(spelling, &component_for(spelling, width, 2))
                 .expect("fixture component");
             let second_value: Vec<u8> = match spelling {
@@ -572,7 +572,7 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
                 ElementKeySpelling::ScoreThenMember => second_key[8..].to_vec(),
                 _ => bytes_of(width, 2),
             };
-            let two = encode_container_page(
+            let two = encode_container_block(
                 spelling,
                 &[
                     (&key, value.as_slice()),
@@ -621,7 +621,7 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
 fn a_one_item_frame_is_exactly_its_parts() {
     let key = b"field-0001";
     let value = bytes_of(40, 1);
-    let page = encode_container_page(ElementKeySpelling::Utf8, &[(key.as_slice(), &value)]);
+    let page = encode_container_block(ElementKeySpelling::Utf8, &[(key.as_slice(), &value)]);
     let expected = CONTAINER_BLOCK_MAGIC.len()
         + 1
         + varint_len(1)
@@ -676,7 +676,7 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
         let second_value = bytes_of(20, 2);
         assert_ne!(first_value, second_value);
 
-        let page = encode_container_page(
+        let page = encode_container_block(
             spelling,
             &[
                 (&first_key, first_value.as_slice()),
@@ -718,7 +718,7 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
 fn a_frame_asked_for_a_component_its_spelling_cannot_name_answers_absent() {
     let member = bytes_of(16, 1);
     // A set page: its keys are raw members and its components are hex.
-    let page = encode_container_page(ElementKeySpelling::Hex, &[(&member, member.as_slice())]);
+    let page = encode_container_block(ElementKeySpelling::Hex, &[(&member, member.as_slice())]);
     // A hash-shaped component, which is not hex.
     assert_eq!(
         ContainerElementRead::Absent,
@@ -751,10 +751,10 @@ fn a_frame_asked_for_a_component_its_spelling_cannot_name_answers_absent() {
 fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     let key = b"field-0001".to_vec();
     let value = bytes_of(24, 1);
-    let good = encode_container_page(ElementKeySpelling::Utf8, &[(&key, value.as_slice())]);
+    let good = encode_container_block(ElementKeySpelling::Utf8, &[(&key, value.as_slice())]);
     // The control: unmutilated, it is a frame and it answers.
     assert!(matches!(
-        decode_container_page(&good),
+        decode_container_block(&good),
         ContainerBlockDecode::Framed { .. }
     ));
 
@@ -787,7 +787,7 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     huge_key[CONTAINER_BLOCK_MAGIC.len() + 2] = 0x7f;
     mutants.push(("key length beyond the payload", huge_key));
     // A value offset past the end of its key.
-    let offset_block = encode_container_page(ElementKeySpelling::Utf8, &[(&key, b"")]);
+    let offset_block = encode_container_block(ElementKeySpelling::Utf8, &[(&key, b"")]);
     let mut bad_offset = offset_block.clone();
     let last = bad_offset.len() - 1;
     bad_offset[last] = 0x7f;
@@ -801,7 +801,7 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     let mut refused = 0usize;
     println!("\n=== frames that must be refused ===");
     for (what, mutant) in mutants {
-        let verdict = decode_container_page(&mutant);
+        let verdict = decode_container_block(&mutant);
         let is_refused = matches!(verdict, ContainerBlockDecode::Corrupt(_));
         println!(
             "  {:<30} {} bytes -> {}",
@@ -840,7 +840,7 @@ fn bytes_with_no_magic_are_not_a_frame() {
     ] {
         assert_eq!(
             ContainerBlockDecode::NotFramed,
-            decode_container_page(&payload),
+            decode_container_block(&payload),
             "a payload of {} bytes was taken for a frame",
             payload.len()
         );
@@ -873,8 +873,8 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     // live set entry carries no element name, so the fetch answers `None` and this panics BEFORE
     // comparing any value -- the instrument fails, not the readback. That the values are whole
     // under the gate is held by `gated_corpus_across_a_store_boundary` for all four kinds across a
-    // store boundary, by `container_pages_are_batched::every_element_reads_back_its_own_value_
-    // after_the_fold_and_after_a_reload`, and by `container_page_ordinal::a_reloaded_container_
+    // store boundary, by `container_blocks_are_batched::every_element_reads_back_its_own_value_
+    // after_the_fold_and_after_a_reload`, and by `container_block_ordinal::a_reloaded_container_
     // still_reads_every_element`.
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
@@ -883,8 +883,8 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     );
     let engine = engine_on(dir.path());
     load_on(&engine);
-    crate::engine::container_pages::reset_unframed_container_write_count();
-    crate::engine::reset_corrupt_container_page_count();
+    crate::engine::container_blocks::reset_unframed_container_write_count();
+    crate::engine::reset_corrupt_container_block_count();
 
     let fields: Vec<(String, Vec<u8>)> = (0..4)
         .map(|index| (format!("field-{index:04}"), bytes_of(48, index)))
@@ -1047,12 +1047,12 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
 
     assert_eq!(
         0,
-        crate::engine::container_pages::unframed_container_write_count(),
+        crate::engine::container_blocks::unframed_container_write_count(),
         "a container write stored a bare value instead of a frame"
     );
     assert_eq!(
         0,
-        crate::engine::corrupt_container_page_count(),
+        crate::engine::corrupt_container_block_count(),
         "a read met a container page it could not walk"
     );
 
@@ -1081,10 +1081,10 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     println!("  stored page shapes:");
     for (kind, key, component) in &stored {
         let frame = engine
-            .container_page_frame_for_test(1, kind, key, Some(component.as_str()))
+            .container_block_frame_for_test(1, kind, key, Some(component.as_str()))
             .unwrap_or_else(|| panic!("no stored page for {kind} {key} component {component}"));
-        match crate::engine::container_pages::decode_container_page(&frame) {
-            crate::engine::container_pages::ContainerBlockDecode::Framed { spelling, items, .. } => {
+        match crate::engine::container_blocks::decode_container_block(&frame) {
+            crate::engine::container_blocks::ContainerBlockDecode::Framed { spelling, items, .. } => {
                 assert_eq!(
                     1,
                     items.len(),
@@ -1095,7 +1095,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
                     !items[0].deleted,
                     "{kind} wrote a live element and the page says it was removed"
                 );
-                let named = crate::engine::container_pages::component_from_element_key(
+                let named = crate::engine::container_blocks::component_from_element_key(
                     spelling,
                     &items[0].key,
                 )
@@ -1165,7 +1165,7 @@ fn a_framed_block_reads_back_after_a_reload() {
         let engine =
             TemporalEngine::with_local_dirs(64 * 1024 * 1024, dir.path().join("cache"), &pages, &indexes);
         load_on(&engine);
-        crate::engine::container_pages::reset_unframed_container_write_count();
+        crate::engine::container_blocks::reset_unframed_container_write_count();
         for (field, value) in &fields {
             write(
                 &engine,
@@ -1207,7 +1207,7 @@ fn a_framed_block_reads_back_after_a_reload() {
         }
         assert_eq!(
             0,
-            crate::engine::container_pages::unframed_container_write_count(),
+            crate::engine::container_blocks::unframed_container_write_count(),
             "a container write stored a bare value instead of a frame"
         );
         engine.flush_shard_index(1);
@@ -1222,7 +1222,7 @@ fn a_framed_block_reads_back_after_a_reload() {
         &pages,
         &indexes,
     );
-    crate::engine::reset_corrupt_container_page_count();
+    crate::engine::reset_corrupt_container_block_count();
     load_on(&reloaded);
 
     // The denominator, before a single value is compared.
@@ -1324,7 +1324,7 @@ fn a_framed_block_reads_back_after_a_reload() {
 
     assert_eq!(
         0,
-        crate::engine::corrupt_container_page_count(),
+        crate::engine::corrupt_container_block_count(),
         "the reload met a container page it could not walk"
     );
     println!(
@@ -1352,7 +1352,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
-    crate::engine::reset_corrupt_container_page_count();
+    crate::engine::reset_corrupt_container_block_count();
 
     // A framed write first, so the fixture holds both shapes at once and the unframed read cannot
     // pass merely because nothing in the store is framed.
@@ -1366,7 +1366,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
     );
 
     let legacy_value = b"a value with no frame at all".to_vec();
-    let installed = engine.install_unframed_hash_page_for_test(1, "mixed", "legacy", &legacy_value);
+    let installed = engine.install_unframed_hash_block_for_test(1, "mixed", "legacy", &legacy_value);
     assert!(
         installed,
         "the fixture could not install an unframed page, so this test proves nothing"
@@ -1403,7 +1403,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
 
     assert_eq!(
         0,
-        crate::engine::corrupt_container_page_count(),
+        crate::engine::corrupt_container_block_count(),
         "reading an unframed page was scored as a corrupt frame"
     );
     println!(

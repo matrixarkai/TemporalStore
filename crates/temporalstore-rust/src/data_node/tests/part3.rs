@@ -5246,7 +5246,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
     let tallied_reports = engine.storage_reclaim_slab_reports_for_test(1);
     let tallied_entries = crate::engine::live_block_scan_entries();
 
-    eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_pages={live_blocks} slabs={slabs}");
+    eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_blocks={live_blocks} slabs={slabs}");
     eprintln!("  REMOVED: live page entries materialized by one reclaim report");
     eprintln!("    walked  = {walked_entries}");
     eprintln!("    tallied = {tallied_entries}");

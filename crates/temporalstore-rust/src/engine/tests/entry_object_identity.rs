@@ -28,7 +28,7 @@
 //!
 //! AND THE STORED SPELLING IS THE KEY'S CHARACTERS. `block_index_written_key` renders the page
 //! index's own map key through `block_ref_key_from_parts` as `kind:object_key:component:...`, and
-//! that string is what a dump writes and what the replay log shares. `pages_per_bucket` pinned the
+//! that string is what a dump writes and what the replay log shares. `blocks_per_bucket` pinned the
 //! COMPONENT's place in it -- found by mutation, because dropping a field from that key leaves every
 //! key distinct (the addresses differ), so uniqueness, key counts and ordering all still pass. The
 //! object key's place in it was pinned by nothing, and a mutation dropping it would have survived
@@ -83,7 +83,7 @@ const MEMBERS_PER_KEY: usize = 25;
 const ROUTED_KEYS: usize = 200;
 
 // =================================================================================================
-// FIXTURE. The same shapes `page_entry_handles` seeds, at the size these assertions need rather than
+// FIXTURE. The same shapes `block_entry_handles` seeds, at the size these assertions need rather than
 // the size a byte measurement needs.
 // =================================================================================================
 
@@ -403,7 +403,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
 
 /// THE WRITTEN KEY OF A PAGE SPELLS ITS OBJECT KEY, SO AN ID CANNOT RENDER IT.
 ///
-/// `pages_per_bucket` pinned the COMPONENT's place in this string after a mutation that dropped it
+/// `blocks_per_bucket` pinned the COMPONENT's place in this string after a mutation that dropped it
 /// survived every test in the crate -- dropping any field from the written key leaves every key
 /// DISTINCT, because the addresses differ, so uniqueness, key counts and ordering all still pass.
 /// The object key's place in it was pinned by nothing and the identical mutation would have survived
@@ -418,8 +418,8 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
 #[test]
 fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() {
     let object_key = "container";
-    let (page_key, page) = entry_named(object_key, Some("body"));
-    let written = crate::engine::state::block_index_written_key(&page_key, &page);
+    let (block_key, page) = entry_named(object_key, Some("body"));
+    let written = crate::engine::state::block_index_written_key(&block_key, &page);
     println!("\n=== the written key of one page ===\n  {written}");
 
     // --- THE PRECONDITION FOR SPLITTING IT, ENFORCED RATHER THAN PRINTED. ---
@@ -447,7 +447,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     );
 
     // --- AND THE ID IS NOT IN IT, so the characters are not substitutable by the id. ---
-    let id = page.object_id(1, &page_key);
+    let id = page.object_id(1, &block_key);
     assert_ne!(
         0, id,
         "the fixture page carries no object id, so the comparison below is vacuous"
@@ -477,7 +477,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     );
 
     // --- AND THE HANDLE MOVES WITH IT, which is what keeps the two from naming different pages. ---
-    let handle = crate::engine::state::block_index_handle(&page_key, &page);
+    let handle = crate::engine::state::block_index_handle(&block_key, &page);
     let other_handle = crate::engine::state::block_index_handle(&other_object_key, &other);
     assert_ne!(
         handle, other_handle,
@@ -720,7 +720,7 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
     // standard library type and says nothing about `BlockIndex`. It is pinned where it is a claim
     // about something -- `entry_width_at_each_step` holds it as the part of the identity that did
     // not leave the process when it left the entry, and
-    // `page_entry_name_pointer::an_arc_str_allocation_is_two_header_words_and_the_characters`
+    // `block_entry_name_pointer::an_arc_str_allocation_is_two_header_words_and_the_characters`
     // prices the allocation the lookup now holds one of per object.
     //
     // WHAT THE COUNTERFACTUAL SAID, recorded because the next reader will want the number and

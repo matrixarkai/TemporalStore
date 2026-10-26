@@ -19,7 +19,7 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::decode_feature_block_strict;
+use super::packed_blocks::decode_feature_block_strict;
 use super::state::PackedFeatureBlockDecode;
 use super::hashing::BlockIdentity;
 use super::{parse_i64, read_block_bytes, ShardState};

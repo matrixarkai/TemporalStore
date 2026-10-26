@@ -5,9 +5,9 @@
 //!
 //! # THE PROPERTY, WHICH ALREADY HAS A GUARD FOR THE DEFAULT PATH
 //!
-//! `container_page_ordinal` assigns a container element its POSITION, and an overwrite of the same
+//! `container_block_ordinal` assigns a container element its POSITION, and an overwrite of the same
 //! element must reuse that position rather than take a new one --
-//! `container_page_ordinal::an_overwrite_keeps_the_members_ordinal_rather_than_climbing` pins that
+//! `container_block_ordinal::an_overwrite_keeps_the_members_ordinal_rather_than_climbing` pins that
 //! for the ungated path. The mechanism is an identity branch: the walk looks for a page already
 //! filed under this element's component and, finding one, returns the ordinal that page holds.
 //!
@@ -25,7 +25,7 @@
 //!
 //! # WHERE THE ORDINAL COMES FROM INSTEAD
 //!
-//! Not from a page read -- `container_page_ordinal` is handed the index and nothing that could
+//! Not from a page read -- `container_block_ordinal` is handed the index and nothing that could
 //! fetch a page, and adding a fetch to a write path inside a footprint change is the scope drift
 //! this series has already declined once.
 //!
@@ -196,7 +196,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     // THE ORDINAL DOES NOT CLIMB, ON EITHER ARM, AND THAT IS WHAT THIS STEP FIXES.
     //
     // An overwrite is the same element in the same position. Under the gate the entry carries no
-    // component, so `container_page_ordinal`'s identity branch cannot find the member's own
+    // component, so `container_block_ordinal`'s identity branch cannot find the member's own
     // previous page and falls through to `highest + 1` -- measured before the fix as ordinals
     // [0, 1]. The position now comes from `shard.sets[key][member].block_id()`: the map that is
     // keyed by the member, holding the address it currently occupies, which IS its position.
@@ -313,7 +313,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         };
         // AND THE PLANT FILES THE OBJECT LOOKUP TOO, WHICH IT HAD TO START DOING.
         //
-        // `BucketNode::insert_page` files the BUCKET's page index and nothing else -- it is handed
+        // `BucketNode::insert_block` files the BUCKET's page index and nothing else -- it is handed
         // a `BlockSlabLiveIndex` and never sees the `CoreIndex` -- so a plant that stopped there
         // left a page the shard's object lookup does not name. While the entry carried its own
         // copy of the identity that cost nothing: every walk read the key off the page. The walks
@@ -331,7 +331,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             .get_mut(&routing_bucket)
             .expect("the object's bucket exists after the writes above");
         let assigned =
-            bucket.insert_page(&planted_key, page.clone(), &mut shard.bucket_index.block_slab_live);
+            bucket.insert_block(&planted_key, page.clone(), &mut shard.bucket_index.block_slab_live);
         assert_eq!(
             handle, assigned,
             "the handle the bucket filed the plant under is not the one composed from the \
@@ -412,7 +412,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
 //
 // # WHY THESE TESTS PLANT RATHER THAN JUST SETTING THE ENV VAR AND WRITING
 //
-// `index_entry_names_a_page` is the single authority deciding whether an entry is filed with NO
+// `index_entry_names_a_block` is the single authority deciding whether an entry is filed with NO
 // component, and today it answers `true` only for `set` and `list` (`storage_bucket_internals.rs`)
 // -- hash is deliberately NOT in that list yet; widening it is a later, separate step. So setting
 // `TS_CONTAINER_ONE_ENTRY_A_PAGE` alone does NOT make a `HashSet` write a component-less entry:
@@ -468,7 +468,7 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 
 /// THE DISCRIMINATING TEST FOR THE HASH ORDINAL FIX: writes a field, overwrites it, and checks the
 /// ordinal did not advance -- against an entry planted component-less, which is the one state
-/// `container_page_ordinal`'s identity branch cannot match.
+/// `container_block_ordinal`'s identity branch cannot match.
 ///
 /// # WHAT ACTUALLY CLIMBS, CORRECTED AGAINST A FIRST WRONG READING
 ///
@@ -477,7 +477,7 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 /// previous page by the ADDRESS the resident map held for it before the overwrite, which has
 /// nothing to do with `component`, so there is still only ONE live page after every round, planted
 /// or not -- measured while writing this test as `ordinals=[0]`, never `[0, 1]`. What climbs is
-/// that ONE page's own position: with the component stripped, `container_page_ordinal`'s identity
+/// that ONE page's own position: with the component stripped, `container_block_ordinal`'s identity
 /// branch cannot match the single live page it is itself looking at, so `highest` is read off it
 /// anyway and the next write is handed `highest + 1` instead of reusing it -- `[0]`, then `[1]`,
 /// then `[2]`, climbing round over round rather than piling up. With the gated branch, every round
@@ -517,7 +517,7 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
         // NO PLANT: a hash entry is nameless by construction now, so the strip that used to
         // manufacture this state removes nothing. Asserted directly instead, per round, because
         // what this test needs established is that the overwrite below is an overwrite of a
-        // NAMELESS entry -- which is the case `container_page_ordinal` could not resolve from the
+        // NAMELESS entry -- which is the case `container_block_ordinal` could not resolve from the
         // index and now resolves from the resident map.
         assert_eq!(
             0,
@@ -617,7 +617,7 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
         named_hash_entries(&engine, KEY)
     );
 
-    let live_pages = {
+    let live_blocks = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");
         let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
@@ -643,8 +643,8 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
             .count()
     };
     assert_eq!(
-        2, live_pages,
-        "{live_pages} live page(s) for a two-field object -- the floor below assumes exactly one \
+        2, live_blocks,
+        "{live_blocks} live page(s) for a two-field object -- the floor below assumes exactly one \
          planted (component=None) page and one intact (component=Some(\"{SIBLING}\")) sibling"
     );
 

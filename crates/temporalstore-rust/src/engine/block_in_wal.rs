@@ -9,7 +9,7 @@
 //! copy is its WAL record, and it is served from the memory cache at a synthetic address that
 //! names no file. So when the cache drops that entry before a dump materializes it, the read
 //! finds nothing: an acked write reads back as MISSING until a full reload replays the WAL.
-//! [`super::hot_page_spill`] works around that by copying evicted values to a real slab, which
+//! [`super::hot_block_spill`] works around that by copying evicted values to a real slab, which
 //! helps only if the spill happened and succeeded.
 //!
 //! The value was in the WAL the whole time. What was missing was a way to say *where*: the
@@ -64,7 +64,7 @@ pub(super) fn begin_write() {
 /// Put a page aside for the record this write is about to append.
 ///
 /// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone -- said the way
-/// `hot_page_spill` says the same thing about `TS_HOT_PAGE_SPILL`, because a retired flag that
+/// `hot_block_spill` says the same thing about `TS_HOT_PAGE_SPILL`, because a retired flag that
 /// leaves no note behind gets cited later as though it still decided something. It was, in the
 /// durability analysis at the top of `tests/wal_single_barrier_recovery.rs`, which is the file
 /// somebody reads to decide what an ack promises.
@@ -186,7 +186,7 @@ type Registration = (LocalWriteAheadLogStore, u64, u64);
 pub(super) type BlockKey = (u64, Option<std::sync::Arc<str>>);
 
 /// Build a key without owning the component until the map needs it.
-fn page_key(object_id: u64, component: Option<&str>) -> BlockKey {
+fn block_key(object_id: u64, component: Option<&str>) -> BlockKey {
     (object_id, component.map(std::sync::Arc::from))
 }
 
@@ -284,7 +284,7 @@ pub(super) fn register_at(
 ) {
     if let Ok(mut map) = registry().lock() {
         map.insert(
-            (block_store.store_id(), shard_id, page_key(object_id, component)),
+            (block_store.store_id(), shard_id, block_key(object_id, component)),
             (store.clone(), log_id, sequence),
         );
     }
@@ -372,7 +372,7 @@ pub(super) fn deregister(
         map.remove(&(
             block_store.store_id(),
             shard_id,
-            page_key(object_id, component),
+            block_key(object_id, component),
         ));
     }
 }
@@ -404,7 +404,7 @@ pub(super) fn read_block(
         .get(&(
             block_store.store_id(),
             shard_id,
-            page_key(object_id, component),
+            block_key(object_id, component),
         ))?
         .clone();
     // One batch record carries many pages, and an ingest reads several of the fields its own

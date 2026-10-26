@@ -71,7 +71,7 @@ fn served_hash_fields(engine: &TemporalEngine, key: &str) -> usize {
 /// THE NAMES DID NOT LEAVE STORAGE, THEY MOVED. A container page SPELLS its elements in its
 /// payload -- that is what makes several of them foldable into one page at all -- so the pages
 /// themselves are the second source, derived with the engine's own
-/// `container_membership::derive_membership`, which is what `folded_page_membership` reads.
+/// `container_membership::derive_membership`, which is what `folded_block_membership` reads.
 ///
 /// AND THE PAIR IS STRONGER THAN THE ONE IT REPLACES, which is worth saying because a
 /// re-attribution usually is not. The entry's element name and the page's payload were written by
@@ -308,7 +308,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     if addresses.len() == FIELDS {
         // AND WHERE THE SHARED-ADDRESS CASE DOES COME FROM, so the bound is a location and not
         // merely a caveat. Every element gets its own page on the write path; several pages are
-        // folded into one only by `container_pages`, and that module states it is done "at
+        // folded into one only by `container_blocks`, and that module states it is done "at
         // COMPACTION and nowhere else". So the component becomes the only discriminator exactly
         // for a COMPACTED batched page -- which is the case the campaign already recorded
         // collapsing, forty hash fields on one page arriving as one entry with thirty-nine lost.
@@ -323,7 +323,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         println!(
             "[fold-hash] MEASURED: {} field(s) share {} address(es). These entries have no \
              element name to tell them apart, so entries converge on pages here -- which is the \
-             intended shape and is what `container_pages_are_batched` measures through a round.",
+             intended shape and is what `container_blocks_are_batched` measures through a round.",
             pages.len(),
             addresses.len()
         );

@@ -1512,29 +1512,29 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
     plant_markers(&engine, PLANTED_MARKERS);
 
     // Taken BEFORE the measured window: this walk charges the same counter.
-    let live_pages = live_blocks_total(&engine);
+    let live_blocks = live_blocks_total(&engine);
 
     let releasing = one_round(&engine, GUARD_SMALL, BATCH, true);
 
     println!(
-        "  canary: corpus {GUARD_SMALL} + {PLANTED_MARKERS} markers -> {live_pages} live pages; \
+        "  canary: corpus {GUARD_SMALL} + {PLANTED_MARKERS} markers -> {live_blocks} live pages; \
          releasing round visited {} addresses, ran {} derivation(s), released {} block(s)",
         releasing.model_visits, releasing.derivations, releasing.released_blocks
     );
 
     assert_eq!(
-        live_pages,
+        live_blocks,
         (GUARD_SMALL + PLANTED_MARKERS) as u64,
-        "the fixture holds {live_pages} live model-map pages, not the {} it was asked for; the \
+        "the fixture holds {live_blocks} live model-map pages, not the {} it was asked for; the \
          planted markers are what makes the visit denominator recoverable and they are not all \
          there",
         GUARD_SMALL + PLANTED_MARKERS
     );
     assert_eq!(
-        live_pages.saturating_sub(GUARD_SMALL as u64),
+        live_blocks.saturating_sub(GUARD_SMALL as u64),
         PLANTED_MARKERS as u64,
         "recovered {} planted markers, not {PLANTED_MARKERS}",
-        live_pages.saturating_sub(GUARD_SMALL as u64)
+        live_blocks.saturating_sub(GUARD_SMALL as u64)
     );
     assert_eq!(
         releasing.derivations, 1,
@@ -1549,8 +1549,8 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
         releasing.released_blocks
     );
     assert_eq!(
-        releasing.model_visits, live_pages,
-        "the round visited {} model-map addresses against {live_pages} live pages. The identity \
+        releasing.model_visits, live_blocks,
+        "the round visited {} model-map addresses against {live_blocks} live pages. The identity \
          is EXACT and deliberately not a tolerance: one pass over the maps, so a second pass \
          added later shows up as a whole extra store rather than inside a margin",
         releasing.model_visits
@@ -1584,9 +1584,9 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = evict_engine(dir.path());
         seed_with_a_slab_roll(&engine, records);
-        let live_pages = live_blocks_total(&engine);
+        let live_blocks = live_blocks_total(&engine);
         let releasing = one_round(&engine, records, BATCH, true);
-        (refusing, releasing, live_pages)
+        (refusing, releasing, live_blocks)
     }
 
     let (small_refusing, small_releasing, small_live) = at(GUARD_SMALL);

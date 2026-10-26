@@ -252,15 +252,15 @@ fn each_tagged_word_reads_back_as_the_arm_it_was_set_to() {
         BlockAddress::Many(BlockLayoutHandle::from_stored(0)),
         BlockAddress::Many(BlockLayoutHandle::from_stored(42)),
     ] {
-        record.set_page_address(arm);
+        record.set_block_address(arm);
         assert_eq!(arm, record.page_address(), "the address arm did not survive a set-then-get");
     }
 
     // A HANDLE OF ZERO AND AN ADDRESS OF ZERO ARE DIFFERENT ARMS. Both words are zero, so only the
     // tag separates them -- which is exactly the case a sentinel would collapse.
-    record.set_page_address(BlockAddress::One(0));
+    record.set_block_address(BlockAddress::One(0));
     let as_address = record.page_address();
-    record.set_page_address(BlockAddress::Many(BlockLayoutHandle::from_stored(0)));
+    record.set_block_address(BlockAddress::Many(BlockLayoutHandle::from_stored(0)));
     let as_handle = record.page_address();
     assert_ne!(as_address, as_handle, "a zero address and a zero handle read the same");
 }
@@ -278,8 +278,8 @@ fn the_record_survives_its_own_codec_intact() {
          BlockAddress::Many(BlockLayoutHandle::from_stored(11))]
     {
         let mut record = ObjectRecord::default();
-        record.set_page_address(address);
-        record.set_page_size(4_096);
+        record.set_block_address(address);
+        record.set_block_size(4_096);
         record.set_model_id(7);
         for (_, bit) in NAMED_BITS {
             // Do not disturb the one tag bit the setter just arranged.
@@ -509,7 +509,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
 #[test]
 fn a_layout_handle_with_no_layout_is_refused_by_name() {
     let mut record = ObjectRecord::default();
-    record.set_page_address(BlockAddress::Many(BlockLayoutHandle::from_stored(5)));
+    record.set_block_address(BlockAddress::Many(BlockLayoutHandle::from_stored(5)));
     let refusal = record
         .into_object_rows(None)
         .expect_err("unfolding a handle with no layout returned an address anyway");
@@ -1462,7 +1462,7 @@ fn every_way_of_building_a_single_address_record_lands_in_the_inline_arm() {
 
     // AND THE HANDLE ARM REFUSES RATHER THAN INVENTING, through the non-panicking door.
     let mut layout_armed = ObjectRecord::default();
-    layout_armed.set_page_address(BlockAddress::Many(BlockLayoutHandle::from_stored(5)));
+    layout_armed.set_block_address(BlockAddress::Many(BlockLayoutHandle::from_stored(5)));
     let refusal = layout_armed
         .try_address()
         .expect_err("a handle arm returned a single address, which would be a wrong address");

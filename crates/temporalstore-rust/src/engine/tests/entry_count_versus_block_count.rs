@@ -27,7 +27,7 @@
 //! THIS ENGINE ALREADY RUNS BOTH SHAPES, WHICH IS WHY THE CONTRAST IS MEASURABLE RATHER THAN
 //! PROJECTED. The timestamped kinds take a different route to the same index:
 //!
-//!   * `packed_pages::append_timestamped_kv_blocks` chunks many points into ONE page against
+//!   * `packed_blocks::append_timestamped_kv_blocks` chunks many points into ONE page against
 //!     `context_block_target_bytes`, so items per page is greater than one; and
 //!   * `sync_bucket_index_object_blocks_with_mode` files what comes back deduplicated BY PHYSICAL
 //!     ADDRESS, with `component: None`, so the entry count is the PAGE count.
@@ -75,7 +75,7 @@
 //! the element's own page, and the page's length is a STORED FACT read back off the index -- not a
 //! counter some path could forget to increment, which is the failure mode that reported a restore
 //! as flat while the kernel saw 6.70x. A batched page is built with the engine's OWN encoder
-//! (`packed_pages::encode_feature_block`) at several batch widths and its length read off the
+//! (`packed_blocks::encode_feature_block`) at several batch widths and its length read off the
 //! bytes, so the amplification below is two measurements and no arithmetic.
 //! `what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch` reports it.
 //!
@@ -585,7 +585,7 @@ fn block_at_for_object(
 /// `BlockIndex` has no element-name field, so `block_index_handle` hashes the model spelling, the
 /// object key and the ADDRESS and nothing else. Two entries over one page are one handle and one
 /// entry, and batching a container's pages moves the entry count with them --
-/// `container_pages_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
+/// `container_blocks_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
 /// count_with_them` measures that end to end, 40 entries over 40 pages before a round and 1 over 1
 /// after.
 ///
@@ -866,7 +866,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
 ///
 /// # THE FIELD NAMES ARE FIXED WIDTH, AND THAT IS LOAD-BEARING RATHER THAN TIDY
 ///
-/// A container page now STATES WHICH ELEMENT IT HOLDS (`container_pages`), so a hash page's stored
+/// A container page now STATES WHICH ELEMENT IT HOLDS (`container_blocks`), so a hash page's stored
 /// length includes its field name. `f0` to `f99` is two names of two characters and ninety of three,
 /// which made the pages three widths and took the assertion below -- "the field pages are not all one
 /// width, so a single 'today' column cannot stand for them" -- from a guard against a broken fixture
@@ -893,7 +893,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
             .collect(),
     );
 
-    let today_page_bytes = {
+    let today_block_bytes = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
         let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
@@ -934,7 +934,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         lengths[0]
     };
     assert!(
-        today_page_bytes > 0,
+        today_block_bytes > 0,
         "a field page of zero bytes is not a page, and every ratio below would divide by it"
     );
 
@@ -961,7 +961,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         other => panic!("expected Bytes from a hash field read, got {other:?}"),
     }
 
-    println!("one field page today: {today_page_bytes} B for a {VALUE_WIDTH} B value");
+    println!("one field page today: {today_block_bytes} B for a {VALUE_WIDTH} B value");
     println!("  batch   page bytes   bytes fetched per single-element read   amplification");
 
     let mut ratios: Vec<(usize, f64)> = Vec::new();
@@ -972,15 +972,15 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
                 value: vec![b'v'; VALUE_WIDTH],
             })
             .collect::<Vec<_>>();
-        let encoded = crate::engine::packed_pages::encode_feature_block(&points);
-        let page_bytes = encoded.len() as u64;
+        let encoded = crate::engine::packed_blocks::encode_feature_block(&points);
+        let block_bytes = encoded.len() as u64;
         assert!(
-            page_bytes > 0,
+            block_bytes > 0,
             "the engine's encoder produced an empty page for a batch of {batch}"
         );
-        let amplification = page_bytes as f64 / today_page_bytes as f64;
+        let amplification = block_bytes as f64 / today_block_bytes as f64;
         println!(
-            "  {batch:>5}   {page_bytes:>10}   {page_bytes:>37}   {amplification:>10.2}x"
+            "  {batch:>5}   {block_bytes:>10}   {block_bytes:>37}   {amplification:>10.2}x"
         );
         ratios.push((batch, amplification));
     }
@@ -1195,16 +1195,16 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
 
     // The entry count each kind actually holds, so the readers below are checked against a measured
     // denominator and not against the constant they were seeded with.
-    let (hash_entries, hash_pages) = entries_and_blocks(&engine, "hash", "rd-h");
-    let (set_entries, set_pages) = entries_and_blocks(&engine, "set", "rd-t");
-    let (zset_entries, zset_pages) = entries_and_blocks(&engine, "zset", "rd-z");
+    let (hash_entries, hash_blocks) = entries_and_blocks(&engine, "hash", "rd-h");
+    let (set_entries, set_blocks) = entries_and_blocks(&engine, "set", "rd-t");
+    let (zset_entries, zset_blocks) = entries_and_blocks(&engine, "zset", "rd-z");
     assert_eq!(
         (hash_entries, set_entries, zset_entries),
         (LARGE_ELEMENTS, LARGE_ELEMENTS, LARGE_ELEMENTS),
         "denominator: the fixture did not write one entry per element on all three kinds"
     );
     assert_eq!(
-        (hash_pages, set_pages, zset_pages),
+        (hash_blocks, set_blocks, zset_blocks),
         (LARGE_ELEMENTS, LARGE_ELEMENTS, LARGE_ELEMENTS),
         "denominator: some kind already shares pages, so the premise is stale for it"
     );

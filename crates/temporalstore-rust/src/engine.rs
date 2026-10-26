@@ -17,12 +17,12 @@ pub mod reports;
 mod admin_report;
 mod constants;
 mod container_membership;
-mod container_pages;
+mod container_blocks;
 mod execute_on_shard;
 mod context;
 mod lifecycle;
 mod object_manager;
-mod packed_pages;
+mod packed_blocks;
 mod product_model;
 // Step one of three: the container lands with nothing using it, so the design can be reviewed
 // without a call-site conversion riding on it. The allow is the honest consequence and comes off
@@ -93,7 +93,7 @@ pub(crate) mod hashing;
 mod bucket_store;
 mod control_rollup;
 mod hll;
-mod hot_page_spill;
+mod hot_block_spill;
 mod block_in_wal;
 mod state;
 mod hash_field_map;
@@ -114,7 +114,7 @@ use self::constants::*;
 pub(crate) use self::constants::HOT_BLOCK_SLAB_ID;
 use self::execute_on_shard::execute_on_shard;
 use self::context::*;
-use self::packed_pages::*;
+use self::packed_blocks::*;
 use self::product_model::*;
 use self::reports::*;
 use self::command_validation::*;
@@ -2661,7 +2661,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// whose eight parts is the generation. A row already on disk whose handle was omitted under the old
 /// rule therefore rebuilds to a DIFFERENT handle, and the page is then looked up under a key nothing
 /// wrote: a durably acknowledged write reads MISSING. See
-/// `page_entry_names::an_omitted_block_handle_restores_to_a_different_key_under_the_new_generation_rule`.
+/// `block_entry_names::an_omitted_block_handle_restores_to_a_different_key_under_the_new_generation_rule`.
 ///
 /// # THE RESERVATION OF 4 IS VOID, AND IS VOIDED HERE RATHER THAN SILENTLY
 ///
@@ -2761,7 +2761,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// wrote at 12 and send every store through WAL replay once, for a key none of them carries.
 ///
 /// SO THE THREE STORED-FORMAT ARMS THAT WENT RED ARE FIXTURES, NOT PRODUCTION OUTPUT MOVING, and
-/// that distinction is written into each of them in `engine::tests::page_entry_names`. All three
+/// that distinction is written into each of them in `engine::tests::block_entry_names`. All three
 /// HAND-CONSTRUCT an element name: two canonicalise a stored row that carries one so they can
 /// assert what this binary writes back, and the third goldened a `BlockIndex` built with a
 /// component argument that the struct literal had already stopped using. The combination they
@@ -2835,7 +2835,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 ///   * A NEW BINARY READING OLD BYTES IS 13'S SHAPE AND NEEDS NO STAMP AT ALL. The stored entry's
 ///     two extra keys are dropped by the named decoder, silently, and the reconstruction reads the
 ///     SAME two values out of the key beside them -- so an old index decodes to exactly the index
-///     it decoded to before. That is not assumed: `page_entry_names`'s `OLD_STORE_INDEX` is bytes a
+///     it decoded to before. That is not assumed: `block_entry_names`'s `OLD_STORE_INDEX` is bytes a
 ///     pre-change binary wrote, and `an_index_written_before_this_change_loads_block_for_block`
 ///     compares every page of it field by field against a committed table.
 ///   * AN OLD BINARY READING NEW BYTES IS WHAT THE STAMP IS SPENT ON, and the msgpack container
@@ -3516,7 +3516,7 @@ fn command_upsert_components(
                         (
                             "feature",
                             key.clone(),
-                            Some(crate::engine::packed_pages::timestamped_component(
+                            Some(crate::engine::packed_blocks::timestamped_component(
                                 point.timestamp_ms,
                                 None,
                             )),
@@ -4378,7 +4378,7 @@ impl CarriedValue for (u64, ElementEntry) {
 /// is what makes the address a usable answer to "is this element's block still here".
 type LiveBlockKey = (u64, u64, u64);
 
-fn live_page_key(address: &ElementEntry) -> LiveBlockKey {
+fn live_block_key(address: &ElementEntry) -> LiveBlockKey {
     (address.block_slab_id(), address.offset(), address.length())
 }
 
@@ -4413,7 +4413,7 @@ fn merge_container_elements<M>(
         return;
     }
     for (element, element_value) in elements {
-        if !live.contains(&live_page_key(element_value.carried_address())) {
+        if !live.contains(&live_block_key(element_value.carried_address())) {
             *skipped += 1;
             continue;
         }
@@ -4470,7 +4470,7 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
     for bucket in shard.bucket_index.bucket_map.values() {
         for page in bucket.block_index.values() {
             if !page.deleted {
-                live.insert(live_page_key(&page.address));
+                live.insert(live_block_key(&page.address));
             }
         }
     }
@@ -4695,7 +4695,7 @@ fn fold_delta_block_items(
     // FILING AND UN-FILING ARE ONE OBLIGATION, AND THIS SITE OWED BOTH.
     //
     // This function writes page entries and NOT the object lookup -- the tree says so in as many
-    // words at `page_entry_element_naming`'s fold fixture -- and it was covered by a whole-shard
+    // words at `block_entry_element_naming`'s fold fixture -- and it was covered by a whole-shard
     // `rebuild_object_block_lookup` immediately after it on the load path. With that rebuild gone
     // the two halves are not symmetrical in consequence: an unfiled page is a page the readers
     // cannot name, and an un-un-filed position is a position that SURVIVES ITS PAGE and names an
@@ -4707,7 +4707,7 @@ fn fold_delta_block_items(
     // `reload_released_bucket` and the two refile loops already work around.
     let mut unfiled: Vec<(crate::engine::storage_bucket_internals::StoredModelKind, Arc<str>, crate::engine::state::BlockLookupRef)> =
         Vec::new();
-    let mut filed_pages: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
+    let mut filed_blocks: Vec<(u32, u64, Arc<str>, BlockIndex)> = Vec::new();
     if upsert {
         // Upsert record: each item replaces exactly its (kind, object, component) predecessor,
         // the same replacement the write path performed in memory. The predecessor lives in the
@@ -4726,38 +4726,38 @@ fn fold_delta_block_items(
             // object. The item's own address is what distinguishes the page it is about. An item
             // carrying no address cannot name a page, so it keeps the component-keyed behaviour it
             // has always had rather than matching everything.
-            let names_a_page =
-                crate::engine::storage_bucket_internals::index_entry_names_a_page(&item.model_id);
+            let names_a_block =
+                crate::engine::storage_bucket_internals::index_entry_names_a_block(&item.model_id);
             let here = item
                 .entry
                 .as_ref()
-                .map(|entry| live_page_key(entry));
+                .map(|entry| live_block_key(entry));
             // THE FILING-NAME TERM IS DELETED AS A TAUTOLOGY, WITH THE REASON HERE RATHER THAN
             // IN A COMMIT MESSAGE.
             //
             // It read `page.component.as_deref() == filed_name`, where
-            // `filed_name = if names_a_page { None } else { item.component.as_deref() }`. BOTH
-            // SIDES WERE ALREADY `None` FOR EVERY KIND: `names_a_page` answers true for all four
+            // `filed_name = if names_a_block { None } else { item.component.as_deref() }`. BOTH
+            // SIDES WERE ALREADY `None` FOR EVERY KIND: `names_a_block` answers true for all four
             // container kinds, and the kinds it answers false for -- `string`, `control_state`,
             // `context_node` and the timestamped series -- carry no element name to begin with, so
             // `filed_name` was unconditionally `None` and no entry had a name to compare with it.
             // The term asserted nothing before the field was touched, and with the field gone it
             // cannot be written at all.
             //
-            // WHAT STILL DECIDES THE SUPERSEDE is the page key below: keyed on `live_page_key`
+            // WHAT STILL DECIDES THE SUPERSEDE is the page key below: keyed on `live_block_key`
             // when a kind converges on the page, and on (kind, object key) alone when it converges
-            // on the object. That distinction is `names_a_page`'s remaining job here, which is why
+            // on the object. That distinction is `names_a_block`'s remaining job here, which is why
             // the binding above it is kept and only this comparison goes.
             // THE IDENTITY OF EVERY PAGE IN THIS BUCKET, TAKEN BEFORE THE MUTATION.
             //
             // `retain` borrows the page index mutably and `identity_of` needs the NODE, so the
             // closure cannot ask which object the page it is looking at belongs to. Taken once
-            // here, from the same two sources -- see `state::page_identities_in`.
+            // here, from the same two sources -- see `state::block_identities_in`.
             //
             // NO DESTRUCTURING IS NEEDED: `object_block_lookup`, `bucket_map` and
             // `block_slab_live` are disjoint fields of `bucket_index`, which is why the line
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
-            let names = crate::engine::state::page_identities_in(
+            let names = crate::engine::state::block_identities_in(
                 bucket,
                 &crate::engine::state::BlockKeysByPosition::from_lookup(
                     &bucket_index.object_block_lookup,
@@ -4776,8 +4776,8 @@ fn fold_delta_block_items(
                 };
                 let drop = page.model_id.as_str() == item.model_id
                     && &**beside == item.object_key.as_ref()
-                    && match (names_a_page, here.as_ref()) {
-                        (true, Some(here)) => live_page_key(&page.address) == *here,
+                    && match (names_a_block, here.as_ref()) {
+                        (true, Some(here)) => live_block_key(&page.address) == *here,
                         _ => true,
                     };
                 if drop {
@@ -4808,7 +4808,7 @@ fn fold_delta_block_items(
         let identities = crate::engine::state::BlockKeysByPosition::from_lookup(object_block_lookup);
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
-            let names = crate::engine::state::page_identities_in(bucket, &identities);
+            let names = crate::engine::state::block_identities_in(bucket, &identities);
             bucket.block_index.retain(
                 live,
                 crate::engine::state::StaleCause::Overwrite,
@@ -4851,13 +4851,13 @@ fn fold_delta_block_items(
         // The record's key is not carried into memory: the map assigns a handle, and the
         // record's spelling is only rebuilt when the index is written back out.
         let object_key: Arc<str> = Arc::from(item.object_key.clone());
-        let handle = bucket.insert_page(&object_key, 
+        let handle = bucket.insert_block(&object_key, 
             BlockIndex {
                 model_id: crate::engine::storage_bucket_internals::stored_model_kind(
                     &item.model_id,
                 ),
                 // NO NAME IS FILED, AND THERE IS NO LONGER A CONDITION DECIDING IT. This read
-                // `if index_entry_names_a_page(..) { None } else { item.component }`, on the
+                // `if index_entry_names_a_block(..) { None } else { item.component }`, on the
                 // reasoning that the two routes must compute the same written key for the same
                 // page. Both branches are gone with the field: the entry has no slot for an
                 // element name, so there is nothing for the two routes to disagree about.
@@ -4886,7 +4886,7 @@ fn fold_delta_block_items(
         // reason: a page whose handle collided with an earlier one is not in the map twice and
         // must not be in the lookup twice either.
         if let Some(placed) = bucket.block_index.get(&handle) {
-            filed_pages.push((item.routing_bucket, handle, object_key, placed.clone()));
+            filed_blocks.push((item.routing_bucket, handle, object_key, placed.clone()));
         }
     }
     // UN-FILE BEFORE FILING, AND THE ORDER IS LOAD-BEARING. A fold can drop a page and place one
@@ -4901,7 +4901,7 @@ fn fold_delta_block_items(
             block_ref,
         );
     }
-    for (routing_bucket, handle, object_key, page) in &filed_pages {
+    for (routing_bucket, handle, object_key, page) in &filed_blocks {
         bucket_index.insert_object_block_lookup(*routing_bucket, *handle, object_key, page);
     }
 }
@@ -5276,7 +5276,7 @@ fn env_flag_on(name: &str) -> bool {
 /// It shipped ON by default (`env_flag_default_on`) from the set and list collapses onward, so the
 /// OFF position was a development affordance and never a deployed configuration. And its coverage
 /// was partly an accident of test ORDER: four arms -- `resident_map_readers` x2 and
-/// `set_listing_page_reads` x2 -- passed in a full suite only because
+/// `set_listing_block_reads` x2 -- passed in a full suite only because
 /// `replay_under_the_gate::the_gate_guard_restores_the_variable_even_when_an_assertion_panics` set
 /// the variable to `"0"` and never put it back. Driven both ways before the retirement: those four
 /// FAIL when run alone (6 passed, 4 failed) and PASS when the leaking arm runs first (15 of 15).
@@ -5843,7 +5843,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         };
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::page_identities_in(
+        let names = crate::engine::state::block_identities_in(
             bucket,
             &crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
@@ -5880,7 +5880,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             // including the one that leaves the list alone on a bucket this delete has emptied:
             // that is how a deleted object's id survives to be reported as a tombstone.
             // THE PROJECTION THIS LOOP ALREADY BUILT, handed over rather than re-derived.
-            crate::engine::storage_bucket_internals::repair_object_index_against_its_pages(
+            crate::engine::storage_bucket_internals::repair_object_index_against_its_blocks(
                 shard_id,
                 bucket,
                 &names,
@@ -5905,7 +5905,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // file it in the same enclosing function; the only doors that do not file have no callers
         // at all, or none outside tests and compile out of `--lib` with zero errors. So an empty
         // lookup means no live page is resident -- and a rebuild over no live pages files nothing.
-        // `push_object_dirty_onto_its_existing_pages` carries the census and asserts the same
+        // `push_object_dirty_onto_its_existing_blocks` carries the census and asserts the same
         // invariant where it used to repair it.
         //
         // THE REF TOTAL'S DISJUNCT WAS ALREADY DEAD. It read
@@ -6016,7 +6016,7 @@ fn mark_bucket_index_block_deleted_with(
 /// drives. `a_removal_retains_one_entry_and_nothing_yet_collects_it` measures the other half.
 ///
 /// AND NOTHING YET COLLECTS ONE, which is the part it would be easy to imply otherwise.
-/// `compact_container_pages_batched` takes its elements from the RESIDENT maps and those do not hold
+/// `compact_container_blocks_batched` takes its elements from the RESIDENT maps and those do not hold
 /// removed elements, so a fold round cannot see a tombstone: it neither collects one nor risks
 /// dropping one. `container_membership::may_drop_tombstones` is the rule a walk that CAN see them will
 /// have to obey, written and driven now so it cannot be added without one.
@@ -6131,7 +6131,7 @@ fn mark_bucket_index_block_deleted_recording(
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
-        let names = crate::engine::state::page_identities_in(
+        let names = crate::engine::state::block_identities_in(
             bucket,
             &crate::engine::state::BlockKeysByPosition::from_lookup(
                 &shard.bucket_index.object_block_lookup,
@@ -6231,9 +6231,9 @@ fn mark_bucket_index_block_deleted_recording(
             bucket.set_meta_loaded(true);
             bucket.set_in_memory(!bucket.block_index.is_empty());
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own pages rather than over the
-            // set this call happened to drop. See [`repair_object_index_against_its_pages`].
+            // set this call happened to drop. See [`repair_object_index_against_its_blocks`].
             // THE PROJECTION THIS LOOP ALREADY BUILT, handed over rather than re-derived.
-            crate::engine::storage_bucket_internals::repair_object_index_against_its_pages(
+            crate::engine::storage_bucket_internals::repair_object_index_against_its_blocks(
                 shard_id,
                 bucket,
                 &names,
@@ -6343,7 +6343,7 @@ fn mark_bucket_index_block_deleted_recording(
                     .bucket_map
                     .get(&routing_bucket)
                     .and_then(|bucket| {
-                        bucket.tombstone_element_page(
+                        bucket.tombstone_element_block(
                             key,
                             crate::engine::storage_bucket_internals::stored_model_kind(model_id),
                             component,
@@ -6837,7 +6837,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
 /// THE KINDS ARE ITERATED because neither marking site knows the object's model, and the lookup is
 /// keyed by both. Seventeen map lookups against a set of that size, which is the same shape
 /// `bucket_index_target_buckets_for_object_key` and the delete path already use.
-pub(in crate::engine) fn push_object_dirty_onto_its_existing_pages(
+pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     shard: &mut ShardState,
     object_key: &str,
 ) {
@@ -7328,7 +7328,7 @@ fn invalidate_records_all_batched<K: AsRef<str>>(
 /// differ, none absent. That measurement is what makes taking the derived value here a no-op rather
 /// than a change of behaviour, and it is why this function no longer consults the field at all.
 ///
-/// THIS FUNCTION ANSWERS WITH THE BLOCK'S WHOLE PAYLOAD, which since `container_pages` is not
+/// THIS FUNCTION ANSWERS WITH THE BLOCK'S WHOLE PAYLOAD, which since `container_blocks` is not
 /// necessarily one element's value. `read_block_bytes` wraps it and does the selection; everything
 /// that wants the frame itself -- a rewrite, a walk, a report -- comes here.
 #[allow(clippy::too_many_arguments)]
@@ -7362,7 +7362,7 @@ fn read_block_frame_bytes(
     // this falls through to the normal read below, which returns None -- the WAL still holds the
     // value and a reload replays it.
     if crate::wal_record::is_wal_resident(address.block_slab_id()) {
-        if let Some(real_address) = hot_page_spill::lookup_spilled(shard_id, address.offset()) {
+        if let Some(real_address) = hot_block_spill::lookup_spilled(shard_id, address.offset()) {
             if let Ok(bytes) = block_store.read(&real_address) {
                 let _ = cache.put(cache_key, bytes.clone());
                 return Some(bytes);
@@ -7458,16 +7458,16 @@ fn read_block_bytes(
     let Some(component) = identity.component() else {
         return Some(bytes);
     };
-    match container_pages::select_container_element(&bytes, component) {
-        container_pages::ContainerElementRead::NotFramed => Some(bytes),
-        container_pages::ContainerElementRead::Found(value) => Some(value),
+    match container_blocks::select_container_element(&bytes, component) {
+        container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+        container_blocks::ContainerElementRead::Found(value) => Some(value),
         // A PAGE THAT STATES THE REMOVAL HAS NO VALUE TO HAND BACK, and this funnel's contract is a
         // value or nothing. The two are one answer HERE and two answers to the derivation, which is
         // why they are two variants and are collapsed at the one caller that cannot use the
         // difference rather than never distinguished.
-        container_pages::ContainerElementRead::Absent
-        | container_pages::ContainerElementRead::Removed => None,
-        container_pages::ContainerElementRead::Corrupt(_) => {
+        container_blocks::ContainerElementRead::Absent
+        | container_blocks::ContainerElementRead::Removed => None,
+        container_blocks::ContainerElementRead::Corrupt(_) => {
             note_corrupt_container_block();
             None
         }
@@ -7486,12 +7486,12 @@ fn note_corrupt_container_block() {
 }
 
 /// How many container pages this process has failed to walk.
-pub fn corrupt_container_page_count() -> u64 {
+pub fn corrupt_container_block_count() -> u64 {
     CORRUPT_CONTAINER_BLOCKS.load(std::sync::atomic::Ordering::Relaxed)
 }
 
 /// Forget the count, so a test can measure one exercise rather than the suite before it.
-pub fn reset_corrupt_container_page_count() {
+pub fn reset_corrupt_container_block_count() {
     CORRUPT_CONTAINER_BLOCKS.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
@@ -7530,7 +7530,7 @@ fn read_block_shared(
     });
     if let Ok(Some(bytes)) = cached {
         // THE CACHE HOLDS THE FRAME, NOT THE ELEMENT. It is keyed by address, and since
-        // `container_pages` one address can name a block holding several elements -- so the shared
+        // `container_blocks` one address can name a block holding several elements -- so the shared
         // path has to select out of a cache HIT exactly as `read_block_bytes` selects out of a
         // store read. Returning the hit unselected is the one way the two doors can disagree, and
         // it would disagree only when the block is warm: a cold read would answer correctly and a
@@ -7538,13 +7538,13 @@ fn read_block_shared(
         let Some(component) = identity.component() else {
             return Some(bytes);
         };
-        return match container_pages::select_container_element(&bytes, component) {
-            container_pages::ContainerElementRead::NotFramed => Some(bytes),
-            container_pages::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
+        return match container_blocks::select_container_element(&bytes, component) {
+            container_blocks::ContainerElementRead::NotFramed => Some(bytes),
+            container_blocks::ContainerElementRead::Found(value) => Some(std::sync::Arc::from(value)),
             // Collapsed for the same reason as the owning funnel above: no value either way.
-            container_pages::ContainerElementRead::Absent
-            | container_pages::ContainerElementRead::Removed => None,
-            container_pages::ContainerElementRead::Corrupt(_) => {
+            container_blocks::ContainerElementRead::Absent
+            | container_blocks::ContainerElementRead::Removed => None,
+            container_blocks::ContainerElementRead::Corrupt(_) => {
                 note_corrupt_container_block();
                 None
             }
@@ -7777,11 +7777,11 @@ fn object_manager_stats(
             //
             // The collect above has every bucket that is dirty in its own right. What it can miss
             // is a bucket holding a page of some OTHER bucket's object, and that bucket's pages
-            // carry the answer: `push_object_dirty_onto_its_existing_pages` runs at both sites
+            // carry the answer: `push_object_dirty_onto_its_existing_blocks` runs at both sites
             // that mark an object dirty, so every page of a dirty object has `page.dirty`. The
             // invariant is pinned elsewhere in these words -- "a mark that does not reach its
             // pages leaves the bucket reading clean" -- and
-            // `the_page_bit_answers_the_dirty_bucket_question` measures the two methods agreeing
+            // `the_block_bit_answers_the_dirty_bucket_question` measures the two methods agreeing
             // with that case isolated, rather than while every bucket happens to be dirty.
             //
             // THIS IS WHY THE OBJECT LOOP IS GONE. Its own comment recorded the cost: it asked,

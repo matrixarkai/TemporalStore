@@ -161,7 +161,7 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 /// It used to STRIP the routing bucket, which was the state the range-argument tests needed. There is
 /// nothing to strip, so what is left is the per-block assertion that the key is inert -- and a fixture
 /// that still covers every block, which is what the callers assert on.
-fn round_trip_every_page_through_the_wire(
+fn round_trip_every_block_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
     let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
@@ -260,7 +260,7 @@ fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Ve
     contents
 }
 
-fn page_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
+fn block_total(contents: &BTreeMap<u32, Vec<String>>) -> usize {
     contents.values().map(|keys| keys.len()).sum()
 }
 
@@ -324,7 +324,7 @@ fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
     for ((rebuild_end, rebuild), contents) in &observed {
         println!(
             "  0..{rebuild_end} {rebuild}: {} pages in {} buckets",
-            page_total(contents),
+            block_total(contents),
             contents.len()
         );
     }
@@ -347,12 +347,12 @@ fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
                 .get(&(rebuild_end, rebuild))
                 .expect("both arms ran");
             assert_eq!(
-                page_total(contents),
+                block_total(contents),
                 RECORDS,
                 "0..{rebuild_end} {rebuild}: {} of {RECORDS} pages survived. Neither rebuild has a \
                  drop filter any more, and a derived bucket cannot be out of range, so nothing can \
                  legitimately be lost here.",
-                page_total(contents)
+                block_total(contents)
             );
             assert_eq!(
                 contents, &expected,
@@ -406,11 +406,11 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
 
         let contents = bucket_contents(shard);
         assert_eq!(
-            page_total(&contents),
+            block_total(&contents),
             keys.len(),
             "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {} pages",
             keys.len(),
-            page_total(&contents)
+            block_total(&contents)
         );
 
         let outside: Vec<u32> = contents
@@ -420,7 +420,7 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
             .collect();
         println!(
             "  0..{end_routing_bucket}: {} live pages in {} buckets, {} buckets outside the range",
-            page_total(&contents),
+            block_total(&contents),
             contents.len(),
             outside.len()
         );
@@ -496,11 +496,11 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
 
         // DENOMINATOR: nothing was lost by the flush.
         assert_eq!(
-            page_total(&contents),
+            block_total(&contents),
             keys.len(),
             "0..{end_routing_bucket}: {} pages went in and {} came out of the flush",
             keys.len(),
-            page_total(&contents)
+            block_total(&contents)
         );
 
         // THE WITNESS, built outside the index from the fixture's own key list.
@@ -531,7 +531,7 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
 
         println!(
             "  0..{end_routing_bucket}: {} pages in {} buckets, witness names {} buckets",
-            page_total(&contents),
+            block_total(&contents),
             contents.len(),
             expected.len()
         );
@@ -590,11 +590,11 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
         refresh_bucket_runtime_flags(shard);
         let contents = bucket_contents(shard);
         assert_eq!(
-            page_total(&contents),
+            block_total(&contents),
             keys.len(),
             "end={rebuild_end}: {} pages went in and {} came out",
             keys.len(),
-            page_total(&contents)
+            block_total(&contents)
         );
         contents
     }
@@ -909,7 +909,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         {
             let mut shards = engine.shards.write().expect("engine lock poisoned");
             let shard = shards.get_mut(&1).expect("shard 1");
-            let round_tripped = round_trip_every_page_through_the_wire(shard);
+            let round_tripped = round_trip_every_block_through_the_wire(shard);
             assert_eq!(
                 round_tripped,
                 keys.len(),
@@ -926,7 +926,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             println!(
                 "  written with the OLD argument: {} pages in {} buckets, {filed_outside} of them \
                  outside the shard's own range",
-                page_total(&contents),
+                block_total(&contents),
                 contents.len()
             );
         }

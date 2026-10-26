@@ -844,12 +844,12 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
         );
 
         let entries = collect_live_block_entries(shard);
-        let dirty_pages = entries
+        let dirty_blocks = entries
             .iter()
             .filter(|entry| shard.dirty_objects.contains(&entry.object_key))
             .count();
         assert!(
-            dirty_pages > 0,
+            dirty_blocks > 0,
             "{label}: no live page belongs to a dirty object, so the precondition below holds \
              over an empty set"
         );
@@ -879,18 +879,18 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
             }
         }
         println!(
-            "  {label}: {dirty_pages} pages of dirty objects, {unreachable} filed where a scoped \
+            "  {label}: {dirty_blocks} pages of dirty objects, {unreachable} filed where a scoped \
              walk never looks, {miscredited} credited to a bucket the dirty set does not name"
         );
 
         if break_it {
             assert_eq!(
-                unreachable, dirty_pages,
+                unreachable, dirty_blocks,
                 "after the reconstruct every page is FILED by `block_routing_bucket(key, 0, \
                  u32::MAX)` while the dirty set still keys on the shard's own range, so every \
                  page of a dirty object sits in a bucket a walk scoped to the dirty set never \
                  opens. The dump that names the dirty bucket then carries no slab for any of \
-                 them. That is the losing direction, and it is all {dirty_pages} pages."
+                 them. That is the losing direction, and it is all {dirty_blocks} pages."
             );
             assert_eq!(
                 miscredited, 0,
@@ -904,7 +904,7 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
                 (0, 0),
                 "on the live write path every address carries `block_routing_bucket(key, start, \
                  end)`, which is what the dirty set keys on, so both halves hold for all \
-                 {dirty_pages} pages"
+                 {dirty_blocks} pages"
             );
         }
     }

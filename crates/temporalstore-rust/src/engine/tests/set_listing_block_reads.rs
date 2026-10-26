@@ -48,7 +48,7 @@
 //! not reads but the only validation a component has.
 //!
 //! THE SECOND HALF OF THAT SENTENCE USED TO READ "and nothing re-checks them; today a page that
-//! disagrees with its name is served as the page", and `container_pages` made it false. A container
+//! disagrees with its name is served as the page", and `container_blocks` made it false. A container
 //! page now states which element it holds, and the read funnel asks the page for the element the
 //! index named -- so a page that disagrees with its name is NOT served, it answers missing. The
 //! component and the payload are still written together by one call site, and the check is now on the
@@ -200,18 +200,18 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
             let Ok(bytes) = engine.block_store.read(&page.address) else {
                 continue;
             };
-            if let crate::engine::container_pages::ContainerBlockDecode::Framed {
+            if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
                 spelling,
                 items,
                 ..
-            } = crate::engine::container_pages::decode_container_page(&bytes)
+            } = crate::engine::container_blocks::decode_container_block(&bytes)
             {
                 for item in items {
                     if item.deleted {
                         continue;
                     }
                     if let Some(component) =
-                        crate::engine::container_pages::component_from_element_key(
+                        crate::engine::container_blocks::component_from_element_key(
                             spelling, &item.key,
                         )
                     {
@@ -226,7 +226,7 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
     stated
 }
 
-fn page_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
+fn block_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
     crate::engine::reset_maintenance_block_read_counts();
     let value = work();
     let counts = crate::engine::maintenance_block_read_counts();
@@ -291,7 +291,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
                 );
             }
 
-            let (set_response, set_reads) = page_reads_of(|| {
+            let (set_response, set_reads) = block_reads_of(|| {
                 read(
                     &engine,
                     Command::SetMembers {
@@ -301,7 +301,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
             });
             let set_members = members_returned(&set_response);
 
-            let (zset_response, zset_reads) = page_reads_of(|| {
+            let (zset_response, zset_reads) = block_reads_of(|| {
                 read(
                     &engine,
                     Command::ZSetRange {
@@ -437,9 +437,9 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
     }
 
     let (first_response, first_reads) =
-        page_reads_of(|| read(&engine, Command::SetMembers { key: key.clone() }));
+        block_reads_of(|| read(&engine, Command::SetMembers { key: key.clone() }));
     let (second_response, second_reads) =
-        page_reads_of(|| read(&engine, Command::SetMembers { key: key.clone() }));
+        block_reads_of(|| read(&engine, Command::SetMembers { key: key.clone() }));
 
     assert_eq!(MEMBERS, members_returned(&first_response).len());
     assert_eq!(MEMBERS, members_returned(&second_response).len());
@@ -809,7 +809,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
             .sets
             .insert_elements_for_test(&key, persisted_before_removal);
 
-        let live_pages: usize = shard
+        let live_blocks: usize = shard
             .bucket_index
             .bucket_map
             .values()
@@ -822,8 +822,8 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
             })
             .sum();
         assert!(
-            live_pages >= 1,
-            "DENOMINATOR: {live_pages} live pages, so the derived view is empty and the merge \
+            live_blocks >= 1,
+            "DENOMINATOR: {live_blocks} live pages, so the derived view is empty and the merge \
              below would keep everything for the wrong reason"
         );
 

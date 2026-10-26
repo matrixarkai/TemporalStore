@@ -616,7 +616,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
             .get(&routing_bucket)
             .expect("a released bucket keeps its node");
         let written = node.object_index.object_count();
-        let named = crate::engine::state::page_identities_in(node, &identities);
+        let named = crate::engine::state::block_identities_in(node, &identities);
         unnameable.insert(routing_bucket, (written, named.len()));
     }
     let total_written: usize = unnameable.values().map(|(written, _)| *written).sum();

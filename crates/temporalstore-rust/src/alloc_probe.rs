@@ -271,7 +271,7 @@ impl AllocClass {
     /// The name a report prints.
     pub const fn label(self) -> &'static str {
         match self {
-            AllocClass::BlockBytes => "page_bytes",
+            AllocClass::BlockBytes => "block_bytes",
             AllocClass::CarriedBlock => "carried_page",
             AllocClass::SlabAppend => "slab_append",
             AllocClass::BucketIndex => "bucket_index",

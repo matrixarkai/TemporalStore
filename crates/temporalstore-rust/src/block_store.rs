@@ -487,7 +487,7 @@ pub struct BlockAddress {
 /// than a restatement of it: four production sites had no key in hand at all. `FastPathRead::Hash`
 /// carried `fields` and a bucket derived FROM the key and then dropped the key;
 /// `compact_block_addresses` took `Item = (u32, &mut BlockAddress)`, so thirteen relocation arms
-/// each holding a key could not pass one; `packed_pages::read_feature_point`,
+/// each holding a key could not pass one; `packed_blocks::read_feature_point`,
 /// `read_feature_point_cached`, `product_model::read_sequence_row` and `context::read_context_value`
 /// took an address and a timestamp and nothing that named an object. Every one of them had a caller
 /// that did hold the key, which is why the threading terminates.

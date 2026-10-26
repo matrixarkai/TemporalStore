@@ -20,7 +20,7 @@
 //!
 //! # WHAT LIFTED IT
 //!
-//! `container_pages`' second shape carries a per-item removal flag, and the removal path appends a
+//! `container_blocks`' second shape carries a per-item removal flag, and the removal path appends a
 //! page that states the removal instead of only dropping the index entry. So the page set is no longer
 //! a superset of the membership; it is a LOG of it, folded by `container_membership::derive_membership`
 //! in append order.
@@ -127,7 +127,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
 
     // Both removal counters are floored over the removal below, so a removal that recorded NOTHING
     // in the pages cannot pass as one that did.
-    crate::engine::container_pages::reset_unframed_container_removal_count();
+    crate::engine::container_blocks::reset_unframed_container_removal_count();
     crate::engine::execute_on_shard::reset_tombstone_append_failure_count();
 
     let victim = members[3].clone();
@@ -142,7 +142,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
 
     assert_eq!(
         0,
-        crate::engine::container_pages::unframed_container_removal_count(),
+        crate::engine::container_blocks::unframed_container_removal_count(),
         "the removal could not frame a tombstone page, so the pages say nothing about it"
     );
     assert_eq!(
@@ -218,7 +218,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     println!(
         "  entries: {live_entries} live, {tombstone_entries} tombstone; \
          {} distinct page(s) read, {} of the first shape",
-        derived.pages_read, derived.live_only_pages
+        derived.blocks_read, derived.live_only_blocks
     );
     println!(
         "  the resident map holds {} member(s); the pages derive {} live and {} removed",
@@ -240,7 +240,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
 
     // DENOMINATORS FIRST. A zero on either side makes every comparison below empty.
     assert!(
-        derived.pages_read > 0,
+        derived.blocks_read > 0,
         "DENOMINATOR: no pages read for this object"
     );
     assert_eq!(

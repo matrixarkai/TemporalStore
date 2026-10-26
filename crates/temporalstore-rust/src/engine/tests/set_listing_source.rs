@@ -168,18 +168,18 @@ fn components_the_blocks_still_state(
             let Ok(bytes) = engine.block_store.read(&page.address) else {
                 continue;
             };
-            if let crate::engine::container_pages::ContainerBlockDecode::Framed {
+            if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
                 spelling,
                 items,
                 ..
-            } = crate::engine::container_pages::decode_container_page(&bytes)
+            } = crate::engine::container_blocks::decode_container_block(&bytes)
             {
                 for item in items {
                     if item.deleted {
                         continue;
                     }
                     if let Some(component) =
-                        crate::engine::container_pages::component_from_element_key(
+                        crate::engine::container_blocks::component_from_element_key(
                             spelling, &item.key,
                         )
                     {
@@ -229,18 +229,18 @@ fn components_at(
         let Ok(bytes) = engine.block_store.read(address) else {
             continue;
         };
-        if let crate::engine::container_pages::ContainerBlockDecode::Framed {
+        if let crate::engine::container_blocks::ContainerBlockDecode::Framed {
             spelling,
             items,
             ..
-        } = crate::engine::container_pages::decode_container_page(&bytes)
+        } = crate::engine::container_blocks::decode_container_block(&bytes)
         {
             for item in items {
                 if item.deleted {
                     continue;
                 }
                 if let Some(component) =
-                    crate::engine::container_pages::component_from_element_key(spelling, &item.key)
+                    crate::engine::container_blocks::component_from_element_key(spelling, &item.key)
                 {
                     stated.insert(component);
                 }
@@ -505,7 +505,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
 // WHAT IT COSTS
 // =================================================================================================
 
-fn page_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
+fn block_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
     crate::engine::reset_maintenance_block_read_counts();
     let value = work();
     let counts = crate::engine::maintenance_block_read_counts();
@@ -571,7 +571,7 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
         let key = format!("cost/{label}");
         let (engine, _dir) = reopened_set(&key, fold);
         let (pages, live, _) = block_and_entry_counts(&engine, &key);
-        let (listed, reads) = page_reads_of(|| listed_members(&engine, &key));
+        let (listed, reads) = block_reads_of(|| listed_members(&engine, &key));
         assert_eq!(
             all_members(),
             listed,

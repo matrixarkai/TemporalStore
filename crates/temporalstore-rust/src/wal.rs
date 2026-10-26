@@ -492,7 +492,7 @@ mod every_result_can_be_found_again_tests {
         }
     }
 
-    fn page_for(object_id: u64, component: &str) -> StagedBlock {
+    fn block_for(object_id: u64, component: &str) -> StagedBlock {
         StagedBlock {
             object_id,
             component: Some(std::sync::Arc::from(component)),
@@ -510,7 +510,7 @@ mod every_result_can_be_found_again_tests {
     fn a_batch_is_not_recoverable_because_a_sibling_carried_a_block() {
         let covered = names_only_an_address(1, "a");
         let uncovered = names_only_an_address(2, "b");
-        let pages = vec![page_for(1, "a")];
+        let pages = vec![block_for(1, "a")];
         // THE REGIME FIRST, so the `false` below is about the uncovered result and not about a
         // page set this helper failed to build: the covered result is covered on its own.
         assert!(
@@ -694,7 +694,7 @@ pub struct WalOutcomeItem {
     ///      `context_index`, `context_audit`, `context_child`, `context_summary`,
     ///      `context_compression`, and the entity/event/node/embedding arms below them. For these
     ///      the component is a stored key parsed as a `u64`, and
-    ///      `container_pages::ElementKeySpelling::for_kind` answers `None` for every one of them --
+    ///      `container_blocks::ElementKeySpelling::for_kind` answers `None` for every one of them --
     ///      their pages carry NO element-key frame at all. The payload cannot supply what it does
     ///      not spell, so for these kinds this field is the only copy and removing it is data loss.
     ///   2. ITS ABSENCE IS A MEANING, which no removal can preserve. The timestamped arm opens
@@ -710,7 +710,7 @@ pub struct WalOutcomeItem {
     /// # WHAT WOULD ACTUALLY BUY IT, SO THE NEXT LANE DOES NOT RE-DERIVE THIS
     ///
     /// Giving the timestamped kinds an element-key page frame of their own -- a fifth, sixth and
-    /// seventh `ElementKeySpelling`, and a `container_pages` writer on their append paths. That is
+    /// seventh `ElementKeySpelling`, and a `container_blocks` writer on their append paths. That is
     /// a PAGE-FORMAT change for six or more kinds, not a field deletion, and it has to carry the
     /// absence-is-a-meaning case in (2) across with it. Until then this field is load-bearing for
     /// everything except the four kinds that no longer read it.
@@ -732,12 +732,12 @@ pub struct WalOutcomeItem {
     /// measurement refuses it. THREE NUMBERS, each with the denominator it is over:
     ///
     ///   * THE PAGE ALREADY NAMES ITS POINTS, so most of the frame does not need building.
-    ///     `packed_pages::encode_feature_block` writes an eight-byte `timestamp_ms` in front of
+    ///     `packed_blocks::encode_feature_block` writes an eight-byte `timestamp_ms` in front of
     ///     every point, and its own doc says why -- "it is what picks one point out of a page
     ///     holding several". Driven through the real decoder on a 64-point append: ONE page, 64 of
     ///     64 timestamps recovered, 0 outcomes whose object carried several pages. For every kind
     ///     whose component IS the stored key, there is nothing to add.
-    ///   * ONLY ONE KIND CARRIES A SECOND TERM. `packed_pages::timestamped_component` packs an
+    ///   * ONLY ONE KIND CARRIES A SECOND TERM. `packed_blocks::timestamped_component` packs an
     ///     identity beside the stored key for `context_event` alone -- `{stored:016x}{id:016x}` --
     ///     and the page holds the timeline key but not the event id. So the frame work reduces to
     ///     ONE kind, at about 8 B per page to put the id in the frame.
@@ -862,7 +862,7 @@ pub struct StagedBlock {
     /// BYTES rather than answering missing.
     ///
     /// The component and not the page's ordinal, on four grounds that are measured elsewhere and
-    /// cited rather than re-derived here. `container_page_ordinal` derives the ordinal FROM this
+    /// cited rather than re-derived here. `container_block_ordinal` derives the ordinal FROM this
     /// component, so it is a lossy projection of the thing it would replace; #2008 measured that a
     /// delete frees an ordinal for the next insert to reuse ("correct for a position and would be
     /// silent corruption for an identity"); the ordinal is left at 0 past an object's 65,535th

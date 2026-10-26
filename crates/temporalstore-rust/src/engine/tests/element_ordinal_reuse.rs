@@ -64,17 +64,17 @@
 //! passes: three members, the third at ordinal 2, and after removing it the arrival is handed 2.
 //!
 //! **WHAT KEEPS IT UNRESERVED IS NO LONGER A `deleted` FILTER.** This paragraph said
-//! "`container_page_ordinal` filters `deleted`, so the tombstone is invisible to the `max`". That
+//! "`container_block_ordinal` filters `deleted`, so the tombstone is invisible to the `max`". That
 //! walk is gone. The allocator asks the RESIDENT MAP, which is keyed by element and holds exactly
 //! the object's live elements, so its high-water mark is over live elements by construction and no
 //! filter is needed -- a removal drops its element from the map and the number falls with it. The
 //! two hazards the filter existed for are unrepresentable rather than guarded now, which
-//! `state::container_page_ordinal`'s own doc sets out.
+//! `state::container_block_ordinal`'s own doc sets out.
 //!
 //! AND THAT MATTERS MORE THAN A TIDIER MECHANISM, because the retained live ENTRY a removal leaves
 //! would have defeated the filter. An entry over a vacated page is not deleted, so a walk over live
 //! entries no longer falls after a removal -- which is exactly how this module's own probe broke:
-//! `next_element_ordinal_would_be` was `pages_of(..).len()`, it reported one too many, and two arms
+//! `next_element_ordinal_would_be` was `blocks_of(..).len()`, it reported one too many, and two arms
 //! read that as the engine having stopped reusing. It asks the allocator now. The hazard the old
 //! paragraph warned of -- "the ordinal would climb once per element ever written ... and a container
 //! churning distinct members would walk to `MAX_ADDRESSABLE_BLOCK_ID`" -- is real and is what the
@@ -381,12 +381,12 @@ fn write(engine: &TemporalEngine, command: Command) {
 /// object holds and what ordinal the next element would take. So the filter restores each of those
 /// claims to the quantity it was always about, rather than weakening any of them.
 /// [`tombstoned_blocks_of`] is the other half, and the arms below assert BOTH.
-fn pages_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<String>, Option<u64>)> {
+fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<String>, Option<u64>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = Vec::new();
     for (_routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         if page.deleted {
             continue;
@@ -413,7 +413,7 @@ fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<
     // ordinal", which is the claim this exists to refute.
     let mut held = Vec::new();
     for (_routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         if page.deleted && page.model_id.as_str() == kind && &*object_key == key {
             held.push(page.address.block_id());
@@ -429,7 +429,7 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut count = 0usize;
     for (_routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         if page.model_id.as_str() == kind && &*object_key == key && page.deleted {
             count += 1;
@@ -440,7 +440,7 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
 
 /// WHAT THE ENGINE'S OWN ALLOCATOR WOULD HAND A NEW ELEMENT OF THIS OBJECT.
 ///
-/// THIS WAS `pages_of(engine, kind, key).len()` AND THAT PROXY HAS BROKEN. Counting the object's
+/// THIS WAS `blocks_of(engine, kind, key).len()` AND THAT PROXY HAS BROKEN. Counting the object's
 /// LIVE page entries stood in for the ordinal high-water mark for as long as the two moved
 /// together, and they no longer do: a container removal leaves the live entry over the page its
 /// element vacated STANDING, beside a tombstone, because the page may still hold the object's other
@@ -453,7 +453,7 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
 /// filter, not a reservation." The filter is intact; what changed is that a retained entry is not
 /// deleted.
 ///
-/// SO IT ASKS `container_page_ordinal`, WHICH IS THE ALLOCATOR ITSELF rather than anything standing
+/// SO IT ASKS `container_block_ordinal`, WHICH IS THE ALLOCATOR ITSELF rather than anything standing
 /// in for it. There is no second implementation to drift: the number this returns is the number the
 /// next write would be handed. The allocator reads the resident map -- keyed by element, holding
 /// exactly the object's live elements -- so the high-water mark it reports is over live elements by
@@ -473,12 +473,12 @@ fn next_element_ordinal_would_be(engine: &TemporalEngine, kind: &str, key: &str)
          its overwrite arm and this helper would be reporting that element's position as the next \
          free ordinal"
     );
-    crate::engine::state::container_page_ordinal(shard, kind, key, &probe) as usize
+    crate::engine::state::container_block_ordinal(shard, kind, key, &probe) as usize
 }
 
 /// The ordinal one named element of this object actually holds, from the resident map.
 ///
-/// The authority: `container_page_ordinal`'s overwrite arm reads exactly this, so an element's
+/// The authority: `container_block_ordinal`'s overwrite arm reads exactly this, so an element's
 /// position and what the allocator would hand it back are one number read one way.
 fn ordinal_of_element(
     engine: &TemporalEngine,
@@ -640,7 +640,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         // a sixth arm was added, and nothing would fail.
         let whole_object = matches!(delete, Command::CommonDelete { .. });
         write(&engine, seed);
-        let before = pages_of(&engine, kind, key);
+        let before = blocks_of(&engine, kind, key);
         assert!(
             !before.is_empty(),
             "DENOMINATOR: {kind}/{key} holds no page after its seed, so the delete below would \
@@ -654,7 +654,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         );
 
         write(&engine, delete);
-        let after = pages_of(&engine, kind, key);
+        let after = blocks_of(&engine, kind, key);
         let tombstoned = tombstoned_blocks_of(&engine, kind, key);
 
         println!(
@@ -680,10 +680,10 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         // per-element arms in the `else` branch below asserting that the LIVE page count FALLS --
         // which is exactly what a gated removal does not do, and the arm would have gone red for
         // the right reason with the wrong explanation. Asking the shared predicate means the kind
-        // list lives in ONE place: a kind added to `index_entry_names_a_page` arrives here with
+        // list lives in ONE place: a kind added to `index_entry_names_a_block` arrives here with
         // it, and a kind held OUT of it (hash, today) keeps the ungated expectation.
         let collapsed = !whole_object
-            && crate::engine::storage_bucket_internals::index_entry_names_a_page(kind);
+            && crate::engine::storage_bucket_internals::index_entry_names_a_block(kind);
         if collapsed {
             assert!(
                 tombstoned > 0,
@@ -781,7 +781,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
         );
     }
 
-    let seeded = pages_of(&engine, "zset", "eo-reuse");
+    let seeded = blocks_of(&engine, "zset", "eo-reuse");
     assert_eq!(
         seeded.len(),
         held.len(),
@@ -839,7 +839,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
     // THE FREED NUMBER IS NOW HELD TWICE, AND EXACTLY ONE OF THE TWO IS LIVE.
     //
     // A NEW FACT, not a relaxation of the one above: the removal keeps an entry pointing at the page
-    // that records it, and `container_page_ordinal` filters `deleted`, so the tombstone keeps the
+    // that records it, and `container_block_ordinal` filters `deleted`, so the tombstone keeps the
     // number it had while the arrival is handed the same number. That is safe for exactly the reason
     // this module has always given -- an ordinal names a POSITION and identity lives in the component
     // -- and it is asserted here rather than left implicit, because "two entries share ordinal 2" is
@@ -937,7 +937,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
         },
     );
     assert_eq!(
-        pages_of(&engine, "zset", "eo-tombstone").len(),
+        blocks_of(&engine, "zset", "eo-tombstone").len(),
         1,
         "DENOMINATOR: the seed did not file a page, so nothing below is being observed"
     );
@@ -961,7 +961,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
         },
     );
     let held_after_rewrite = tombstone_holds(&engine, object_id);
-    let blocks_after_rewrite = pages_of(&engine, "zset", "eo-tombstone").len();
+    let blocks_after_rewrite = blocks_of(&engine, "zset", "eo-tombstone").len();
 
     println!(
         "\n  [tombstone] object id {object_id}: held before delete={held_before_delete}, after \
@@ -1113,7 +1113,7 @@ fn a_high_water_mark_lives_only_where_the_rebuild_recomputes_it() {
             },
         );
 
-        let seeded_blocks = pages_of(&engine, "zset", "eo-reload").len();
+        let seeded_blocks = blocks_of(&engine, "zset", "eo-reload").len();
         let seeded_durable = durable_element_count(&engine, "zset", "eo-reload");
         assert_eq!(
             seeded_blocks,
@@ -1294,11 +1294,11 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
 
     // ONE ELEMENT'S COMPONENT SPELLING, READ FROM THE PAGE THAT SPELLS IT.
     //
-    // RE-ATTRIBUTED. This read `pages_of(...)[0].0` -- the component off the index entry -- and
+    // RE-ATTRIBUTED. This read `blocks_of(...)[0].0` -- the component off the index entry -- and
     // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no component"))` is exactly what it
     // did, because an entry has no element-name field to hold one. The four spellings this arm is
     // about did NOT go anywhere: a container page states its own elements in its payload, which is
-    // what `container_pages::ElementKeySpelling` renders and what makes several pages foldable into
+    // what `container_blocks::ElementKeySpelling` renders and what makes several pages foldable into
     // one. So the component comes off the page, through the engine's own
     // `container_membership::derive_membership`, which is the same door `SetMembers` answers from.
     //
@@ -1314,7 +1314,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
             let mut live = 0usize;
             {
                 for (_routing_bucket, _handle, object_key, page) in
-                    super::pages_with_identity(&shard.bucket_index)
+                    super::blocks_with_identity(&shard.bucket_index)
                 {
                     if page.model_id.as_str() == kind && &*object_key == key {
                         if !page.deleted {
@@ -1872,7 +1872,7 @@ fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usiz
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut rows = Vec::new();
     for (_routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         rows.push((
             page.model_id.as_str().to_string(),
@@ -2906,7 +2906,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         },
     );
     assert_eq!(
-        pages_of(&engine, "zset", "eo-fold").len(),
+        blocks_of(&engine, "zset", "eo-fold").len(),
         2,
         "DENOMINATOR: the fixture did not file two pages"
     );

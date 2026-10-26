@@ -25,7 +25,7 @@
 //! Its measured result was 96.00% -> 0.00% unreachable with a negative control still at 1/2.
 //!
 //! So the acceptance test for THIS change is #2011's failing case passing on the product's own
-//! read path, and it lives in `carried_page_identity` where the BEFORE numbers were taken. That
+//! read path, and it lives in `carried_block_identity` where the BEFORE numbers were taken. That
 //! module's `free` id is no longer a simulation -- it is simply what `stable_block_object_id`
 //! returns.
 //!
@@ -59,7 +59,7 @@ use std::collections::BTreeSet;
 use crate::engine::hashing::stable_block_object_id;
 
 const OPERATOR_END: u32 = 1023;
-/// Eight keys and twenty-five fields: the population `carried_page_identity` and
+/// Eight keys and twenty-five fields: the population `carried_block_identity` and
 /// `entry_object_identity` both use, so the rows here are comparable to theirs line for line.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
@@ -160,7 +160,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 /// `object_index` is the thing this change shrinks, so it is read DIRECTLY rather than inferred
 /// from a grouping of page entries. Only rows belonging to the kind's own keys are counted, so one
 /// arm's rows cannot leak into the other's.
-fn pages_and_index_rows(
+fn blocks_and_index_rows(
     engine: &TemporalEngine,
     kind: &str,
     keys: &BTreeSet<String>,
@@ -286,14 +286,14 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     let hash_keys: BTreeSet<String> = (0..CONTAINER_KEYS).map(|k| format!("h{k}")).collect();
     let string_keys: BTreeSet<String> = (0..ROUTED_KEYS).map(|i| format!("s{i}")).collect();
 
-    let (hash_pages, hash_rows) = pages_and_index_rows(&engine, "hash", &hash_keys);
-    let (string_pages, string_rows) = pages_and_index_rows(&engine, "string", &string_keys);
+    let (hash_blocks, hash_rows) = blocks_and_index_rows(&engine, "hash", &hash_keys);
+    let (string_blocks, string_rows) = blocks_and_index_rows(&engine, "string", &string_keys);
 
     println!("\n=== bucket.object_index rows against live pages ===");
     println!("  kind     keys  pages  rows  rows/page");
     for (kind, keys, pages, rows) in [
-        ("hash", hash_keys.len(), hash_pages, hash_rows),
-        ("string", string_keys.len(), string_pages, string_rows),
+        ("hash", hash_keys.len(), hash_blocks, hash_rows),
+        ("string", string_keys.len(), string_blocks, string_rows),
     ] {
         println!(
             "  {kind:<7} {keys:>5} {pages:>6} {rows:>5}   {:>8.4}",
@@ -303,26 +303,26 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
 
     // DENOMINATORS FIRST.
     assert_eq!(
-        hash_pages,
+        hash_blocks,
         CONTAINER_KEYS * MEMBERS_PER_KEY,
-        "the container arm exercised {hash_pages} pages, not {}",
+        "the container arm exercised {hash_blocks} pages, not {}",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     assert_eq!(
-        string_pages, ROUTED_KEYS,
-        "CONTROL NOT EXERCISED: {string_pages} string pages, not {ROUTED_KEYS}"
+        string_blocks, ROUTED_KEYS,
+        "CONTROL NOT EXERCISED: {string_blocks} string pages, not {ROUTED_KEYS}"
     );
 
     // THE DELIVERABLE.
     assert_eq!(
         hash_rows, CONTAINER_KEYS,
         "the container arm holds {hash_rows} object-index rows for {CONTAINER_KEYS} keys and \
-         {hash_pages} pages. One key is one object now, so the row count is the KEY count -- if it \
+         {hash_blocks} pages. One key is one object now, so the row count is the KEY count -- if it \
          is the PAGE count, the component is still reaching the id"
     );
     assert!(
-        hash_pages > hash_rows,
-        "DENOMINATOR: {hash_pages} pages and {hash_rows} rows. A fixture whose keys held one page \
+        hash_blocks > hash_rows,
+        "DENOMINATOR: {hash_blocks} pages and {hash_rows} rows. A fixture whose keys held one page \
          each would satisfy the assertion above while measuring nothing"
     );
 
@@ -334,9 +334,9 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     );
     println!(
         "  VERDICT: container rows/page {:.4} (was 1.0000, one row per page); CONTROL string \
-         rows/page {:.4}, unmoved, {string_pages} pages exercised.",
-        hash_rows as f64 / hash_pages as f64,
-        string_rows as f64 / string_pages as f64
+         rows/page {:.4}, unmoved, {string_blocks} pages exercised.",
+        hash_rows as f64 / hash_blocks as f64,
+        string_rows as f64 / string_blocks as f64
     );
 
     // AND THE DISTRIBUTION THAT SAYS WHERE THIS APPLIES, as #2007 measured it. A histogram rather
@@ -461,7 +461,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     // So the membership claim is asked of `shard.hashes`, which is the authority and is what
     // `HashLen` and `HashGetAll` answer from, and the retained entry is asserted as the cost rather
     // than left to look like a bug nobody noticed. The arm that owns the retained entry as its own
-    // subject is `container_page_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it`.
+    // subject is `container_block_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it`.
     assert_eq!(
         resident_after_one.len(),
         FIELDS - 1,

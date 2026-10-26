@@ -841,7 +841,7 @@ fn setting_a_length_after_the_fact_writes_it_and_saturates_it() {
 /// written. An old row carrying a real `oi` beside a `g` that agrees with it still DECODES -- both
 /// sides of that cross-check come off the wire -- and then yields an address whose
 /// `ADDRESS_HAS_GENERATION` bit is set while `generation()` answers `None`. The stamp refusing the
-/// load is the only point at which that is visible, and `page_entry_names::
+/// load is the only point at which that is visible, and `block_entry_names::
 /// a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded` drives it.
 ///
 /// THE EARLIER NOTE, KEPT because it is the other half of the same slot's history: `generation`
@@ -2914,7 +2914,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
         let engine = budget_engine(dir.path());
         objside_seed(&engine, scale, true);
 
-        let (live_rows, tombstone_rows, block_indexes, page_arms) = {
+        let (live_rows, tombstone_rows, block_indexes, block_arms) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
             let (live, dead) = object_id_rows(shard);
@@ -3100,32 +3100,32 @@ fn what_the_object_side_of_the_bucket_node_costs() {
         // NEXT change to start, and they are measured here rather than assumed.
         let block_charge = clone_alloc_bytes(&block_indexes);
         let block_spine = spine(size_of::<BlockIndexMap>());
-        let page_heap = block_charge.saturating_sub(block_spine);
-        let block_multi = page_arms[2];
+        let block_heap = block_charge.saturating_sub(block_spine);
+        let block_multi = block_arms[2];
         assert_eq!(
             buckets,
-            page_arms.iter().sum::<usize>(),
+            block_arms.iter().sum::<usize>(),
             "the page arm census counted {} buckets against {buckets}",
-            page_arms.iter().sum::<usize>()
+            block_arms.iter().sum::<usize>()
         );
         println!(
             "  NEXT TERM -- the page index: {} B of field x {buckets} = {block_spine} B, plus \
-             {page_heap} B on the heap ({:.2} B/bucket), {:.1}% of the node's width",
+             {block_heap} B on the heap ({:.2} B/bucket), {:.1}% of the node's width",
             size_of::<BlockIndexMap>(),
-            page_heap as f64 / buckets as f64,
+            block_heap as f64 / buckets as f64,
             100.0 * size_of::<BlockIndexMap>() as f64 / size_of::<BucketNode>() as f64
         );
         println!(
             "    its arms: {} buckets hold no page, {} hold exactly one (inline), {block_multi} \
              hold several (a map) -- {:.2}% on the map arm",
-            page_arms[0],
-            page_arms[1],
+            block_arms[0],
+            block_arms[1],
             100.0 * block_multi as f64 / buckets as f64
         );
         if block_multi > 0 {
             println!(
                 "    the map arm alone charges {:.1} B a bucket that is on it",
-                page_heap as f64 / block_multi as f64
+                block_heap as f64 / block_multi as f64
             );
         }
 
@@ -4000,7 +4000,7 @@ fn a_bucket_nodes_tombstone_rows_survive_the_wire() {
     );
     assert_eq!(
         Some((3, 128, 48)),
-        back.tombstone_element_page(
+        back.tombstone_element_block(
             "tw/set",
             crate::engine::storage_bucket_internals::stored_model_kind("set"),
             "6d2d31"

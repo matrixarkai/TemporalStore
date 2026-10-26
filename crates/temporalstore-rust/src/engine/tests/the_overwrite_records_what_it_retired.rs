@@ -5,7 +5,7 @@
 //!
 //! # THE THING THAT DID NOT EXIST
 //!
-//! Liveness was tracked exactly and staleness was never recorded. `insert_page` and `remove` both
+//! Liveness was tracked exactly and staleness was never recorded. `insert_block` and `remove` both
 //! discharge `block_slab_live`, and that tally is right to the byte -- 2,000 keys x 256 B holds at
 //! 536,000 B across five rewrites, which is precisely the live set. But nothing wrote down what
 //! LEFT, so garbage was only derivable as `logical_ever - live` per slab, and only after a

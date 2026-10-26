@@ -178,7 +178,7 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 /// EQUAL, and `the_older_index_door_is_the_identity` fails if it does not.
 ///
 /// Returns how many pages it round-tripped, so a caller can still assert the fixture was covered.
-fn round_trip_every_page_through_the_wire(
+fn round_trip_every_block_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
     let keys: Vec<String> = shard.strings().keys().map(|key| key.to_string()).collect();
@@ -400,10 +400,10 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     let (round_tripped, contents) = {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        // The door is the identity now -- see `round_trip_every_page_through_the_wire`. It is kept
+        // The door is the identity now -- see `round_trip_every_block_through_the_wire`. It is kept
         // in the fixture because it asserts that, per page, and because a page that DID change when
         // its `rs` key came off would make every number below mean something else.
-        let round_tripped = round_trip_every_page_through_the_wire(shard);
+        let round_tripped = round_trip_every_block_through_the_wire(shard);
         // The rebuild the load path runs, with the argument mx#1945 gave it.
         rebuild_bucket_first_index(1, shard, 0, NARROW_END);
         refresh_bucket_runtime_flags(shard);
@@ -492,7 +492,7 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
     let filed_in_range = {
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
-        let round_tripped = round_trip_every_page_through_the_wire(shard);
+        let round_tripped = round_trip_every_block_through_the_wire(shard);
         rebuild_bucket_first_index(1, shard, 0, NARROW_END);
         refresh_bucket_runtime_flags(shard);
         assert_eq!(

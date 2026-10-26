@@ -17,7 +17,7 @@
 //!   bucket.dirty() || bucket.block_index.values().any(|page| page.dirty)
 //! ```
 //!
-//! and it is exact rather than approximate, because `push_object_dirty_onto_its_existing_pages`
+//! and it is exact rather than approximate, because `push_object_dirty_onto_its_existing_blocks`
 //! runs at **both** sites that mark an object dirty. The invariant is already pinned elsewhere in
 //! these words: *a mark that does not reach its pages leaves the bucket reading clean.* So every
 //! page of a dirty object carries `page.dirty`, and every bucket holding one of those pages has a
@@ -77,7 +77,7 @@ fn by_block_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
 }
 
 #[test]
-fn the_page_bit_answers_the_dirty_bucket_question() {
+fn the_block_bit_answers_the_dirty_bucket_question() {
     // ---- A NARROW ROUTING RANGE, so keys SHARE buckets. On the default range a key lands alone
     // ---- by construction, every object's blocks sit in its own routing bucket, and the two
     // ---- methods would agree without the case that distinguishes them ever arising.
@@ -208,7 +208,7 @@ fn the_page_bit_answers_the_dirty_bucket_question() {
         via_objects, via_blocks,
         "the two methods disagree.\n  via the object set: {via_objects:?}\n  via the page bit:   \
          {via_blocks:?}\n\nThe page bit is only sufficient while \
-         `push_object_dirty_onto_its_existing_pages` runs at EVERY site that marks an object dirty. \
+         `push_object_dirty_onto_its_existing_blocks` runs at EVERY site that marks an object dirty. \
          A disagreement means a marking site stopped pushing, and the object-keyed set is covering \
          for it -- fix the push rather than keeping the set, because a bucket missing from the page \
          view is a bucket that stops being dumped"

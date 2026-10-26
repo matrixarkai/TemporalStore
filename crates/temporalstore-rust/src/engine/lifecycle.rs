@@ -491,7 +491,7 @@ impl TemporalEngine {
         // Install the durable read-by-address fallback for log-backed hot blocks: an eviction
         // handler spills an evicted hot block to a real slab (freeing DRAM + preventing the acked
         // write from reading back as missing). Idempotent + a no-op when disabled.
-        hot_page_spill::install_spill_handler(&cache, &block_store);
+        hot_block_spill::install_spill_handler(&cache, &block_store);
         Self {
             shards: Arc::default(),
             cache,
@@ -693,7 +693,7 @@ impl TemporalEngine {
     /// is the door that selects, and asking it would hand back the element's value with the frame
     /// already gone.
     #[cfg(test)]
-    pub(crate) fn container_page_frame_for_test(
+    pub(crate) fn container_block_frame_for_test(
         &self,
         shard_id: ShardId,
         model_id: &str,
@@ -709,7 +709,7 @@ impl TemporalEngine {
         // `page.component.as_deref() == component` on every branch. An entry carries no element
         // name, so for a container element that resolved NOTHING and this door answered `None` for
         // elements that were present and served:
-        // `container_page_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
+        // `container_block_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
         // framed_page` failed at "no stored page for hash hash-key component field-0000".
         //
         // The resident map is keyed BY the element and is where the production readers that used to
@@ -751,7 +751,7 @@ impl TemporalEngine {
     }
 
     /// Install a hash field whose block carries NO element frame, the way every block written before
-    /// `container_pages` existed does.
+    /// `container_blocks` existed does.
     ///
     /// The one thing a compatibility test needs and cannot otherwise have: bytes in a slab with no
     /// magic in front of them, named by a block index entry and by the resident map, so the product's
@@ -761,7 +761,7 @@ impl TemporalEngine {
     ///
     /// Returns whether the block was written, so a fixture cannot pass by having installed nothing.
     #[cfg(test)]
-    pub(crate) fn install_unframed_hash_page_for_test(
+    pub(crate) fn install_unframed_hash_block_for_test(
         &self,
         shard_id: ShardId,
         object_key: &str,
@@ -1411,7 +1411,7 @@ impl TemporalEngine {
             return String::from("<no shard>");
         };
         let mut out = String::new();
-        let identities = shard.bucket_index.page_identities();
+        let identities = shard.bucket_index.block_identities();
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
             for (block_ref_key, page) in &bucket.block_index {
                 // A page whose neighbours do not name an object prints an empty key and a zero
@@ -1701,7 +1701,7 @@ impl TemporalEngine {
     ///
     /// # THE PAGE IS THE AUTHORITY FOR WHAT ELEMENT IT HOLDS, AND IT IS NOT ALWAYS AVAILABLE
     ///
-    /// A container page states its own elements -- `container_pages` is the module that made it do
+    /// A container page states its own elements -- `container_blocks` is the module that made it do
     /// so, and its own doc says why: "the element name now exists in a second place, which is the
     /// precondition for it leaving the first." Replay used to ask the RECORDED OUTCOME which
     /// element its page was about; it asks the page.
@@ -1718,7 +1718,7 @@ impl TemporalEngine {
     /// # WHAT THAT FAILURE ACTUALLY WAS, MEASURED, AND IT IS NOT WHAT IT LOOKED LIKE
     ///
     /// "The page names nothing" reads as a missing frame, and the first reading of it here was that
-    /// some write path stores an unframed page -- `container_pages::UNFRAMED_CONTAINER_WRITES`
+    /// some write path stores an unframed page -- `container_blocks::UNFRAMED_CONTAINER_WRITES`
     /// exists for exactly that class, so it was a plausible cause. IT WAS WRONG. The pages are
     /// framed. Driven from the proxy binary's own suite with a temporary print on this arm, 24 of
     /// 24 fallbacks reported:
@@ -1754,7 +1754,7 @@ impl TemporalEngine {
     /// it in 3 of 3 payloads by searching for it -- and that is a weaker claim than it looks:
     /// present is not the same as recoverable. What makes this sound is that the page carries a
     /// one-byte KEY SPELLING and `component_from_element_key` is a defined inverse of the rendering
-    /// the write path used, driven both ways by `container_page_element_key`.
+    /// the write path used, driven both ways by `container_block_element_key`.
     ///
     /// # WHERE THE BYTES COME FROM, AND WHY THE ORDER IS THIS ONE
     ///
@@ -1783,7 +1783,7 @@ impl TemporalEngine {
         item: &crate::wal::WalOutcomeItem,
         carried: &[crate::wal::StagedBlock],
     ) -> OutcomeBlockElements {
-        let Some(spelling) = super::container_pages::ElementKeySpelling::for_kind(&item.kind) else {
+        let Some(spelling) = super::container_blocks::ElementKeySpelling::for_kind(&item.kind) else {
             return OutcomeBlockElements::Unreadable("this kind has no element-key page");
         };
         let Some(address) = item.resolved_address() else {
@@ -1817,13 +1817,13 @@ impl TemporalEngine {
                 }
             },
         };
-        match super::container_pages::decode_container_page(&bytes) {
-            super::container_pages::ContainerBlockDecode::Framed {
+        match super::container_blocks::decode_container_block(&bytes) {
+            super::container_blocks::ContainerBlockDecode::Framed {
                 spelling: written, items, ..
             } if written == spelling => {
                 let mut named = Vec::with_capacity(items.len());
                 for element in &items {
-                    match super::container_pages::component_from_element_key(written, &element.key) {
+                    match super::container_blocks::component_from_element_key(written, &element.key) {
                         Some(component) => named.push((component, element.deleted)),
                         None => {
                             return OutcomeBlockElements::Unreadable(
@@ -1839,13 +1839,13 @@ impl TemporalEngine {
                 }
                 OutcomeBlockElements::Named(named)
             }
-            super::container_pages::ContainerBlockDecode::Framed { .. } => {
+            super::container_blocks::ContainerBlockDecode::Framed { .. } => {
                 OutcomeBlockElements::Unreadable("the frame's key spelling is not this kind's")
             }
-            super::container_pages::ContainerBlockDecode::NotFramed => {
+            super::container_blocks::ContainerBlockDecode::NotFramed => {
                 OutcomeBlockElements::Unreadable("the page carries no frame")
             }
-            super::container_pages::ContainerBlockDecode::Corrupt(_) => {
+            super::container_blocks::ContainerBlockDecode::Corrupt(_) => {
                 OutcomeBlockElements::Unreadable("the frame could not be walked")
             }
         }
@@ -1930,7 +1930,7 @@ impl TemporalEngine {
                 // THE TOMBSTONE PAGE NAMES WHAT WAS REMOVED, so a removal reads its element the
                 // same way an insert does.
                 //
-                // `remove_container_element` appends `container_pages::tombstone_page(kind,
+                // `remove_container_element` appends `container_blocks::tombstone_block(kind,
                 // component)` before it records anything, and the outcome carries THAT page's
                 // address -- the comment on the re-filing below already says the address travels
                 // for the entry's sake. The page it names is a frame whose item for the removed
@@ -1939,7 +1939,7 @@ impl TemporalEngine {
                 // outcome does not have to spell it.
                 //
                 // A REMOVAL WITH NO TOMBSTONE PAGE IS REFUSED, and that is a deliberate narrowing
-                // rather than a gap left open. `tombstone_page` answers `None` for a kind with no
+                // rather than a gap left open. `tombstone_block` answers `None` for a kind with no
                 // element-key spelling and counts it, and the append can fail and is counted by
                 // `TOMBSTONE_APPEND_FAILURES`. In either case the removal was never recorded IN THE
                 // PAGES -- so a derivation after the replay would resurrect the element whatever
@@ -2776,7 +2776,7 @@ impl TemporalEngine {
         if shard.wal_resident_blocks.is_empty() {
             return;
         }
-        let identities = shard.bucket_index.page_identities();
+        let identities = shard.bucket_index.block_identities();
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, page) in bucket.block_index.iter() {
                 if page.deleted {
@@ -3334,7 +3334,7 @@ impl TemporalEngine {
         // Drop this shard's hot-block spill redirects: on the next load the WAL replay re-derives
         // the hot blocks (and re-spills them as needed), so the live-path redirect map stays
         // bounded across load/unload cycles.
-        hot_page_spill::clear_shard(request.shard_id);
+        hot_block_spill::clear_shard(request.shard_id);
         // Drop this shard's WAL-resident registrations too: they name records in a log this
         // engine no longer serves, and a reload re-derives them from the WAL anyway.
         block_in_wal::clear_shard(&self.block_store, request.shard_id);

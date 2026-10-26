@@ -12,8 +12,8 @@
 //!
 //! An object list amortises. It costs a row per object and pays for itself by letting every page
 //! of that object carry an ordinal instead of a name. The saving is therefore
-//! `(name - ordinal) * pages_per_object - row_cost`, and everything depends on
-//! `pages_per_object` being greater than one.
+//! `(name - ordinal) * blocks_per_object - row_cost`, and everything depends on
+//! `blocks_per_object` being greater than one.
 //!
 //! IT WAS NOT, AND THAT WAS NOT AN ACCIDENT: a page's object identity was
 //! `stable_block_object_id(shard_id, kind, object_key, component)` -- THE COMPONENT WAS IN THE
@@ -140,7 +140,7 @@ fn percentile(sorted: &[usize], fraction: f64) -> usize {
 /// against the fixture and not against itself.
 struct SeedCounts {
     strings: usize,
-    container_pages: usize,
+    container_blocks: usize,
     series_keys: usize,
 }
 
@@ -159,10 +159,10 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
 
     // Two fifths containers, across all four container kinds: one page PER ELEMENT, each element a
     // component and therefore an object of its own.
-    let container_pages = records * 2 / 5;
+    let container_blocks = records * 2 / 5;
     let members = 100usize;
-    let container_keys = container_pages / members;
-    let mut commands = Vec::with_capacity(container_pages);
+    let container_keys = container_blocks / members;
+    let mut commands = Vec::with_capacity(container_blocks);
     for k in 0..container_keys {
         for m in 0..members {
             commands.push(match k % 4 {
@@ -217,7 +217,7 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
         }
     }
 
-    SeedCounts { strings, container_pages, series_keys }
+    SeedCounts { strings, container_blocks, series_keys }
 }
 
 /// Everything read off one store: the arm population by bucket AND by page, and pages-per-object
@@ -226,7 +226,7 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
 struct Population {
     /// arm -> (buckets in it, pages held by those buckets)
     arms: BTreeMap<&'static str, (usize, usize)>,
-    pages_per_bucket: Vec<usize>,
+    blocks_per_bucket: Vec<usize>,
     objects_per_bucket: Vec<usize>,
     /// Pages grouped by the engine's own object identity -- component IN the hash.
     by_object_id: BTreeMap<u64, usize>,
@@ -236,7 +236,7 @@ struct Population {
     component_free_by_kind_key: BTreeMap<String, usize>,
     component_free_by_object_id: BTreeMap<u64, usize>,
     total_buckets: usize,
-    total_pages: usize,
+    total_blocks: usize,
     blocks_without_object_id: usize,
 }
 
@@ -258,9 +258,9 @@ fn population(engine: &TemporalEngine) -> Population {
         slot.0 += 1;
         slot.1 += pages;
         out.total_buckets += 1;
-        out.total_pages += pages;
+        out.total_blocks += pages;
         if pages > 0 {
-            out.pages_per_bucket.push(pages);
+            out.blocks_per_bucket.push(pages);
             out.objects_per_bucket.push(objects);
         }
         for (handle, entry) in &node.block_index {
@@ -280,7 +280,7 @@ fn population(engine: &TemporalEngine) -> Population {
             *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
     }
-    out.pages_per_bucket.sort_unstable();
+    out.blocks_per_bucket.sort_unstable();
     out.objects_per_bucket.sort_unstable();
     out
 }
@@ -303,7 +303,7 @@ fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usiz
 }
 
 // `field_width` IS GONE WITH ITS ONE CALLER. It took a width FROM THE FIELD rather than from a
-// type named at the call site, which is how `pages_per_bucket` came to charge two fat pointers for
+// type named at the call site, which is how `blocks_per_bucket` came to charge two fat pointers for
 // a seventeen-byte group (#1994, paid down in #1997). Its only use here was
 // `name_pointer_width`, which read the entry's name field; the entry has no name field, so there
 // is no field left to take a width from and the helper has nothing to infer from.
@@ -348,7 +348,7 @@ fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
 /// now unused and is named so.
 ///
 /// AND WHERE THOSE SIXTEEN BYTES WENT IS NOT NOWHERE: one shared pointer per (kind, object) in
-/// `CoreIndex::object_block_lookup`, which `page_entry_name_pointer`'s surviving allocation arm
+/// `CoreIndex::object_block_lookup`, which `block_entry_name_pointer`'s surviving allocation arm
 /// prices. A per-PAGE pointer became a per-OBJECT one; this column is the per-page half.
 fn name_pointer_width(_engine: &TemporalEngine) -> usize {
     0
@@ -390,11 +390,11 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             };
             println!(
                 "\n{records} records of the real kind mix on {width}: {} buckets, {} pages",
-                pop.total_buckets, pop.total_pages
+                pop.total_buckets, pop.total_blocks
             );
             println!(
                 "  (seeded {} string keys, {} container pages, {} series keys)",
-                seeded.strings, seeded.container_pages, seeded.series_keys
+                seeded.strings, seeded.container_blocks, seeded.series_keys
             );
 
             // --- THE ARM POPULATION, BY BUCKET AND BY PAGE, EACH WITH ITS DENOMINATOR. ---
@@ -413,14 +413,14 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 } else {
                     buckets as f64 * 100.0 / pop.total_buckets as f64
                 };
-                let block_share = if pop.total_pages == 0 {
+                let block_share = if pop.total_blocks == 0 {
                     0.0
                 } else {
-                    pages as f64 * 100.0 / pop.total_pages as f64
+                    pages as f64 * 100.0 / pop.total_blocks as f64
                 };
                 println!(
                     "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {pages:>8} pages ({block_share:>7.3}% of {})",
-                    pop.total_buckets, pop.total_pages
+                    pop.total_buckets, pop.total_blocks
                 );
                 if arm == "multi_page_object" {
                     widest_bucket_share_of_multi_block_object =
@@ -442,27 +442,27 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 pop.total_buckets
             );
             assert_eq!(
-                arm_blocks, pop.total_pages,
+                arm_blocks, pop.total_blocks,
                 "{records}/{end}: arm page rows sum to {arm_blocks} against {} pages",
-                pop.total_pages
+                pop.total_blocks
             );
             // AND THE STORE HOLDS WHAT THE FIXTURE WROTE, so the denominator is not self-checked.
             assert!(
-                pop.total_pages >= seeded.strings + seeded.container_pages,
+                pop.total_blocks >= seeded.strings + seeded.container_blocks,
                 "{records}/{end}: the index holds {} pages, fewer than the {} strings plus {} container pages the fixture wrote -- the histogram is not over the fixture",
-                pop.total_pages,
+                pop.total_blocks,
                 seeded.strings,
-                seeded.container_pages
+                seeded.container_blocks
             );
             println!("    live arms in this store: {live_arms} of {}", EVERY_ARM.len());
 
             println!(
                 "    pages/bucket   p50 {:>5}  p90 {:>5}  p99 {:>5}  MAX {:>5}   over {} occupied",
-                percentile(&pop.pages_per_bucket, 0.50),
-                percentile(&pop.pages_per_bucket, 0.90),
-                percentile(&pop.pages_per_bucket, 0.99),
-                pop.pages_per_bucket.last().copied().unwrap_or_default(),
-                pop.pages_per_bucket.len()
+                percentile(&pop.blocks_per_bucket, 0.50),
+                percentile(&pop.blocks_per_bucket, 0.90),
+                percentile(&pop.blocks_per_bucket, 0.99),
+                pop.blocks_per_bucket.last().copied().unwrap_or_default(),
+                pop.blocks_per_bucket.len()
             );
             println!(
                 "    objects/bucket p50 {:>5}  p90 {:>5}  p99 {:>5}  MAX {:>5}   over {} occupied",
@@ -629,8 +629,8 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             };
 
             let total_buckets = breakdown.len();
-            let total_pages: usize = breakdown.iter().map(|keys| keys.iter().sum::<usize>()).sum();
-            assert!(total_pages > 0, "{records}/{end}: nothing was written");
+            let total_blocks: usize = breakdown.iter().map(|keys| keys.iter().sum::<usize>()).sum();
+            assert!(total_blocks > 0, "{records}/{end}: nothing was written");
 
             let mut mixed_buckets = 0usize;
             let mut blocks_in_mixed_buckets = 0usize;
@@ -692,20 +692,20 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             }
 
             println!(
-                "\n{records} records of the real kind mix on {width}: {total_buckets} occupied buckets, {total_pages} pages, name pointer {name_width} B read off the field"
+                "\n{records} records of the real kind mix on {width}: {total_buckets} occupied buckets, {total_blocks} pages, name pointer {name_width} B read off the field"
             );
             println!(
-                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} pages ({:.3}% of {total_pages})",
+                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} pages ({:.3}% of {total_blocks})",
                 mixed_buckets as f64 * 100.0 / total_buckets as f64,
-                blocks_in_mixed_buckets as f64 * 100.0 / total_pages as f64
+                blocks_in_mixed_buckets as f64 * 100.0 / total_blocks as f64
             );
             println!(
                 "    per-bucket dispatch (the layout state) saves {per_bucket_saving:>10} B = {:>7.3} B/page",
-                per_bucket_saving as f64 / total_pages as f64
+                per_bucket_saving as f64 / total_blocks as f64
             );
             println!(
                 "    per-key decision              saves {per_key_saving:>10} B = {:>7.3} B/page",
-                per_key_saving as f64 / total_pages as f64
+                per_key_saving as f64 / total_blocks as f64
             );
             let captured = if per_key_saving == 0 {
                 0.0
@@ -716,8 +716,8 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 "    so the layout state captures {captured:.3}% of what the decision is actually worth"
             );
             println!(
-                "    pages a single per-bucket representation must get wrong: {blocks_represented_wrongly} ({:.3}% of {total_pages})",
-                blocks_represented_wrongly as f64 * 100.0 / total_pages as f64
+                "    pages a single per-bucket representation must get wrong: {blocks_represented_wrongly} ({:.3}% of {total_blocks})",
+                blocks_represented_wrongly as f64 * 100.0 / total_blocks as f64
             );
 
             // --- THE DISPATCH COST, IN PROBE COUNTS AND NOT IN TIME. ---
@@ -737,7 +737,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 seen
             };
             println!(
-                "    dispatch: 1 discriminant test per page lookup, paid on {total_pages} of {total_pages} pages (100.000%); layout arms actually present: {} ({:?})",
+                "    dispatch: 1 discriminant test per page lookup, paid on {total_blocks} of {total_blocks} pages (100.000%); layout arms actually present: {} ({:?})",
                 arms_present.len(),
                 arms_present
             );
@@ -811,11 +811,11 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
 
         println!(
             "\n{records} records on 0..{end}: {} pages",
-            pop.total_pages
+            pop.total_blocks
         );
         println!(
             "    rows in the STORED object_index            {stored_rows:>8}  ({:.4} rows per page)",
-            stored_rows as f64 / pop.total_pages as f64
+            stored_rows as f64 / pop.total_blocks as f64
         );
         println!(
             "    distinct object ids among the pages        {distinct_object_ids:>8}  (the identity IS (kind, key) now)"
@@ -831,10 +831,10 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         // NON-VACUITY FIRST. If every key held one page then rows, keys and pages would all be
         // the same number and the equality below would be arithmetic rather than a measurement.
         assert!(
-            pop.total_pages > distinct_keys,
+            pop.total_blocks > distinct_keys,
             "DENOMINATOR: {} pages over {distinct_keys} distinct (kind, key). A store whose keys \
              each held one page satisfies every assertion below while measuring nothing",
-            pop.total_pages
+            pop.total_blocks
         );
 
         // THE FINDING, INVERTED. The stored list is keyed on (kind, key) now.
@@ -851,14 +851,14 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         );
         // And it is now far closer to the KEY count than to the page count -- the mechanism,
         // stated the same way round as before so the two runs stay comparable.
-        let to_blocks = (stored_rows as f64 - pop.total_pages as f64).abs();
+        let to_blocks = (stored_rows as f64 - pop.total_blocks as f64).abs();
         let to_keys = (stored_rows as f64 - distinct_keys as f64).abs();
         assert!(
             to_keys < to_blocks,
             "the stored object_index row count {stored_rows} is closer to the page count {} than \
              to the distinct-key count {distinct_keys}; the claim that it is keyed per key does \
              not hold here",
-            pop.total_pages
+            pop.total_blocks
         );
     }
 }

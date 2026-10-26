@@ -244,7 +244,7 @@ fn write_context_node(
     // door with that field as its component. Leaving this one site unframed would leave the node
     // the single hash element a later load could not recover from its block, which is the element
     // #2016 already recorded as the one whose absence reads as the node not existing at all.
-    let page = crate::engine::container_pages::single_element_page(
+    let page = crate::engine::container_blocks::single_element_block(
         "hash",
         CONTEXT_NODE_FIELD,
         &context_bytes(node),
@@ -348,7 +348,7 @@ fn drop_if_expired(
 /// # WHAT IT DOES WHEN IT CANNOT WRITE THE PAGE
 ///
 /// It removes the element anyway and leaves the pages silent, with the miss counted by
-/// `container_pages::unframed_container_removal_count` or by [`TOMBSTONE_APPEND_FAILURES`]. That is
+/// `container_blocks::unframed_container_removal_count` or by [`TOMBSTONE_APPEND_FAILURES`]. That is
 /// the only honest choice: refusing the removal would keep serving an element the caller deleted,
 /// which is worse than a page set that a derivation will decline to install. Both counters are
 /// floored at zero by the guards, so neither is a tolerance -- they are how a hole announces itself
@@ -367,14 +367,14 @@ pub(super) fn remove_container_element(
     async_storage: bool,
 ) -> bool {
     let routing_bucket = block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-    let tombstone = crate::engine::container_pages::tombstone_page(model_id, component).and_then(
+    let tombstone = crate::engine::container_blocks::tombstone_block(model_id, component).and_then(
         |page| {
             // THE ORDINAL IS THE ELEMENT'S OWN, exactly as it is on the write path: the element
             // already has a position in this object and the tombstone is another page AT that
             // position, not a new one. Computed before the append because the append stamps it into
             // the record header and onto the address from one value -- `decode_block_record` refuses
             // a page whose two copies disagree, which is what #2008 threaded this for.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 model_id,
                 key,
@@ -904,7 +904,7 @@ pub(crate) fn execute_on_shard(
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD, inside the function.
-            // `container_page_ordinal` used to find an existing field's position by looking for an
+            // `container_block_ordinal` used to find an existing field's position by looking for an
             // entry filed under that field's component; a page-named entry carries none, so the
             // walk fell through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
             // address, a fresh page, for a write that should land on the same one. Hash is the one
@@ -913,17 +913,17 @@ pub(crate) fn execute_on_shard(
             // THAT IS ONE BRANCH, NOT TWO, NOW. This arm used to read `shard.hashes` itself under
             // the gate and call the function without it; the function reads the resident map
             // itself, so the two arms of that `if` computed the same value and the gate decided
-            // nothing. The rule lives in one place -- see `state::container_page_ordinal`, which
+            // nothing. The rule lives in one place -- see `state::container_block_ordinal`, which
             // also records why the resident map answers the high-water half as well.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "hash",
                 &key,
                 &field,
             );
             // The block STATES which field it is, rather than leaving that to the entry that names
-            // it. Same value, one frame around it -- see `container_pages`.
-            let page = crate::engine::container_pages::single_element_page("hash", &field, &value);
+            // it. Same value, one frame around it -- see `container_blocks`.
+            let page = crate::engine::container_blocks::single_element_block("hash", &field, &value);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -1046,17 +1046,17 @@ pub(crate) fn execute_on_shard(
                 // disagreeing, which `decode_block_record` refuses as a page id mismatch.
                 //
                 // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see
-                // `HashSet`'s identical site and `state::container_page_ordinal`.
-                let block_ordinal = crate::engine::state::container_page_ordinal(
+                // `HashSet`'s identical site and `state::container_block_ordinal`.
+                let block_ordinal = crate::engine::state::container_block_ordinal(
                         shard,
                         "hash",
                         &key,
                         &field,
                 );
-                // The block STATES which field it is -- see `container_pages`. Built per entry
+                // The block STATES which field it is -- see `container_blocks`. Built per entry
                 // because the frame carries the field, so one frame cannot stand for two.
                 let page =
-                    crate::engine::container_pages::single_element_page("hash", &field, &value);
+                    crate::engine::container_blocks::single_element_block("hash", &field, &value);
                 if let Ok(address) = append_value_of_object(
                     cache,
                     block_store,
@@ -1134,15 +1134,15 @@ pub(crate) fn execute_on_shard(
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
             //
             // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see `HashSet`'s
-            // identical site and `state::container_page_ordinal` for why the index cannot say.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            // identical site and `state::container_block_ordinal` for why the index cannot say.
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "hash",
                 &key,
                 &field,
             );
-            // The block STATES which field it is -- see `container_pages`.
-            let page = crate::engine::container_pages::single_element_page(
+            // The block STATES which field it is -- see `container_blocks`.
+            let page = crate::engine::container_blocks::single_element_block(
                 "hash",
                 &field,
                 value.to_string().as_bytes(),
@@ -1399,7 +1399,7 @@ pub(crate) fn execute_on_shard(
             // where the element's own previous block, if it has one, already states its position.
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER, inside the function.
-            // `container_page_ordinal` used to pick an element's existing position out of the INDEX
+            // `container_block_ordinal` used to pick an element's existing position out of the INDEX
             // by component, which a page-named entry does not carry -- so every rewrite fell
             // through to `highest + 1` and a member written five times left five pages instead of
             // overwriting one (measured: two pages and ordinals [0, 1] where one and [0] are
@@ -1409,17 +1409,17 @@ pub(crate) fn execute_on_shard(
             // THAT IS ONE BRANCH, NOT TWO, NOW. The function asks the resident map itself, so the
             // gated arm here and the ungated one computed the same value and the `if` decided
             // nothing -- a branch whose arms cannot differ, which no suite can report. The lookup
-            // lives in the one place that owns the rule; see `state::container_page_ordinal`.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            // lives in the one place that owns the rule; see `state::container_block_ordinal`.
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "set",
                 &key,
                 &member_component,
             );
-            // The block STATES which member it is -- see `container_pages`. For a set the element
+            // The block STATES which member it is -- see `container_blocks`. For a set the element
             // key IS the member and so is the value, which the frame stores once: #2017 measured
             // that redundancy and this is the stage that stops paying it twice.
-            let page = crate::engine::container_pages::single_element_page(
+            let page = crate::engine::container_blocks::single_element_block(
                 "set",
                 &member_component,
                 &member,
@@ -1490,17 +1490,17 @@ pub(crate) fn execute_on_shard(
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "zset",
                 &key,
                 &component,
             );
-            // The block STATES which element it is -- see `container_pages`. A zset's element key is
+            // The block STATES which element it is -- see `container_blocks`. A zset's element key is
             // its biased score followed by its member, and the value IS that member, so the frame
             // stores the member once and says where inside the key it starts.
             let page =
-                crate::engine::container_pages::single_element_page("zset", &component, &member);
+                crate::engine::container_blocks::single_element_block("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -1858,15 +1858,15 @@ pub(crate) fn execute_on_shard(
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "zset",
                 &key,
                 &component,
             );
-            // The block STATES which element it is -- see `container_pages`.
+            // The block STATES which element it is -- see `container_blocks`.
             let page =
-                crate::engine::container_pages::single_element_page("zset", &component, &member);
+                crate::engine::container_blocks::single_element_block("zset", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,
@@ -2006,17 +2006,17 @@ pub(crate) fn execute_on_shard(
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
             // disagreeing, which `decode_block_record` refuses as a page id mismatch.
-            let block_ordinal = crate::engine::state::container_page_ordinal(
+            let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "list",
                 &key,
                 &component,
             );
-            // The block STATES which element it is -- see `container_pages`. A list's element key is
+            // The block STATES which element it is -- see `container_blocks`. A list's element key is
             // its biased sequence word, which is eight bytes and is NOT the value beside it, so
             // this is the one container kind whose frame carries both in full.
             let page =
-                crate::engine::container_pages::single_element_page("list", &component, &member);
+                crate::engine::container_blocks::single_element_block("list", &component, &member);
             if let Ok(address) = append_value_of_object(
                 cache,
                 block_store,

@@ -137,7 +137,7 @@
 //! history; 4 and 10 appear nowhere, and 13 is live on four branches. The refusal is TWO-SIDED --
 //! `engine.rs`'s container decoder refuses on `!=` and runs before `persistence.rs` compares with
 //! `<` -- so a value too high is refused as well as one too low. Both sides already have tests
-//! beside them (`page_entry_names`), so neither is re-pinned here.
+//! beside them (`block_entry_names`), so neither is re-pinned here.
 //!
 //! # NO PRODUCTION CODE MOVES HERE
 //!

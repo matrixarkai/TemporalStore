@@ -40,7 +40,7 @@
 //! AND A CENSUS MAKES THAT STRUCTURAL. All nine production sites that install a page into a
 //! bucket's map file it in the same enclosing function; the only non-filing doors have no callers
 //! at all or none outside tests. So a live page cannot be resident unfiled in production, the
-//! rebuild served no reachable state, and `push_object_dirty_onto_its_existing_pages` now ASSERTS
+//! rebuild served no reachable state, and `push_object_dirty_onto_its_existing_blocks` now ASSERTS
 //! that invariant where it used to repair it -- which makes every one of the 926 tests that enter
 //! it the check, instead of one fixture here.
 
@@ -62,7 +62,7 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
     bucket.set_meta_loaded(true);
     bucket.set_in_memory(true);
     let mut live = BlockSlabLiveIndex::default();
-    bucket.insert_page(&object_key, 
+    bucket.insert_block(&object_key, 
         BlockIndex {
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",
@@ -85,7 +85,7 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
 /// Kept, and kept unfiled, because it is the subject of
 /// [`the_push_builds_the_object_lookup_when_it_finds_it_unbuilt`]'s successor: the push now
 /// REFUSES this state rather than repairing it. The census that says production cannot reach it is
-/// written at the assertion in `push_object_dirty_onto_its_existing_pages`; this is the fixture
+/// written at the assertion in `push_object_dirty_onto_its_existing_blocks`; this is the fixture
 /// that proves the assertion can fire.
 ///
 /// Every other arm in this module wants [`a_shard_holding_one_filed_clean_block`], because their
@@ -98,7 +98,7 @@ fn a_shard_holding_one_filed_clean_block(object_key: &str) -> (ShardState, u32) 
     // THIS IS NOT A FIXTURE QUIETLY REPAIRED TO MAKE A TEST PASS. The unfiled state used to be the
     // only thing in the tree describing the window the push's rebuild existed for, which is why
     // editing it would have erased the finding. The assertion in
-    // `push_object_dirty_onto_its_existing_pages` is that description now, held on every run by
+    // `push_object_dirty_onto_its_existing_blocks` is that description now, held on every run by
     // every test that marks -- so filing here restores a positive claim the assertion has made
     // safe to restore, rather than hiding anything.
     let placed: Vec<(u64, BlockIndex)> = shard
@@ -119,7 +119,7 @@ fn a_shard_holding_one_filed_clean_block(object_key: &str) -> (ShardState, u32) 
     (shard, routing_bucket)
 }
 
-fn any_page_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
+fn any_block_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
     shard
         .bucket_index
         .bucket_map
@@ -139,14 +139,14 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
     // THE STARTING STATE IS ASSERTED, or "it is dirty afterwards" could be true of a fixture that
     // was dirty all along and the mark could be doing nothing.
     assert!(
-        !any_page_dirty(&shard, routing_bucket),
+        !any_block_dirty(&shard, routing_bucket),
         "the fixture page must start clean"
     );
 
     mark_object_dirty(&mut shard, "pushed-object", 0, WHOLE_RANGE_END);
 
     assert!(
-        any_page_dirty(&shard, routing_bucket),
+        any_block_dirty(&shard, routing_bucket),
         "marking the object must reach the page it already has; otherwise the bucket predicate, \
          which now reads only `page.dirty`, answers false for a dirty object"
     );
@@ -177,7 +177,7 @@ fn an_unmarked_object_leaves_its_blocks_clean() {
     mark_object_dirty(&mut shard, "a-different-object", 0, WHOLE_RANGE_END);
 
     assert!(
-        !any_page_dirty(&shard, routing_bucket),
+        !any_block_dirty(&shard, routing_bucket),
         "marking a different object must not reach this one's pages"
     );
     refresh_bucket_runtime_flags(&mut shard);
@@ -228,7 +228,7 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
         "the push must establish the lookup rather than silently finding nothing"
     );
     assert!(
-        any_page_dirty(&shard, routing_bucket),
+        any_block_dirty(&shard, routing_bucket),
         "and having established it, the push must reach the page"
     );
 }
@@ -424,20 +424,20 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     // --- level would be a bound on an accident of fixture order; the invariant that matters is that
     // --- the count does not follow the corpus, because that is what breaks if the short-circuit is
     // --- written out of either fold.
-    let (small_rung, small_pages, small_folds) = measured[0];
-    let (large_rung, large_pages, large_folds) = measured[1];
+    let (small_rung, small_blocks, small_folds) = measured[0];
+    let (large_rung, large_blocks, large_folds) = measured[1];
     assert!(
         small_folds > 0 && large_folds > 0,
         "the folds charged {small_folds} and {large_folds} visits, so at least one rung measured \
          nothing and the flatness below would be the flatness of two zeroes"
     );
-    let block_growth = large_pages as f64 / small_pages.max(1) as f64;
+    let block_growth = large_blocks as f64 / small_blocks.max(1) as f64;
     let fold_growth = large_folds as f64 / small_folds.max(1) as f64;
     assert!(
         fold_growth * 2.0 < block_growth,
         "fold visits grew x{fold_growth:.1} while the bucket grew x{block_growth:.1} \
-         ({small_folds} visits at {small_pages} pages on corpus {small_rung}, {large_folds} at \
-         {large_pages} on corpus {large_rung}). The two folds in \
+         ({small_folds} visits at {small_blocks} pages on corpus {small_rung}, {large_folds} at \
+         {large_blocks} on corpus {large_rung}). The two folds in \
          `refresh_one_bucket_runtime_flags` are cheap only because `all` and `any` stop at the \
          first page that decides them; a predicate written with `count()`, `collect` or \
          `filter().count()` computes the same answer and walks the whole bucket, which is \

@@ -112,16 +112,16 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
     let (pages, objects) = blocks_and_objects(&regime);
     println!("dirty pages per bucket:   {pages:?}");
     println!("dirty objects per bucket: {objects:?}");
-    let total_pages: u64 = pages.values().sum();
+    let total_blocks: u64 = pages.values().sum();
     let total_objects: u64 = objects.values().sum();
-    println!("totals: {total_pages} dirty pages, {total_objects} dirty objects");
+    println!("totals: {total_blocks} dirty pages, {total_objects} dirty objects");
     assert!(
-        total_pages > 0 && total_objects > 0,
-        "the fixture must be dirty at all: {total_pages} pages, {total_objects} objects"
+        total_blocks > 0 && total_objects > 0,
+        "the fixture must be dirty at all: {total_blocks} pages, {total_objects} objects"
     );
     assert!(
-        total_pages > total_objects,
-        "this fixture cannot tell a page count from an object count ({total_pages} pages vs \
+        total_blocks > total_objects,
+        "this fixture cannot tell a page count from an object count ({total_blocks} pages vs \
          {total_objects} objects) -- every object holds one page, so the two arms would agree \
          for the wrong reason. The fixture needs a multi-page object, not a different assertion."
     );

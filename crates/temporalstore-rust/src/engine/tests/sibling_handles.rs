@@ -12,7 +12,7 @@
 //! onto one entry with thirty-nine lost. Its own header quoted `index_log.rs` on the condition:
 //! the component *"cannot go until the entry stops being per-element."*
 //!
-//! THE ENTRY HAS STOPPED BEING PER-ELEMENT. `index_entry_names_a_page` answers true for all four
+//! THE ENTRY HAS STOPPED BEING PER-ELEMENT. `index_entry_names_a_block` answers true for all four
 //! container kinds, so the projection emits ONE entry per distinct physical page, and
 //! `BlockIndex` no longer has a `component` field at all. The state this module pinned against --
 //! two entries of one object at one address -- is not something the index can hold any more.
@@ -29,7 +29,7 @@
 //!      and because an assertion that it does NOT collide is what this module would have to
 //!      become if the handle ever gained a discriminator again.
 //!   2. NOTHING FILES THE COLLIDING STATE. Every container kind converges on the page, asked of
-//!      `index_entry_names_a_page` itself rather than of a comment, so no path files two entries
+//!      `index_entry_names_a_block` itself rather than of a comment, so no path files two entries
 //!      of one object at one address for the collision to be reached through.
 //!
 //! Either one alone is weak: (1) without (2) describes a live defect, and (2) without (1) is a
@@ -126,7 +126,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
 /// AND NOTHING FILES THE COLLIDING STATE, which is what makes the collision above unreachable
 /// rather than a live loss.
 ///
-/// Asked of `index_entry_names_a_page` -- the single predicate every filing site in the engine
+/// Asked of `index_entry_names_a_block` -- the single predicate every filing site in the engine
 /// reads, so the projection, `upsert_bucket_index_block_inner` and `fold_delta_block_items` cannot
 /// come to disagree about it -- and asked by `ModelKind::as_str` rather than by string literals,
 /// so a kind renamed in the registry cannot leave this matching nothing.
@@ -134,7 +134,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
 /// rust-internal: reads a filing predicate, no product behaviour
 #[test]
 fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at_one_address() {
-    use crate::engine::storage_bucket_internals::index_entry_names_a_page;
+    use crate::engine::storage_bucket_internals::index_entry_names_a_block;
 
     let container_kinds = [
         crate::engine::ModelKind::Set,
@@ -144,7 +144,7 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
     ];
     for kind in container_kinds {
         assert!(
-            index_entry_names_a_page(kind.as_str()),
+            index_entry_names_a_block(kind.as_str()),
             "{} does not converge on the page, so it files one entry per ELEMENT -- and with no \
              element name on the entry its elements on a shared page collide onto one handle, \
              which is the loss the test above measures",
@@ -156,7 +156,7 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
     // `string` converges on the OBJECT KEY instead: it holds one page per object, so there is no
     // shared page for two of its entries to sit on.
     assert!(
-        !index_entry_names_a_page(crate::engine::ModelKind::String.as_str()),
+        !index_entry_names_a_block(crate::engine::ModelKind::String.as_str()),
         "`string` answered page-named. It holds one page per object and converges on the object \
          key, so if it answers true this predicate is not distinguishing anything and the \
          assertions above are satisfied by a function that always says yes"

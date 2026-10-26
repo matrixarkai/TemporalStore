@@ -71,7 +71,7 @@ fn member_bytes(index: usize) -> Vec<u8> {
 }
 
 /// Live pages, live entries, and entries carrying a component, for one set object.
-fn pages_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
+fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
@@ -125,7 +125,7 @@ fn sweep_once() -> (usize, usize, u64, u64) {
         .compact_shard_blocks(1)
         .expect("the sweep must succeed");
     let (batches, folded) = crate::engine::container_batch_counts();
-    let (pages, entries) = pages_and_entries(&engine, "sweep/set");
+    let (pages, entries) = blocks_and_entries(&engine, "sweep/set");
     drop(engine);
     (pages, entries, batches, folded)
 }

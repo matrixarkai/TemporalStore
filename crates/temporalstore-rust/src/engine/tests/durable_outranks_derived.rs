@@ -1700,7 +1700,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 /// THE MERGE ASKS THAT QUESTION OF ITS PERSISTED INPUT TOO NOW, which is a later change and not a
 /// reason to relax this one. `resident_map_readers` carries the argument: the carry and the persisted
 /// map are two inputs to one merge, the carry was applied in the wrong ORDER and the persisted map is
-/// simply OLDER than the page index, and both now answer `live_page_key` against the finished index.
+/// simply OLDER than the page index, and both now answer `live_block_key` against the finished index.
 /// So this test's subject would be stripped downstream if it survived here. It must not survive
 /// here: correctness at this stage is not the same as being cleaned up at the next one.
 ///
@@ -1764,15 +1764,15 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         absent_address.length(),
         "the two addresses are identical, so this fixture cannot tell a live page from an absent one"
     );
-    let live_pages: usize = shard
+    let live_blocks: usize = shard
         .bucket_index
         .bucket_map
         .values()
         .map(|bucket| bucket.block_index.values().filter(|page| !page.deleted).count())
         .sum();
     assert!(
-        live_pages >= 1,
-        "DENOMINATOR: {live_pages} live pages; with none, every carried element is skipped for the \
+        live_blocks >= 1,
+        "DENOMINATOR: {live_blocks} live pages; with none, every carried element is skipped for the \
          wrong reason and the finding below is vacuous"
     );
 
@@ -1794,7 +1794,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
     println!(
-        "[resurrect] {live_pages} live page(s); restored {} of 2 carried element(s)",
+        "[resurrect] {live_blocks} live page(s); restored {} of 2 carried element(s)",
         restored.len()
     );
 
@@ -1951,7 +1951,7 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
 ///   1. IS THE NAME PARSEABLE, or merely PRESENT? An earlier probe searched the payload bytes for
 ///      the field name as a SUBSTRING and found it in 3 of 3 pages. That is not the same claim: a
 ///      substring says the information is there, not that there is a defined way to recover it.
-///      This decodes the page through `container_pages::decode_container_page` and renders the
+///      This decodes the page through `container_blocks::decode_container_block` and renders the
 ///      component back through `component_from_element_key`, which is the only recovery that
 ///      counts.
 ///   2. HOW MANY ELEMENTS DOES ONE STAGED PAGE HOLD? If one, the page names the outcome's element
@@ -1962,8 +1962,8 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
 ///      time is a product property, so that cost decides whether any of this is worth doing.
 #[test]
 fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
-    use crate::engine::container_pages::{
-        component_from_element_key, decode_container_page, ContainerBlockDecode, ElementKeySpelling,
+    use crate::engine::container_blocks::{
+        component_from_element_key, decode_container_block, ContainerBlockDecode, ElementKeySpelling,
     };
 
     const KEY: &str = "pay-hash";
@@ -2012,7 +2012,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     let mut spellings: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
     for record in &records {
         for page in &record.staged_blocks {
-            match decode_container_page(&page.bytes) {
+            match decode_container_block(&page.bytes) {
                 ContainerBlockDecode::Framed { spelling, items, .. } => {
                     framed += 1;
                     spellings.insert(format!("{spelling:?}"));
@@ -2947,7 +2947,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
 /// rust-internal: measurement only, no product behaviour
 #[test]
 fn what_the_element_name_on_a_timestamped_record_is_worth() {
-    use crate::engine::container_pages::ElementKeySpelling;
+    use crate::engine::container_blocks::ElementKeySpelling;
 
     const FEATURE_KEY: &str = "tsf-series";
     const POINTS: usize = 64;
@@ -3014,7 +3014,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         for page in &record.staged_blocks {
             pages += 1;
             *blocks_by_object.entry(page.object_id).or_default() += 1;
-            if let Some(points) = crate::engine::packed_pages::decode_feature_block(&page.bytes) {
+            if let Some(points) = crate::engine::packed_blocks::decode_feature_block(&page.bytes) {
                 decoded_blocks += 1;
                 points_per_block.push(points.len());
                 for point in &points {

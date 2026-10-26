@@ -260,7 +260,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 ///      while six timestamped kinds read it and its absence is a meaning; the argument is set out
 ///      in full at the field.
 ///   2. THE TOMBSTONE SWEEP, which is the reader that makes this parameter stay. `element.as_deref()`
-///      keys `tombstone_element_page`, and that is how a re-add clears the tombstone ITS OWN element
+///      keys `tombstone_element_block`, and that is how a re-add clears the tombstone ITS OWN element
 ///      left. Narrow on purpose: the predicate it replaced widened to every tombstone of the object
 ///      the moment the filed name went to `None`, which is the resurrection
 ///      `engine::tests::write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_member_back`
@@ -304,7 +304,7 @@ pub(super) fn install_element<K: RecordedKind>(
     // ASKED ONLY WHEN THE ENTRY IS PAGE-NAMED. While an entry names its element the filer's own
     // component-keyed supersede already takes the predecessor, so there is nothing to tell it and
     // nothing to pay for: the ungated path does not reach the scan at all.
-    let replaces = if super::storage_bucket_internals::index_entry_names_a_page(K::KIND) {
+    let replaces = if super::storage_bucket_internals::index_entry_names_a_block(K::KIND) {
         K::resident(shard).block_an_element_vacates(object_key, &element, &address)
     } else {
         None
@@ -601,7 +601,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     {
         let elements = self.entries.get(object_key)?;
         let previous = elements.element_address(element)?;
-        if super::live_page_key(previous) == super::live_page_key(landing) {
+        if super::live_block_key(previous) == super::live_block_key(landing) {
             return None;
         }
         if elements.any_element_other_than_at(element, previous) {
@@ -1205,13 +1205,13 @@ impl AddressedElementMap for super::hash_field_map::HashFieldMap {
     }
 
     fn any_element_other_than_at(&self, skip: &super::hash_field_map::FieldName, page: &ElementEntry) -> bool {
-        let page = super::live_page_key(page);
+        let page = super::live_block_key(page);
         // COMPARED BY TEXT, NOT BY HANDLE. Two handles for one field name are equal strings
         // and unequal pointers, and `Arc<str>`'s `PartialEq` compares the strings -- but an
         // explicit slice comparison says so at the site rather than relying on the reader
         // knowing which of the two it is.
         self.iter().any(|(field, address)| {
-            field[..] != skip[..] && super::live_page_key(address) == page
+            field[..] != skip[..] && super::live_block_key(address) == page
         })
     }
 }
@@ -1232,10 +1232,10 @@ where
     }
 
     fn any_element_other_than_at(&self, skip: &E, page: &ElementEntry) -> bool {
-        let page = super::live_page_key(page);
+        let page = super::live_block_key(page);
         self.iter().any(|(element, value)| {
             element != skip
-                && super::live_page_key(super::CarriedValue::carried_address(value)) == page
+                && super::live_block_key(super::CarriedValue::carried_address(value)) == page
         })
     }
 }
@@ -1250,8 +1250,8 @@ where
 // `BTreeMap<Vec<u8>, _>` has no JSON object-key representation. The collapse dropped that codec --
 // `set_index_serde` was left referenced only from comments -- and three reload tests failed:
 // `conformance_random_sequences_never_panic_and_survive_reload`,
-// `container_page_element_key::a_framed_block_reads_back_after_a_reload` and
-// `container_page_ordinal::a_reloaded_container_still_reads_every_element`.
+// `container_block_element_key::a_framed_block_reads_back_after_a_reload` and
+// `container_block_ordinal::a_reloaded_container_still_reads_every_element`.
 //
 // With the codec required per kind, a kind added later cannot inherit a wrong default. Each one
 // names its encoding, the bytes are identical by construction rather than by resemblance, and no

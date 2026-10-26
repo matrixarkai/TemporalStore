@@ -148,7 +148,7 @@
 //! spans, and both are flat:
 //!
 //!   * `slab_append` is `engine::append_value`, reached through `batch_execute`, with the payload
-//!     encode re-tagged out of it as `page_bytes` and the slab file opened once for the batch;
+//!     encode re-tagged out of it as `block_bytes` and the slab file opened once for the batch;
 //!   * the 7.000 here is a direct single-record `BlockStore::append`, which carries its own record
 //!     encode and opens the slab file per call.
 //!

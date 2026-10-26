@@ -16,7 +16,7 @@
 //!     is_a_whole_component_and_survives_the_fold_shape` came back `None` where `Some(3.0)` was
 //!     written. And a RESCORE is an in-place rewrite from the index's side: the old element key is
 //!     tombstoned while its live entry is not superseded, leaving TWO live entries for one member
-//!     at one score, which is precisely the shape `index_entry_names_a_page` warns an
+//!     at one score, which is precisely the shape `index_entry_names_a_block` warns an
 //!     address-keyed predicate mishandles.
 //!   * `hash` REFUSED on its readers. Four of them resolve through the page index BY COMPONENT
 //!     with no resident-map fallback, so a nameless hash entry makes a present field unreachable
@@ -554,7 +554,7 @@ fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing
 ///
 /// # THIS IS THE RESTATEMENT OF A PIN THAT HAD TO GO RED, FOR THE SECOND TIME
 ///
-/// `index_entry_names_a_page` used to say "only its SET arm consumes the answer: hash, zset and
+/// `index_entry_names_a_block` used to say "only its SET arm consumes the answer: hash, zset and
 /// list emit one named entry per element either way", and
 /// `gated_corpus_across_a_store_boundary` calls those three kinds THE CONTROL. This test replaced
 /// that sentence with per-kind assertions against a real engine -- and then its own two control
@@ -622,13 +622,13 @@ fn the_projection_collapses_every_container_kind() {
 /// is why it could not stay.
 #[test]
 fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
-    use crate::engine::storage_bucket_internals::index_entry_names_a_page;
+    use crate::engine::storage_bucket_internals::index_entry_names_a_block;
     {
         for kind in ["set", "list", "hash", "zset"] {
             assert!(
-                index_entry_names_a_page(kind),
+                index_entry_names_a_block(kind),
                 "{kind} must be page-named when the gate is on: all four container kinds are in \
-                 the collapsed set now. See `index_entry_names_a_page` for what discharged the \
+                 the collapsed set now. See `index_entry_names_a_block` for what discharged the \
                  hash and zset refusals"
             );
         }
@@ -644,7 +644,7 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
                 continue;
             }
             assert!(
-                !index_entry_names_a_page(name),
+                !index_entry_names_a_block(name),
                 "{name} answered page-named, but it is not a container kind: it files no element \
                  name and has one page per object, so the page-keyed term would leave its \
                  relocated pages behind as stale live entries"
@@ -664,14 +664,14 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
     // non-container kinds are still checked in the same breath.
     for kind in ["set", "zset", "list", "hash"] {
         assert!(
-            index_entry_names_a_page(kind),
+            index_entry_names_a_block(kind),
             "{kind} is a container kind and did not answer page-named. There is no gate left to \
              turn off, so the only way this can be false is the predicate's own kind list"
         );
     }
     for kind in ["string", "feature"] {
         assert!(
-            !index_entry_names_a_page(kind),
+            !index_entry_names_a_block(kind),
             "{kind} answered page-named, and it holds ONE page per object: the page-keyed term \
              would leave its relocated pages behind as stale live entries"
         );
@@ -906,7 +906,7 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     // cannot be served by counting entries any more.
     //
     // WHAT CAN STILL REGRESS IS THE RENDERER, and that is what this now asserts.
-    // `container_pages::component_from_element_key` is the function that turns a page's item key
+    // `container_blocks::component_from_element_key` is the function that turns a page's item key
     // back into a component string, and its `ScoreThenMember` arm is the one that used to spell
     // the score: it returns `hex::encode(key[8..])`, the member alone, deliberately skipping the
     // eight score bytes. A change that dropped the `8..` would put the score straight back into
@@ -919,15 +919,15 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     // guarded against.
     let member = b"zs-member-01".to_vec();
     let score_bytes: [u8; 8] = 0x0123_4567_89ab_cdefu64.to_be_bytes();
-    let mut page_key = score_bytes.to_vec();
-    page_key.extend_from_slice(&member);
-    let rendered = crate::engine::container_pages::component_from_element_key(
-        crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
-        &page_key,
+    let mut block_key = score_bytes.to_vec();
+    block_key.extend_from_slice(&member);
+    let rendered = crate::engine::container_blocks::component_from_element_key(
+        crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
+        &block_key,
     )
     .expect("a score-then-member key renders a component");
     let score_hex = hex::encode(score_bytes);
-    println!("    key = {} -> component {rendered}", hex::encode(&page_key));
+    println!("    key = {} -> component {rendered}", hex::encode(&block_key));
     assert!(
         !rendered.contains(&score_hex),
         "the zset component renderer spelled the score back into the name: {rendered} contains \

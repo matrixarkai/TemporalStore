@@ -14,7 +14,7 @@ use crate::types::{
 };
 use matrixcache::MultiLayerCache;
 
-use super::packed_pages::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
+use super::packed_blocks::{read_feature_point, read_feature_point_cached, read_feature_point_cold};
 use super::hashing::BlockIdentity;
 use super::timestamped_series::TimestampedSeries;
 use super::{read_block_bytes, stable_object_hash, ShardState};

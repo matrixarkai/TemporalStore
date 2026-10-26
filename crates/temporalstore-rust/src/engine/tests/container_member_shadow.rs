@@ -38,7 +38,7 @@
 //!      `bucket_index_component_block_addresses` -- the door a container read goes through -- is
 //!      called for `"hash"` and `"set"` and for nothing else.
 //!      `a_zset_read_examines_no_page_index_entries_and_a_hash_read_does` counts it with
-//!      `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page`, and carries the hash arm as
+//!      `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_block`, and carries the hash arm as
 //!      the CONTROL: an instrument reading zero on both arms would be measuring nothing.
 //!
 //!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE COMPONENT NAME. The `"zset"`
@@ -178,7 +178,7 @@ struct ZsetBlock {
 }
 
 /// Every `zset` page the bucket index holds, read off the engine's own index.
-fn zset_pages(engine: &TemporalEngine) -> Vec<ZsetBlock> {
+fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
     let named = super::BlockObjects::of(&shard.bucket_index);
@@ -527,7 +527,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
     assert_eq!(MEMBER_WIDTH, 20, "and 20 bytes carry the same information");
 
     // THE NEGATIVE CONTROL: the decimal producer is not a doubling and must not read as one.
-    let decimal = crate::engine::packed_pages::timestamped_component(u64::MAX, None);
+    let decimal = crate::engine::packed_blocks::timestamped_component(u64::MAX, None);
     assert_eq!(decimal.len(), 20, "u64::MAX in decimal is twenty characters");
     let decimal_fraction = (decimal.len() - 8) as f64 / decimal.len() as f64;
     assert!(
@@ -567,7 +567,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 /// # WHAT IT ASSERTS INSTEAD, AND WHY THAT IS NOT A WEAKER CLAIM
 ///
 /// The member's identity lives in exactly two places now: `shard.zsets`, and the page's own item
-/// key -- written by `container_pages::element_key_from_component` precisely so a page is
+/// key -- written by `container_blocks::element_key_from_component` precisely so a page is
 /// interpretable without the entry that names it. That key is the ONLY copy outside the model map,
 /// which makes a codec that does not round-trip a LOSS rather than a mislabelling. So the round
 /// trip is asserted, per member, over the members the model map actually holds, in both directions:
@@ -588,7 +588,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     load_on(&engine, NARROW_END);
     let keys = seed_zsets(&engine);
 
-    let pages = zset_pages(&engine);
+    let pages = zset_blocks(&engine);
     assert_eq!(
         pages.len(),
         CONTAINER_KEYS * MEMBERS,
@@ -608,7 +608,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     //
     // WHAT REPLACES IT IS A ROUND TRIP, not a corrected number. The member's identity now lives in
     // exactly two places: `shard.zsets` and the page's own item key, written by
-    // `container_pages::element_key_from_component` so a page is interpretable without the entry
+    // `container_blocks::element_key_from_component` so a page is interpretable without the entry
     // that names it. That codec is what the identity passes through, it is the thing a change can
     // still break, and the round trip is what catches the class this campaign has been bitten by:
     // `hex::decode` has no opinion about what the bytes mean, so a key that framed and decoded
@@ -669,21 +669,21 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
         // covers the real population rather than whatever the codec happens to accept.
         for member in model.keys() {
             let component = hex::encode(member);
-            let page_key = crate::engine::container_pages::element_key_from_component(
-                crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
+            let block_key = crate::engine::container_blocks::element_key_from_component(
+                crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
                 &component,
             )
             .unwrap_or_else(|| panic!("{key}: no page key for member {component}"));
             assert_eq!(
                 MEMBER_WIDTH + 8,
-                page_key.len(),
+                block_key.len(),
                 "{key}: the page key for a {MEMBER_WIDTH}-byte member is {} B, not the member \
                  behind an eight-byte score slot",
-                page_key.len()
+                block_key.len()
             );
-            let back = crate::engine::container_pages::component_from_element_key(
-                crate::engine::container_pages::ElementKeySpelling::ScoreThenMember,
-                &page_key,
+            let back = crate::engine::container_blocks::component_from_element_key(
+                crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
+                &block_key,
             )
             .unwrap_or_else(|| panic!("{key}: the page key for {component} renders no component"));
             assert_eq!(
@@ -716,17 +716,17 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
 ///
 /// It is the arm where the mechanism predicts an effect. `HashGetAll` resolves the object through
 /// `bucket_index_component_block_addresses`, which asks `bucket.block_index.get` for every page of
-/// the object and so enters `find_page` -- the one door the counter sits in. It walks the INDEX by
+/// the object and so enters `find_block` -- the one door the counter sits in. It walks the INDEX by
 /// construction rather than reading a block by an address it was handed, which is what makes it
 /// hold at any fixture size and what the point read no longer does.
 ///
 /// THE POPULATION IS RETURNED AND ASSERTED, not assumed. `BlockIndexMap::One` answers a
-/// single-block bucket with one comparison and never enters `find_page`, so a control over a thin
+/// single-block bucket with one comparison and never enters `find_block`, so a control over a thin
 /// object would read zero for a reason that has nothing to do with this module; and a listing that
 /// came back empty would examine entries over nothing. A count of `MEMBERS` fields served is what
 /// makes a non-zero entry count a page walk over a whole container.
 fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (u64, usize) {
-    crate::engine::state::reset_page_lookup_entries_examined();
+    crate::engine::state::reset_block_lookup_entries_examined();
     let response = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::HashGetAll {
@@ -738,7 +738,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
         crate::types::CommandResponse::HashEntries { entries } => entries.len(),
         other => panic!("the control's whole-object read answered {other:?}"),
     };
-    let examined = crate::engine::state::page_lookup_entries_examined();
+    let examined = crate::engine::state::block_lookup_entries_examined();
     assert_eq!(
         MEMBERS, listed,
         "the CONTROL listed {listed} of {MEMBERS} fields, so it did not read a populated object \
@@ -754,7 +754,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// addressing to lose. `ZSetScore` reads the score straight out of `shard.zsets`, `ZSetCard` reads
 /// `len()`, `ZSetRange` orders the same map's keys.
 ///
-/// COUNT, DO NOT TIME. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_page`, the one
+/// COUNT, DO NOT TIME. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_block`, the one
 /// door every page lookup goes through, so this reads the copy production calls. A timing ratio on
 /// this box once read 485x idle against 11x busy off identical code.
 ///
@@ -765,7 +765,7 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// so it MUST be non-zero and an instrument reading zero on both arms would be measuring nothing.
 /// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.hashes` and hands
 /// the address it holds to `read_block_bytes`, which consults the cache, the WAL-resident redirect
-/// and the block store -- and none of those enters `find_page`. So the control read ZERO and this
+/// and the block store -- and none of those enters `find_block`. So the control read ZERO and this
 /// test refused itself, which is the instrument working: the arm that was supposed to prove the
 /// counter can see a lookup had stopped being a lookup.
 ///
@@ -812,7 +812,7 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
 
     // ZSET ARM. Every zset read command, over a key whose hundred members are all present.
     let zset_key = keys.first().expect("a container key").clone();
-    crate::engine::state::reset_page_lookup_entries_examined();
+    crate::engine::state::reset_block_lookup_entries_examined();
     let mut zset_reads = 0usize;
     for m in 0..MEMBERS {
         let response = engine.execute(ExecuteRequest {
@@ -862,13 +862,13 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
         ),
         other => panic!("a zset range returned {other:?}"),
     }
-    let zset_examined = crate::engine::state::page_lookup_entries_examined();
+    let zset_examined = crate::engine::state::block_lookup_entries_examined();
 
     // THE HASH POINT READ, MEASURED AND PRINTED. Not a control any more -- see the header. The
     // reads are still required to FIND their field, because a point read answering `None` would
     // examine nothing for the uninteresting reason and the number below would be a count over
     // nothing rather than a count over a resolved read.
-    crate::engine::state::reset_page_lookup_entries_examined();
+    crate::engine::state::reset_block_lookup_entries_examined();
     let mut point_reads = 0usize;
     for f in 0..MEMBERS {
         let response = engine.execute(ExecuteRequest {
@@ -889,7 +889,7 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
         );
         point_reads += 1;
     }
-    let point_examined = crate::engine::state::page_lookup_entries_examined();
+    let point_examined = crate::engine::state::block_lookup_entries_examined();
 
     // HASH ARM, THE CONTROL. The same count over a read that does resolve through the page index.
     let (whole_examined, whole_listed) = whole_object_hash_read_examined(&engine, &hash_key);
@@ -964,7 +964,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         load_on(&engine, end_routing_bucket);
         let keys = seed_zsets(&engine);
 
-        let pages = zset_pages(&engine);
+        let pages = zset_blocks(&engine);
         assert_eq!(
             pages.len(),
             CONTAINER_KEYS * MEMBERS,
@@ -1115,7 +1115,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     // the index". The addresses held before the write are recorded here and the one address that is
     // new afterwards IS the page the write filed. That is a stricter identification than the name
     // was, because it cannot match a page the write did not create.
-    let before_addresses: BTreeSet<(u64, u64, u64)> = zset_pages(&engine)
+    let before_addresses: BTreeSet<(u64, u64, u64)> = zset_blocks(&engine)
         .iter()
         .map(|page| {
             (
@@ -1135,7 +1135,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
         },
     });
     assert!(response.status.ok, "the single-member write must ack");
-    let after = zset_pages(&engine);
+    let after = zset_blocks(&engine);
     assert_eq!(
         after.len(),
         before_blocks + 1,
@@ -1161,16 +1161,16 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     );
     // The stored page is the member plus the per-member record framing. Taken off the index, so
     // this is the length the write actually filed rather than the width it was handed.
-    let today_page_bytes = added[0].address.length() as usize;
+    let today_block_bytes = added[0].address.length() as usize;
     assert!(
-        today_page_bytes >= MEMBER_WIDTH,
-        "the appended page is smaller than the member it holds: {today_page_bytes} B for a \
+        today_block_bytes >= MEMBER_WIDTH,
+        "the appended page is smaller than the member it holds: {today_block_bytes} B for a \
          {MEMBER_WIDTH}-byte member"
     );
     assert!(
-        today_page_bytes < 4 * MEMBER_WIDTH,
+        today_block_bytes < 4 * MEMBER_WIDTH,
         "the appended page is implausibly large for one member, so it is not one member's page: \
-         {today_page_bytes} B"
+         {today_block_bytes} B"
     );
 
     // PACKED: the whole container's member buffer, through the engine's own encoder.
@@ -1187,14 +1187,14 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     );
 
     println!("--- bytes rewritten by ONE single-member update ---");
-    println!("  today  : {today_page_bytes:>7} B  (one page, the member itself)");
+    println!("  today  : {today_block_bytes:>7} B  (one page, the member itself)");
     println!(
         "  packed : {:>7} B  (the whole {MEMBERS}-member buffer, measured through rmp_serde)",
         buffer.len()
     );
     println!(
         "  amplification: {:.1}x",
-        buffer.len() as f64 / today_page_bytes as f64
+        buffer.len() as f64 / today_block_bytes as f64
     );
     println!(
         "  the packed buffer carries {} B for {MEMBERS} members = {:.1} B a member, against the \
@@ -1205,10 +1205,10 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     );
 
     assert!(
-        buffer.len() > 10 * today_page_bytes,
+        buffer.len() > 10 * today_block_bytes,
         "the packed buffer is not materially larger than the page a single-member write appends \
          today, so there is no write amplification to report and this test is not measuring the \
-         trade it claims: {} B against {today_page_bytes} B",
+         trade it claims: {} B against {today_block_bytes} B",
         buffer.len()
     );
 }

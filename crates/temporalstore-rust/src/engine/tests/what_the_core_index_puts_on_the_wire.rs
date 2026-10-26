@@ -289,7 +289,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 // longer held at a distance. `index_log::block_ref_key_parts` cuts the six right-hand fields from
 // the RIGHT and the kind from the LEFT, so an object key keeps every colon it arrived with --
 // `{collection_key}:{entity_hash}` included -- and
-// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus`
+// `the_key_a_block_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus`
 // asserts the component slot EMPTY and the parse exact on all 8,000 pages of two key shapes, rather
 // than relying on it.
 //
@@ -326,7 +326,7 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     bucket.routing_bucket = 3;
     bucket.set_meta_loaded(true);
     let mut live = BlockSlabLiveIndex::default();
-    bucket.insert_page(&"an-object", 
+    bucket.insert_block(&"an-object", 
         BlockIndex {
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",
@@ -456,7 +456,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
 
     // THE `object` PARAMETER IS GONE, NOT RENAMED `_object`. The entry has no field for it, and a
     // caller that still tries to name an object through this builder should stop compiling rather
-    // than be ignored -- the treatment `entry_count_versus_page_count::block_at` took for its own
+    // than be ignored -- the treatment `entry_count_versus_block_count::block_at` took for its own
     // dead `component` argument. The object each page belongs to is named where it is filed.
     fn page(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
         BlockIndex {
@@ -490,7 +490,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
             let node = bucket_map
                 .get_mut(routing_bucket)
                 .expect("the bucket was just inserted");
-            node.insert_page(object_key, entry.clone(), block_slab_live);
+            node.insert_block(object_key, entry.clone(), block_slab_live);
         }
     }
 
@@ -654,8 +654,8 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
         // address and their `deleted` bit; they are the same object by construction, so passing
         // the literal twice says that, where reading one copy off each page did not.
         let object_key: std::sync::Arc<str> = std::sync::Arc::from(OBJECT);
-        let live_handle = node.insert_page(&object_key, live.clone(), block_slab_live);
-        let dead_handle = node.insert_page(&object_key, dead.clone(), block_slab_live);
+        let live_handle = node.insert_block(&object_key, live.clone(), block_slab_live);
+        let dead_handle = node.insert_block(&object_key, dead.clone(), block_slab_live);
         // The SAME handle the two pages were filed with, which is what the production path
         // now does: the row clones a handle rather than minting from the characters.
         node.record_tombstone_element(

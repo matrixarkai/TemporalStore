@@ -701,7 +701,7 @@ fn a_new_uncharged_cache_read_would_fail_this_guard() {
     );
 
     // And the matcher must not fire on a map named `..._cache`, which is what a left boundary is
-    // for: `packed_block_cache.get(address)` is a HashMap lookup in `packed_pages.rs`.
+    // for: `packed_block_cache.get(address)` is a HashMap lookup in `packed_blocks.rs`.
     assert!(
         !names_a_cache_read("if let Some(points) = packed_block_cache.get(address) {"),
         "the matcher must not read a map whose name ends in `cache` as a cache read"

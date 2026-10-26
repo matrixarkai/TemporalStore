@@ -4,7 +4,7 @@
 //! #2019 CHANGED THE INPUT TO STEP 1b'S REFUTATION, AND THE VERDICT DOES NOT MOVE.
 //!
 //! THIS ROUTE IS ALREADY REFUTED AND SAYING SO IS THE FIRST JOB OF THIS MODULE, because the next
-//! reader will otherwise re-derive it. `page_entry_name_pointer` scores it as two of six dependent
+//! reader will otherwise re-derive it. `block_entry_name_pointer` scores it as two of six dependent
 //! verdicts:
 //!
 //!   * STEP 1b -- the key moved to the bucket's object list -- entry 48, stride 56, REFUTED. On
@@ -31,7 +31,7 @@
 //!      with `offset_of!` on mirror structures rather than asserted. A `u8` ordinal lands on the
 //!      SAME 48, so its ceiling of 255 objects a bucket -- reachable, since a bucket is a hash
 //!      bucket that fills with the corpus -- buys precisely zero additional bytes. Nothing should be
-//!      spent on it. (`page_entry_name_pointer`'s step 2 row reads 40/48 because it composes an
+//!      spent on it. (`block_entry_name_pointer`'s step 2 row reads 40/48 because it composes an
 //!      ordinal with step 1a's thin `component` as well; this row substitutes `object_key` only.)
 //!
 //!   2. #2019'S COLLAPSE DOES NOT REOPEN STEP 1b, and the reason is the arm it did not touch. The
@@ -223,8 +223,8 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 }
 
 /// `(live pages, distinct object-index rows)` for one kind, read off the buckets themselves. The
-/// same shape #2019's `pages_and_index_rows` uses, so the two modules' rows are comparable.
-fn pages_and_index_rows(
+/// same shape #2019's `blocks_and_index_rows` uses, so the two modules' rows are comparable.
+fn blocks_and_index_rows(
     engine: &TemporalEngine,
     kind: &str,
     keys: &BTreeSet<String>,
@@ -238,7 +238,7 @@ fn pages_and_index_rows(
     let mut pages = 0usize;
     let mut rows: BTreeSet<u64> = BTreeSet::new();
     for (_routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         if page.deleted || page.model_id.as_str() != kind {
             continue;
@@ -270,7 +270,7 @@ fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let mut held = 0usize;
     for (_routing_bucket, _handle, object_key, page) in
-        super::pages_with_identity(&shard.bucket_index)
+        super::blocks_with_identity(&shard.bucket_index)
     {
         if !page.deleted && page.model_id.as_str() == kind && &*object_key == key {
             held += 1;
@@ -498,7 +498,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
 
     let ordinal_names = super::BlockObjects::of(&shard.bucket_index);
     let mut rows_seen = 0usize;
-    let mut pages_seen = 0usize;
+    let mut blocks_seen = 0usize;
     let mut id_already_answered = 0usize;
     // Every row of every object list, and what an ordinal into it would resolve TO.
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -515,7 +515,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
             if page.deleted || page.model_id.as_str() != "hash" {
                 continue;
             }
-            pages_seen += 1;
+            blocks_seen += 1;
             let object_key = ordinal_names.at(bucket.routing_bucket, *handle);
             // What the entry can answer WITHOUT an ordinal, from the address alone.
             let from_address = page.object_id(1, object_key);
@@ -528,23 +528,23 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
 
     println!("\n=== what an ordinal into the object list would resolve to ===");
     println!("  object-index rows walked : {rows_seen}");
-    println!("  live pages walked        : {pages_seen}");
+    println!("  live pages walked        : {blocks_seen}");
     println!("  pages whose id the entry already answers from its address: {id_already_answered}");
 
     assert!(
-        pages_seen > 0 && rows_seen > 0,
-        "DENOMINATOR: {pages_seen} pages and {rows_seen} rows walked. A store that filed nothing \
+        blocks_seen > 0 && rows_seen > 0,
+        "DENOMINATOR: {blocks_seen} pages and {rows_seen} rows walked. A store that filed nothing \
          would satisfy every assertion below while observing nothing"
     );
     assert_eq!(
-        id_already_answered, pages_seen,
-        "only {id_already_answered} of {pages_seen} pages answer their own object id from the \
+        id_already_answered, blocks_seen,
+        "only {id_already_answered} of {blocks_seen} pages answer their own object id from the \
          address. The refutation's first reason is that an ordinal buys a second route to \
          something already free; if the address has stopped answering, that reason weakens"
     );
     println!(
         "  VERDICT: the list is {rows_seen} rows of u64 id. The id is ALREADY free from the \
-         address on {id_already_answered}/{pages_seen} pages, and the NAME is not in the list at \
+         address on {id_already_answered}/{blocks_seen} pages, and the NAME is not in the list at \
          all -- so the ordinal serves no reader of `object_key`."
     );
 }
@@ -769,7 +769,7 @@ fn a_slot_into_the_object_list_survives_the_three_mutations_that_invalidated_an_
 /// `Arc<str>` a row. The list's own allocation is NOT charged: a `Box<Vec<u64>>` widened to carry
 /// names pays a vector header once a bucket, allocator rounding, and growth slack, none of which
 /// appears below. So the real figure is WORSE than this on every arm, and the standing measurement
-/// says how much worse: `page_entry_name_pointer` scores step 1b at -15.76 to -15.84 B a page on
+/// says how much worse: `block_entry_name_pointer` scores step 1b at -15.76 to -15.84 B a page on
 /// containers and +8.11 to +9.10 on routed keys at the shipped range, where the sign has flipped
 /// because the list grows by a key for every object and a routed bucket holds forty.
 ///
@@ -795,8 +795,8 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     let hash_keys: BTreeSet<String> = (0..CONTAINER_KEYS).map(|k| format!("h{k}")).collect();
     let string_keys: BTreeSet<String> = (0..ROUTED_KEYS).map(|i| format!("s{i}")).collect();
 
-    let (hash_pages, hash_rows) = pages_and_index_rows(&engine, "hash", &hash_keys);
-    let (string_pages, string_rows) = pages_and_index_rows(&engine, "string", &string_keys);
+    let (hash_blocks, hash_rows) = blocks_and_index_rows(&engine, "hash", &hash_keys);
+    let (string_blocks, string_rows) = blocks_and_index_rows(&engine, "string", &string_keys);
 
     // The saving is measured, not assumed, so this arithmetic moves with a sibling width step.
     let saving = size_of::<(u64, BlockIndex)>() - size_of::<(u64, OrdinalEntryU16)>();
@@ -810,16 +810,16 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
         (saving as f64 * pages as f64 - row_cost as f64 * rows as f64) / pages as f64
     };
 
-    let hash_net = net_per_block(hash_pages, hash_rows);
-    let string_net = net_per_block(string_pages, string_rows);
+    let hash_net = net_per_block(hash_blocks, hash_rows);
+    let string_net = net_per_block(string_blocks, string_rows);
 
     println!("\n=== the trade, per arm, never averaged -- A CEILING ON THE PRIZE ===");
     println!("  saving {saving} B/page of stride, name row {row_cost} B");
     println!("  the list's own allocation is NOT charged, so every row below is optimistic");
     println!("  arm       keys  pages  rows  rows/page  ceiling B/page");
     for (arm, keys, pages, rows, net) in [
-        ("hash", hash_keys.len(), hash_pages, hash_rows, hash_net),
-        ("string", string_keys.len(), string_pages, string_rows, string_net),
+        ("hash", hash_keys.len(), hash_blocks, hash_rows, hash_net),
+        ("string", string_keys.len(), string_blocks, string_rows, string_net),
     ] {
         println!(
             "  {arm:<8} {keys:>5} {pages:>6} {rows:>5}   {:>8.4}  {net:>+10.2}",
@@ -829,14 +829,14 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
 
     // DENOMINATORS FIRST, BOTH ARMS.
     assert_eq!(
-        hash_pages,
+        hash_blocks,
         CONTAINER_KEYS * MEMBERS_PER_KEY,
-        "the container arm exercised {hash_pages} pages, not {}",
+        "the container arm exercised {hash_blocks} pages, not {}",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     assert_eq!(
-        string_pages, ROUTED_KEYS,
-        "CONTROL NOT EXERCISED: {string_pages} string pages, not {ROUTED_KEYS}. A control that \
+        string_blocks, ROUTED_KEYS,
+        "CONTROL NOT EXERCISED: {string_blocks} string pages, not {ROUTED_KEYS}. A control that \
          read nothing reports no movement for the wrong reason"
     );
     assert!(
@@ -844,8 +844,8 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
         "CONTROL OVER ZERO ROWS: a control whose list is empty reports success whatever the trade"
     );
     assert!(
-        hash_pages > hash_rows,
-        "DENOMINATOR: {hash_pages} pages and {hash_rows} rows on the container arm. A fixture \
+        hash_blocks > hash_rows,
+        "DENOMINATOR: {hash_blocks} pages and {hash_rows} rows on the container arm. A fixture \
          whose keys held one page each would measure nothing"
     );
 
@@ -853,8 +853,8 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // absent -- so its rows-per-page cannot have moved off 1.0000, and that is the whole reason the
     // collapse does not reopen the route.
     assert_eq!(
-        string_rows, string_pages,
-        "the control holds {string_rows} rows for {string_pages} pages. #2019 was the identity on \
+        string_rows, string_blocks,
+        "the control holds {string_rows} rows for {string_blocks} pages. #2019 was the identity on \
          this arm, so one row per page is what it must still hold; if this has moved, the route IS \
          reopened and this module's verdict needs remeasuring"
     );
@@ -893,7 +893,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
 
     println!(
         "  VERDICT: container ceiling {hash_net:+.2} B/page, CONTROL routed ceiling \
-         {string_net:+.2} B/page over {string_pages} pages and {string_rows} rows. #2019 collapsed \
+         {string_net:+.2} B/page over {string_blocks} pages and {string_rows} rows. #2019 collapsed \
          the container arm's rows/page by 25x and did NOT move the routed arm, whose ceiling is \
          zero before the list's allocation is charged at all -- so step 1b stays refuted."
     );

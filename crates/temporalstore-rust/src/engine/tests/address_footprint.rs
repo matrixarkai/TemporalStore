@@ -3198,7 +3198,7 @@ fn the_block_identity_has_no_constructor_that_takes_an_id() {
 /// And the chain from the most numerous holder to that call is closed:
 ///
 ///   the model map level-2 value (`BTreeMap<u64, ElementEntry>`)
-///     -> `packed_pages::read_feature_point`
+///     -> `packed_blocks::read_feature_point`
 ///     -> `engine::read_block_bytes`
 ///     -> `BlockStore::read`
 ///     -> `read_range(slab, offset, length)`

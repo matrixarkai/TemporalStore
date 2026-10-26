@@ -700,7 +700,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // walk at all: it read 2,000 for a call that built 3,984 entries. Both terms are derived
     // from the shard below rather than written down, so a fixture that stops releasing anything
     // fails the denominator instead of quietly measuring the easy case.
-    let (indexed_pages, released_buckets) = {
+    let (indexed_blocks, released_buckets) = {
         let shards = engine.shards.read().expect("shards lock poisoned");
         let shard = shards.get(&1).expect("shard 1 is loaded");
         (
@@ -723,15 +723,15 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
          is not the one this guard is about"
     );
     assert!(
-        indexed_pages < report.total_block_refs as u64,
-        "the released buckets must be missing from the index ({indexed_pages} indexed against \
+        indexed_blocks < report.total_block_refs as u64,
+        "the released buckets must be missing from the index ({indexed_blocks} indexed against \
          {} returned), or there was nothing to supplement",
         report.total_block_refs
     );
 
     let charges = sites.values().copied().collect::<Vec<_>>();
     println!(
-        "    one walk charged {} to return {} ({indexed_pages} indexed + a whole {}-page \
+        "    one walk charged {} to return {} ({indexed_blocks} indexed + a whole {}-page \
          re-walk), {released_buckets} bucket(s) released",
         charges[0], report.total_block_refs, report.total_block_refs
     );
@@ -742,9 +742,9 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     );
     assert_eq!(
         charges[0],
-        indexed_pages + report.total_block_refs as u64,
+        indexed_blocks + report.total_block_refs as u64,
         "one walk materialised {} entries; with {released_buckets} bucket(s) released it should \
-         build the {indexed_pages} indexed pages and then the whole {}-page set again",
+         build the {indexed_blocks} indexed pages and then the whole {}-page set again",
         charges[0],
         report.total_block_refs
     );

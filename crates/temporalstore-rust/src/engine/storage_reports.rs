@@ -43,8 +43,8 @@ impl TemporalEngine {
         ObjectIndexDivergenceReport {
             rebuilds: counts.rebuilds,
             reconstructs: counts.reconstructs,
-            pages_named_an_object_the_list_lacked: counts.pages_named_an_object_the_list_lacked,
-            list_held_an_object_no_page_names: counts.list_held_an_object_no_page_names,
+            blocks_named_an_object_the_list_lacked: counts.blocks_named_an_object_the_list_lacked,
+            list_held_an_object_no_block_names: counts.list_held_an_object_no_block_names,
             divergences_logged: counts.divergences_logged,
             stored_slots_repeated_an_id: super::state::stored_slots_repeated_an_id(),
             last_divergence: counts.last.map(|(what, object_id)| ObjectIndexDivergenceSample {

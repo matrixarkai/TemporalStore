@@ -289,7 +289,7 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
             // walk it replaces.
             if let Some(page) = bucket.block_index.values().find(|page| {
                 page.deleted
-                    && crate::engine::state::tombstone_page_key(&page.address) == row.page
+                    && crate::engine::state::tombstone_block_key(&page.address) == row.page
             }) {
                 addresses.push(page.address.clone());
             }

@@ -55,7 +55,7 @@ fn a_bucket_holding_one_block(routing_bucket: u32, object_key: &str) -> BucketNo
     bucket.set_meta_loaded(true);
     bucket.set_in_memory(true);
     let mut live = BlockSlabLiveIndex::default();
-    bucket.insert_page(&object_key, 
+    bucket.insert_block(&object_key, 
         BlockIndex {
             model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",

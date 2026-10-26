@@ -38,8 +38,8 @@
 #![allow(clippy::all)]
 use super::*;
 use crate::engine::state::{
-    bisect_page, block_index_handle, find_page, page_lookup_entries_examined,
-    reset_page_lookup_entries_examined, scan_page, BlockIndex, BlockIndexMap, BlockSlabLiveIndex,
+    bisect_block, block_index_handle, find_block, block_lookup_entries_examined,
+    reset_block_lookup_entries_examined, scan_block, BlockIndex, BlockIndexMap, BlockSlabLiveIndex,
     BucketNode,
 };
 use std::mem::size_of;
@@ -666,13 +666,13 @@ fn the_walk_and_the_bisection_answer_identically_at_every_length() {
         let (_, pages) = sorted_list(length);
         for (handle, _) in &pages {
             assert_eq!(
-                scan_page(&pages, handle),
-                bisect_page(&pages, handle),
+                scan_block(&pages, handle),
+                bisect_block(&pages, handle),
                 "the two strategies disagreed on a present handle at length {length}"
             );
             assert_eq!(
-                find_page(&pages, handle),
-                scan_page(&pages, handle),
+                find_block(&pages, handle),
+                scan_block(&pages, handle),
                 "the shipped lookup disagreed with the walk on a present handle at length {length}"
             );
             checked += 1;
@@ -683,13 +683,13 @@ fn the_walk_and_the_bisection_answer_identically_at_every_length() {
                 continue;
             }
             assert_eq!(
-                scan_page(&pages, &absent),
-                bisect_page(&pages, &absent),
+                scan_block(&pages, &absent),
+                bisect_block(&pages, &absent),
                 "the two strategies disagreed on an absent handle at length {length}"
             );
             assert_eq!(
-                find_page(&pages, &absent),
-                bisect_page(&pages, &absent),
+                find_block(&pages, &absent),
+                bisect_block(&pages, &absent),
                 "the shipped lookup disagreed with the bisection on an absent handle at length \
                  {length}"
             );
@@ -739,13 +739,13 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
         assert_eq!(length, pages.len(), "the fixture built a list of the wrong length");
         let walk_entries = counted(|| {
             for (handle, _) in &pages {
-                let _ = std::hint::black_box(scan_page(&pages, handle));
+                let _ = std::hint::black_box(scan_block(&pages, handle));
             }
         }) as f64
             / length as f64;
         let bisect_entries = counted(|| {
             for (handle, _) in &pages {
-                let _ = std::hint::black_box(bisect_page(&pages, handle));
+                let _ = std::hint::black_box(bisect_block(&pages, handle));
             }
         }) as f64
             / length as f64;
@@ -807,17 +807,17 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
     let (_, long) = sorted_list(39);
     let through_the_door = counted(|| {
         for (handle, _) in &long {
-            let _ = std::hint::black_box(find_page(&long, handle));
+            let _ = std::hint::black_box(find_block(&long, handle));
         }
     });
     let through_the_bisection = counted(|| {
         for (handle, _) in &long {
-            let _ = std::hint::black_box(bisect_page(&long, handle));
+            let _ = std::hint::black_box(bisect_block(&long, handle));
         }
     });
     let through_the_walk = counted(|| {
         for (handle, _) in &long {
-            let _ = std::hint::black_box(scan_page(&long, handle));
+            let _ = std::hint::black_box(scan_block(&long, handle));
         }
     });
     assert_eq!(
@@ -834,9 +834,9 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
 
 /// Entries the shipped lookup functions examined while `body` ran.
 fn counted(body: impl FnOnce()) -> u64 {
-    reset_page_lookup_entries_examined();
+    reset_block_lookup_entries_examined();
     body();
-    page_lookup_entries_examined()
+    block_lookup_entries_examined()
 }
 
 /// THE PLANTED MARKER for the entry counter, recovered exactly.
@@ -852,7 +852,7 @@ fn the_entry_counter_recovers_a_planted_walk_exactly() {
     let (_, pages) = sorted_list(PLANTED);
     assert_eq!(PLANTED, pages.len(), "the fixture built the wrong list");
     let touched = counted(|| {
-        let _ = std::hint::black_box(scan_page(&pages, &u64::MAX));
+        let _ = std::hint::black_box(scan_block(&pages, &u64::MAX));
     });
     assert_eq!(
         PLANTED as u64, touched,
@@ -861,7 +861,7 @@ fn the_entry_counter_recovers_a_planted_walk_exactly() {
     // And the counter must move at all under the shipped door, or the production path is not the
     // path being counted.
     let through_the_door = counted(|| {
-        let _ = std::hint::black_box(find_page(&pages, &u64::MAX));
+        let _ = std::hint::black_box(find_block(&pages, &u64::MAX));
     });
     assert!(
         through_the_door > 0,
@@ -976,7 +976,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
 
         // The pages, bucket by bucket, exactly as the engine filed them -- EACH WITH THE KEY
         // THE BUCKET'S OWN LOOKUP NAMES IT BY. The entry carries no identity of its own, so the
-        // pair is taken from `page_identities_in`, which is the same per-bucket projection every
+        // pair is taken from `block_identities_in`, which is the same per-bucket projection every
         // production sweep uses. Built OUTSIDE the counted spans below, so the two container
         // measurements are over the identical values they were before.
         let by_bucket: Vec<Vec<(std::sync::Arc<str>, BlockIndex)>> = {
@@ -990,7 +990,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
                 .bucket_map
                 .values()
                 .map(|bucket| {
-                    let named = crate::engine::state::page_identities_in(bucket, &keys);
+                    let named = crate::engine::state::block_identities_in(bucket, &keys);
                     bucket
                         .block_index
                         .iter()
@@ -1538,7 +1538,7 @@ fn a_read_examines_entries_only_where_a_block_list_exists() {
 
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        reset_page_lookup_entries_examined();
+        reset_block_lookup_entries_examined();
         let mut served = 0usize;
         for key in keys.iter().take(1_000) {
             if crate::engine::bucket_store::bucket_index_block_address(
@@ -1549,7 +1549,7 @@ fn a_read_examines_entries_only_where_a_block_list_exists() {
                 served += 1;
             }
         }
-        let examined = page_lookup_entries_examined();
+        let examined = block_lookup_entries_examined();
         assert_eq!(1_000, served, "the fixture resolved {served} of 1,000 keys");
         charged.insert(end_routing_bucket, (examined, served));
         println!(
@@ -1615,7 +1615,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         let mut total = 0usize;
         let mut object_keys = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
-            let named = crate::engine::state::page_identities_in(bucket, &keys);
+            let named = crate::engine::state::block_identities_in(bucket, &keys);
             for (handle, _page) in &bucket.block_index {
                 handles.insert(*handle);
                 object_keys.insert(

@@ -16,7 +16,7 @@
 //! every bucket holds exactly one block, that costs 482.0 B a bucket against boxing's 178.3 and the
 //! inline entry's own 284.2. Dropping is therefore a REGRESSION of 197.9 B a bucket against doing
 //! nothing, on a range that stores built before #1973 still run. Boxing keeps the single-block arm's
-//! short-circuit on the read path as well: it never enters `find_page`, so examined entries do not
+//! short-circuit on the read path as well: it never enters `find_block`, so examined entries do not
 //! move at all.
 //!
 //! #1964 kept the arm on an explicit measurement: dropping it would save bytes on every bucket and
@@ -189,7 +189,7 @@ impl ArmCensus {
         (empty, one, many)
     }
 
-    fn single_page_buckets(&self) -> usize {
+    fn single_block_buckets(&self) -> usize {
         self.held.get(&1).copied().unwrap_or_default()
     }
 
@@ -731,10 +731,10 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
         let wide = &observed[&(records, WIDE_END)];
         assert_eq!(
             wide.buckets(),
-            wide.single_page_buckets(),
+            wide.single_block_buckets(),
             "{records} on the whole keyspace: {} of {} buckets hold one page -- the wide range is \
              single-page BY CONSTRUCTION and a fixture showing otherwise is not that range",
-            wide.single_page_buckets(),
+            wide.single_block_buckets(),
             wide.buckets()
         );
 
@@ -746,11 +746,11 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
             narrow.widest()
         );
         assert!(
-            narrow.single_page_buckets() * 2 < narrow.buckets(),
+            narrow.single_block_buckets() * 2 < narrow.buckets(),
             "{records} on 0..{NARROW_END}: {} of {} buckets are single-page. If the shipped \
              default were still mostly single-page, #1964's premise would still hold and this \
              module's conclusion would not follow",
-            narrow.single_page_buckets(),
+            narrow.single_block_buckets(),
             narrow.buckets()
         );
     }
@@ -759,8 +759,8 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
     for records in [SMALL, LARGE] {
         let wide = &observed[&(records, WIDE_END)];
         let narrow = &observed[&(records, NARROW_END)];
-        let wide_share = wide.single_page_buckets() as f64 / wide.buckets() as f64;
-        let narrow_share = narrow.single_page_buckets() as f64 / narrow.buckets() as f64;
+        let wide_share = wide.single_block_buckets() as f64 / wide.buckets() as f64;
+        let narrow_share = narrow.single_block_buckets() as f64 / narrow.buckets() as f64;
         println!(
             "  {records} records: single-page buckets {wide_share:.5} of {} on the whole keyspace \
              -> {narrow_share:.5} of {} on the shipped default",
@@ -848,7 +848,7 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
             let save_chunk = keep.total_chunk_per_bucket() - dropped.total_chunk_per_bucket();
             let save_request = keep.total_request_per_bucket() - dropped.total_request_per_bucket();
             // THE PAY, per single-block bucket, measured on its own.
-            let single = census.single_page_buckets();
+            let single = census.single_block_buckets();
             let pay = pay_per_single_block_bucket(&page);
 
             println!(
@@ -1031,7 +1031,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
                 inline.allocs
             );
 
-            let single = census.single_page_buckets();
+            let single = census.single_block_buckets();
             let buckets = census.buckets();
             println!(
                 "  {label}: {single} single-page bucket(s) of {buckets} ({:.5}) x 1 allocation = \
@@ -1062,8 +1062,8 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
 /// DROPPING THE ARM.
 ///
 /// The single-block arm answers a lookup with ONE COMPARISON and one pointer load, and never enters
-/// `find_page` -- boxing the entry did not change that, because the arm still exists. So
-/// `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_page` that every list lookup goes
+/// `find_block` -- boxing the entry did not change that, because the arm still exists. So
+/// `BLOCK_LOOKUP_ENTRIES_EXAMINED`, the counter inside `find_block` that every list lookup goes
 /// through, reads exactly what it read before this change: a single-block bucket contributes nothing
 /// to it.
 ///
@@ -1073,14 +1073,14 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
 ///
 /// WHAT BOXING DOES COST THE READ PATH is a DEPENDENT load: the entry's address is not known until
 /// the node has been read, so it cannot be issued in parallel with reading the node. A counter
-/// cannot see that; `pages_per_bucket::reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not`
+/// cannot see that; `blocks_per_bucket::reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not`
 /// measures it ABBA and asserts the structural half.
 ///
 /// rust-internal: reads the engine's own lookup counter, no product behaviour
 #[test]
 #[ignore = "seeds two stores of 4,000 records; run by name"]
 fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_were_dropped() {
-    println!("\n=== the read path, counted through find_page ===");
+    println!("\n=== the read path, counted through find_block ===");
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
@@ -1088,9 +1088,9 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
         let keys = seed_routed(&engine, SMALL);
         let census = arm_census(&engine);
 
-        crate::engine::state::reset_page_lookup_entries_examined();
+        crate::engine::state::reset_block_lookup_entries_examined();
         let hits = read_back_count(&engine, &keys);
-        let examined = crate::engine::state::page_lookup_entries_examined();
+        let examined = crate::engine::state::block_lookup_entries_examined();
         assert_eq!(
             keys.len(),
             hits,
@@ -1102,20 +1102,20 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
             "  0..{end_routing_bucket}: {examined} entries examined over {hits} reads = {:.4} \
              entries a lookup | single-page buckets {} of {} ({:.5})",
             examined as f64 / hits as f64,
-            census.single_page_buckets(),
+            census.single_block_buckets(),
             census.buckets(),
-            census.single_page_buckets() as f64 / census.buckets() as f64
+            census.single_block_buckets() as f64 / census.buckets() as f64
         );
 
         // THE WHOLE-KEYSPACE ARM IS THE ONE THAT SAYS SO, AND IT SAYS ZERO. Every bucket there
         // holds exactly one block, so every lookup takes the single-block arm and NONE reaches
-        // `find_page`. A non-zero reading would mean the arm had stopped short-circuiting -- which
+        // `find_block`. A non-zero reading would mean the arm had stopped short-circuiting -- which
         // is precisely what dropping it would have done.
         if end_routing_bucket == WIDE_END {
             assert_eq!(
                 0, examined,
                 "on the whole keyspace every bucket holds one page, so no lookup should reach \
-                 `find_page` at all -- it examined {examined} entries over {hits} reads, which \
+                 `find_block` at all -- it examined {examined} entries over {hits} reads, which \
                  means the single-page arm is no longer answering without a search"
             );
         } else {
@@ -1135,9 +1135,9 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
     seed_routed(&engine, 16);
     let page = one_real_block(&engine);
     let single = block_list(1, &page);
-    crate::engine::state::reset_page_lookup_entries_examined();
-    let found = crate::engine::state::find_page(&single, &single[0].0);
-    let one_entry = crate::engine::state::page_lookup_entries_examined();
+    crate::engine::state::reset_block_lookup_entries_examined();
+    let found = crate::engine::state::find_block(&single, &single[0].0);
+    let one_entry = crate::engine::state::block_lookup_entries_examined();
     assert!(found.is_ok(), "the fixture's own page must be found in its own list");
     assert_eq!(
         1, one_entry,
@@ -1195,7 +1195,7 @@ fn a_container_store_is_the_control_where_the_range_predicts_no_change() {
         wide.arm_samples(),
         narrow.arm_samples()
     );
-    let moved = (wide.single_page_buckets() as f64 - narrow.single_page_buckets() as f64).abs()
+    let moved = (wide.single_block_buckets() as f64 - narrow.single_block_buckets() as f64).abs()
         / wide.buckets().max(1) as f64;
     println!(
         "  the control's single-page share moved by {:.2}% between the two ranges -- the mechanism \
