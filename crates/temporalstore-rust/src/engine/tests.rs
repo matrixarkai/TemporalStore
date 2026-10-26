@@ -240,6 +240,7 @@ mod serving_read_guard;
 mod poison_shard_guard;
 mod restore_serving_gate;
 mod page_and_block_counter_ratio;
+mod page_and_block_name_one_tier;
 mod manifest_restore_model_maps;
 mod prune_crash_window;
 mod install_on_load_anchor;
