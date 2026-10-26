@@ -171,7 +171,11 @@ fn main() {
     let local_admin_enabled = env_bool("TS_RAFT_ENABLE_LOCAL_ADMIN", false);
     let blocked_peers = Arc::new(Mutex::new(BTreeSet::new()));
     info!(
-        node = runtime.status().leader_id,
+        // The node this process IS, not the node it currently follows. This read
+        // `runtime.status().leader_id`, so every process in a three-node group logged the
+        // same id -- three distinct processes on three distinct ports all announcing
+        // themselves as node 1, which is no use at all when reading three logs side by side.
+        node = runtime.local_node_id(),
         addr = %bind_addr,
         "temporalstore raft node listening"
     );

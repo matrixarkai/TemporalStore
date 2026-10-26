@@ -5468,6 +5468,13 @@ impl RaftTransport for RaftCluster {
     }
 }
 
+/// One replica's row in a `/raft/status` reply.
+///
+/// Only the row whose `node_id` equals the REPORTING process's own node id is a statement
+/// about a real replica. Every other row is that process's local shadow of a peer, carrying
+/// whatever bookkeeping happened to pass through it, and `applied_index` in particular is not
+/// the peer's: a three-node group has been observed reporting a peer's `applied_index` as 0 in
+/// the same instant that peer reported 9 about itself. Ask a node about itself.
 fn node_status(node: &RaftNode, leader_commit_index: u64) -> RaftNodeStatus {
     RaftNodeStatus {
         node_id: node.id,
