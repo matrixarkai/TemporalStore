@@ -694,6 +694,11 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
     }
     mark_liveness(isolated, isolated_node, true);
 
+    // What the isolated node's own log held before the majority wrote anything. The sever is
+    // judged by whether this moves, which is encoding-agnostic: it does not matter how the
+    // appends are framed, only whether any of them landed.
+    let isolated_log_before = local_log_index(isolated, isolated_node);
+
     let majority_write = propose(leader, "partition-majority", "v-partition");
     for majority in nodes.iter().filter(|node| node.node_id != isolated_node) {
         wait_for_value(
@@ -704,11 +709,33 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         );
     }
 
+    // The block has to be shown to have severed replication before a read-back means anything.
+    // A chaos block that quietly stopped matching leaves the follower fully current, and a
+    // current follower serving a committed value is correct behaviour, not a violation. This is
+    // the regime assertion for this phase: it must come before any claim about the read.
+    assert_isolation_held(isolated, isolated_node, isolated_log_before);
+
+    // A key nothing ever wrote, read on the same node at the same moment. Without it, an absent
+    // read proves nothing: the read route answers `ok` for "looked, not there" just as it does
+    // for a hit, so `status.ok` alone cannot tell the two apart.
+    let control_key = format!("partition-never-written-{}", now_ms());
+    let isolated_control = read_value(isolated, isolated_node, &control_key);
+    assert!(
+        isolated_control.value.is_none(),
+        "negative control failed: key {control_key} was never written yet the isolated follower \
+         returned a value for it: {isolated_control:?}"
+    );
+
     let isolated_read = read_value(isolated, isolated_node, "partition-majority");
     assert!(
+        isolated_read.value.is_none(),
+        "isolated follower served the majority's committed value while cut off from the \
+         majority: {isolated_read:?}"
+    );
+    assert!(
         !isolated_read.status.ok,
-        "isolated follower unexpectedly served a read during partition: {:?}",
-        isolated_read
+        "isolated follower accepted a read while cut off from the majority instead of refusing \
+         it; a minority node has no way to know what it is missing: {isolated_read:?}"
     );
 
     for peer in nodes.iter().filter(|node| node.node_id != isolated_node) {
@@ -724,6 +751,55 @@ fn run_partition_phase(nodes: &[ProductionRaftNode]) -> PartitionSummary {
         isolated_read_status: isolated_read.status,
         healed_read,
     }
+}
+
+/// The node's own last log index, as that node reports it about itself.
+fn local_log_index(node: &ProductionRaftNode, node_id: RaftNodeId) -> u64 {
+    let status: RaftClusterStatus =
+        get_json_with_options(&node.addr, "/raft/status", request_options())
+            .expect("status request failed");
+    status
+        .nodes
+        .iter()
+        .find(|replica| replica.node_id == node_id)
+        .map(|replica| replica.last_log_index)
+        .unwrap_or_default()
+}
+
+/// Assert that the isolation the phase set up actually held while the majority wrote.
+///
+/// Two independent facts, both required, because either alone is satisfiable by a broken
+/// fixture: nothing new landed in the isolated node's own log, and the isolated node itself
+/// reports that it no longer holds a majority. A chaos block that has silently stopped matching
+/// fails the first; a node that was never told its peers were gone fails the second.
+fn assert_isolation_held(node: &ProductionRaftNode, node_id: RaftNodeId, log_index_before: u64) {
+    // Bounded settle: give any append that the block failed to stop time to arrive, so this
+    // does not pass merely by reading too early.
+    let mut last = log_index_before;
+    for _ in 0..40 {
+        thread::sleep(Duration::from_millis(50));
+        last = local_log_index(node, node_id);
+        if last != log_index_before {
+            break;
+        }
+    }
+    assert_eq!(
+        last, log_index_before,
+        "the peer block did not sever replication: node {node_id} was supposed to be cut off, \
+         but its own log grew from {log_index_before} to {last} while the majority wrote. \
+         Nothing can be concluded from a read-back on a node that is still being replicated to."
+    );
+    let status: RaftClusterStatus =
+        get_json_with_options(&node.addr, "/raft/status", request_options())
+            .expect("status request failed");
+    assert!(
+        !status.has_majority,
+        "node {node_id} was supposed to be cut off from the majority, but it still reports \
+         has_majority=true (live_voters={} of majority={}); it has no reason to refuse a read: \
+         {status:?}",
+        status.live_voters,
+        status.majority
+    );
 }
 
 fn run_lagging_follower_phase(nodes: &[ProductionRaftNode]) -> LaggingFollowerSummary {

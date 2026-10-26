@@ -538,27 +538,13 @@ fn command_response(
     }
 }
 
+// This rule had two copies, and only this one was repaired when appends became binary. The
+// other -- in the `raft_node` binary, which is the one the three-node chaos harness drives --
+// kept parsing the body as JSON, so its peer block silently stopped covering replication. Two
+// copies of a filter are two chances to fix one of them, so there is now one implementation,
+// in the lib, with a test over both encodings.
 fn incoming_raft_peer_id(request: &HttpRequest) -> Option<RaftNodeId> {
-    match request.path.as_str() {
-        "/raft/append_entries" | "/raft/install_snapshot" | "/raft/install_snapshot_chunk" => {
-            // A binary body has no field to read out by name, so decode it. Returning None
-            // here would quietly stop attributing the request to the peer that sent it.
-            if temporalstore_rust::raft::is_binary_rpc(&request.body) {
-                return temporalstore_rust::raft::decode_append_entries(&request.body)
-                    .ok()
-                    .map(|decoded| decoded.leader_id);
-            }
-            serde_json::from_slice::<serde_json::Value>(&request.body)
-                .ok()?
-                .get("leader_id")?
-                .as_u64()
-        }
-        "/raft/request_vote" => serde_json::from_slice::<serde_json::Value>(&request.body)
-            .ok()?
-            .get("candidate_id")?
-            .as_u64(),
-        _ => None,
-    }
+    temporalstore_rust::raft::replication_peer_id_for_http_request(request)
 }
 
 fn is_raft_read_command(command: &Command) -> bool {

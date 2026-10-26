@@ -127,6 +127,27 @@ jobs:
         continue-on-error: true
         run: cargo test --release -p temporalstore-rust --lib --tests --no-fail-fast -- --test-threads=1
 
+      # The step above is `continue-on-error`, so it REPORTS and does not GATE. The
+      # sender attribution below has to gate: when it broke, the three-node chaos
+      # harness went on claiming it had cut a node off while the leader kept
+      # replicating to it, and because nothing runs that harness the lie was
+      # invisible for 2,463 commits. The failure shape is silent by construction --
+      # the attribution returns None, None reads as "no peer to filter", and the
+      # filter allows -- so only an assertion catches it.
+      #
+      # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so a renamed or moved
+      # test would turn this gate into a no-op that still reports success. The grep
+      # on `1 passed` is what makes the gate real; do not drop it.
+      - name: cargo test (raft peer attribution, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          cargo test --release -p temporalstore-rust --lib \
+            raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
+            -- --test-threads=1 2>&1 | tee /tmp/attribution-gate.log
+          grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/attribution-gate.log \
+            || { echo "::error::the attribution gate matched no test, or did not pass exactly one"; exit 1; }
+
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a
       # hard gate. Deliberately NOT --bins: some bin test harnesses run servers

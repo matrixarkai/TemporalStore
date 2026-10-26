@@ -755,6 +755,86 @@ fn authenticated_route_accepts_a_binary_append() {
     assert!(parsed.success, "the append must actually be accepted");
 }
 
+/// Which peer a request came from must be answerable for BOTH encodings of an append.
+///
+/// The sibling above fixed the auth wrapper, which failed loudly: a JSON parse over a binary body
+/// errored, and every append got a 403. A caller that only wants the sender id fails quietly
+/// instead -- `None`, which reads as "no peer to filter" and therefore allows. That is how the
+/// three-node chaos harness's peer block stopped covering replication on the day appends became
+/// binary: the harness went on reporting that it had cut a node off while the leader kept
+/// replicating to it, so an "isolated" follower was in fact fully current and served reads
+/// correctly. The harness failed on every run from then on, and nothing ran it.
+#[test]
+fn the_sender_of_an_append_is_attributed_in_both_encodings() {
+    let request = AppendEntriesRequest {
+        rpc: None,
+        shard_id: 1,
+        term: 7,
+        leader_id: 1,
+        target_id: 3,
+        prev_log_index: 0,
+        prev_log_term: 0,
+        entries: vec![RaftLogEntry {
+            leader_time_ms: 0,
+            term: 7,
+            index: 1,
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "sender".into(),
+                value: b"attributed".to_vec(),
+            },
+        }],
+        leader_commit: 0,
+    };
+
+    let json_body = serde_json::to_vec(&request).unwrap();
+    assert_eq!(
+        replication_peer_id_for_http_request(&HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/append_entries".to_string(),
+            body: json_body,
+        }),
+        Some(1),
+        "a JSON append must be attributed to its leader"
+    );
+
+    let binary_body = wal_proto::encode_append_entries(&request).unwrap();
+    assert!(
+        is_binary_rpc(&binary_body),
+        "the encoder must actually have produced the binary shape, or this proves nothing"
+    );
+    assert_eq!(
+        replication_peer_id_for_http_request(&HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/append_entries".to_string(),
+            body: binary_body,
+        }),
+        Some(1),
+        "a BINARY append must be attributed to the same leader; returning None here reads as \
+         'no peer to filter' and silently disables every sender-keyed filter"
+    );
+
+    let vote = VoteRequest {
+        rpc: None,
+        shard_id: 1,
+        term: 7,
+        candidate_id: 2,
+        target_id: 3,
+        last_log_index: 0,
+        last_log_term: 0,
+        pre_vote: false,
+    };
+    assert_eq!(
+        replication_peer_id_for_http_request(&HttpRequest {
+            method: "POST".to_string(),
+            path: "/raft/request_vote".to_string(),
+            body: serde_json::to_vec(&vote).unwrap(),
+        }),
+        Some(2),
+        "a vote must be attributed to its candidate"
+    );
+}
+
 
 /// Counts how many appends are in flight per peer at once, failing the moment two overlap.
 ///

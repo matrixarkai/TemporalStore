@@ -572,19 +572,7 @@ fn apply_membership_response(
 }
 
 fn incoming_peer_id(request: &HttpRequest) -> Option<u64> {
-    match request.path.as_str() {
-        "/raft/append_entries" | "/raft/install_snapshot" | "/raft/install_snapshot_chunk" => {
-            serde_json::from_slice::<serde_json::Value>(&request.body)
-                .ok()?
-                .get("leader_id")?
-                .as_u64()
-        }
-        "/raft/request_vote" => serde_json::from_slice::<serde_json::Value>(&request.body)
-            .ok()?
-            .get("candidate_id")?
-            .as_u64(),
-        _ => None,
-    }
+    temporalstore_rust::raft::replication_peer_id_for_http_request(request)
 }
 
 fn command_response(

@@ -2203,6 +2203,39 @@ fn raft_rpc_metadata_for_http_request(
     }
 }
 
+/// Which peer a replication or vote request came FROM, for a caller that filters by sender.
+///
+/// The sender is a field of the message, and a binary body has no fields to read out by name, so
+/// it has to be decoded. A caller that reaches for `serde_json` here gets `None` on every binary
+/// append -- and `None` reads as "no peer to filter", which is the permissive answer. That is how
+/// the chaos peer block stopped covering replication the day appends became binary: the filter
+/// did not error, it just stopped matching. `raft_rpc_metadata_for_http_request` already has to
+/// decode for the same reason; this is the same requirement for the sender id.
+pub fn replication_peer_id_for_http_request(request: &HttpRequest) -> Option<RaftNodeId> {
+    match request.path.as_str() {
+        "/raft/append_entries" => {
+            if wal_proto::is_binary_rpc(&request.body) {
+                return wal_proto::decode_append_entries(&request.body)
+                    .ok()
+                    .map(|req| req.leader_id);
+            }
+            json_field_u64(&request.body, "leader_id")
+        }
+        "/raft/install_snapshot" | "/raft/install_snapshot_chunk" => {
+            json_field_u64(&request.body, "leader_id")
+        }
+        "/raft/request_vote" => json_field_u64(&request.body, "candidate_id"),
+        _ => None,
+    }
+}
+
+fn json_field_u64(body: &[u8], field: &str) -> Option<u64> {
+    serde_json::from_slice::<serde_json::Value>(body)
+        .ok()?
+        .get(field)?
+        .as_u64()
+}
+
 fn validate_raft_rpc_metadata(
     rpc: &Option<RaftRpcMetadata>,
     required_token: &str,
