@@ -511,3 +511,20 @@ Licensed under the Apache License, Version 2.0 ([`LICENSE`](LICENSE), [`NOTICE`]
 Third-party dependency licenses and attributions are listed in
 [`THIRD-PARTY-NOTICES.md`](docs/THIRD-PARTY-NOTICES.md). Product and crate names are trademarks
 of MatrixArkAI; see [`TRADEMARKS.md`](docs/TRADEMARKS.md).
+
+### WAL encoding and shared-store append support
+
+New local WAL records use binary protobuf. Outcome recording and binary framing
+are enabled by default; commands remain when needed for safe recovery. Existing
+JSON records remain readable.
+
+`SharedStoreReplicator` also defaults to `ProtobufAppendBlob`, including the
+retry-policy constructor and the MatrixObject server durability path. Synchronous
+and asynchronous writes use the same encoding; acknowledgement timing is separate.
+Readers accept older per-key JSON records alongside the protobuf append log.
+
+A shared-store backend must implement real `append_blob` semantics for this
+default. The base trait returns an unsupported error instead of replacing earlier
+log bytes. Existing put-only integrations can explicitly select
+`SharedStoreWalAppendMode::JsonPerKey` during migration; there is no automatic
+fallback to JSON after an append failure.

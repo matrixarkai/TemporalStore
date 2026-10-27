@@ -3115,7 +3115,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert!(!report.log_compatibility.native_binary_compatible);
     assert_eq!(
         report.log_compatibility.wal_format,
-        "rust-jsonl-command-v1"
+        "rust-protobuf-wal-v1"
     );
     assert_eq!(
         report.log_compatibility.index_log_format,

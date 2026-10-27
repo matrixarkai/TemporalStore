@@ -432,7 +432,7 @@ impl TemporalEngine {
         let index_log_records = self.index_log_store.record_count(shard_id).unwrap_or_default();
         StorageLogCompatibilityReport {
             shard_id,
-            wal_format: "rust-jsonl-command-v1".to_string(),
+            wal_format: "rust-protobuf-wal-v1".to_string(),
             index_log_format: "rust-jsonl-shard-index-v1".to_string(),
             compatibility_mode: "rust_native_migration_only".to_string(),
             migration_required: true,
@@ -450,7 +450,6 @@ impl TemporalEngine {
             compatibility_gaps: vec![
                 "compatibility mode is migration-only; direct mixed-format binary log serving is not supported"
                     .to_string(),
-                "binary/protobuf wal reader and writer are not implemented".to_string(),
                 "binary/protobuf index-log reader and writer are not implemented".to_string(),
                 "golden log conversion/replay suite is required before migration".to_string(),
             ],

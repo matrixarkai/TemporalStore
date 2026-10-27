@@ -56,7 +56,7 @@ jobs:
         # needs libclang; building RocksDB itself needs cmake.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
@@ -88,7 +88,7 @@ jobs:
         # needs libclang; building RocksDB itself needs cmake.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
@@ -158,7 +158,9 @@ jobs:
           for t in \
             raft::tests::part5::only_the_majority_check_refuses_a_read_on_a_node_that_lost_its_peers \
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
-            shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format ; do
+            shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
+            shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
+            engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_component ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
@@ -173,6 +175,14 @@ jobs:
             grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/gate.log \
               || { echo "::error::$t did not pass"; exit 1; }
           done
+
+      - name: Unsupported append never replaces WAL bytes
+        run: |
+          set -o pipefail
+          cargo test --release -p temporalstore-snapshot --lib \
+            object_store::tests::a_put_only_store_refuses_append_without_replacing_bytes \
+            -- --exact --test-threads=1 2>&1 | tee /tmp/append-safety.log
+          grep -q 'test result: ok. 1 passed; 0 failed' /tmp/append-safety.log
 
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a

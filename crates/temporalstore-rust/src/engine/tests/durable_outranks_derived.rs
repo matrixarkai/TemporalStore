@@ -2330,7 +2330,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
 ///
 /// The first version of this arm drove `install_shared_outcomes_with_blocks`, and it FAILED -- for
 /// a reason that turned out to be a defect in that path rather than in this change, which
-/// `the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate`
+/// `the_shared_install_pairs_carried_blocks_by_object_and_component`
 /// below records in full. The short form: that path pairs a carried page to an outcome by
 /// `object_id`, which is per (kind, key) and NOT per element, so for a record carrying several
 /// pages of one key it attaches the FIRST page's bytes to every outcome. While the outcome carried
@@ -2549,7 +2549,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 ///
 /// rust-internal: records a known defect in the shared-install path, no product behaviour
 #[test]
-fn the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate() {
+fn the_shared_install_pairs_carried_blocks_by_object_and_component() {
     const KEY: &str = "pair-hash";
     let fields = ["one", "two"];
 
@@ -2610,16 +2610,14 @@ fn the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_d
             .map(|held| held.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default()
     };
-    println!("[pairing] installed={installed} fields={held:?} for {fields:?}");
-    assert_eq!(
-        1,
-        held.len(),
-        "the shared install restored {} field(s) of 2. THIS ARM RECORDS A DEFECT: it expects ONE, \
-         because both outcomes localise onto the FIRST carried page of their object id. If this is \
-         now 2, the pairing has been fixed -- which is the intended outcome -- and this arm should \
-         be restated to assert the fix rather than relaxed to accept either",
-        held.len()
-    );
+    assert!(installed);
+    assert_eq!(held, fields.iter().map(|field| field.to_string()).collect());
+    for field in fields {
+        assert_eq!(fresh.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashGet { key: KEY.to_string(), field: field.to_string() },
+        }).response, CommandResponse::Bytes { value: Some(format!("v-{field}").into_bytes()) });
+    }
 }
 
 /// THE PATH A `--lib` FIXTURE COULD NOT SEE: THE PAGE IS UNREACHABLE AND THE OUTCOME STILL NAMES

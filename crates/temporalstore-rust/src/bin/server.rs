@@ -1999,7 +1999,7 @@ fn wire_matrixobject_durability(
     use std::time::Duration;
     use temporalstore_rust::matrixobject_store::MatrixObjectObjectStore;
     use temporalstore_rust::{
-        SharedStoreReplicator, SharedStoreStorageMode, SharedStoreWalAppendMode, StorageBackend,
+        SharedStoreReplicator, SharedStoreStorageMode, StorageBackend,
     };
 
     // THE DIRECTORY COMES FROM THE BACKEND, NOT FROM A SECOND ENV READ. This read
@@ -2062,18 +2062,13 @@ fn wire_matrixobject_durability(
         }
     };
 
-    // `TS_MATRIXOBJECT_SYNC_FLUSH=1` forces every write durable before ack; group commit, which
-    // is unconditional, then coalesces concurrent sync writers onto a shared durable barrier. Coalescing requires the single-appendable-log
-    // (ProtobufAppendBlob) WAL layout, so select it here when group commit is active on the sync
-    // path. `latest_persisted_wal_index` / replay read BOTH layouts (union by WAL index), so a shard
-    // that previously wrote the per-key layout continues monotonically with no migration.
+    // All durability modes use the binary protobuf append log. Sync mode controls
+    // acknowledgement timing and group commit, not record encoding. Replay accepts
+    // older per-key records alongside the append log, so existing shards keep their order.
     let sync_flush = env_bool("TS_MATRIXOBJECT_SYNC_FLUSH", false);
     let group_commit = sync_flush && temporalstore_rust::wal::group_commit_configured();
     let commit_delay = temporalstore_rust::wal::group_commit_delay();
-    let mut replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
-    if group_commit {
-        replicator = replicator.with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
-    }
+    let replicator = SharedStoreReplicator::new(cluster_id, Arc::new(store));
 
     let latest = match rt.block_on(replicator.latest_persisted_wal_index(shard_id)) {
         Ok(latest) => latest,

@@ -52,18 +52,13 @@ pub trait ObjectStore: Send + Sync {
         key: &str,
         bytes: Bytes,
     ) -> Result<AppendBlobReceipt, ObjectStoreError> {
-        let bytes_written = bytes.len() as u64;
-        self.put(key, bytes).await?;
-        Ok(AppendBlobReceipt {
-            key: key.to_string(),
-            start_offset: 0,
-            end_offset: bytes_written,
-            bytes_written,
-            object_length: bytes_written,
-            physical_slab_count: 0,
-            first_physical_offset: None,
-        })
+        let _ = (key, bytes);
+        Err(ObjectStoreError::Io(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "this object store does not implement append_blob; replacing an object is not an append",
+        )))
     }
+
     async fn put_many(&self, objects: &[(String, Bytes)]) -> Result<(), ObjectStoreError> {
         for (key, bytes) in objects {
             self.put(key, bytes.clone()).await?;
@@ -772,6 +767,46 @@ async fn collect_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_put_only_store_refuses_append_without_replacing_bytes() {
+        struct PutOnly(FileObjectStore);
+        #[async_trait]
+        impl ObjectStore for PutOnly {
+            async fn put(&self, key: &str, bytes: Bytes) -> Result<(), ObjectStoreError> {
+                self.0.put(key, bytes).await
+            }
+            async fn get(&self, key: &str) -> Result<Bytes, ObjectStoreError> {
+                self.0.get(key).await
+            }
+            async fn list(&self, prefix: &str) -> Result<Vec<String>, ObjectStoreError> {
+                self.0.list(prefix).await
+            }
+            async fn delete(&self, key: &str) -> Result<(), ObjectStoreError> {
+                self.0.delete(key).await
+            }
+            fn uri(&self, key: &str) -> String {
+                self.0.uri(key)
+            }
+        }
+        let dir = tempfile::tempdir().unwrap();
+        let store = PutOnly(FileObjectStore::new(dir.path()));
+        store
+            .put("wal", Bytes::from_static(b"first"))
+            .await
+            .unwrap();
+        let error = store
+            .append_blob("wal", Bytes::from_static(b"second"))
+            .await
+            .unwrap_err();
+        assert!(
+            matches!(error, ObjectStoreError::Io(ref error) if error.kind() == std::io::ErrorKind::Unsupported)
+        );
+        assert_eq!(
+            store.get("wal").await.unwrap(),
+            Bytes::from_static(b"first")
+        );
+    }
 
     #[tokio::test]
     async fn file_object_store_append_blob_preserves_existing_bytes() {
