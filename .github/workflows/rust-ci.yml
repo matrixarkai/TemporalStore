@@ -54,9 +54,10 @@ jobs:
       - name: Install system build dependencies
         # librocksdb-sys (via matrixcache's rocksdb-ssd feature) runs bindgen and
         # needs libclang; building RocksDB itself needs cmake.
+        # The optional backend also builds raft-proto, which invokes protoc.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
@@ -86,9 +87,10 @@ jobs:
       - name: Install system build dependencies
         # librocksdb-sys (via matrixcache's rocksdb-ssd feature) runs bindgen and
         # needs libclang; building RocksDB itself needs cmake.
+        # The optional backend also builds raft-proto, which invokes protoc.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
@@ -106,7 +108,7 @@ jobs:
       - name: cargo check (all targets)
         run: cargo check -p temporalstore-rust --all-targets
 
-      # This example requires the optional backend and are skipped by default builds.
+      # This example requires the optional backend and is skipped by default builds.
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery
         run: cargo run --release --locked -p temporalstore-rust --features matrixobject --example one_append_amplification_report
