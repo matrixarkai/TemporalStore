@@ -259,7 +259,7 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     }
     if status.ok {
         if let Some(retain_from_block_slab_id) = request.retain_block_slabs_from_id {
-            // One engine shares a single page_store across every shard it hosts, so a slab can
+            // One engine shares a single block_store across every shard it hosts, so a slab can
             // hold pages from multiple shards. Retain slabs live in ANY loaded shard, not just
             // this request's shard; a per-shard live set would delete another shard's live pages.
             let mut live_block_slab_ids = inner.engine.live_block_slab_ids_all_shards();
