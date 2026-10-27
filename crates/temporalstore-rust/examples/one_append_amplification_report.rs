@@ -11,6 +11,9 @@
 //! `stored = rate * payload + envelope` is fitted over it, with the residual printed so a
 //! non-linear term cannot hide inside a quoted slope.
 //!
+//! Both command records and outcomes captured from an engine write are measured separately.
+//! Every append is read back through a fresh reader before its size is accepted.
+//!
 //! # THE TWO LEGS ARE PRICED SEPARATELY
 //!
 //! One append in `ProtobufAppendBlob` mode writes exactly TWO objects and they are not the same
@@ -32,7 +35,7 @@
 //!   user bytes      what the caller handed us -- key + value
 //!   entry bytes     one WAL entry's extent length: the protobuf encoding
 //!   blob bytes      every extent the append blob holds -- BOTH legs
-//!   physical bytes  blob bytes times the replica count -- the store's durability choice
+//!   replicated bytes  blob bytes times the replica count -- a model, not disk usage
 //! ```
 //!
 //! A ratio without its pair named is a number nobody can reproduce, so every figure below says
@@ -46,7 +49,7 @@ use matrixobjectstore_rs::StoreOptions;
 use temporalstore_rust::shared_store::{
     SharedStoreReplicator, SharedStoreWalAppendMode, SharedStoreWalEntry,
 };
-use temporalstore_rust::{Command, MatrixObjectObjectStore};
+use temporalstore_rust::{Command, ExecuteRequest, MatrixObjectObjectStore, TemporalEngine};
 use temporalstore_snapshot::object_store::ObjectStore;
 
 const BUCKET: &str = "temporalstore-shared";
@@ -58,8 +61,92 @@ const KEY: &str = "amp-key";
 const CLUSTER: &str = "cluster-one-append";
 const LONG_CLUSTER: &str = "cluster-one-append-with-a-deliberately-much-longer-name";
 
+#[derive(Clone, Copy, Debug)]
+enum Shape {
+    Command,
+    Outcome,
+}
+
+// Capture the engine's own record: invented object IDs or omitted pages change the cost.
+fn entry_for(shape: Shape, value: Vec<u8>) -> SharedStoreWalEntry {
+    let command = Command::StringSet {
+        key: KEY.to_string(),
+        value,
+    };
+    if matches!(shape, Shape::Command) {
+        return SharedStoreWalEntry {
+            shard_id: SHARD,
+            wal_index: 1,
+            command: Some(command),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+    }
+    let dir = tempfile::tempdir().expect("bounded engine fixture");
+    let primary = TemporalEngine::with_local_dirs(
+        1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("index"),
+    );
+    primary.load_shard(SHARD);
+    assert!(
+        primary
+            .execute(ExecuteRequest {
+                shard_id: SHARD,
+                command
+            })
+            .status
+            .ok
+    );
+    let records = primary
+        .write_ahead_log_store()
+        .scan(SHARD, 0, u64::MAX, u64::MAX)
+        .expect("scan the engine append");
+    let mut writes = records
+        .iter()
+        .map(|(_, bytes)| {
+            temporalstore_rust::wal::decode_wal_line(bytes).expect("decode engine record")
+        })
+        .filter(|record| !record.outcomes.is_empty());
+    let record = writes.next().expect("the engine must write outcomes");
+    assert!(
+        writes.next().is_none(),
+        "one write must produce one outcome record"
+    );
+    assert!(
+        record.command.is_none(),
+        "the outcome sweep must not carry a command"
+    );
+    assert_eq!(
+        record.outcomes.len(),
+        1,
+        "one string write must yield one outcome"
+    );
+    let mut staged_blocks = record.staged_blocks;
+    if staged_blocks.is_empty() {
+        for item in &record.outcomes {
+            if let Some(address) = item.resolved_address() {
+                staged_blocks.push(temporalstore_rust::wal::StagedBlock {
+                    object_id: item.object_id,
+                    component: item.component.as_deref().map(Arc::from),
+                    bytes: primary.block_store().read(&address).expect("carried page"),
+                });
+            }
+        }
+    }
+    SharedStoreWalEntry {
+        shard_id: SHARD,
+        wal_index: 1,
+        command: record.command,
+        staged_blocks,
+        outcomes: record.outcomes,
+    }
+}
+
 /// One append of `payload` bytes into a store of its own, and what the store then holds.
 async fn one_append(
+    shape: Shape,
     cluster: &str,
     payload: usize,
     options: &StoreOptions,
@@ -70,19 +157,35 @@ async fn one_append(
     let replicator = SharedStoreReplicator::new(cluster, store.clone())
         .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
 
-    let value = vec![b'v'; payload];
+    // Deterministic dense bytes keep page compression from hiding per-byte storage costs.
+    let mut seed = 0x1234_5678u32;
+    let value: Vec<u8> = (0..payload)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            seed as u8
+        })
+        .collect();
     let user_bytes = KEY.len() + value.len();
 
+    let expected = entry_for(shape, value);
     replicator
-        .publish_wal_entry(SharedStoreWalEntry {
-            shard_id: SHARD,
-            wal_index: 1,
-            command: Some(Command::StringSet { key: KEY.to_string(), value }),
-            staged_blocks: Vec::new(),
-            outcomes: Vec::new(),
-        })
+        .publish_wal_entry(expected.clone())
         .await
         .unwrap_or_else(|err| panic!("append of {payload} bytes: {err:?}"));
+    // A fresh reader cannot answer from the writer's state. Every measured byte must recover.
+    let reader = SharedStoreReplicator::new(cluster, store.clone())
+        .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+    let read = reader
+        .read_wal_entry_by_offset_metadata(SHARD, 1)
+        .await
+        .expect("indexed read")
+        .expect("the measured entry must exist");
+    assert_eq!(
+        read.entry, expected,
+        "the measured append must read back intact"
+    );
 
     // ---- THE ENTRY, and then EVERY object the append left behind. The sidecar is a second
     // ---- object and it is part of what an append costs, so it is counted rather than ignored.
@@ -106,9 +209,15 @@ async fn one_append(
 
     let mut blob_bytes = 0u64;
     for key in &objects {
-        if let Ok(object) = guard.get_object(BUCKET, key) {
-            blob_bytes += object.metadata.extents.iter().map(|e| e.length()).sum::<u64>();
-        }
+        let object = guard
+            .get_object(BUCKET, key)
+            .expect("every listed object must be counted");
+        blob_bytes += object
+            .metadata
+            .extents
+            .iter()
+            .map(|e| e.length())
+            .sum::<u64>();
     }
 
     (user_bytes, entry_bytes, blob_bytes, objects.len())
@@ -122,7 +231,11 @@ fn fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
     let sxx: f64 = points.iter().map(|p| p.0 * p.0).sum();
     let sxy: f64 = points.iter().map(|p| p.0 * p.1).sum();
     let denom = n * sxx - sx * sx;
-    let rate = if denom == 0.0 { 0.0 } else { (n * sxy - sx * sy) / denom };
+    let rate = if denom == 0.0 {
+        0.0
+    } else {
+        (n * sxy - sx * sy) / denom
+    };
     let envelope = (sy - rate * sx) / n;
     let worst = points
         .iter()
@@ -133,6 +246,7 @@ fn fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
 
 /// Sweep the value size under one cluster id and return the fitted line for both legs.
 async fn sweep(
+    shape: Shape,
     cluster: &str,
     sizes: &[usize],
     options: &StoreOptions,
@@ -142,10 +256,10 @@ async fn sweep(
     let mut entry_points: Vec<(f64, f64)> = Vec::new();
 
     if print {
-        println!("    payload   user B   entry B   sidecar B   blob B   objects   blob/user   physical/user");
+        println!("    payload   user B   entry B   sidecar B   blob B   objects   blob/user   replicated/user");
     }
     for &payload in sizes {
-        let (user, entry, blob, objects) = one_append(cluster, payload, options).await;
+        let (user, entry, blob, objects) = one_append(shape, cluster, payload, options).await;
         // ---- THE OBJECT COUNT IS ASSERTED, NOT ASSUMED. A listing that came back short would
         // ---- make every ratio below a ratio over the wrong denominator, and an empty one would
         // ---- read as "0 bytes over 0 objects", which looks free.
@@ -156,7 +270,7 @@ async fn sweep(
              means this is measuring something else"
         );
         assert!(
-            entry > 0 && blob >= entry,
+            entry > 0 && blob > entry,
             "entry {entry} B and blob {blob} B are not a log frame inside a listing that \
              contains it"
         );
@@ -186,7 +300,7 @@ async fn sweep(
         println!();
         println!("    log frame    = {entry_rate:.4} * payload + {entry_env:.1}      worst residual {entry_resid:.1} B");
         println!("    both legs    = {blob_rate:.4} * payload + {blob_env:.1}      worst residual {blob_resid:.1} B");
-        println!("    the sidecar is the difference: {:.1} B, and it does not move with the payload", blob_env - entry_env);
+        println!("    the sidecar is the difference: {:.1} B, at the fitted intercept; offset varints can widen with the payload", blob_env - entry_env);
     }
     (blob_rate, blob_env, blob_resid)
 }
@@ -202,7 +316,13 @@ async fn main() {
         ..StoreOptions::default()
     };
 
-    println!("WHAT ONE APPEND COSTS");
+    for shape in [Shape::Command, Shape::Outcome] {
+        report(shape, &options).await;
+    }
+}
+
+async fn report(shape: Shape, options: &StoreOptions) {
+    println!("WHAT ONE APPEND COSTS: {shape:?}");
     println!();
     println!("  one WAL entry per store, swept over the value size");
     println!("  store: page_size {}  chunk_size {}  max_extent_bytes {}  replica_count {}  write_quorum {}",
@@ -219,13 +339,24 @@ async fn main() {
         "the sweep is too narrow to separate the slope from the envelope"
     );
 
-    let (blob_rate, blob_env, blob_resid) = sweep(CLUSTER, &sizes, &options, true).await;
+    let (blob_rate, blob_env, blob_resid) = sweep(shape, CLUSTER, &sizes, options, true).await;
 
     println!();
-    println!("  SO THE PER-APPEND ENVELOPE IS ABOUT {:.0} BYTES, and the marginal rate is {:.3}x.", blob_env, blob_rate);
+    println!(
+        "  SO THE PER-APPEND ENVELOPE IS ABOUT {:.0} BYTES, and the marginal rate is {:.3}x.",
+        blob_env, blob_rate
+    );
     println!("  A ratio quoted at one payload size is mostly that envelope divided by that size:");
-    println!("    at {:>5} B payload the envelope alone is {:>8.2}x", sizes[1], blob_env / (KEY.len() + sizes[1]) as f64);
-    println!("    at {:>5} B payload the envelope alone is {:>8.2}x", sizes[sizes.len() - 1], blob_env / (KEY.len() + sizes[sizes.len() - 1]) as f64);
+    println!(
+        "    at {:>5} B payload the envelope alone is {:>8.2}x",
+        sizes[1],
+        blob_env / (KEY.len() + sizes[1]) as f64
+    );
+    println!(
+        "    at {:>5} B payload the envelope alone is {:>8.2}x",
+        sizes[sizes.len() - 1],
+        blob_env / (KEY.len() + sizes[sizes.len() - 1]) as f64
+    );
     println!();
 
     // ---- AND THE ENVELOPE NO LONGER DEPENDS ON THE CLUSTER ID. The sidecar used to write the
@@ -234,9 +365,17 @@ async fn main() {
     // ---- means this comparison is the test of that: two cluster ids 40 characters apart.
     println!("  THE ENVELOPE IS INDEPENDENT OF THE CLUSTER ID, which it was not when the sidecar");
     println!("  wrote the log's object key into every frame:");
-    let (_, long_env, _) = sweep(LONG_CLUSTER, &sizes, &options, false).await;
-    println!("    cluster id {:>2} chars -> envelope {:.1} B", CLUSTER.len(), blob_env);
-    println!("    cluster id {:>2} chars -> envelope {:.1} B", LONG_CLUSTER.len(), long_env);
+    let (_, long_env, _) = sweep(shape, LONG_CLUSTER, &sizes, options, false).await;
+    println!(
+        "    cluster id {:>2} chars -> envelope {:.1} B",
+        CLUSTER.len(),
+        blob_env
+    );
+    println!(
+        "    cluster id {:>2} chars -> envelope {:.1} B",
+        LONG_CLUSTER.len(),
+        long_env
+    );
     assert!(
         LONG_CLUSTER.len() >= CLUSTER.len() + 30,
         "the two cluster ids differ by {} characters, too few for their difference to show up as \
@@ -253,10 +392,13 @@ async fn main() {
     );
     println!();
     println!("  AND THE REPLICATION FACTOR IS SEPARATE, and multiplies whatever the above is:");
-    println!("    replica_count {} with stripe_redundancy_units {} -> {:.1}x of the blob",
-             options.replica_count, options.stripe_redundancy_units, options.replica_count as f64);
-    println!("    a non-zero stripe_redundancy_units would make that {:.2}x instead",
-             options.replica_count as f64 / (options.replica_count - 1) as f64);
+    println!(
+        "    replica_count {} with stripe_redundancy_units {} -> {:.1}x of the blob",
+        options.replica_count, options.stripe_redundancy_units, options.replica_count as f64
+    );
+    println!(
+        "    replicated/user models copied blob bytes; allocator and disk overhead are excluded"
+    );
 
     // ---- THE FIT HAS TO BE A FIT. A line quoted over points that do not lie on one is a
     // ---- summary of nothing, so the residual is asserted small against the envelope.
@@ -265,6 +407,11 @@ async fn main() {
         "the blob-byte fit leaves a residual of {blob_resid:.1} B against an envelope of \
          {blob_env:.1} B, so `rate * payload + envelope` is not the shape of this cost and the \
          slope above is not a rate. Print the sweep and find the term that is missing"
+    );
+
+    assert!(
+        blob_rate < 1.01,
+        "the append writes more than one payload: {blob_rate:.4}x"
     );
 
     // ---- AND THE MARGINAL RATE MUST BE AT LEAST ONE. Below 1.0 would mean the store writes
@@ -286,9 +433,10 @@ async fn main() {
     // ---- undoing the narrowing of the log frame's checksum -- a CRC32C back to a 32-byte digest
     // ---- is 29 B, and back to 64 hex characters is 59 -- trips it, as does re-adding either
     // ---- term retired from the sidecar.
+    // Measured outcome envelope: 69.8 B; keep enough room for small varint changes.
     assert!(
-        blob_env < 60.0,
-        "the per-append envelope is {blob_env:.1} B, over the 60 B ceiling. Five named terms were \
+        blob_env < if matches!(shape, Shape::Command) { 60.0 } else { 74.0 },
+        "the per-append envelope is {blob_env:.1} B, over the ceiling for {shape:?}. Five named terms were \
          removed or narrowed to get it here -- a duplicate hex digest the read path never \
          consulted, the log's object key in every frame, the transcription of the frame's own \
          digest, that digest replaced by the CRC32C the check was always for, and a payload \

@@ -3342,16 +3342,20 @@ fn decode_wal_proto_frame_exact(
         }
     }
     let command = match frame.command_encoding {
+        // Outcome-only records deliberately carry no command. Keep empty command records
+        // invalid unless results are present, and still reject unknown encoding tags.
+        WAL_COMMAND_ENCODING_JSON_SERDE
+            if frame.command_payload.is_empty() && !frame.items.is_empty() => None,
         WAL_COMMAND_ENCODING_SDK_PROTO => {
             let command = v1::Command::decode(frame.command_payload.as_slice())?;
-            sdk::sdk_command_to_types(command).map_err(|status| {
+            Some(sdk::sdk_command_to_types(command).map_err(|status| {
                 SharedStoreReplicationError::Io(std::io::Error::new(
                     std::io::ErrorKind::InvalidData,
                     status.to_string(),
                 ))
-            })?
+            })?)
         }
-        WAL_COMMAND_ENCODING_JSON_SERDE => serde_json::from_slice(&frame.command_payload)?,
+        WAL_COMMAND_ENCODING_JSON_SERDE => Some(serde_json::from_slice(&frame.command_payload)?),
         other => {
             return Err(SharedStoreReplicationError::Io(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -3367,11 +3371,11 @@ fn decode_wal_proto_frame_exact(
         None
     };
     // Worked out before the command is moved into the record, and once rather than per item.
-    let command_key = crate::wal_proto::command_object_key(Some(&command));
+    let command_key = crate::wal_proto::command_object_key(command.as_ref());
     Ok(SharedStoreWalEntry {
         shard_id: frame.shard_id,
         wal_index: frame.wal_index,
-        command: Some(command),
+        command,
         outcomes: frame
             .items
             .into_iter()
@@ -3663,6 +3667,60 @@ mod tests {
     use super::*;
     use crate::types::CommandResponse;
 
+
+    #[test]
+    fn outcome_only_binary_frames_recover_in_every_supported_format() {
+        let key = "result-key";
+        let mut entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: None,
+            staged_blocks: Vec::new(),
+            outcomes: vec![crate::wal::WalOutcomeItem {
+                kind: "string".to_string(),
+                object_key: key.to_string(),
+                component: None,
+                object_id: crate::engine::hashing::stable_block_object_id(1, "string", key),
+                routing_bucket: 7,
+                address: None,
+                value: Some(vec![0, 255, 10, 128]),
+                ttl: Some(123456),
+                deleted: false,
+                meta: false,
+            }],
+        };
+        for format in [
+            WAL_FRAME_FORMAT_HEX_DIGEST,
+            WAL_FRAME_FORMAT_RAW_DIGEST,
+            WAL_FRAME_FORMAT_CRC32C,
+            WAL_FRAME_FORMAT_NO_SIZE,
+        ] {
+            let frame = encode_wal_proto_frame(&entry, format).unwrap();
+            assert_eq!(decode_wal_proto_frame_exact(&frame, "test").unwrap(), entry);
+            assert_eq!(decode_wal_proto_blob(&frame).unwrap(), vec![entry.clone()]);
+        }
+        // A carried command must still survive beside its results.
+        entry.command = Some(Command::StringSet {
+            key: key.to_string(),
+            value: vec![0, 255],
+        });
+        let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_NO_SIZE).unwrap();
+        assert_eq!(decode_wal_proto_frame_exact(&frame, "test").unwrap(), entry);
+
+        // The omission is specific to the writer's encoding, not permission to guess a codec.
+        entry.command = None;
+        let frame = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_NO_SIZE).unwrap();
+        let mut message = SharedStoreWalFrameProto::decode(&frame[4..]).unwrap();
+        message.command_encoding = 99;
+        let payload = message.encode_to_vec();
+        let mut unknown = (payload.len() as u32).to_be_bytes().to_vec();
+        unknown.extend(payload);
+        assert!(decode_wal_proto_frame_exact(&unknown, "test").is_err());
+
+        entry.outcomes.clear();
+        let empty = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_NO_SIZE).unwrap();
+        assert!(decode_wal_proto_frame_exact(&empty, "test").is_err());
+    }
 
     /// WHERE ONE APPEND'S FIXED ENVELOPE GOES, TERM BY TERM.
     ///
