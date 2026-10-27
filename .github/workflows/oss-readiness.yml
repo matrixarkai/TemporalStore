@@ -42,7 +42,9 @@ jobs:
         run: python -m py_compile tools/*.py
 
       - name: Validate open-source readiness contract
-        run: python tools/validate_open_source_readiness.py
+        run: |
+          python tools/test_private_account_markers.py
+          python tools/validate_open_source_readiness.py
 
       # Green and unwired is the same protection as absent. This guard sat in tools/ running
       # nowhere, and it was red on main -- one false positive on the English phrase "byte STORED"
