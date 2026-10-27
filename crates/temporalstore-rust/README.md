@@ -83,11 +83,6 @@ deployment profiles. `StorageTuningConfig::from_env()` reads:
   is subject to the same 4 GiB ceiling.
 - `TS_COMPACTION_WATERMARK_BYTES`: compaction scheduling watermark.
 - `TS_COLD_SCAN_NO_CACHE_FILL`: default cold-scan behavior for lifecycle work.
-- `TS_PAGE_INDEX_CACHE_BYTES`, `TS_BLOCK_INDEX_CACHE_BYTES`: published in a node's
-  `effective_storage_tuning` report and read by nothing else. Neither bounds a
-  cache -- address lookups are served from the DRAM-resident index, which takes
-  no cache call, and the record cache is bounded by `TS_CACHE_MEMORY_BYTES`.
-  They are not two caches either: `page` and `block` are one tier here.
 
 The block store consumes the segment/blob knobs directly for append rolling, and
 context packed blocks consume `TS_CONTEXT_BLOCK_TARGET_BYTES`. The remaining knobs

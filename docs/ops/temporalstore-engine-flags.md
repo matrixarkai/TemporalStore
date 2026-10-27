@@ -8,7 +8,7 @@ within a week and its staleness is silent.
 
 ## Why this exists
 
-There are 311 of them, read by 98 functions.
+There are 309 of them, read by 98 functions.
 
 Deleting unreachable code is not the lever. An earlier version of this document argued that
 by asserting every accessor had a caller -- true when it was hand-checked at 55, and carried
@@ -250,7 +250,6 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TEMPORALSTORE_CONTEXT_BENCHMARK_MAX_EVENTS` | 32 | script | 1 | — |
 | `TS_BLOB_CHUNK_BYTES` | — | config | 1 | — |
 | `TS_BLOB_PEER_FETCH_TIMEOUT_MS` | 5000 | nothing | 1 | — |
-| `TS_BLOCK_INDEX_CACHE_BYTES` | 67108864 | config, test, portal | 1 | — |
 | `TS_BLOCK_SEGMENT_TARGET_BYTES` | — | nothing | 1 | — |
 | `TS_BLOCK_SLAB_TARGET_BYTES` | 1073741824 | config, test, portal | 1 | — |
 | `TS_CACHE_MEMORY_BYTES` | — | config, launch | 1 | — |
@@ -292,7 +291,6 @@ Sizes, ceilings and intervals. The tuning a deployment actually reaches for.
 | `TS_META_TASK_SCHEDULER_MAX_RETRY_TIMES` | — | nothing | 1 | — |
 | `TS_METRICS_MAX_BUCKET_SERIES` | — | portal | 1 | — |
 | `TS_METRICS_MAX_SLOT_SERIES` | — | nothing | 1 | — |
-| `TS_PAGE_INDEX_CACHE_BYTES` | 67108864 | config, test, portal | 1 | — |
 | `TS_PROXY_AUTO_REGISTER_MIN_INTERVAL_MS` | — | nothing | 1 | — |
 | `TS_PROXY_CONNECT_TIMEOUT_MS` | — | config | 1 | — |
 | `TS_PROXY_DROP_PERCENT` | — | nothing | 1 | — |

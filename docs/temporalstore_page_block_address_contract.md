@@ -531,8 +531,6 @@ configs, or environment readers internally.
 | `TS_STREAM_MAX_BLOB_SIZE` | Stream/blob cap; effective segment target is the lower of this and block segment target. | `10485760` |
 | `TS_COMPACTION_WATERMARK_BYTES` | Compaction scheduling/reclaim watermark. | `268435456` |
 | `TS_COLD_SCAN_NO_CACHE_FILL` | Default no-cache/no-promote behavior for cold lifecycle scans. | `true` |
-| `TS_PAGE_INDEX_CACHE_BYTES` | Published in the tuning report and read by nothing else; bounds no cache. | `67108864` |
-| `TS_BLOCK_INDEX_CACHE_BYTES` | Published in the tuning report and read by nothing else; bounds no cache. | `67108864` |
 
 Names the first milestone moved. The engine reads the CURRENT spelling first and the previous
 one only when the current is unset, so a deployment setting either keeps working. The table and
@@ -561,12 +559,16 @@ Required report shape:
     "TS_STORAGE_ZONE_SIZE": 10485760,
     "TS_STREAM_MAX_BLOB_SIZE": 10485760,
     "TS_COMPACTION_WATERMARK_BYTES": 268435456,
-    "TS_COLD_SCAN_NO_CACHE_FILL": true,
-    "TS_PAGE_INDEX_CACHE_BYTES": 67108864,
-    "TS_BLOCK_INDEX_CACHE_BYTES": 67108864
+    "TS_COLD_SCAN_NO_CACHE_FILL": true
   }
 }
 ```
+
+`TS_PAGE_INDEX_CACHE_BYTES` and `TS_BLOCK_INDEX_CACHE_BYTES` were published here until they were
+retired: each named a budget for an index cache that does not exist, and this report was their
+only reader. A report recorded before the retirement carries both keys and still decodes -- the
+object is a string-keyed map, so an unknown key is an entry rather than a decode failure -- and
+the committed corpora that recorded them are left as they were.
 
 Conformance rules:
 

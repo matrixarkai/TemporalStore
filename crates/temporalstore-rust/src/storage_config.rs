@@ -15,22 +15,18 @@ pub const TS_BLOCK_SLAB_TARGET_BYTES: &str = "TS_BLOCK_SLAB_TARGET_BYTES";
 pub const TS_STREAM_MAX_BLOB_SIZE: &str = "TS_STREAM_MAX_BLOB_SIZE";
 pub const TS_COMPACTION_WATERMARK_BYTES: &str = "TS_COMPACTION_WATERMARK_BYTES";
 pub const TS_COLD_SCAN_NO_CACHE_FILL: &str = "TS_COLD_SCAN_NO_CACHE_FILL";
-/// DECLARED BUDGET, ENFORCED BY NOTHING. Setting this changes exactly one observable thing:
-/// the value published under this name in a node's `effective_storage_tuning` report. No cache
-/// is sized from it, because there is no index cache to size -- a point read resolves its
-/// address in the DRAM-resident index, in-process, with no cache call, and that index is not
-/// bounded by a byte budget at all. The cache that IS bounded is the record cache, by
-/// `TS_CACHE_MEMORY_BYTES`.
-///
-/// Kept, not retired, because the name is operator-facing and the report key is a published
-/// field that an older report is deserialized into. Held true by
-/// `the_two_index_cache_budgets_are_read_by_the_report_and_nothing_else`.
-pub const TS_PAGE_INDEX_CACHE_BYTES: &str = "TS_PAGE_INDEX_CACHE_BYTES";
-/// DECLARED BUDGET, ENFORCED BY NOTHING -- see [`TS_PAGE_INDEX_CACHE_BYTES`]. These two are not
-/// two caches. `page` and `block` are ONE TIER in this crate with `block` canonical, so a
-/// "page-index cache" and a "block-index cache" could only ever have been one thing; neither
-/// exists. The pair is kept as two names because both are operator-facing and published.
-pub const TS_BLOCK_INDEX_CACHE_BYTES: &str = "TS_BLOCK_INDEX_CACHE_BYTES";
+// RETIRED: TS_PAGE_INDEX_CACHE_BYTES and TS_BLOCK_INDEX_CACHE_BYTES.
+//
+// Both named a budget for an index cache that does not exist: an address lookup is answered
+// from the DRAM-resident index with no cache call, and the record cache is bounded by
+// TS_CACHE_MEMORY_BYTES. Each parsed into a setting whose only production reader put it in the
+// tuning report, so setting either moved one reported number and nothing else -- measured two
+// ways before removal, with both set to 1 byte and with a panic planted on the reads.
+//
+// Nothing reads either name now, so a deployment that still sets one is accepted and ignored
+// rather than refused: there is no read to fail. The shipped config loader behaves the same way
+// and was measured doing it -- an unmapped key is reported `unmapped config keys (ignored)` and
+// the process exits 0. Held true by `the_retired_index_cache_budgets_are_read_by_nothing`.
 pub const TS_INDEX_DUMP_WAL_GAP_BYTES: &str = "TS_INDEX_DUMP_WAL_GAP_BYTES";
 /// Previous name for [`TS_INDEX_DUMP_WAL_GAP_BYTES`], still honoured so a deployment that
 /// sets it keeps working. Read only when the current name is unset.
@@ -84,12 +80,6 @@ pub const MAX_BLOCK_SLAB_TARGET_BYTES: u64 = 1 << 32;
 pub const DEFAULT_STREAM_MAX_BLOB_SIZE: u64 = 10 * 1024 * 1024;
 pub const DEFAULT_COMPACTION_WATERMARK_BYTES: u64 = 256 * 1024 * 1024;
 pub const DEFAULT_COLD_SCAN_NO_CACHE_FILL: bool = true;
-/// The value published for [`TS_PAGE_INDEX_CACHE_BYTES`] when the variable is unset. It is a
-/// published default, not a budget anything spends against.
-pub const DEFAULT_PAGE_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
-/// The value published for [`TS_BLOCK_INDEX_CACHE_BYTES`] when the variable is unset. It is a
-/// published default, not a budget anything spends against.
-pub const DEFAULT_BLOCK_INDEX_CACHE_BYTES: u64 = 64 * 1024 * 1024;
 // Undumped index-log-gap threshold that triggers a background catalog/index dump under the
 // MANIFEST-CONFORMANCE FOLD (TS_INDEX_CATALOG_FOLD). Matches the
 // default of 1 MiB.
@@ -136,12 +126,6 @@ pub struct StorageTuningConfig {
     pub stream_max_blob_size: u64,
     pub compaction_watermark_bytes: u64,
     pub cold_scan_no_cache_fill: bool,
-    /// Parsed from [`TS_PAGE_INDEX_CACHE_BYTES`] and read by one production site, which puts it
-    /// in a report. Nothing is sized from it; see that constant.
-    pub page_index_cache_bytes: u64,
-    /// Parsed from [`TS_BLOCK_INDEX_CACHE_BYTES`] and read by one production site, which puts it
-    /// in a report. Nothing is sized from it; see that constant.
-    pub block_index_cache_bytes: u64,
     pub index_dump_wal_gap_bytes: u64,
     pub index_dump_min_interval_ms: u64,
     pub index_gc_min_reclaimable_bytes: u64,
@@ -155,8 +139,6 @@ impl Default for StorageTuningConfig {
             stream_max_blob_size: DEFAULT_STREAM_MAX_BLOB_SIZE,
             compaction_watermark_bytes: DEFAULT_COMPACTION_WATERMARK_BYTES,
             cold_scan_no_cache_fill: DEFAULT_COLD_SCAN_NO_CACHE_FILL,
-            page_index_cache_bytes: DEFAULT_PAGE_INDEX_CACHE_BYTES,
-            block_index_cache_bytes: DEFAULT_BLOCK_INDEX_CACHE_BYTES,
             index_dump_wal_gap_bytes: DEFAULT_INDEX_DUMP_WAL_GAP_BYTES,
             index_dump_min_interval_ms: DEFAULT_INDEX_DUMP_MIN_INTERVAL_MS,
             index_gc_min_reclaimable_bytes: DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES,
@@ -243,14 +225,6 @@ impl StorageTuningConfig {
                 get(TS_COLD_SCAN_NO_CACHE_FILL),
                 defaults.cold_scan_no_cache_fill,
             ),
-            page_index_cache_bytes: parse_u64(
-                get(TS_PAGE_INDEX_CACHE_BYTES),
-                defaults.page_index_cache_bytes,
-            ),
-            block_index_cache_bytes: parse_u64(
-                get(TS_BLOCK_INDEX_CACHE_BYTES),
-                defaults.block_index_cache_bytes,
-            ),
             index_dump_wal_gap_bytes: parse_u64(
                 get(TS_INDEX_DUMP_WAL_GAP_BYTES)
                     .or_else(|| get(TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME)),
@@ -277,7 +251,7 @@ impl StorageTuningConfig {
             .max(self.stream_max_blob_size)
     }
 
-    pub fn env_names() -> [&'static str; 13] {
+    pub fn env_names() -> [&'static str; 11] {
         [
             TS_CONTEXT_BLOCK_TARGET_BYTES,
             TS_CONTEXT_BLOCK_TARGET_BYTES_PREVIOUS_NAME,
@@ -286,8 +260,6 @@ impl StorageTuningConfig {
             TS_STREAM_MAX_BLOB_SIZE,
             TS_COMPACTION_WATERMARK_BYTES,
             TS_COLD_SCAN_NO_CACHE_FILL,
-            TS_PAGE_INDEX_CACHE_BYTES,
-            TS_BLOCK_INDEX_CACHE_BYTES,
             TS_INDEX_DUMP_WAL_GAP_BYTES,
             TS_INDEX_DUMP_GAP_BYTES_PREVIOUS_NAME,
             TS_INDEX_DUMP_MIN_INTERVAL_MS,
@@ -377,14 +349,6 @@ mod tests {
             DEFAULT_COMPACTION_WATERMARK_BYTES
         );
         assert!(config.cold_scan_no_cache_fill);
-        assert_eq!(
-            config.page_index_cache_bytes,
-            DEFAULT_PAGE_INDEX_CACHE_BYTES
-        );
-        assert_eq!(
-            config.block_index_cache_bytes,
-            DEFAULT_BLOCK_INDEX_CACHE_BYTES
-        );
         // 1 MiB default.
         assert_eq!(
             config.index_dump_wal_gap_bytes,
@@ -408,8 +372,6 @@ mod tests {
                 "TS_STREAM_MAX_BLOB_SIZE",
                 "TS_COMPACTION_WATERMARK_BYTES",
                 "TS_COLD_SCAN_NO_CACHE_FILL",
-                "TS_PAGE_INDEX_CACHE_BYTES",
-                "TS_BLOCK_INDEX_CACHE_BYTES",
                 "TS_INDEX_DUMP_WAL_GAP_BYTES",
                 "TS_INDEX_DUMP_OPLOG_GAP_BYTES",
                 "TS_INDEX_DUMP_MIN_INTERVAL_MS",
@@ -626,8 +588,6 @@ mod tests {
             (TS_STREAM_MAX_BLOB_SIZE, "8388608"),
             (TS_COMPACTION_WATERMARK_BYTES, "4096"),
             (TS_COLD_SCAN_NO_CACHE_FILL, "false"),
-            (TS_PAGE_INDEX_CACHE_BYTES, "2097152"),
-            (TS_BLOCK_INDEX_CACHE_BYTES, "4194304"),
             (TS_INDEX_DUMP_WAL_GAP_BYTES, "2097152"),
         ]);
         let config = StorageTuningConfig::from_getter(|name| env.get(name).map(|v| v.to_string()));
@@ -638,18 +598,19 @@ mod tests {
         assert_eq!(config.effective_slab_target_bytes(), 10 * 1024 * 1024);
         assert_eq!(config.compaction_watermark_bytes, 4096);
         assert!(!config.cold_scan_no_cache_fill);
-        assert_eq!(config.page_index_cache_bytes, 2 * 1024 * 1024);
-        assert_eq!(config.block_index_cache_bytes, 4 * 1024 * 1024);
         assert_eq!(config.index_dump_wal_gap_bytes, 2 * 1024 * 1024);
     }
 
-    /// Every production read of either index-cache budget, by SHAPE rather than by name: the
-    /// scan joins a field access that sits on its own continuation line onto its receiver
-    /// before matching, which a line-at-a-time matcher cannot see, and it ignores
-    /// `field: value` in a struct literal because that is a write.
+    /// Every use of a name, by SHAPE rather than by needle. Continuation lines are joined onto
+    /// their receiver first, so a field access sitting on its own line is seen -- a
+    /// line-at-a-time matcher reports those as absent, which is a clean pass over a scan that
+    /// cannot see half its subject. Prose is skipped. The match is whole-word, so a longer
+    /// identifier that merely starts with the name is a different identifier.
     ///
-    /// Returns `(line, field)` for each read.
-    fn index_cache_budget_reads(text: &str) -> Vec<(usize, String)> {
+    /// Any use counts, read or write: after the retirement below there is no legitimate one.
+    ///
+    /// Returns `(line, name)` per use.
+    fn uses_of(text: &str, names: &[&str]) -> Vec<(usize, String)> {
         let mut joined: Vec<(usize, String)> = Vec::new();
         for (index, raw) in text.lines().enumerate() {
             let trimmed = raw.trim();
@@ -662,64 +623,81 @@ mod tests {
             joined.push((index + 1, trimmed.to_string()));
         }
 
+        let ident = |c: char| c.is_alphanumeric() || c == '_';
         let mut found = Vec::new();
         for (number, line) in joined {
-            // Prose that names a field is not a read of it. Counted by the caller so an
-            // exclusion that has started matching everything shows as a collapsed numerator.
             if line.starts_with("//") || line.starts_with("/*") || line.starts_with('*') {
                 continue;
             }
-            for field in ["page_index_cache_bytes", "block_index_cache_bytes"] {
-                let needle = format!(".{field}");
+            for name in names {
                 let mut from = 0usize;
-                while let Some(offset) = line[from..].find(&needle) {
+                while let Some(offset) = line[from..].find(name) {
                     let at = from + offset;
-                    let after = line[at + needle.len()..].chars().next();
-                    let continues = matches!(after, Some(c) if c.is_alphanumeric() || c == '_');
-                    if !continues {
-                        found.push((number, field.to_string()));
+                    let before = line[..at].chars().next_back();
+                    let after = line[at + name.len()..].chars().next();
+                    let bounded = !matches!(before, Some(c) if ident(c))
+                        && !matches!(after, Some(c) if ident(c));
+                    if bounded {
+                        found.push((number, (*name).to_string()));
                     }
-                    from = at + needle.len();
+                    from = at + name.len();
                 }
             }
         }
         found
     }
 
-    /// THE TWO INDEX-CACHE BUDGETS ARE READ BY THE REPORT AND BY NOTHING ELSE.
+    /// The six names the index-cache budgets were spelled with. All retired.
+    const RETIRED_INDEX_CACHE_NAMES: [&str; 6] = [
+        "page_index_cache_bytes",
+        "block_index_cache_bytes",
+        "TS_PAGE_INDEX_CACHE_BYTES",
+        "TS_BLOCK_INDEX_CACHE_BYTES",
+        "DEFAULT_PAGE_INDEX_CACHE_BYTES",
+        "DEFAULT_BLOCK_INDEX_CACHE_BYTES",
+    ];
+
+    /// A knob of the same shape that IS live, used as the positive control below.
+    const LIVE_SIBLING_NAMES: [&str; 3] = [
+        "compaction_watermark_bytes",
+        "TS_COMPACTION_WATERMARK_BYTES",
+        "DEFAULT_COMPACTION_WATERMARK_BYTES",
+    ];
+
+    /// THE RETIRED INDEX-CACHE BUDGETS ARE READ BY NOTHING.
     ///
-    /// `TS_PAGE_INDEX_CACHE_BYTES` and `TS_BLOCK_INDEX_CACHE_BYTES` parse into
-    /// `page_index_cache_bytes` and `block_index_cache_bytes`, and this enumerates every
-    /// production read of those two fields in the crate. There are FOUR, in two files: the two
-    /// `defaults` reads in `from_getter`, which only supply the fallback when the variable is
-    /// unset, and the two reads in `effective_storage_tuning_from_env`, which put the value in
-    /// a report map. No cache is sized from either, because there is no index cache in this
-    /// engine -- an address lookup is answered from the DRAM-resident index with no cache call,
-    /// and the record cache is bounded by `TS_CACHE_MEMORY_BYTES`.
+    /// `TS_PAGE_INDEX_CACHE_BYTES` and `TS_BLOCK_INDEX_CACHE_BYTES` named a budget for a cache
+    /// that does not exist. Before the retirement this guard asserted a reader set of FOUR --
+    /// two fallback reads here and two `values.insert` calls in the tuning report -- and the
+    /// claim it now has to hold is that the set is EMPTY. A guard whose population empties has
+    /// to say so rather than stop checking, so the assertion inverted instead of going away.
     ///
-    /// Measured before it was written down, in both directions. Both budgets set to 1 byte
-    /// leave the index-footprint and cache-read arms inside the jitter that a control pair of
-    /// identical baseline runs already shows, with 6 of 6 and 3 of 3 passing either way. A
-    /// `panic!()` planted on the two reads in `effective_storage_tuning_from_env` leaves the
-    /// index, cache, compaction and bucket arms passing -- 41 tests -- and kills the arms that
-    /// build a node lifecycle report, which is the plant proving it landed.
+    /// AN EMPTY SET IS THE ASSERTION A BROKEN SCAN PASSES BY DEFAULT, which is why it is not the
+    /// only one here. Three things carry it:
     ///
-    /// WHY THIS IS A TEST AND NOT A COMMENT. Four operator-facing documents now state that
-    /// these two bound nothing: the top-level README, the crate README, the public storage
-    /// contract and the shipped config file. A fifth read appearing here means one of them has
-    /// been wired to something and all four have silently become wrong, so this fails and says
-    /// so instead. `a_new_read_of_an_index_cache_budget_would_fail_this_guard` is the negative
-    /// control.
+    /// - the denominators: 400+ files, 200,000+ production lines, 50+ files cut at
+    ///   `#[cfg(test)]`, each asserted, so a walk that read nothing fails rather than passes;
+    /// - a POSITIVE CONTROL over the same corpus with the same matcher, on
+    ///   `compaction_watermark_bytes` -- a knob of identical shape that IS live. It must be
+    ///   found, several times. If the matcher ever stops seeing its subject, the control goes
+    ///   empty and this fails, instead of the retired set reading clean for the wrong reason;
+    /// - `a_reinstated_index_cache_budget_would_fail_this_guard`, the negative control, which
+    ///   feeds the matcher a re-added read, a re-added write and a re-added constant and
+    ///   requires it to see all three.
     ///
-    /// If the right answer is to bound a real cache with these, that is the fix -- update this
-    /// guard and those four documents in the same commit.
+    /// Why the names and not just the fields: the settings, the two `TS_*` variables and the two
+    /// `DEFAULT_*` constants were all removed, so any of the six reappearing in production code
+    /// is the retirement being undone. A deployment that still exports either variable is
+    /// accepted and ignored -- nothing reads the name, so there is no read to fail -- and the
+    /// shipped config loader was measured doing the same with an unmapped key.
     #[test]
-    fn the_two_index_cache_budgets_are_read_by_the_report_and_nothing_else() {
+    fn the_retired_index_cache_budgets_are_read_by_nothing() {
         let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src");
         let mut files = 0usize;
         let mut lines = 0usize;
         let mut truncated = 0usize;
-        let mut reads: Vec<(String, usize, String)> = Vec::new();
+        let mut retired: Vec<(String, usize, String)> = Vec::new();
+        let mut control: Vec<(String, usize, String)> = Vec::new();
 
         let mut stack = vec![root.clone()];
         while let Some(dir) = stack.pop() {
@@ -743,8 +721,8 @@ mod tests {
                     continue;
                 };
                 // A test item in a production FILE is still a test. Each file is cut at its
-                // first `#[cfg(test)]` so classifying by path alone cannot put this very
-                // module's own reads into the production count, and the cuts are counted.
+                // first `#[cfg(test)]`, which is also what keeps this module's own mentions of
+                // the retired names out of the production count. The cuts are counted.
                 let production = match text.find("#[cfg(test)]") {
                     Some(at) => {
                         truncated += 1;
@@ -754,22 +732,30 @@ mod tests {
                 };
                 files += 1;
                 lines += production.lines().count();
-                for (number, field) in index_cache_budget_reads(production) {
-                    reads.push((display.clone(), number, field));
+                for (number, name) in uses_of(production, &RETIRED_INDEX_CACHE_NAMES) {
+                    retired.push((display.clone(), number, name));
+                }
+                for (number, name) in uses_of(production, &LIVE_SIBLING_NAMES) {
+                    control.push((display.clone(), number, name));
                 }
             }
         }
 
-        reads.sort();
-        for (file, number, field) in &reads {
-            println!("  READ  {file}:{number}  {field}");
+        retired.sort();
+        control.sort();
+        for (file, number, name) in &retired {
+            println!("  RETIRED-NAME STILL USED  {file}:{number}  {name}");
         }
-        println!("  files {files}, production lines {lines}, cut at #[cfg(test)] {truncated}");
+        println!(
+            "  files {files}, production lines {lines}, cut at #[cfg(test)] {truncated}; \
+             retired uses {}, live-sibling uses {}",
+            retired.len(),
+            control.len()
+        );
 
-        // Denominators before verdicts: every assertion below is about a set, and an empty set
-        // satisfies all of them dishonestly.
+        // Denominators before verdicts.
         assert!(
-            files >= 300,
+            files >= 400,
             "the walk read {files} source files; this guard would be passing over nothing"
         );
         assert!(
@@ -782,93 +768,90 @@ mod tests {
              this scan is now counting test items as production"
         );
 
-        // Sorted by (file, field), so the expected set does not encode which of the two sits
-        // first in a file and a reordering of the inserts is not a failure.
-        let mut owners: Vec<(String, String)> = reads
-            .iter()
-            .map(|(file, _, field)| (file.clone(), field.clone()))
-            .collect();
-        owners.sort();
-        assert_eq!(
-            owners,
-            vec![
-                (
-                    "engine/reports.rs".to_string(),
-                    "block_index_cache_bytes".to_string()
-                ),
-                (
-                    "engine/reports.rs".to_string(),
-                    "page_index_cache_bytes".to_string()
-                ),
-                (
-                    "storage_config.rs".to_string(),
-                    "block_index_cache_bytes".to_string()
-                ),
-                (
-                    "storage_config.rs".to_string(),
-                    "page_index_cache_bytes".to_string()
-                ),
-            ],
-            "the index-cache budgets gained or lost a reader. They are documented in README.md, \
-             crates/temporalstore-rust/README.md, docs/temporalstore_page_block_address_contract.md \
-             and config/temporalstore.toml as published values that bound no cache; a new reader \
-             makes all four wrong at once. Update them with this guard."
+        // The positive control: the same matcher, the same corpus, a knob that IS live. Without
+        // this, a matcher that had stopped seeing anything would report the retirement clean.
+        assert!(
+            control.len() >= 4,
+            "the positive control found only {} uses of a knob that is live, so the matcher is \
+             no longer seeing its subject and the empty result below means nothing",
+            control.len()
         );
 
-        // The two outside the config module must be the report's, and the enclosing item is
-        // taken from the source rather than assumed, because the line numbers move.
-        let reports = std::fs::read_to_string(root.join("engine/reports.rs"))
-            .expect("the report module must be readable");
-        let report_lines: Vec<&str> = reports.lines().collect();
-        for (file, number, field) in &reads {
-            if file == "storage_config.rs" {
-                continue;
-            }
-            let enclosing = report_lines[..*number]
-                .iter()
-                .rev()
-                .find(|line| line.starts_with("pub fn ") || line.starts_with("fn "))
-                .unwrap_or(&"<none>");
-            assert!(
-                enclosing.contains("effective_storage_tuning_from_env"),
-                "{field} is read at {file}:{number}, inside `{enclosing}`, and the only \
-                 production consumer of an index-cache budget is the tuning report"
-            );
-        }
+        let offenders: Vec<String> = retired
+            .iter()
+            .map(|(file, number, name)| format!("{file}:{number}  {name}"))
+            .collect();
+        assert!(
+            offenders.is_empty(),
+            "the index-cache budgets were retired because neither bounded a cache, and these \
+             production sites use one of their names again. If a real cache is being bounded, \
+             that is a fine change -- reinstate the setting deliberately and update this guard, \
+             README.md, crates/temporalstore-rust/README.md, \
+             docs/temporalstore_page_block_address_contract.md and config/temporalstore.toml, \
+             which all now say no such budget exists:\n{}",
+            offenders.join("\n")
+        );
     }
 
-    /// The negative control for the guard above. Without it, a matcher that had stopped seeing
-    /// its subject would report the same clean enumeration as a tree with nothing wired up.
+    /// The negative control for the guard above: the matcher must see a reinstated name in each
+    /// of the three shapes it could come back in. Without this, a matcher that had stopped
+    /// matching anything would report the same clean result as a tree with nothing wrong in it.
     #[test]
-    fn a_new_read_of_an_index_cache_budget_would_fail_this_guard() {
-        // A read split across lines, which is the form the scan exists to catch.
-        let wired = "fn size_the_index_cache(tuning: StorageTuningConfig) -> u64 {\n\
-                     \x20   tuning\n\
-                     \x20       .page_index_cache_bytes\n\
-                     }\n";
+    fn a_reinstated_index_cache_budget_would_fail_this_guard() {
+        // A read split across lines, which is the shape a line-at-a-time matcher misses.
+        let read = "fn size_the_index_cache(tuning: StorageTuningConfig) -> u64 {\n\
+                    \x20   tuning\n\
+                    \x20       .page_index_cache_bytes\n\
+                    }\n";
         assert_eq!(
-            index_cache_budget_reads(wired),
+            uses_of(read, &RETIRED_INDEX_CACHE_NAMES),
             vec![(2usize, "page_index_cache_bytes".to_string())],
-            "a newly wired read must be seen, and on the receiver's line"
+            "a reinstated read must be seen, and on the receiver's line"
         );
 
-        // A struct literal is a write, and prose is neither.
-        let write = "        Self {\n            page_index_cache_bytes: DEFAULT_PAGE_INDEX_CACHE_BYTES,\n        }\n";
-        assert!(
-            index_cache_budget_reads(write).is_empty(),
-            "a struct-literal field is a write, not a read"
-        );
-        let prose = "    /// tuning.page_index_cache_bytes is published and nothing else.\n";
-        assert!(
-            index_cache_budget_reads(prose).is_empty(),
-            "prose naming a field is not a read of it"
+        // A write, which after the retirement is just as much a reinstatement as a read.
+        let write = "        Self {\n            block_index_cache_bytes: 0,\n        }\n";
+        assert_eq!(
+            uses_of(write, &RETIRED_INDEX_CACHE_NAMES),
+            vec![(2usize, "block_index_cache_bytes".to_string())],
+            "a reinstated struct-literal field must be seen"
         );
 
-        // And the longer sibling name must not be swallowed by the shorter one.
-        let sibling = "    let used = tuning.page_index_cache_bytes_observed;\n";
+        // The variable name coming back.
+        let constant = "        pub const TS_PAGE_INDEX_CACHE_BYTES: &str = \"x\";\n";
+        assert_eq!(
+            uses_of(constant, &RETIRED_INDEX_CACHE_NAMES),
+            vec![(1usize, "TS_PAGE_INDEX_CACHE_BYTES".to_string())],
+            "a reinstated variable constant must be seen"
+        );
+
+        // And what must NOT be seen: prose, and a longer identifier that starts with the name.
         assert!(
-            index_cache_budget_reads(sibling).is_empty(),
-            "a longer identifier that starts with the field name is a different field"
+            uses_of(
+                "    // page_index_cache_bytes was retired; nothing reads it.\n",
+                &RETIRED_INDEX_CACHE_NAMES
+            )
+            .is_empty(),
+            "prose naming a retired knob is not a use of it"
+        );
+        assert!(
+            uses_of(
+                "    let used = tuning.page_index_cache_bytes_observed;\n",
+                &RETIRED_INDEX_CACHE_NAMES
+            )
+            .is_empty(),
+            "a longer identifier that starts with the name is a different identifier"
+        );
+
+        // The positive control's matcher is the same one, so prove it on the live sibling too.
+        assert_eq!(
+            uses_of(
+                "            compaction_watermark_bytes: DEFAULT_COMPACTION_WATERMARK_BYTES,\n",
+                &LIVE_SIBLING_NAMES
+            )
+            .len(),
+            2,
+            "the live-sibling matcher must see both the field and the constant"
         );
     }
 }

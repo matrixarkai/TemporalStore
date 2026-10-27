@@ -75,12 +75,11 @@ context_page_target_bytes = 65536      # TS_CONTEXT_BLOCK_TARGET_BYTES  target c
 block_slab_target_bytes = 1073741824   # TS_BLOCK_SLAB_TARGET_BYTES  data-slab seal size (bytes, 1 GiB). CEILING 4294967296 (4 GiB): a block address holds its offset in 32 bits, so a store configured above this REFUSES TO START rather than recording an offset that does not fit. Not clamped -- a clamp would surface as a mis-addressed read long after the setting
 # stream_max_blob_size = 0             # TS_STREAM_MAX_BLOB_SIZE  max inline blob before streaming tier (0/unset = engine default)
 # compaction_watermark_bytes = 0       # TS_COMPACTION_WATERMARK_BYTES  dead-bytes watermark that triggers compaction
-# These two are PUBLISHED, NOT ENFORCED: the engine parses each one and puts it in a node's
-# effective_storage_tuning report, and nothing else reads either. Neither bounds a cache -- an
-# address lookup is served from the DRAM-resident index with no cache call. The record cache is
-# bounded by TS_CACHE_MEMORY_BYTES. Setting these changes a reported number and nothing else.
-# page_index_cache_bytes = 0           # TS_PAGE_INDEX_CACHE_BYTES  published only, bounds no cache
-# block_index_cache_bytes = 0          # TS_BLOCK_INDEX_CACHE_BYTES published only, bounds no cache
+# RETIRED: page_index_cache_bytes / block_index_cache_bytes. Each named a budget for an index
+# cache that does not exist -- an address lookup is served from the DRAM-resident index with no
+# cache call, and the record cache is bounded by TS_CACHE_MEMORY_BYTES (cache_memory_bytes
+# below). The engine no longer reads either variable. A file that still sets one is accepted and
+# ignored: the loader reports it under "unmapped config keys (ignored)" and exits 0.
 cold_scan_no_cache_fill = 0            # TS_COLD_SCAN_NO_CACHE_FILL  1 = cold scans bypass cache fill (avoid cache pollution)
 # The engine enables this itself (default_page_record_compression_enabled -> true), the deploy
 # profile exports it as 1, and a running box has it on. This file said 0, which made the

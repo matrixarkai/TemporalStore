@@ -44,7 +44,11 @@ const cases = [
   { env: "TS_INDEX_DUMP_WAL_GAP_BYTES", value: "1048576", expect: "1 MiB" },
   { env: "MATRIXARK_QUOTA_MAX_BLOB_BYTES", value: "5368709120", expect: "5 GiB" },
   { env: "MATRIXARK_QUOTA_MAX_BODY_BYTES", value: "16777216", expect: "16 MiB" },
-  { env: "TS_PAGE_INDEX_CACHE_BYTES", value: "", default: "67108864", expect: "64 MiB" },
+  /* The only case exercising the DEFAULT path. It named TS_PAGE_INDEX_CACHE_BYTES until that
+     variable was retired, which would have left it testing the rule against a name that
+     exists nowhere -- the same mistake the note below records. TS_CACHE_MEMORY_BYTES is the
+     cache budget the engine actually enforces, and its default is 16 MiB. */
+  { env: "TS_CACHE_MEMORY_BYTES", value: "", default: "16777216", expect: "16 MiB" },
   /* Both are byte counts whose names do NOT end in _BYTES. The case here used to read
      TS_STREAM_MAX_BLOB_SIZE_BYTES, a variable that exists nowhere -- so it exercised the suffix
      rule against a name invented to satisfy it, and said nothing about the setting it was for. */
@@ -76,7 +80,7 @@ for (const env of ["TS_VECTOR_SCALED", "TS_MAX_RETAINED_FINISHED_JOBS", "MATRIXA
 }
 
 for (const bad of ["", "auto", "0", "-1"]) {
-  const out = byteHint({ env: "TS_PAGE_INDEX_CACHE_BYTES", value: bad, default: "" });
+  const out = byteHint({ env: "TS_CACHE_MEMORY_BYTES", value: bad, default: "" });
   if (out !== "") {
     console.log("FAIL unreadable value " + JSON.stringify(bad) + " produced " + JSON.stringify(out));
     failures += 1;

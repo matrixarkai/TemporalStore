@@ -9,9 +9,8 @@ use crate::block_store::{
     BlockStoreSlabReport, BlockStoreStats, BlockStoreSlabDescriptor, BlockStoreSlabSummary,
 };
 use crate::storage_config::{
-    StorageTuningConfig, TS_BLOCK_INDEX_CACHE_BYTES, TS_BLOCK_SLAB_TARGET_BYTES,
-    TS_COLD_SCAN_NO_CACHE_FILL, TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_BLOCK_TARGET_BYTES,
-    TS_PAGE_INDEX_CACHE_BYTES, TS_STREAM_MAX_BLOB_SIZE,
+    StorageTuningConfig, TS_BLOCK_SLAB_TARGET_BYTES, TS_COLD_SCAN_NO_CACHE_FILL,
+    TS_COMPACTION_WATERMARK_BYTES, TS_CONTEXT_BLOCK_TARGET_BYTES, TS_STREAM_MAX_BLOB_SIZE,
 };
 use crate::types::{ShardId, Status};
 use matrixcache::{CacheEntryInfo, CacheStats};
@@ -2477,20 +2476,12 @@ pub fn effective_storage_tuning_from_env() -> BTreeMap<String, StorageContractVa
         TS_COLD_SCAN_NO_CACHE_FILL.to_string(),
         contract_bool(tuning.cold_scan_no_cache_fill),
     );
-    // THE ONLY PRODUCTION READ OF EITHER INDEX-CACHE BUDGET, AND IT ENDS HERE. Both are
-    // published so an operator can see what the process resolved, and neither sizes anything:
-    // there is no index cache in this engine. Measured two ways -- both budgets set to 1 byte
-    // leave the index and cache arms within the jitter of a control pair of baseline runs, and
-    // a `panic!()` planted on these two reads kills every arm that builds a lifecycle report
-    // while the index, cache, compaction and bucket arms all still pass.
-    values.insert(
-        TS_PAGE_INDEX_CACHE_BYTES.to_string(),
-        contract_u64(tuning.page_index_cache_bytes),
-    );
-    values.insert(
-        TS_BLOCK_INDEX_CACHE_BYTES.to_string(),
-        contract_u64(tuning.block_index_cache_bytes),
-    );
+    // TS_PAGE_INDEX_CACHE_BYTES and TS_BLOCK_INDEX_CACHE_BYTES used to be published here. They
+    // were retired because neither bounded a cache -- this report was their only reader, so
+    // publishing them told an operator a budget was in force when none was. A report recorded
+    // before the retirement still carries both keys and still decodes: this map is a
+    // BTreeMap<String, _>, so an unknown key is an entry rather than a decode failure, and the
+    // committed corpora that recorded them are left exactly as they were.
     values.insert(
         "effective_block_segment_target_bytes".to_string(),
         contract_u64(tuning.effective_slab_target_bytes()),
