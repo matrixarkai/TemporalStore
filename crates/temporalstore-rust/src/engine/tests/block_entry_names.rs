@@ -2352,6 +2352,81 @@ pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_versi
 /// `stale > 0` alone is not enough: `index_load_path_counts` is four independent counters and a
 /// load that was refused AND accepted would move both. So `accepted` is asserted at zero over the
 /// same reset window. An earlier guard in this file moves `stale` and leaves `accepted` unchecked.
+/// THE READER TAKES BOTH SPELLINGS, PROVED AGAINST BYTES AND NOT AGAINST A ROUND TRIP.
+///
+/// The bucket node's block index is WRITTEN under the key `page_index` and held in a field called
+/// `block_index`. Converging that is a stored-format change, so the reader has to land first --
+/// but "reader first" buys nothing if the reader is single-form, and this one WAS: its accepted
+/// set held `page_index` and `page_refs`, two RETIRED spellings, and not the canonical one. A
+/// writer flipped to `block_index` would have produced an index this very binary could not read.
+///
+/// So the set is what is asserted, in both directions:
+///
+///   * the committed `UNGATED_STORE_INDEX_AT_STAMP_8`, which spells `page_index` and was written
+///     by a binary that predates all of this, still loads with its block index POPULATED. A round
+///     trip could not establish this -- it writes and reads with the same build, so both halves
+///     move together and agree. Only bytes nobody can edit into agreement can.
+///   * the same document with the key spelled `block_index` loads to the SAME block count, which
+///     is what makes flipping the writer safe rather than hopeful.
+///
+/// A non-zero count is asserted on both arms. A named map DROPS a key its struct does not declare,
+/// silently and with every other value intact, so "it loaded" is not the property -- "it loaded
+/// carrying the blocks" is, and an empty block index is exactly what the silent drop looks like.
+#[test]
+fn the_bucket_node_reader_takes_the_block_spelling_and_the_page_spelling() {
+    let stored = crate::engine::decode_index_bytes(UNGATED_STORE_INDEX_AT_STAMP_8.as_bytes())
+        .expect("the committed pre-change bytes must still decode");
+    let stored_blocks = super::blocks_with_identity(&stored.bucket_index).len();
+    assert!(
+        stored_blocks > 0,
+        "the committed bytes decoded to ZERO blocks. A named map drops an undeclared key in          silence, so this is what losing the stored spelling looks like -- not an error"
+    );
+
+    // The canonical spelling, in a document otherwise identical. Built by rewriting the KEY in
+    // the committed bytes, so the two arms differ in exactly one token and nothing else.
+    assert!(
+        UNGATED_STORE_INDEX_AT_STAMP_8.contains("\"page_index\":"),
+        "the committed bytes no longer spell `page_index`, so the arm below varies nothing"
+    );
+    let as_block = UNGATED_STORE_INDEX_AT_STAMP_8.replace("\"page_index\":", "\"block_index\":");
+    assert!(
+        !as_block.contains("\"page_index\":"),
+        "the rewrite left a `page_index` key behind, so this arm is still testing the old spelling"
+    );
+    let canonical = crate::engine::decode_index_bytes(as_block.as_bytes())
+        .expect("an index spelling the key `block_index` must load, or the writer cannot converge");
+    let canonical_blocks = super::blocks_with_identity(&canonical.bucket_index).len();
+
+    assert_eq!(
+        stored_blocks, canonical_blocks,
+        "the two spellings decoded to different block counts ({stored_blocks} under `page_index`,          {canonical_blocks} under `block_index`). The reader has to take the set, not one of them"
+    );
+    println!(
+        "  `page_index` -> {stored_blocks} blocks, `block_index` -> {canonical_blocks} blocks, from the same document"
+    );
+
+    // AND BOTH WRITERS STILL SPELL `page_index`, PERMANENTLY, WHICH IS WHY THIS ASSERTION
+    // CARRIES ITS REASON RATHER THAN A POINTER TO ONE. A comment does not fail; this does.
+    let state = include_str!("../state.rs");
+    for writer in [
+        "node.serialize_field(\"page_index\"",
+        "once!(block_index, \"page_index\")",
+    ] {
+        assert!(
+            state.contains(writer),
+            "a writer stopped spelling the stored key: {writer:?} is gone from state.rs.
+             
+             `page_index` IS A DURABLE NAME AND ITS SPELLING IS DECLINED, NOT PENDING. The field              is `block_index` and the key written is `page_index`, and that divergence stays. A              stored name's installed base is on-disk data written by older builds, and no release              schedule changes that -- the same rule that keeps the 49 `DURABLE_NAMES` entries              where they are.
+             
+             MEASURED COST OF CONVERGING IT, so nobody has to find this out twice: 12 test sites              reading the written key off freshly serialized output, 1 published contract value,              and 78 occurrences across FOUR committed `compat/` corpora -- 48 of them in              `storage_lifecycle_report_pair_corpus.json`.
+             
+             AND THE CORPORA ARE THE REASON, NOT THE COUNT.              `compat/storage_unified_case_report_pair.json` RECORDED engine output, which is the              one thing it exists to hold. Regenerating it does not update a fixture, it destroys              the only record of what an older build emitted. Two further facts stood against the              flip when it was priced: its only live check is `page_and_block_name_one_tier`'s own              fixture test, so it is blocked behind that guard's redesign; and the validator that              corpus names, `tools/validate_storage_unified_case_report_pair.py`, does not exist              in this repository at all.
+             
+             So NO STAMP IS OWED and both literal pins of `SHARD_INDEX_FORMAT_VERSION` 27 stay              where they are. The reader accepting `block_index` beside `page_index` and              `page_refs` is the finished state, not a step toward moving the writer."
+        );
+    }
+}
+
 #[test]
 fn an_ungated_store_is_refused_before_it_is_served() {
     use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_counts};

@@ -6101,6 +6101,12 @@ const BUCKET_NODE_FIELDS: &[&str] = &[
     "last_dump_sequence",
     "object_index",
     "deleted_object_index",
+    // THE CANONICAL SPELLING FIRST, THE TWO OLDER ONES AFTER IT. The reader has to accept the
+    // name a converged writer will write BEFORE that writer exists, or landing the reader first
+    // buys nothing: a reader that accepts only what it would write rejects its own future as
+    // surely as one that accepts only the past rejects its history. Until this entry existed the
+    // accepted set held two RETIRED spellings and not the current one.
+    "block_index",
     "page_index",
     "tombstone_elements",
 ];
@@ -6139,7 +6145,7 @@ impl<'de> Deserialize<'de> for BucketNodeField {
                     "deleted_object_index" | "deleted_object_ids" => {
                         BucketNodeField::DeletedObjectIndex
                     }
-                    "page_index" | "page_refs" => BucketNodeField::BlockIndex,
+                    "block_index" | "page_index" | "page_refs" => BucketNodeField::BlockIndex,
                     "tombstone_elements" => BucketNodeField::TombstoneElements,
                     _ => BucketNodeField::Ignore,
                 })
