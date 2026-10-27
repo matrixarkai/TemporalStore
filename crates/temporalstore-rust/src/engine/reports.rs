@@ -153,7 +153,7 @@ pub struct ShardCompactionReport {
     /// Bytes this round copied onto the fresh slab, verbatim.
     ///
     /// The round's real cost, and the figure that says how much a round on a node leading
-    /// nothing would have thrown away. `rewritten_page_refs` beside it counts the relocations;
+    /// nothing would have thrown away. `rewritten_block_refs` beside it counts the relocations;
     /// this counts what they moved, and two rounds with the same ref count can differ by orders
     /// of magnitude here.
     #[serde(default)]
@@ -394,7 +394,7 @@ pub struct StorageRecoveryReport {
     #[serde(default)]
     #[serde(alias = "segment_integrity")]
     pub slab_integrity: StorageSlabIntegrityReport,
-    #[serde(rename = "feature_page_layout", default)]
+    #[serde(rename = "feature_block_layout", default)]
     pub feature_block_layout: StorageFeatureBlockLayoutReport,
 }
 
@@ -1149,7 +1149,7 @@ pub struct StorageReclaimCandidate {
 
 /// What a compaction round would relocate, and why, composed from per-object answers.
 ///
-/// `relocatable_page_refs` is the whole decision: zero means no object holds a page on a slab
+/// `relocatable_block_refs` is the whole decision: zero means no object holds a page on a slab
 /// anyone wants emptied, so a round would roll a fresh slab, copy every live page onto it
 /// verbatim, and leave the slab it emptied behind as the reason the next round runs.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1471,7 +1471,7 @@ pub struct StorageLifecycleReport {
     pub dump_manifest: Option<BucketDumpManifest>,
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
-    #[serde(rename = "cache_warmup_page_refs", default)]
+    #[serde(rename = "cache_warmup_block_refs", default)]
     pub cache_warmup_block_refs: usize,
     #[serde(default)]
     pub cache_warmup: StorageCacheWarmupReport,
@@ -3932,7 +3932,7 @@ pub struct StorageProductionReadinessReport {
     pub log_compatibility: StorageLogCompatibilityReport,
     #[serde(default)]
     pub block_format_compatibility: StorageBlockFormatCompatibilityReport,
-    #[serde(rename = "feature_page_layout", default)]
+    #[serde(rename = "feature_block_layout", default)]
     pub feature_block_layout: StorageFeatureBlockLayoutReport,
     pub feature_block_layout_mismatch_count: usize,
     pub corrupt_feature_block_count: usize,

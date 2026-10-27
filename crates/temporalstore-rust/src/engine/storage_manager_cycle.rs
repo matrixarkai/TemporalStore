@@ -203,7 +203,7 @@ impl TemporalEngine {
         // What keeps that 0 honest is that the plan travels WITH them:
         // `StorageManagerCycleReport.plan.bucket_summaries` is the same `Option`, so a reader of
         // any of these byte or count figures can tell an unmeasured 0 from a measured one without
-        // a second source. `live_page_summaries_measured` below is that test, named once.
+        // a second source. `live_block_summaries_measured` below is that test, named once.
         let bucket_summaries = plan.bucket_summaries.as_deref();
         let live_block_summaries_measured = bucket_summaries.is_some();
         let bucket_logical_bytes = bucket_summaries
@@ -1018,7 +1018,7 @@ impl TemporalEngine {
                     .to_string()
             },
             pressure_signal:
-                "stale_page_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
+                "stale_block_bytes+delayed_destroy_backlog+stale_density+dependency_retention"
                     .to_string(),
             pressure_score: pressure_signals
                 .stale_block_bytes
@@ -1295,7 +1295,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
                     .to_string()
             },
             skipped: !live_block_summaries_measured,
-            pressure_signal: "slot_page_cache_metrics".to_string(),
+            pressure_signal: "slot_block_cache_metrics".to_string(),
             pressure_score: bucket_count as u64 + bucket_block_ref_count,
             pressure_threshold: 1,
             pressure_triggered: bucket_summaries
@@ -1388,7 +1388,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
             .or_else(|| latest_bucket_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
         // Sampled, not the whole store. This report is here for `manifest_chain_issues`, the two
         // dump sequences and the two replay sequences, none of which reads a page -- but it also
-        // CARRIES `stale_index_page_refs` / `unreadable_page_bytes`, so the readability check is
+        // CARRIES `stale_index_block_refs` / `unreadable_page_bytes`, so the readability check is
         // bounded rather than skipped: corruption is still found, across rounds instead of all in
         // one. Measured at 32,000 records the unbounded version was 575 ms and 32,000 reads,
         // about a fifth of the round.

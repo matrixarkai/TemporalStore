@@ -163,7 +163,7 @@ pub fn native_feature_sequence_golden_corpus_report() -> GoldenCorpusReport {
     let block_layout = engine.storage_recovery_report(1).feature_block_layout;
     record_golden_case(
         &mut cases,
-        "native_timestamped_kv_shared_page_layout",
+        "native_timestamped_kv_shared_block_layout",
         block_layout.packed_feature_blocks >= 1
             && block_layout.unique_feature_block_refs < block_layout.indexed_feature_points
             && !block_layout.has_errors(),

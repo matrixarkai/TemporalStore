@@ -3596,9 +3596,9 @@ fn verify_storage_fault_matrix(case: &StorageMigrationCase) {
     for required in [
         "checksum_mismatch",
         "partial_manifest",
-        "missing_page_segment",
+        "missing_block_segment",
         "stale_manifest",
-        "corrupt_page_segment",
+        "corrupt_block_segment",
     ] {
         assert!(
             scenarios.contains(required),
@@ -3927,7 +3927,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
     assert_eq!(matrix.raft_snapshot_install_floor_block_count, 2);
     assert_eq!(matrix.delayed_destroy_grace_block_count, 1);
     for expected in [
-        "live_page_ref",
+        "live_block_ref",
         "slot_dump_manifest",
         "shared_store_replay_cursor",
         "raft_snapshot_ref",

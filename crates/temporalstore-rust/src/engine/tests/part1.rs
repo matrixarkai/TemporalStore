@@ -8678,7 +8678,7 @@ fn what_the_compaction_preamble_walks() {
     let _ = engine.validate_shard_block_ownership(1, shard);
     let walked = crate::engine::live_block_scan_entries();
     total += walked;
-    report("validate_shard_page_ownership", walked);
+    report("validate_shard_block_ownership", walked);
 
     crate::engine::reset_live_block_scan_entries();
     let _ = crate::engine::collect_live_block_slab_ids(shard);
@@ -8754,7 +8754,7 @@ fn what_the_compaction_preamble_walks() {
     assert!(compaction.is_ok(), "compaction failed: {compaction:?}");
     eprintln!(
         "  [preamble] {:<38} {walked:>8} entries = {:>5.1}x the shard   <- the real one",
-        "compact_shard_pages_with_budgets",
+        "compact_shard_blocks_with_budgets",
         walked as f64 / live_blocks as f64,
     );
     assert!(
@@ -10812,7 +10812,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
     // failed is exactly the shape this test exists to avoid.
     let failure = first_round.expect_err("the seam must make round one fail partway");
     assert_eq!(
-        failure.code, "page_compaction_failed",
+        failure.code, "block_compaction_failed",
         "round one failed for the wrong reason: {failure:?}",
     );
 

@@ -494,7 +494,7 @@ impl TemporalEngine {
             reasons.push("dirty_slot_dump_delayed".to_string());
         }
         if !stale_block_slab_ids.is_empty() {
-            reasons.push("stale_page_segment_gc".to_string());
+            reasons.push("stale_block_segment_gc".to_string());
         }
         if !reclaim_candidates.is_empty() {
             reasons.push("ranked_reclaim_candidates".to_string());
@@ -518,7 +518,7 @@ impl TemporalEngine {
             .is_empty()
             && !block_gc_dependency_plan.safe_to_reclaim
         {
-            reasons.push("page_gc_dependency_blocked".to_string());
+            reasons.push("block_gc_dependency_blocked".to_string());
         }
         let manifest_prune_plan = self.bucket_dump_manifest_prune_plan_with_follower_cursors(
             request.shard_id,
@@ -615,7 +615,7 @@ impl TemporalEngine {
             if live_set.contains(block_slab_id) {
                 dependency_blocks.push(StorageBlockGcDependencyBlock {
                     block_slab_id: *block_slab_id,
-                    dependency: "live_page_ref".to_string(),
+                    dependency: "live_block_ref".to_string(),
                     owner_id: format!("shard:{shard_id}"),
                     reason: "indexed live page references still point at this page segment"
                         .to_string(),
@@ -731,7 +731,7 @@ impl TemporalEngine {
                 .filter(|block| block.dependency == dependency)
                 .count()
         };
-        let live_ref_block_count = dependency_count("live_page_ref");
+        let live_ref_block_count = dependency_count("live_block_ref");
         let bucket_dump_manifest_block_count = dependency_count("slot_dump_manifest");
         let shared_store_cursor_block_count = dependency_count("shared_store_replay_cursor");
         let raft_snapshot_ref_block_count = dependency_count("raft_snapshot_ref");

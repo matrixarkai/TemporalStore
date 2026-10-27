@@ -2240,12 +2240,12 @@ impl TemporalEngine {
         let bucket_store_layout_api_ready = physical_index.bucket_nodes.iter().any(|bucket| {
             matches!(
                 bucket.layout.as_str(),
-                "single_object" | "single_page_object" | "multi_page_object" | "multi_object"
+                "single_object" | "single_block_object" | "multi_block_object" | "multi_object"
             )
         });
         let mut blockers = Vec::new();
         if !physical_index.bucket_index_authority || !ownership.first_class_index_present {
-            blockers.push("slot_object_page_authority_missing".to_string());
+            blockers.push("slot_object_block_authority_missing".to_string());
         }
         if !bucket_store_layout_api_ready {
             blockers.push("slot_store_layout_states_missing".to_string());

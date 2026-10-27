@@ -4641,7 +4641,7 @@ pub(super) fn upsert_bucket_index_block(
 /// under it put the entry in a bucket holding nothing else for the object. That made the bucket
 /// all-tombstone (so a twelve-member set reported as a deleted object) and made its filed bucket
 /// disagree with the one its key routes to (so a compaction round refused with
-/// `page_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
+/// `block_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
 /// Drop an object's LIVE page entries for one kind, leaving its tombstones where they are.
 ///
 /// # WHY LIVE ONLY
@@ -5781,8 +5781,8 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     match layout {
         BucketLayoutState::Empty => "empty",
         BucketLayoutState::SingleObject => "single_object",
-        BucketLayoutState::SingleBlockObject => "single_page_object",
-        BucketLayoutState::MultiBlockObject => "multi_page_object",
+        BucketLayoutState::SingleBlockObject => "single_block_object",
+        BucketLayoutState::MultiBlockObject => "multi_block_object",
         BucketLayoutState::MultiObject => "multi_object",
     }
 }

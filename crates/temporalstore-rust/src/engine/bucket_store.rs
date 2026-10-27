@@ -145,8 +145,8 @@ fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     match layout {
         BucketLayoutState::Empty => "empty",
         BucketLayoutState::SingleObject => "single_object",
-        BucketLayoutState::SingleBlockObject => "single_page_object",
-        BucketLayoutState::MultiBlockObject => "multi_page_object",
+        BucketLayoutState::SingleBlockObject => "single_block_object",
+        BucketLayoutState::MultiBlockObject => "multi_block_object",
         BucketLayoutState::MultiObject => "multi_object",
     }
 }

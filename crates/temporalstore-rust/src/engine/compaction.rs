@@ -199,7 +199,7 @@ pub(super) fn model_compaction_policy_reports(
             let layout_aware_rewrite_required = object_block_packing_enabled
                 || matches!(
                     layout_policy,
-                    "timestamped_chunked_pages" | "context_timeline_or_sidecar_pages"
+                    "timestamped_chunked_blocks" | "context_timeline_or_sidecar_blocks"
                 )
                 || model_id == "control_state";
             ModelCompactionPolicyReport {
@@ -232,19 +232,19 @@ pub(super) fn model_compaction_policy_reports(
 pub(super) fn compaction_layout_policy_for_model(model_id: &str) -> &'static str {
     match model_id {
         "string" | "control_state" | "context_node" | "context_entity" | "context_embedding" => {
-            "single_page_object"
+            "single_block_object"
         }
-        "hash" | "set" => "component_page_object",
-        "feature" | "sequence" => "timestamped_chunked_pages",
-        model if model.starts_with("context_") => "context_timeline_or_sidecar_pages",
-        _ => "generic_page_object",
+        "hash" | "set" => "component_block_object",
+        "feature" | "sequence" => "timestamped_chunked_blocks",
+        model if model.starts_with("context_") => "context_timeline_or_sidecar_blocks",
+        _ => "generic_block_object",
     }
 }
 
 pub(super) fn compaction_object_block_packing_enabled(model_id: &str) -> bool {
     matches!(
         compaction_layout_policy_for_model(model_id),
-        "single_page_object" | "component_page_object"
+        "single_block_object" | "component_block_object"
     )
 }
 
@@ -282,7 +282,7 @@ pub(super) struct CompactionRewriteStats {
     pub(super) skipped_by_budget_bytes: u64,
     /// Bytes this round committed to copying, charged at the same point the byte budget is.
     ///
-    /// This is the cost of the round stated in the unit that matters. `rewritten_page_refs`
+    /// This is the cost of the round stated in the unit that matters. `rewritten_block_refs`
     /// counts relocations; a relocation reads a page and appends it verbatim somewhere else, so
     /// what it actually spends is its LENGTH, and two rounds with the same ref count can differ
     /// by orders of magnitude in what they moved.
@@ -708,7 +708,7 @@ fn read_block_bytes_for_compaction(
     // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
     // will not resolve a container ELEMENT page whose only durable copy is still a WAL record,
     // so compaction cannot relocate that page -- and the round FAILS rather than skipping it.
-    // Both callers turn this `None` into `Status::error("page_compaction_failed", ...)` with `?`,
+    // Both callers turn this `None` into `Status::error("block_compaction_failed", ...)` with `?`,
     // which is what CP4 requires: a round that stops partway must propagate, so the consistent
     // partial index is durably committed, or reclaim purges a slab the durable index still names.
     // The fault seam above says the same from the other side -- returning `None` here is THE way
@@ -890,7 +890,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
         )
         .ok_or_else(|| {
             Status::error(
-                "page_compaction_failed",
+                "block_compaction_failed",
                 "missing container element page bytes during compaction",
             )
         })?;
@@ -1020,7 +1020,7 @@ fn flush_container_batch(
     let ordinal = u32::try_from(batch_ordinal).unwrap_or(u32::MAX);
     let new_address = block_store
         .append_block_of_object(&bytes, object_id, Some(routing_bucket), ordinal)
-        .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+        .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
     let _ = cache.put(
         CacheKey::page_with_slot_generation(
             shard_id,
@@ -1114,7 +1114,7 @@ pub(super) fn compact_block_addresses<'a>(
         )
             .ok_or_else(|| {
                 Status::error(
-                    "page_compaction_failed",
+                    "block_compaction_failed",
                     "missing page bytes during compaction",
                 )
             })?;
@@ -1129,7 +1129,7 @@ pub(super) fn compact_block_addresses<'a>(
                 Some(routing_bucket),
                 address.block_id().unwrap_or_default() as u32,
             )
-            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
         *address = new_address.clone();
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
@@ -1180,7 +1180,7 @@ pub(super) fn compact_feature_block_addresses(
         )
             .ok_or_else(|| {
                 Status::error(
-                    "page_compaction_failed",
+                    "block_compaction_failed",
                     "missing feature page bytes during compaction",
                 )
             })?;
@@ -1191,7 +1191,7 @@ pub(super) fn compact_feature_block_addresses(
                 Some(routing_bucket),
                 old_address.block_id().unwrap_or_default() as u32,
             )
-            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
         let _ = cache.put(
             CacheKey::page_with_slot_generation(
                 shard_id,

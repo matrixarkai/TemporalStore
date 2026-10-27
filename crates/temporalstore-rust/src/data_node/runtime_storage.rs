@@ -1255,7 +1255,7 @@ impl DataNodeRuntime {
                 && compaction_has_work,
             vec![
                 storage_manager_pressure_signal(
-                    "relocatable_page_refs",
+                    "relocatable_block_refs",
                     compaction_relocatable_block_refs,
                     1,
                 ),

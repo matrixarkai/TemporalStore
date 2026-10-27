@@ -661,7 +661,7 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         if !missing.is_empty() {
             return Err(Status::error(
-                "slot_dump_missing_page_segments",
+                "slot_dump_missing_block_segments",
                 format!("slot dump references missing page segments: {missing:?}"),
             ));
         }
@@ -721,7 +721,7 @@ impl TemporalEngine {
             .collect::<Vec<_>>();
         if manifest.block_slab_ids != canonical_block_slab_ids {
             return Err(Status::error(
-                "slot_dump_page_segment_ids_not_canonical",
+                "slot_dump_block_segment_ids_not_canonical",
                 "slot dump manifest page segment ids must be sorted and unique",
             ));
         }
@@ -855,7 +855,7 @@ impl TemporalEngine {
             .collect::<BTreeSet<_>>();
         if index_block_slab_ids != manifest_block_slab_ids {
             return Err(Status::error(
-                "slot_dump_page_segment_mismatch",
+                "slot_dump_block_segment_mismatch",
                 format!(
                     "slot dump page segment ids {manifest_block_slab_ids:?} do not match the live refs of the index it installs {index_block_slab_ids:?}"
                 ),
@@ -879,7 +879,7 @@ impl TemporalEngine {
         }
         if unreadable_block_refs > 0 {
             return Err(Status::error(
-                "slot_dump_unreadable_page_refs",
+                "slot_dump_unreadable_block_refs",
                 format!(
                     "slot dump has {unreadable_block_refs} unreadable page refs covering {unreadable_block_bytes} bytes"
                 ),
@@ -941,10 +941,10 @@ impl TemporalEngine {
             blockers.push("stale_manifest_sequence".to_string());
         }
         if !missing_block_slab_ids.is_empty() {
-            blockers.push("missing_page_segments".to_string());
+            blockers.push("missing_block_segments".to_string());
         }
         if !corrupt_block_slab_ids.is_empty() {
-            blockers.push("corrupt_page_segments".to_string());
+            blockers.push("corrupt_block_segments".to_string());
         }
 
         let mut unreadable_block_ref_count = 0usize;
@@ -1025,7 +1025,7 @@ impl TemporalEngine {
             blockers.push("stale_object_conflicts".to_string());
         }
         if !stale_block_conflicts.is_empty() {
-            blockers.push("stale_page_conflicts".to_string());
+            blockers.push("stale_block_conflicts".to_string());
         }
         blockers.sort();
         blockers.dedup();
@@ -1285,8 +1285,8 @@ impl TemporalEngine {
             .map(|status| status.code)
             .unwrap_or_else(|| "ok".to_string());
         scenarios.push(bucket_dump_fault_scenario(
-            "missing_page_segment",
-            "slot_dump_missing_page_segments",
+            "missing_block_segment",
+            "slot_dump_missing_block_segments",
             missing_code,
             missing_preflight.blockers,
             missing_preflight.install_safe,
@@ -1385,9 +1385,9 @@ impl TemporalEngine {
                             corrupt_blockers = corrupt_preflight.blockers;
                             corrupt_code = if corrupt_blockers
                                 .iter()
-                                .any(|blocker| blocker == "corrupt_page_segments")
+                                .any(|blocker| blocker == "corrupt_block_segments")
                             {
-                                "corrupt_page_segments".to_string()
+                                "corrupt_block_segments".to_string()
                             } else {
                                 self.validate_bucket_dump_manifest(&manifest)
                                     .err()
@@ -1403,8 +1403,8 @@ impl TemporalEngine {
             }
         }
         scenarios.push(bucket_dump_fault_scenario(
-            "corrupt_page_segment",
-            "corrupt_page_segments",
+            "corrupt_block_segment",
+            "corrupt_block_segments",
             corrupt_code,
             corrupt_blockers,
             corrupt_install_safe,
@@ -1442,7 +1442,7 @@ impl TemporalEngine {
             }
             if preflight.unreadable_block_ref_count > 0 {
                 return Err(Status::error(
-                    "slot_dump_unreadable_page_refs",
+                    "slot_dump_unreadable_block_refs",
                     format!(
                         "slot dump has {} unreadable page refs covering {} bytes",
                         preflight.unreadable_block_ref_count, preflight.unreadable_block_bytes

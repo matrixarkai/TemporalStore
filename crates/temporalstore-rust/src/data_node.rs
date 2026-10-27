@@ -847,7 +847,7 @@ pub struct CompactionResponse {
     /// Bytes the round copied onto the fresh slab, verbatim.
     ///
     /// `compacted_objects` beside it is the round's relocation COUNT (it carries the shard
-    /// report's `rewritten_page_refs`); this is what those relocations moved. Two rounds with
+    /// report's `rewritten_block_refs`); this is what those relocations moved. Two rounds with
     /// the same count can differ by orders of magnitude here, which is why the count alone
     /// cannot say what a round cost.
     #[serde(default)]
@@ -1470,7 +1470,7 @@ pub struct StorageManagerPressureSnapshot {
     /// stage that invalidates cached pages -- the cache terms are the ones that stage can move.
     #[serde(default)]
     pub memory_cache_pressure_score: u64,
-    /// See `engine::reports::StorageManagerPressureSnapshot::live_page_summaries_measured`:
+    /// See `engine::reports::StorageManagerPressureSnapshot::live_block_summaries_measured`:
     /// false means the debt beside it was never counted this round, not that it is zero.
     #[serde(default)]
     pub live_block_summaries_measured: bool,

@@ -272,7 +272,7 @@ impl AllocClass {
     pub const fn label(self) -> &'static str {
         match self {
             AllocClass::BlockBytes => "block_bytes",
-            AllocClass::CarriedBlock => "carried_page",
+            AllocClass::CarriedBlock => "carried_block",
             AllocClass::SlabAppend => "slab_append",
             AllocClass::BucketIndex => "bucket_index",
             AllocClass::DirtyObjects => "dirty_objects",

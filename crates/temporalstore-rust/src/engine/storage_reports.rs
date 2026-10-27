@@ -275,13 +275,13 @@ impl TemporalEngine {
             .saturating_sub(boundary.latest_dump_wal_sequence);
         let mut blockers = Vec::new();
         if !boundary.stale_index_block_refs.is_empty() {
-            blockers.push("stale_index_page_refs".to_string());
+            blockers.push("stale_index_block_refs".to_string());
         }
         if !boundary.corrupt_block_slab_ids.is_empty() {
-            blockers.push("corrupt_page_segments".to_string());
+            blockers.push("corrupt_block_segments".to_string());
         }
         if boundary.unreadable_block_bytes > 0 || !recovery.all_live_blocks_readable {
-            blockers.push("unreadable_live_page_refs".to_string());
+            blockers.push("unreadable_live_block_refs".to_string());
         }
         if !boundary.owner_mismatch_block_refs.is_empty() {
             blockers.push("owner_mismatch_page_refs".to_string());
@@ -306,7 +306,7 @@ impl TemporalEngine {
             blockers.push("storage_segment_integrity_failed".to_string());
         }
         if recovery.feature_block_layout.has_errors() {
-            blockers.push("feature_page_layout_mismatch".to_string());
+            blockers.push("feature_block_layout_mismatch".to_string());
         }
 
         let mut warnings = Vec::new();
@@ -314,13 +314,13 @@ impl TemporalEngine {
             warnings.push("dirty_slots_pending_dump".to_string());
         }
         if !plan.stale_block_slab_ids.is_empty() {
-            warnings.push("stale_page_segments_pending_gc".to_string());
+            warnings.push("stale_block_segments_pending_gc".to_string());
         }
         if !boundary.orphan_block_slab_ids.is_empty() {
-            warnings.push("orphan_page_segments_pending_gc".to_string());
+            warnings.push("orphan_block_segments_pending_gc".to_string());
         }
         if bucket_dump_manifest_count == 0 && recovery.total_block_refs > 0 {
-            warnings.push("no_slot_dump_manifest_for_live_pages".to_string());
+            warnings.push("no_slot_dump_manifest_for_live_blocks".to_string());
         }
         if policy
             .max_dirty_buckets
@@ -334,14 +334,14 @@ impl TemporalEngine {
             .map(|limit| plan.stale_block_slab_ids.len() > limit)
             .unwrap_or(false)
         {
-            blockers.push("stale_page_segments_exceed_policy".to_string());
+            blockers.push("stale_block_segments_exceed_policy".to_string());
         }
         if policy
             .max_orphan_block_slabs
             .map(|limit| boundary.orphan_block_slab_ids.len() > limit)
             .unwrap_or(false)
         {
-            blockers.push("orphan_page_segments_exceed_policy".to_string());
+            blockers.push("orphan_block_segments_exceed_policy".to_string());
         }
         if policy
             .max_undumped_wal_records

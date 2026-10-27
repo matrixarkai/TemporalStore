@@ -84,7 +84,7 @@
 //!      set exactly that before the first ingest. The knob costs no allocation, no indirection and
 //!      no line of code. (This module previously published 0.632x for the same comparison, from
 //!      the pre-#1966 tree.)
-//!   2. WHERE THE KNOB IS SET, THE ARM IS GONE AND SO IS THE SAVING. `single_page_object` is
+//!   2. WHERE THE KNOB IS SET, THE ARM IS GONE AND SO IS THE SAVING. `single_block_object` is
 //!      4.510% of occupied buckets at 4,000 records on 0..1023 and 0.000% at 40,000, where
 //!      `multi_object` is 100.000%. At 0.000% simple the tagged shape saves 1.7% of the chunk
 //!      bytes and still costs 1.304x the allocations. That cell is the control on the explanation:
@@ -245,9 +245,9 @@ struct ArmHistogram {
 fn arm_name(layout: BucketLayoutState) -> &'static str {
     match layout {
         BucketLayoutState::Empty => "empty",
-        BucketLayoutState::SingleObject => "single_object_no_page",
-        BucketLayoutState::SingleBlockObject => "single_page_object",
-        BucketLayoutState::MultiBlockObject => "multi_page_object",
+        BucketLayoutState::SingleObject => "single_object_no_block",
+        BucketLayoutState::SingleBlockObject => "single_block_object",
+        BucketLayoutState::MultiBlockObject => "multi_block_object",
         BucketLayoutState::MultiObject => "multi_object",
     }
 }
@@ -256,9 +256,9 @@ fn arm_name(layout: BucketLayoutState) -> &'static str {
 /// measurement, and `assert_every_claimed_arm_has_samples` refuses one.
 const EVERY_ARM: [&str; 5] = [
     "empty",
-    "single_object_no_page",
-    "single_page_object",
-    "multi_page_object",
+    "single_object_no_block",
+    "single_block_object",
+    "multi_block_object",
     "multi_object",
 ];
 
@@ -292,7 +292,7 @@ impl ArmHistogram {
     /// The two arms a tagged word would hold inline: one object with one block, and one object
     /// with none. Together, the fraction of buckets the proposal would actually help.
     fn simple_fraction(&self) -> f64 {
-        self.occupied_fraction("single_page_object") + self.occupied_fraction("single_object_no_page")
+        self.occupied_fraction("single_block_object") + self.occupied_fraction("single_object_no_block")
     }
 
     fn percentile(sorted: &[usize], q: f64) -> usize {
@@ -468,7 +468,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
         let narrow = routed.get(&(records, NARROW_END)).expect("narrow arm");
 
         assert_every_claimed_arm_has_samples(
-            &["single_page_object"],
+            &["single_block_object"],
             wide,
             &format!("{records} routed keys on the whole keyspace"),
         );
@@ -517,7 +517,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
 
     // --- THE CONTAINER WORKLOAD REACHES THE GENERAL ARM ON THE WIDE RANGE TOO. ---
     //
-    // AND IT NOW REACHES `multi_page_object` RATHER THAN `multi_object`, WHICH IS THE IDENTITY
+    // AND IT NOW REACHES `multi_block_object` RATHER THAN `multi_object`, WHICH IS THE IDENTITY
     // CHANGE SHOWING UP IN THE CLASSIFIER.
     //
     // This test asserted `multi_object` and said why: a hash's hundred fields looked like one
@@ -527,19 +527,19 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     //
     // Since the component left `stable_block_object_id`, `object_index` holds ONE row for that
     // key and `classify_bucket_layout(1, many)` answers `MultiBlockObject`. So the arm the
-    // container workload lands in has moved, and `multi_page_object` -- which this module used to
+    // container workload lands in has moved, and `multi_block_object` -- which this module used to
     // report as reached by nothing -- is now exactly what a container reaches.
     for (blocks, hist) in &container {
         assert_every_claimed_arm_has_samples(
-            &["multi_page_object"],
+            &["multi_block_object"],
             hist,
             &format!("{blocks} container pages on the whole keyspace"),
         );
         assert!(
-            hist.occupied_fraction("single_page_object") < 0.01,
-            "the container store put {:.5} of occupied buckets in `single_page_object`; it is \
+            hist.occupied_fraction("single_block_object") < 0.01,
+            "the container store put {:.5} of occupied buckets in `single_block_object`; it is \
              meant to be the workload the range cannot split",
-            hist.occupied_fraction("single_page_object")
+            hist.occupied_fraction("single_block_object")
         );
     }
 
@@ -549,7 +549,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     // are asserted non-empty above and the rest are reported here as the zeroes they are. Both
     // are reachable in principle and neither changes the pricing:
     //
-    //   * `single_object_no_page` is a RELEASED bucket -- `release_bucket_blocks` empties the
+    //   * `single_object_no_block` is a RELEASED bucket -- `release_bucket_blocks` empties the
     //     block index and keeps `object_index` -- which holds no block in either representation
     //     and so cannot decide between them;
     //   * `multi_object` is what a container used to reach and no longer does, because its

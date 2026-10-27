@@ -72,18 +72,18 @@ const LARGE: usize = 40_000;
 /// Every arm this module quotes a figure for.
 const EVERY_ARM: [&str; 5] = [
     "empty",
-    "single_object_no_page",
-    "single_page_object",
-    "multi_page_object",
+    "single_object_no_block",
+    "single_block_object",
+    "multi_block_object",
     "multi_object",
 ];
 
 fn arm_name(layout: BucketLayoutState) -> &'static str {
     match layout {
         BucketLayoutState::Empty => "empty",
-        BucketLayoutState::SingleObject => "single_object_no_page",
-        BucketLayoutState::SingleBlockObject => "single_page_object",
-        BucketLayoutState::MultiBlockObject => "multi_page_object",
+        BucketLayoutState::SingleObject => "single_object_no_block",
+        BucketLayoutState::SingleBlockObject => "single_block_object",
+        BucketLayoutState::MultiBlockObject => "multi_block_object",
         BucketLayoutState::MultiObject => "multi_object",
     }
 }
@@ -422,7 +422,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                     "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {blocks:>8} pages ({block_share:>7.3}% of {})",
                     pop.total_buckets, pop.total_blocks
                 );
-                if arm == "multi_page_object" {
+                if arm == "multi_block_object" {
                     widest_bucket_share_of_multi_block_object =
                         widest_bucket_share_of_multi_block_object.max(bucket_share);
                     widest_block_share_of_multi_block_object =
@@ -533,7 +533,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     // --- THE FINDING, ON THE ARM THE PROPOSAL IS FOR. ---
     // THE FINDING, INVERTED BY THE IDENTITY CHANGE, AND THE TWO SHARES SPLIT APART.
     //
-    // This used to assert `multi_page_object` stayed under one percent of buckets everywhere,
+    // This used to assert `multi_block_object` stayed under one percent of buckets everywhere,
     // because `(1 object, many pages)` was unreachable for any component-bearing kind. Since the
     // component left the object id a container IS that shape, so the arm is now reached -- and
     // the assertion is not LOOSENED, it is replaced by the pair of numbers the mechanism
@@ -545,13 +545,13 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     // Either share quoted alone would read as a much bigger or much smaller result than this is.
     assert!(
         widest_bucket_share_of_multi_block_object > 0.0,
-        "`multi_page_object` reached no bucket in any store. Since the component left the object \
+        "`multi_block_object` reached no bucket in any store. Since the component left the object \
          id a container key is ONE object holding many pages, which is exactly this arm -- an \
          unreached arm here means the identity did not collapse"
     );
     assert!(
         widest_block_share_of_multi_block_object > widest_bucket_share_of_multi_block_object,
-        "`multi_page_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of buckets \
+        "`multi_block_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of buckets \
          and {widest_block_share_of_multi_block_object:.3}% of pages. The whole shape of this arm \
          is a FEW buckets holding MANY pages; if the page share is not the larger of the two, \
          the population being read is not the container one"
@@ -560,7 +560,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         .expect("the shipped range at scale must have been measured");
     assert_eq!(
         shipped, 0,
-        "`multi_page_object` reached {shipped} buckets at 40,000 records on the shipped range, where the finding is stated on it being absent"
+        "`multi_block_object` reached {shipped} buckets at 40,000 records on the shipped range, where the finding is stated on it being absent"
     );
     let live = shipped_range_at_scale_live_arms.expect("live arm count at scale");
     assert_eq!(
@@ -568,7 +568,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         "at 40,000 records on the shipped range {live} layout arms are populated. The finding is stated on exactly ONE being live, which is what makes a five-way dispatch select nothing there"
     );
     println!(
-        "\n  THE ARM: `multi_page_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of BUCKETS and {widest_block_share_of_multi_block_object:.3}% of PAGES, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
+        "\n  THE ARM: `multi_block_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of BUCKETS and {widest_block_share_of_multi_block_object:.3}% of PAGES, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
         EVERY_ARM.len()
     );
     println!(

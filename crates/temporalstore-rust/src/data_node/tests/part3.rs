@@ -6942,7 +6942,7 @@ fn does_compaction_retrigger_itself() {
         }
     }
 
-    eprintln!("  round  compact_ran  rewritten_page_refs  round_ms");
+    eprintln!("  round  compact_ran  rewritten_block_refs  round_ms");
     let options = StorageManagerOptions::default();
     let mut rounds_that_compacted = 0usize;
     let mut total_rewritten = 0usize;
@@ -7119,7 +7119,7 @@ fn does_the_periodic_loop_reach_compaction() {
         }
     }
 
-    eprintln!("  round  compact_ran  rewritten_page_refs  round_ms");
+    eprintln!("  round  compact_ran  rewritten_block_refs  round_ms");
     let options = StorageManagerOptions::default();
     let mut rounds_that_compacted = 0usize;
     let mut total_rewritten = 0usize;
@@ -11022,7 +11022,7 @@ fn run_compaction_rounds_under_role(
             role_skipped_rounds += 1;
         }
         if let Some(compaction) = report.compaction_report.as_ref() {
-            // compacted_objects carries the shard report rewritten_page_refs.
+            // compacted_objects carries the shard report rewritten_block_refs.
             relocated_refs += compaction.compacted_objects;
             relocated_bytes += compaction.relocated_bytes;
         }

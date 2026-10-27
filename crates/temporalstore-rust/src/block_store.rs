@@ -1088,7 +1088,7 @@ impl BlockStoreGcPolicy {
     /// `BlockStore::publish_live_block_bytes`. The denominator moved with it, from the file
     /// size to the slab descriptor's `logical_bytes` -- the total ever appended there -- because a
     /// live block is counted at its logical length. `a_published_live_tally_makes_used_bytes_mean_
-    /// live_page_bytes` shows the floor excluding a 90%-live slab, which is the first time this
+    /// live_block_bytes` shows the floor excluding a 90%-live slab, which is the first time this
     /// knob has excluded anything.
     ///
     /// WHAT DID NOT CHANGE. In a running store the floor still excludes none of the COLLECTOR's

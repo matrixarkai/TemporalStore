@@ -4219,7 +4219,7 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_block() {
     let readiness = engine.storage_production_readiness_report(1);
     assert!(readiness
         .blockers
-        .contains(&"feature_page_layout_mismatch".to_string()));
+        .contains(&"feature_block_layout_mismatch".to_string()));
     assert_eq!(readiness.feature_block_layout_mismatch_count, 1);
 }
 
@@ -4269,7 +4269,7 @@ fn feature_recovery_reports_packed_timestamp_orphaned_from_index() {
     let readiness = engine.storage_production_readiness_report(1);
     assert!(readiness
         .blockers
-        .contains(&"feature_page_layout_mismatch".to_string()));
+        .contains(&"feature_block_layout_mismatch".to_string()));
     assert_eq!(readiness.feature_block_layout_mismatch_count, 1);
 }
 
@@ -4332,7 +4332,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
     let readiness = engine.storage_production_readiness_report(1);
     assert!(readiness
         .blockers
-        .contains(&"feature_page_layout_mismatch".to_string()));
+        .contains(&"feature_block_layout_mismatch".to_string()));
     assert_eq!(readiness.feature_block_layout_mismatch_count, 1);
 }
 
@@ -4379,7 +4379,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
     assert!(!readiness.production_ready);
     assert!(readiness
         .blockers
-        .contains(&"feature_page_layout_mismatch".to_string()));
+        .contains(&"feature_block_layout_mismatch".to_string()));
     assert_eq!(readiness.corrupt_feature_block_count, 1);
     assert!(
         readiness.feature_block_layout.corrupt_packed_feature_blocks[0]

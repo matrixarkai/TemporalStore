@@ -20,7 +20,7 @@
 //!   block_bytes                   2.00          2,115           1.000
 //!   dirty_objects                1.31            121           0.999
 //!   index_log_delta              1.26            372           1.013
-//!   carried_page                 1.06          1,065           1.000
+//!   carried_block                 1.06          1,065           1.000
 //!   log_record                   0.03          2,386           0.968
 //!   nine classes summed         54.42          9,172
 //!   SPAN TOTAL                  80.69         11,933           <- independent counter

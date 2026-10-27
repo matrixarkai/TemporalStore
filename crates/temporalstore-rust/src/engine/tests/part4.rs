@@ -702,7 +702,7 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
     assert_eq!(missing_preflight.missing_block_slab_ids, vec![999_999]);
     assert!(missing_preflight
         .blockers
-        .contains(&"missing_page_segments".to_string()));
+        .contains(&"missing_block_segments".to_string()));
     assert!(!engine.validate_bucket_dump_manifest(&missing).unwrap_err().ok);
 
     let mut incomplete = engine
@@ -715,7 +715,7 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
             .validate_bucket_dump_manifest(&incomplete)
             .unwrap_err()
             .code,
-        "slot_dump_page_segment_mismatch"
+        "slot_dump_block_segment_mismatch"
     );
 
     let corrupt = engine
@@ -740,7 +740,7 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
             .validate_bucket_dump_manifest(&corrupt)
             .unwrap_err()
             .code,
-        "slot_dump_unreadable_page_refs"
+        "slot_dump_unreadable_block_refs"
     );
 }
 
@@ -1406,7 +1406,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     assert!(!stale_preflight.install_safe, "{stale_preflight:?}");
     assert!(stale_preflight
         .blockers
-        .contains(&"stale_page_conflicts".to_string()));
+        .contains(&"stale_block_conflicts".to_string()));
     assert!(stale_preflight.stale_block_conflict_count > 0);
     assert_eq!(stale_preflight.stale_object_conflict_count, 0);
     assert!(!engine
@@ -2685,7 +2685,7 @@ fn storage_block_gc_blocks_all_retention_dependencies_before_reclaim() {
     assert_eq!(matrix.raft_snapshot_install_floor_block_count, 2);
     assert_eq!(matrix.delayed_destroy_grace_block_count, 1);
     for expected in [
-        "live_page_ref",
+        "live_block_ref",
         "slot_dump_manifest",
         "shared_store_replay_cursor",
         "raft_snapshot_ref",
@@ -2996,7 +2996,7 @@ fn bucket_dump_manifest_rejects_non_canonical_bucket_and_block_slab_ids() {
             .validate_bucket_dump_manifest(&duplicate_block_slab)
             .unwrap_err()
             .code,
-        "slot_dump_page_segment_ids_not_canonical"
+        "slot_dump_block_segment_ids_not_canonical"
     );
 }
 
@@ -3393,10 +3393,10 @@ fn storage_production_readiness_blocks_corrupt_live_block_slabs() {
     assert!(!report.production_ready, "{report:?}");
     assert!(report
         .blockers
-        .contains(&"corrupt_page_segments".to_string()));
+        .contains(&"corrupt_block_segments".to_string()));
     assert!(report
         .blockers
-        .contains(&"unreadable_live_page_refs".to_string()));
+        .contains(&"unreadable_live_block_refs".to_string()));
     assert!(report
         .blockers
         .contains(&"storage_segment_integrity_failed".to_string()));
@@ -10029,7 +10029,7 @@ fn every_maintenance_round_is_bounded_by_default() {
         ("max_expire_cold_buckets_per_round", request.max_expire_cold_buckets_per_round as u64),
         ("eviction_batch_limit", request.eviction_batch_limit as u64),
         (
-            "page_gc_min_band_garbage_basis_points",
+            "block_gc_min_band_garbage_basis_points",
             request.block_gc_min_slab_garbage_basis_points,
         ),
     ] {

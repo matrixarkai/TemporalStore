@@ -268,7 +268,7 @@ impl TemporalEngine {
     /// in `live_logical_bytes`, which the planner never reads.
     ///
     /// The fields that DO require the read -- `live_logical_bytes`, `readable_live_page_refs`,
-    /// `unreadable_live_page_refs` -- are left at zero here, so this is not a drop-in for the
+    /// `unreadable_live_block_refs` -- are left at zero here, so this is not a drop-in for the
     /// report: it is the planner's view, and `the_reclaim_planner_sees_the_same_candidates`
     /// pins it to the answer the report produced.
     pub(super) fn storage_reclaim_slab_reports(
@@ -1522,7 +1522,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         );
         if !ownership.mismatches.is_empty() {
             return Err(Status::error(
-                "page_compaction_owner_mismatch",
+                "block_compaction_owner_mismatch",
                 format!(
                     "refusing compaction because {} live page refs disagree with object/page/slot ownership",
                     ownership.mismatches.len()
@@ -1564,7 +1564,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 let roll = self
                     .block_store
                     .roll_slab()
-                    .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+                    .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
                 (roll.previous_block_slab_id, roll.new_block_slab_id)
             }
         };
@@ -1918,16 +1918,16 @@ fn expiry_scan_budget(limit: usize) -> usize {
             rebuild_bucket_block_ownership(shard_id, shard, start_routing_bucket, end_routing_bucket);
             self.block_store.sync_durable().map_err(|barrier| {
                 Status::error(
-                    "page_compaction_failed",
+                    "block_compaction_failed",
                     format!(
                         "durability barrier failed while committing a partial compaction: {barrier}"
                     ),
                 )
             })?;
             let partial_index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-                .map_err(|serialize| Status::error("page_compaction_failed", serialize.to_string()))?;
+                .map_err(|serialize| Status::error("block_compaction_failed", serialize.to_string()))?;
             self.persist_index_bytes(shard_id, &partial_index_bytes)
-                .map_err(|persist| Status::error("page_compaction_failed", persist.to_string()))?;
+                .map_err(|persist| Status::error("block_compaction_failed", persist.to_string()))?;
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             // Keep the round OPEN. A relocation that failed partway left work behind by
             // definition -- the pages it had not reached yet are still on their old slabs -- and
@@ -2008,7 +2008,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // syncs here; the success path must too. Unconditional, matching that path.
         self.block_store.sync_durable().map_err(|barrier| {
             Status::error(
-                "page_compaction_failed",
+                "block_compaction_failed",
                 format!(
                     "durability barrier failed before publishing the compacted base index: {barrier}"
                 ),
@@ -2038,13 +2038,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // thread can observe the vacated volatile index until the durable one names the new
         // slab. The cost is real and measured; it buys the invariant.
         let index_bytes = Ok::<_, serde_json::Error>(super::serialize_index_stamped(shard))
-            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
         // The PUBLISH, not just the encode, is what has to happen inside the region. See
         // `FLUSH_PUBLISHED_UNDER_GUARD`.
         #[cfg(test)]
         note_compaction_flush_publish();
         self.persist_index_bytes(shard_id, &index_bytes)
-            .map_err(|err| Status::error("page_compaction_failed", err.to_string()))?;
+            .map_err(|err| Status::error("block_compaction_failed", err.to_string()))?;
         let _ = self.index_log_store.append_index_bytes(shard_id, &index_bytes);
         let rewritten_object_blocks = rewrite_stats.rewritten_block_refs;
         let bucket_layout_transition_count =

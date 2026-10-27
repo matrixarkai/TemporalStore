@@ -636,7 +636,7 @@ fn run_gradual_async_warmup_with_serving(
     let reports = handle.join().expect("async warmup thread should complete");
     let latency_us = start.elapsed().as_micros();
     let async_warmup = AsyncWarmupProbe {
-        name: "gradual_async_page_index_warmup".to_string(),
+        name: "gradual_async_block_index_warmup".to_string(),
         batches: reports.len(),
         batch_size,
         latency_us,

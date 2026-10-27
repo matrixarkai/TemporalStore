@@ -831,7 +831,7 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     let (bare_allocs, bare_bytes) = measure(None);
     let (named_allocs, named_bytes) = measure(Some("f7"));
 
-    println!("\n=== carried_page allocations for {BLOCKS} staged pages ===");
+    println!("\n=== carried_block allocations for {BLOCKS} staged pages ===");
     println!("  element          allocs   bytes   allocs/page   B/page");
     for (label, allocs, bytes) in [
         ("CONTROL: none", bare_allocs, bare_bytes),

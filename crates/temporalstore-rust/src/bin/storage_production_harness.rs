@@ -70,7 +70,7 @@ struct StorageProductionCaseSummary {
     fault_matrix_ready: bool,
     fault_matrix_passed_count: usize,
     fault_matrix_scenario_count: usize,
-    #[serde(rename = "cache_warmup_page_refs")]
+    #[serde(rename = "cache_warmup_block_refs")]
     cache_warmup_block_refs: usize,
     cache_warmup_block_store_reads: usize,
     cache_warmup_failed_block_refs: usize,
