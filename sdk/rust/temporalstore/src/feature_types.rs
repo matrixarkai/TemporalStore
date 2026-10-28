@@ -42,6 +42,9 @@ pub struct FeaturePoint {
 #[derive(Clone, Copy, Debug)]
 #[cfg_attr(feature = "proxy", derive(serde::Serialize, serde::Deserialize))]
 pub struct SequenceFeatureRow {
+    // The engine's row names this `timestamp_ms` and requires it. The Rust name stays as it was
+    // so callers do not change; only the wire name is corrected.
+    #[cfg_attr(feature = "proxy", serde(rename = "timestamp_ms"))]
     pub timestamp: u64,
     pub gid: u64,
     pub action_type: u32,
