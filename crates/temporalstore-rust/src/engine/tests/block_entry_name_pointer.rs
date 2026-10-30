@@ -84,7 +84,7 @@
 //! WHAT THIS MODULE DECIDES, as six verdicts, because four of them are DEPENDENT and reporting them
 //! as parallel options would overstate every one.
 //!
-//! AND IT IS THE STRIDE THAT IS REPORTED, NOT THE STRUCT. `state.rs` asserts that `BlockIndexMap`
+//! AND IT IS THE STRIDE THAT IS REPORTED, NOT THE STRUCT. `engine_storage_state.rs` asserts that `BlockIndexMap`
 //! IS its list -- `size_of::<BlockIndexMap>() == size_of::<Vec<(u64, BlockIndex)>>()` -- so what a
 //! page costs in memory is `size_of::<(u64, BlockIndex)>()`, and that re-aligns to eight whatever
 //! the entry's own alignment is. Measuring the struct instead of the stride is exactly how a step

@@ -81,16 +81,16 @@
 //!                                                                    `object.deleted |= page.deleted` let ONE removed member
 //!                                                                    report its whole object deleted.
 //!                                                                    a_removed_member_does_not_make_its_object_deleted
-//! 16  state.rs:3356 rebuild_object_block_lookup             CORRECT  delegates to insert_object_block_lookup, which returns
+//! 16  engine_storage_state.rs:3356 rebuild_object_block_lookup             CORRECT  delegates to insert_object_block_lookup, which returns
 //!                                                                    early on a deleted page -- so tombstones stay OUT of the
 //!                                                                    fast lookup, which is what keeps index answers unchanged
-//! 17  state.rs:3525 contains_object_block_address           CORRECT  `!page.deleted`
-//! 18  state.rs:3564 next_block_index_for_object             CORRECT AS-IS, and this one is a judgement. It has no filter and
+//! 17  engine_storage_state.rs:3525 contains_object_block_address           CORRECT  `!page.deleted`
+//! 18  engine_storage_state.rs:3564 next_block_index_for_object             CORRECT AS-IS, and this one is a judgement. It has no filter and
 //!                                                                    needs none: its thirteen call sites are all `feature` and
 //!                                                                    `context_*`, the timestamped kinds, which have no
 //!                                                                    tombstones. Two high-water derivations over DISJOINT kind
 //!                                                                    sets, so filtering one was the right half to filter.
-//! 19  state.rs:3638 container_block_ordinal                  WRONG, FIXED HERE. No filter, so a tombstone stopped `max` from
+//! 19  engine_storage_state.rs:3638 container_block_ordinal                  WRONG, FIXED HERE. No filter, so a tombstone stopped `max` from
 //!                                                                    falling: the ordinal would climb once per element ever
 //!                                                                    written and a churning container would walk to
 //!                                                                    MAX_ADDRESSABLE_BLOCK_ID and fall off the ceiling

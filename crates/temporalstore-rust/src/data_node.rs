@@ -2984,4 +2984,5 @@ pub fn validate_multi_process_lifecycle_reports(
 }
 
 #[cfg(test)]
+#[path = "data_node/data_node_regression_tests.rs"]
 mod tests;

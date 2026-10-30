@@ -5,7 +5,7 @@
 //!
 //! `ShardState` declares twelve resident address maps. Eleven of them are `HashMap<String, _>`
 //! whose value is either a bare `BlockAddress` or an ORDERED inner map; ONE -- `hashes`, at
-//! `state.rs:123` -- is `HashMap<String, HashMap<String, BlockAddress>>`, the only nested hashed
+//! `engine_storage_state.rs:123` -- is `HashMap<String, HashMap<String, BlockAddress>>`, the only nested hashed
 //! container in the structure. `the_hash_inner_map_is_the_only_hashed_model_map` asserts that from
 //! the declaration text itself rather than from a list written here, because a hand-written
 //! subject list goes stale and nothing fails.
@@ -19,7 +19,7 @@
 //!
 //!   2. THE OUTER MAPS, all five keyed by object key. Measured here and NOT changed: the outer
 //!      map is on a read path (`Command::StringGet` resolves straight through `shard.strings`, as
-//!      the `BucketNode` doc note in `state.rs` says in as many words), and a flat vector is only
+//!      the `BucketNode` doc note in `engine_storage_state.rs` says in as many words), and a flat vector is only
 //!      viable at BUCKET granularity, which is a move into the bucket node and not a container
 //!      swap.
 //!
@@ -79,7 +79,7 @@ use crate::alloc_probe::Probe;
 
 /// The declaration text this module reasons about, read at COMPILE TIME from the file that owns
 /// it. A copy of the declarations written out here would go stale the moment one moved.
-const STATE_DECLARATIONS: &str = include_str!("../state.rs");
+const STATE_DECLARATIONS: &str = include_str!("../engine_storage_state.rs");
 
 /// The narrow end bucket `docs/runtime_tuning.md` tells an operator to set, and the shipped
 /// default since #1973.
@@ -111,7 +111,7 @@ const INSTANCES: usize = 2_000;
 /// not deleted with the subject: zero nested hashed maps, `hashes` carrying the named container, and
 /// the ordered floor kept so the count cannot quietly go to zero on both sides at once and agree.
 ///
-/// Derived from the authority -- the `state.rs` source -- rather than from a list of names typed
+/// Derived from the authority -- the `engine_storage_state.rs` source -- rather than from a list of names typed
 /// here, which is the shape that goes stale while every assertion still passes.
 ///
 /// rust-internal: reads this crate's own declaration text, no product behaviour
@@ -124,8 +124,8 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
         .collect();
     // THE ORDERED MAPS, WHEREVER THEY NOW LIVE -- which after the container work is two places.
     //
-    // This counted `state.rs` alone and the floor below was seventeen. `sets` has since moved its
-    // declaration INTO `RecordedSetContainer`, so a `state.rs`-only scan reported sixteen and the
+    // This counted `engine_storage_state.rs` alone and the floor below was seventeen. `sets` has since moved its
+    // declaration INTO `RecordedSetContainer`, so a `engine_storage_state.rs`-only scan reported sixteen and the
     // floor fired. That is the floor doing its job: it exists so the hashed count above cannot
     // reach zero by declarations VANISHING. The right answer is therefore to follow the
     // declaration, not to lower the number -- lowering it would have retired the only thing
@@ -145,11 +145,11 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
         })
         .map(|line| line.trim())
         .collect();
-    // AND THE CONTAINER SIDE MUST ACTUALLY CONTRIBUTE, or this is a `state.rs` scan wearing a
+    // AND THE CONTAINER SIDE MUST ACTUALLY CONTRIBUTE, or this is a `engine_storage_state.rs` scan wearing a
     // wider name and the floor would start drifting down again silently.
     assert!(
         container_declarations.contains("entries: HashMap<String, K::Elements>"),
-        "the set container's inner declaration is not findable, so the ordered count below is          really a `state.rs`-only count and its floor no longer means what it says"
+        "the set container's inner declaration is not findable, so the ordered count below is          really a `engine_storage_state.rs`-only count and its floor no longer means what it says"
     );
 
     println!("--- nested HASHED model maps ({}) ---", nested_hashed.len());

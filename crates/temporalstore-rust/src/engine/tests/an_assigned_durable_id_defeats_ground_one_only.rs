@@ -146,7 +146,7 @@
 //! above applies again: the bucket a dirty object is FILED under is not guaranteed to be the
 //! bucket HOLDING its pages. It needs its own fail-first test with a control that can refuse.
 //! The other reader in that function, the TTL minimum over `expires_at_ms`, has no bucket-keyed
-//! counterpart at all -- that map is `BTreeMap<String, u64>` at `state.rs:129`, keyed by the
+//! counterpart at all -- that map is `BTreeMap<String, u64>` at `engine_storage_state.rs:129`, keyed by the
 //! characters.
 
 use std::mem::{align_of, size_of};
@@ -186,7 +186,7 @@ const _: fn(&str, u32, u32) -> u32 = crate::engine::hashing::block_routing_bucke
 /// THIS IS THE THIRD RECORDED INSTANCE OF THAT SHAPE AND THE SECOND STILL LIVE.
 /// `entry_width_at_each_step`'s module doc records it for its own step-zero mirror and answers it
 /// with field OFFSET pins, saying in as many words that its width controls "discriminate at WORD
-/// granularity and no finer". `state.rs`'s address-word probe records it for itself. This file
+/// granularity and no finer". `engine_storage_state.rs`'s address-word probe records it for itself. This file
 /// read both notes and carried the defect anyway, because nothing here reads an offset.
 ///
 /// SO THE ARITHMETIC IN THIS PARAGRAPH WAS WRONG TOO, and it is the half a width cannot check. It
@@ -194,7 +194,7 @@ const _: fn(&str, u32, u32) -> u32 = crate::engine::hashing::block_routing_bucke
 /// field, and thirty-two is a multiple of the alignment, so it lands there exactly". With the two
 /// retired terms gone it is eight plus one plus sixteen plus one plus one: TWENTY-SEVEN bytes of
 /// field in thirty-two, with five of slack. It lands at thirty-two by ROUNDING, not exactly --
-/// which is the same correction `state.rs`'s probe took for the same reason.
+/// which is the same correction `engine_storage_state.rs`'s probe took for the same reason.
 ///
 /// THE VERDICT IS UNCHANGED AND THAT IS NOT LUCK: thirty-two is still not twenty-four, so the
 /// proposal still reaches twenty-four only in the form where the id is the KEY OF THE HOLDING MAP
@@ -278,7 +278,7 @@ const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == 24);
 ///
 /// THE MIRROR IS KEPT RATHER THAN FOLDED, AND ONLY BECAUSE THIS EQUALITY IS WRITTEN. Two
 /// declarations of one shape are two things to keep in step -- `entry_width_at_each_step` folded
-/// its step-one mirror away for exactly that reason, and `state.rs` has folded two probes. What
+/// its step-one mirror away for exactly that reason, and `engine_storage_state.rs` has folded two probes. What
 /// keeps this one honest is that its collapse into the live type is a CHECKED claim: if either
 /// shape moves, this line fails rather than the two quietly drifting apart.
 const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == size_of::<BlockIndex>());
@@ -371,8 +371,8 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
 // to start paying. It does not have to. The model maps own the characters today, unconditionally,
 // because that is how a record is addressed:
 //
-//   * `ShardState::strings` is `HashMap<ModelKey, ElementEntry>` at `state.rs:150`, and
-//     `ModelKey` is `Box<str>` at `state.rs:73` -- the characters, OWNED, one per object.
+//   * `ShardState::strings` is `HashMap<ModelKey, ElementEntry>` at `engine_storage_state.rs:150`, and
+//     `ModelKey` is `Box<str>` at `engine_storage_state.rs:73` -- the characters, OWNED, one per object.
 //   * `RecordedMap` holds `HashMap<String, K::Elements>` at `recorded_map.rs:152`, which is the
 //     same thing for the four recorded kinds.
 //
@@ -472,7 +472,7 @@ const _: () = assert!(size_of::<Arc<str>>() == 16);
 //   * `storage_reporting.rs:347` sets a report flag bit; `:368` packs it into a report blob;
 //     `:473` copies it into a report struct.
 //   * `bucket_store.rs:101` counts it into `ttl_bucket_count`; `:134` sets a report field.
-//   * `state.rs:3951` serializes it, and `ttl_ms` is in `BUCKET_NODE_FIELDS` at `state.rs:4008`.
+//   * `engine_storage_state.rs:3951` serializes it, and `ttl_ms` is in `BUCKET_NODE_FIELDS` at `engine_storage_state.rs:4008`.
 //   * It is CONSTRUCTED in only one place: `storage_bucket_internals.rs:5375` and `:5378`, which
 //     is the function above.
 //
@@ -500,7 +500,7 @@ const _: () = assert!(size_of::<Arc<str>>() == 16);
 // that decides where a page lives -- is sound with a CONSERVATIVE minimum precisely because the
 // consumer is a report, so it never has to search for the next minimum on a removal. It would cost
 // about twelve bytes a bucket against a removal saving sixteen bytes a page at the in-tree p50 of
-// thirty-nine pages a bucket (`state.rs:1414`), so roughly two per cent of the saving. Cheap, and
+// thirty-nine pages a bucket (`engine_storage_state.rs:1414`), so roughly two per cent of the saving. Cheap, and
 // unnecessary if the term is simply dropped.
 // =================================================================================================
 

@@ -1688,7 +1688,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
 /// entry is 40 bytes, not the 56 this arithmetic is written against; re-derive the field sum before
 /// trusting the two numbers above."
 ///
-/// THE SUM IS READ OFF THE TYPES RATHER THAN WRITTEN DOWN, which is the same correction `state.rs`
+/// THE SUM IS READ OFF THE TYPES RATHER THAN WRITTEN DOWN, which is the same correction `engine_storage_state.rs`
 /// already made to its own const assert. That keeps the pair non-circular: the const assert beside
 /// the struct proves the SUM is 40 and the TYPE is 40, neither inferred from the other; this arm
 /// proves what an ADDED field does to that.
@@ -1804,7 +1804,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // the durable model maps are the sole source for an element's identity. A reader who comes
     // here for the width argument should find it withdrawn rather than quietly re-numbered.
     //
-    // AND IT RE-PRICES EVERY "THE NEXT FIELD COSTS A WORD" CLAIM IN THE TREE. `state.rs`'s own
+    // AND IT RE-PRICES EVERY "THE NEXT FIELD COSTS A WORD" CLAIM IN THE TREE. `engine_storage_state.rs`'s own
     // prose now says a field up to five bytes wide is free here; this is that statement measured.
     //
     // AND THE TWO WIDTHS DIVERGE FOR THE FIRST TIME, WHICH NO EARLIER READING OF THIS ARM COULD
@@ -1841,12 +1841,12 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 
     // And the state of the tree at that ceiling, so this module does not imply it is safe.
     let state = std::fs::read_to_string(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine/state.rs"),
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine/engine_storage_state.rs"),
     )
-    .expect("state.rs is readable");
+    .expect("engine_storage_state.rs is readable");
     assert!(
         state.len() > 100_000,
-        "DENOMINATOR: read {} bytes of state.rs",
+        "DENOMINATOR: read {} bytes of engine_storage_state.rs",
         state.len()
     );
     assert!(
@@ -2354,7 +2354,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///
 /// A zset component is score-bits-then-member and a list component is a `i64::MIN`-biased sequence,
 /// both so that LEXICAL order is the element's order. `execute_on_shard.rs` says the bias is "what
-/// lets recovery and range reads walk the bucket index directly", and `state.rs` says "the index
+/// lets recovery and range reads walk the bucket index directly", and `engine_storage_state.rs` says "the index
 /// component already encodes score-then-member, so recovery has the order for free". An ordinal that
 /// did not preserve that ordering would force those readers to sort -- which would be the refutation,
 /// and it is the reason this arm exists.
@@ -2371,7 +2371,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///     sole source. The order is still re-established by the map rather than inherited from a walk,
 ///     and now it could not be inherited from one even if a reader wanted to.
 ///   * **RANGE READS USE THE DURABLE MAPS.** `zset_members_in_score_range` and `zset_ordered_members`
-///     read `shard.zsets`, which is keyed by MEMBER and not by score -- `state.rs` says so directly:
+///     read `shard.zsets`, which is keyed by MEMBER and not by score -- `engine_storage_state.rs` says so directly:
 ///     "is derived per query -- V1 accepts the per-range sort". `ListRange` reads `shard.lists`, keyed
 ///     by the `i64` itself. Neither touches a component.
 ///   * **THE THREE READERS THAT DO SORT BY COMPONENT NEED ONLY A TOTAL ORDER.**
@@ -2766,7 +2766,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///
 /// AND THE QUESTION IT WAS PRICING DOES NOT ARISE. The experiment asked whether NARROWING the name
 /// from sixteen bytes to two was safe, and answered no. The name was not narrowed, it was removed:
-/// `state.rs` pins the entry at 40 bytes against the 56 it was, so all sixteen bytes a page came
+/// `engine_storage_state.rs` pins the entry at 40 bytes against the 56 it was, so all sixteen bytes a page came
 /// back and there is no two-byte residue whose safety has to be argued.
 ///
 /// WHAT THE ARM STILL ASSERTS, UNCHANGED: the dropped member does not come back and the untouched
@@ -2954,7 +2954,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         // AND THE PROPOSAL IT REFUSED IS SUPERSEDED RATHER THAN STILL PENDING. The experiment was
         // pricing a NARROWING -- sixteen bytes of name down to two -- and asking whether it was
         // safe. The name was not narrowed, it was REMOVED -- and the identity went the same way
-        // one leg later: `state.rs` pins the entry at 24 bytes against the 56 it was, so all
+        // one leg later: `engine_storage_state.rs` pins the entry at 24 bytes against the 56 it was, so all
         // sixteen of the name's bytes and all sixteen of the key's came back, and the question of
         // whether two of them could be kept safely does not arise.
         //

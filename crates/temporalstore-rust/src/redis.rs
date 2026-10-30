@@ -15,6 +15,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 mod protocol;
 mod server;
+#[path = "redis/redis_command_state.rs"]
 mod state;
 mod keyspace_commands;
 mod string_commands;

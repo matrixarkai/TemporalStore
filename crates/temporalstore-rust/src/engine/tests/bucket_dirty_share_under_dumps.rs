@@ -42,7 +42,7 @@
 //! free: a single minimum gives the reclaim FLOOR correctly -- that floor is the minimum of these
 //! claims either way -- but it cannot give the dump ORDER, and `first_dirty_rank` is a sort key over
 //! N buckets. `part4::dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id`
-//! is the guard that fails if the order is lost, and `state.rs` states the trade in the field's own
+//! is the guard that fails if the order is lost, and `engine_storage_state.rs` states the trade in the field's own
 //! doc. The arm is priced because it was asked for; it is not recommended by this module.
 //!
 //! AND ONE CORRECTION TO THE TARGET, because it changes 24 bytes into 16. `dirty_generation` cannot

@@ -118,7 +118,7 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
     // nothing it observes could disagree, which is the definition of the vacuity this campaign
     // keeps deleting rather than leaving as apparent coverage.
     //
-    // WHAT ENFORCES THE CLAIM INSTEAD, so it is not merely dropped: `state.rs` pins
+    // WHAT ENFORCES THE CLAIM INSTEAD, so it is not merely dropped: `engine_storage_state.rs` pins
     // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` beside it AND asserts the field sum
     // equals the width -- zero slack. Re-adding a name to the entry costs eight bytes at minimum
     // and sixteen for an `Option<Arc<str>>`, so it fails const-evaluation at the pin rather than

@@ -374,7 +374,7 @@ impl TemporalEngine {
         //
         // THE DEBUG CROSS-CHECK THAT STOOD HERE IS SPENT WITH ITS SCAFFOLD. It compared the
         // object lookup against the pages' OWN copies of the identity, and the pages have none;
-        // `state.rs` carries why a version of it over one source would compare that source with
+        // `engine_storage_state.rs` carries why a version of it over one source would compare that source with
         // itself. What licensed removing the whole-shard rebuild from this path is that every
         // producer files as it places and un-files as it drops, and that obligation sits at the
         // producers rather than in a pass after them.
@@ -528,7 +528,7 @@ impl TemporalEngine {
             // names a page that has gone or a page has no position. A whole-shard rebuild stood
             // here to close that window and is no longer closing anything.
             //
-            // AND THE DEBUG CROSS-CHECK IS SPENT TOO, for the reason `state.rs` records: it read
+            // AND THE DEBUG CROSS-CHECK IS SPENT TOO, for the reason `engine_storage_state.rs` records: it read
             // the pages' own copies of the identity, which are gone.
             // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
             // reads the object lookup while this loop holds the bucket map mutably, and both are fields of

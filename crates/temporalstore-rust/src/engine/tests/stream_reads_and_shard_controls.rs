@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Part 3 of engine tests, split from engine/tests.rs.
+//! Part 3 of engine tests, split from engine/engine_regression_tests.rs.
 #![allow(clippy::all)]
 use super::*;
 

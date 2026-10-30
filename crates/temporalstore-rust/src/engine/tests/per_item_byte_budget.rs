@@ -337,7 +337,7 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     //
     // 14 IS JUSTIFIED AND NOT MERELY MEASURED. The distinction this guard protects is between a
     // structure that stopped being watched and one that no longer EXISTS to watch, and only the
-    // first is a defect. All three of the removed rows are gone from `state.rs` entirely -- an
+    // first is a defect. All three of the removed rows are gone from `engine_storage_state.rs` entirely -- an
     // object maps straight to its `BlockRefs`, which keeps its own row above -- so there is
     // nothing left for them to be watched for.
     assert_eq!(
@@ -677,7 +677,7 @@ fn only_the_structures_that_hold_an_address_moved() {
         // making the arm green. The group is refilled instead.
         //
         // Each of these holds no `ElementEntry` inline, so each predicts NO movement, and each has
-        // its own `const _: () = assert!(size_of::<T>() == N)` beside its declaration in `state.rs`
+        // its own `const _: () = assert!(size_of::<T>() == N)` beside its declaration in `engine_storage_state.rs`
         // -- so the literal in the `before` column here is cross-checked by the build rather than
         // being a second, driftable copy of the width.
         ("ModelKey", size_of::<ModelKey>(), 16, 0),

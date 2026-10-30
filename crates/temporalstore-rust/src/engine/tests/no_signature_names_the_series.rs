@@ -82,7 +82,7 @@ const ALLOWED: &[(&str, &str, &str)] = &[
     // #2172 can find and delete them instead of inheriting them as policy.
     // ---------------------------------------------------------------------------------------------
     (
-        "state.rs",
+        "engine_storage_state.rs",
         "set_context_event_series",
         "A DOOR ONTO THE STORED SHAPE. It takes the `BTreeMap` because its callers have one -- the\
          key-state fold deserializes the stored form, which is still a B-tree -- and converts into\
