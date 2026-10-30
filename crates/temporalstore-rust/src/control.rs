@@ -957,7 +957,7 @@ pub enum StreamKind {
 pub struct StreamReadRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub size: u64,
@@ -973,7 +973,7 @@ pub struct StreamReadResponse {
 pub struct ScanStreamRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub start_offset: u64,
     pub end_offset: u64,

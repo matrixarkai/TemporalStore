@@ -1026,7 +1026,7 @@ pub struct BlockStoreSlabLive {
 /// points at. Across the whole store it is not, and this is where that shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLiveFraction {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     /// Total logical bytes ever appended to this slab. Only ever grows, which is correct FOR A
@@ -1043,7 +1043,7 @@ pub struct BlockStoreSlabLiveFraction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcUtilityCandidate {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub bytes: u64,
     #[serde(default)]
@@ -1177,7 +1177,7 @@ pub struct BlockStoreGcPolicyPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreDelayedDestroySlabReport {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1350,7 +1350,7 @@ pub struct BlockStoreSlabDescriptor {
     /// ever do.
     #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub state: BlockStoreSlabState,
     pub physical_bytes: u64,
@@ -1359,9 +1359,9 @@ pub struct BlockStoreSlabDescriptor {
     pub created_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
@@ -1457,7 +1457,7 @@ pub struct BlockStoreSlabSummary {
 pub struct BlockStoreSlabUsage {
     #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     #[serde(alias = "storage_zone_id", default)]
     pub storage_slab_id: u64,
@@ -1481,9 +1481,9 @@ pub struct BlockStoreSlabUsage {
     pub reclaimable_block_store_used_bytes: u64,
     #[serde(alias = "purged_page_store_used_bytes")]
     pub purged_block_store_used_bytes: u64,
-    #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
 }
 
@@ -1517,9 +1517,9 @@ pub struct StreamBackedSlabRuntimeReport {
     pub logical_bytes: u64,
     #[serde(default)]
     pub stream_record_count: u64,
-    #[serde(rename = "first_page_id", default)]
+    #[serde(rename = "first_page_id", alias = "first_block_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", default)]
+    #[serde(rename = "last_page_id", alias = "last_block_id", default)]
     pub last_block_id: Option<u64>,
     #[serde(alias = "page_id_continuity_ready", default)]
     pub block_id_continuity_ready: bool,
@@ -1570,7 +1570,7 @@ pub struct StreamBackedSlabRuntimeReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabReport {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -1595,9 +1595,9 @@ pub struct BlockStoreSlabReport {
     #[serde(alias = "routing_slot_count")]
     pub routing_bucket_count: u64,
     pub compressed_records: u64,
-    #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     /// ALWAYS `None` TODAY -- see `routing_bucket_count`. With
     /// `skip_serializing_if = "Option::is_none"` this means the field is absent from the
@@ -4156,6 +4156,211 @@ const RETIRED_NAMES: &[&str] = &[
              client that was told the name was gone now sees it again; decide that on purpose\n\
              and move the name back into DURABLE_NAMES in the same change."
         );
+    }
+
+    /// THE SLAB IDENTITY READER TAKES BOTH SPELLINGS, PROVED AGAINST BYTES AND NOT A ROUND TRIP.
+    ///
+    /// `BlockStoreSlabDescriptor` is the on-disk slab manifest. Three of its keys are still
+    /// page-spelled on the wire while the fields they land in are block-spelled: `page_segment_id`,
+    /// `first_page_id` and `last_page_id`. Converging any of them is a STORED-FORMAT change, so the
+    /// reader has to land first -- and "reader first" buys nothing if the reader is single-form,
+    /// which all three WERE. `serde(rename)` REPLACES the accepted name rather than adding to it,
+    /// so a manifest spelling `first_block_id` was dropped by a named map IN SILENCE and the field
+    /// defaulted to `None`. Not an error. A writer flipped to the block spelling would have written
+    /// a manifest this very binary read as a slab with no first or last block.
+    ///
+    /// So the accepted SET is what is asserted, in both directions, against bytes nobody can edit
+    /// into agreement:
+    ///
+    ///   * the frozen page-spelled document below -- the shape every build through
+    ///     `SHARD_INDEX_FORMAT_VERSION` 27 emits -- still loads with all three values POPULATED.
+    ///   * the same document with those three keys rewritten to the block spelling loads to an
+    ///     EQUAL descriptor, which is what would make flipping the writer safe rather than hopeful.
+    ///
+    /// A round trip could establish neither: it writes and reads with the same build, so both
+    /// halves move together and agree. Populated-ness is asserted SEPARATELY from equality,
+    /// because `Option` defaulting is exactly what the silent drop looks like and two `None`s
+    /// compare equal -- an equality check alone is how this bug would pass.
+    ///
+    /// This widens the reader ONLY. Nothing here moves a byte any writer emits, and no stamp is
+    /// owed: `a_durable_name_is_never_quietly_dropped` above still finds all three page spellings,
+    /// because they are still what is written.
+    #[test]
+    fn the_slab_descriptor_reader_takes_the_block_spelling_and_the_page_spelling() {
+        // Frozen, page-spelled, and NOT regenerated: this records the shape an older build wrote.
+        // `state` is `rename_all = "snake_case"`, hence the lowercase variant.
+        const SLAB_DESCRIPTOR_AT_STAMP_27: &str = r#"{"band_id":4,"page_segment_id":7,"state":"sealed","physical_bytes":8192,"logical_bytes":4096,"first_page_id":11,"last_page_id":29}"#;
+
+        const STORED_KEYS: [&str; 3] = [
+            r#""page_segment_id":"#,
+            r#""first_page_id":"#,
+            r#""last_page_id":"#,
+        ];
+
+        // The fixture really is the old shape. Without this pair the arms below vary nothing: a
+        // fixture quietly updated to the new spelling would make every assertion that follows
+        // pass while proving the opposite of what it claims.
+        for old in STORED_KEYS {
+            assert!(
+                SLAB_DESCRIPTOR_AT_STAMP_27.contains(old),
+                "the frozen bytes no longer spell {old}, so this guard is not testing the stored \
+                 shape any more"
+            );
+        }
+        for new in ["block_segment_id", "first_block_id", "last_block_id"] {
+            assert!(
+                !SLAB_DESCRIPTOR_AT_STAMP_27.contains(new),
+                "the frozen bytes already carry {new}, so they are not a pre-change document"
+            );
+        }
+
+        let stored: BlockStoreSlabDescriptor = serde_json::from_str(SLAB_DESCRIPTOR_AT_STAMP_27)
+            .expect("the frozen page-spelled slab manifest must still load");
+        assert_eq!(
+            stored.block_slab_id, 7,
+            "[CLAUSE stored-slab-id] the slab identity did not come off the stored key"
+        );
+        assert_eq!(
+            stored.first_block_id,
+            Some(11),
+            "[CLAUSE stored-first] the stored `first_page_id` did not reach `first_block_id`"
+        );
+        assert_eq!(
+            stored.last_block_id,
+            Some(29),
+            "[CLAUSE stored-last] the stored `last_page_id` did not reach `last_block_id`"
+        );
+
+        // The block spelling in a document otherwise identical: built by rewriting the KEYS in the
+        // frozen bytes, so the two arms differ in exactly three tokens and nothing else.
+        let as_block = SLAB_DESCRIPTOR_AT_STAMP_27
+            .replace(r#""page_segment_id":"#, r#""block_segment_id":"#)
+            .replace(r#""first_page_id":"#, r#""first_block_id":"#)
+            .replace(r#""last_page_id":"#, r#""last_block_id":"#);
+        for old in STORED_KEYS {
+            assert!(
+                !as_block.contains(old),
+                "the rewrite left {old} behind, so this arm is still testing the old spelling"
+            );
+        }
+
+        let canonical: BlockStoreSlabDescriptor = serde_json::from_str(&as_block).expect(
+            "a slab manifest spelling the block names must load, or the writer can never converge",
+        );
+
+        // POPULATED, clause by clause, and asserted BEFORE equality. A named map drops an
+        // undeclared key in silence and leaves every other value intact, so "it loaded" is not the
+        // property being established -- "it loaded CARRYING the identity" is.
+        assert_eq!(
+            canonical.block_slab_id, 7,
+            "[CLAUSE block-slab-id] the block-spelled slab identity did not land"
+        );
+        assert!(
+            canonical.first_block_id.is_some(),
+            "[CLAUSE first-block-id] `first_block_id` came back None from a document that spells \
+             it. This is the silent drop, not an error: the key was not in the accepted set"
+        );
+        assert!(
+            canonical.last_block_id.is_some(),
+            "[CLAUSE last-block-id] `last_block_id` came back None from a document that spells \
+             it. This is the silent drop, not an error: the key was not in the accepted set"
+        );
+        assert_eq!(
+            stored, canonical,
+            "[CLAUSE whole-descriptor] the two spellings decoded to different descriptors, so the \
+             reader took one of the forms rather than the set"
+        );
+        println!(
+            "  page-spelled -> slab {} first {:?} last {:?}; block-spelled -> slab {} first {:?} last {:?}",
+            stored.block_slab_id,
+            stored.first_block_id,
+            stored.last_block_id,
+            canonical.block_slab_id,
+            canonical.first_block_id,
+            canonical.last_block_id
+        );
+    }
+
+    /// EVERY SITE, NOT JUST THE ONE WITH A FIXTURE.
+    ///
+    /// The guard above proves the accepted set on `BlockStoreSlabDescriptor`, the one struct
+    /// carrying all three stored keys. Sixteen other fields emit `page_segment_id` and five more
+    /// each emit `first_page_id` and `last_page_id`, and a fixture for every one of them would be
+    /// twenty-nine fixtures proving one property. This pins the property at the SITE instead: a
+    /// field that emits one of these three stored names must also ACCEPT its block spelling, so a
+    /// new site added without the alias fails here rather than shipping a single-form reader.
+    ///
+    /// Counted off the source text and asserted as an EQUALITY, not a floor -- a floor passes when
+    /// a site is added without its alias, which is the whole failure this exists to catch. The
+    /// emitting counts are also asserted non-zero: a walk that found nothing would satisfy an
+    /// equality of two zeroes.
+    ///
+    /// `crates/temporalstore-snapshot` is walked too. It is OUTSIDE
+    /// `a_durable_name_is_never_quietly_dropped`'s walk, which reads only this crate's `src`, and
+    /// `snapshot_manifest_types.rs` emits `page_segment_id` on the snapshot manifest -- a durable
+    /// name no registry in this repository covers.
+    #[test]
+    fn every_field_emitting_a_stored_page_name_also_accepts_the_block_name() {
+        let crates_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate directory has a parent")
+            .to_path_buf();
+        let mut sources = String::new();
+        let mut files_read = 0_usize;
+        let mut pending = vec![crates_root];
+        while let Some(path) = pending.pop() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    if entry_path.file_name().and_then(|n| n.to_str()) == Some("target") {
+                        continue;
+                    }
+                    pending.push(entry_path);
+                } else if entry_path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    if let Ok(text) = std::fs::read_to_string(&entry_path) {
+                        files_read += 1;
+                        sources.push_str(&text);
+                        sources.push('\n');
+                    }
+                }
+            }
+        }
+        assert!(
+            sources.len() > 100_000,
+            "the source walk found almost nothing ({} bytes over {files_read} files); every count \
+             below would be zero and the equalities would hold vacuously",
+            sources.len()
+        );
+
+        for (stored, accepted) in [
+            ("page_segment_id", "block_segment_id"),
+            ("first_page_id", "first_block_id"),
+            ("last_page_id", "last_block_id"),
+        ] {
+            let emits = format!("rename = {:?}", stored);
+            let accepts = format!("rename = {:?}, alias = {:?}", stored, accepted);
+            let emitting = sources.matches(&emits).count();
+            let paired = sources.matches(&accepts).count();
+            assert!(
+                emitting > 0,
+                "no field emits the stored name `{stored}` any more. If the writer moved, that is \
+                 a format change this guard is not the place to approve; if the name is genuinely \
+                 gone, remove it from this list in the same change"
+            );
+            assert_eq!(
+                emitting, paired,
+                "{} of {emitting} field(s) emitting the stored name `{stored}` do not also accept \
+                 `{accepted}`.\n\
+                 `serde(rename)` REPLACES the accepted name, it does not add to it, so such a \
+                 field reads a document spelling `{accepted}` as an ABSENT key -- silently, with \
+                 every other value intact.",
+                emitting - paired
+            );
+            println!("  {stored} -> emitted at {emitting} site(s), all accepting {accepted}");
+        }
     }
 
     #[test]
