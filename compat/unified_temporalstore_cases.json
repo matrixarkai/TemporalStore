@@ -2708,7 +2708,7 @@
             "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/Risk page-backed layouts, and slot layout transition evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "rust_runner": "cargo test -p temporalstore-rust page_compaction_reports_model_layouts_tombstones_object_pages_and_density --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust block_compaction_reports_model_layouts_delete_markers_object_blocks_and_density --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "native_storage_parity"
           },
@@ -4036,7 +4036,7 @@
             "required_paths": [
               "docs/rust_vs_temporalstore_parity_report.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_pages_and_filters --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_blocks_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "native_context_pipeline_parity"
           },
@@ -5490,7 +5490,7 @@
             "required_paths": [
               "docs/rust_code_deep_dive_vs_native.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_pages_and_filters --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_blocks_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "native_context_pipeline_parity"
           },
