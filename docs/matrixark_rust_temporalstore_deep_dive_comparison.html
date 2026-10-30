@@ -181,7 +181,7 @@
       <div class="note">
         The deepest Rust storage engine code currently lives in
         <code>crates/temporalstore-rust/src/engine.rs</code>,
-        <code>engine/state.rs</code>,
+        <code>engine/engine_storage_state.rs</code>,
         <code>engine/context.rs</code>,
         <code>engine/packed_pages.rs</code>,
         <code>block_store.rs</code>,
@@ -211,7 +211,7 @@
           </tr>
           <tr>
             <td>Shard state and indexes</td>
-            <td><code>engine/state.rs</code>, <code>engine/slot_store.rs</code></td>
+            <td><code>engine/engine_storage_state.rs</code>, <code>engine/slot_store.rs</code></td>
             <td><code>ShardState</code>, model maps, context maps, <code>CoreIndex</code>, <code>SlotNode</code>, <code>PageIndex</code>, slot runtime reports.</td>
           </tr>
           <tr>
@@ -241,7 +241,7 @@
           </tr>
           <tr>
             <td>MatrixArk context</td>
-            <td><code>types.rs</code>, <code>engine/context.rs</code>, <code>context_workflow.rs</code>, <code>proxy.rs</code></td>
+            <td><code>command_protocol_types.rs</code>, <code>engine/context.rs</code>, <code>context_workflow.rs</code>, <code>proxy.rs</code></td>
             <td>Context data models, timestamp key fanout, child refs, secondary indexes, native retrieval workflow, resource/skill fanout.</td>
           </tr>
           <tr>
@@ -306,19 +306,19 @@
           </tr>
           <tr>
             <td><code>ShardState</code></td>
-            <td><code>engine/state.rs</code></td>
+            <td><code>engine/engine_storage_state.rs</code></td>
             <td>Model maps, context maps, <code>slot_index</code>, <code>dirty_objects</code></td>
             <td>In-memory shard object/index authority.</td>
           </tr>
           <tr>
             <td><code>SlotNode</code></td>
-            <td><code>engine/state.rs</code></td>
+            <td><code>engine/engine_storage_state.rs</code></td>
             <td><code>routing_slot</code>, <code>layout</code>, <code>dirty</code>, <code>deleted</code>, <code>object_index</code>, <code>page_index</code></td>
             <td>Slot-local ownership, dirtiness and page references.</td>
           </tr>
           <tr>
             <td><code>PageIndex</code></td>
-            <td><code>engine/state.rs</code></td>
+            <td><code>engine/engine_storage_state.rs</code></td>
             <td><code>object_key</code>, <code>model_id</code>, <code>component</code>, <code>object_id</code>, <code>address</code>, <code>dirty</code>, <code>deleted</code>, <code>log_backed</code></td>
             <td>Logical object/component to durable page address.</td>
           </tr>
@@ -652,7 +652,7 @@ ContextInjectRequest
       <h2>Referenced Local Code Paths</h2>
       <ul class="small">
         <li><code>crates/temporalstore-rust/src/engine.rs</code></li>
-        <li><code>crates/temporalstore-rust/src/engine/state.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/engine_storage_state.rs</code></li>
         <li><code>crates/temporalstore-rust/src/engine/context.rs</code></li>
         <li><code>crates/temporalstore-rust/src/engine/packed_pages.rs</code></li>
         <li><code>crates/temporalstore-rust/src/engine/slot_store.rs</code></li>

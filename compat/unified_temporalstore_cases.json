@@ -2708,7 +2708,7 @@
             "description": "Shared compaction case for model-layout-aware rewrites, tombstone preservation, stale-page density improvement, packed timestamped pages, context/Risk page-backed layouts, and slot layout transition evidence.",
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
-            "rust_runner": "cargo test -p temporalstore-rust page_compaction_reports_model_layouts_tombstones_object_pages_and_density --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust block_compaction_reports_model_layouts_delete_markers_object_blocks_and_density --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
             "suite": "native_storage_parity"
           },
@@ -2732,7 +2732,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/types.rs",
+              "crates/temporalstore-rust/src/command_protocol_types.rs",
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/bin/storage_modes_harness.rs"
             ],
@@ -4036,7 +4036,7 @@
             "required_paths": [
               "docs/rust_vs_temporalstore_parity_report.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_pages_and_filters --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_blocks_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "native_context_pipeline_parity"
           },
@@ -4687,7 +4687,7 @@
             "required_paths": [
               "docs/raft_matrixraft_leader_election_parity.md",
               "crates/temporalstore-rust/src/raft.rs",
-              "crates/temporalstore-rust/src/raft/tests.rs",
+              "crates/temporalstore-rust/src/raft/raft_regression_tests.rs",
               "matrixraft"
             ],
             "rust_runner": "cargo test -p temporalstore-rust matrixraft_leader_election_and_learner_promotion_parity_report_is_ready --lib -- --test-threads=1",
@@ -5490,7 +5490,7 @@
             "required_paths": [
               "docs/rust_code_deep_dive_vs_native.md"
             ],
-            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_pages_and_filters --lib -- --test-threads=1",
+            "rust_runner": "cargo test -p temporalstore-rust context_models_match_keys_timeline_blocks_and_filters --lib -- --test-threads=1",
             "rust_validator": "tools/run_context_workflow_local.sh",
             "suite": "native_context_pipeline_parity"
           },
@@ -6068,7 +6068,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs"
+              "crates/temporalstore-rust/src/context_workflow/context_workflow_regression_tests.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_resource_lifecycle_models_import_paths_refresh_and_delete --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
@@ -6114,7 +6114,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/tests.rs#resource_ingest_uses_live_embeddings_and_summary_retrieval"
+              "crates/temporalstore-rust/src/context_workflow/context_workflow_regression_tests.rs#resource_ingest_uses_live_embeddings_and_summary_retrieval"
             ],
             "rust_runner": "cargo test -p temporalstore-rust resource_ingest_uses_live_embeddings_and_summary_retrieval --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only",
@@ -7670,7 +7670,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/engine/tests.rs"
+              "crates/temporalstore-rust/src/engine/engine_regression_tests.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust engine_reload_shard_updates_metadata_and_rejects_stale_version --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
@@ -11422,7 +11422,7 @@
             "required_paths": [
               "crates/temporalstore-rust/src/context_workflow/resource.rs",
               "crates/temporalstore-rust/src/context_workflow.rs",
-              "crates/temporalstore-rust/src/context_workflow/tests.rs",
+              "crates/temporalstore-rust/src/context_workflow/context_workflow_regression_tests.rs",
               "tools/matrixark_raw_message_storage_contract.py"
             ]
           }

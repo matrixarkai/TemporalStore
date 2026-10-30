@@ -95,6 +95,7 @@ mod control_rollup;
 mod hll;
 mod hot_block_spill;
 mod block_in_wal;
+#[path = "engine/engine_storage_state.rs"]
 mod state;
 mod hash_field_map;
 mod recorded_map;
@@ -7960,6 +7961,7 @@ fn object_manager_stats(
 }
 
 #[cfg(test)]
+#[path = "engine/engine_regression_tests.rs"]
 mod tests;
 
 #[cfg(test)]

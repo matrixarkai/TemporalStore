@@ -70,6 +70,7 @@ pub mod storage_backend;
 pub mod storage_config;
 pub mod storage_descriptor;
 pub mod telemetry;
+#[path = "command_protocol_types.rs"]
 pub mod types;
 pub mod fault;
 pub mod wal;

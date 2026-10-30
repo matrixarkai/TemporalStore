@@ -3986,7 +3986,7 @@ impl Serialize for BlockEntryAt<'_> {
 /// # WHAT MAKES THE REFUSAL UNREACHABLE: THE FILING SITES, NOT AN ARGUMENT
 ///
 /// The lookup is `skip_serializing` and is filed as pages are placed, at every site that places
-/// one. `insert_object_block_lookup` has ELEVEN production callers -- `state.rs` at the decode
+/// one. `insert_object_block_lookup` has ELEVEN production callers -- `engine_storage_state.rs` at the decode
 /// (`CoreIndex`'s visitor, from the `block_keys` the decode hands up), at
 /// `CoreIndex::insert_page_for_bucket` and at two rebuild sites; `storage_bucket_internals.rs` at
 /// six (the publish establish, the batch fold, the two reconstructs, the whole-shard rebuild and
@@ -6803,7 +6803,7 @@ impl BlockIndex {
     /// `BlockAddress::block_id()` is `None` exactly while the block is log-resident, so the address
     /// already answers this and a stored flag could only agree or disagree with it. It did both:
     /// three sites derived it (`storage_bucket_internals.rs:362`, `:3655`, `:3983`) and three wrote
-    /// a constant `false` without looking (`:3524`, `:5873`, `state.rs`'s own fixture).
+    /// a constant `false` without looking (`:3524`, `:5873`, `engine_storage_state.rs`'s own fixture).
     ///
     /// The disagreement was observable in one place and not in the obvious one. The behavioural
     /// reader -- `object_manager`'s hot/cold classification -- tests `deleted` FIRST, and the
@@ -7546,7 +7546,7 @@ mod component_lookup_tests {
     //!     `names_the_only_slot` predicate, asserted BOTH WAYS in one arm so that loosening it
     //!     cannot satisfy a one-sided check.
     //!   * `the_refs_in_the_only_slot_stay_sorted_for_the_search_that_removes_them` -- carried out
-    //!     of `components_of_one_object_stay_separate` in `part4.rs`, which the collapse deleted.
+    //!     of `components_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs`, which the collapse deleted.
     //!     The order claim it held belongs to `BlockRefs`, whose `insert` keeps the refs sorted and
     //!     whose `remove` binary-searches them, and nothing else in the tree asserted it.
 
@@ -7713,7 +7713,7 @@ mod component_lookup_tests {
     /// THE REFS IN THE ONE SLOT STAY SORTED, WHICH IS THE ORDER `remove` SEARCHES.
     ///
     /// CARRIED FROM AN ARM THE COLLAPSE DELETED, in the merge that joined the two branches.
-    /// `components_of_one_object_stay_separate` in `part4.rs` asserted "removal binary-searches
+    /// `components_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs` asserted "removal binary-searches
     /// this vector, so its order is load-bearing" of the SECOND LEVEL's vector, and the
     /// element-name branch's rewrite of that arm moved the claim down onto the refs. The level is
     /// gone and the rewrite with it -- it reads `by_component` and `refs_for(..)`, neither of which

@@ -164,7 +164,7 @@ fn fn_name(trimmed: &str) -> String {
 ///
 /// # AN UPWARD WALK, BECAUSE THE GATE IS NOT NECESSARILY ON THE FILE'S OWN DECLARATION
 ///
-/// `engine/tests/foo.rs` is declared by `engine/tests.rs` with a plain `mod foo;` -- no gate
+/// `engine/tests/foo.rs` is declared by `engine/engine_regression_tests.rs` with a plain `mod foo;` -- no gate
 /// there at all. The `#[cfg(test)]` is one level further up, on `engine.rs`'s `mod tests;`. So a
 /// check that only looks at the file's own declaration answers "not test" for every one of the
 /// ~130 test modules in this tree, and the first version of this did exactly that and returned

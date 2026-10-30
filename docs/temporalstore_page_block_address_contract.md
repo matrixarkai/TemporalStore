@@ -21,7 +21,7 @@ id and absence of a generation are distinct states; neither may be replaced by
 a zero sentinel. Generation and routing are derived using the current address
 and bucket rules, rather than introducing another page identity.
 
-[`BlockIndexNamedBy`, `BlockEntryAt`, and `StoredBlockEntry`](../crates/temporalstore-rust/src/engine/state.rs)
+[`BlockIndexNamedBy`, `BlockEntryAt`, and `StoredBlockEntry`](../crates/temporalstore-rust/src/engine/engine_storage_state.rs)
 encode or decode the block index. The enclosing map supplies the object identity;
 an index entry's stored payload carries `address`, `dirty`, and `deleted`.
 There is no separate `PageIndex` storage tier or independent `PageAddress` type.
@@ -43,7 +43,7 @@ checksums, format stamps, or recovery behavior.
   for a naming-only change.
 
 See the address codec in [`block_store.rs`](../crates/temporalstore-rust/src/block_store.rs)
-and the bucket-node codec in [`state.rs`](../crates/temporalstore-rust/src/engine/state.rs).
+and the bucket-node codec in [`state.rs`](../crates/temporalstore-rust/src/engine/engine_storage_state.rs).
 
 ## Published reports
 

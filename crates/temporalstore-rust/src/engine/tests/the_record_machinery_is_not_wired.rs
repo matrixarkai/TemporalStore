@@ -144,7 +144,7 @@ fn the_records_deadline_and_dirty_bit_have_no_production_writer() {
     // The page-layout side table, which the `with_layout` arm needs.
     let layout_sites: Vec<String> = production_mentions("object_block_layouts")
         .into_iter()
-        .filter(|site| !site.contains("state.rs"))
+        .filter(|site| !site.contains("engine_storage_state.rs"))
         .collect();
     assert!(
         layout_sites.is_empty(),

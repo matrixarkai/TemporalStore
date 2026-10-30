@@ -3400,7 +3400,7 @@ mod eviction_round_scale {
     /// The same corpus, READ BACK.
     ///
     /// A read is what populates the record caches -- `the_cache_namespaces_a_record_can_actually_use`
-    /// (engine/tests/part4.rs) establishes that, and says it in as many words: "a read is what
+    /// (engine/tests/persistence_recovery_and_accounting.rs) establishes that, and says it in as many words: "a read is what
     /// populates the record caches, so writing alone would leave every namespace empty". So
     /// `engine_with` on its own is a COLD-cache fixture, and the one knob between the two arms
     /// below is this loop.
@@ -4357,7 +4357,7 @@ mod eviction_round_scale {
     /// covers, so the two arms below have something to disagree about.
     ///
     /// A READ is what populates a record cache -- `the_cache_namespaces_a_record_can_actually_use`
-    /// (engine/tests/part4.rs) says so in as many words -- so every write here is followed by the
+    /// (engine/tests/persistence_recovery_and_accounting.rs) says so in as many words -- so every write here is followed by the
     /// read that caches it. Three hash fields and three feature windows per key, because the
     /// namespaces that get SWEPT are exactly the ones that hold more than one entry per key: a
     /// hash caches one entry per field and a feature one per query window. A fixture with one

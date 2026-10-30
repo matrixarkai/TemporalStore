@@ -3720,7 +3720,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     // of refusing at the child. They are still counted and named as retaining the logs above them.
     // Refusing outright let one lagging follower pin the whole log for as long as it lagged. This
     // is a third copy of the contract corrected in mx#1213 and mx#1220; the engine-side test for
-    // the same scenario, engine/tests/part4.rs, already asserts it this way.
+    // the same scenario, engine/tests/persistence_recovery_and_accounting.rs, already asserts it this way.
     assert!(blocked.safe_to_reclaim, "{blocked:?}");
     assert_eq!(blocked.follower_cursor_block_count, 1);
     assert_eq!(blocked.raft_snapshot_block_count, 1);
@@ -3822,7 +3822,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     // cursor advances rather than all at once when it finally reaches the frontier. What must
     // hold is that the frontier itself has moved up to the final anchor.
     //
-    // Copied from engine/tests/part4.rs, which covers this scenario and was corrected for the
+    // Copied from engine/tests/persistence_recovery_and_accounting.rs, which covers this scenario and was corrected for the
     // clamp already. mx#1228 fixed the blocked phase in this file and the failure moved here.
     assert_eq!(
         released_wal.plan.retain_from_wal_sequence,

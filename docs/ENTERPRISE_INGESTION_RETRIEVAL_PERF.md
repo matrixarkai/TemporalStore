@@ -287,8 +287,8 @@ it as current and do **not** replay the WAL to catch up: restart recovery (`load
 `persistence.rs`), dump-manifest creation (`export_index_bytes` → sha256 + `ShardState` deserialize,
 `bucket_dump_manifest_methods.rs`), shared-store index upload (`shared_store.rs`), `StreamKind::Index`
 reads (`stream_batch_methods.rs`), recovery/compaction (`recovery_sweep_compact.rs`), plus engine
-tests that read the raw file bytes and assert exact content/sha (`engine/tests/part3.rs`,
-`part4.rs`). A prior persistence-timing deferral broke **55 storage tests** for exactly this reason
+tests that read the raw file bytes and assert exact content/sha (`engine/tests/stream_reads_and_shard_controls.rs`,
+`persistence_recovery_and_accounting.rs`). A prior persistence-timing deferral broke **55 storage tests** for exactly this reason
 (recorded in project history). Making the write incremental therefore requires re-routing *every*
 reader through a base+delta reconstruction — a broad, durability-sensitive change touching recovery,
 dump, and shared-store paths that cannot land safely in the same pass as Iteration 6 on a highly

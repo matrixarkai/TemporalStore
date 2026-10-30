@@ -565,7 +565,7 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // state a slack claim at all -- `index_rounded_tail` IS `round_up_to(index_tail, 8)`, so the
     // comparison holds for every tail any structure could have and no change could turn it red.
     // An equality on the DIFFERENCE can go red in either direction, which is what makes it a
-    // check: it is the same claim `state.rs` carries beside the width as `size_of - field_sum`.
+    // check: it is the same claim `engine_storage_state.rs` carries beside the width as `size_of - field_sum`.
     assert_eq!(
         5,
         index_rounded_tail - index_tail,

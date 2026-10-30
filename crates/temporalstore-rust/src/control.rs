@@ -393,6 +393,47 @@ pub struct ShardCanonicalStorageStats {
     /// here are stored bytes, so the compression factor cancels instead of dividing in.
     #[serde(default)]
     pub lifetime_write_amplification_ppm: u64,
+    /// Physical bytes written SINCE THE LAST COMPACTION per physical byte that is live now, in
+    /// PARTS PER MILLION -- the same ratio as `lifetime_write_amplification_ppm` over a window
+    /// that closes whenever the live set is consolidated.
+    ///
+    /// `bytes_written_since_compaction / live_block_bytes`, both published beside it so the ratio
+    /// is re-derivable. Zero when nothing is live.
+    ///
+    /// # THIS IS THE ONE OF THE TWO THAT CAN CARRY A THRESHOLD
+    ///
+    /// `lifetime_write_amplification_ppm` has a lifetime numerator and a current denominator, so on
+    /// a store whose live set is flat it rises without limit as a function of uptime. A gate on it
+    /// fires on a healthy store that has merely been up a long time, and its own note says so. This
+    /// field is the same arithmetic with the history dropped at each consolidation, which is what
+    /// makes a fixed trigger meaningful: it answers "how much has been written since the store last
+    /// tidied itself, per byte it is holding", and a compaction brings it back down.
+    ///
+    /// # AND IT IS WHY COMPACTION AND WRITE AMPLIFICATION STOP FIGHTING
+    ///
+    /// Compaction is itself a writer. Measured on a three-slab store, one round wrote 3,697,200 B
+    /// to make 1,232,400 B reclaimable. Charged against a lifetime numerator those bytes are pure
+    /// amplification, so the operation that LOWERS space amplification RAISES the write figure and
+    /// the two readings pull in opposite directions. Opening a window at the consolidation is what
+    /// resolves that: the rewrite's cost is the last thing in the old window rather than the first
+    /// thing in the new one.
+    ///
+    /// # WHAT IT DOES NOT PROMISE
+    ///
+    /// A BUDGETED OR DRAINED COMPACTION OPENS A WINDOW HAVING CONSOLIDATED ONLY PART OF THE STORE,
+    /// so this reads optimistically after one. The compaction report carries
+    /// `blocks_left_by_budget` and `blocks_left_off_drain_set` for exactly that question. And
+    /// before the first compaction the window is the whole lifetime, so this equals
+    /// `lifetime_write_amplification_ppm` -- which is correct rather than a special case.
+    #[serde(default)]
+    pub write_amplification_since_compaction_ppm: u64,
+    /// Physical bytes written since the last compaction consolidated the live set.
+    ///
+    /// The numerator of `write_amplification_since_compaction_ppm`, published so that ratio is
+    /// re-derivable from terms rather than trusted. Equal to `bytes_written` until the first
+    /// compaction.
+    #[serde(default)]
+    pub bytes_written_since_compaction: u64,
     /// Physical bytes the store occupies per physical byte that is live, in PARTS PER MILLION.
     ///
     /// `total_known_physical_bytes / live_physical_bytes` from the slab summary. What pushes it

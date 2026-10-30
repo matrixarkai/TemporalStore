@@ -45,7 +45,7 @@
 //! whatever came before it.
 //!
 //! A second attempt matched the attribute name as TEXT, which counted the dozen prose comments in
-//! `state.rs` that explain why some field carries it -- reporting nine violations where there are
+//! `engine_storage_state.rs` that explain why some field carries it -- reporting nine violations where there are
 //! none.
 //!
 //! Both are guarded below by controls rather than by care.
@@ -79,7 +79,7 @@ impl Field {
 /// Every field declared in the named struct's body, with the attributes contiguously above it.
 ///
 /// BOUNDED TO THE STRUCT, not to the file, so this is a property of `ShardState` rather than of
-/// whatever else `state.rs` happens to contain.
+/// whatever else `engine_storage_state.rs` happens to contain.
 ///
 /// CONTIGUOUS, which is the part the adjacency audit got wrong: the walk upward stops at the first
 /// line that is not an attribute, so a doc comment, a plain comment or a blank line ends the run
@@ -138,7 +138,7 @@ fn fields_of(source: &str, declaration: &str) -> Vec<Field> {
 /// A FIELD THAT STOPS BEING WRITTEN MUST STILL DECODE AN IMAGE THAT LACKS IT.
 #[test]
 fn a_field_that_stops_being_written_must_still_decode_an_image_that_lacks_it() {
-    let source = include_str!("../state.rs");
+    let source = include_str!("../engine_storage_state.rs");
     assert!(
         source.len() > 100_000,
         "the source this guard reads came back implausibly short ({} bytes), so a clean result \
@@ -181,7 +181,7 @@ fn a_field_that_stops_being_written_must_still_decode_an_image_that_lacks_it() {
          supplies `Default` itself.",
         unpaired
             .iter()
-            .map(|field| format!("  state.rs:{} {}", field.line, field.name))
+            .map(|field| format!("  engine_storage_state.rs:{} {}", field.line, field.name))
             .collect::<Vec<_>>()
             .join("\n")
     );
@@ -219,7 +219,7 @@ fn a_field_that_stops_being_written_must_still_decode_an_image_that_lacks_it() {
         bare.len()
     );
     for field in &bare {
-        println!("    state.rs:{} {}", field.line, field.name);
+        println!("    engine_storage_state.rs:{} {}", field.line, field.name);
     }
 
     // --- CONTROL ONE: the matcher finds a violation when there is one.

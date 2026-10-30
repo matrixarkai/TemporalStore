@@ -83,7 +83,7 @@ The common request path is:
 
 ## Command And Data Model Core
 
-`types.rs` is the product contract center. It defines:
+`command_protocol_types.rs` is the product contract center. It defines:
 
 - `Command`: string, hash, set, feature, sequence, control-state, Redis/admin,
   context, ingestion, storage, and lifecycle commands.

@@ -725,7 +725,7 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
     //
     // WHAT THE COUNTERFACTUAL SAID, recorded because the next reader will want the number and
     // should not have to re-derive it: 35 bytes of field minus the key's 16 is 19, which rounds
-    // to 24 against the 40 it was, so the entry lost a whole two words. The pins in `state.rs`
+    // to 24 against the 40 it was, so the entry lost a whole two words. The pins in `engine_storage_state.rs`
     // assert that outcome directly now.
 
     // --- THE NODE, RECONSTRUCTED, so the tail arithmetic below is about this structure. ---

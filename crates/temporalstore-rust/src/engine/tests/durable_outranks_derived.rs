@@ -1077,7 +1077,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         //
         // It read "Under one entry a page none can: if this reddens the collapse has been
         // reverted". `BlockIndex` has no component field, so an entry naming a field is not a
-        // reversion this test could observe -- it is UNREPRESENTABLE, and `state.rs`'s width pin
+        // reversion this test could observe -- it is UNREPRESENTABLE, and `engine_storage_state.rs`'s width pin
         // refuses it at const-evaluation. That is what this whole module is for: a divergence
         // proved unreachable is worth more than one measured absent, and this arm's subject has
         // just become the former.

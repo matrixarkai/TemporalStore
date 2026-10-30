@@ -597,7 +597,7 @@ fn the_projection_collapses_every_container_kind() {
     //
     // IT CANNOT, ANY MORE. `BlockIndex` has no component field, so no regression in this crate can
     // make that count non-zero -- the only way back is to re-add the field, which fails
-    // `state.rs`'s width pin at const-evaluation before any test runs. The half the paragraph
+    // `engine_storage_state.rs`'s width pin at const-evaluation before any test runs. The half the paragraph
     // dismissed as the one that "would not notice" is now the only one with a subject, and the
     // fold floor is what stops it being vacuous: `live < ELEMENTS` is satisfied trivially when
     // elements share no page, which is why `assert_collapsed` is only ever called after `fold`.

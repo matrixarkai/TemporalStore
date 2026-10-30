@@ -458,7 +458,7 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
     // that the lookup's second level held one entry per (object, component). It did not: every
     // entry was filed under one nameless slot per OBJECT, so the charge was one per object all
     // along and the per-member column overstated it by the container's member count. The level is
-    // now deleted outright -- see `ObjectBlockRefs` in `state.rs` -- so the lookup contributes
+    // now deleted outright -- see `ObjectBlockRefs` in `engine_storage_state.rs` -- so the lookup contributes
     // nothing that scales with members.
     println!(
         "per member, in-struct only: BlockIndex {index_total} bytes. The object lookup adds no \
@@ -560,7 +560,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 ///
 /// An index entry has no component. The redundancy is not smaller, mis-stated, or differently
 /// shaped -- it is STRUCTURALLY UNREPRESENTABLE: there is no second copy of the member on the
-/// entry because there is no name on the entry, and `state.rs` pins the entry at 40 bytes with
+/// entry because there is no name on the entry, and `engine_storage_state.rs` pins the entry at 40 bytes with
 /// zero slack so one cannot come back without failing const-evaluation. Correcting a number here
 /// would have produced a test measuring nothing.
 ///

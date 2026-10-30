@@ -1975,4 +1975,5 @@ fn now_unix_ms() -> u64 {
 }
 
 #[cfg(test)]
+#[path = "client/client_regression_tests.rs"]
 mod tests;

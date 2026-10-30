@@ -634,7 +634,7 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
             // NOTHING TO INTERN. This measured what a candidate intern table for element names
             // would cost, over the names the entries held. The entries hold none, so the table
             // has no input -- and the question it was pricing is settled more cheaply than it
-            // proposed: the name did not need interning, it needed removing, and `state.rs`'s pin
+            // proposed: the name did not need interning, it needed removing, and `engine_storage_state.rs`'s pin
             // records the sixteen bytes a page that recovered.
         }
     }

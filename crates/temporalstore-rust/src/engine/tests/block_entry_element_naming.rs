@@ -102,7 +102,7 @@
 //! # WHAT WOULD ACTUALLY UNBLOCK IT, NAMED PRECISELY
 //!
 //! One prerequisite, not a family of them: `shard.hashes` would have to become DURABLE -- the
-//! `skip_serializing` on `engine/state.rs` removed -- and `HashGetAll`/`HashLen` moved onto that
+//! `skip_serializing` on `engine/engine_storage_state.rs` removed -- and `HashGetAll`/`HashLen` moved onto that
 //! map instead of onto `bucket_index_component_block_addresses`. That is a MOVE rather than a
 //! duplication: the field names it would start writing are the same characters the component writes
 //! today through `block_index_written_key`.
@@ -661,7 +661,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     assert_eq!(24, size_of::<BlockIndex>(), "the entry pin moved");
     // THE `!= 39` AND `!= 41` PARTNERS ARE GONE, dominated by the equality above them, which
     // panics first and so left them unreachable on every change that could have fired them.
-    // The width is also pinned as a const beside `BlockIndex` in `state.rs`, with the alignment
+    // The width is also pinned as a const beside `BlockIndex` in `engine_storage_state.rs`, with the alignment
     // pin a width pin does not entail. What this module adds is the STRIDE reconstructed from
     // that width, and the stride pin below is the claim here that can still move.
     // THIRTY-TWO, AND THE STRIDE MOVED WITH THE ENTRY RATHER THAN BY ITSELF. The element is a

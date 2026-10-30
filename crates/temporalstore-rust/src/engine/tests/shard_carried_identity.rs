@@ -9,7 +9,7 @@
 //! that:
 //!
 //! ```text
-//!   BlockIndex::object_id                       engine/state.rs
+//!   BlockIndex::object_id                       engine/engine_storage_state.rs
 //!   object_manager::runtime_report              engine/object_manager.rs
 //!   settle_released_bucket_object_delete        engine/storage_bucket_internals.rs
 //!   bucket_generation_fingerprints_by_bucket    engine/storage_reporting.rs

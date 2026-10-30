@@ -59,7 +59,7 @@ process-local static map). It may be lost on restart, and that is safe:
 
 - `engine.rs`: `ContextMarkSummaryDirty` / `ContextQuerySummaryDirty` handlers
   rewritten to use `shard.context_dirty_index` (a `HashMap<String, ContextDirtyEntry>`).
-- `engine/state.rs`: added `context_dirty_index` (`#[serde(skip)]`) and the
+- `engine/engine_storage_state.rs`: added `context_dirty_index` (`#[serde(skip)]`) and the
   `ContextDirtyEntry` struct. The legacy `context_dirty` field is retained as an
   **always-empty vestigial map** so snapshot load/save and page-rebuild code compiles
   and no-ops (candidate for a later removal).

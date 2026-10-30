@@ -845,7 +845,7 @@ fn a_listing_reuses_the_manifest_it_already_read_and_verified() {
 ///
 /// The second half is the one that decides whether this memo is sound. A rule that depended on
 /// every site which removes a manifest remembering to say so would already be wrong in this tree:
-/// `engine/tests/part4.rs`, `engine/tests/part2.rs` and `engine/tests/prune_crash_window.rs` all
+/// `engine/tests/persistence_recovery_and_accounting.rs`, `engine/tests/cache_tiers_and_command_execution.rs` and `engine/tests/prune_crash_window.rs` all
 /// delete manifest files with `fs::remove_file` and tell nobody. The key is what `read_dir` and
 /// `stat` report, so none of them has to.
 #[test]

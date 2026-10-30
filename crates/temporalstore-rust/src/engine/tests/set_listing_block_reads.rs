@@ -483,7 +483,7 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 /// the term is zero now, and zero is not measurable off a hardcoded `None`.
 ///
 /// WHAT DOES GUARD THE DELETION IS A CONST-EVALUATED FIELD SUM, and it is named precisely because
-/// the obvious candidate does not. `state.rs` reconstructs `BlockIndex`'s width from its seven
+/// the obvious candidate does not. `engine_storage_state.rs` reconstructs `BlockIndex`'s width from its seven
 /// fields BY TYPE and asserts the sum is 40 and equal to `size_of::<BlockIndex>()`, so re-adding a
 /// `component: Option<Arc<str>>` puts the sum at 56 and fails to COMPILE -- it cannot be a test
 /// nothing runs. The signature tripwire in `element_ordinal_reuse`, which pins this function's
