@@ -66,7 +66,7 @@ pub const TS_SHARED_STORE_CLUSTER_ID: &str = "TS_SHARED_STORE_CLUSTER_ID";
 
 /// Env var: directory holding this node's durable MatrixObject snapshot.
 ///
-/// NAMED HERE BECAUSE IT WAS NOT NAMED ANYWHERE. The durability wiring in `src/bin/server.rs`
+/// NAMED HERE BECAUSE IT WAS NOT NAMED ANYWHERE. The durability wiring in `src/bin/temporalstore_data_server.rs`
 /// read this key as a bare string literal, which is the one shape of config that cannot be
 /// checked: a typo in it does not fail, it silently selects the default. Every other key this
 /// module resolves is a `const` for that reason.
