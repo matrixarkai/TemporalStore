@@ -187,7 +187,7 @@ impl ProxyService {
                 "<repo>/crates/temporalstore-rust/src/proxy/prometheus.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/meta_sync.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_configuration_defaults.rs".to_string(),
             ],
             rust_prometheus_families: proxy_metric_families_from(&rendered),
             mappings: proxy_metric_mappings_against(&rendered),
@@ -262,7 +262,7 @@ impl ProxyService {
                 "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/meta_sync.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/commands.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/config.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_configuration_defaults.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/response.rs".to_string(),
             ],
             entries: vec![

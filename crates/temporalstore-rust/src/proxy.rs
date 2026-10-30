@@ -13,6 +13,7 @@ mod meta_sync;
 mod prometheus;
 mod reports;
 mod handle;
+#[path = "proxy/proxy_configuration_defaults.rs"]
 mod config;
 mod metrics;
 mod policy;
