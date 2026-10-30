@@ -320,14 +320,14 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     );
 
     let mut kinds_folded = 0usize;
-    for (kind, pages_before, entries_before) in &before {
-        let (pages_after, entries_after) = addresses_and_entries(&engine, kind, "folded");
+    for (kind, blocks_before, entries_before) in &before {
+        let (blocks_after, entries_after) = addresses_and_entries(&engine, kind, "folded");
         println!(
-            "  {kind:>6}  {pages_before:>12}  {pages_after:>11}  {entries_before:>13}  {entries_after:>12}"
+            "  {kind:>6}  {blocks_before:>12}  {blocks_after:>11}  {entries_before:>13}  {entries_after:>12}"
         );
         assert!(
-            pages_after < *pages_before,
-            "{kind} holds {pages_after} pages where it held {pages_before}, so nothing folded"
+            blocks_after < *blocks_before,
+            "{kind} holds {blocks_after} pages where it held {blocks_before}, so nothing folded"
         );
         // THE ENTRY COUNT FOLDS WITH THE PAGES, AND THAT IS THE ROW THIS ARM EXISTS TO HOLD. It
         // asserted `entries_after == entries_before` for as long as an entry named its element:
@@ -338,12 +338,12 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         //
         // WHAT THIS IS WORTH, STATED EXACTLY, BECAUSE IT IS LESS THAN IT LOOKS. On this tree the
         // page fold and the entry fold are the SAME EVENT: there is no field left that could keep
-        // two entries over one folded page, so `pages_after < pages_before` above and the
+        // two entries over one folded page, so `blocks_after < blocks_before` above and the
         // assertion below cannot part company. It is kept as a TRIPWIRE on the claim that
         // inverted -- it FAILS on the engine this arm was written against, where the page column
         // fell and the entry column did not -- and not as an independent guard.
         //
-        // `entries_after == pages_after` WAS WRITTEN HERE AND THEN DELETED AS VACUOUS, which is
+        // `entries_after == blocks_after` WAS WRITTEN HERE AND THEN DELETED AS VACUOUS, which is
         // recorded because it reads like the stronger assertion. `addresses_and_entries` derives
         // its PAGE column by deduplicating the very entries it counts for the ENTRY column, so the
         // two columns are one measurement and nothing independent could make them disagree.
@@ -360,7 +360,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         assert!(
             entries_after < *entries_before,
             "{kind} holds {entries_after} entries where it held {entries_before}; a round that \
-             folded {pages_before} pages into {pages_after} left the entry count alone, which is \
+             folded {blocks_before} pages into {blocks_after} left the entry count alone, which is \
              what an entry that names its element does"
         );
         kinds_folded += 1;
@@ -665,8 +665,8 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
             },
         );
     }
-    let (pages_before, entries_before) = addresses_and_entries(&engine, "hash", "capped");
-    assert_eq!(OVER_CAP_ELEMENTS, pages_before);
+    let (blocks_before, entries_before) = addresses_and_entries(&engine, "hash", "capped");
+    assert_eq!(OVER_CAP_ELEMENTS, blocks_before);
     assert_eq!(OVER_CAP_ELEMENTS, entries_before);
 
     crate::engine::reset_container_batch_counts();
@@ -674,36 +674,36 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
         .compact_shard_blocks(1)
         .expect("the round must succeed");
     let (batches, folded) = crate::engine::container_batch_counts();
-    let (pages_after, entries_after) = addresses_and_entries(&engine, "hash", "capped");
+    let (blocks_after, entries_after) = addresses_and_entries(&engine, "hash", "capped");
 
     let cap = crate::engine::CONTAINER_BATCH_ELEMENT_CAP;
     println!(
-        "\n=== the element cap ===\n  cap {cap}, elements {OVER_CAP_ELEMENTS}: {pages_before} pages -> {pages_after}, {batches} batches, {folded} folded"
+        "\n=== the element cap ===\n  cap {cap}, elements {OVER_CAP_ELEMENTS}: {blocks_before} pages -> {blocks_after}, {batches} batches, {folded} folded"
     );
     assert!(
         batches > 0 && folded > 0,
         "nothing folded, so the cap was not exercised"
     );
     assert!(
-        pages_after > 1,
-        "{OVER_CAP_ELEMENTS} elements folded into {pages_after} page(s) against a cap of {cap}, so \
+        blocks_after > 1,
+        "{OVER_CAP_ELEMENTS} elements folded into {blocks_after} page(s) against a cap of {cap}, so \
          the cap did not bind and one page holds the whole container"
     );
     let smallest_possible = (OVER_CAP_ELEMENTS + cap - 1) / cap;
     assert!(
-        pages_after >= smallest_possible,
-        "{OVER_CAP_ELEMENTS} elements cannot fit in {pages_after} pages of at most {cap}"
+        blocks_after >= smallest_possible,
+        "{OVER_CAP_ELEMENTS} elements cannot fit in {blocks_after} pages of at most {cap}"
     );
     // THE ENTRY COUNT IS THE PAGE COUNT NOW, WHICH IS THE COLLAPSE AND NOT A DRIFT.
     //
     // This asserted `entries_after == OVER_CAP_ELEMENTS` under "the entry count must not move": one
     // entry per element, whatever the pages did. Every container kind is page-named, so the index
     // files one entry per distinct PAGE and the count is the page count. Asserted against
-    // `pages_after` rather than re-goldened to a literal, so the claim is still a relation between
+    // `blocks_after` rather than re-goldened to a literal, so the claim is still a relation between
     // two measured things and a count that drifted from the pages would still fail.
     assert_eq!(
-        pages_after, entries_after,
-        "the index filed {entries_after} entries over {pages_after} page(s). One entry a page is \
+        blocks_after, entries_after,
+        "the index filed {entries_after} entries over {blocks_after} page(s). One entry a page is \
          what the collapse means: more entries than pages is a stale entry over a dead page, and \
          fewer means a page nothing names"
     );

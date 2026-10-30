@@ -864,14 +864,14 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     add(&engine, member_bytes(1));
 
     let before = member_block(&engine, &member_bytes(0));
-    let (live_before, pages_before, _) = entry_census(&engine);
+    let (live_before, blocks_before, _) = entry_census(&engine);
     // FLOOR 1: each member is on its OWN page, or there is no alone-on-a-page case to rewrite off
     // and this test would be measuring the fold arm's situation instead.
     assert_eq!(
         2,
-        pages_before.len(),
+        blocks_before.len(),
         "the two members resolve to {} distinct page(s), so neither is alone on one",
-        pages_before.len()
+        blocks_before.len()
     );
     assert_eq!(
         2, live_before,

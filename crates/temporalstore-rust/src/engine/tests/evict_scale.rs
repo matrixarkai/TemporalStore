@@ -1930,7 +1930,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         (released, dirty, blocks, objects)
     };
 
-    let pages_before = live_blocks_by_key(&engine);
+    let live_blocks_before = live_blocks_by_key(&engine);
 
     crate::engine::reset_model_map_addresses_visited();
     crate::engine::reset_bucket_release_model_derivations();
@@ -1940,7 +1940,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         release_bucket_blocks(shard, &candidates)
     };
     let derivations = crate::engine::bucket_release_model_derivations();
-    let pages_after = live_blocks_by_key(&engine);
+    let live_blocks_after = live_blocks_by_key(&engine);
 
     println!(
         "  mixed batch: {} candidates, oracle says release {:?} and refuse {} on dirt; the \
@@ -2049,14 +2049,14 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
     }
 
     assert_eq!(
-        pages_after.len(),
-        pages_before.len(),
+        live_blocks_after.len(),
+        live_blocks_before.len(),
         "the shard held {} distinct live keys before the release and {} after",
-        pages_before.len(),
-        pages_after.len()
+        live_blocks_before.len(),
+        live_blocks_after.len()
     );
-    for (key, before) in &pages_before {
-        let after = pages_after.get(key).copied().unwrap_or_default();
+    for (key, before) in &live_blocks_before {
+        let after = live_blocks_after.get(key).copied().unwrap_or_default();
         assert_eq!(
             after, *before,
             "key {key} had {before} live pages before the release and {after} after"

@@ -423,7 +423,7 @@ struct Recovery {
     wal_reads: u64,
     index_log_read_bytes: u64,
     index_log_reads: u64,
-    page_read_bytes: u64,
+    block_read_bytes: u64,
     page_reads: u64,
     /// The two stores' OWN `bytes_read`, which counts what a scan handed back rather than what it
     /// read off disk. Printed beside the physical counters so the difference stays visible; never
@@ -469,7 +469,7 @@ impl Recovery {
             + self.manifest_bytes_read
             + self.wal_read_bytes
             + self.index_log_read_bytes
-            + self.page_read_bytes
+            + self.block_read_bytes
     }
 
     /// THE SUBJECT: the kernel's total less the rows above.
@@ -601,7 +601,7 @@ fn recover(
     let (wal_before, wal_reads_before) = crate::wal::wal_piece_read_counts_on_this_thread();
     let (index_before, index_reads_before) =
         crate::index_log::index_log_piece_read_counts_on_this_thread();
-    let pages_before = engine.block_store().stats();
+    let blocks_before = engine.block_store().stats();
     let started = std::time::Instant::now();
 
     let (response, kernel_rchar) = kernel_read_span(|| {
@@ -629,7 +629,7 @@ fn recover(
     let (index_after, index_reads_after) =
         crate::index_log::index_log_piece_read_counts_on_this_thread();
     // BEFORE the readback below, which would charge its own page reads to the recovery.
-    let pages_after = engine.block_store().stats();
+    let blocks_after = engine.block_store().stats();
     let manifest = crate::engine::bucket_dump_manifest_io_counts();
     // `stats`, not `raw_stats`: the cached `last_sequence` is set by an APPEND, and a store
     // that only replayed never appended, so `raw_stats` answered 0 here for every arm and the
@@ -694,10 +694,10 @@ fn recover(
         wal_reads: wal_reads_after - wal_reads_before,
         index_log_read_bytes: index_after - index_before,
         index_log_reads: index_reads_after - index_reads_before,
-        page_read_bytes: pages_after
+        block_read_bytes: blocks_after
             .bytes_read
-            .saturating_sub(pages_before.bytes_read),
-        page_reads: pages_after.reads.saturating_sub(pages_before.reads),
+            .saturating_sub(blocks_before.bytes_read),
+        page_reads: blocks_after.reads.saturating_sub(blocks_before.reads),
         wal_handed_back: wal_stats.bytes_read,
         index_log_handed_back: index_stats.bytes_read,
         kernel_rchar,
@@ -800,7 +800,7 @@ fn show_recovery(reading: &Recovery) {
         reading.replay_scans,
         reading.index_log_read_bytes,
         reading.index_log_reads,
-        reading.page_read_bytes,
+        reading.block_read_bytes,
         reading.page_reads,
         reading.named(),
     );

@@ -442,10 +442,10 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
 
     // ONE ENTRY A PAGE IS THE PREMISE, so it is asserted rather than assumed. If a set ever went
     // back to an entry per element this reads MEMBERS and the whole-page reasoning stops applying.
-    let (pages_before, live_before, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
+    let (blocks_before, live_before, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
     assert_eq!(
         1, live_before,
-        "the folded object holds {live_before} live entr(ies) over {pages_before} page(s). One \
+        "the folded object holds {live_before} live entr(ies) over {blocks_before} page(s). One \
          entry a page is what makes a whole-page un-naming the only one available, and this arm \
          is built on it"
     );
@@ -454,9 +454,9 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     // control below has to read these addresses straight off the block store.
     let addresses = live_block_addresses(&engine, "listing/one-name-gone");
     assert_eq!(
-        pages_before,
+        blocks_before,
         addresses.len(),
-        "captured {} address(es) for {pages_before} live page(s)",
+        "captured {} address(es) for {blocks_before} live page(s)",
         addresses.len()
     );
 
