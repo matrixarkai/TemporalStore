@@ -639,6 +639,8 @@ mod what_the_collector_sees_after_a_rewrite;
 mod the_amplification_set_under_rewrite;
 #[path = "tests/the_write_window_closes_at_compaction.rs"]
 mod the_write_window_closes_at_compaction;
+#[path = "tests/what_a_live_user_bytes_denominator_would_cost.rs"]
+mod what_a_live_user_bytes_denominator_would_cost;
 #[path = "tests/whether_a_dead_slab_can_be_reclaimed.rs"]
 mod whether_a_dead_slab_can_be_reclaimed;
 #[path = "tests/the_overwrite_records_what_it_retired.rs"]
