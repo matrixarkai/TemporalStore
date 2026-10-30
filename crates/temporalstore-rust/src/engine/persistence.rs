@@ -1205,6 +1205,19 @@ impl TemporalEngine {
                     block_store.bytes_written,
                     index_live_bytes,
                 ),
+                // THE SAME RATIO OVER A WINDOW THAT CLOSES AT EACH CONSOLIDATION. Saturating,
+                // because the baseline can only have been recorded at or below the current
+                // `bytes_written` -- but a saturating subtraction means a reordered or restored
+                // snapshot reports 0 rather than a huge wrapped figure.
+                write_amplification_since_compaction_ppm: Self::ppm_ratio(
+                    block_store
+                        .bytes_written
+                        .saturating_sub(block_store.bytes_written_at_last_compaction),
+                    index_live_bytes,
+                ),
+                bytes_written_since_compaction: block_store
+                    .bytes_written
+                    .saturating_sub(block_store.bytes_written_at_last_compaction),
                 space_amplification_ppm: Self::ppm_ratio(
                     block_store_slabs.total_known_physical_bytes,
                     block_store_slabs.live_physical_bytes,

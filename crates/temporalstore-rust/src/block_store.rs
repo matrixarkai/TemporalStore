@@ -881,6 +881,27 @@ pub struct BlockStoreStats {
     /// up front.
     #[serde(default)]
     pub shared_slab_fetches: u64,
+    /// `bytes_written` as it stood when a compaction last consolidated the live set.
+    ///
+    /// THIS IS A WINDOW BASELINE, NOT A COUNTER. `bytes_written` is never reset -- two published
+    /// ratios read it (`storage_write_amplification_ppm` and
+    /// `lifetime_write_amplification_ppm`), so zeroing it would silently change both. Recording
+    /// where the window opened and subtracting gives the same window without mutating a live
+    /// counter.
+    ///
+    /// WHY A WINDOW IS NEEDED AT ALL. A write-amplification ratio over a LIFETIME numerator and a
+    /// CURRENT denominator rises without limit as a function of uptime, so it cannot be held to a
+    /// threshold. Worse, compaction is itself a writer: measured on a three-slab store, one
+    /// compaction round wrote 3,697,200 B to make 1,232,400 B reclaimable. Charged against a
+    /// lifetime numerator, the operation that REDUCES space amplification RAISES write
+    /// amplification, so the two figures work against each other. Opening a new window where the
+    /// live set is consolidated is what makes the ratio a reading about the current shape of the
+    /// store rather than about its history.
+    ///
+    /// Zero until the first compaction, which is the honest starting value: before any compaction
+    /// the window is the whole lifetime, and the windowed ratio equals the lifetime one.
+    #[serde(default)]
+    pub bytes_written_at_last_compaction: u64,
 }
 
 /// Lazy read-through source for slabs that live only in shared storage after a
@@ -2740,6 +2761,28 @@ impl BlockStore {
 
     pub fn stats(&self) -> BlockStoreStats {
         self.inner.lock().expect("block store lock poisoned").stats
+    }
+
+    /// Open a new write-amplification window here, because the live set has just been
+    /// consolidated.
+    ///
+    /// Records the current `bytes_written` as the window's baseline. Nothing is reset: see
+    /// [`BlockStoreStats::bytes_written_at_last_compaction`] for why a baseline rather than a
+    /// counter reset.
+    ///
+    /// THE BASELINE IS `bytes_written` AS IT STOOD BEFORE THE RELOCATION, NOT AFTER IT, so the
+    /// compaction's OWN rewrite is the first thing in the new window rather than the last thing in
+    /// the old one. That is the difference between a store reporting 0.000x immediately after a
+    /// compaction -- true, but saying only "nothing has been written since" -- and reporting
+    /// roughly 1.000x, which is the useful statement that what is on disk is about one copy of
+    /// what is live. Measured on a 400-key fixture: the relocation wrote 414,400 B against 409,600
+    /// B live, so the window opens at 1.012x.
+    ///
+    /// Called from the one inner funnel every compaction entry point routes through, so a caller
+    /// cannot compact without opening a window.
+    pub(crate) fn mark_write_window_at_compaction(&self, baseline: u64) {
+        let mut inner = self.inner.lock().expect("block store lock poisoned");
+        inner.stats.bytes_written_at_last_compaction = baseline;
     }
 }
 

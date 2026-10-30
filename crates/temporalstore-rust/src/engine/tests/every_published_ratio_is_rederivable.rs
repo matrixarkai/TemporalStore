@@ -91,7 +91,7 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
     println!("  PUBLISHED RATIOS, each beside the same figure recomputed from the counters above");
 
     // (name, published ppm, numerator, denominator)
-    let identities: [(&str, u64, u64, u64); 5] = [
+    let identities: [(&str, u64, u64, u64); 6] = [
         (
             "storage_write_amplification_ppm",
             published.storage_write_amplification_ppm,
@@ -102,6 +102,16 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
             "lifetime_write_amplification_ppm",
             published.lifetime_write_amplification_ppm,
             published.bytes_written,
+            published.live_block_bytes,
+        ),
+        // THE WINDOWED WRITE RATIO, whose numerator is its own published term rather than
+        // `bytes_written`. That is the point of publishing the term: the lifetime figure above and
+        // this one divide DIFFERENT numerators by the same denominator, and from the two ppm
+        // values alone a consumer could not tell which window either covers.
+        (
+            "write_amplification_since_compaction_ppm",
+            published.write_amplification_since_compaction_ppm,
+            published.bytes_written_since_compaction,
             published.live_block_bytes,
         ),
         (

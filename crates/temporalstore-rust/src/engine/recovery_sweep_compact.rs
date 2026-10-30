@@ -1486,6 +1486,10 @@ fn expiry_scan_budget(limit: usize) -> usize {
         budget_block_refs: usize,
         drain_block_slab_ids: Option<BTreeSet<u64>>,
     ) -> Result<ShardCompactionReport, Status> {
+        // CAPTURED BEFORE ANYTHING IS REWRITTEN, so a successful round can open the write-
+        // amplification window at this point and count its own relocation as the window's first
+        // writes. Reading it after the rewrite would open the window at 0 bytes and report 0.000x.
+        let bytes_written_before_relocation = self.block_store.stats().bytes_written;
         let (start_routing_bucket, end_routing_bucket) = self
             .infos
             .read()
@@ -2075,6 +2079,25 @@ fn expiry_scan_budget(limit: usize) -> usize {
         if !has_layout_transitions {
             model_layout_compaction_blockers
                 .push("slot layout transition evidence is missing".to_string());
+        }
+        // OPEN A NEW WRITE-AMPLIFICATION WINDOW, because the live set has just been consolidated
+        // and the writes before this point no longer describe the store's current shape.
+        //
+        // HERE, AND ONLY IF SOMETHING MOVED. This is the single inner funnel that
+        // `compact_shard_blocks`, `compact_shard_blocks_draining`, `compact_shard_blocks_with_budget`
+        // and `compact_shard_blocks_with_budgets` all route through, and it has exactly one success
+        // return -- so a compaction cannot complete without passing this line. A round that
+        // rewrote NO live refs consolidated nothing, and resetting on it would hand the store a
+        // fresh window for doing no work, which is the one way this could flatter the figure.
+        //
+        // A BUDGETED OR DRAINED ROUND STILL OPENS A WINDOW THOUGH IT CONSOLIDATED ONLY PART OF THE
+        // STORE, so the windowed ratio is OPTIMISTIC after a partial compaction. That is stated
+        // rather than corrected: `blocks_left_by_budget` and `blocks_left_off_drain_set` are on
+        // this very report, so a reader who needs to know whether the window covers the whole
+        // store has both numbers beside it.
+        if rewritten_object_blocks > 0 {
+            self.block_store
+                .mark_write_window_at_compaction(bytes_written_before_relocation);
         }
         Ok(ShardCompactionReport {
             shard_id,
