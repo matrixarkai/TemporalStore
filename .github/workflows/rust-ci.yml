@@ -163,12 +163,19 @@ jobs:
       # `cargo test` EXITS 0 WHEN THE FILTER MATCHES NOTHING, so a renamed or moved
       # test would turn this gate into a no-op that still reports success. The grep
       # on `1 passed` is what makes the gate real; do not drop it.
-      # Three guards:
+      # Five guards:
       #   - the sender attribution, whose silent failure made the chaos harness lie
       #   - the majority check, which is the ONLY thing refusing a read on a node that has lost
       #     its peers; the freshness bar beside it is a value the node maintains itself and
       #     freezes when it is cut off, so it cannot refuse
       #   - binary outcome records must recover without a command
+      #   - a cycle request body that names no per-round bound must still decode to the
+      #     bounded round. 0 means NO bound in every one of them, a bare `#[serde(default)]`
+      #     on a number decodes an absent field to 0, and both cycle endpoints build the
+      #     request from a parsed body -- so the shipped bounds reached no HTTP caller at all
+      #     while the guard beside it, which asserts `Default`, stayed green
+      #   - and those shipped values are non-zero, which the equality above cannot say on its
+      #     own: if every bound went to 0 in `Default` too, both sides would agree
       - name: cargo test (read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -180,7 +187,9 @@ jobs:
             raft::tests::part5::the_sender_of_an_append_is_attributed_in_both_encodings \
             shared_store::tests::outcome_only_binary_frames_recover_in_every_supported_format \
             shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
-            engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_component ; do
+            engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_component \
+            engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
+            engine::tests::part4::every_maintenance_round_is_bounded_by_default ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log

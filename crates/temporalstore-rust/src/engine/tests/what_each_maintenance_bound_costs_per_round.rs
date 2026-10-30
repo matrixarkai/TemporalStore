@@ -1,0 +1,632 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+//! WHAT EACH PER-ROUND BOUND COSTS A MAINTENANCE ROUND, AND THE ROUTE THAT ARRIVES WITH NONE.
+//!
+//! Seven per-round bounds and triggers on `StorageManagerCycleRequest` decide how much one
+//! maintenance round does. `0` means NO BOUND in every one of them -- the expiry window walks
+//! every due deadline, the eviction sampler keeps every victim it finds, the index-log sweep
+//! removes every removable record, and both index-GC triggers fire whatever the log looks like.
+//! A round holding zeros is therefore not inert, it is MAXIMALLY AGGRESSIVE, and setting a bound
+//! makes each round do LESS. That is the trade measured here: cost per round against how many
+//! rounds a backlog takes to drain.
+//!
+//! `StorageManagerCycleRequest::default()` sets all seven and
+//! `every_maintenance_round_is_bounded_by_default` pins the values. THAT IS NOT THE ROUTE A
+//! SERVER TAKES. Both cycle endpoints -- `POST /server/storage/manager/cycle` and
+//! `POST /storage_manager/cycle` -- build the request with
+//! `parse_json::<StorageManagerCycleRequest>(&request.body)`, and the seven carried a bare
+//! `#[serde(default)]`. On a `usize` or a `u64` that decodes an ABSENT field to the FIELD TYPE's
+//! default, which is 0 -- not to the STRUCT's `Default`, which is where the bounds live. An
+//! absent field is what every caller who does not name one sends, so the shipped bounds reached
+//! callers of `Default::default()` and no HTTP caller at all.
+//!
+//! The tree already knew this hazard class, for exactly one field beside them:
+//! `omitting_the_commit_before_truncate_guard_still_commits_before_truncating` states it for
+//! `index_gc_commit_dirty_buckets_before_truncation`, which is why that one bool carries
+//! `#[serde(default = "...")]`. The reasoning was never carried across to the numbers.
+//!
+//! [`a_cycle_request_that_names_no_bound_still_arrives_bounded`] is the guard, and it asserts the
+//! DECODE and not the constant: the whole decoded request must equal the shipped default, so a
+//! bound that goes back to meaning "unbounded" on this route goes red whether or not anyone
+//! remembers to add it to a list, and a bound added later is covered the day it is added.
+//! Asserting `Default` alone -- which the existing guard does -- structurally cannot see this,
+//! because `Default` was right the whole time.
+//!
+//! WHAT EACH BOUND MOVES is measured by [`each_shipped_bound_bites_and_the_round_does_less_work`]
+//! on one seeded shard, the same fixture built twice and run with the seven at 0 and at the
+//! shipped values. The table it prints is reproduced in the note on that test.
+//!
+//! Counted, not timed, for every claim that matters: the box these run on carries other tenants,
+//! so wall time is printed and never asserted on.
+
+use super::*;
+
+const SHARD: ShardId = 1;
+
+/// Records the fixture writes, and the reason it is this large.
+///
+/// The index-GC gate is ANDed: at least `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` (768 KiB) of
+/// index log AND at least `DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS` (40%) of its records
+/// removable. An index-log record is about 59 B, so 8,000 records is 477 KB and the byte gate
+/// declines -- correctly -- while 16,000 reaches 943 KB and it fires. That measurement is
+/// `the_periodic_loop_actually_reclaims_the_index_log`, which is where this number comes from.
+/// The gate is exercised at the SHIPPED threshold; tuning the threshold down to suit the fixture
+/// would exercise a gate no deployment runs.
+const RECORDS: usize = 16_000;
+
+/// One key in this many is written with a deadline already in the past.
+///
+/// 16,000 / 50 = 320 due keys, which must EXCEED `DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND` (128)
+/// or the hot bound cannot be shown to bite at all. A fixture that cannot exceed a bound runs
+/// green while measuring nothing, so that margin is ASSERTED below rather than assumed.
+const DEADLINE_EVERY: usize = 50;
+
+/// One write per call, deliberately, and not a batch.
+///
+/// A write BATCH is ONE log record however many objects it carries, so a batched corpus sits on
+/// the delayed side of `min_undumped_wal_records` (1,000) for ever: the dump never fires, nothing
+/// advances the index-log retain floor, and the index-GC stage finds nothing removable. That is
+/// why `round_stage_cost.rs` reports `index_gc` flat at zero and says in as many words that the
+/// zero is unexercised rather than cheap. One record per sequence clears the dump threshold and
+/// gives the stage real work to be bounded.
+fn seed(engine: &TemporalEngine) -> usize {
+    let mut due = 0usize;
+    for index in 0..RECORDS {
+        let command = if index % DEADLINE_EVERY == 0 {
+            due += 1;
+            Command::StringSetEx {
+                key: format!("d-{index:08}"),
+                value: vec![b'v'; 64],
+                ttl_ms: 1,
+            }
+        } else {
+            Command::StringSet {
+                key: format!("k-{index:08}"),
+                value: vec![b'v'; 64],
+            }
+        };
+        let response = engine.execute(ExecuteRequest {
+            shard_id: SHARD,
+            command,
+        });
+        assert!(response.status.ok, "seed write failed: {:?}", response.status);
+    }
+    due
+}
+
+fn seeded(dir: &std::path::Path) -> (TemporalEngine, usize) {
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 24,
+        dir.join("cache"),
+        dir.join("pages"),
+        dir.join("indexes"),
+    );
+    engine.load_shard(SHARD);
+    let due = seed(&engine);
+    (engine, due)
+}
+
+/// The round both arms run: every stage on, and ONLY the seven bounds differing.
+///
+/// `eviction_memory_pressure_threshold` is 1 so the eviction gate ADMITS. With the shipped
+/// threshold the stage declines on a fixture this size and reports zero victims in both arms,
+/// which reads exactly like a bound that changed nothing. `load_cold_buckets_for_expire` is on so
+/// the cold window is reached at all rather than being skipped before its bound is consulted.
+fn round(bounded: bool) -> StorageManagerCycleRequest {
+    let shipped = StorageManagerCycleRequest::default();
+    let usize_bound = |value: usize| if bounded { value } else { 0 };
+    let u64_bound = |value: u64| if bounded { value } else { 0 };
+    StorageManagerCycleRequest {
+        shard_id: SHARD,
+        enable_prepare: true,
+        enable_wal_reclaim: true,
+        enable_expire: true,
+        enable_evict: true,
+        enable_block_reclaim: true,
+        enable_block_compaction: true,
+        enable_index_gc: true,
+        eviction_memory_pressure_threshold: 1,
+        load_cold_buckets_for_expire: true,
+        index_gc_max_entries_per_round: usize_bound(shipped.index_gc_max_entries_per_round),
+        index_gc_index_log_bytes_threshold: u64_bound(shipped.index_gc_index_log_bytes_threshold),
+        index_gc_usage_ratio_trigger_basis_points: u64_bound(
+            shipped.index_gc_usage_ratio_trigger_basis_points,
+        ),
+        max_expire_hot_buckets_per_round: usize_bound(shipped.max_expire_hot_buckets_per_round),
+        max_expire_cold_buckets_per_round: usize_bound(shipped.max_expire_cold_buckets_per_round),
+        eviction_batch_limit: usize_bound(shipped.eviction_batch_limit),
+        block_gc_min_slab_garbage_basis_points: u64_bound(
+            shipped.block_gc_min_slab_garbage_basis_points,
+        ),
+        ..shipped
+    }
+}
+
+/// What one round did, read off the report the round itself published.
+struct RoundCost {
+    /// Index-log records the sweep actually discarded.
+    swept: usize,
+    /// How many were removable BEFORE the entry budget was applied. This is the denominator for
+    /// "the budget bit": equal to `swept` means the budget was never reached.
+    removable: usize,
+    budget_exhausted: bool,
+    index_gc_applied: bool,
+    index_gc_skipped_reason: String,
+    usage_ratio_bp: u64,
+    index_log_bytes_before: u64,
+    /// Due keys the hot and cold expiry windows took. Named `*_buckets_scanned` on the report; the
+    /// quantity assigned to it is `hot_selected.len()`, which counts KEYS.
+    hot_scanned: usize,
+    cold_scanned: usize,
+    expired: usize,
+    /// Victims the eviction stage CHOSE, which is the list `eviction_batch_limit` truncates.
+    victims: usize,
+    pressure_gate_open: bool,
+    index_log_bytes_reclaimed: u64,
+    cache_bytes_removed: u64,
+    cache_entries_removed: usize,
+    /// Printed, never asserted on: see the note at the top of this file.
+    duration_ms: u64,
+    /// Per-stage wall time, so "the round got cheaper" can say WHICH stage paid. A total on its
+    /// own cannot: one stage carrying the whole cost and seven sharing it read the same.
+    stage_ms: Vec<(String, u64)>,
+}
+
+fn one_round(engine: &TemporalEngine, bounded: bool) -> RoundCost {
+    let report = engine.run_storage_manager_cycle(round(bounded));
+    let gc = report.index_gc_report.clone().unwrap_or_default();
+    let expiry = report.expiry_report.clone().unwrap_or_default();
+    let eviction = report.eviction_report.clone().unwrap_or_default();
+    RoundCost {
+        swept: gc.records_removed,
+        removable: gc.removable_records_before_budget,
+        budget_exhausted: gc.budget_exhausted,
+        index_gc_applied: gc.applied,
+        index_gc_skipped_reason: gc.skipped_reason.clone(),
+        usage_ratio_bp: gc.usage_ratio_basis_points,
+        index_log_bytes_before: gc.bytes_before,
+        hot_scanned: expiry.hot_buckets_scanned,
+        cold_scanned: expiry.cold_buckets_scanned,
+        expired: expiry.expired_records_removed,
+        victims: eviction.selected_victims.len(),
+        pressure_gate_open: eviction.pressure_gate_open,
+        index_log_bytes_reclaimed: gc.bytes_before.saturating_sub(gc.bytes_after),
+        cache_bytes_removed: eviction.cache_disk_bytes_removed,
+        cache_entries_removed: eviction.cache_entries_removed,
+        duration_ms: report.duration_ms,
+        stage_ms: report
+            .stages
+            .iter()
+            .map(|stage| (stage.stage.clone(), stage.duration_ms))
+            .collect(),
+    }
+}
+
+fn show(tag: &str, cost: &RoundCost) {
+    eprintln!(
+        "  {tag:<16} swept={:<6} removable={:<6} exhausted={:<5} applied={:<5} usage={:<6}bp \
+         log_before={:<9} hot={:<5} cold={:<4} expired={:<5} victims={:<5} gate={:<5} \
+         log_freed={:<9} cache_freed={:<9} cache_entries={:<5} ms={:<5} skip={:?}",
+        cost.swept,
+        cost.removable,
+        cost.budget_exhausted,
+        cost.index_gc_applied,
+        cost.usage_ratio_bp,
+        cost.index_log_bytes_before,
+        cost.hot_scanned,
+        cost.cold_scanned,
+        cost.expired,
+        cost.victims,
+        cost.pressure_gate_open,
+        cost.index_log_bytes_reclaimed,
+        cost.cache_bytes_removed,
+        cost.cache_entries_removed,
+        cost.duration_ms,
+        cost.index_gc_skipped_reason,
+    );
+}
+
+/// A cycle request that names no bound must still arrive bounded.
+///
+/// THE GUARD, and it reads the DECODE. Both cycle endpoints parse a request body, so what an
+/// OMITTED field decodes to is the behaviour every caller gets who does not name it -- and on a
+/// `usize` or `u64`, a bare `#[serde(default)]` decodes to 0, which in every one of these means
+/// NO BOUND. The struct's own `Default` is not consulted on that route, so a guard that asserts
+/// `Default` cannot see a zero reaching the engine through it.
+///
+/// Asserted as WHOLE-STRUCT equality rather than as a list of seven field names, on purpose. A
+/// list has to be maintained: a bound added later with a bare `#[serde(default)]` and a non-zero
+/// `Default` is a hole the day it is added and nothing goes red, and a bound RETIRED shrinks the
+/// list rather than failing. Equality covers every field there is now and every field there will
+/// be, and it names the offenders in the failure message by diffing the two encodings first.
+#[test]
+fn a_cycle_request_that_names_no_bound_still_arrives_bounded() {
+    // THE ROUTE, not a reconstruction of it: `crate::http::parse_json` is the function both
+    // endpoints call on `request.body`.
+    let silent: StorageManagerCycleRequest = crate::http::parse_json(br#"{"shard_id":7}"#)
+        .expect("a body naming only the shard must parse");
+    let shipped = StorageManagerCycleRequest {
+        shard_id: 7,
+        ..StorageManagerCycleRequest::default()
+    };
+
+    // Diff the two encodings first, so a failure says WHICH fields rather than printing two
+    // forty-field structs and leaving the reader to find the difference.
+    let left = serde_json::to_value(&shipped).unwrap();
+    let right = serde_json::to_value(&silent).unwrap();
+    let mut unbounded: Vec<String> = Vec::new();
+    for (field, want) in left.as_object().unwrap() {
+        let got = right.get(field).cloned().unwrap_or(serde_json::Value::Null);
+        if &got != want {
+            unbounded.push(format!("{field}: shipped {want}, decoded {got}"));
+        }
+    }
+    assert!(
+        unbounded.is_empty(),
+        "a cycle request body that names only the shard decoded to something other than the \
+         shipped round. Each of these reached the engine as the caller never asked for, and a 0 \
+         in a per-round bound is NO bound rather than a small one:\n  {}",
+        unbounded.join("\n  ")
+    );
+    assert_eq!(
+        silent, shipped,
+        "the decoded request must be the shipped round with only the shard named"
+    );
+
+    // AND THE BOUNDS ARE STILL NON-ZERO, which the equality above does not say on its own: if
+    // every bound went to 0 in `Default` as well, the two sides would agree and this test would
+    // pass on a wholly unbounded round. This half is what `every_maintenance_round_is_bounded_by_default`
+    // pins by value; restated here so one test name defends the whole claim in CI.
+    for (name, bound) in [
+        (
+            "index_gc_max_entries_per_round",
+            silent.index_gc_max_entries_per_round as u64,
+        ),
+        (
+            "index_gc_index_log_bytes_threshold",
+            silent.index_gc_index_log_bytes_threshold,
+        ),
+        (
+            "index_gc_usage_ratio_trigger_basis_points",
+            silent.index_gc_usage_ratio_trigger_basis_points,
+        ),
+        (
+            "max_expire_hot_buckets_per_round",
+            silent.max_expire_hot_buckets_per_round as u64,
+        ),
+        (
+            "max_expire_cold_buckets_per_round",
+            silent.max_expire_cold_buckets_per_round as u64,
+        ),
+        ("eviction_batch_limit", silent.eviction_batch_limit as u64),
+        (
+            "block_gc_min_slab_garbage_basis_points",
+            silent.block_gc_min_slab_garbage_basis_points,
+        ),
+    ] {
+        assert!(
+            bound > 0,
+            "{name} decoded to zero, which is not a bound at all"
+        );
+    }
+
+    // THE PERIODIC LOOP, the other production path that does not go through a body at all.
+    let periodic = crate::data_node::StorageManagerRuntimeOptions::default().request;
+    assert_eq!(
+        periodic.index_gc_max_entries_per_round, silent.index_gc_max_entries_per_round,
+        "the periodic loop and the endpoints must agree about the index-GC entry budget"
+    );
+    assert_eq!(
+        periodic.max_expire_hot_buckets_per_round, silent.max_expire_hot_buckets_per_round,
+        "the periodic loop and the endpoints must agree about the hot expiry window"
+    );
+    assert_eq!(
+        periodic.eviction_batch_limit, silent.eviction_batch_limit,
+        "the periodic loop and the endpoints must agree about the eviction batch"
+    );
+
+    // THE ESCAPE HATCH SURVIVES, and this is the half that says the change is a DEFAULT and not a
+    // floor: naming 0 explicitly still asks for an unbounded round. Serde only consults a default
+    // for an ABSENT field, so an operator who means "sweep everything this round" can still say
+    // so -- they just have to say it.
+    let explicit: StorageManagerCycleRequest = crate::http::parse_json(
+        br#"{"shard_id":7,"index_gc_max_entries_per_round":0,"eviction_batch_limit":0}"#,
+    )
+    .expect("a body naming the bounds must parse");
+    assert_eq!(
+        explicit.index_gc_max_entries_per_round, 0,
+        "naming the entry budget 0 must still ask for an unbounded sweep"
+    );
+    assert_eq!(
+        explicit.eviction_batch_limit, 0,
+        "naming the eviction batch 0 must still ask for an unbounded eviction"
+    );
+}
+
+/// Each shipped bound bites a round, and ONE OF THE SEVEN DOES NOT BOUND THE ROUND AT ALL.
+///
+/// Two arms of the SAME fixture: the seven at 0, which is what the decode used to hand both cycle
+/// endpoints, and the seven at the shipped values. 16,000 records, 320 of them with a deadline
+/// already in the past, one round each. Measured:
+///
+/// ```text
+///   ROUND 1                        at 0       shipped    what the bound did
+///   index-log records swept       16,001      15,536     bounds the TAIL PIECE only, see below
+///   index-log bytes freed        929,688     866,601     93% of the bytes still freed
+///   due keys taken (hot)             320         128     bit exactly, 2.5x fewer
+///   due keys taken (cold)              0           0     NOT EXERCISED, see the ignored arm
+///   eviction victims chosen       15,680          16     bit exactly, 980x fewer
+///   cache entries removed              0           0     the cost was CHOOSING, not freeing
+///   round wall time (ms)         212,458      12,095     17.6x cheaper (two runs: 23.3x, 17.6x)
+/// ```
+///
+/// A BOUNDED ROUND IS ONE TO TWO ORDERS OF MAGNITUDE CHEAPER, AND THE ROUND CANNOT SAY WHICH
+/// STAGE PAID. Wall time is quoted as a range because the box carries other tenants: two runs of
+/// the same fixture gave 231,714 / 9,925 ms and 212,458 / 12,095 ms. Nothing here is asserted on
+/// it.
+///
+/// The attribution is UNMEASURED, and that is a defect in the round and not a gap in this file:
+/// every row in `report.stages` reports `duration_ms` of 0 while the round reports 212,458, so the
+/// loop printing per-stage durations below prints nothing at all. The stage rows therefore cannot
+/// name the stage that paid. `the_storage_cycle_records_how_long_its_stages_take` asserts only
+/// that the stage times do not EXCEED the round, and 0 satisfies that for every stage, so it is
+/// green on a round whose rows are all zero.
+///
+/// What can be said without that attribution: the only stage whose work fell by three orders of
+/// magnitude is eviction, 15,680 victims chosen against 16, and it removed nothing from the cache
+/// in either arm (`cache_entries_removed` is 0 both times) -- so an unbounded round ranked every
+/// bucket in the store and then acted on none of them. That makes `eviction_batch_limit` the
+/// likely holder of the latency, and likely is as far as the measurement goes.
+///
+/// THE INDEX-GC ENTRY BUDGET IS NOT A BOUND ON THE ROUND, and this is the result that matters most
+/// because it is the opposite of what the budget looks like. With a budget of 256 and 16,001
+/// records removable, the round removed 15,536 of them -- sixty times its budget -- and
+/// `budget_exhausted` was nonetheless true. Both facts are correct. Whole sealed pieces of the log
+/// are unlinked BY NAME without being opened, so they never reach the record loop the budget
+/// guards; the budget bounds only the piece being WRITTEN. 15,280 records went in whole-piece
+/// unlinks, 256 through the budgeted loop, and 465 were retained. The budget bought a 6.8% cut in
+/// bytes freed and no measurable latency. `index_log_sweep_bound.rs` established the mechanism in
+/// counts; this is the same mechanism inside a whole round.
+///
+/// AND THE BACKLOG IT LEAVES IS HELD BY THE BYTE THRESHOLD, NOT BY THE BUDGET. One bounded round
+/// removed 97.1% of the removable records and retained 465. Round 2 does NOT take the next slice:
+/// round 1 took the log to 55,685 B, which is under the shipped 768 KiB trigger, so the stage
+/// declines with "index-log byte threshold not reached" and those 465 wait for writes to grow the
+/// log again. That is the operational consequence of pairing a byte trigger with a per-round
+/// budget, and it is the opposite of "the budget paces the drain": the budget leaves a remainder
+/// the trigger then parks.
+///
+/// Every claim here is paired with its denominator. "The bound bit" means the unbounded arm
+/// EXCEEDED the bound: on a fixture that cannot exceed it, a bounded round and an unbounded one
+/// are indistinguishable and a green test measures nothing.
+#[test]
+fn each_shipped_bound_bites_and_the_round_does_less_work() {
+    let shipped = StorageManagerCycleRequest::default();
+
+    let free_dir = tempfile::tempdir().unwrap();
+    let (free_engine, free_due) = seeded(free_dir.path());
+    let bound_dir = tempfile::tempdir().unwrap();
+    let (bound_engine, bound_due) = seeded(bound_dir.path());
+    assert_eq!(
+        free_due, bound_due,
+        "the two arms must be the same fixture, or the comparison is between two stores"
+    );
+    assert!(
+        free_due > shipped.max_expire_hot_buckets_per_round,
+        "DENOMINATOR: the fixture must hold more due keys ({free_due}) than the hot bound ({}) \
+         allows per round, or that bound cannot be shown to bite",
+        shipped.max_expire_hot_buckets_per_round
+    );
+
+    eprintln!("ROUND 1 -- the seven at 0 against the seven at the shipped values");
+    let free = one_round(&free_engine, false);
+    show("unbounded", &free);
+    let bound = one_round(&bound_engine, true);
+    show("shipped", &bound);
+
+    // ---- THE INDEX-LOG ENTRY BUDGET: IT BINDS, AND IT DOES NOT BOUND THE ROUND ----
+    assert!(
+        free.index_gc_applied && bound.index_gc_applied,
+        "DENOMINATOR: the index-GC stage must APPLY in BOTH arms, or they differ in whether the \
+         stage ran rather than in how much it did. Unbounded skipped with {:?} on a {} B log at \
+         {} bp removable; bounded skipped with {:?}",
+        free.index_gc_skipped_reason,
+        free.index_log_bytes_before,
+        free.usage_ratio_bp,
+        bound.index_gc_skipped_reason
+    );
+    assert!(
+        free.removable > shipped.index_gc_max_entries_per_round,
+        "DENOMINATOR: more records must be removable ({}) than the budget ({}) allows, or the \
+         budget is never reached",
+        free.removable,
+        shipped.index_gc_max_entries_per_round
+    );
+    assert_eq!(
+        free.swept, free.removable,
+        "an entry budget of 0 is NO budget: the sweep must remove every removable record"
+    );
+    assert!(
+        !free.budget_exhausted,
+        "a sweep with no budget cannot report having exhausted one"
+    );
+    assert!(
+        bound.budget_exhausted,
+        "the budgeted record loop must have reached its budget, or the budget was never consulted"
+    );
+    assert!(
+        bound.swept < free.swept,
+        "the bounded round must remove FEWER index-log records than the unbounded one: {} \
+         against {}",
+        bound.swept,
+        free.swept
+    );
+    // THE PART THAT IS WORTH ASSERTING RATHER THAN ASSUMING. A budget of 256 that removed 15,536
+    // records is not a broken budget -- whole sealed pieces are unlinked by NAME and never enter
+    // the loop it guards. If this ever drops to the budget, that piece-unlinking path has stopped
+    // running and the sweep has gone back to costing what it READS rather than what it removes.
+    assert!(
+        bound.swept > shipped.index_gc_max_entries_per_round * 4,
+        "the entry budget bounds only the record loop over the piece being WRITTEN, so a round \
+         removes far more than its budget: removed {} on a budget of {}. Equal to the budget \
+         means whole-piece unlinking is no longer running",
+        bound.swept,
+        shipped.index_gc_max_entries_per_round
+    );
+    // And what the budget costs in bytes, which is the quantity the log is actually bounded by.
+    assert!(
+        free.index_log_bytes_reclaimed > 0,
+        "DENOMINATOR: the unbounded arm must free index-log bytes, or the share below is 0/0"
+    );
+    let bytes_share = bound.index_log_bytes_reclaimed * 100 / free.index_log_bytes_reclaimed;
+    eprintln!(
+        "  the budgeted round still freed {bytes_share}% of the index-log bytes the unbounded one did"
+    );
+    assert!(
+        bytes_share > 80,
+        "the entry budget must not be the thing holding the log up: the bounded round freed \
+         {bytes_share}% of the bytes, and anything low here means the budget is pacing the log \
+         rather than the byte threshold being"
+    );
+
+    // ---- THE HOT EXPIRY WINDOW ----
+    assert_eq!(
+        free.hot_scanned, free_due,
+        "a hot window of 0 is NO window: it must take every due key ({free_due})"
+    );
+    assert_eq!(
+        bound.hot_scanned, shipped.max_expire_hot_buckets_per_round,
+        "THE BOUND MUST BITE EXACTLY: with {free_due} due keys the hot window must take {} of them",
+        shipped.max_expire_hot_buckets_per_round
+    );
+
+    // ---- THE EVICTION BATCH, WHICH IS WHERE THE ROUND LATENCY IS ----
+    assert!(
+        free.pressure_gate_open && bound.pressure_gate_open,
+        "DENOMINATOR: the eviction gate must admit in BOTH arms, or the batch limit is never \
+         consulted: unbounded {} bounded {}",
+        free.pressure_gate_open,
+        bound.pressure_gate_open
+    );
+    assert!(
+        free.victims > shipped.eviction_batch_limit,
+        "DENOMINATOR: the unbounded arm must find more victims ({}) than the batch limit ({}) \
+         allows, or the limit cannot be shown to bite",
+        free.victims,
+        shipped.eviction_batch_limit
+    );
+    assert_eq!(
+        bound.victims, shipped.eviction_batch_limit,
+        "THE BOUND MUST BITE EXACTLY: the eviction stage must choose {} victims, not {}",
+        shipped.eviction_batch_limit, bound.victims
+    );
+
+    // ---- WHAT THE ROUND COST, AND WHY IT CANNOT SAY WHERE ----
+    //
+    // Printed and NOT asserted on: this box carries other tenants, so a stopwatch on it measures
+    // them too. The per-stage rows are printed because the attribution is the part worth having
+    // -- and on this path they are all zero, which is itself the thing to report rather than to
+    // leave as an empty space under a heading.
+    for (tag, cost) in [("unbounded", &free), ("shipped", &bound)] {
+        let charged: Vec<&(String, u64)> =
+            cost.stage_ms.iter().filter(|(_, ms)| *ms > 0).collect();
+        if charged.is_empty() {
+            eprintln!(
+                "  stage durations, {tag} arm: ALL {} ROWS REPORT 0 ms while the round reports \
+                 {} ms, so the round cannot name the stage that paid",
+                cost.stage_ms.len(),
+                cost.duration_ms
+            );
+        } else {
+            eprintln!("  stage durations, {tag} arm:");
+            for (stage, ms) in charged {
+                eprintln!("    {stage:<28} {ms:>8} ms");
+            }
+        }
+    }
+
+    // ---- THE OTHER HALF OF THE TRADE: WHAT THE BOUNDED ROUND LEFT BEHIND ----
+    let retained = free.removable.saturating_sub(bound.swept);
+    eprintln!(
+        "  BACKLOG: the bounded round retained {retained} of {} removable index-log records \
+         ({:.1}% removed in one round)",
+        free.removable,
+        bound.swept as f64 * 100.0 / free.removable as f64
+    );
+    assert!(
+        retained > 0,
+        "the bounded round must leave SOMETHING behind, or there is no trade to describe"
+    );
+
+    eprintln!("ROUND 2 -- the same two stores, one round later");
+    let free_2 = one_round(&free_engine, false);
+    show("unbounded", &free_2);
+    let bound_2 = one_round(&bound_engine, true);
+    show("shipped", &bound_2);
+    assert!(
+        free_2.swept < free.swept,
+        "the unbounded arm drained its removable records in round 1, so round 2 has less to do: \
+         {} then {}",
+        free.swept,
+        free_2.swept
+    );
+    // AND THE BACKLOG IS NOT RELEASED BY THE NEXT ROUND. What holds the retained records is the
+    // BYTE THRESHOLD, not the entry budget: round 1 took the log from 907 KB to 41 KB, which is
+    // far under the shipped 768 KiB, so the stage declines until writes grow it again. Stated as
+    // an assertion because it is the operational consequence of pairing a byte trigger with a
+    // per-round budget, and it is the opposite of "the budget paces the drain".
+    eprintln!(
+        "  the bounded arm, round 2: applied={} reason={:?} log_before={} B against a {} B threshold",
+        bound_2.index_gc_applied,
+        bound_2.index_gc_skipped_reason,
+        bound_2.index_log_bytes_before,
+        shipped.index_gc_index_log_bytes_threshold
+    );
+    assert!(
+        bound_2.index_log_bytes_before < shipped.index_gc_index_log_bytes_threshold,
+        "round 1 must have taken the log under the byte threshold, or this is not the case the \
+         note describes: {} B against {} B",
+        bound_2.index_log_bytes_before,
+        shipped.index_gc_index_log_bytes_threshold
+    );
+    assert!(
+        !bound_2.index_gc_applied,
+        "with the log under the byte threshold the stage must decline rather than drain the \
+         backlog the budget left: it applied and swept {}",
+        bound_2.swept
+    );
+}
+
+/// What the two bounds this fixture CANNOT exercise would need, printed rather than asserted.
+///
+/// Run it when either bound is being changed:
+///
+///   cargo test -p temporalstore-rust --lib what_the_unexercised_bounds_would_need -- --ignored --nocapture
+///
+/// `max_expire_cold_buckets_per_round` selects on `!record_exists`, so it needs a key whose
+/// deadline outlived its record in memory -- which this fixture, where everything stays resident,
+/// does not produce: `cold_buckets_scanned` is 0 in both arms above.
+/// `block_gc_min_slab_garbage_basis_points` is INERT by construction and the constant beside it
+/// says so: the collector only offers slabs with no live refs at all, and a slab with no live refs
+/// is 10,000 basis points of garbage, which clears any threshold below it. Neither is asserted to
+/// bite above, because neither can here, and an assertion that cannot fail is worse than none.
+#[test]
+#[ignore]
+fn what_the_unexercised_bounds_would_need() {
+    let shipped = StorageManagerCycleRequest::default();
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, due) = seeded(dir.path());
+    let free = one_round(&engine, false);
+    eprintln!("  due keys seeded: {due}");
+    eprintln!(
+        "  cold window at 0 took {} keys; the shipped bound is {}, so it binds only once more \
+         than that many due keys have left memory",
+        free.cold_scanned, shipped.max_expire_cold_buckets_per_round
+    );
+    eprintln!(
+        "  slab garbage threshold is {} bp; a collectable slab carries 10000 bp, so every \
+         candidate clears it",
+        shipped.block_gc_min_slab_garbage_basis_points
+    );
+}

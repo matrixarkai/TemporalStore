@@ -816,6 +816,16 @@ fn main() {
                 }
             }
             ("POST", "/server/storage/manager/cycle") => {
+                // THE BOUNDS COME FROM THE DECODE, NOT FROM `Default`, AND THAT IS WHY THEY
+                // CARRY A NAMED `serde` DEFAULT. A caller who does not name a per-round bound
+                // sends an ABSENT field, and a bare `#[serde(default)]` on a number decodes
+                // that to 0 -- which means NO bound in every one of them, not a small one.
+                // The shipped values live on `StorageManagerCycleRequest` beside the
+                // constants that state the arithmetic for each; this route reaches them only
+                // because each field names its default function.
+                // `a_cycle_request_that_names_no_bound_still_arrives_bounded` asserts this
+                // route, not the struct. Naming a bound 0 explicitly still asks for an
+                // unbounded round.
                 match parse_json::<StorageManagerCycleRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
@@ -1093,6 +1103,16 @@ fn main() {
                 Err(err) => json_response(400, &Status::error("bad_request", err.to_string())),
             },
             ("POST", "/storage_manager/cycle") => {
+                // THE BOUNDS COME FROM THE DECODE, NOT FROM `Default`, AND THAT IS WHY THEY
+                // CARRY A NAMED `serde` DEFAULT. A caller who does not name a per-round bound
+                // sends an ABSENT field, and a bare `#[serde(default)]` on a number decodes
+                // that to 0 -- which means NO bound in every one of them, not a small one.
+                // The shipped values live on `StorageManagerCycleRequest` beside the
+                // constants that state the arithmetic for each; this route reaches them only
+                // because each field names its default function.
+                // `a_cycle_request_that_names_no_bound_still_arrives_bounded` asserts this
+                // route, not the struct. Naming a bound 0 explicitly still asks for an
+                // unbounded round.
                 match parse_json::<StorageManagerCycleRequest>(&request.body) {
                     Ok(req) => json_response(
                         200,
