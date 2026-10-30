@@ -14,6 +14,7 @@ use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 mod protocol;
+#[path = "redis/redis_proxy_server.rs"]
 mod server;
 #[path = "redis/redis_command_state.rs"]
 mod state;

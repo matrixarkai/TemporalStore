@@ -4465,7 +4465,7 @@
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
-              "crates/temporalstore-rust/src/bin/server.rs",
+              "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
               "crates/temporalstore-rust/src/bin/raft_node.rs",
               "crates/temporalstore-rust/src/raft.rs",
               "crates/rustraft/src/lib.rs"

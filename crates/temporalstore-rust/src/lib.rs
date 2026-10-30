@@ -40,6 +40,7 @@ static COUNTING_ALLOCATOR: alloc_probe::CountingAllocator = alloc_probe::Countin
 pub mod bytes_serde;
 pub mod block_store;
 pub mod checksum;
+#[path = "temporalstore_client.rs"]
 pub mod client;
 pub mod context_workflow;
 pub mod control;

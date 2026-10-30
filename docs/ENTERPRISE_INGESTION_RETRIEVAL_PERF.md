@@ -202,7 +202,7 @@ behavior: a server that accepts exactly one connection serves five sequential re
 
 ### Iteration 5 — large-file streaming wired end-to-end through HTTP
 
-**Change (`src/bin/server.rs`, new `src/bin/blob_http_bench.rs`, `src/http.rs`):** the datanode
+**Change (`src/bin/temporalstore_data_server.rs`, new `src/bin/blob_http_bench.rs`, `src/http.rs`):** the datanode
 now exposes `POST|PUT /blob/<key>` and `GET /blob/<key>`. The upload chunks the request body
 straight into `ObjectStore::append_blob` (the same primitive `shared_store`'s
 `append_blob_with_retry` calls) in `TS_BLOB_CHUNK_BYTES` slices (default 1 MiB), so a single
@@ -231,7 +231,7 @@ attachment — adequate for the attachment sizes this tier targets.
 
 ### Iteration 6 — blob zero-copy: streaming HTTP `/blob` (no full-body buffering)
 
-**Change (`src/http.rs`, `src/bin/server.rs`, `crates/temporalstore-snapshot/src/object_store.rs`):**
+**Change (`src/http.rs`, `src/bin/temporalstore_data_server.rs`, `crates/temporalstore-snapshot/src/object_store.rs`):**
 this delivers the "documented next step" from Iteration 5. The generic HTTP server grew a
 **streaming path** alongside the buffered one:
 
@@ -319,7 +319,7 @@ records no fabricated figures for a change it did not land).
 
 - Iteration 0-3 code change (`src/http.rs`): `TCP_NODELAY` on accepted server + client sockets,
   header+body coalesced into a single write. Iteration 4 (`src/http.rs`): HTTP keep-alive server
-  loop + thread-local client connection pool. Iteration 5 (`src/bin/server.rs`, `src/http.rs`):
+  loop + thread-local client connection pool. Iteration 5 (`src/bin/temporalstore_data_server.rs`, `src/http.rs`):
   streamed `/blob/<key>` attachment endpoints + `request_bytes_with_options` raw-body client.
 - Single-threaded lib suite **605 passed / 1 failed** — the one failure
   (`data_node … storage_manager … jitter_backoff`) is the pre-existing environmental flake also
