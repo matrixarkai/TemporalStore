@@ -7,7 +7,7 @@ the final blocks under a token budget.
 All code references are to `crates/temporalstore-rust/src/`.
 
 - Entry points: `retrieve_context` and `inject_context` (in `context_workflow.rs`)
-- Query understanding + scoring primitives: `context_workflow/query.rs`
+- Query understanding + scoring primitives: `context_workflow/context_query_scoring.rs`
 - Storage-side command handlers: `engine/execute_on_shard.rs`, `engine/context.rs`
 
 ---
@@ -101,7 +101,7 @@ node_hashes ─▶ [recall] batched summary-embedding fetch → cosine → per-n
              [inject] token-budget greedy pack → <context> + durable audit
 ```
 
-### 1 — Query encoding & understanding (`query.rs`)
+### 1 — Query encoding & understanding (`context_query_scoring.rs`)
 
 Three encodings are derived from the raw query.
 
