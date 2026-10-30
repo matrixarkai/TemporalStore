@@ -399,7 +399,7 @@ pub struct StorageRecoveryReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBlockError {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -409,7 +409,7 @@ pub struct StorageRecoveryBlockError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBlockOwnerMismatch {
     pub object_key: String,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub expected_object_id: u64,
@@ -475,7 +475,7 @@ pub struct StorageFeatureBlockError {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub key: String,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -488,7 +488,7 @@ pub struct StorageFeatureBlockTimestampMismatch {
     pub kind: String,
     pub key: String,
     pub timestamp_ms: u64,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -519,7 +519,7 @@ impl StorageObjectLifecycleReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoverySlabLiveReport {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -733,7 +733,7 @@ pub struct StoragePhysicalBlockIndex {
     pub component: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -1133,7 +1133,7 @@ pub struct StorageLifecyclePlan {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageReclaimCandidate {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub live_physical_bytes: u64,
@@ -1178,7 +1178,7 @@ pub struct StorageBlockGcReplayCursor {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBlockGcDependencyBlock {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: u64,
     pub dependency: String,
     #[serde(default)]

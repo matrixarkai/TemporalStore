@@ -19,7 +19,7 @@ pub enum CompressionFormat {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockSlabManifest {
-    #[serde(rename = "page_segment_id")]
+    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
     pub block_slab_id: String,
     pub relative_path: String,
     pub byte_size: u64,

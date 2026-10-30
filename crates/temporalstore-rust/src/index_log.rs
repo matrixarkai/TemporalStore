@@ -1822,9 +1822,9 @@ pub struct SlabCatalogEntry {
     pub created_unix_ms: Option<u64>,
     #[serde(default)]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_page_id", default)]
+    #[serde(rename = "first_page_id", alias = "first_block_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", default)]
+    #[serde(rename = "last_page_id", alias = "last_block_id", default)]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub version: u64,

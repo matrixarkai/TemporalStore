@@ -180,9 +180,9 @@ pub struct SharedStoreBlockSlab {
     // `byte_size` above is the slab's physical byte size.
     #[serde(default)]
     pub logical_bytes: u64,
-    #[serde(rename = "first_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_unix_ms: Option<u64>,
