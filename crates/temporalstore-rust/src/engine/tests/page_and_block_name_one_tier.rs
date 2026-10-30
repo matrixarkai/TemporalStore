@@ -665,3 +665,106 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
         findings.join("\n")
     );
 }
+
+/// The page-spelled keys the STORED OBJECT RECORD emits, named as a set.
+///
+/// `BlockLayout` is spelled `blocks` in Rust and emits `pages`, so the identifier says nothing
+/// about the contract and a scan over identifiers cannot see this key at all.
+///
+/// # WHY THIS IS NOT A `DURABLE_NAMES` ENTRY
+///
+/// `DURABLE_NAMES` in `block_store.rs` checks one direction: every listed name must still be
+/// spelled by SOME site outside the list. For this key that check can never go red. The string
+/// `"pages"` has 747 other sites in this crate -- it is also the on-disk directory the block
+/// store lives in (`<data>/pages`, set by `docker/single-node-entrypoint.sh`,
+/// `docker/docker-compose.cloud-api.yml` and `tools/deploy_profile_common.sh`) -- so the
+/// substring survives the serde rename being deleted outright. A registry entry for `pages`
+/// would be a guard that cannot fail, which is worse than no entry: it reads as covered.
+///
+/// So this key is pinned where it is EMITTED instead, on both halves of the round trip.
+const PAGE_SPELLED_RECORD_KEYS: &[&str] = &["pages"];
+
+/// The stored layout emits the page spelling, and still reads one back.
+///
+/// THREE CLAUSES, because "the key is there" is the easy half:
+///
+///   1. ENCODE -- the emitted key set is the declared one, so adding or dropping an emitted
+///      key on this record has to be deliberate;
+///   2. the Rust field name is NOT what is emitted, so the clause above is a fact about the
+///      wire and not about the identifier (without this, the test would still pass if someone
+///      deleted the `rename` AND renamed the field to `pages`, which is a different change);
+///   3. DECODE -- a record written by an older build loads, and the block spelling is NOT
+///      silently accepted in its place. A guard that only reads the ENCODE cannot tell a
+///      retained wire name from an accepted alias, and those have opposite consequences for a
+///      store already on disk.
+#[test]
+fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
+    use crate::engine::object_record::BlockLayout;
+
+    // ---- CLAUSE 1: ENCODE ----
+    let encoded =
+        serde_json::to_value(BlockLayout::default()).expect("the stored layout must serialize");
+    let emitted: Vec<&str> = encoded
+        .as_object()
+        .expect("the stored layout must serialize as an object")
+        .keys()
+        .map(|key| key.as_str())
+        .collect();
+    assert_eq!(
+        emitted, PAGE_SPELLED_RECORD_KEYS,
+        "the stored object layout emits {emitted:?} and this file declares \
+         {PAGE_SPELLED_RECORD_KEYS:?}. A key that LEFT is a change to what is already on disk, \
+         not a rename -- every multi-block object record written by every older build carries \
+         the old spelling, and a reader that stops accepting it stops finding those blocks"
+    );
+
+    // ---- CLAUSE 2: THE IDENTIFIER IS NOT THE CONTRACT ----
+    //
+    // Reading the emitted set cannot establish this, so this clause reads the SOURCE. If
+    // someone deleted the `rename` and renamed the field to the wire name, the clause
+    // above would still see exactly the declared set and pass, while the canonical
+    // identifier left the crate with nothing red. The two names have to be checked where
+    // they sit together.
+    let declared = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("src/engine/object_record.rs"),
+    )
+    .expect("the stored-record source must be readable");
+    assert!(
+        declared.contains(r#"rename = "pages""#),
+        "`object_record.rs` no longer carries an explicit rename to the page spelling. Either \
+         the wire name moved -- which the ENCODE clause also catches -- or the FIELD was \
+         renamed to the wire name, which leaves the emitted set unchanged and silently \
+         retires the canonical identifier instead"
+    );
+    assert!(
+        declared.contains("    blocks: Vec<StoredBlock>,"),
+        "the stored layout's field is no longer the canonical `blocks`. This crate spells the \
+         tier `block` and only the WIRE carries `pages`, so a page-spelled field here means \
+         the retained name has been promoted back into the identifier surface"
+    );
+
+    // ---- CLAUSE 3: DECODE, AND THE ALIAS THAT MUST NOT EXIST ----
+    let written_by_an_older_build = r#"{"pages":[{"address":42,"length":7,"block_id":3,"has_block_id":true,"has_generation":false}]}"#;
+    let decoded: BlockLayout = serde_json::from_str(written_by_an_older_build)
+        .expect("a layout written under the page spelling must still load");
+    assert_eq!(
+        decoded.len(),
+        1,
+        "the page-spelled payload decoded to {} blocks rather than 1, so the key was accepted \
+         and the blocks behind it were dropped -- which loses an object's data without failing",
+        decoded.len()
+    );
+    let as_block_spelled = written_by_an_older_build.replace("pages", "blocks");
+    assert_ne!(
+        as_block_spelled, written_by_an_older_build,
+        "the substitution changed nothing, so the clause below is comparing the payload against \
+         itself and would pass however the layout decodes"
+    );
+    assert!(
+        serde_json::from_str::<BlockLayout>(&as_block_spelled).is_err(),
+        "the block spelling was also accepted, so `pages` is an ALIAS and not the wire name. \
+         That is a different contract from the one this file documents: it would mean new \
+         writes may already be going out under the canonical spelling, and the retirement \
+         question becomes which spelling is on disk rather than whether to move it"
+    );
+}
