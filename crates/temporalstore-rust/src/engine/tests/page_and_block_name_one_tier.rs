@@ -25,7 +25,7 @@
 //!
 //! `page_and_block_counter_ratio` pins the reads and writes pair against nine workloads.
 //! NOTHING pinned the other mirrors. `page_index_entries` and `block_index_entries` are
-//! assigned from one expression four lines apart in `engine/persistence.rs`, `page_store_reads`
+//! assigned from one expression four lines apart in `engine/engine_persistence.rs`, `page_store_reads`
 //! and `block_store_reads` are incremented on consecutive lines of one `else if` arm in
 //! `engine/storage_reports.rs`, and `page_index_count` is assigned FROM
 //! `physical_index.block_index_count` in `engine.rs`. Every one of those is one line away from
@@ -100,7 +100,7 @@ fn mirror_groups(
 ///
 /// Not remembered -- each pair is one line away from carrying two quantities, and the
 /// line is named. `page_index_entries` and `block_index_entries` are assigned from one
-/// expression five lines apart in `engine/persistence.rs`; `page_reads`/`block_reads` and
+/// expression five lines apart in `engine/engine_persistence.rs`; `page_reads`/`block_reads` and
 /// `page_writes`/`block_writes` are declared beside each other on this struct in
 /// `control.rs` and filled from one snapshot.
 ///
@@ -236,7 +236,7 @@ fn the_published_contract_names_one_type_for_both_address_spellings() {
 
     // Denominator, printed. Provenance: `PublicStorageContract` declares 17 fields, of which
     // these are the page-spelled ones -- counted at 2701ed26e with
-    // `awk '/pub struct PublicStorageContract/,/^}/' engine/reports.rs | grep -c 'pub page_'`.
+    // `awk '/pub struct PublicStorageContract/,/^}/' engine/engine_reports.rs | grep -c 'pub page_'`.
     let block_keys: Vec<&String> = encoded
         .as_object()
         .expect("the contract must serialize as an object")

@@ -7,16 +7,24 @@ use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
+#[path = "proxy/proxy_commands.rs"]
 mod commands;
+#[path = "proxy/proxy_context.rs"]
 mod context;
 mod meta_sync;
+#[path = "proxy/proxy_prometheus.rs"]
 mod prometheus;
+#[path = "proxy/proxy_reports.rs"]
 mod reports;
+#[path = "proxy/proxy_handle.rs"]
 mod handle;
 #[path = "proxy/proxy_configuration_defaults.rs"]
 mod config;
+#[path = "proxy/proxy_metrics.rs"]
 mod metrics;
+#[path = "proxy/proxy_policy.rs"]
 mod policy;
+#[path = "proxy/proxy_response.rs"]
 mod response;
 
 use config::{
@@ -4558,7 +4566,7 @@ mod tests {
         assert!(report
             .compared_files
             .iter()
-            .any(|path| path.ends_with("/src/proxy/handle.rs")));
+            .any(|path| path.ends_with("/src/proxy/proxy_handle.rs")));
         assert!(report.mappings.iter().any(|mapping| {
             mapping.native_surface.contains("command/admission")
                 && mapping.rust_prometheus_family == "temporalstore_proxy_requests_total"

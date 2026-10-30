@@ -182,7 +182,7 @@
         The deepest Rust storage engine code currently lives in
         <code>crates/temporalstore-rust/src/engine.rs</code>,
         <code>engine/engine_storage_state.rs</code>,
-        <code>engine/context.rs</code>,
+        <code>engine/engine_context.rs</code>,
         <code>engine/packed_pages.rs</code>,
         <code>block_store.rs</code>,
         <code>cache.rs</code>,
@@ -216,7 +216,7 @@
           </tr>
           <tr>
             <td>Page/block store</td>
-            <td><code>block_store.rs</code>, <code>block_store/record.rs</code>, <code>lib.rs</code></td>
+            <td><code>block_store.rs</code>, <code>block_store/block_store_record.rs</code>, <code>lib.rs</code></td>
             <td><code>BlockAddress</code>, <code>LocalBlockStore</code>, delayed destroy, extent/segment summaries, compression envelope, and aliases that expose <code>LocalPageStore</code>/<code>PageAddress</code>.</td>
           </tr>
           <tr>
@@ -236,12 +236,12 @@
           </tr>
           <tr>
             <td>Lifecycle</td>
-            <td><code>data_node.rs</code>, <code>engine/reports.rs</code>, <code>engine.rs</code></td>
+            <td><code>data_node.rs</code>, <code>engine/engine_reports.rs</code>, <code>engine.rs</code></td>
             <td>Schedulers, storage manager options, pressure snapshots, phase reports, canonical parity reports and effective tuning.</td>
           </tr>
           <tr>
             <td>MatrixArk context</td>
-            <td><code>command_protocol_types.rs</code>, <code>engine/context.rs</code>, <code>context_workflow.rs</code>, <code>proxy.rs</code></td>
+            <td><code>command_protocol_types.rs</code>, <code>engine/engine_context.rs</code>, <code>context_workflow.rs</code>, <code>proxy.rs</code></td>
             <td>Context data models, timestamp key fanout, child refs, secondary indexes, native retrieval workflow, resource/skill fanout.</td>
           </tr>
           <tr>
@@ -380,7 +380,7 @@
   -&gt; bounded decode
   -&gt; no hot-cache promotion</pre>
       <p>
-        The canonical cold-scan contract is defined in <code>engine/reports.rs</code> and exposed through
+        The canonical cold-scan contract is defined in <code>engine/engine_reports.rs</code> and exposed through
         <code>storage_cold_scan_contract</code>. The Rust runtime has the <code>TS_COLD_SCAN_NO_CACHE_FILL</code> knob and
         report fields such as <code>cold_scan_no_cache_reads</code> and <code>hot_cache_promotions</code>. The intended
         production invariant is that temporal compression or GC scans do not warm serving cache unless a user-facing
@@ -611,7 +611,7 @@ ContextInjectRequest
           </tr>
           <tr>
             <td>Public parity reports</td>
-            <td>Strong: canonical storage contract, tuning, read/write/cold scan, cache and reclaim contracts in <code>engine/reports.rs</code>.</td>
+            <td>Strong: canonical storage contract, tuning, read/write/cold scan, cache and reclaim contracts in <code>engine/engine_reports.rs</code>.</td>
             <td>Reports are being normalized from mature internal metrics/gflags.</td>
             <td>Rust currently has clearer public parity output; remains behavior reference.</td>
           </tr>
@@ -653,10 +653,10 @@ ContextInjectRequest
       <ul class="small">
         <li><code>crates/temporalstore-rust/src/engine.rs</code></li>
         <li><code>crates/temporalstore-rust/src/engine/engine_storage_state.rs</code></li>
-        <li><code>crates/temporalstore-rust/src/engine/context.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/engine_context.rs</code></li>
         <li><code>crates/temporalstore-rust/src/engine/packed_pages.rs</code></li>
         <li><code>crates/temporalstore-rust/src/engine/slot_store.rs</code></li>
-        <li><code>crates/temporalstore-rust/src/engine/reports.rs</code></li>
+        <li><code>crates/temporalstore-rust/src/engine/engine_reports.rs</code></li>
         <li><code>crates/temporalstore-rust/src/block_store.rs</code></li>
         <li><code>crates/temporalstore-rust/src/cache.rs</code></li>
         <li><code>crates/temporalstore-rust/src/wal.rs</code></li>

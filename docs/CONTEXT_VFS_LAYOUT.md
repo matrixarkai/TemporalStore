@@ -60,7 +60,7 @@ isolation is carried in the key itself.
 | compress    | `ctx:compress:{t}:{node}`                                  | ContextCompressionEvent                 | feature              |
 | dirty       | `ctx:dirty:{t}:{node}`                                     | SummaryDirtyMarker                      | **in-memory only**   |
 
-Key derivation lives in `crates/temporalstore-rust/src/engine/context.rs`
+Key derivation lives in `crates/temporalstore-rust/src/engine/engine_context.rs`
 (`context_node_key`, `context_event_key`, `context_index_key`, `context_audit_key`,
 `context_entity_key` / `context_entity_collection_key`, `context_child_key`,
 `context_embedding_key`, `context_summary_key`, `context_compression_key`,

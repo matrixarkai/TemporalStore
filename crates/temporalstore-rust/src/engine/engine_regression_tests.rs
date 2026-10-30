@@ -220,7 +220,7 @@ fn assert_cache_latency_histograms_observed(stats: matrixcache::CacheStats) {
 }
 
 
-#[path = "tests/conformance.rs"]
+#[path = "tests/engine_tests_conformance.rs"]
 mod conformance;
 #[path = "tests/concurrent_commit.rs"]
 mod concurrent_commit;
@@ -232,7 +232,7 @@ mod phase1_flat;
 mod part1;
 #[path = "tests/cache_tiers_and_command_execution.rs"]
 mod part2;
-#[path = "tests/quota.rs"]
+#[path = "tests/engine_tests_quota.rs"]
 mod quota;
 #[path = "tests/stream_reads_and_shard_controls.rs"]
 mod part3;

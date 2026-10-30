@@ -183,10 +183,10 @@ impl ProxyService {
         ProxyMetricsParityReport {
             status: Status::ok(),
             compared_files: vec![
-                "<repo>/crates/temporalstore-rust/src/proxy/metrics.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/prometheus.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_metrics.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_prometheus.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/meta_sync.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_handle.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/proxy_configuration_defaults.rs".to_string(),
             ],
             rust_prometheus_families: proxy_metric_families_from(&rendered),
@@ -259,11 +259,11 @@ impl ProxyService {
             rust_native_aliases_ready: true,
             compared_files: vec![
                 "<repo>/crates/temporalstore-rust/src/proxy.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/handle.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_handle.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/meta_sync.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/commands.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_commands.rs".to_string(),
                 "<repo>/crates/temporalstore-rust/src/proxy/proxy_configuration_defaults.rs".to_string(),
-                "<repo>/crates/temporalstore-rust/src/proxy/response.rs".to_string(),
+                "<repo>/crates/temporalstore-rust/src/proxy/proxy_response.rs".to_string(),
             ],
             entries: vec![
                 proxy_operational_surface_entry(

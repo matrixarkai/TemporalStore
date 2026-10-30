@@ -28,6 +28,7 @@ pub use types::{
     ControlStateWindowUnit, FeatureFilter, FeatureFilterOp, FeaturePoint, FeatureWritePolicy, SequenceFeatureRow,
 };
 
+#[path = "client_options.rs"]
 mod options;
 pub use options::Options;
 

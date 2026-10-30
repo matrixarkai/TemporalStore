@@ -447,8 +447,8 @@ fn grafana_metrics_coverage_ready(root: &Path) -> bool {
 
 fn rust_sources_contain(root: &Path, snippets: &[&str]) -> bool {
     // Walked, not listed. This was six hardcoded paths, and it broke the moment `engine.rs` was
-    // split into submodules and `server.rs` into `server/metrics.rs`: six of the eleven metrics
-    // moved into `engine/prometheus_metrics.rs` and `bin/server/metrics.rs`, the list still named
+    // split into submodules and `server.rs` into `server/server_metrics.rs`: six of the eleven metrics
+    // moved into `engine/prometheus_metrics.rs` and `bin/server/server_metrics.rs`, the list still named
     // the old files, and the contract asserted that files contain metrics they no longer hold. It
     // failed for a refactor that should not have concerned it, and said only `false`.
     let mut text = String::new();

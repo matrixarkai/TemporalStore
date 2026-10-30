@@ -81,7 +81,7 @@ pub struct EmbedDrainReport {
 }
 
 // A local name for the crate vocabulary, not a second one. See the twin of this shadow in
-// engine/context.rs: spelled out, it took `1` and `true` and answered `false` for everything
+// engine/engine_context.rs: spelled out, it took `1` and `true` and answered `false` for everything
 // else, including the default it was handed.
 fn env_bool(name: &str, default: bool) -> bool {
     crate::env_flag::env_bool(name, default)

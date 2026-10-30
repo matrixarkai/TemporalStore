@@ -6,7 +6,7 @@
 //! Two parts of the metaserver decide where a shard lives, and today they
 //! disagree.
 //!
-//! [`build_shards`] (`meta/partitioning.rs`) builds the topology a client reads.
+//! [`build_shards`] (`meta/meta_partitioning.rs`) builds the topology a client reads.
 //! It is placement-aware: it spreads a shard's replicas across distinct
 //! locations and distinct hosts, because two replicas sharing a rack or a
 //! machine are one fault away from being zero replicas.

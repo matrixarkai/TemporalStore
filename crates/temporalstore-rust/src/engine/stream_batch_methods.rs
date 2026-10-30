@@ -201,7 +201,7 @@ impl TemporalEngine {
             // partition is missing/not-primary (a topology error: the client should
             // refresh its shard map), not an OK batch full of per-command errors. The Rust client
             // treats a batch-level shard_not_loaded status as topology-retryable
-            // (client/retry.rs status_is_topology_retryable) and refreshes + retries -- but it
+            // (client/client_retry.rs status_is_topology_retryable) and refreshes + retries -- but it
             // keys on the batch-level status, which the old ok+N-errors shape left ok, so the
             // client never refreshed and kept hitting the wrong node. Return it batch-level.
             return BatchExecuteResponse {

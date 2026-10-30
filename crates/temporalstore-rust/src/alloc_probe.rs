@@ -669,7 +669,7 @@ impl AllocCounts {
 /// statics directly cannot -- both answer zero. This says which, so the caller can record it
 /// alongside its numbers and a reader is never shown a zero that means the opposite.
 ///
-/// `restore_phase_probe` in `engine/lifecycle.rs` is the caller this exists for.
+/// `restore_phase_probe` in `engine/engine_lifecycle.rs` is the caller this exists for.
 pub fn counted_now() -> Option<(u64, u64)> {
     #[cfg(feature = "alloc-probe")]
     {

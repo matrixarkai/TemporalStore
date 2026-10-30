@@ -236,7 +236,7 @@ fn a_value_replacing_write_discards_the_deadline_it_overwrote() {
 /// words, and they are what caught it.
 #[test]
 fn every_dispatched_command_is_advertised_or_named_as_unadvertised() {
-    const DISPATCH: &str = include_str!("../../redis/dispatch.rs");
+    const DISPATCH: &str = include_str!("../../redis/redis_dispatch.rs");
     const TABLE: &str = include_str!("../../redis/command_table.rs");
 
     /// The control-state families. Three storage shapes (counter, distinct-count, selection)

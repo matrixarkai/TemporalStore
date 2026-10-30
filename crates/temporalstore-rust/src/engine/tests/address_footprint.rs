@@ -3100,7 +3100,7 @@ fn the_identity_a_read_builds_is_the_id_the_address_held() {
 /// rust-internal: reads this crate's own source text, no product behaviour
 #[test]
 fn the_block_identity_has_no_constructor_that_takes_an_id() {
-    const HASHING: &str = include_str!("../hashing.rs");
+    const HASHING: &str = include_str!("../engine_hashing.rs");
     assert!(
         HASHING.len() > 3_000,
         "hashing.rs read back as {} bytes, so every assertion below is over nothing",

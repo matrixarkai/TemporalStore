@@ -11,15 +11,20 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use sha2::{Digest, Sha256};
 
+#[path = "engine/engine_golden.rs"]
 pub mod golden;
+#[path = "engine/engine_reports.rs"]
 pub mod reports;
 
 mod admin_report;
+#[path = "engine/engine_constants.rs"]
 mod constants;
 mod container_membership;
 mod container_blocks;
 mod execute_on_shard;
+#[path = "engine/engine_context.rs"]
 mod context;
+#[path = "engine/engine_lifecycle.rs"]
 mod lifecycle;
 mod object_manager;
 mod packed_blocks;
@@ -44,6 +49,7 @@ mod storage_reports;
 mod prometheus_metrics;
 mod stream_batch_methods;
 mod recovery_sweep_compact;
+#[path = "engine/engine_persistence.rs"]
 mod persistence;
 mod bucket_dump_io;
 pub use self::bucket_dump_io::{
@@ -53,6 +59,7 @@ pub use self::bucket_dump_io::{
 };
 mod command_validation;
 pub mod resource_blobs;
+#[path = "engine/engine_quota.rs"]
 pub mod quota;
 pub(crate) mod eviction_sampler;
 // Single source of truth for write-command classification (shared with the data_node layer,
@@ -82,6 +89,7 @@ pub use shard_write_guard::{
     reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
     reset_maintenance_block_read_counts, IndexEncodeCounts, MaintenanceBlockReadCounts,
 };
+#[path = "engine/engine_compaction.rs"]
 mod compaction;
 // The maintenance round in `data_node` asks this before compacting; see the function's doc.
 pub use compaction::{
@@ -89,9 +97,11 @@ pub use compaction::{
     reset_container_batch_counts, CONTAINER_BATCH_ELEMENT_CAP,
 };
 mod storage_reporting;
+#[path = "engine/engine_hashing.rs"]
 pub(crate) mod hashing;
 mod bucket_store;
 mod control_rollup;
+#[path = "engine/engine_hll.rs"]
 mod hll;
 mod hot_block_spill;
 mod block_in_wal;

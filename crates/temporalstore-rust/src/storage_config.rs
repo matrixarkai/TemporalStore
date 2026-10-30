@@ -537,7 +537,7 @@ mod tests {
         // 8 MiB -- the slab wins, so the floor below never fires and that assertion holds whether
         // or not this clamp exists at all.
         //
-        // `block_store/append.rs` and `block_store.rs` seal at
+        // `block_store/block_store_append.rs` and `block_store.rs` seal at
         // `effective_block_slab_target_bytes()`, so this, not the field, is what an operator's
         // value has to survive.
         for written in ["1024", "65536", "1048576", "10485759"] {

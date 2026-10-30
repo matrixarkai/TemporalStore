@@ -8,7 +8,7 @@
 //! halves of the pair. That reads as two different measurements, and a rename treating one as
 //! a stale spelling of the other would then halve a real number.
 //!
-//! It is not two measurements. `engine/persistence.rs` assigns all four fields from the SAME
+//! It is not two measurements. `engine/engine_persistence.rs` assigns all four fields from the SAME
 //! `BlockStore` counters, four lines apart:
 //!
 //! ```text
@@ -19,8 +19,8 @@
 //! ```
 //!
 //! `BlockStore` carries exactly one read counter (`stats.reads`, incremented at three call
-//! sites in `block_store/read.rs`) and one write counter (`stats.writes`, two sites in
-//! `block_store/append.rs`). There is no second measurement for the second name to carry, so
+//! sites in `block_store/block_store_read.rs`) and one write counter (`stats.writes`, two sites in
+//! `block_store/block_store_append.rs`). There is no second measurement for the second name to carry, so
 //! the ratio is one -- the fixture's two was authored, never observed.
 //!
 //! These tests drive the engine over nine shaped workloads and assert the RATIO rather than

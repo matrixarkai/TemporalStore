@@ -12,11 +12,15 @@ use thiserror::Error;
 
 use crate::storage_config::effective_block_slab_target_bytes;
 
+#[path = "block_store/block_store_paths.rs"]
 mod paths;
 mod slab_manifest;
 mod slab_reports;
+#[path = "block_store/block_store_append.rs"]
 mod append;
+#[path = "block_store/block_store_read.rs"]
 mod read;
+#[path = "block_store/block_store_gc.rs"]
 mod gc;
 mod slab_ids;
 mod slab_backend;
@@ -24,6 +28,7 @@ pub use slab_backend::block_store_file_read_counts;
 use slab_backend::{
     read_block_store_file, BlockStoreReadTally, LocalSlabBackend, SlabBackend,
 };
+#[path = "block_store/block_store_record.rs"]
 mod record;
 
 /// Bytes a block record spends on its header, before the block's own bytes.

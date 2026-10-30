@@ -250,8 +250,8 @@ fn no_nested_model_map_is_a_hashed_table_and_hashes_carries_the_named_container(
 #[test]
 fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     let execute = include_str!("../execute_on_shard.rs");
-    let context = include_str!("../context.rs");
-    let constants = include_str!("../constants.rs");
+    let context = include_str!("../engine_context.rs");
+    let constants = include_str!("../engine_constants.rs");
 
     assert!(
         execute.len() > 50_000 && context.len() > 10_000 && constants.len() > 500,
