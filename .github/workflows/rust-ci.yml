@@ -54,9 +54,19 @@ jobs:
       - name: Install system build dependencies
         # librocksdb-sys (via matrixcache's rocksdb-ssd feature) runs bindgen and
         # needs libclang; building RocksDB itself needs cmake.
+        #
+        # protobuf-compiler is NOT optional and is NOT provided by the runner image.
+        # `raft-proto`'s build script runs prost-build, which shells out to `protoc`
+        # and panics without it. This was absent here and the gate still passed for
+        # months: `actions/cache` restores `target`, so the DEBUG build-script output
+        # came back from the cache and `cargo check` never re-ran it, while the
+        # release build below had nothing cached and had to. The job therefore failed
+        # only on the release profile, which made it look like a release-only problem
+        # rather than a missing package. Installing it here instead of relying on the
+        # image means a cold cache fails nothing.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
@@ -86,9 +96,19 @@ jobs:
       - name: Install system build dependencies
         # librocksdb-sys (via matrixcache's rocksdb-ssd feature) runs bindgen and
         # needs libclang; building RocksDB itself needs cmake.
+        #
+        # protobuf-compiler is NOT optional and is NOT provided by the runner image.
+        # `raft-proto`'s build script runs prost-build, which shells out to `protoc`
+        # and panics without it. This was absent here and the gate still passed for
+        # months: `actions/cache` restores `target`, so the DEBUG build-script output
+        # came back from the cache and `cargo check` never re-ran it, while the
+        # release build below had nothing cached and had to. The job therefore failed
+        # only on the release profile, which made it look like a release-only problem
+        # rather than a missing package. Installing it here instead of relying on the
+        # image means a cold cache fails nothing.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake
+          sudo apt-get install -y --no-install-recommends clang libclang-dev cmake protobuf-compiler
 
       - name: Install Rust toolchain
         run: rustup toolchain install 1.88.0 --profile minimal --no-self-update && rustup default 1.88.0
