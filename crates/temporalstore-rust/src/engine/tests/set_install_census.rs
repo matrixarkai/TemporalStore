@@ -52,7 +52,7 @@ use super::*;
 /// rust-internal: reads this crate's own source text, no product behaviour
 #[test]
 fn every_command_that_installs_a_set_member_reports_a_touched_element() {
-    let types = include_str!("../../types.rs");
+    let types = include_str!("../../command_protocol_types.rs");
     let execute = include_str!("../execute_on_shard.rs");
     let engine = include_str!("../../engine.rs");
     let lifecycle = include_str!("../lifecycle.rs");

@@ -2732,7 +2732,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/types.rs",
+              "crates/temporalstore-rust/src/command_protocol_types.rs",
               "crates/temporalstore-rust/src/engine.rs",
               "crates/temporalstore-rust/src/bin/storage_modes_harness.rs"
             ],

@@ -21,6 +21,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 
 mod control_state_types;
 mod feature_types;
+#[path = "value_type_exports.rs"]
 mod types;
 pub use types::{
     ControlStateFolType, ControlStateHType, ControlStatePrecision, ControlStateWindow,

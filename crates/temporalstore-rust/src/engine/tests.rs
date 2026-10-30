@@ -224,10 +224,14 @@ mod conformance;
 mod concurrent_commit;
 mod raft_apply_coalesce;
 mod phase1_flat;
+#[path = "tests/storage_maintenance_and_compaction.rs"]
 mod part1;
+#[path = "tests/cache_tiers_and_command_execution.rs"]
 mod part2;
 mod quota;
+#[path = "tests/stream_reads_and_shard_controls.rs"]
 mod part3;
+#[path = "tests/persistence_recovery_and_accounting.rs"]
 mod part4;
 mod expiry_scale;
 mod reclaim_dump;
