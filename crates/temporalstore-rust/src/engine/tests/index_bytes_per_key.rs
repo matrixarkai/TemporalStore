@@ -10193,3 +10193,222 @@ fn what_a_dump_round_takes_out_of_the_resident_index() {
          and in both cases the transient share this arm reports is wrong."
     );
 }
+
+/// THE AMPLIFICATION SET AT TWO ARMS EXACTLY 4.0x APART, AT A MATCHED TABLE PHASE.
+///
+/// `the_amplification_set_in_the_published_format` reports the index's space-in-memory quadrant at
+/// one corpus. One corpus cannot say whether the figure is a property of the index or of the
+/// corpus, and `the_per_key_index_figure_is_a_sawtooth` is why two corpora usually cannot either:
+/// a hashbrown table's cost per key is a step function of n, so two arms in different phases differ
+/// by up to 2x with no constant term to give it away.
+///
+/// SO THE TWO ARMS ARE CHOSEN TO SIT AT THE SAME PHASE. 1,792 and 7,168 are both exactly 7/8 of a
+/// power of two -- the most a 2,048- and an 8,192-bucket table hold -- so both tables are at 100%
+/// usable load, and they are exactly 4.0x apart, which is the arm spacing this campaign uses. Both
+/// facts are asserted rather than arranged and trusted: if hashbrown's growth policy moves, the
+/// capacity assertion fails and says the phase match is gone.
+///
+/// AND IT IS THE STEADY STATE, NOT THE FIXTURE STATE. Measured on the shipped `0..1023` routing
+/// range rather than `load_shard`'s whole keyspace, and after a full dump round, because
+/// `what_a_dump_round_takes_out_of_the_resident_index` showed 30.6% of the published figure is the
+/// dirty index a dump empties. The shared `Arc<str>` key characters are added back in, because
+/// `deep_heap_bytes` is a clone and `Arc::clone` bumps a refcount rather than copying.
+///
+/// WHAT IT IS FOR: the asymptote. Per-bucket terms saturate at 1,024 buckets on this range, so the
+/// ratio falls with corpus size and a single reading overstates it. The two slopes -- resident
+/// bytes per key and encoded bytes per key -- give the figure a large corpus converges on, which is
+/// the number any footprint target has to be set against.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib the_amplification_set_at_two_arms_four_times_apart -- --ignored --nocapture
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds two corpora, dumps each and weighs them; run by name"]
+fn the_amplification_set_at_two_arms_four_times_apart() {
+    use crate::types::{Command, ExecuteRequest};
+    const VALUE: usize = 256;
+    const SHIPPED_END: u32 = 1023;
+    /// 7/8 of 2,048 -- the most a 2,048-bucket table holds, so the table is exactly full.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+    const TARGET: f64 = 4.0;
+
+    struct Arm {
+        keys: usize,
+        census: Vec<(&'static str, u64)>,
+        image: u64,
+        clone_resident: u64,
+        arc_bytes: u64,
+        buckets: usize,
+        capacity: usize,
+    }
+
+    let weigh = |keys: usize| -> Arm {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), SHIPPED_END);
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("amp-{index:06}"),
+                    value: vec![b'v'; VALUE],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        // THE DUMP, through the production lifecycle, so the dirty index is drained the way a
+        // deployment drains it rather than by emptying a field.
+        let candidates: Vec<u32> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        };
+        assert!(!candidates.is_empty(), "{keys} keys produced no bucket to dump");
+        let lifecycle =
+            engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_buckets: candidates.clone(),
+                max_dump_buckets_per_round: candidates.len(),
+                ..Default::default()
+            });
+        std::hint::black_box(&lifecycle);
+
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        assert_eq!(keys, shard.strings().len(), "denominator: the map must hold every key");
+        assert_eq!(
+            0,
+            shard.dirty_objects.len(),
+            "{keys} keys: the dump left the shard dirty, so this is not the steady state"
+        );
+        let (arc_bytes, _) = arc_payload_bytes(&shard.bucket_index);
+        Arm {
+            keys,
+            census: census_bytes(shard),
+            image: crate::engine::encode_index_bytes(shard).len() as u64,
+            clone_resident: deep_heap_bytes(shard),
+            arc_bytes,
+            buckets: shard.bucket_index.bucket_map.len(),
+            capacity: shard.strings().capacity(),
+        }
+    };
+
+    let one = weigh(ONE_X);
+    let four = weigh(FOUR_X);
+
+    // --- THE PHASE MATCH, ASSERTED. This is the premise the whole comparison rests on: a table
+    // --- holding exactly 7/8 of its buckets is at the cheapest point of the sawtooth, and both
+    // --- arms must be at it or their per-key figures are not comparable.
+    for arm in [&one, &four] {
+        assert_eq!(
+            arm.keys, arm.capacity,
+            "the {}-key arm's string table reports capacity {} for {} entries. The arm sizes are \
+             chosen so that a full table holds exactly the corpus -- if hashbrown's growth policy \
+             moved, these two arms are in different phases of the sawtooth and every per-key \
+             figure below is a comparison of phases rather than of corpora.",
+            arm.keys, arm.capacity, arm.keys
+        );
+    }
+    assert_eq!(4 * ONE_X, FOUR_X, "the arms must be exactly 4.0x apart");
+
+    let one_true = one.clone_resident + one.arc_bytes;
+    let four_true = four.clone_resident + four.arc_bytes;
+    let span = (FOUR_X - ONE_X) as f64;
+
+    println!();
+    println!("  THE INDEX SPACE-IN-MEMORY QUADRANT, TWO ARMS 4.0x APART, BOTH TABLES EXACTLY FULL");
+    println!("  (shipped range 0..1023, after a full dump round, key characters counted)");
+    println!();
+    println!("    {:<40} {:>11} {:>11} {:>10}", "row", "1x (1,792)", "4x (7,168)", "slope B/k");
+    for (index, (name, one_bytes)) in one.census.iter().enumerate() {
+        let (four_name, four_bytes) = four.census[index];
+        assert_eq!(*name, four_name, "the census rows must line up to be differenced");
+        let slope = (four_bytes as i64 - *one_bytes as i64) as f64 / span;
+        println!("    {:<40} {:>11} {:>11} {:>10.1}", name, one_bytes, four_bytes, slope);
+    }
+    println!();
+    println!("    {:<40} {:>11} {:>11}", "buckets", one.buckets, four.buckets);
+    println!("    {:<40} {:>11} {:>11}", "encoded image", one.image, four.image);
+    println!("    {:<40} {:>11} {:>11}", "clone resident", one.clone_resident, four.clone_resident);
+    println!("    {:<40} {:>11} {:>11}", "Arc<str> key characters", one.arc_bytes, four.arc_bytes);
+    println!("    {:<40} {:>11} {:>11}", "TRUE resident", one_true, four_true);
+    println!();
+    let one_ratio = one_true as f64 / one.image as f64;
+    let four_ratio = four_true as f64 / four.image as f64;
+    println!(
+        "    B/key resident   {:>8.1} {:>11.1}",
+        one_true as f64 / ONE_X as f64,
+        four_true as f64 / FOUR_X as f64
+    );
+    println!("    amplification    {one_ratio:>8.3}x{four_ratio:>10.3}x");
+
+    // --- THE ASYMPTOTE, from the two slopes. Per-bucket terms are capped at 1,024 buckets on this
+    // --- range, so they stop contributing and the ratio converges on the ratio of the slopes.
+    let resident_slope = (four_true - one_true) as f64 / span;
+    let image_slope = (four.image - one.image) as f64 / span;
+    assert!(
+        image_slope > 0.0 && resident_slope > 0.0,
+        "a slope came out non-positive ({resident_slope:.1} resident, {image_slope:.1} image), so \
+         the asymptote below is not a ratio of growth rates"
+    );
+    let asymptote = resident_slope / image_slope;
+    println!();
+    println!(
+        "    marginal: {resident_slope:.1} B/key resident over {image_slope:.1} B/key encoded"
+    );
+    println!("    ASYMPTOTE: a large corpus on this structure converges on {asymptote:.2}x");
+    println!();
+
+    // --- WHAT REACHING 4.0x WOULD TAKE, as a number rather than an aspiration.
+    let allowed_per_key = TARGET * image_slope;
+    let cut_needed = resident_slope - allowed_per_key;
+    println!("  WHAT A 4.0x TARGET REQUIRES");
+    println!(
+        "    at {image_slope:.1} encoded B/key, 4.0x allows {allowed_per_key:.1} resident B/key"
+    );
+    println!(
+        "    the marginal cost is {resident_slope:.1}, so reaching it needs {cut_needed:.1} B/key removed ({:.0}% of the per-key index)",
+        100.0 * cut_needed / resident_slope
+    );
+    println!("    the rows still per-key at the steady state, largest first:");
+    let mut rows: Vec<(&'static str, f64)> = one
+        .census
+        .iter()
+        .enumerate()
+        .filter(|(_, (name, _))| *name != "WHOLE ShardState clone")
+        .map(|(index, (name, one_bytes))| {
+            let (_, four_bytes) = four.census[index];
+            (*name, (four_bytes as i64 - *one_bytes as i64) as f64 / span)
+        })
+        .filter(|(_, slope)| *slope > 0.5)
+        .collect();
+    rows.sort_by(|left, right| right.1.partial_cmp(&left.1).expect("finite slopes"));
+    for (name, slope) in &rows {
+        println!("      {:<44} {:>7.1} B/key", name, slope);
+    }
+    println!();
+
+    // --- THE ARMS MUST ACTUALLY DIFFER, or every slope above is noise.
+    assert!(
+        four_true > one_true && four.image > one.image,
+        "the 4x arm did not grow against the 1x arm ({one_true} -> {four_true} resident, {} -> {} image), so there is no slope to take",
+        one.image,
+        four.image
+    );
+    // --- AND THE RATIO MUST FALL BETWEEN THEM, which is the finding that makes a single reading
+    // --- of this quadrant an overstatement. If it ever rises, the per-bucket terms stopped
+    // --- saturating and the asymptote argument above does not hold.
+    assert!(
+        four_ratio < one_ratio,
+        "the amplification rose from {one_ratio:.3}x at {ONE_X} keys to {four_ratio:.3}x at {FOUR_X}. It was expected to FALL, because the per-bucket rows are capped at 1,024 buckets and stop contributing as keys grow -- if it rises, something per-key grew superlinearly and the asymptote is not a bound."
+    );
+    // --- AND THE TARGET IS NOT ALREADY MET, so this arm says what is left to do rather than
+    // --- quietly passing. If a change ever brings the asymptote under 4.0x, this fails and says
+    // --- the target is reached, which is the point at which the note above should be rewritten.
+    assert!(
+        asymptote > TARGET,
+        "the asymptote is {asymptote:.2}x, at or below the {TARGET:.1}x target. That is the goal reached -- update this arm to pin the new figure and rewrite the note, rather than loosening this assertion."
+    );
+}
