@@ -7546,7 +7546,7 @@ mod component_lookup_tests {
     //!     `names_the_only_slot` predicate, asserted BOTH WAYS in one arm so that loosening it
     //!     cannot satisfy a one-sided check.
     //!   * `the_refs_in_the_only_slot_stay_sorted_for_the_search_that_removes_them` -- carried out
-    //!     of `components_of_one_object_stay_separate` in `part4.rs`, which the collapse deleted.
+    //!     of `components_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs`, which the collapse deleted.
     //!     The order claim it held belongs to `BlockRefs`, whose `insert` keeps the refs sorted and
     //!     whose `remove` binary-searches them, and nothing else in the tree asserted it.
 
@@ -7713,7 +7713,7 @@ mod component_lookup_tests {
     /// THE REFS IN THE ONE SLOT STAY SORTED, WHICH IS THE ORDER `remove` SEARCHES.
     ///
     /// CARRIED FROM AN ARM THE COLLAPSE DELETED, in the merge that joined the two branches.
-    /// `components_of_one_object_stay_separate` in `part4.rs` asserted "removal binary-searches
+    /// `components_of_one_object_stay_separate` in `persistence_recovery_and_accounting.rs` asserted "removal binary-searches
     /// this vector, so its order is load-bearing" of the SECOND LEVEL's vector, and the
     /// element-name branch's rewrite of that arm moved the claim down onto the refs. The level is
     /// gone and the rewrite with it -- it reads `by_component` and `refs_for(..)`, neither of which

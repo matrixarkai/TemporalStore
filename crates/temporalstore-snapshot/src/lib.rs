@@ -6,6 +6,7 @@
 pub mod metrics;
 pub mod object_store;
 pub mod snapshot_store;
+#[path = "snapshot_manifest_types.rs"]
 pub mod types;
 
 pub use metrics::SnapshotMetrics;

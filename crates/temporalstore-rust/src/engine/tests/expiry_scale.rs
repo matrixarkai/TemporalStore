@@ -3726,7 +3726,7 @@ fn cache_pass_due(objects: usize) -> Vec<String> {
 ///
 /// WHY THE DEADLINES ARE BACK-DATED RATHER THAN SHORT, and this is the single most expensive
 /// mistake available here. A record cache is populated by READS -- `the_cache_namespaces_a_record_
-/// can_actually_use` (engine/tests/part4.rs) says so in as many words -- and a read of a key whose
+/// can_actually_use` (engine/tests/persistence_recovery_and_accounting.rs) says so in as many words -- and a read of a key whose
 /// deadline has already passed caches nothing. Writing with a one-millisecond TTL and then warming
 /// would therefore produce an EMPTY cache, the sweep would walk zero entries, and the cost would
 /// measure at its floor, which reads exactly like a cheap operation. So every key is written with
