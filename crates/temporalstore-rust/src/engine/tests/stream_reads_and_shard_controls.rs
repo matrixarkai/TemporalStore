@@ -2547,7 +2547,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
                 "last_dump_sequence": 11,
                 "object_ids": [42],
                 "page_refs": {
-                    "string:k::1:2": {
+                    "__BLOCK_REF_KEY__": {
                         "object_key": "k",
                         "model_id": "string",
                         "object_id": 42,
@@ -2567,6 +2567,29 @@ fn core_index_loads_legacy_bucket_page_field_names() {
             }
         }
     }"#;
+
+    // THE KEY IS DERIVED FROM THE PRODUCTION BUILDER, NOT SPELLED OUT, and that is not tidiness.
+    //
+    // This fixture used to carry `"string:k::1:2"` written by hand. #2359 took the object key and
+    // the model id OFF the entry and made the key the only place they are stored, so the key is now
+    // READ BACK at load (`StoredBlockEntry::into_parts_from_key`) and has to be the whole eight-slot
+    // composite. A five-slot key stopped being loadable the day that landed, and the control below
+    // -- which is the half that can actually go wrong -- has been failing on the KEY ever since,
+    // never reaching the address word it exists to check. The refusal above kept passing, so the
+    // arm reported a red that looked like the thing it was asserting.
+    //
+    // Spelling eight slots by hand would re-arm exactly that trap for the next format change. Built
+    // through `block_ref_key_from_parts`, this fixture moves with the renderer, and the slots carry
+    // the SAME numbers the stored address below names -- slab 1, offset 2, length 3, block id 4 --
+    // so the key and the address cannot disagree about which block this is. The generation slot
+    // follows the block id, which is what `ElementEntry::try_from_parts` derives it from.
+    //
+    // `the_key_a_block_is_filed_under_inverts_exactly` is what holds the format itself; this only
+    // has to stop being a second, stale copy of it.
+    let legacy_json = &legacy_json.replace(
+        "__BLOCK_REF_KEY__",
+        &crate::index_log::block_ref_key_from_parts("string", "k", None, 1, 2, 3, 4, 4),
+    );
 
     // THE OLD NAMES STILL LOAD; THE OLD ADDRESS SHAPE DOES NOT, AND THAT IS THE WHOLE POINT.
     //
