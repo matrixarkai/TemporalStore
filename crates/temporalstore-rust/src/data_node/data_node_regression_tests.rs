@@ -14,6 +14,9 @@ mod part1;
 mod part2;
 #[path = "tests/maintenance_and_lifecycle_recovery.rs"]
 mod part3;
+#[path = "tests/exported_storage_terms.rs"]
 mod exported_storage_terms;
+#[path = "tests/evict_live.rs"]
 mod evict_live;
+#[path = "tests/evict_dump_drop.rs"]
 mod evict_dump_drop;

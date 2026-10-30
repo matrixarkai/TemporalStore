@@ -28,7 +28,7 @@
 //! not mention. So the enumeration is maintained by the compiler, and every field is forced to
 //! declare in one place whether it reaches the wire. `ShardState` already carries this shape for
 //! its own packing pass, with the skipped fields annotated in the pattern -- see the destructuring
-//! around `state.rs:5765`.
+//! around `engine_storage_state.rs:5765`.
 //!
 //! # AND THE WIRE IS OBSERVED, NOT READ OFF THE ATTRIBUTES
 //!

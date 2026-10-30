@@ -61,8 +61,8 @@ fn shard_state_fields() -> Vec<(String, String)> {
     let state = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
         .join("src")
         .join("engine")
-        .join("state.rs");
-    let text = std::fs::read_to_string(&state).expect("state.rs must be readable");
+        .join("engine_storage_state.rs");
+    let text = std::fs::read_to_string(&state).expect("engine_storage_state.rs must be readable");
 
     // BRACE-MATCH THE STRUCT. This arm is DEFENSIVE AND CURRENTLY UNEXERCISED, and saying so is
     // the point: a plant swapped it for the naive `find("\n}\n")` and the guard still passed, even

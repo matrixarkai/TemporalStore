@@ -672,7 +672,7 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
 /// `BlockLookupRef` is the entry `object_block_lookup` holds, and it is the structure
 /// `bucket_index_target_buckets_for_object_key` reads the bucket out of. It carries a `u32` bucket
 /// beside a `u64` ref key -- 12 bytes of field in 16, because the `u32` pads to the `u64`'s
-/// alignment. `state.rs` pins that width with a const assertion saying the waste is "pinned so the
+/// alignment. `engine_storage_state.rs` pins that width with a const assertion saying the waste is "pinned so the
 /// waste is visible, not because it can be reclaimed here".
 ///
 /// It CAN be reclaimed, and this is the one place in the study where it can. Take the bucket out
@@ -720,7 +720,7 @@ fn dropping_the_bucket_from_a_lookup_ref_is_the_one_place_it_pays() {
 
     assert_eq!(
         16, real,
-        "BlockLookupRef is {real} B, not the 16 `state.rs` pins -- the arithmetic below assumes 16"
+        "BlockLookupRef is {real} B, not the 16 `engine_storage_state.rs` pins -- the arithmetic below assumes 16"
     );
     assert_eq!(
         real, mirror,

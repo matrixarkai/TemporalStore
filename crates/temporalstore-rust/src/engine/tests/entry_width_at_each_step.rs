@@ -5,7 +5,7 @@
 //!
 //! The target shape was twenty-four bytes carrying NO IDENTITY OF ITS OWN: a flag group, a model
 //! spelling, and an address, with the identity supplied by the position the entry is held at. THE
-//! ENTRY IS THAT SHAPE. `state.rs` pins it at twenty-four with nineteen bytes of field and five of
+//! ENTRY IS THAT SHAPE. `engine_storage_state.rs` pins it at twenty-four with nineteen bytes of field and five of
 //! slack, and the identity is resolved through `BlockKeysByPosition` from the position the page is
 //! filed at.
 //!
@@ -17,7 +17,7 @@
 //! measures the live type; every row that was "composed on step one" is composed on step zero,
 //! which is the same field set under its real name.
 //!
-//! THAT IS THE SECOND FOLD THIS FILE HAS TAKEN FOR THE SAME REASON, and `state.rs` has taken two:
+//! THAT IS THE SECOND FOLD THIS FILE HAS TAKEN FOR THE SAME REASON, and `engine_storage_state.rs` has taken two:
 //! a probe whose justification is "the number has to be real before anyone starts" is spent the
 //! moment the number is the live type's own.
 //!
@@ -200,7 +200,7 @@ const _: () = assert!(size_of::<StepZeroWithOneWordTooMany>() == 32);
 // describing a field set the live entry had lost.
 //
 // WHAT IT MEASURED IS NOT LOST, IT IS PINNED ON THE LIVE TYPE. Nineteen bytes of field in
-// twenty-four with five of slack is asserted thirty lines above as step zero, and `state.rs`
+// twenty-four with five of slack is asserted thirty lines above as step zero, and `engine_storage_state.rs`
 // asserts the same reconstruction on `BlockIndex` itself.
 //
 // AND THE CLAIM IT WAS WRITTEN TO CORRECT IS WORTH KEEPING. It once read "twenty-four bytes of

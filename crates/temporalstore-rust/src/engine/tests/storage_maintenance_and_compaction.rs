@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Part 1 of engine tests, split from engine/tests.rs.
+//! Part 1 of engine tests, split from engine/engine_regression_tests.rs.
 #![allow(clippy::all)]
 use super::*;
 // FOR `points()` ON A SLOT: `super::*` re-exports the engine's items but not this trait,
@@ -4770,7 +4770,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 //
 // THE REBUILD WALKED THE PAGES AND READ EACH ONE'S KEY, so with the identity off the entry there
 // is nothing to rebuild FROM, and the oracle has one side. `rebuild_object_block_lookup` is
-// deleted in `state.rs` with the reasoning; these three go with it rather than being rewritten to
+// deleted in `engine_storage_state.rs` with the reasoning; these three go with it rather than being rewritten to
 // compare the maintained lookup with itself.
 //
 // WHAT THE ORACLE BOUGHT, so it outlives the assertions: it is the whole of the evidence that

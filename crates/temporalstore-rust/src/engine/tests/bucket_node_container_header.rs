@@ -211,7 +211,7 @@ const _: () = assert!(size_of::<BucketFlags>() == 1);
 // `align_of::<BlockIndex>()` in the control below cannot be.
 //
 // THE DOC ABOVE LEANS ON THEM TOO. The ladder floor of 16 and the refusal of `ObjectIndex` at 8
-// are both niche-and-tag arguments, and the tag width there is the payload alignment; `state.rs`
+// are both niche-and-tag arguments, and the tag width there is the payload alignment; `engine_storage_state.rs`
 // writes that identity out for `ObjectIndex` as `size == align_of + size_of::<Box<ObjectSlots>>`.
 // All of it is arithmetic in the alignment and none of it was asserted.
 //

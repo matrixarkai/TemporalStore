@@ -132,7 +132,7 @@
 //!
 //!   * STAGE ONE re-keyed `ObjectBlockLookup`'s own field and its own methods -- `get`, `get_mut`,
 //!     `file`, `remove`, `iter` and the two key-sharing helpers -- and `cargo check --lib` named
-//!     TEN production sites, NINE of them inside `state.rs`. That reads as a change with almost no
+//!     TEN production sites, NINE of them inside `engine_storage_state.rs`. That reads as a change with almost no
 //!     blast radius, and it is an artefact: `CoreIndex`'s wrapper methods keep their `&str`
 //!     signatures and ABSORB the re-keying, so every caller beyond them still type-checks. A
 //!     census stopped there would have priced this leg at ten sites.
@@ -214,7 +214,7 @@ const RESIDENT_ENTRY_PAYLOAD: usize = std::mem::size_of::<(Arc<str>, u64)>();
 const LOOKUP_ENTRY_TODAY: usize =
     KEY_AS_SHARED_POINTER + std::mem::size_of::<crate::engine::state::BlockRefs>();
 
-/// The same entry addressed by a word. `state.rs` already pins the forty next to the type; this is
+/// The same entry addressed by a word. `engine_storage_state.rs` already pins the forty next to the type; this is
 /// the thirty-two beside it, so the pair is readable in one place.
 const LOOKUP_ENTRY_ID_ADDRESSED: usize =
     KEY_AS_A_WORD + std::mem::size_of::<crate::engine::state::BlockRefs>();
@@ -298,7 +298,7 @@ fn the_payload_route_c_frees_is_not_nominal() {
 /// (route C), moved into a new resident table (route B), or moved and also written (route A) --
 /// and that difference is larger than the eight bytes this arm is about.
 ///
-/// `state.rs` pins the forty beside the type as `size_of::<Option<Arc<str>>>() +
+/// `engine_storage_state.rs` pins the forty beside the type as `size_of::<Option<Arc<str>>>() +
 /// size_of::<BlockRefs>()`. This reconstructs it from the key term this module uses, so the two
 /// cannot drift: a `BlockRefs` that widened would move both.
 #[test]

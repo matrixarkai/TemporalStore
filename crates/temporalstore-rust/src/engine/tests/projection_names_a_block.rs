@@ -235,7 +235,7 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
 
         // AND THE "NONE NAMED" HALF IS STRUCTURAL NOW. This block also asserted `0 == on_named`
         // from `entries_with_a_component`, whose helper has been deleted with it: `BlockIndex` has
-        // no component field, so the count could only read zero. `state.rs`'s pin is what refuses
+        // no component field, so the count could only read zero. `engine_storage_state.rs`'s pin is what refuses
         // a name coming back -- 40 with `!= 39 && != 41` and a field sum equal to the width.
 
         // ---- AND THE READ, WHICH IS NOT YET BROUGHT ALONG. ----

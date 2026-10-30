@@ -3087,4 +3087,5 @@ fn redact_context_pii(value: &str) -> String {
 }
 
 #[cfg(test)]
+#[path = "context_workflow/context_workflow_regression_tests.rs"]
 mod tests;

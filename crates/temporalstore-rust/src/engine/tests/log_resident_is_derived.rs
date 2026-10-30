@@ -7,7 +7,7 @@
 //! address already answers "is this log-resident" and a stored flag beside it could only agree or
 //! disagree. It did both: three sites derived it (`storage_bucket_internals.rs:362`, `:3655`,
 //! `:3983`) and three wrote a constant `false` without consulting the address (`:3524`, `:5873`,
-//! and a fixture in `state.rs`). Three maintain it, three override it — which is what makes the
+//! and a fixture in `engine_storage_state.rs`). Three maintain it, three override it — which is what makes the
 //! invariant FALSE rather than merely unproven.
 //!
 //! # WHY THAT WAS INVISIBLE, AND WHY THE INVISIBILITY WAS LUCK

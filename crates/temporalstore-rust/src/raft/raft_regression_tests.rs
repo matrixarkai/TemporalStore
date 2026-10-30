@@ -27,10 +27,17 @@ mod part3;
 mod part4;
 #[path = "tests/wal_compaction_and_restart.rs"]
 mod part5;
+#[path = "tests/durable_apply.rs"]
 mod durable_apply;
+#[path = "tests/pre_vote_default.rs"]
 mod pre_vote_default;
+#[path = "tests/snapshot_cadence.rs"]
 mod snapshot_cadence;
+#[path = "tests/snapshot_cost.rs"]
 mod snapshot_cost;
+#[path = "tests/snapshot_large_store.rs"]
 mod snapshot_large_store;
+#[path = "tests/snapshot_scale.rs"]
 mod snapshot_scale;
+#[path = "tests/snapshot_scope.rs"]
 mod snapshot_scope;

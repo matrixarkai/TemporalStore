@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Part 4 of engine tests, split from engine/tests.rs.
+//! Part 4 of engine tests, split from engine/engine_regression_tests.rs.
 #![allow(clippy::all)]
 use super::*;
 
@@ -4669,7 +4669,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 //
 // WHY IT IS NOT REWRITTEN. The only claim that survives is "six written fields produce six block
 // refs", and that is a claim about `BlockRefs` accumulating, not about per-component grouping --
-// `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `state.rs` holds it directly,
+// `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `engine_storage_state.rs` holds it directly,
 // against the producer. The `Some`-misses half would restate `names_the_only_slot`, which
 // `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything` already asserts
 // in both directions in one arm so that it cannot pass one-sided.
@@ -4682,7 +4682,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 // `BlockRefs::insert` keeps the refs sorted and `BlockRefs::remove` binary-searches them, so an
 // `insert` rewritten to append would make `remove` miss a ref that is present. Nothing else in the
 // tree asserted it. It is restated against the producer, beside
-// `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `state.rs`.
+// `the_insert_accumulates_an_objects_blocks_into_the_one_slot` in `engine_storage_state.rs`.
 //
 // AND RESTATED ON THE WHOLE REF, NOT RE-GOLDENED. That branch's version sorted a PROJECTION --
 // `refs.iter().map(|r| r.block_ref_key)` -- while `BlockLookupRef` derives `Ord` over
@@ -5717,7 +5717,7 @@ fn the_block_index_still_writes_string_keys() {
 //
 // THE REBUILD WALKED THE PAGES AND READ EACH ONE'S KEY, so with the identity off the entry there
 // is nothing to rebuild FROM, and the oracle has one side. `rebuild_object_block_lookup` is
-// deleted in `state.rs` with the reasoning; these three go with it rather than being rewritten to
+// deleted in `engine_storage_state.rs` with the reasoning; these three go with it rather than being rewritten to
 // compare the maintained lookup with itself.
 //
 // WHAT THE ORACLE BOUGHT, so it outlives the assertions: it is the whole of the evidence that
@@ -7196,7 +7196,7 @@ fn an_object_index_costs_a_word_and_a_pointer() {
 // component after it -- has no analogue either, because there are no positions.
 //
 // The measurement in its doc, "the measured average is 1.0 components per object", is what paid
-// for the deletion. It is recorded beside `ObjectBlockRefs` in `state.rs`, where the shape it
+// for the deletion. It is recorded beside `ObjectBlockRefs` in `engine_storage_state.rs`, where the shape it
 // justifies now lives.
 
 /// A bucket summary reads BOTH spellings, and now writes the short one.
@@ -7741,7 +7741,7 @@ fn object_block_lookup_refs_per_object_census() {
     // `objects == objects` and pass for every corpus including an empty one. Its claim -- that a
     // component can no longer be filed under a row of its own -- is kept where it is still
     // falsifiable: `a_named_component_resolves_nothing_while_the_unnamed_one_resolves_everything`
-    // in `state.rs` asserts `names_the_only_slot` in both directions in one arm.
+    // in `engine_storage_state.rs` asserts `names_the_only_slot` in both directions in one arm.
     //
     // THE MULTIPLICITY DID NOT GO -- IT MOVED INSIDE THE SLOT. A hash of eight fields is one slot
     // holding EIGHT refs, where it used to be eight rows of one. So the question this census

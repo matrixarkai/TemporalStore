@@ -1698,7 +1698,7 @@ pub(super) fn rebuild_bucket_block_ownership(
     //
     // In a release build this is one fewer O(blocks) pass per compaction round, and the debug
     // verification that earned the removal has now been spent: it compared the lookup against the
-    // pages' own copies of the identity and the pages have none. `state.rs` carries why a version
+    // pages' own copies of the identity and the pages have none. `engine_storage_state.rs` carries why a version
     // of it over one source would compare that source with itself.
     // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
     // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
@@ -4419,7 +4419,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// it), 3 `E0080` (the const decompositions). THAT IS A FLOOR, for the same reason the failure
 /// count was: `E0560` SUPPRESSES `E0063` on the same literal, so the struct-literal sites are two
 /// passes and not one. Grep is no substitute here -- `component` appears about 2,000 times in this
-/// crate and `state.rs` ALONE DECLARED THE SAME FIELD ON A SECOND STRUCT, `ComponentBlocks`, whose
+/// crate and `engine_storage_state.rs` ALONE DECLARED THE SAME FIELD ON A SECOND STRUCT, `ComponentBlocks`, whose
 /// own `component: Option<Arc<str>>` a field-text match could not tell from this one. That second
 /// declaration is gone: `ComponentBlocks`, `ComponentList` and `ObjectBlockRefs` were deleted when
 /// the object lookup collapsed onto `BlockRefs`, so the entry below is the only place in the crate
@@ -5749,7 +5749,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // Scoped to the case the rebuild existed for -- a lookup that could not be trusted to target
     // -- so an established index pays nothing for it. It compares the lookup against every live
     // page in the shard, which is the postcondition the rebuild used to deliver by construction.
-    // The debug verification that stood here is spent with its scaffold -- see `state.rs`.
+    // The debug verification that stood here is spent with its scaffold -- see `engine_storage_state.rs`.
     let _ = lookup_can_target;
 }
 
@@ -6927,7 +6927,7 @@ pub(super) fn rebuild_bucket_first_index(
     }
     // The same removal as in `rebuild_bucket_block_ownership`, and the verification that stood in
     // its place is spent with its scaffold: it read the pages' own copies of the identity, which
-    // the entry no longer holds. `state.rs` carries the reasoning and names what the obligation
+    // the entry no longer holds. `engine_storage_state.rs` carries the reasoning and names what the obligation
     // moved to.
     shard.bucket_index = bucket_index;
     // The local index charged every block it filed, and it arrived empty, so the tally travelled
@@ -7498,7 +7498,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         );
     }
     // THE FOURTH KIND, AND THE REASON IT WAS THE ODD ONE OUT IS GONE. `hashes` is durable now
-    // (`state.rs` carries `#[serde(default)]`, not `skip_serializing`), so there is a persisted map
+    // (`engine_storage_state.rs` carries `#[serde(default)]`, not `skip_serializing`), so there is a persisted map
     // to outrank a name this code could not read -- which is the whole consolation the other three
     // arms had and this one did not. The `saw_hashes` gate went with it: that flag existed ONLY to
     // stop a wholesale assignment of a derived-empty map over a live one, and a merge cannot do
@@ -7743,7 +7743,7 @@ where
     // view could not produce, and says so: "a transient read failure never drops a durable series".
     // That consolation is real for `features`, whose map IS serialized. It does not exist for
     // `context_events` or `context_indexes`: both are `skip_serializing` on `ShardState`
-    // (`state.rs`), so the persisted map is EMPTY by construction and this derived view is the only
+    // (`engine_storage_state.rs`), so the persisted map is EMPTY by construction and this derived view is the only
     // copy. A swallowed read there does not degrade an answer, it removes the events.
     let bytes = read_block_for_view_rebuild(block_store, &address);
     // Fold the disk->memory promotion into the load read we already perform here.

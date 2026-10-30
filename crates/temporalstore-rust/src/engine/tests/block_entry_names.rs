@@ -2407,14 +2407,14 @@ fn the_bucket_node_reader_takes_the_block_spelling_and_the_page_spelling() {
 
     // AND BOTH WRITERS STILL SPELL `page_index`, PERMANENTLY, WHICH IS WHY THIS ASSERTION
     // CARRIES ITS REASON RATHER THAN A POINTER TO ONE. A comment does not fail; this does.
-    let state = include_str!("../state.rs");
+    let state = include_str!("../engine_storage_state.rs");
     for writer in [
         "node.serialize_field(\"page_index\"",
         "once!(block_index, \"page_index\")",
     ] {
         assert!(
             state.contains(writer),
-            "a writer stopped spelling the stored key: {writer:?} is gone from state.rs.
+            "a writer stopped spelling the stored key: {writer:?} is gone from engine_storage_state.rs.
              
              `page_index` IS A DURABLE NAME AND ITS SPELLING IS DECLINED, NOT PENDING. The field              is `block_index` and the key written is `page_index`, and that divergence stays. A              stored name's installed base is on-disk data written by older builds, and no release              schedule changes that -- the same rule that keeps the 49 `DURABLE_NAMES` entries              where they are.
              

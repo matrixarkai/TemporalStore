@@ -1633,7 +1633,7 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
     fn the_two_shapes_priced_side_by_side() {
         let pair = std::mem::size_of::<StoredBlock>();
         let layout_inline = std::mem::size_of::<BlockLayout>();
-        let refs_inline = 24; // BlockRefs, pinned in state.rs
+        let refs_inline = 24; // BlockRefs, pinned in engine_storage_state.rs
 
         // TODAY: a B-tree node holds up to 11 entries; a one-element map allocates a 280-byte root
         // and the steady-state occupancy of a leaf is about 5.8 of 11. Per entry at steady state:

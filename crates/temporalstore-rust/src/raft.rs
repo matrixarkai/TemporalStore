@@ -8004,4 +8004,5 @@ fn install_meta_leader_snapshot_tail(
 }
 
 #[cfg(test)]
+#[path = "raft/raft_regression_tests.rs"]
 mod tests;

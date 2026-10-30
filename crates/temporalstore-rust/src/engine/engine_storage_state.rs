@@ -3986,7 +3986,7 @@ impl Serialize for BlockEntryAt<'_> {
 /// # WHAT MAKES THE REFUSAL UNREACHABLE: THE FILING SITES, NOT AN ARGUMENT
 ///
 /// The lookup is `skip_serializing` and is filed as pages are placed, at every site that places
-/// one. `insert_object_block_lookup` has ELEVEN production callers -- `state.rs` at the decode
+/// one. `insert_object_block_lookup` has ELEVEN production callers -- `engine_storage_state.rs` at the decode
 /// (`CoreIndex`'s visitor, from the `block_keys` the decode hands up), at
 /// `CoreIndex::insert_page_for_bucket` and at two rebuild sites; `storage_bucket_internals.rs` at
 /// six (the publish establish, the batch fold, the two reconstructs, the whole-shard rebuild and
@@ -6803,7 +6803,7 @@ impl BlockIndex {
     /// `BlockAddress::block_id()` is `None` exactly while the block is log-resident, so the address
     /// already answers this and a stored flag could only agree or disagree with it. It did both:
     /// three sites derived it (`storage_bucket_internals.rs:362`, `:3655`, `:3983`) and three wrote
-    /// a constant `false` without looking (`:3524`, `:5873`, `state.rs`'s own fixture).
+    /// a constant `false` without looking (`:3524`, `:5873`, `engine_storage_state.rs`'s own fixture).
     ///
     /// The disagreement was observable in one place and not in the obvious one. The behavioural
     /// reader -- `object_manager`'s hot/cold classification -- tests `deleted` FIRST, and the
