@@ -397,7 +397,7 @@ fn every_production_caller_of_a_fold_reaching_loader_is_flag_gated() {
         !sites.is_empty(),
         "the census found NO call site of either fold-reaching loader. That is not a clean bill \
          of health -- the matcher has stopped matching. The loaders are {FOLD_REACHING_CALLS:?} \
-         and they are called from `engine/lifecycle.rs` at least twice."
+         and they are called from `engine/engine_lifecycle.rs` at least twice."
     );
 
     let (else_start, else_end) = wal_single_barrier_else_lines();

@@ -3,6 +3,7 @@
 
 //! S3-compatible Raft snapshot storage for the TemporalStore Rust rewrite.
 
+#[path = "snapshot_metrics.rs"]
 pub mod metrics;
 pub mod object_store;
 pub mod snapshot_store;

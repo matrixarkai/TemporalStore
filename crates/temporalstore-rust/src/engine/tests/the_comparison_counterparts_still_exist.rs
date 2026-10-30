@@ -58,13 +58,13 @@
 const COUNTERPARTS: &[(&str, &str, &str, &str)] = &[
     (
         "records eligible for compaction before a budget cut in",
-        "engine/reports.rs",
+        "engine/engine_reports.rs",
         "removable_records_before_budget",
         "the eligible count, which is what a compactable count is before the round is bounded",
     ),
     (
         "records a compaction round actually removed",
-        "engine/reports.rs",
+        "engine/engine_reports.rs",
         "records_removed",
         "on the index-log GC report: the log is where a change record lives here",
     ),
@@ -76,13 +76,13 @@ const COUNTERPARTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "tombstones a compaction could drop",
-        "engine/reports.rs",
+        "engine/engine_reports.rs",
         "delete_marked_object_ids_before",
         "delete-marked ids are this tree's tombstones; `_after` beside it gives the dropped count",
     ),
     (
         "tombstones a compaction did drop",
-        "engine/reports.rs",
+        "engine/engine_reports.rs",
         "delete_marked_object_ids_after",
         "the second half of that pair -- before minus after is the drop",
     ),
@@ -112,13 +112,13 @@ const COUNTERPARTS: &[(&str, &str, &str, &str)] = &[
     ),
     (
         "whether the round was cut short by its budget",
-        "engine/reports.rs",
+        "engine/engine_reports.rs",
         "budget_exhausted",
         "paired with blocks_left_by_budget and bytes_left_by_budget on the compaction report",
     ),
     (
         "blocks and bytes a budget left behind",
-        "engine/reports.rs",
+        "engine/engine_reports.rs",
         "blocks_left_by_budget",
         "the skipped-by-budget quantity, named for what was left rather than what was skipped",
     ),
@@ -153,7 +153,7 @@ fn source_of(relative: &str) -> &'static str {
     match relative {
         "control.rs" => include_str!("../../control.rs"),
         "data_node.rs" => include_str!("../../data_node.rs"),
-        "engine/reports.rs" => include_str!("../reports.rs"),
+        "engine/engine_reports.rs" => include_str!("../engine_reports.rs"),
         other => panic!("the mapping names a file this arm cannot read: {other}"),
     }
 }

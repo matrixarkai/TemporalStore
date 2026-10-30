@@ -1480,8 +1480,8 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
     /// distinguish from production code.
     const WHOLE_RANGE_SITES: &[&str] = &[
         "engine/bucket_dump_manifest_methods.rs :: rebuild_bucket_block_ownership x1",
-        "engine/lifecycle.rs :: promote_model_maps_to_bucket_index_authority x1",
-        "engine/lifecycle.rs :: rebuild_bucket_block_ownership x1",
+        "engine/engine_lifecycle.rs :: promote_model_maps_to_bucket_index_authority x1",
+        "engine/engine_lifecycle.rs :: rebuild_bucket_block_ownership x1",
     ];
     const REBUILDS: [&str; 3] = [
         "rebuild_bucket_block_ownership(",

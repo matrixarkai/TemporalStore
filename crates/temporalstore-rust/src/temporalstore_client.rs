@@ -24,7 +24,7 @@ use crate::meta::{
 mod client_routing;
 #[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
-#[path = "client/commands.rs"]
+#[path = "client/client_commands.rs"]
 mod commands;
 // The proxy's drop decision hashes the same routing key this builds; it is re-exported
 // rather than copied because the copy that used to live there had drifted.
@@ -35,9 +35,9 @@ mod table_feature;
 mod table_context;
 #[path = "client/table_control_state.rs"]
 mod table_control_state;
-#[path = "client/retry.rs"]
+#[path = "client/client_retry.rs"]
 mod retry;
-#[path = "client/routing.rs"]
+#[path = "client/client_routing_operations.rs"]
 mod routing;
 
 use client_routing::batch_read_policy;

@@ -38,7 +38,9 @@ use crate::meta::{
 use crate::rebalance::RaftPersistedSchedulerState;
 use crate::types::{Command, CommandResponse, ExecuteRequest, ShardId, Status};
 
+#[path = "raft/raft_matrixraft.rs"]
 mod matrixraft;
+#[path = "raft/raft_membership.rs"]
 mod membership;
 mod readiness;
 mod cluster_snapshot;

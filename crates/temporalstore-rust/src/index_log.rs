@@ -2951,7 +2951,7 @@ impl LocalIndexLogStore {
     /// | `engine.rs` single-command ack | `!raft_applying() && !wal_single_barrier()` | **false** |
     /// | `engine/recovery_sweep_compact.rs` expiry flush | `!raft_applying() && !wal_single_barrier()` | **false** |
     /// | `engine/stream_batch_methods.rs` batch ack | `!raft_applying()` | **true** |
-    /// | `engine/persistence.rs` threshold catalog dump | `true` | **true** |
+    /// | `engine/engine_persistence.rs` threshold catalog dump | `true` | **true** |
     ///
     /// `wal_single_barrier()` is `!wal_legacy_recovery()`, which reads `TS_WAL_LEGACY_RECOVERY`,
     /// off by default -- so the two expressions carrying that term evaluate false, and the raft

@@ -8,7 +8,7 @@ All code references are to `crates/temporalstore-rust/src/`.
 
 - Entry points: `retrieve_context` and `inject_context` (in `context_workflow.rs`)
 - Query understanding + scoring primitives: `context_workflow/context_query_scoring.rs`
-- Storage-side command handlers: `engine/execute_on_shard.rs`, `engine/context.rs`
+- Storage-side command handlers: `engine/execute_on_shard.rs`, `engine/engine_context.rs`
 
 ---
 
@@ -272,7 +272,7 @@ these commands back explicit index-driven retrieval:
 
 ---
 
-## Capacity & limits (`engine/constants.rs`)
+## Capacity & limits (`engine/engine_constants.rs`)
 
 | Limit | Value |
 |-------|-------|

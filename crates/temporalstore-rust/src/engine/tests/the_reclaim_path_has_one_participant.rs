@@ -22,7 +22,7 @@
 //! of the code**. If reclaim ever gains a second participant, those twelve stop being out of scope
 //! and nothing would say so.
 //!
-//! So the premise is pinned here. `block_store/gc.rs` imports exactly `super::*` and contains none
+//! So the premise is pinned here. `block_store/block_store_gc.rs` imports exactly `super::*` and contains none
 //! of the constructs a remote participant needs. The day that changes, this fails and names what
 //! came into scope with it.
 //!
@@ -72,12 +72,12 @@ const REMOTE_PARTICIPANT_CONSTRUCTS: &[(&str, &str)] = &[
 
 #[test]
 fn the_reclaim_path_has_one_participant() {
-    let gc = include_str!("../../block_store/gc.rs");
+    let gc = include_str!("../../block_store/block_store_gc.rs");
 
     println!();
     println!("  THE BLOCK RECLAIM PATH, CHECKED FOR A SECOND PARTICIPANT");
     println!();
-    println!("    block_store/gc.rs: {} lines", gc.lines().count());
+    println!("    block_store/block_store_gc.rs: {} lines", gc.lines().count());
     println!();
 
     let mut found: Vec<&str> = Vec::new();
@@ -94,14 +94,14 @@ fn the_reclaim_path_has_one_participant() {
     // ---- pass by finding nothing, which is the one way this arm could be vacuous.
     assert!(
         gc.lines().count() > 200,
-        "block_store/gc.rs is only {} lines. This arm asserts an ABSENCE, so it passes trivially \
+        "block_store/block_store_gc.rs is only {} lines. This arm asserts an ABSENCE, so it passes trivially \
          over a file that has been emptied or had the reclaim logic moved elsewhere -- in which \
          case the premise has to be re-established where that logic now lives",
         gc.lines().count()
     );
     assert!(
         gc.contains("delayed_destroy") || gc.contains("reclaim"),
-        "block_store/gc.rs no longer mentions delayed destruction or reclaim, so it is probably no \
+        "block_store/block_store_gc.rs no longer mentions delayed destruction or reclaim, so it is probably no \
          longer the reclaim path and this arm is checking the wrong file"
     );
 

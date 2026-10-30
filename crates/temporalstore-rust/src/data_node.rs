@@ -53,6 +53,7 @@ use crate::types::{
     ExecuteResponse, ShardId, Status,
 };
 
+#[path = "data_node/data_node_lifecycle.rs"]
 mod lifecycle;
 mod dirty_tracking;
 mod shard_lifecycle;
@@ -60,6 +61,7 @@ mod task_execution;
 mod runtime_reports;
 mod runtime_storage;
 mod task_output;
+#[path = "data_node/data_node_worker.rs"]
 mod worker;
 mod storage_manager_runtime;
 use self::dirty_tracking::*;

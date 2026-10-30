@@ -29,7 +29,7 @@
 //! costs nothing extra as the store grows.
 //!
 //! THE COST IS AFFINE IN THE STORE -- A PER-RECORD TERM PLUS A FIXED ONE. A dump serializes the
-//! whole served index and writes it durably (`engine/persistence.rs`, step 2 of
+//! whole served index and writes it durably (`engine/engine_persistence.rs`, step 2 of
 //! `dump_index_catalog_anchored`), so the bytes it writes are the shard's, not the round's:
 //! 929,480 B of base index at 24,000 records held and 9,050,875 B at 240,000. Fitted on the two
 //! PROPORTIONAL arms, a dump costs 37.598 B per record held PLUS about 35,291 B that does not
@@ -86,7 +86,7 @@
 //! holding 48 records in 524,288 bytes at 20,000 and 408 records in 3,145,728 bytes at 200,000,
 //! while a control arm written one command at a time released 261,933 bytes in 1,199 records off
 //! the same call. Underneath the zero, `gc_before_sequence` returned
-//! `Corruption("binary record is incomplete")`, and `engine/persistence.rs` took it with `.ok()`
+//! `Corruption("binary record is incomplete")`, and `engine/engine_persistence.rs` took it with `.ok()`
 //! and then `.unwrap_or_default()`, so an errored reclaim and a reclaim with nothing to do
 //! produced a byte-identical `CatalogDumpReclaimReport`.
 //!
@@ -2186,7 +2186,7 @@ fn what_each_cadence_writes_to_get_the_same_work_through_the_store() {
 ///
 /// Every arm above reaches the cadence through the argument-taking test variant, so a change that
 /// removed the relative term from the PRODUCTION callers alone -- leaving the shared function
-/// intact -- would leave all of them passing. This reads `engine/persistence.rs` instead and
+/// intact -- would leave all of them passing. This reads `engine/engine_persistence.rs` instead and
 /// requires that the deployment's configured value is read in exactly ONE place, that both
 /// production cadence checks take their threshold from it, and that the checks it counts are all
 /// of them.
@@ -2198,14 +2198,14 @@ fn what_each_cadence_writes_to_get_the_same_work_through_the_store() {
 /// rust-internal: pins how the engine's own dump cadence obtains its threshold
 #[test]
 fn every_production_dump_cadence_check_reads_the_store_for_its_threshold() {
-    const PERSISTENCE: &str = include_str!("../persistence.rs");
+    const PERSISTENCE: &str = include_str!("../engine_persistence.rs");
 
     // DENOMINATOR FIRST. If this file stops holding cadence checks, everything below passes by
     // having nothing to check.
     let checks = PERSISTENCE.matches("should_dump_index_catalog_now(").count();
     assert!(
         checks >= 4,
-        "VACUITY: engine/persistence.rs holds {checks} cadence checks, fewer than the 4 this guard \
+        "VACUITY: engine/engine_persistence.rs holds {checks} cadence checks, fewer than the 4 this guard \
          was written against -- it is no longer reading what it thinks it is"
     );
 
@@ -2215,7 +2215,7 @@ fn every_production_dump_cadence_check_reads_the_store_for_its_threshold() {
     assert_eq!(
         configured_reads, 1,
         "the deployment's configured accrual floor is read in {configured_reads} places in \
-         engine/persistence.rs. It must be read in exactly one -- `index_dump_threshold_bytes`, \
+         engine/engine_persistence.rs. It must be read in exactly one -- `index_dump_threshold_bytes`, \
          which is where that floor is raised to keep a dump's cost in proportion to what it \
          releases. A second reader is a production cadence check that skipped the relative term."
     );
@@ -2234,6 +2234,6 @@ fn every_production_dump_cadence_check_reads_the_store_for_its_threshold() {
     assert!(
         PERSISTENCE.contains("crate::index_log::effective_index_dump_threshold_bytes(")
             && PERSISTENCE.contains("crate::index_log::INDEX_DUMP_BASE_FRACTION_DIVISOR"),
-        "engine/persistence.rs no longer applies the relative term at all"
+        "engine/engine_persistence.rs no longer applies the relative term at all"
     );
 }
