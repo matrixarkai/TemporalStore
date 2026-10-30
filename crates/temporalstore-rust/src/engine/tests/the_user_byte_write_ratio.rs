@@ -245,8 +245,15 @@ fn no_string_row_is_removed_outside_its_door() {
     use std::path::Path;
 
     const NEEDLE: &str = "strings_mut().remove(";
-    /// The one file allowed to spell it: the door's own body.
-    const DOOR: &str = "engine/state.rs";
+    /// The door's own definition, which is what makes its file the one allowed to spell the needle.
+    ///
+    /// THE DOOR IS FOUND BY ITS FUNCTION, NOT BY A FILE NAME. This held
+    /// `const DOOR: &str = "engine/state.rs"`, and a suite-wide rename moved that file to
+    /// `engine_storage_state.rs` -- which did not make the guard wrong, it made the guard FAIL,
+    /// because its positive control could no longer find the one legitimate call. That is the
+    /// control doing its job, and it is also a maintenance burden nobody signed up for. So the
+    /// door is now whichever file defines `remove_string_row`, which a rename carries with it.
+    const DOOR_DEFINITION: &str = "fn remove_string_row";
 
     fn walk(dir: &Path, out: &mut Vec<(String, usize, String)>) {
         for entry in std::fs::read_dir(dir).expect("the crate source is readable") {
@@ -281,8 +288,33 @@ fn no_string_row_is_removed_outside_its_door() {
     let mut hits = Vec::new();
     walk(&root, &mut hits);
 
-    let in_door: Vec<_> = hits.iter().filter(|(p, _, _)| p.contains(DOOR)).collect();
-    let outside: Vec<_> = hits.iter().filter(|(p, _, _)| !p.contains(DOOR)).collect();
+    // WHICH FILE IS THE DOOR, resolved from the tree rather than remembered.
+    fn find_door(dir: &Path, needle: &str, out: &mut Vec<String>) {
+        for entry in std::fs::read_dir(dir).expect("the crate source is readable") {
+            let path = entry.expect("a readable dir entry").path();
+            if path.is_dir() {
+                find_door(&path, needle, out);
+            } else if path.extension().and_then(|e| e.to_str()) == Some("rs")
+                && std::fs::read_to_string(&path).unwrap_or_default().contains(needle)
+            {
+                out.push(path.to_string_lossy().to_string());
+            }
+        }
+    }
+    let mut door_files: Vec<String> = Vec::new();
+    find_door(&root, DOOR_DEFINITION, &mut door_files);
+    assert_eq!(
+        1,
+        door_files.len(),
+        "expected exactly one file to define `{DOOR_DEFINITION}` and found {}: {:?}. The door must be a single function, or 'outside the door' is not a well-defined set.",
+        door_files.len(),
+        door_files
+    );
+    let door = door_files[0].clone();
+    println!("  the door is defined in {door}");
+
+    let in_door: Vec<_> = hits.iter().filter(|(p, _, _)| *p == door).collect();
+    let outside: Vec<_> = hits.iter().filter(|(p, _, _)| *p != door).collect();
 
     println!();
     println!("  {} spelling(s) of `{NEEDLE}` in the crate", hits.len());
@@ -295,7 +327,7 @@ fn no_string_row_is_removed_outside_its_door() {
     // --- THE CONTROL FIRST: the scan must still find the door, or it is blind.
     assert!(
         !in_door.is_empty(),
-        "the scan found no `{NEEDLE}` in {DOOR}, where `remove_string_row` spells it. The needle \
+        "the scan found no `{NEEDLE}` in {door}, where `remove_string_row` spells it. The needle \
          has gone stale, so a run reporting no violations elsewhere would prove nothing."
     );
     assert!(
