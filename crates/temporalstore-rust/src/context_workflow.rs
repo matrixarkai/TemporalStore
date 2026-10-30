@@ -40,6 +40,7 @@ fn lexical_score_to_micros(raw: u32) -> i64 {
     raw.saturating_mul(LEXICAL_MATCH_MICROS) / LEXICAL_SCORE_SATURATION
 }
 
+#[path = "context_workflow/context_query_scoring.rs"]
 mod query;
 mod embed_drainer;
 mod resource;

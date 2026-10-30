@@ -7693,7 +7693,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/query.rs"
+              "crates/temporalstore-rust/src/context_workflow/context_query_scoring.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
