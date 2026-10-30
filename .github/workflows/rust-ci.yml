@@ -204,6 +204,32 @@ jobs:
             -- --exact --test-threads=1 2>&1 | tee /tmp/append-safety.log
           grep -q 'test result: ok. 1 passed; 0 failed' /tmp/append-safety.log
 
+      # The published write and space ratios are only falsifiable at a consumer if the identities
+      # tying each ratio to its published terms actually run. They are NOT covered by the suite
+      # step above, which carries continue-on-error AND has been observed timing out at its limit,
+      # so that step can report success having finished no tests. And this workflow runs no
+      # unfiltered suite -- every invocation is an --exact named filter -- so a guard runs here
+      # only if its name is pinned. That is why this step exists.
+      - name: cargo test (published ratio guards, hard gate)
+        timeout-minutes: 20
+        run: |
+          set -o pipefail
+          for t in \
+            engine::tests::the_write_window_closes_at_compaction::the_write_window_closes_at_compaction ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
+            # cargo test exits 0 when a filter matches NOTHING, so assert the COUNT as well as the
+            # result line: a rename would otherwise leave this step green having run nothing.
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/ratio_gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/ratio_gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a
       # hard gate. Deliberately NOT --bins: some bin test harnesses run servers
