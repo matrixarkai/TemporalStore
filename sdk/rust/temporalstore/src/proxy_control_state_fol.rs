@@ -25,7 +25,8 @@ impl ProxyClient {
                 ("ttl", serde_json::json!(ttl_ms / 1000)),
                 ("ttl_ms", serde_json::json!(ttl_ms)),
                 (
-                    "fol_type",
+                    // The route parses this as `selection_type`; the argument keeps its name.
+                    "selection_type",
                     serde_json::to_value(fol_type).map_err(json_error)?,
                 ),
             ],

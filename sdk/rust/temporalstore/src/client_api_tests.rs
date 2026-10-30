@@ -103,28 +103,10 @@ fn proxy_client_exposes_proxy_parity_methods() {
         u64,
         crate::ControlStatePrecision,
     ) -> crate::Result<()> = ProxyClient::control_state_hset_with_options;
-    let _: fn(
-        &ProxyClient,
-        &str,
-        crate::ControlStatePrecision,
-        crate::ControlStateWindow,
-        &str,
-    ) -> crate::Result<Vec<i64>> = ProxyClient::control_state_hquery;
-    let _: fn(
-        &ProxyClient,
-        &str,
-        &[&str],
-        u64,
-        u64,
-        crate::ControlStatePrecision,
-        bool,
-    ) -> crate::Result<()> = ProxyClient::control_state_cpc_set;
-    let _: fn(
-        &ProxyClient,
-        &str,
-        crate::ControlStatePrecision,
-        crate::ControlStateWindow,
-    ) -> crate::Result<Vec<i64>> = ProxyClient::control_state_cpc_query;
+    // `control_state_hquery`, `control_state_cpc_set` and `control_state_cpc_query` are
+    // deliberately absent: the dispatcher answers 404 for ControlStateHquery, ControlStateCPCSet
+    // and ControlStateCPCQuery, which is why #1040 left them off this SDK. `proxy_route_contract`
+    // is what keeps them off.
     let _: fn(
         &ProxyClient,
         &str,

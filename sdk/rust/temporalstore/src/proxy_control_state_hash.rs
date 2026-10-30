@@ -2,10 +2,8 @@
 // Copyright 2026 MatrixArkAI
 
 use crate::proxy_client::ProxyClient;
-use crate::proxy_helpers::{
-    control_state_precision_ms, control_state_window_ms, json_error, proxy_timestamp_ms,
-};
-use crate::{ControlStateHType, ControlStatePrecision, ControlStateWindow, Result};
+use crate::proxy_helpers::{control_state_precision_ms, json_error, proxy_timestamp_ms};
+use crate::{ControlStateHType, ControlStatePrecision, Result};
 
 #[cfg(feature = "proxy")]
 impl ProxyClient {
@@ -55,38 +53,10 @@ impl ProxyClient {
             .map(|_| ())
     }
 
-    pub fn control_state_hquery(
-        &self,
-        key: &str,
-        precision: ControlStatePrecision,
-        window: ControlStateWindow,
-        aggregator: &str,
-    ) -> Result<Vec<i64>> {
-        let (start_ms, end_ms) = control_state_window_ms(window);
-        let body = self.proxy_service_body(
-            key,
-            &[
-                ("start_ms", serde_json::json!(start_ms)),
-                ("end_ms", serde_json::json!(end_ms)),
-                (
-                    "precision_ms",
-                    serde_json::json!(control_state_precision_ms(precision)),
-                ),
-                ("aggregator", serde_json::json!(aggregator)),
-            ],
-        );
-        let response = self.proxy_service_execute("/ProxyService/ControlStateHquery", body)?;
-        Ok(response
-            .get("result_list")
-            .and_then(|value| value.as_array())
-            .cloned()
-            .unwrap_or_default()
-            .into_iter()
-            .map(|item| {
-                item.get("result")
-                    .and_then(|value| value.as_i64())
-                    .unwrap_or_default()
-            })
-            .collect())
-    }
+    // There was a `control_state_hquery` here, posting to `/ProxyService/ControlStateHquery`.
+    // The dispatcher answers 404 for that route (it matches ControlStateHset, Increment, Count,
+    // Manager and the Fol/Selection pair, and nothing else), so the call could only ever fail.
+    // #1040 removed every unserved route from this SDK and named this one as unserved; it is left
+    // off rather than re-added. Adding the route to the proxy is the other way to resolve it, and
+    // `proxy_route_contract` is the test that will fail if the method comes back first.
 }
