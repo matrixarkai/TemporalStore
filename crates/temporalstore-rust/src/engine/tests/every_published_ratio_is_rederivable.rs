@@ -91,7 +91,7 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
     println!("  PUBLISHED RATIOS, each beside the same figure recomputed from the counters above");
 
     // (name, published ppm, numerator, denominator)
-    let identities: [(&str, u64, u64, u64); 6] = [
+    let identities: [(&str, u64, u64, u64); 7] = [
         (
             "storage_write_amplification_ppm",
             published.storage_write_amplification_ppm,
@@ -113,6 +113,17 @@ fn every_published_ratio_is_rederivable_from_published_counters() {
             published.write_amplification_since_compaction_ppm,
             published.bytes_written_since_compaction,
             published.live_block_bytes,
+        ),
+        // THE USER-BYTE RATIO, whose BOTH halves are in the caller's units. It is the only
+        // identity here that cannot be checked against `bytes_written` at all: its numerator is
+        // `logical_bytes_written` and its denominator the maintained class total, so a consumer
+        // reading only the stored counters could not re-derive it. That is the reason both terms
+        // are published.
+        (
+            "user_write_amplification_ppm",
+            published.user_write_amplification_ppm,
+            published.logical_bytes_written,
+            published.live_user_bytes,
         ),
         (
             "space_amplification_ppm",

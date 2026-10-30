@@ -434,6 +434,56 @@ pub struct ShardCanonicalStorageStats {
     /// compaction.
     #[serde(default)]
     pub bytes_written_since_compaction: u64,
+    /// UNCOMPRESSED bytes written per uncompressed byte that is live, in PARTS PER MILLION -- how
+    /// many times over the workload has written the data it is keeping, in the units the caller
+    /// handed us rather than the units the codec produced.
+    ///
+    /// `logical_bytes_written / live_user_bytes`, both published beside it. Zero when nothing
+    /// covered is live.
+    ///
+    /// # WHY THIS IS NOT A SPELLING OF `storage_write_amplification_ppm`
+    ///
+    /// That one is physical-over-logical and measures the CODEC: it reads 0.137x because values
+    /// compress. This is user-over-user and measures REWRITE, so compression cancels out of it
+    /// entirely. They move independently, and a store can have an excellent codec figure while
+    /// rewriting its live set many times over.
+    ///
+    /// # ITS DENOMINATOR IS APPROXIMATE, AND BY A STATED AMOUNT
+    ///
+    /// No record holds an exact uncompressed size -- `page_size` is assigned from
+    /// `address.length()` and is the STORED length. Each object instead carries a ONE-BYTE SIZE
+    /// CLASS, which fits in the tail slack `ObjectRecord` had already pinned and therefore costs no
+    /// width at all. The class is a four-bit exponent and four-bit mantissa, so it is within about
+    /// 3% per object and measured at 1.5% over a corpus of lengths chosen to fall between classes.
+    /// An exact `u32` would have taken the record from 16 bytes to 24.
+    ///
+    /// The alternative that needs no field -- dividing the stored tally by the store-wide
+    /// compression ratio -- was measured at **67.6% out**, because it assumes the live set
+    /// compresses like the history. It reported 1.013x for a live set written 1.698x over. See
+    /// `what_a_live_user_bytes_denominator_would_cost`.
+    ///
+    /// # AND IT IS ONLY AS COMPLETE AS `live_objects_with_logical_size`
+    ///
+    /// Classes are installed by the string write path. An object written by another path, or
+    /// decoded from an image predating the field, carries none and contributes nothing to either
+    /// term. READ THE COVERAGE COUNT BEFORE THIS RATIO: a partial denominator makes this figure
+    /// too HIGH, and nothing in the ppm value says so. The totals are also `serde(skip)`, so after
+    /// a reload they are 0 until writes repopulate them -- the classes survive on the records, but
+    /// nothing re-sums them on the load path.
+    #[serde(default)]
+    pub user_write_amplification_ppm: u64,
+    /// Uncompressed bytes of the live objects that carry a size class.
+    ///
+    /// The denominator of `user_write_amplification_ppm`, published so the ratio is re-derivable
+    /// rather than trusted.
+    #[serde(default)]
+    pub live_user_bytes: u64,
+    /// How many live objects contributed to `live_user_bytes`.
+    ///
+    /// Coverage. Compare it against the live object count: equal means the figure above describes
+    /// the whole live set, and anything less means it describes a subset and reads high.
+    #[serde(default)]
+    pub live_objects_with_logical_size: u64,
     /// Physical bytes the store occupies per physical byte that is live, in PARTS PER MILLION.
     ///
     /// `total_known_physical_bytes / live_physical_bytes` from the slab summary. What pushes it

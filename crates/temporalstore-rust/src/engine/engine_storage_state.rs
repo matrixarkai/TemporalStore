@@ -242,6 +242,22 @@ pub(super) struct ShardState {
     /// full sweep, so a fresh process starts from fully recomputed flags.
     #[serde(skip)]
     pub(super) buckets_pending_flag_refresh: BTreeSet<u32>,
+    /// Uncompressed bytes of the live objects that carry a size class.
+    ///
+    /// Maintained where the class is installed and where the row is dropped, so the total and the
+    /// classes cannot disagree about what left. EPHEMERAL: `serde(skip)`, so after a load it is 0
+    /// until writes repopulate it, and the covered count below is what makes that visible rather
+    /// than letting a small total read as a small live set. Same bargain the stale-range record
+    /// makes, and stated for the same reason.
+    #[serde(skip)]
+    pub(super) live_user_bytes: u64,
+    /// How many live objects contributed to `live_user_bytes`.
+    ///
+    /// The denominator for coverage. A ratio over `live_user_bytes` is only as complete as this
+    /// count is against the live object count, and publishing it is what stops a partial total
+    /// being read as a whole one.
+    #[serde(skip)]
+    pub(super) live_objects_with_logical_size: u64,
     // THE EXPIRY LEDGER IS A DOMAIN OF `u64_ledgers` NOW, behind `expires_at_ms()` and
     // `expires_at_ms_mut()`. It is a `u64` per object key, which is what the other two
     // domains are, so the merge adds a domain key and no union. The deadline-ORDERED
@@ -8247,6 +8263,13 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // Same as the line above, for the visibility-publish interval: `#[serde(skip)]`, so a
         // decoded image carries no claim to have checkpointed anything and 0 means DUE.
         publish_index_flush_countdown: _,
+        // Plain `u64`s the decode leaves at 0 because both are `#[serde(skip)]`, and 0 is the
+        // honest value: a decoded image has no size classes counted yet, so it claims no live
+        // user bytes and no coverage. The records themselves DO carry their classes across a
+        // reload -- the class is on the wire -- but nothing re-sums them here, which is why the
+        // covered count is published beside the total rather than the total alone.
+        live_user_bytes: _,
+        live_objects_with_logical_size: _,
         promote_scan_done: _,
         evict_sampler: _,
         routing_range_start: _,
@@ -8957,8 +8980,72 @@ impl ShardState {
     }
 
     /// Drop one string key's row, handing back the address it held.
+    /// Record one string key's UNCOMPRESSED size and keep the live total in step.
+    ///
+    /// SEPARATE FROM `set_string_address` ON PURPOSE. That door is handed a stored `ElementEntry`,
+    /// whose `length()` is the COMPRESSED size, and it has thirty-three callers. Threading a
+    /// second argument through all of them to serve three write sites would be a large change for
+    /// a small one; this is called from the sites that actually hold the writer's length.
+    ///
+    /// THE SUBTRACTION AND THE ADDITION HAPPEN HERE TOGETHER, which is what keeps the total honest
+    /// on an overwrite: `set_logical_size` hands back what it displaced, so the old value leaves in
+    /// the same statement the new one arrives. A caller cannot add without subtracting.
+    ///
+    /// Does nothing when the key has no row -- there is no object to attribute the size to, and
+    /// inventing one would make the covered count exceed the live count.
+    pub(super) fn set_string_logical_size(&mut self, key: &str, len: u64) -> bool {
+        let Some(slot) = self.strings_mut().get_mut(key) else {
+            return false;
+        };
+        let displaced = slot.set_logical_size(len);
+        let installed = slot.logical_size().unwrap_or(0);
+        match displaced {
+            Some(previous) => {
+                self.live_user_bytes = self.live_user_bytes.saturating_sub(previous);
+            }
+            None => {
+                self.live_objects_with_logical_size =
+                    self.live_objects_with_logical_size.saturating_add(1);
+            }
+        }
+        self.live_user_bytes = self.live_user_bytes.saturating_add(installed);
+        true
+    }
+
+    /// Drop one string row, keeping the live user-byte totals in step. THE ONE REMOVAL DOOR.
+    ///
+    /// # WHY THIS EXISTS RATHER THAN FIVE CALLS TO `strings_mut().remove`
+    ///
+    /// That is what the crate had, at five production sites: `engine.rs` twice, the
+    /// `StringDelete` arm, the lifecycle sweep, and `take_string_address`. A total maintained at
+    /// one of them drifts at the other four, and it drifts SILENTLY -- a denominator that only
+    /// ever rises makes `user_write_amplification_ppm` read LOW, and nothing in the ppm value says
+    /// a deleted object is still in it. Measured: hooking only `take_string_address` left a
+    /// `StringDelete` subtracting nothing at all.
+    ///
+    /// So every remover calls this. `strings_mut()` is still reachable, so this is a convention
+    /// rather than a compiler-enforced funnel -- the enforced version is the `RecordedMap` shape
+    /// `hashes`, `sets`, `zsets` and `lists` already use, where mutation requires a witness that
+    /// cannot be constructed without the record. Closing this map the same way is the right fix
+    /// and is not this change; `no_string_row_is_removed_outside_its_door` holds the convention in
+    /// the meantime.
+    pub(super) fn remove_string_row(
+        &mut self,
+        key: &str,
+    ) -> Option<super::object_record::ObjectSlot> {
+        let removed = self.strings_mut().remove(key);
+        if let Some(slot) = removed.as_ref() {
+            if let Some(size) = slot.logical_size() {
+                self.live_user_bytes = self.live_user_bytes.saturating_sub(size);
+                self.live_objects_with_logical_size =
+                    self.live_objects_with_logical_size.saturating_sub(1);
+            }
+        }
+        removed
+    }
+
     pub(super) fn take_string_address(&mut self, key: &str) -> Option<ElementEntry> {
-        self.strings_mut().remove(key).map(|slot| slot.address())
+        self.remove_string_row(key).map(|slot| slot.address())
     }
 
     /// Context-node addresses. Read as a fallback; nothing in production writes this.

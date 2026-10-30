@@ -649,6 +649,10 @@ pub(crate) fn execute_on_shard(
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &address);
+                    // THE WRITER'S OWN LENGTH, which is the only place it is known. `address`
+                    // carries the STORED length, so a denominator taken from the index would be
+                    // compressed bytes; this is what the caller handed us, before the codec.
+                    shard.set_string_logical_size(key.as_str(), value.len() as u64);
                 mutated = true;
             }
             invalidate_cache_key(cache, CacheKey::string(shard_id, &key), async_storage);
@@ -689,6 +693,10 @@ pub(crate) fn execute_on_shard(
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &address);
+                    // THE WRITER'S OWN LENGTH, which is the only place it is known. `address`
+                    // carries the STORED length, so a denominator taken from the index would be
+                    // compressed bytes; this is what the caller handed us, before the codec.
+                    shard.set_string_logical_size(key.as_str(), value.len() as u64);
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
                 // This write sets a value AND a deadline. Recording only the block passes a probe
@@ -775,6 +783,10 @@ pub(crate) fn execute_on_shard(
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &address);
+                    // THE WRITER'S OWN LENGTH, which is the only place it is known. `address`
+                    // carries the STORED length, so a denominator taken from the index would be
+                    // compressed bytes; this is what the caller handed us, before the codec.
+                    shard.set_string_logical_size(key.as_str(), value.len() as u64);
                     if let Some(ttl_ms) = ttl_ms {
                         let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                         crate::engine::set_expiry(shard, key.clone(), expires_at);
@@ -889,7 +901,7 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= mark_bucket_index_object_deleted(shard, &key);
-            mutated |= shard.strings_mut().remove(key.as_str()).is_some();
+            mutated |= shard.remove_string_row(key.as_str()).is_some();
             let _ = cache.invalidate(&CacheKey::string(shard_id, &key));
             CommandResponse::Empty
         }

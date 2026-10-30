@@ -2022,7 +2022,7 @@ impl TemporalEngine {
         let mut shards = self.shards.write().expect("engine lock poisoned");
         shards
             .get_mut(&shard_id)
-            .and_then(|shard| shard.strings_mut().remove(key))
+            .and_then(|shard| shard.remove_string_row(key))
             .is_some()
     }
 
@@ -5847,7 +5847,7 @@ fn delete_record_exact(shard: &mut ShardState, key: &str) -> bool {
     removed |= recorded_map::drop_object::<recorded_map::ListKind>(shard, key, deletion.clone());
     removed |= recorded_map::drop_object::<recorded_map::ZSetKind>(shard, key, deletion);
     removed |= clear_expiry(shard, key);
-    removed |= shard.strings_mut().remove(key).is_some();
+    removed |= shard.remove_string_row(key).is_some();
     removed |= shard.buckets.remove(key).is_some();
     removed |= shard.seen.remove(key).is_some();
     if shard.features_mut().remove(key).is_some() {

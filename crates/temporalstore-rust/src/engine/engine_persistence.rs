@@ -1218,6 +1218,15 @@ impl TemporalEngine {
                 bytes_written_since_compaction: block_store
                     .bytes_written
                     .saturating_sub(block_store.bytes_written_at_last_compaction),
+                // USER BYTES ON BOTH SIDES, so the codec cancels instead of appearing in the
+                // quotient. The denominator is the shard's maintained class total; see the field
+                // note for its accuracy and its coverage caveat.
+                user_write_amplification_ppm: Self::ppm_ratio(
+                    block_store.logical_bytes_written,
+                    state.live_user_bytes,
+                ),
+                live_user_bytes: state.live_user_bytes,
+                live_objects_with_logical_size: state.live_objects_with_logical_size,
                 space_amplification_ppm: Self::ppm_ratio(
                     block_store_slabs.total_known_physical_bytes,
                     block_store_slabs.live_physical_bytes,
