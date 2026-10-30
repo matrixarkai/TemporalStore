@@ -114,7 +114,7 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
     println!("\n=== entries per OBJECT, set kind, across two re-derivations ===");
     println!(
         "  {:>9}  {:>6}  {:>7}  {:>6}  {:>7}  {:>6}",
-        "occupancy", "pages", "entries", "pages", "entries", "tombs"
+        "occupancy", "blocks", "entries", "blocks", "entries", "tombs"
     );
 
     for occupancy in [1usize, 4, 40] {

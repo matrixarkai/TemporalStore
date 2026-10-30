@@ -343,7 +343,7 @@ fn walk() -> Vec<(Shape, Carried)> {
         "removal",
         "deadline",
         "addr-only",
-        "pages",
+        "blocks",
         "no-way-back"
     );
     for (shape, counts) in &measured {

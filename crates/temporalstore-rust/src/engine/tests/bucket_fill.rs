@@ -1081,7 +1081,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
     println!("  store path length held at {first} characters across all arms");
     println!(
         "  {:>8} {:>12} {:>9} {:>8} {:>9} {:>12} {:>20}",
-        "records", "range end", "buckets", "pages", "B/page", "allocs/page", "index arms E/One/Many"
+        "records", "range end", "buckets", "blocks", "B/page", "allocs/page", "index arms E/One/Many"
     );
     for ((records, end_routing_bucket), row) in &observed {
         println!(

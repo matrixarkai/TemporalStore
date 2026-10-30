@@ -2180,7 +2180,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
     );
     println!(
         "    {:<7} {:>5} {:>9} {:>11} {:>12} {:>12} {:>8}",
-        "kind", "n", "pages", "comp chars", "REQUEST B", "CHUNK B", "chars/n"
+        "kind", "n", "blocks", "comp chars", "REQUEST B", "CHUNK B", "chars/n"
     );
 
     for kind in ["set", "zset", "list", "string"] {

@@ -597,7 +597,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
     println!("PER-RECORD BYTES AND ALLOCATIONS, ONE ROW A CELL");
     println!(
         "  {:<9} {:<12} {:>9} {:>9} {:>9} {:>8} {:>8} {:>8} {:>9}",
-        "records", "range", "req B/rec", "chk B/rec", "held B/rec", "all/rec", "buckets", "pages",
+        "records", "range", "req B/rec", "chk B/rec", "held B/rec", "all/rec", "buckets", "blocks",
         "nodes"
     );
     for (cell, _) in &cells {
