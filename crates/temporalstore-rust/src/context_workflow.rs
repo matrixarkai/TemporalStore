@@ -9,7 +9,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 /// Max ref_hashes per ContextQueryEmbeddings command. Must not exceed the
-/// engine's CONTEXT_MAX_LIMIT (engine/constants.rs), which command validation
+/// engine's CONTEXT_MAX_LIMIT (engine/engine_constants.rs), which command validation
 /// enforces by rejecting larger requests. Retrieval chunks its summary-embedding
 /// lookups at this size so a namespace with more nodes than the cap is still
 /// fully scored instead of silently falling back to lexical ranking.
@@ -40,13 +40,19 @@ fn lexical_score_to_micros(raw: u32) -> i64 {
     raw.saturating_mul(LEXICAL_MATCH_MICROS) / LEXICAL_SCORE_SATURATION
 }
 
+#[path = "context_workflow/context_query_scoring.rs"]
 mod query;
 mod embed_drainer;
+#[path = "context_workflow/context_workflow_resource.rs"]
 mod resource;
+#[path = "context_workflow/context_workflow_benchmark.rs"]
 mod benchmark;
 mod model_provider;
+#[path = "context_workflow/context_workflow_ingest.rs"]
 mod ingest;
+#[path = "context_workflow/context_workflow_reports.rs"]
 mod reports;
+#[path = "context_workflow/context_workflow_skill.rs"]
 mod skill;
 
 pub use resource::{

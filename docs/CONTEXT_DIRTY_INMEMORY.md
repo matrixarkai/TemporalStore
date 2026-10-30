@@ -64,7 +64,7 @@ process-local static map). It may be lost on restart, and that is safe:
   **always-empty vestigial map** so snapshot load/save and page-rebuild code compiles
   and no-ops (candidate for a later removal).
 - Removed `context_dirty` from the persisted reporting paths:
-  `engine/storage_pages.rs`, `engine/compaction.rs`, `engine/page_layout.rs`,
+  `engine/storage_pages.rs`, `engine/engine_compaction.rs`, `engine/page_layout.rs`,
   `engine/records.rs`; `engine/expiration.rs` now expires the in-memory index.
 - Verification: `examples/inmemory_dirty_check.rs` (runtime proof) and
   `tests/inmemory_dirty_summary.rs` (public-API integration test) cover coalescing,

@@ -47,7 +47,7 @@ and the bucket-node codec in [`state.rs`](../crates/temporalstore-rust/src/engin
 
 ## Published reports
 
-[`PublicStorageContract`](../crates/temporalstore-rust/src/engine/reports.rs)
+[`PublicStorageContract`](../crates/temporalstore-rust/src/engine/engine_reports.rs)
 maps both `page_address` and `block_address` to `ElementEntry`. Published
 `page_index_entry` and `block_index_entry` labels and their sample structures
 remain available to existing report consumers. They are report views, not

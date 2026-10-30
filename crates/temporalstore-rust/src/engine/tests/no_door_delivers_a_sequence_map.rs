@@ -6,7 +6,7 @@
 //! # THE ARGUMENT THAT IS NOT ENOUGH
 //!
 //! "Nothing writes it" is true -- every `insert` and `entry` on that map lived in
-//! `engine/tests/conformance.rs`, a test model -- and on its own it is wrong, because the field
+//! `engine/tests/engine_tests_conformance.rs`, a test model -- and on its own it is wrong, because the field
 //! WAS on the wire when non-empty and `ShardState` carries no `deny_unknown_fields`. An index
 //! still holding a series decodes *cleanly* against a struct without the field, and the series is
 //! dropped with no error raised anywhere. A deletion resting on the absence of a writer loses that

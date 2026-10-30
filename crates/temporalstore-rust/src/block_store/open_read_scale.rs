@@ -478,11 +478,11 @@ fn the_residual_a_cold_open_leaves_is_zero_and_a_planted_read_proves_it_is_a_rea
 /// of a hand-written list is exactly the second door this campaign keeps finding.
 const MODULES: &[(&str, &str)] = &[
     ("block_store.rs", include_str!("../block_store.rs")),
-    ("append.rs", include_str!("append.rs")),
-    ("gc.rs", include_str!("gc.rs")),
-    ("paths.rs", include_str!("paths.rs")),
-    ("read.rs", include_str!("read.rs")),
-    ("record.rs", include_str!("record.rs")),
+    ("block_store_append.rs", include_str!("block_store_append.rs")),
+    ("block_store_gc.rs", include_str!("block_store_gc.rs")),
+    ("block_store_paths.rs", include_str!("block_store_paths.rs")),
+    ("block_store_read.rs", include_str!("block_store_read.rs")),
+    ("block_store_record.rs", include_str!("block_store_record.rs")),
     ("slab_backend.rs", include_str!("slab_backend.rs")),
     ("slab_ids.rs", include_str!("slab_ids.rs")),
     ("slab_manifest.rs", include_str!("slab_manifest.rs")),

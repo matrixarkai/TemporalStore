@@ -2875,7 +2875,7 @@ mod eviction_round_scale {
     ///
     /// `delete_drop` is OFF by default in both places it can be set. It is not unreachable: both
     /// are `#[serde(default)]` fields on deserialized structs -- `StorageManagerRequest`
-    /// (`engine/reports.rs`), which the on-demand cycle takes from a caller, and the data node's
+    /// (`engine/engine_reports.rs`), which the on-demand cycle takes from a caller, and the data node's
     /// own options (`data_node.rs`), which a deployment configures. Either can turn it on with no
     /// code change, so what it costs when on is worth a number.
     ///
@@ -2889,7 +2889,7 @@ mod eviction_round_scale {
     /// `applied_wal_sequence`. The argument does not hold, and this is where it is written down.
     ///
     /// WHAT THE SEQUENCE GUARANTEES. Replay keeps records whose `sequence` is strictly above the
-    /// durable anchor and then SORTS them by sequence (`engine/lifecycle.rs`), so a key's final
+    /// durable anchor and then SORTS them by sequence (`engine/engine_lifecycle.rs`), so a key's final
     /// state is decided by the highest-sequence record naming it. WHERE IT IS ASSIGNED: inside
     /// `append_with_sync_inner`, under the log's own mutex, at the moment the bytes are written --
     /// `seq = last_sequence + 1`. There is no way to take a sequence now and write its bytes

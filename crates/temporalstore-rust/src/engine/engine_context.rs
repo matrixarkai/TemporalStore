@@ -110,7 +110,7 @@ pub(super) const EMBEDDING_DIRTY_PREFIX: &str = "ctx:embdirty:";
 // left to guard and no prefix left to parse.
 //
 // The PREFIX itself stays, below, because the command surface still builds these key strings:
-// `client/commands.rs` and `command_validation.rs` advertise the object key a command touches,
+// `client/client_commands.rs` and `command_validation.rs` advertise the object key a command touches,
 // which is a different job from keying a resident map.
 
 pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: u64) -> String {

@@ -300,8 +300,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::startup_load_request_uses_readonly_secondary_env",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::startup_load_request_uses_readonly_secondary_env",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "startup_load_request_uses_readonly_secondary_env",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -309,8 +309,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_topology_validation_fetches_metaserver_partition_map",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_topology_validation_fetches_metaserver_partition_map",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_topology_validation_fetches_metaserver_partition_map",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -318,8 +318,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_exposes_parity_readiness_report",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_exposes_parity_readiness_report",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_exposes_parity_readiness_report",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -327,8 +327,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::block_store_options_read_compression_policy_env",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::block_store_options_read_compression_policy_env",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "block_store_options_read_compression_policy_env",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -336,8 +336,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::membership_update_posts_finish_callback_to_meta",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::membership_update_posts_finish_callback_to_meta",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "membership_update_posts_finish_callback_to_meta",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -345,8 +345,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_execute_uses_consensus_state_for_writes_and_reads",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_raft_execute_uses_consensus_state_for_writes_and_reads",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_raft_execute_uses_consensus_state_for_writes_and_reads",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -354,8 +354,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_execute_rejects_follower_writes",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_raft_execute_rejects_follower_writes",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_raft_execute_rejects_follower_writes",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -363,8 +363,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_bounded_stale_read_policy_reads_local_replica",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_raft_bounded_stale_read_policy_reads_local_replica",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_raft_bounded_stale_read_policy_reads_local_replica",
       "family": "control plane",
       "classification": "move_to_shared",
@@ -372,8 +372,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::native_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::native_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "native_server_service_lifecycle_snapshot_routes_restore_scheduler_state",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -381,8 +381,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::native_server_service_lifecycle_snapshot_survives_http_restart_boundary",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::native_server_service_lifecycle_snapshot_survives_http_restart_boundary",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "native_server_service_lifecycle_snapshot_survives_http_restart_boundary",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -390,8 +390,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_async_lifecycle_alias_submits_load_job",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_async_lifecycle_alias_submits_load_job",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_async_lifecycle_alias_submits_load_job",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -399,8 +399,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_ingest_batch_rest_route_rejects_duplicate_kafka_offset_without_noop",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_ingest_batch_rest_route_rejects_duplicate_kafka_offset_without_noop",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_ingest_batch_rest_route_rejects_duplicate_kafka_offset_without_noop",
       "family": "ingestion",
       "classification": "move_to_shared",
@@ -408,8 +408,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_admin_aliases_expose_runtime_preflight_dirty_and_queue_state",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -417,8 +417,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_raft_admin_bootstrap_external_snapshot_installs_downloaded_snapshot",
       "family": "storage/cache",
       "classification": "move_to_shared",
@@ -426,8 +426,8 @@
       "notes": "Grandfathered product behavior; migrate into shared executable conformance corpus case or fold into an existing shared case."
     },
     {
-      "test_id": "crates/temporalstore-rust/src/bin/server.rs::server_raft_admin_routes_can_be_disabled",
-      "file": "crates/temporalstore-rust/src/bin/server.rs",
+      "test_id": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs::server_raft_admin_routes_can_be_disabled",
+      "file": "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
       "test_name": "server_raft_admin_routes_can_be_disabled",
       "family": "Redis/admin",
       "classification": "move_to_shared",

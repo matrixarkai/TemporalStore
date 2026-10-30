@@ -2809,7 +2809,7 @@ fn start_server_raft_from_env(
 }
 
 include!("server/raft_route.rs");
-include!("server/metrics.rs");
+include!("server/server_metrics.rs");
 fn validate_node_topology_from_meta(
     runtime: &DataNodeRuntime,
     meta_addr: &str,

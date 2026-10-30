@@ -4465,7 +4465,7 @@
             "kind": "existing_test",
             "mode": "runtime",
             "required_paths": [
-              "crates/temporalstore-rust/src/bin/server.rs",
+              "crates/temporalstore-rust/src/bin/temporalstore_data_server.rs",
               "crates/temporalstore-rust/src/bin/raft_node.rs",
               "crates/temporalstore-rust/src/raft.rs",
               "crates/rustraft/src/lib.rs"
@@ -7635,7 +7635,7 @@
       ]
     },
     {
-      "description": "Shared conformance engine lifecycle case for direct shard load, duplicate-load rejection, config versioning, info/stats reporting, membership version guards, and unload cleanup. Added after splitting Rust engine lifecycle code into engine/lifecycle.rs so the moved production surface remains tied to the unified corpus.",
+      "description": "Shared conformance engine lifecycle case for direct shard load, duplicate-load rejection, config versioning, info/stats reporting, membership version guards, and unload cleanup. Added after splitting Rust engine lifecycle code into engine/engine_lifecycle.rs so the moved production surface remains tied to the unified corpus.",
       "family": "control plane",
       "name": "engine_lifecycle_load_config_membership_unload",
       "shard_id": 7,
@@ -7647,7 +7647,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/engine/lifecycle.rs"
+              "crates/temporalstore-rust/src/engine/engine_lifecycle.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust control_api_load_config_info_stats_membership_and_unload --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
@@ -7658,7 +7658,7 @@
       ]
     },
     {
-      "description": "Shared conformance engine lifecycle case for reload metadata replacement, stale load-version rejection, membership preservation across reload, and readonly write barriers. Added after splitting Rust engine lifecycle code into engine/lifecycle.rs.",
+      "description": "Shared conformance engine lifecycle case for reload metadata replacement, stale load-version rejection, membership preservation across reload, and readonly write barriers. Added after splitting Rust engine lifecycle code into engine/engine_lifecycle.rs.",
       "family": "control plane",
       "name": "engine_lifecycle_reload_metadata_readonly_stale_version",
       "shard_id": 7,
@@ -7693,7 +7693,7 @@
             "kind": "existing_test",
             "mode": "rust_executable_native_static",
             "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/query.rs"
+              "crates/temporalstore-rust/src/context_workflow/context_query_scoring.rs"
             ],
             "rust_runner": "cargo test -p temporalstore-rust context_query_debug_reports_filter_groups_drops_and_injection_order --lib -- --test-threads=1",
             "rust_validator": "python3 tools/run_temporalstore_unified_tests.py --validate-only && python3 tools/validate_rust_product_test_guard.py",
@@ -11420,7 +11420,7 @@
             "rust_test": "context_resource_parser_spills_large_resource_body_to_object_store_ref",
             "native_adapter_status": "pending_adapter",
             "required_paths": [
-              "crates/temporalstore-rust/src/context_workflow/resource.rs",
+              "crates/temporalstore-rust/src/context_workflow/context_workflow_resource.rs",
               "crates/temporalstore-rust/src/context_workflow.rs",
               "crates/temporalstore-rust/src/context_workflow/context_workflow_regression_tests.rs",
               "tools/matrixark_raw_message_storage_contract.py"

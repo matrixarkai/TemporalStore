@@ -4,7 +4,7 @@
 //! Metaserver-driven raft leader failover planning.
 //!
 //! The metaserver's failure detector ([`SingleNodeMeta::freeze_stale_resources`]
-//! in `meta/lifecycle.rs`) marks a datanode whose heartbeats have gone stale as
+//! in `meta/meta_lifecycle.rs`) marks a datanode whose heartbeats have gone stale as
 //! [`MetaEntityState::Frozen`]. On its own that freeze is inert for a
 //! raft-replicated shard: the surviving replicas are never told their leader is
 //! gone, so their raft view keeps the dead node marked alive, `tick_election`

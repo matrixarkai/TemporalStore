@@ -6,7 +6,7 @@
 //! # THE QUESTION
 //!
 //! A block's routing bucket is `start + FNV-1a-64(object_key) % (end - start + 1)`
-//! (`engine/hashing.rs`), so the key is folded INTO the configured range and a key's bucket moves
+//! (`engine/engine_hashing.rs`), so the key is folded INTO the configured range and a key's bucket moves
 //! when the range moves. #1977 measured that as a refutation of recomputation: 4,000 keys written
 //! on `0..4294967295` and reopened on `0..1023` gave 4,000 of 4,000 recomputed buckets wrong. This
 //! module asks the stronger question underneath it -- should the dependence exist at all? -- and
@@ -90,7 +90,7 @@
 //!
 //! It is a REINDEX, not a data move, and by a wider margin than the `BlockAddress` field suggests.
 //! A block's bytes live at `(slab, offset)` in the address word, chosen by the single active slab
-//! and rolled by SIZE alone (`block_store/append.rs`) -- the bucket takes no part in placement. And
+//! and rolled by SIZE alone (`block_store/block_store_append.rs`) -- the bucket takes no part in placement. And
 //! the on-disk block record carries neither the bucket nor the object id nor the key:
 //! `encode_block_record` takes both identities and discards them (`let _ = (object_id,
 //! routing_bucket);`), and `parse_block_record_header` hardcodes both absent. So no slab byte would

@@ -4,7 +4,7 @@
 //! Adaptive heartbeat failure detection and correlated-failure conviction gating.
 //!
 //! The metaserver decides that a datanode is dead in
-//! [`SingleNodeMeta::freeze_stale_resources_with_policy`] (`meta/lifecycle.rs`):
+//! [`SingleNodeMeta::freeze_stale_resources_with_policy`] (`meta/meta_lifecycle.rs`):
 //! any server whose last heartbeat is older than a fixed `stale_after_ms` is
 //! frozen. That single fixed threshold has three failure modes this module
 //! addresses, all of which turn a small incident into a cluster-wide one:

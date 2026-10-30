@@ -37,20 +37,25 @@ pub fn admin_auth_header() -> String {
         .map(|token| format!("Authorization: Bearer {token}\r\n"))
         .unwrap_or_default()
 }
+#[path = "meta/meta_partitioning.rs"]
 mod partitioning;
+#[path = "meta/meta_lifecycle.rs"]
 mod lifecycle;
 mod snapshot_ops;
 mod node_reports;
 mod state_setters;
+#[path = "meta/meta_registration.rs"]
 mod registration;
 mod table_ops;
 mod topology_helpers;
 mod auto_rebalance;
 mod failure_detector;
+#[path = "meta/meta_location.rs"]
 mod location;
 mod placement_rebalance;
 mod raft_failover;
 mod shard_check;
+#[path = "meta/meta_retention.rs"]
 mod retention;
 mod proxy_groups;
 mod subsystem_metrics;

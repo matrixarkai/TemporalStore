@@ -370,7 +370,7 @@ pub struct ShardCanonicalStorageStats {
     ///
     /// THE NUMERATOR IS A LIFETIME ACCUMULATOR AND THE DENOMINATOR IS A CURRENT READING. Nothing
     /// resets `bytes_written`: the only assignments to zero in the crate are local accumulators in
-    /// `block_store/append.rs`, and no compaction, reclamation or dump path touches the counter. So
+    /// `block_store/block_store_append.rs`, and no compaction, reclamation or dump path touches the counter. So
     /// on a store whose live set is roughly flat, this figure RISES WITHOUT LIMIT as a function of
     /// uptime, and a gate set at any multiple of 1.0x will eventually fire on a healthy store that
     /// has simply been up a long time. `lifetime_` is in the name for that reason.
@@ -755,15 +755,15 @@ pub struct ShardCanonicalStorageStats {
     /// One per call, not one per byte and not one per page: a four-megabyte object read cold
     /// counts one, the same as a five-hundred-byte one, and a read served from the memory or
     /// disk cache counts none because it never reaches the store. Incremented at three sites
-    /// in `block_store/read.rs` -- `read`, `read_range`, `read_logical_range`.
+    /// in `block_store/block_store_read.rs` -- `read`, `read_range`, `read_logical_range`.
     pub page_reads: u64,
     /// How many times the block store was CALLED to append, summed over the shard's lifetime.
-    /// Two increment sites, both in `block_store/append.rs`.
+    /// Two increment sites, both in `block_store/block_store_append.rs`.
     pub page_writes: u64,
     /// The SAME number as `page_reads`, not a second measurement.
     ///
     /// Block and page are one concept under two names while the rename is in flight, and
-    /// `engine/persistence.rs` assigns both fields from `block_store.reads` four lines apart.
+    /// `engine/engine_persistence.rs` assigns both fields from `block_store.reads` four lines apart.
     /// A committed fixture once recorded `page_reads: 4` beside `block_reads: 2`, which reads
     /// as two measurements and would make a rename halve a real number; no code path can
     /// produce that, and `engine::tests::page_and_block_counter_ratio` asserts the ratio is

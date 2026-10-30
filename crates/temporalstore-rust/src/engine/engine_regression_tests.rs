@@ -220,7 +220,7 @@ fn assert_cache_latency_histograms_observed(stats: matrixcache::CacheStats) {
 }
 
 
-#[path = "tests/conformance.rs"]
+#[path = "tests/engine_tests_conformance.rs"]
 mod conformance;
 #[path = "tests/concurrent_commit.rs"]
 mod concurrent_commit;
@@ -232,7 +232,7 @@ mod phase1_flat;
 mod part1;
 #[path = "tests/cache_tiers_and_command_execution.rs"]
 mod part2;
-#[path = "tests/quota.rs"]
+#[path = "tests/engine_tests_quota.rs"]
 mod quota;
 #[path = "tests/stream_reads_and_shard_controls.rs"]
 mod part3;
@@ -639,6 +639,8 @@ mod what_the_collector_sees_after_a_rewrite;
 mod the_amplification_set_under_rewrite;
 #[path = "tests/the_write_window_closes_at_compaction.rs"]
 mod the_write_window_closes_at_compaction;
+#[path = "tests/what_a_live_user_bytes_denominator_would_cost.rs"]
+mod what_a_live_user_bytes_denominator_would_cost;
 #[path = "tests/whether_a_dead_slab_can_be_reclaimed.rs"]
 mod whether_a_dead_slab_can_be_reclaimed;
 #[path = "tests/the_overwrite_records_what_it_retired.rs"]

@@ -14,7 +14,7 @@
 //! the decision durable: the route list below is a claim that each entry is served, and anything
 //! added to the SDK fails here until someone states which it is.
 //!
-//! The dispatcher's own arms are in `crates/temporalstore-rust/src/proxy/handle.rs`. This crate is
+//! The dispatcher's own arms are in `crates/temporalstore-rust/src/proxy/proxy_handle.rs`. This crate is
 //! published standalone and cannot depend on it, so the list is checked by hand against those arms
 //! and pinned here; it is not derived at run time.
 
@@ -24,7 +24,7 @@ use std::path::PathBuf;
 
 /// Routes the proxy serves and this SDK is allowed to call.
 ///
-/// Adding a line here asserts that `crates/temporalstore-rust/src/proxy/handle.rs` matches it for
+/// Adding a line here asserts that `crates/temporalstore-rust/src/proxy/proxy_handle.rs` matches it for
 /// POST. If it does not, the call can only ever fail at run time.
 const SERVED_ROUTES: &[&str] = &[
     "/ProxyService/BatchExecuteCmd",
@@ -135,7 +135,7 @@ fn proxy_route_contract() {
         assert!(
             !called.contains(*route),
             "the SDK calls {route}, which the dispatcher answers 404 for. Either add the arm in \
-             crates/temporalstore-rust/src/proxy/handle.rs and move the route into SERVED_ROUTES, \
+             crates/temporalstore-rust/src/proxy/proxy_handle.rs and move the route into SERVED_ROUTES, \
              or leave the method off as #1040 did."
         );
     }

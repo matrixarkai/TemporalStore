@@ -4267,7 +4267,7 @@ fn what_one_add_costs_end_to_end() {
 
 // --- Restored ---------------------------------------------------------------------
 // These cover `context_embedding_model_conflicts`, which is live in
-// context_workflow/query.rs and wired in context_workflow.rs. They were lost when a ship
+// context_workflow/context_query_scoring.rs and wired in context_workflow.rs. They were lost when a ship
 // copied a stale whole-file snapshot of this file over a concurrently merged version: the
 // source survived, the tests did not, and the guard shipped untested. Taken verbatim from
 // 9b1a2678 rather than rewritten, so they remain their author's tests.

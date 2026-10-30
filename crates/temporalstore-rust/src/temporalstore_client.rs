@@ -20,16 +20,24 @@ use crate::meta::{
     GetTableTopologyRequest, ServerEndpoint, TableTopologyResponse, TopologyVersionReport,
     TopologyVersionRequest,
 };
+#[path = "client/client_routing.rs"]
 mod client_routing;
+#[path = "client/client_meta_sync.rs"]
 mod client_meta_sync;
+#[path = "client/client_commands.rs"]
 mod commands;
 // The proxy's drop decision hashes the same routing key this builds; it is re-exported
 // rather than copied because the copy that used to live there had drifted.
 pub(crate) use commands::command_routing_key;
+#[path = "client/table_feature.rs"]
 mod table_feature;
+#[path = "client/table_context.rs"]
 mod table_context;
+#[path = "client/table_control_state.rs"]
 mod table_control_state;
+#[path = "client/client_retry.rs"]
 mod retry;
+#[path = "client/client_routing_operations.rs"]
 mod routing;
 
 use client_routing::batch_read_policy;
