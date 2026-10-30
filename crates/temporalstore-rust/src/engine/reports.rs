@@ -3954,6 +3954,8 @@ pub struct StorageLogPressureReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLogCompatibilityReport {
     pub shard_id: ShardId,
+    /// Current writer payload format. Older JSON records remain readable.
+    /// Outcome items are enabled by default; commands are retained where recovery needs them.
     #[serde(rename = "wal_format")]
     pub wal_format: String,
     pub index_log_format: String,

@@ -258,13 +258,15 @@ impl SharedStoreStorageMode {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 pub enum SharedStoreWalAppendMode {
+    /// Explicit compatibility mode for stores that only support whole-object puts.
     JsonPerKey,
+    /// Default binary WAL layout; requires a backend with real append support.
     ProtobufAppendBlob,
 }
 
 impl Default for SharedStoreWalAppendMode {
     fn default() -> Self {
-        Self::JsonPerKey
+        Self::ProtobufAppendBlob
     }
 }
 
@@ -1550,57 +1552,9 @@ where
                     actual: wal_index,
                 });
             }
-            // Advance the expected position HERE, before the branches, and not at the end of the
-            // loop body. The outcomes branch below ends in `continue`, so an increment at the
-            // bottom is skipped for every entry that carries outcomes -- which is how the strict
-            // loop this check came from would refuse a perfectly contiguous log of them at its
-            // SECOND entry. Nothing noticed, because that loop had no production caller and every
-            // test that exercised it published entries with no outcomes.
+            // Both command and outcome records advance the same sequence.
             expected = wal_index + 1;
-            // An entry that says what its write DID is installed, not re-executed. Re-executing
-            // reproduces the write only if everything that influenced it is reproduced too, and on
-            // a SUCCESSOR that is a stronger assumption than it is on a restart: a different node,
-            // a different clock, and whatever config it happens to hold.
-            //
-            // The fallback is what makes this safe to land. An entry carrying no outcomes replays
-            // exactly as it used to, so a shared log written before this still applies.
-            if !entry.outcomes.is_empty() {
-                if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_blocks) {
-                    return Err(SharedStoreReplicationError::ApplyFailed {
-                        wal_index,
-                        status: Status::error(
-                            "shared_wal_outcome_refused",
-                            "a recorded outcome could not be installed; refusing to serve a shard missing it",
-                        ),
-                    });
-                }
-                report.applied += 1;
-                report.last_wal_index = wal_index;
-                continue;
-            }
-            // Hand the replayed write the pages the ORIGINAL write produced. Re-executing the
-            // command would otherwise substitute this node's reconstruction for the bytes that
-            // were actually acked -- identical for a plain value, and not necessarily so for
-            // derived state.
-            let Some(command) = entry.command else {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    wal_index,
-                    status: Status::error(
-                        "shared_wal_entry_empty",
-                        "entry carries neither results nor an operation; refusing rather than skipping a durable write",
-                    ),
-                });
-            };
-            let response = engine.execute_with_carried_blocks(
-                ExecuteRequest { shard_id, command },
-                entry.staged_blocks,
-            );
-            if !response.status.ok {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    wal_index,
-                    status: response.status,
-                });
-            }
+            Self::apply_replayed_wal_entry(shard_id, wal_index, entry, engine)?;
             report.applied += 1;
             report.last_wal_index = wal_index;
         }
@@ -1621,6 +1575,36 @@ where
         self.replay_wal(shard_id, after_wal_index, engine).await
     }
 
+    fn apply_replayed_wal_entry(
+        shard_id: ShardId,
+        wal_index: u64,
+        entry: SharedStoreWalEntry,
+        engine: &TemporalEngine,
+    ) -> Result<(), SharedStoreReplicationError> {
+        if !entry.outcomes.is_empty() {
+            if !engine.install_shared_outcomes_with_blocks(shard_id, &entry.outcomes, &entry.staged_blocks) {
+                return Err(SharedStoreReplicationError::ApplyFailed {
+                    wal_index,
+                    status: Status::error("shared_wal_outcome_refused", "a recorded outcome could not be installed"),
+                });
+            }
+            return Ok(());
+        }
+        let Some(command) = entry.command else {
+            return Err(SharedStoreReplicationError::ApplyFailed {
+                wal_index,
+                status: Status::error("shared_wal_entry_empty", "entry carries neither results nor an operation"),
+            });
+        };
+        let response = engine.execute_with_carried_blocks(
+            ExecuteRequest { shard_id, command }, entry.staged_blocks,
+        );
+        if !response.status.ok {
+            return Err(SharedStoreReplicationError::ApplyFailed { wal_index, status: response.status });
+        }
+        Ok(())
+    }
+
     async fn replay_wal_from_offset_metadata(
         &self,
         shard_id: ShardId,
@@ -1629,6 +1613,15 @@ where
     ) -> Result<Option<ReplayReport>, SharedStoreReplicationError> {
         let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
         if offset_metadata.is_empty() {
+            return Ok(None);
+        }
+
+        // A compatibility writer can leave records before, between, or after indexed
+        // records. Select the union reader before applying anything from the fast path.
+        if self.object_store.list(&self.wal_prefix(shard_id)).await?
+            .iter().filter_map(|key| parse_wal_index(key))
+            .any(|index| index > after_wal_index)
+        {
             return Ok(None);
         }
 
@@ -1659,26 +1652,7 @@ where
             let (entry, range_bytes_read) = self
                 .read_wal_entry_with_offset_metadata(shard_id, *wal_index, metadata)
                 .await?;
-            // Neither results nor an operation: refusing beats skipping a durable write.
-            let Some(command) = entry.command else {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    wal_index: *wal_index,
-                    status: Status::error(
-                        "shared_wal_entry_empty",
-                        "entry carries neither results nor an operation",
-                    ),
-                });
-            };
-            let response = engine.execute(ExecuteRequest {
-                shard_id,
-                command,
-            });
-            if !response.status.ok {
-                return Err(SharedStoreReplicationError::ApplyFailed {
-                    wal_index: *wal_index,
-                    status: response.status,
-                });
-            }
+            Self::apply_replayed_wal_entry(shard_id, *wal_index, entry, engine)?;
             report.applied += 1;
             report.last_wal_index = *wal_index;
             report.offset_index_reads += 1;
@@ -2193,7 +2167,9 @@ where
     ) -> Result<u64, SharedStoreReplicationError> {
         let offset_metadata = self.load_wal_offset_metadata(shard_id).await?;
         if let Some(max) = offset_metadata.keys().max().copied() {
-            return Ok(max);
+            let legacy_max = self.object_store.list(&self.wal_prefix(shard_id)).await?
+                .iter().filter_map(|key| parse_wal_index(key)).max().unwrap_or(0);
+            return Ok(max.max(legacy_max));
         }
         let entries = self.load_wal_entries(shard_id).await?;
         Ok(entries.keys().max().copied().unwrap_or(0))
@@ -3668,6 +3644,152 @@ mod tests {
     use crate::types::CommandResponse;
 
 
+    #[tokio::test]
+    async fn default_shared_wal_preserves_multiple_binary_outcomes_and_older_json() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let legacy = SharedStoreReplicator::new("default-binary", store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
+        legacy
+            .publish_wal_entry(SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: 1,
+                command: Some(Command::StringSet {
+                    key: "old".into(),
+                    value: b"old-value".to_vec(),
+                }),
+                staged_blocks: Vec::new(),
+                outcomes: Vec::new(),
+            })
+            .await
+            .unwrap();
+        let writer = SharedStoreReplicator::new("default-binary", store.clone());
+        assert_eq!(
+            writer.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        );
+        let retry_writer = SharedStoreReplicator::with_retry_policy(
+            "default-binary",
+            store.clone(),
+            SharedStoreRetryPolicy::default(),
+        );
+        assert_eq!(
+            retry_writer.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob
+        );
+        let primary = test_engine(dir.path(), "default-writer");
+        primary.load_shard(1);
+        for index in 2..=3 {
+            let key = format!("new-{index}");
+            assert!(
+                primary
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringSet {
+                            key: key.clone(),
+                            value: vec![0, 255, index as u8]
+                        },
+                    })
+                    .status
+                    .ok
+            );
+            let rows = primary
+                .write_ahead_log_store()
+                .scan(1, 0, u64::MAX, u64::MAX)
+                .unwrap();
+            let (_, payload) = rows.last().expect("a write produced a WAL record");
+            assert_eq!(payload.first(), Some(&crate::log_framing::FRAME_MAGIC_V3));
+            let protobuf = crate::log_framing::decode_line(payload).unwrap();
+            assert!(matches!(
+                protobuf.first(),
+                Some(&crate::wal_proto::RAW_PAYLOAD_MARKER)
+                    | Some(&crate::wal_proto::COMPRESSED_RAW_PAYLOAD_MARKER)
+            ));
+            let record = crate::wal::decode_wal_line(payload).unwrap();
+            assert!(
+                record.command.is_none(),
+                "the default must record outcomes without a duplicate command"
+            );
+            assert_eq!(record.outcomes.len(), 1);
+            let mut staged_blocks = record.staged_blocks;
+            if staged_blocks.is_empty() {
+                for item in &record.outcomes {
+                    if let Some(address) = item.resolved_address() {
+                        staged_blocks.push(crate::wal::StagedBlock {
+                            object_id: item.object_id,
+                            component: item.component.as_deref().map(Arc::from),
+                            bytes: primary.block_store().read(&address).unwrap(),
+                        });
+                    }
+                }
+            }
+            let entry = SharedStoreWalEntry {
+                shard_id: 1,
+                wal_index: index,
+                command: record.command,
+                staged_blocks,
+                outcomes: record.outcomes,
+            };
+            assert!(writer.publish_wal_entry(entry).await.unwrap().is_some());
+        }
+        let bytes = store.get(&writer.wal_blob_key(1)).await.unwrap();
+        let records = decode_wal_proto_blob(&bytes).unwrap();
+        assert_eq!(
+            records.len(),
+            2,
+            "append must not overwrite the first outcome"
+        );
+        for (record, index) in records.iter().zip(2..=3) {
+            assert_eq!(record.wal_index, index);
+            assert!(record.command.is_none());
+            assert_eq!(record.outcomes[0].object_key, format!("new-{index}"));
+        }
+        let reader = SharedStoreReplicator::new("default-binary", store.clone());
+        assert_eq!(reader.latest_persisted_wal_index(1).await.unwrap(), 3);
+        let follower = test_engine(dir.path(), "default-reader");
+        follower.load_shard(1);
+        let replay = reader.replay_wal_strict(1, 0, &follower).await.unwrap();
+        assert_eq!(replay.applied, 3);
+        for (key, expected) in [
+            ("old", b"old-value".to_vec()),
+            ("new-2", vec![0, 255, 2]),
+            ("new-3", vec![0, 255, 3]),
+        ] {
+            assert_eq!(
+                follower
+                    .execute(ExecuteRequest {
+                        shard_id: 1,
+                        command: Command::StringGet { key: key.into() }
+                    })
+                    .response,
+                CommandResponse::Bytes {
+                    value: Some(expected)
+                }
+            );
+        }
+        store.delete(&legacy.wal_key(1, 1)).await.unwrap();
+        let indexed = test_engine(dir.path(), "indexed-reader");
+        indexed.load_shard(1);
+        let replay = reader.replay_wal_strict(1, 1, &indexed).await.unwrap();
+        assert_eq!(replay.applied, 2);
+        assert_eq!(replay.offset_index_reads, 2);
+        for index in 2..=3 {
+            assert_eq!(indexed.execute(ExecuteRequest {
+                shard_id: 1, command: Command::StringGet { key: format!("new-{index}") },
+            }).response, CommandResponse::Bytes { value: Some(vec![0, 255, index as u8]) });
+        }
+        legacy.publish_wal_entry(SharedStoreWalEntry {
+            shard_id: 1, wal_index: 4,
+            command: Some(Command::StringSet { key: "compat-tail".into(), value: vec![4] }),
+            outcomes: Vec::new(), staged_blocks: Vec::new(),
+        }).await.unwrap();
+        assert_eq!(reader.latest_persisted_wal_index(1).await.unwrap(), 4);
+        assert_eq!(reader.replay_wal_strict(1, 3, &indexed).await.unwrap().applied, 1);
+        assert_eq!(indexed.execute(ExecuteRequest {
+            shard_id: 1, command: Command::StringGet { key: "compat-tail".into() },
+        }).response, CommandResponse::Bytes { value: Some(vec![4]) });
+    }
+
     #[test]
     fn outcome_only_binary_frames_recover_in_every_supported_format() {
         let key = "result-key";
@@ -4897,7 +5019,8 @@ mod tests {
         root: &Path,
     ) -> (Arc<FileObjectStore>, SharedStoreReplicator<FileObjectStore>) {
         let store = Arc::new(FileObjectStore::new(root.join("objects")));
-        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         (store, replicator)
     }
 
@@ -6221,7 +6344,8 @@ mod tests {
         SharedStoreReplicator<MatrixObjectHttpStore>,
     ) {
         let store = Arc::new(MatrixObjectHttpStore::new(uri).unwrap());
-        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         (store, replicator)
     }
 
@@ -7197,7 +7321,7 @@ mod tests {
                 max_attempts: 2,
                 backoff_ms: 0,
             },
-        );
+        ).with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         replicator
             .publish_wal_entry(SharedStoreWalEntry {
                 shard_id: 1,
@@ -7221,7 +7345,8 @@ mod tests {
             inner: FileObjectStore::new(dir.path().join("objects")),
             fail_puts: Mutex::new(1),
         });
-        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store);
+        let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store)
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         let writer = replicator.storage_writer(SharedStoreStorageMode::Async, 1);
         writer
             .write(
@@ -8421,7 +8546,8 @@ mod tests {
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
         let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
-        let patient = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let patient = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
 
         for wal_index in 1..=20u64 {
             patient
@@ -8482,6 +8608,7 @@ mod tests {
 
         // Now the same store with a lag bound. Nineteen entries behind, bound of five.
         let bounded = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey)
             .with_cursor_abandon_policy(SharedStoreCursorAbandonPolicy {
                 max_cursor_age_ms: 0,
                 max_cursor_lag_entries: 5,
@@ -8559,6 +8686,7 @@ mod tests {
         primary.load_shard(1);
         let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
         let bounded = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey)
             .with_cursor_abandon_policy(SharedStoreCursorAbandonPolicy {
                 max_cursor_age_ms: 0,
                 max_cursor_lag_entries: 5,
@@ -8673,7 +8801,8 @@ mod tests {
         ] {
             let store = Arc::new(FileObjectStore::new(dir.path().join(label)));
             let replicator =
-                SharedStoreReplicator::new(TEST_CLUSTER_ID, store).with_cursor_abandon_policy(policy);
+                SharedStoreReplicator::new(TEST_CLUSTER_ID, store)
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey).with_cursor_abandon_policy(policy);
             for wal_index in 1..=20u64 {
                 replicator
                     .publish_wal_entry(SharedStoreWalEntry {

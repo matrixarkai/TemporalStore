@@ -426,7 +426,7 @@ impl OutcomeBlockElements {
     ///
     /// If the page names elements and the outcome's component is not among them, then the page in
     /// hand is not the page this outcome is about -- which is the `object_id` pairing defect
-    /// recorded in `the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate`
+    /// recorded in `the_shared_install_pairs_carried_blocks_by_object_and_component`
     /// arriving with evidence. Installing the page's names would file this element's address under
     /// another element's name; installing the component's would file another page's bytes under
     /// this one. Both are corruption, so neither is chosen and the load is refused.
@@ -1658,11 +1658,14 @@ impl TemporalEngine {
             let mut item = item.clone();
             if let (Some(address), Some(block)) = (
                 item.resolved_address(),
-                carried.iter().find(|block| block.object_id == item.object_id),
+                carried.iter().find(|block| {
+                    block.object_id == item.object_id
+                        && block.component.as_deref() == item.component.as_deref()
+                }),
             ) {
-                if self.block_store.read(&address).is_err() {
-                    // The bytes are not here, and the entry brought them. Write them and install
-                    // where they landed LOCALLY.
+                if !matches!(self.block_store.read(&address), Ok(bytes) if bytes == block.bytes) {
+                    // A foreign address can resolve to unrelated local bytes. The carried
+                    // block is authoritative, even when that address is readable here.
                     if let Ok(local) = super::append_value(
                         &self.cache,
                         &self.block_store,
@@ -1677,6 +1680,8 @@ impl TemporalEngine {
                         false,
                     ) {
                         item.address = Some(local);
+                    } else {
+                        return false;
                     }
                 }
             }
@@ -1733,7 +1738,7 @@ impl TemporalEngine {
     ///
     ///   * the record is a `HashMultiSet` of several fields of ONE key, so it carries several pages
     ///     under one `object_id` and the carried page cannot be matched to this outcome -- the
-    ///     pairing defect `the_shared_install_pairs_a_carried_block_to_an_outcome_by_an_id_that_cannot_discriminate`
+    ///     pairing defect `the_shared_install_pairs_carried_blocks_by_object_and_component`
     ///     records, arriving in the wild rather than in a fixture;
     ///   * and that test runs with ASYNC STORAGE on, so the block the address names was still
     ///     buffered and the store did not have it.
