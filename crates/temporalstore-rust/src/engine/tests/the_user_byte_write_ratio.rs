@@ -253,7 +253,10 @@ fn no_string_row_is_removed_outside_its_door() {
     /// because its positive control could no longer find the one legitimate call. That is the
     /// control doing its job, and it is also a maintenance burden nobody signed up for. So the
     /// door is now whichever file defines `remove_string_row`, which a rename carries with it.
-    const DOOR_DEFINITION: &str = "fn remove_string_row";
+    /// COMPOSED AT RUNTIME so the literal never appears in this file. Spelled whole, this
+    /// const would make THIS file match the search too, the scan would find two "definitions"
+    /// and the one-file assertion below would fail -- a guard defeated by its own needle.
+    const DOOR_FN: &str = "remove_string_row";
 
     fn walk(dir: &Path, out: &mut Vec<(String, usize, String)>) {
         for entry in std::fs::read_dir(dir).expect("the crate source is readable") {
@@ -302,11 +305,12 @@ fn no_string_row_is_removed_outside_its_door() {
         }
     }
     let mut door_files: Vec<String> = Vec::new();
-    find_door(&root, DOOR_DEFINITION, &mut door_files);
+    let definition = format!("fn {DOOR_FN}");
+    find_door(&root, &definition, &mut door_files);
     assert_eq!(
         1,
         door_files.len(),
-        "expected exactly one file to define `{DOOR_DEFINITION}` and found {}: {:?}. The door must be a single function, or 'outside the door' is not a well-defined set.",
+        "expected exactly one file to define `{definition}` and found {}: {:?}. The door must be a single function, or 'outside the door' is not a well-defined set.",
         door_files.len(),
         door_files
     );
@@ -319,7 +323,7 @@ fn no_string_row_is_removed_outside_its_door() {
     println!();
     println!("  {} spelling(s) of `{NEEDLE}` in the crate", hits.len());
     for (path, line, text) in &hits {
-        let where_ = if path.contains(DOOR) { "DOOR" } else { "OUTSIDE" };
+        let where_ = if *path == door { "DOOR" } else { "OUTSIDE" };
         println!("    [{where_}] {}:{} {}", path.rsplit('/').next().unwrap_or(path), line, text);
     }
     println!();
