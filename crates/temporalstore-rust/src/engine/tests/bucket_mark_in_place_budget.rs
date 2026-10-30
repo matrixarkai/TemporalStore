@@ -310,9 +310,9 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         assert_eq!(acked, arm.records, "DENOMINATOR: the seed did not ack every record");
 
         let before = blocks_by_bucket(&engine);
-        let pages_before: usize = before.values().sum();
+        let blocks_before: usize = before.values().sum();
         assert!(
-            pages_before > 0,
+            blocks_before > 0,
             "DENOMINATOR [{}]: the seed filed no page at all, so nothing could be retained",
             arm.label
         );
@@ -336,7 +336,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
 
         let after = blocks_by_bucket(&engine);
         let tombs = tombstones_by_bucket(&engine);
-        let pages_after: usize = after.values().sum();
+        let blocks_after: usize = after.values().sum();
         let tombs_total: usize = tombs.values().sum();
 
         // The entries a mark-in-place delete would have KEPT: the pages each bucket lost.
@@ -385,7 +385,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         println!("=== {}", arm.label);
         println!(
             "    records acked {acked}   keys deleted {deleted}   buckets {n_buckets}   \
-             pages {pages_before} -> {pages_after}   tombstoned ids {tombs_total}"
+             pages {blocks_before} -> {blocks_after}   tombstoned ids {tombs_total}"
         );
         println!(
             "    retained entries would be {retained_total} over {n_buckets} buckets; \

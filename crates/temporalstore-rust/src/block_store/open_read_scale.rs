@@ -10,7 +10,7 @@
 //! IT READ ZERO FOR TWO REASONS, AND ONLY ONE OF THEM WAS THE EXPECTED ONE.
 //!
 //! First, the reading is in the OPEN, not in the load. `restore_large_scale.rs` builds the engine
-//! -- and with it the block store -- and only then takes `pages_before` and opens the span it
+//! -- and with it the block store -- and only then takes `blocks_before` and opens the span it
 //! measures. Every byte this store reads on a cold start has already been read by the time that
 //! span begins, so the row it prints is a zero taken after the fact.
 //!

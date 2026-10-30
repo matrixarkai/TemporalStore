@@ -103,14 +103,14 @@ fn seed_strings(engine: &TemporalEngine, count: usize) {
 /// multiplying the record count by a number somebody remembered.
 struct AddressCount {
     buckets: usize,
-    page_entries: usize,
+    block_entries: usize,
     model_map: usize,
     blocks_per_bucket: Vec<usize>,
 }
 
 impl AddressCount {
     fn total(&self) -> usize {
-        self.page_entries + self.model_map
+        self.block_entries + self.model_map
     }
 }
 
@@ -123,7 +123,7 @@ fn count_addresses(shard: &crate::engine::state::ShardState) -> AddressCount {
         .collect();
     AddressCount {
         buckets: shard.bucket_index.bucket_map.len(),
-        page_entries: blocks_per_bucket.iter().sum(),
+        block_entries: blocks_per_bucket.iter().sum(),
         model_map: shard.strings().len(),
         blocks_per_bucket,
     }
@@ -210,7 +210,7 @@ fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
                 "denominator: no routing buckets, so every per-bucket figure is meaningless"
             );
             assert!(
-                addresses.page_entries > 0,
+                addresses.block_entries > 0,
                 "denominator: no page-index entries, so there are no addresses to measure"
             );
 
@@ -218,7 +218,7 @@ fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
             println!(
                 "  buckets={} page entries={} model-map addresses={} addresses total={}",
                 addresses.buckets,
-                addresses.page_entries,
+                addresses.block_entries,
                 addresses.model_map,
                 addresses.total()
             );

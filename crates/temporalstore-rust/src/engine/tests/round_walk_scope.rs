@@ -677,9 +677,9 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         let shard = shards.get_mut(&1).expect("shard 1");
         let _released = assert_no_released_bucket_is_dirty(shard);
 
-        let pages_before = collect_live_block_entries(shard).len();
+        let blocks_before = collect_live_block_entries(shard).len();
         assert!(
-            pages_before > 0,
+            blocks_before > 0,
             "{label}: the fixture stored no page, so there is nothing to file anywhere"
         );
 
@@ -702,8 +702,8 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         let entries = collect_live_block_entries(shard);
         assert_eq!(
             entries.len(),
-            pages_before,
-            "{label}: the reconstruct changed the page count ({pages_before} -> {}), so the two \
+            blocks_before,
+            "{label}: the reconstruct changed the page count ({blocks_before} -> {}), so the two \
              arms are not comparing the same store",
             entries.len()
         );
@@ -1084,7 +1084,7 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
     const RECORDS: usize = 1_200;
 
     let dir = tempfile::tempdir().expect("tempdir");
-    let (buckets_before, pages_before) = {
+    let (buckets_before, blocks_before) = {
         let engine = engine_on(dir.path());
         load_on_range(&engine, NARROW_END_BUCKET);
         seed(&engine, 0, RECORDS);
@@ -1101,9 +1101,9 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
         (full.len(), full.values().sum::<u64>())
     };
     assert!(
-        buckets_before > 0 && pages_before > 0,
+        buckets_before > 0 && blocks_before > 0,
         "the fixture stored nothing before the restart ({buckets_before} buckets, \
-         {pages_before} pages)"
+         {blocks_before} pages)"
     );
 
     // The restart: a new engine over the same directories, loaded on the same range.

@@ -589,7 +589,7 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
     );
     crate::engine::reset_bucket_dump_manifest_io_counts();
     let index_log_before = engine.index_log_store().stats(1);
-    let pages_before = engine.block_store().stats();
+    let blocks_before = engine.block_store().stats();
     reset_promote_model_map_check_counts();
     reset_peak_rss();
     let rss_before_kb = vm_status_kb("VmRSS").unwrap_or(0);
@@ -624,7 +624,7 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
     let wal = engine.write_ahead_log_store().raw_stats(1);
     let index_log_after = engine.index_log_store().stats(1);
     // BEFORE the probe reads below, which would charge their own page reads to the restore.
-    let pages_after = engine.block_store().stats();
+    let blocks_after = engine.block_store().stats();
     let (promote_checks, promote_rebuilds, promote_blocks) = promote_model_map_check_counts();
     let mut readable = 0usize;
     let mut probe = 0usize;
@@ -656,10 +656,10 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
             .bytes_read
             .saturating_sub(index_log_before.bytes_read),
         index_log_reads: index_log_after.reads.saturating_sub(index_log_before.reads),
-        block_bytes_read: pages_after
+        block_bytes_read: blocks_after
             .bytes_read
-            .saturating_sub(pages_before.bytes_read),
-        page_reads: pages_after.reads.saturating_sub(pages_before.reads),
+            .saturating_sub(blocks_before.bytes_read),
+        page_reads: blocks_after.reads.saturating_sub(blocks_before.reads),
         promote_checks,
         promote_rebuilds,
         promote_blocks,
