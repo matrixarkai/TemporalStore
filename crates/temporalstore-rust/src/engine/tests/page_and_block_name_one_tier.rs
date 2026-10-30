@@ -3,40 +3,16 @@
 
 //! `page` and `block` NAME ONE TIER HERE, AND THIS IS THE GUARD THAT SAYS SO.
 //!
-//! # WHY THIS EXISTS
+//! # THE CURRENT CONTRACT
 //!
-//! A proposal arrived to rename this crate's whole `page` vocabulary to `block`, on the
-//! footing that `block` is canonical here. Before moving anything, the question was asked the
-//! other way round: are they even the same thing? Two surfaces say they are NOT.
+//! `docs/temporalstore_page_block_address_contract.md` describes one block tier.
+//! `PublicStorageContract` maps both published address labels to `ElementEntry`.
+//! `BlockIndexNamedBy` carries a `BlockIndexMap`, and `BlockEntryAt` writes its entries.
+//! Older page-named report fields are retained for consumers, not a second storage tier.
+//! `PublicStorageFeatureShapes` describes report projections rather than Rust field layouts.
 //!
-//!   * `docs/temporalstore_page_block_address_contract.md` defines `PageAddress` as "a logical
-//!     page slice inside the TemporalStore serving storage layer" and `BlockAddress` as "the
-//!     physical durable bytes that back one page or page slice" -- logical against physical,
-//!     with different field sets.
-//!   * [`crate::engine::reports::PublicStorageFeatureShapes`] declares those field sets
-//!     separately: `page_address_fields` carries `segment_id`, `page_id` and `generation`,
-//!     `block_address_fields` carries `block_id` and `checksum`.
-//!
-//! Both are DECLARATIONS. The types underneath them say one thing, and a type is enforced
-//! where a declaration is not:
-//!
-//!   * NO `page_id` OR `page_ordinal` FIELD EXISTS IN THIS CRATE. Every identity on this tier
-//!     is spelled `block_id`, and [`crate::block_store::ElementEntry`]'s `block_id` is
-//!     documented as "WHICH PAGE of the object this is".
-//!   * [`crate::engine::state::PageIndexNamedBy`] is a `Page`-named type whose only payload is
-//!     a `BlockIndexMap`, and `BlockIndex` reaches the wire through `PageEntryAt`.
-//!   * `PublicStorageContract` maps BOTH `page_address` and `block_address` to one type string,
-//!     `ElementEntry`, and `storage_page_address_sample` and `storage_block_address_sample`
-//!     both take `&ElementEntry` and are called on the same value.
-//!   * There is no page SIZE tier: no `PAGE_SIZE` constant exists. A page is not a unit between
-//!     two others here, the way it is in MatrixObject, where a page is a 1 MiB tier between a
-//!     64 MiB chunk and a fragment.
-//!
-//! So the two words name one tier, `block` is the canonical spelling, and the `page` spellings
-//! that remain on published reports are a MIRROR of the block ones, deliberately kept because
-//! a published key is the wire. `PublicStorageContract::band` says the rule in prose: folding
-//! two published names "would delete a published entry rather than rename a field -- a wire
-//! change wearing a rename's clothes."
+//! The two names on a published statistic must continue to carry the same measurement.
+//! Removing a published key would change the report contract rather than rename a field.
 //!
 //! # WHAT GOES WRONG WITHOUT THIS
 //!
