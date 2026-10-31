@@ -12,6 +12,7 @@
 //! valid across builds. P=12 (4096 registers, ~1.6% standard error), matching the CPC lgK.
 //! Everything here is only reachable behind a config gate; the exact path is unchanged by default.
 
+use std::collections::BTreeMap;
 use std::collections::BTreeSet;
 
 use serde::{Deserialize, Serialize};
@@ -163,6 +164,35 @@ impl Hll {
 /// goes straight into its HLL. Otherwise it goes into the exact set, and — when the gate is on —
 /// a set that grows past `DISTINCT_SKETCH_THRESHOLD` is folded into a new HLL and the exact set
 /// is dropped, bounding memory while keeping small buckets exact. Read via `count_changes`.
+/// Convert every still-exact bucket of one key to a sketch.
+///
+/// The whole key moves, not the bucket that happened to tip it over, because the bound being
+/// enforced is on the key: leaving the other buckets exact would leave the memory the bound exists
+/// to cap still allocated.
+fn sketch_whole_key(series: &mut BTreeMap<u64, DistinctBucket>) {
+    for bucket in series.values_mut() {
+        if let DistinctBucket::Exact(set) = bucket {
+            let mut sketch = Hll::new();
+            for value in set.iter() {
+                sketch.add(value);
+            }
+            *bucket = DistinctBucket::Sketch(sketch);
+        }
+    }
+}
+
+/// Exact members held across all of a key's buckets. A sketched bucket holds none -- it is a
+/// fixed-size register array, which is the point of having converted it.
+fn exact_members(series: &BTreeMap<u64, DistinctBucket>) -> usize {
+    series
+        .values()
+        .map(|bucket| match bucket {
+            DistinctBucket::Exact(set) => set.len(),
+            DistinctBucket::Sketch(_) => 0,
+        })
+        .sum()
+}
+
 pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, value: Vec<u8>) {
     let enabled = shard.control_distinct_sketch;
     // MINTS HERE AND IS ADOPTED AFTER, which is the order every other holder uses. The page
@@ -170,12 +200,15 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
     // `adopt_object_key_allocations` runs once the bucket index holds one and re-keys this map
     // onto it. Asking for the handle here is what went 0 for 40,040 the first time a sharing
     // mechanism was wired before its source existed.
-    let bucket = shard
+    let series = shard
         .control_state_changes
         .entry(super::state::ModelKey::from(key))
-        .or_default()
-        .entry(bucket_ms)
         .or_default();
+    // Asked BEFORE the entry is taken, because `or_default()` cannot be asked afterwards whether
+    // it created anything. A key's member total only grows structurally when a bucket appears, and
+    // that is exactly the growth the per-bucket threshold below cannot see.
+    let bucket_is_new = !series.contains_key(&bucket_ms);
+    let bucket = series.entry(bucket_ms).or_default();
     match bucket {
         // Already sketched: the value joins the sketch and the exact members are long gone.
         DistinctBucket::Sketch(sketch) => sketch.add(&value),
@@ -192,6 +225,24 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
                 *bucket = DistinctBucket::Sketch(sketch);
             }
         }
+    }
+
+    // THE THRESHOLD IS THE KEY'S, NOT ONE BUCKET'S.
+    //
+    // The arm above compares one bucket's set against the threshold, which bounds a key that keeps
+    // its members in a FEW buckets and does nothing at all for one that spreads them over MANY. A
+    // key with a thousand buckets holding fifty members each is fifty thousand exact members and
+    // not one bucket near the limit, so nothing ever converted and the memory grew without a
+    // ceiling. The model this follows measures its promotion against the whole key's member total
+    // and promotes the key, which is the shape here.
+    //
+    // CHECKED ON A NEW BUCKET, which is what makes it affordable. The total is a walk of the key's
+    // buckets, so doing it per write would charge every write for the key's width; doing it when a
+    // bucket is created charges it once per bucket instead, and a bucket appearing is the only way
+    // this total grows that the per-bucket arm cannot already see. The model this follows amortises
+    // the same check a different way -- once every hundred writes -- for the same reason.
+    if enabled && bucket_is_new && exact_members(series) > DISTINCT_SKETCH_THRESHOLD {
+        sketch_whole_key(series);
     }
 }
 

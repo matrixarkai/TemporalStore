@@ -240,6 +240,8 @@ mod part3;
 mod part4;
 #[path = "tests/expiry_scale.rs"]
 mod expiry_scale;
+#[path = "tests/the_distinct_bound_is_the_keys_not_one_buckets.rs"]
+mod the_distinct_bound_is_the_keys_not_one_buckets;
 #[path = "tests/reclaim_dump.rs"]
 mod reclaim_dump;
 #[path = "tests/claim_stamp_hold.rs"]
