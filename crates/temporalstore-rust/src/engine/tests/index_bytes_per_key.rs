@@ -11308,109 +11308,699 @@ fn what_boxing_the_wide_arm_would_save() {
     );
 }
 
-/// WHAT AN ARENA FOR THE KEY CHARACTERS WOULD SAVE, AND WHAT IT CANNOT.
+/// WHAT AN ARENA FOR THE KEY CHARACTERS WOULD SAVE, CHARGED HONESTLY.
 ///
-/// # THE ROW
+/// # THE ROW, AND WHICH OF TWO THINGS IT IS
 ///
-/// `Arc<str>` key characters are **32.0 B/key** marginal at the steady state -- the fourth-largest
-/// row, and the only one not held in a map. `arc_str_bytes` charges
-/// `((16 + len + 7) / 8) * 8`: sixteen bytes of strong and weak count, the characters, rounded to
-/// pointer alignment. A twelve-character key therefore costs **32** to hold **12**.
+/// The `Arc<str>` key characters are **32.0 B/key** marginal at the steady state of
+/// `the_amplification_set_at_two_arms_four_times_apart` -- the fourth-largest row of the resident
+/// index and the only one not held inside a map. That row is **the allocation and nothing else**:
+/// `arc_str_bytes` charges `((16 + len + 7) / 8) * 8`, sixteen bytes of strong and weak count plus
+/// the characters, rounded to pointer alignment. The amplification arm writes `amp-{index:06}`, so
+/// `len` is 10 and the row is `((16 + 10 + 7) / 8) * 8 = 32` bytes to hold ten.
 ///
-/// The characters have to exist somewhere. **The refcount header does not.** One arena holding every
-/// key's bytes, addressed by offset and length, pays the bytes plus a span and no header at all.
-/// This measures both at two corpus sizes and charges the span table against the saving, because a
-/// span per key is the cost the arena adds and leaving it out would overstate the win.
+/// The 16-byte **fat pointer** each holder keeps in its slot is a DIFFERENT row. It lives inside
+/// `strings` (46.9 B/key) and inside `object_block_lookup` (78.4). Emptying the allocation moves
+/// this row; narrowing the handle moves those. Keeping the two apart is most of what this arm is
+/// for, because the figure it replaced did not.
 ///
-/// # WHAT IT CANNOT DO, STATED SO THE FIGURE IS READ AS A CEILING
+/// # WHY THE FIGURE THIS ARM REPLACED OVERSTATED THE SAVING
 ///
-///   * **It needs a raw-entry table and this crate has none.** An 8-byte span cannot hash or
-///     compare without the arena, and std's `HashMap` has no stable raw-entry API; hashbrown is not
-///     a direct dependency. So this is a dependency decision, not a layout change.
-///   * **Reclamation.** An `Arc` refcount frees a key's characters on removal for nothing. An arena
-///     needs compaction to do the same, and a shard that churns keys would fragment it.
-///   * **Sharing already works.** `which_resident_maps_hold_their_own_key_characters` asserts
-///     `strings` shares every key allocation with the bucket index via
-///     `ShardState::adopt_strings_key`, so the header is paid **once per key**, not once per holder.
-///     There is no duplicate left for an arena to collapse -- only the header.
+/// It reported **25.1 B/key** from two arms that each held their keys in a `Vec`: one of
+/// `Arc<str>` at 16 bytes a slot, against one of spans at 8. So a `16 -> 8` HANDLE narrowing sat
+/// inside a figure labelled as the payload row -- one holder's worth of a saving that belongs to
+/// the map rows -- while the arena's `Vec` grew geometrically underneath it, so realloc churn was
+/// netted off the other way. The number was neither of the two figures a reader needs.
+///
+/// This arm charges both sides at the same boundary -- the key payload PLUS one handle slot per
+/// holder -- with every container reserved to its exact length so no figure is a growth artefact,
+/// at the two phase-matched corpus sizes the published figure uses, asserting that each term
+/// AGREES across the 4.0x so that nothing constant is wearing a per-key label.
+///
+/// # THE ARENA'S OWN CAPACITY RUNS THE OTHER WAY, SO IT IS MEASURED TWICE
+///
+/// A buffer reserved to the exact total is the arena's floor. A buffer that GREW -- which is what
+/// a shard filling one does -- holds up to twice its length and charges that capacity as resident.
+/// Both are printed and the saving is taken from the grown one, so the arena is not flattered.
+/// The two corpus sizes stay comparable on the grown arm because they are exactly 4.0x apart and
+/// four is a power of two, so a doubling growth policy lands at the same capacity-over-length
+/// ratio on both.
+///
+/// # AND ONLY HALF OF THE SLOT SAVING IS BEHIND THE SAME GATE AS THE OTHER HALF
+///
+/// Both figures need a raw-entry table, because neither an eight-byte span nor a one-word handle
+/// can `Borrow<str>` (`the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency`). But the
+/// two holders are different containers, and the table only exists for one of them:
+///
+///   * `strings` is a `HashMap`, so `hashbrown::HashTable` is the right shape for its 8 bytes.
+///   * `object_block_lookup` is a `BTreeMap`, which has NO raw-entry API and NO comparator hook
+///     at all. A span-keyed `BTreeMap` would order by arena offset -- insertion order -- and
+///     there is nowhere to hand it the arena so it could order by characters instead. Its 8
+///     bytes need the container changed as well, which this arm does not price.
+///
+/// WHAT IS NOT ESTABLISHED, so it is not quoted as cleared: whether that iteration order is
+/// load-bearing. `BlockKeysByPosition::from_lookup` -- the written-key inversion that refuses an
+/// integer address on ground 2 -- turns out to be order-INSENSITIVE: it builds two `HashMap`s,
+/// keyed by `(routing_bucket, block_ref_key)` and by handle, so each identity lands in one slot
+/// whatever order it is reached in. The other readers were not swept, so that half stays
+/// UNPRICED rather than available.
+///
+/// # THE ARENA'S THREE GROUNDS ARE NOT THE INTEGER ADDRESS'S THREE GROUNDS
+///
+/// `ObjectBlockLookup`'s note refuses a `u64` address on three grounds. A span is not a derived
+/// integer, and two of them miss it: the key is still THERE, reachable through the arena, so the
+/// written-key inversion is intact (ground 2), and an exact address cannot collide the way a
+/// 56-bit-mergeable FNV state can (ground 3). Ground 1, the widths, favours the span. So the
+/// arena is gated on the table and on reclamation, NOT on that refusal -- which is why it is
+/// priced here rather than treated as already settled.
 ///
 /// rust-internal: measures this crate's own structures, no product behaviour
 ///
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_an_arena_for_the_key_characters_would_save -- --ignored --nocapture --test-threads=1
 #[test]
 #[cfg(feature = "alloc-probe")]
-#[ignore = "allocates two key corpora twice over under the counting allocator; run by name"]
+#[ignore = "allocates two key corpora several times over under the counting allocator; run by name"]
 fn what_an_arena_for_the_key_characters_would_save() {
     use std::sync::Arc;
 
     const ONE_X: usize = 1_792;
     const FOUR_X: usize = 7_168;
+    /// How many resident structures hold ONE key allocation at the steady state: `strings` and
+    /// `object_block_lookup`. Asserted on the real index by
+    /// `every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for`, not
+    /// assumed here.
+    const HOLDERS: usize = 2;
 
-    // The key shape the steady-state arms use, so the 32.0 B/key row is the subject.
-    let key = |i: usize| format!("own-{i:08}");
-
-    let weigh_arcs = |n: usize| -> u64 {
-        let probe = Probe::start();
-        let held: Vec<Arc<str>> = (0..n).map(|i| Arc::from(key(i).as_str())).collect();
-        let bytes = probe.stop().alloc_bytes;
-        std::hint::black_box(&held);
-        bytes
-    };
-    let weigh_arena = |n: usize| -> u64 {
-        let probe = Probe::start();
-        let mut arena: Vec<u8> = Vec::new();
-        let mut spans: Vec<(u32, u16)> = Vec::new();
-        for i in 0..n {
-            let k = key(i);
-            let at = arena.len() as u32;
-            arena.extend_from_slice(k.as_bytes());
-            spans.push((at, k.len() as u16));
-        }
-        let bytes = probe.stop().alloc_bytes;
-        std::hint::black_box((&arena, &spans));
-        bytes
-    };
-
-    let arcs1 = weigh_arcs(ONE_X);
-    let arcs4 = weigh_arcs(FOUR_X);
-    let arena1 = weigh_arena(ONE_X);
-    let arena4 = weigh_arena(FOUR_X);
-    let span = (FOUR_X - ONE_X) as f64;
-
-    let klen = key(0).len();
-    println!();
-    println!("  key length {klen}, so arc_str_bytes charges (({} + {klen} + 7) / 8) * 8 = {}", 16, ((16 + klen + 7) / 8) * 8);
-    println!();
-    println!("  {:<34} {:>11} {:>11} {:>10}", "", "1x (1,792)", "4x (7,168)", "slope B/k");
-    for (name, a, b) in [
-        ("one Arc<str> per key (ships)", arcs1, arcs4),
-        ("one arena plus a span per key", arena1, arena4),
-    ] {
-        println!("  {name:<34} {a:>11} {b:>11} {:>10.1}", (b as i64 - a as i64) as f64 / span);
+    /// An offset into the arena and a length. The whole point of the lever: no header, and eight
+    /// bytes where the fat pointer is sixteen.
+    #[derive(Clone, Copy)]
+    struct Span {
+        at: u32,
+        len: u16,
     }
-    let arcs_slope = (arcs4 - arcs1) as f64 / span;
-    let arena_slope = (arena4 as i64 - arena1 as i64) as f64 / span;
-    let per_key_1x = (arcs1 as f64 - arena1 as f64) / ONE_X as f64;
-    let per_key_4x = (arcs4 as f64 - arena4 as f64) / FOUR_X as f64;
+
+    const _: () = assert!(std::mem::size_of::<Span>() == 8);
+    const _: () = assert!(std::mem::size_of::<Arc<str>>() == 16);
+
+    // The amplification arm's own key shape, so the subject is the 32.0 B/key row and not some
+    // other length. The arm this replaces used a twelve-character key, which rounds to the same
+    // 32 and so reported the same row by luck rather than by construction.
+    let corpus = |n: usize| -> Vec<String> { (0..n).map(|i| format!("amp-{i:06}")).collect() };
+
+    /// One term of the comparison, per key, at one corpus size.
+    struct Term {
+        /// Resident bytes the published model charges.
+        model: f64,
+        /// What the allocator was ASKED for. Equal to the resident figure in every arm below,
+        /// because each reserves its container and so reallocates nothing.
+        request: f64,
+        /// What the allocator SET ASIDE for that request, read back from it.
+        chunk: f64,
+    }
+
+    struct Measured {
+        key_len: usize,
+        /// One `Arc<str>` per key: the 32.0 row.
+        arc_payload: Term,
+        /// One holder's slot table of `Arc<str>`.
+        arc_slots: Term,
+        /// The arena buffer, reserved to the exact total.
+        arena_reserved: Term,
+        /// The arena buffer, grown geometrically -- resident capacity, not request.
+        arena_grown_capacity: f64,
+        /// One holder's slot table of spans.
+        span_slots: Term,
+    }
+
+    let measure = |keys: usize| -> Measured {
+        let keys_text = corpus(keys);
+        let key_len = keys_text[0].len();
+        assert!(
+            keys_text.iter().all(|k| k.len() == key_len),
+            "the key shape must be one fixed length or the per-key payload is an average"
+        );
+        let total: usize = keys_text.iter().map(|k| k.len()).sum();
+        let n = keys as f64;
+
+        // --- THE PAYLOAD. The slot table is reserved OUTSIDE the probe, so this measures the
+        // --- allocations and nothing else.
+        let mut owned: Vec<Arc<str>> = Vec::with_capacity(keys);
+        let probe = Probe::start();
+        for text in &keys_text {
+            owned.push(Arc::<str>::from(text.as_str()));
+        }
+        let payload = probe.stop();
+        let mut model_payload = 0u64;
+        let mut seen: HashSet<usize> = HashSet::new();
+        for arc in &owned {
+            model_payload += arc_str_bytes(&mut seen, arc);
+        }
+        assert_eq!(
+            keys,
+            seen.len(),
+            "{keys} keys produced {} distinct allocations, so the corpus is sharing and the \
+             payload per key is not what this measures",
+            seen.len()
+        );
+
+        // --- ONE HOLDER'S SLOT TABLE OF FAT POINTERS. Reserved inside the probe, so the figure is
+        // --- the buffer and not a growth curve.
+        let probe = Probe::start();
+        let mut arc_slots: Vec<Arc<str>> = Vec::with_capacity(keys);
+        for arc in &owned {
+            arc_slots.push(Arc::clone(arc));
+        }
+        let arc_slot_counts = probe.stop();
+        assert_eq!(
+            1, arc_slot_counts.allocs,
+            "the slot table took {} allocations for {keys} keys, so its {} bytes are a growth \
+             curve rather than its resident width",
+            arc_slot_counts.allocs, arc_slot_counts.alloc_bytes
+        );
+
+        // --- THE ARENA, RESERVED EXACTLY. Its floor.
+        let probe = Probe::start();
+        let mut arena: Vec<u8> = Vec::with_capacity(total);
+        for text in &keys_text {
+            arena.extend_from_slice(text.as_bytes());
+        }
+        let arena_counts = probe.stop();
+        assert_eq!(
+            1, arena_counts.allocs,
+            "the reserved arena took {} allocations, so it is not the floor this arm prints",
+            arena_counts.allocs
+        );
+        assert_eq!(total, arena.capacity(), "a reserved arena must hold exactly what it was given");
+
+        // --- THE ARENA, GROWN. What a shard filling one actually holds, capacity and all.
+        let mut grown: Vec<u8> = Vec::new();
+        let mut spans: Vec<Span> = Vec::with_capacity(keys);
+        for text in &keys_text {
+            let at = grown.len() as u32;
+            grown.extend_from_slice(text.as_bytes());
+            spans.push(Span { at, len: text.len() as u16 });
+        }
+        let grown_capacity = grown.capacity() as f64;
+        assert!(grown.capacity() >= total, "a grown arena cannot hold less than it was given");
+
+        // --- ONE HOLDER'S SLOT TABLE OF SPANS.
+        let probe = Probe::start();
+        let mut span_slots: Vec<Span> = Vec::with_capacity(keys);
+        span_slots.extend_from_slice(&spans);
+        let span_slot_counts = probe.stop();
+        assert_eq!(
+            1, span_slot_counts.allocs,
+            "the span table took {} allocations for {keys} keys, so its {} bytes are a growth \
+             curve rather than its resident width",
+            span_slot_counts.allocs, span_slot_counts.alloc_bytes
+        );
+
+        std::hint::black_box((&owned, &arc_slots, &arena, &grown, &spans, &span_slots));
+
+        Measured {
+            key_len,
+            arc_payload: Term {
+                model: model_payload as f64 / n,
+                request: payload.alloc_bytes as f64 / n,
+                chunk: payload.chunk_bytes as f64 / n,
+            },
+            arc_slots: Term {
+                model: std::mem::size_of::<Arc<str>>() as f64,
+                request: arc_slot_counts.alloc_bytes as f64 / n,
+                chunk: arc_slot_counts.chunk_bytes as f64 / n,
+            },
+            arena_reserved: Term {
+                model: total as f64 / n,
+                request: arena_counts.alloc_bytes as f64 / n,
+                chunk: arena_counts.chunk_bytes as f64 / n,
+            },
+            arena_grown_capacity: grown_capacity / n,
+            span_slots: Term {
+                model: std::mem::size_of::<Span>() as f64,
+                request: span_slot_counts.alloc_bytes as f64 / n,
+                chunk: span_slot_counts.chunk_bytes as f64 / n,
+            },
+        }
+    };
+
+    let one = measure(ONE_X);
+    let four = measure(FOUR_X);
+    assert_eq!(4 * ONE_X, FOUR_X, "the arms must be exactly 4.0x apart");
+    assert_eq!(one.key_len, four.key_len, "both arms must hold the same key shape");
+
+    println!();
+    println!("  THE KEY-CHARACTER ROW, AND WHAT AN ARENA WOULD AND WOULD NOT TAKE OUT OF IT");
+    println!(
+        "  (key shape amp-{{index:06}}, {} characters; {HOLDERS} holders per key allocation)",
+        one.key_len
+    );
     println!();
     println!(
-        "  THE ARENA SAVES {:.1} B/key at 1x, {:.1} at 4x, {:.1} MARGINAL",
-        per_key_1x,
-        per_key_4x,
-        arcs_slope - arena_slope
+        "    {:<42} {:>9} {:>9} {:>9} {:>9}",
+        "term, B/key", "model 1x", "model 4x", "request", "chunk"
     );
-    println!("  (a CEILING: it needs a raw-entry table this crate does not depend on, and arena compaction)");
+    for (name, a, b) in [
+        ("Arc<str> allocation (THE 32.0 ROW)", &one.arc_payload, &four.arc_payload),
+        ("one holder's Arc<str> slot", &one.arc_slots, &four.arc_slots),
+        ("arena buffer, reserved exactly", &one.arena_reserved, &four.arena_reserved),
+        ("one holder's span slot", &one.span_slots, &four.span_slots),
+    ] {
+        println!(
+            "    {name:<42} {:>9.1} {:>9.1} {:>9.1} {:>9.1}",
+            a.model, b.model, a.request, a.chunk
+        );
+    }
+    println!(
+        "    {:<42} {:>9.1} {:>9.1}",
+        "arena buffer, grown (resident capacity)",
+        one.arena_grown_capacity,
+        four.arena_grown_capacity
+    );
     println!();
 
+    // --- EVERY TERM MUST AGREE ACROSS THE 4.0x, or it is a constant divided by keys.
+    for (name, a, b) in [
+        ("Arc<str> allocation", one.arc_payload.model, four.arc_payload.model),
+        ("Arc<str> slot", one.arc_slots.model, four.arc_slots.model),
+        ("arena reserved", one.arena_reserved.model, four.arena_reserved.model),
+        ("span slot", one.span_slots.model, four.span_slots.model),
+        ("arena grown", one.arena_grown_capacity, four.arena_grown_capacity),
+    ] {
+        assert!(
+            (a - b).abs() <= 0.25 * a.abs().max(1.0),
+            "the {name} term reads {a:.1} B/key at {ONE_X} keys and {b:.1} at {FOUR_X}. Those must \
+             agree, or the figure is a constant divided by keys wearing a per-key label."
+        );
+    }
+
+    // --- THE TWO SAVINGS, SEPARATELY, BECAUSE THEY LAND ON DIFFERENT ROWS. Taken from the 4x arm,
+    // --- now that every term is known to agree across the two.
+    let payload_saving = four.arc_payload.model - four.arena_grown_capacity;
+    let slot_saving = (four.arc_slots.model - four.span_slots.model) * HOLDERS as f64;
+    let ships = four.arc_payload.model + four.arc_slots.model * HOLDERS as f64;
+    let arena = four.arena_grown_capacity + four.span_slots.model * HOLDERS as f64;
+    println!("  WHAT EACH SAVING IS, AND WHICH ROW IT COMES OUT OF");
+    println!(
+        "    the payload row (THE 32.0 ROW):   {:.1} -> {:.1}, so {payload_saving:.1} B/key",
+        four.arc_payload.model, four.arena_grown_capacity
+    );
+    println!(
+        "    the holder slots, {HOLDERS} of them:        {:.1} -> {:.1}, so {slot_saving:.1} B/key",
+        four.arc_slots.model * HOLDERS as f64,
+        four.span_slots.model * HOLDERS as f64
+    );
+    println!(
+        "      -- and those {slot_saving:.1} land in `strings` and `object_block_lookup`, NOT here"
+    );
+    println!(
+        "    key identity in total:            {ships:.1} -> {arena:.1}, so {:.1} B/key",
+        ships - arena
+    );
+    println!();
+    println!("    the figure this arm replaced said 25.1, which is neither of the two above:");
+    println!("      it added ONE holder's slot narrowing to the payload saving and then netted");
+    println!("      the arena Vec's realloc churn off the result.");
+    println!();
+
+    // --- THE DECOMPOSITION MUST ADD UP, or the two figures above are not a split of one total.
     assert!(
-        arena_slope < arcs_slope,
-        "the arena cost {arena_slope:.1} B/key marginal against {arcs_slope:.1} for one Arc each. \
-         It must be cheaper -- the saving is the 16-byte refcount header a key no longer carries -- \
-         so if it is not, the span table has eaten the header and this lever does not exist."
+        ((ships - arena) - (payload_saving + slot_saving)).abs() < 0.05,
+        "the total saving {:.3} is not the payload saving {payload_saving:.3} plus the slot saving \
+         {slot_saving:.3}, so the split above is arithmetic over two different quantities",
+        ships - arena
+    );
+    // --- AND THE ARENA CANNOT HOLD LESS THAN THE CHARACTERS, which is the floor that makes the
+    // --- payload saving a ceiling rather than an aspiration.
+    assert!(
+        four.arena_grown_capacity >= four.key_len as f64,
+        "the grown arena reads {:.1} B/key for {} characters a key. It cannot hold less than the \
+         characters, so this figure is wrong rather than good news.",
+        four.arena_grown_capacity,
+        four.key_len
     );
     assert!(
-        (per_key_1x - per_key_4x).abs() <= 0.25 * per_key_1x.abs().max(1.0),
-        "the saving reads {per_key_1x:.1} B/key at {ONE_X} keys and {per_key_4x:.1} at {FOUR_X}. \
-         Those must agree, or the figure is a constant divided by keys wearing a per-key label."
+        payload_saving > 0.0 && slot_saving > 0.0,
+        "a saving came out non-positive (payload {payload_saving:.1}, slots {slot_saving:.1}), so \
+         the lever this arm prices does not exist in the direction it claims"
+    );
+    // --- AND IT MUST BE SMALLER THAN THE FIGURE IT REPLACES, which is the whole correction. 25.1
+    // --- was the payload saving with one holder's slot narrowing folded in; the payload saving on
+    // --- its own is necessarily less than that.
+    assert!(
+        payload_saving < 25.1,
+        "the payload saving reads {payload_saving:.1} B/key, at or above the 25.1 this arm \
+         corrects. 25.1 was the payload saving PLUS one holder's 16 -> 8 slot narrowing, so the \
+         payload term alone must be below it -- if it is not, the two figures are not the \
+         decomposition this arm claims."
     );
 }
+
+/// WHAT THE SIXTEEN-BYTE REFCOUNT HEADER BUYS, AND WHY REMOVING IT WITHOUT AN ARENA COSTS MORE.
+///
+/// # THE CLAIM THIS ARM KILLS
+///
+/// "The characters have to exist somewhere; the refcount header does not." That reads as though
+/// the header were waste. It is not. It buys **one allocation for every holder**, and the only
+/// header-free representation available to this crate without a new dependency -- `Box<str>` --
+/// cannot share, so each holder owns its own copy.
+///
+/// On the published model that trade is a **wash** at the key shape the index measures:
+/// `((16 + 10 + 7) / 8) * 8 = 32` for one shared allocation, against `((10 + 7) / 8) * 8 = 16`
+/// twice for two owned ones. Zero bytes either way, and a reading that stopped at the model would
+/// have reported a free lever worth nothing and moved on.
+///
+/// On what the allocator ACTUALLY SETS ASIDE it is a **loss at every key length**, because glibc
+/// serves nothing from under a 32-byte chunk: one 26-byte request is a 48-byte chunk, and two
+/// 10-byte requests are two 32-byte chunks. The header-free shape costs **16 B/key more**. This is
+/// the hazard `alloc_probe`'s own note states -- the request counter "UNDER-CHARGES the
+/// out-of-line side, systematically and in the direction that flatters it" -- and `Box<str>` at
+/// two holders is the more out-of-line side.
+///
+/// So the 32.0 row cannot be reduced by deleting the header. It can only be reduced by a
+/// representation that needs no header because it is not a pointer at all, which is the arena
+/// span -- gated on a raw-entry table this crate does not depend on
+/// (`the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency`).
+///
+/// # WHAT IS ASSERTED, AND WHAT WOULD TURN IT RED
+///
+/// The chunk inequality over a length sweep, and the model wash at the fixture's own length. If an
+/// allocator ever serves two small chunks for less than one with a header, this fails and the
+/// header-free shape has become a real cut.
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib removing_the_refcount_header_without_an_arena_costs_more_than_it_saves -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "allocates a key corpus per swept length under the counting allocator; run by name"]
+fn removing_the_refcount_header_without_an_arena_costs_more_than_it_saves() {
+    use std::sync::Arc;
+
+    const KEYS: usize = 4_096;
+    /// The holder count the index has at the steady state, asserted on the real index by
+    /// `every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for`.
+    const HOLDERS: usize = 2;
+    /// The amplification arm's own key length, so one row of the sweep is the subject.
+    const SHIPPED_LEN: usize = 10;
+
+    let model = |raw: usize| -> u64 { ((raw + 7) / 8 * 8) as u64 };
+
+    println!();
+    println!("  ONE SHARED Arc<str> AGAINST {HOLDERS} OWNED Box<str>, PER KEY, AT {KEYS} KEYS");
+    println!("  (the model is what `arc_str_bytes` charges; the chunk is read back from glibc)");
+    println!();
+    println!(
+        "    {:>4}  {:>10} {:>10}   {:>10} {:>10}   {:>9} {:>9}",
+        "len", "arc model", "box model", "arc chunk", "box chunk", "d model", "d chunk"
+    );
+
+    let mut rows: Vec<(usize, f64, f64, f64, f64)> = Vec::new();
+    for len in [4usize, 8, SHIPPED_LEN, 12, 16, 17, 24, 40, 56] {
+        let keys_text: Vec<String> =
+            (0..KEYS).map(|i| format!("{i:0>width$}", width = len)).collect();
+        assert!(
+            keys_text.iter().all(|k| k.len() == len),
+            "the planted length must hold, or the row is about some other key shape"
+        );
+        let n = KEYS as f64;
+
+        let mut shared: Vec<Arc<str>> = Vec::with_capacity(KEYS);
+        let probe = Probe::start();
+        for text in &keys_text {
+            shared.push(Arc::<str>::from(text.as_str()));
+        }
+        let arc = probe.stop();
+
+        let mut owned: Vec<Vec<Box<str>>> = Vec::with_capacity(HOLDERS);
+        for _ in 0..HOLDERS {
+            owned.push(Vec::with_capacity(KEYS));
+        }
+        let probe = Probe::start();
+        for holder in owned.iter_mut() {
+            for text in &keys_text {
+                holder.push(Box::<str>::from(text.as_str()));
+            }
+        }
+        let boxed = probe.stop();
+
+        assert_eq!(
+            KEYS as u64, arc.allocs,
+            "one shared allocation a key is the premise; {} for {KEYS} keys is not it",
+            arc.allocs
+        );
+        assert_eq!(
+            (HOLDERS * KEYS) as u64,
+            boxed.allocs,
+            "{HOLDERS} owned allocations a key is the premise; {} for {KEYS} keys is not it",
+            boxed.allocs
+        );
+        std::hint::black_box((&shared, &owned));
+
+        let arc_model = model(16 + len) as f64;
+        let box_model = (HOLDERS as u64 * model(len)) as f64;
+        let arc_chunk = arc.chunk_bytes as f64 / n;
+        let box_chunk = boxed.chunk_bytes as f64 / n;
+        println!(
+            "    {len:>4}  {arc_model:>10.1} {box_model:>10.1}   {arc_chunk:>10.1} {box_chunk:>10.1}   {:>9.1} {:>9.1}",
+            box_model - arc_model,
+            box_chunk - arc_chunk
+        );
+        rows.push((len, arc_model, box_model, arc_chunk, box_chunk));
+    }
+    println!();
+    println!("  d is what DROPPING THE HEADER costs: positive means the header-free shape is worse.");
+    println!();
+
+    // --- THE KILLING NUMBER: two chunks cost more than one, at every length in the sweep.
+    for (len, _, _, arc_chunk, box_chunk) in &rows {
+        assert!(
+            box_chunk > arc_chunk,
+            "at {len} characters the header-free shape costs {box_chunk:.1} B/key against \
+             {arc_chunk:.1} for one shared allocation. It was expected to cost MORE at every \
+             length, because glibc serves nothing from under a 32-byte chunk, so {HOLDERS} \
+             allocations cost 64 whatever they hold against 48 for one. If an allocator now \
+             serves the split shape for less, the header IS removable without an arena and this \
+             refusal has expired -- re-price it rather than loosening this assertion."
+        );
+    }
+    // --- AND THE MODEL CALLS IT A WASH AT THE SHIPPED LENGTH, which is why the chunk column is
+    // --- the one that decides. A model-only reading would have found zero and stopped.
+    let (_, arc_model, box_model, _, _) = rows
+        .iter()
+        .find(|(len, _, _, _, _)| *len == SHIPPED_LEN)
+        .copied()
+        .expect("the sweep must include the shipped key length");
+    assert!(
+        (arc_model - box_model).abs() < 0.05,
+        "at {SHIPPED_LEN} characters the model charges {arc_model:.1} for one shared allocation \
+         and {box_model:.1} for {HOLDERS} owned ones. Those were equal when this was measured -- \
+         sixteen header bytes against one extra eight-byte rounding, twice -- and the point of the \
+         chunk column is that a reading which found them equal would have stopped here."
+    );
+}
+
+/// EVERY RESIDENT KEY ALLOCATION HAS EXACTLY THE HOLDERS THE HEADER IS PRICED FOR.
+///
+/// # WHY THIS IS A TRIPWIRE AND NOT A STATISTIC
+///
+/// The refusal above rests on a COUNT: the sixteen-byte header is paid for because **two** resident
+/// structures hold each key allocation -- `strings` and `object_block_lookup` -- so one allocation
+/// replaces two. At ONE holder the arithmetic inverts and `Box<str>` takes the whole header out for
+/// nothing: 16 B/key on the published model, with no arena, no new dependency and `Borrow<str>`
+/// intact, so every `get(&str)` call site compiles untouched.
+///
+/// So the refusal expires if the holder count ever falls to one, and this asserts the count rather
+/// than the conclusion. A comment saying "two holders" would not fail when a map stops holding the
+/// key.
+///
+/// `which_resident_maps_hold_their_own_key_characters` asserts that `strings` SHARES. This asserts
+/// HOW MANY share, which is the number the price turns on and which that arm does not report.
+///
+/// Taken at the steady state -- after a full dump round through the production lifecycle -- so the
+/// dirty index is drained and is not counted as a third holder it is not at rest.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds a corpus and dumps it through the production lifecycle; run by name"]
+fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for() {
+    use crate::types::{Command, ExecuteRequest};
+    use std::collections::HashMap as Counter;
+
+    const KEYS: usize = 1_792;
+    const SHIPPED_END: u32 = 1023;
+    /// What the header is priced against in
+    /// `removing_the_refcount_header_without_an_arena_costs_more_than_it_saves`.
+    const PRICED_FOR: usize = 2;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    for index in 0..KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet { key: format!("amp-{index:06}"), value: vec![b'v'; 256] },
+        });
+        assert!(response.status.ok, "write {index}: {:?}", response.status);
+    }
+    let candidates: Vec<u32> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.bucket_map.keys().copied().collect()
+    };
+    assert!(!candidates.is_empty(), "{KEYS} keys produced no bucket to dump");
+    let lifecycle =
+        engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_buckets: candidates.clone(),
+            max_dump_buckets_per_round: candidates.len(),
+            ..Default::default()
+        });
+    std::hint::black_box(&lifecycle);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+    assert_eq!(
+        0,
+        shard.dirty_objects.len(),
+        "the dump left the shard dirty, so this is not the steady state and the dirty index would \
+         be counted as a holder it is not at rest"
+    );
+
+    // Holders of one key allocation, by DATA pointer -- the same identity `arc_str_bytes` uses, so
+    // "the same allocation" means here what it means in the published row.
+    let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
+    for (_model_id, object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
+        holders.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
+    }
+    for key in shard.strings().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("strings");
+    }
+    for key in shard.dirty_objects.iter() {
+        holders.entry(key.as_ptr() as usize).or_default().push("dirty_objects");
+    }
+
+    let mut by_count: Counter<usize, usize> = Counter::new();
+    for who in holders.values() {
+        *by_count.entry(who.len()).or_insert(0) += 1;
+    }
+    let mut spread: Vec<(usize, usize)> = by_count.into_iter().collect();
+    spread.sort_unstable();
+
+    println!();
+    println!("  {KEYS} keys at the steady state: how many resident structures hold one allocation");
+    println!();
+    for (count, allocations) in &spread {
+        println!("    {count} holder(s)   {allocations:>7} allocations");
+    }
+    println!();
+    println!("    distinct key allocations {}", holders.len());
+    println!();
+
+    assert_eq!(
+        KEYS,
+        holders.len(),
+        "{KEYS} keys produced {} distinct key allocations. One each is the premise of every figure \
+         in this group -- more means the sharing regressed, and \
+         `which_resident_maps_hold_their_own_key_characters` should have caught it first.",
+        holders.len()
+    );
+    assert_eq!(
+        vec![(PRICED_FOR, KEYS)],
+        spread,
+        "the holder spread is not `{PRICED_FOR} holders for every one of {KEYS} allocations`. The \
+         refusal in `removing_the_refcount_header_without_an_arena_costs_more_than_it_saves` is \
+         PRICED AT {PRICED_FOR} HOLDERS: one shared allocation replaces {PRICED_FOR} owned ones, \
+         which is a wash on the published model and a 16 B/key win on what the allocator sets \
+         aside. At ONE holder the arithmetic inverts and `Box<str>` takes the whole header out for \
+         nothing -- no arena, no new dependency, `Borrow<str>` intact -- so that refusal has \
+         expired and the lever is available. At three or more the header is better than paid for. \
+         Either way re-price it rather than loosening this assertion."
+    );
+}
+
+/// THE SPAN-KEYED TABLE THE ARENA LEVER NEEDS IS NOT A DEPENDENCY OF THIS CRATE.
+///
+/// # THE GATE, AS A FACT THAT CAN FAIL
+///
+/// An eight-byte span cannot `Hash`, `Eq` or `Borrow<str>` without the arena to resolve it, so a
+/// span-keyed map needs a raw-entry table: a lookup that takes a caller-computed hash and a
+/// caller-supplied equality closure. std's `HashMap` has no stable raw-entry API, and `hashbrown`
+/// -- which does, as `HashTable` -- is in `Cargo.lock` only transitively. So the arena is a
+/// DEPENDENCY decision rather than a layout change, and that is the gate the refusal rests on.
+///
+/// A gate stated in prose does not fail when it opens. This reads the manifest. If `hashbrown`
+/// ever becomes a direct dependency, the raw-entry table is in reach and the arena lever priced by
+/// `what_an_arena_for_the_key_characters_would_save` is constructible, so this goes red and says so.
+///
+/// Carries both controls, because a scan that silently matches nothing is indistinguishable from
+/// one that found nothing: a POSITIVE control that the file read really is this crate's manifest,
+/// and a NEGATIVE control that the predicate catches a planted declaration.
+///
+/// rust-internal: reads this crate's own manifest, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency -- --exact
+#[test]
+fn the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency() {
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("Cargo.toml");
+    let text = std::fs::read_to_string(&manifest)
+        .unwrap_or_else(|error| panic!("reading {}: {error}", manifest.display()));
+
+    // POSITIVE CONTROL: the file read is the manifest of THIS crate. Without it, a renamed or
+    // moved manifest would read as "no raw-entry table declared" forever.
+    assert!(
+        text.contains("name = \"temporalstore-rust\""),
+        "{} does not declare this crate, so whatever it says about dependencies is about some \
+         other manifest",
+        manifest.display()
+    );
+
+    let declares = |body: &str| -> bool {
+        body.lines().map(str::trim).any(|line| {
+            !line.starts_with('#')
+                && (line.starts_with("hashbrown ")
+                    || line.starts_with("hashbrown=")
+                    || line.starts_with("hashbrown."))
+        })
+    };
+
+    // NEGATIVE CONTROL: the predicate catches a declaration that IS there.
+    let planted = format!("{text}\nhashbrown = \"0.17\"\n");
+    assert!(
+        declares(&planted),
+        "the predicate cannot see a planted declaration, so its silence on the real manifest \
+         means nothing"
+    );
+
+    assert!(
+        !declares(&text),
+        "a raw-entry table (`HashTable`) is now in reach as a direct dependency of this crate. \
+         That is the gate the key-character refusal rests on: an eight-byte arena span cannot \
+         hash, compare or `Borrow<str>` without one, and std's `HashMap` has no stable raw-entry \
+         API. With the table available, the arena lever priced by \
+         `what_an_arena_for_the_key_characters_would_save` is constructible -- re-price it, and \
+         price arena compaction with it, rather than loosening this assertion."
+    );
+}
+
+/// THE WIDTHS THE `strings` ROW TURNS ON, SO THE `46.9 -> 37.7` ARITHMETIC CANNOT GO STALE.
+///
+/// A one-word handle in place of the `Arc<str>` fat pointer takes the `strings` bucket from
+/// `(16 + 24) + 1 = 41` bytes to `(8 + 24) + 1 = 33`. At 2,048 buckets holding 1,792 keys -- the
+/// phase the published figure is measured at -- that is `46.9 -> 37.7 B/key`. The arithmetic is
+/// only as good as the two tuple widths, so they are pinned rather than quoted.
+///
+/// THIS IS THE OTHER HALF OF THE KEY-CHARACTER QUESTION, AND IT IS NOT THE 32.0 ROW. The 32.0 row
+/// is the allocation; this is the slot. Both are gated on the same raw-entry table, because the
+/// one-word handle cannot `Borrow<str>` either.
+const _: () = assert!(
+    std::mem::size_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 40
+);
+/// The one-word-handle arm. Eight bytes narrower, which is the whole of the `strings` saving.
+const _: () =
+    assert!(std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>() == 32);
+/// Pinned on its own, because a width pin admits every alignment that divides it.
+const _: () = assert!(
+    std::mem::align_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 8
+);
