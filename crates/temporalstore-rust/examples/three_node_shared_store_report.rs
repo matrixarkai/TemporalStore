@@ -9,9 +9,11 @@
 //!
 //! `ObjectStore::compare_and_swap` has a **fail-closed default** — a backend without a real atomic
 //! conditional put refuses rather than degrading the fence to an unfenced read-modify-write.
-//! `FileObjectStore` overrides it with a cross-process CAS over an atomic `mkdir`. The MatrixObject
-//! adapter does not override it, so the fence is unavailable there and the run says so instead of
-//! stopping.
+//! Both backends here override it: `FileObjectStore` with a cross-process CAS over an atomic
+//! `mkdir`, and the MatrixObject adapter with `PutOptions::if_none_match` to create a lease and
+//! `if_match_etag` to replace one, each enforced inside the put. So the fence is available on both
+//! and phase 5 exercises it on both; a run whose fence line reads UNAVAILABLE is reporting a real
+//! failure rather than a backend that was never expected to fence.
 
 use std::sync::Arc;
 
