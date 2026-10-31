@@ -3338,7 +3338,7 @@ pub struct StorageManagerCycleRequest {
     pub enable_block_compaction: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_index_gc: bool,
-    #[serde(default)]
+    #[serde(default = "default_max_dump_buckets_per_round")]
     pub max_dump_buckets_per_round: usize,
     #[serde(rename = "min_undumped_wal_records", default)]
     pub min_undumped_wal_records: u64,
@@ -3406,7 +3406,7 @@ pub struct StorageManagerCycleRequest {
     pub block_gc_checkpoint_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub block_gc_raft_install_floor_slab_id: Option<u64>,
-    #[serde(default)]
+    #[serde(default = "default_block_gc_delayed_destroy_grace_ms")]
     pub block_gc_delayed_destroy_grace_ms: u64,
     #[serde(default = "default_index_gc_index_log_bytes_threshold")]
     pub index_gc_index_log_bytes_threshold: u64,
@@ -3428,6 +3428,18 @@ pub struct StorageManagerCycleRequest {
     /// (today's behavior). The garbage-ratio GC gate, expressed against slabs.
     #[serde(default = "default_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
+    /// Slabs this round may destroy. 0 means no bound.
+    ///
+    /// Reaches `BlockStoreGcPolicy::max_destroy_slabs`, which `block_store_gc` enforces and
+    /// reports through `skipped_by_budget_count`.
+    #[serde(default = "default_block_gc_max_destroy_slabs_per_round")]
+    pub block_gc_max_destroy_slabs_per_round: usize,
+    /// Physical bytes this round may destroy. 0 means no bound, and 0 is what ships -- see
+    /// [`DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND`] for why a ceiling below one slab
+    /// target stops the collector permanently rather than bounding it. When both are set,
+    /// whichever is reached first stops the round and the remainder is the next round's candidates.
+    #[serde(default = "default_block_gc_max_destroy_physical_bytes_per_round")]
+    pub block_gc_max_destroy_physical_bytes_per_round: u64,
     /// Bytes the active data slab must hold before the prepare stage rolls a fresh one.
     ///
     /// Zero means "whatever the process is configured for", which is what a caller with no
@@ -3451,34 +3463,42 @@ pub struct StorageManagerCycleRequest {
 /// log looks like. The enforcement was there and tested the whole time; nothing set it, so a
 /// cycle did as much work as there was work to do.
 ///
-/// The values are the same order as the design being followed, deliberately not identical --
-/// they are our bounds, chosen against our own costs, not copied numbers:
+/// THE SHIPPED VALUES, each with the quantity it bounds and the arithmetic behind it. Rounder
+/// numbers than this set carried before, because every one of them is now a figure an operator
+/// reads off a dashboard and reasons about, not a tuning constant:
 ///
-/// | bound | theirs | ours | why ours differs |
-/// |---|---|---|---|
-/// | index-log records per round | 200 | 256 | the same order; a round number here |
-/// | index-log size before a sweep | 1 MiB | 768 KiB | agrees with the post-dump sweep's own threshold |
-/// | removable share before a sweep | 50% | 40% | our sweep rewrites a log, theirs rewrites a zone's live pages -- ours is the cheaper one, so it can fire sooner |
-/// | hot buckets expired per round | 100 | 128 | the same order |
-/// | cold buckets expired per round | 5 | 8 | small on purpose either way: a cold bucket has to be loaded before it can be expired |
-/// | eviction victims per round | 10 | 16 | the same order |
-/// | slab garbage before reclaim | 50% | 40% | see the note on the constant |
-pub const DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND: usize = 256;
+/// | bound | value | what it bounds |
+/// |---|---|---|
+/// | index-log records per round | 200 | records the sweep removes through its budgeted loop. Whole sealed pieces are unlinked by name and do NOT pass through it, so a round removes far more than this; see `what_each_maintenance_bound_costs_per_round` |
+/// | index-log size before a sweep | 1 MiB | the log must reach this before a sweep is worth its gate cost. Below it the stage declines and says so |
+/// | removable share before a sweep | 50% | half the log must be removable before it is rewritten, so a rewrite never copies more live records than it drops |
+/// | hot buckets expired per round | 100 | due keys taken from the in-memory deadline order. Measured biting exactly: 320 due, 100 taken |
+/// | cold buckets expired per round | 5 | due keys whose record has left memory. Twenty times smaller than hot because each one costs a load before it can be expired |
+/// | eviction victims per round | 10 | buckets the sampler keeps. Measured biting exactly: 15,680 found, 10 kept, and this is where a round's latency was |
+/// | slab garbage before reclaim | 50% | half a slab must be garbage before the collector takes it. Inert while the collector only offers slabs with no live refs at all, which carry 10,000 bp |
+/// | dirty buckets dumped per round | 200 | the most expensive thing a round does, so the ceiling is on this one |
+/// | compacted slab destroy grace | 24 h | how long a vacated slab stays readable after the collector decides it is dead |
+///
+/// A round's cost is the bound TIMES the loop rate, so these values and the loop interval are one
+/// setting. At the shipped 1,000 ms interval a round of 200 index-log records is 200 records a
+/// second; the same bounds on a 30 ms loop would be 6,660. Changing one without the other changes
+/// the maintenance throughput by that ratio, which is the thing to check before either moves.
+pub const DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND: usize = 200;
 /// Index-log size below which a sweep is not worth running. Matches the post-dump sweep's
 /// reclaimable-bytes threshold, so the two things that rewrite this log agree about when it is
 /// too small to bother with.
-pub const DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD: u64 = 768 * 1024;
+pub const DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD: u64 = 1024 * 1024;
 /// Share of the log's records that must be removable before a sweep runs, in basis points.
-pub const DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS: u64 = 4_000;
+pub const DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS: u64 = 5_000;
 /// Buckets whose deadlines are examined per expiry round, in memory and on the store.
 ///
 /// Cold is much smaller than hot because a cold bucket has to be LOADED before its records can
 /// be expired, so a cold round costs I/O a hot one does not. That is the same reason the design
 /// being followed scans 5 on-store slots against 100 in-memory ones.
-pub const DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND: usize = 128;
-pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 8;
+pub const DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND: usize = 100;
+pub const DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND: usize = 5;
 /// Buckets evicted per round once the cache is over its memory pressure threshold.
-pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 16;
+pub const DEFAULT_EVICTION_BATCH_LIMIT: usize = 10;
 
 /// The per-shard resident-index bound `StorageManagerCycleRequest` ships, named rather than
 /// written twice.
@@ -3497,7 +3517,67 @@ pub const DEFAULT_INDEX_RESIDENT_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// points of garbage, which clears any threshold below it. It binds only if a future GC starts
 /// offering partially-live slabs as candidates -- which is exactly when a threshold should
 /// already be in place rather than being added in a hurry.
-pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 4_000;
+pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 5_000;
+
+/// Slabs one round may destroy, and physical bytes one round may destroy.
+///
+/// THE ENFORCEMENT ALREADY EXISTED AND NOTHING SET IT. `block_store_gc` counts every candidate it
+/// turns away into `skipped_by_budget_count` / `skipped_by_budget_physical_bytes`, so the budget
+/// is both applied and reported -- but the only constructor the scheduled cycle used,
+/// `BlockStoreGcPolicy::with_slab_garbage_floor`, writes `max_destroy_slabs: 0` and
+/// `max_destroy_physical_bytes: 0` into every policy it builds, and 0 in these two fields means
+/// NO BOUND. A production round therefore destroyed every eligible slab, and the two
+/// `skipped_by_budget_*` figures were 0 in every round because nothing could ever be skipped.
+///
+/// Destroying a slab is an unlink plus the accounting that follows it, and the round holds the
+/// store while it happens, so this is the ceiling that keeps one round's reclaim off the write
+/// path. What it leaves behind is the next round's candidate set, highest-garbage first, and the
+/// budget `continue`s rather than `break`s, so a candidate turned away does not shut the round:
+/// a smaller one behind it is still taken.
+///
+/// 500 is the operational value and it is a CEILING, not a throttle: at
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` of one gibibyte, 500 slabs is more than any round reaches, so
+/// this bounds the pathological round rather than the ordinary one. That is the right shape for
+/// this stage -- the reason to have it is that `0` admitted an unbounded round at all, and the two
+/// `skipped_by_budget_*` figures the stage reports could never be anything but 0 while it did.
+pub const DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND: usize = 500;
+
+/// The byte half of the same ceiling -- and it ships at 0, NO BOUND, on purpose.
+///
+/// A sub-slab byte ceiling does not bound this stage, it switches it off for ever. The budget is
+/// applied per candidate as `selected_physical_bytes + candidate.bytes > max_destroy_physical_bytes`,
+/// and `selected_physical_bytes` starts at 0, so when one slab is larger than the whole ceiling the
+/// FIRST candidate already exceeds it -- and so does every other, round after round.
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` is `1 << 30`, one gibibyte, so any ceiling below that selects
+/// nothing and the collector never destroys a slab again while it is in force. The count ceiling
+/// beside this one has no such edge: it compares a LENGTH against a LENGTH, so a ceiling of n
+/// always admits n candidates.
+///
+/// `a_byte_ceiling_below_one_slab_would_stop_the_collector_dead` measures that, and
+/// `the_shipped_byte_ceiling_is_zero_or_at_least_one_slab` is the guard: this value may go non-zero
+/// only at or above one slab target, whatever the slab target becomes.
+pub const DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND: u64 = 0;
+
+/// Dirty buckets one round may dump.
+///
+/// A dump re-serializes a bucket index, so this is the per-round ceiling on the most expensive
+/// thing a round does. 200 is the operational value: a round that dumps more than that holds the
+/// write path behind it for longer than the loop interval, and the buckets it leaves behind are
+/// taken by the next round because a bucket records the log sequences of its own oldest undumped
+/// write.
+pub const DEFAULT_MAX_DUMP_BUCKETS_PER_ROUND: usize = 200;
+
+/// Milliseconds a compacted slab stays on disk before the collector may destroy it.
+///
+/// Twenty-four hours. A slab is destroyed only once nothing live points at it, but "nothing live
+/// points at it" is a judgement made from an index that a reader may still be mid-traversal of,
+/// and a follower or a snapshot install may still name the slab. The grace window is what makes
+/// the decision recoverable: for a whole day after a slab is vacated it is still there to be
+/// read, so a reader holding a stale slab address gets its bytes instead of a hole.
+///
+/// It was 0 -- destroy as soon as the collector decides -- which leaves no margin for a reader the
+/// decision did not account for.
+pub const DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS: u64 = 24 * 3_600 * 1_000;
 
 /// THE DECODE DEFAULTS FOR THE PER-ROUND BOUNDS, each naming the constant beside it.
 ///
@@ -3512,6 +3592,12 @@ pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 4_000;
 /// Naming a bound 0 explicitly still asks for an unbounded round: serde consults a default only
 /// for an ABSENT field, so this is a default and not a floor.
 /// `a_cycle_request_that_names_no_bound_still_arrives_bounded` asserts both halves.
+fn default_max_dump_buckets_per_round() -> usize {
+    DEFAULT_MAX_DUMP_BUCKETS_PER_ROUND
+}
+fn default_block_gc_delayed_destroy_grace_ms() -> u64 {
+    DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS
+}
 fn default_index_gc_max_entries_per_round() -> usize {
     DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND
 }
@@ -3532,6 +3618,12 @@ fn default_eviction_batch_limit() -> usize {
 }
 fn default_block_gc_min_slab_garbage_basis_points() -> u64 {
     DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS
+}
+fn default_block_gc_max_destroy_slabs_per_round() -> usize {
+    DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND
+}
+fn default_block_gc_max_destroy_physical_bytes_per_round() -> u64 {
+    DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND
 }
 fn default_index_resident_limit_bytes() -> u64 {
     DEFAULT_INDEX_RESIDENT_LIMIT_BYTES
@@ -3568,7 +3660,7 @@ impl Default for StorageManagerCycleRequest {
             enable_block_reclaim: true,
             enable_block_compaction: true,
             enable_index_gc: true,
-            max_dump_buckets_per_round: 0,
+            max_dump_buckets_per_round: DEFAULT_MAX_DUMP_BUCKETS_PER_ROUND,
             min_undumped_wal_records: 0,
             min_undumped_wal_bytes: 0,
             warm_cache: false,
@@ -3585,7 +3677,8 @@ impl Default for StorageManagerCycleRequest {
             block_gc_shared_store_cursors: Vec::new(),
             block_gc_checkpoint_floor_slab_id: None,
             block_gc_raft_install_floor_slab_id: None,
-            block_gc_delayed_destroy_grace_ms: 0,
+            block_gc_delayed_destroy_grace_ms:
+                DEFAULT_BLOCK_GC_DELAYED_DESTROY_GRACE_MS,
             index_gc_index_log_bytes_threshold: DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD,
             index_gc_usage_ratio_trigger_basis_points:
                 DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS,
@@ -3593,6 +3686,9 @@ impl Default for StorageManagerCycleRequest {
             index_gc_commit_dirty_buckets_before_truncation: true,
             block_gc_min_slab_garbage_basis_points:
                 DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_max_destroy_slabs_per_round: DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND,
+            block_gc_max_destroy_physical_bytes_per_round:
+                DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
             prepare_slab_target_bytes: 0,
         }
     }

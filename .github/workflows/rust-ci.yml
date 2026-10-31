@@ -189,7 +189,10 @@ jobs:
             shared_store::tests::default_shared_wal_preserves_multiple_binary_outcomes_and_older_json \
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_component \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
-            engine::tests::part4::every_maintenance_round_is_bounded_by_default ; do
+            engine::tests::part4::every_maintenance_round_is_bounded_by_default \
+            engine::tests::what_each_maintenance_bound_costs_per_round::a_byte_ceiling_below_one_slab_would_stop_the_collector_dead \
+            engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_byte_ceiling_is_zero_or_at_least_one_slab \
+            engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
