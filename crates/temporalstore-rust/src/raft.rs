@@ -6267,8 +6267,26 @@ fn install_leader_snapshot_tail(
             install_snapshot_state_for_role(node, snapshot);
         }
     }
+    // A catch-up may not pull a node BACKWARDS.
+    //
+    // The caller admits a node on EITHER being behind on the commit point OR behind on the last
+    // log index, so a node that is AHEAD on commit and BEHIND on log arrives here. Assigning the
+    // leader's commit point would then lower it while `applied`, `applied_index` and
+    // `max_applied_index` stay where they are -- and both apply loops SKIP any entry at or below
+    // `max_applied_index`, advancing the apply cursor over it without running it. Every
+    // replacement entry below the old floor would be stepped over, and the state machine would
+    // keep what it applied from the log that was just replaced.
+    //
+    // A node whose exactly-once floor is above the leader's commit point cannot be caught up by
+    // replacing its log at all: its applied state does not belong to this log. That is what a
+    // snapshot install is for, and unlike this path it moves the apply state along with the log.
+    if leader_commit_index < node.max_applied_index {
+        return;
+    }
     node.log = leader_log;
-    node.commit_index = leader_commit_index;
+    // Monotonic, like every other advance of this field: a commit point that can fall is a commit
+    // point that can fall below the floor.
+    node.commit_index = node.commit_index.max(leader_commit_index);
     if node.replica_role.can_serve_data() {
         apply_committed(node);
     }
@@ -8033,16 +8051,41 @@ fn install_meta_leader_snapshot_tail(
     leader_log: Vec<MetaLogEntry>,
     leader_commit_index: u64,
     leader_state: MetaState,
+    leader_meta: SingleNodeMeta,
 ) {
+    // Replacing a node's log means replacing the state machine that log built.
+    //
+    // A metaserver node carries TWO: the `MetaState` summary and `SingleNodeMeta`, the metadata
+    // store that answers reads. This installer assigned the first and left the second holding
+    // whatever the REPLACED log had put there -- and `read_meta` prefers the lowest-id node whose
+    // commit point has reached the leader's, so an unreconciled store is not a spare copy but the
+    // source every metadata read is served from.
+    //
+    // The apply loop could not repair it: `apply_meta_committed` is guarded by
+    // `node.applied.insert(index)`, a set rather than a cursor, and the entries a joiner would
+    // replay have usually been compacted out of the log it is handed.
+    let node_applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
+    if leader_commit_index < node_applied_index {
+        // Not a catch-up at all: this node has applied past the leader's commit point, so the
+        // state it holds does not belong to the log being installed. Lowering the commit point
+        // here is what the commit floor on the data path exists to refuse.
+        return;
+    }
     if meta_node_last_log_or_snapshot_index(node) < leader_snapshot_index {
         node.installed_snapshot_index = leader_snapshot_index;
         node.installed_snapshot_term = leader_snapshot_term;
-        node.applied.clear();
-        node.applied.extend(1..=leader_snapshot_index);
     }
     node.log = leader_log;
-    node.commit_index = leader_commit_index;
+    // Monotonic, like every other advance of this field: a commit point that can fall is a commit
+    // point that can fall below what has already been applied.
+    node.commit_index = node.commit_index.max(leader_commit_index);
     node.state = leader_state;
+    node.meta = leader_meta;
+    // Both copies reflect the leader through ITS commit point, so that is exactly what this node
+    // has now applied -- no more, which would skip a replacement, and no less, which would apply
+    // one twice. The guard above is what makes this safe: it cannot erase an applied index.
+    node.applied.clear();
+    node.applied.extend(1..=leader_commit_index);
     apply_meta_committed(node);
 }
 

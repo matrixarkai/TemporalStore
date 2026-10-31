@@ -933,6 +933,7 @@ impl MetaRaftCluster {
             leader.log.clone(),
             leader.commit_index,
             leader.state.clone(),
+            leader.meta.clone(),
         );
         inner.nodes.insert(node_id, node);
         Ok(())
@@ -988,8 +989,8 @@ impl MetaRaftCluster {
                     leader_log.clone(),
                     leader_commit_index,
                     leader_state.clone(),
+                    leader_meta.clone(),
                 );
-                node.meta = leader_meta.clone();
                 inner.nodes.insert(*node_id, node);
             }
         }
@@ -1198,6 +1199,7 @@ impl MetaRaftCluster {
         let leader_state = leader.state.clone();
         let leader_snapshot_index = leader.installed_snapshot_index;
         let leader_snapshot_term = leader.installed_snapshot_term;
+        let leader_meta = leader.meta.clone();
         let node = inner
             .nodes
             .get_mut(&node_id)
@@ -1209,6 +1211,7 @@ impl MetaRaftCluster {
             leader_log,
             leader_commit_index,
             leader_state,
+            leader_meta,
         );
         Ok(())
     }
