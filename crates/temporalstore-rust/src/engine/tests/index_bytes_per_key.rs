@@ -10412,3 +10412,503 @@ fn the_amplification_set_at_two_arms_four_times_apart() {
         "the asymptote is {asymptote:.2}x, at or below the {TARGET:.1}x target. That is the goal reached -- update this arm to pin the new figure and rewrite the note, rather than loosening this assertion."
     );
 }
+
+/// WHAT A RELEASE DOES TO THE PUBLISHED AMPLIFICATION RATIO, AND WHETHER THE NEXT READ UNDOES IT.
+///
+/// # WHY THIS IS THE QUESTION THE 4.0x TARGET ACTUALLY TURNS ON
+///
+/// The 4.0x index-memory target is closed **by width**: it needs 91.7 B/key removed, no remaining
+/// row is that large, and the one that was is refused on three pinned grounds
+/// (`an_integer_addressed_lookup_serves_another_objects_refs`).
+///
+/// It is **not** closed by TRIGGER, and those two had been collapsed into one claim.
+/// `the_amplification_set_at_two_arms_four_times_apart` is the authoritative figure -- resident
+/// bytes per key over the index's own ENCODED bytes per key, on two corpora at the same hashbrown
+/// phase, asserting `asymptote > 4.0` so that reaching the target turns that arm red rather than
+/// passing quietly. **It already measures the steady state after a full dump round**, so the dump
+/// is counted in it. A RELEASE is not. That is the lever this arm drives.
+///
+/// # THE TRAP THIS ARM EXISTS TO AVOID: A RELEASE MOVES BOTH SIDES OF THE RATIO
+///
+/// A release empties bucket block lists out of MEMORY. The denominator of the published figure is
+/// `encode_index_bytes(shard).len()` -- the index's own serialized form, taken from the same
+/// shard. So a release can shrink the numerator and the denominator together, and recover a great
+/// many bytes while moving the RATIO barely at all, or the wrong way.
+///
+/// Counting recovered bytes therefore cannot answer the 4.0x question. This arm weighs the
+/// numerator, the denominator and the ratio at each of three states, so the answer is the ratio
+/// and not a byte count.
+///
+/// # TWO NUMBERS THAT LOOK COMPARABLE AND ARE NOT
+///
+/// `what_a_dump_then_release_recovers_on_the_shipped_routing_range` carries **55.7%** in its prose.
+/// It is tempting to set that against the **43%** a 4.0x target needs and call the target reached.
+/// Do not:
+///
+///   * the 55.7% is of the **whole `ShardState` clone**; the 43% is of the **marginal per-key**
+///     index from the slope arm. Different denominators, so the comparison is arithmetic over two
+///     different quantities -- the basis-mixing error this campaign keeps making.
+///   * and 55.7% is **prose, not a guarded fact**. That arm asserts `recovered * 4 >= whole0`, a
+///     floor of **25%**, which is BELOW the 43%. Nothing in the tree holds the higher figure, and
+///     the arm is `#[ignore]`d so nothing re-reads it.
+///
+/// Corroborating that it can go stale: a **bare** release on current main recovers **0%**
+/// (`0 of 1024 buckets released, 1024 refused`), because a freshly seeded store is entirely dirty
+/// and a release refuses a dirty block. Every recovery figure is contingent on the dump first.
+///
+/// # WHAT IS ASSERTED, AND WHAT DELIBERATELY IS NOT
+///
+/// No recovery fraction and no ratio bound: the direction was not known before this ran, and a
+/// bound fitted to one fixture after reading its number is not a bound. What is asserted holds
+/// either way -- the release moved bytes, every key still answers, no key changed membership, and
+/// the swept shard is not smaller than the released one. The three states are PRINTED, row by row,
+/// so the trade is a table a reader can check.
+///
+/// On coverage: the arms that already drive a release check readability on a **16-key sample**,
+/// which is 0.04% of this corpus, and none of them weighs the index again afterwards. So the
+/// standing evidence that releasing is free is a sample that cannot see what reading costs.
+///
+/// The trigger this uses ships OFF (`enable_evict: false`).
+///
+/// rust-internal: measures this crate's own counters, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_release_does_to_the_published_amplification_ratio -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds 40,000 records, releases, then reads every key back under the counting allocator; run by name"]
+fn what_a_release_does_to_the_published_amplification_ratio() {
+    const SHIPPED_END: u32 = 1023;
+    const STRINGS: usize = 40_000;
+
+    /// One weighing: both sides of the ratio, plus the denominators the rows divide by.
+    struct State {
+        bucket_map: u64,
+        lookup: u64,
+        dirty: u64,
+        clone_resident: u64,
+        arc_bytes: u64,
+        /// `encode_index_bytes(shard).len()` -- the DENOMINATOR of the published figure.
+        image: u64,
+        /// What the eviction gate itself reads, which is a different quantity from the clone.
+        resident_reading: u64,
+        keys: usize,
+        buckets: usize,
+        pages: usize,
+    }
+
+    impl State {
+        /// Numerator of the published figure: the clone cannot see `Arc` payloads, so they are added.
+        fn true_resident(&self) -> u64 {
+            self.clone_resident + self.arc_bytes
+        }
+        fn amplification(&self) -> f64 {
+            self.true_resident() as f64 / self.image as f64
+        }
+    }
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    probe_seed(&engine, STRINGS, 40, 1_000, 0);
+
+    let weigh = |engine: &TemporalEngine| -> State {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let (arc_bytes, _) = arc_payload_bytes(&shard.bucket_index);
+        State {
+            bucket_map: deep_heap_bytes(&shard.bucket_index.bucket_map),
+            lookup: deep_heap_bytes(&shard.bucket_index.object_block_lookup),
+            dirty: deep_heap_bytes(&shard.dirty_objects),
+            clone_resident: deep_heap_bytes(shard),
+            arc_bytes,
+            image: crate::engine::encode_index_bytes(shard).len() as u64,
+            resident_reading: engine.bucket_index_resident_bytes(1),
+            keys: shard.strings().len() + shard.features().len(),
+            buckets: shard.bucket_index.bucket_map.len(),
+            pages: shard.bucket_index.bucket_map.values().map(|b| b.block_index.len()).sum(),
+        }
+    };
+
+    // Read every seeded string key, and return how many answered with bytes.
+    let sweep = |engine: &TemporalEngine| -> usize {
+        (0..STRINGS)
+            .filter(|i| {
+                matches!(
+                    engine
+                        .execute(ExecuteRequest {
+                            shard_id: 1,
+                            command: Command::StringGet { key: format!("s{i}") },
+                        })
+                        .response,
+                    crate::types::CommandResponse::Bytes { value: Some(_) }
+                )
+            })
+            .count()
+    };
+
+    let seeded = weigh(&engine);
+
+    // --- DENOMINATORS, asserted, because every figure below divides by one of them.
+    assert!(
+        seeded.keys > STRINGS,
+        "denominator: the shard holds {} keys, which is not more than the {STRINGS} strings seeded \
+         plus its series keys -- the corpus is not the one these figures report",
+        seeded.keys
+    );
+    assert!(seeded.pages > 0, "denominator: no pages means there are no block lists to release");
+    assert!(
+        seeded.buckets > 0 && seeded.buckets <= (SHIPPED_END as usize + 1),
+        "denominator: {} buckets is not a 0..{SHIPPED_END} population",
+        seeded.buckets
+    );
+    assert!(
+        seeded.image > 0,
+        "denominator: the encoded index image is zero bytes, so every ratio below divides by zero"
+    );
+    assert!(
+        seeded.resident_reading > 0,
+        "denominator: the eviction gate reads zero bytes before anything happened"
+    );
+
+    // --- THE PRODUCTION SEQUENCE: threshold 0 so the pressure gate cannot early-return, no batch
+    // --- limit, dump ON because a release refuses a dirty block, delete-drop OFF because that mode
+    // --- shrinks the index by destroying data and would make any recovery figure meaningless.
+    let _report = engine.apply_storage_eviction(1, 0, 0, true, false);
+    let released = weigh(&engine);
+
+    // --- THEN READ EVERYTHING BACK. The existing arms read a 16-key SAMPLE after a release to
+    // --- prove the node stayed routable -- 0.04% of this corpus -- and none of them re-weighs
+    // --- the index afterwards. Sweeping the whole corpus and weighing again is the step that
+    // --- says what the release actually bought.
+    let answered = sweep(&engine);
+    let swept = weigh(&engine);
+
+    let n = seeded.keys as f64;
+    println!();
+    println!("  {STRINGS} string keys on the shipped 0..{SHIPPED_END} range, {} keys in all", seeded.keys);
+    println!();
+    println!("  {:<26} {:>11} {:>11} {:>11}", "", "seeded", "released", "swept");
+    for (name, pick) in [
+        ("bucket_map", (|s: &State| s.bucket_map) as fn(&State) -> u64),
+        ("object_block_lookup", |s| s.lookup),
+        ("dirty_objects", |s| s.dirty),
+        ("clone resident", |s| s.clone_resident),
+        ("Arc<str> key characters", |s| s.arc_bytes),
+        ("TRUE resident (numerator)", |s| s.true_resident()),
+        ("encoded image (denominator)", |s| s.image),
+        ("gate's resident reading", |s| s.resident_reading),
+    ] {
+        println!(
+            "  {name:<26} {:>11} {:>11} {:>11}",
+            pick(&seeded),
+            pick(&released),
+            pick(&swept)
+        );
+    }
+    println!(
+        "  {:<26} {:>11} {:>11} {:>11}",
+        "buckets / pages",
+        format!("{}/{}", seeded.buckets, seeded.pages),
+        format!("{}/{}", released.buckets, released.pages),
+        format!("{}/{}", swept.buckets, swept.pages)
+    );
+    println!();
+    println!("  THE PUBLISHED FIGURE AT EACH STATE");
+    for (label, s) in [("seeded", &seeded), ("after dump+release", &released), ("after a full read sweep", &swept)] {
+        println!(
+            "    {label:<24} {:>8.2}x   ({:.1} resident B/key over {:.1} encoded B/key)",
+            s.amplification(),
+            s.true_resident() as f64 / n,
+            s.image as f64 / n
+        );
+    }
+    println!();
+    println!("  WHAT THE RELEASE DID TO EACH SIDE");
+    println!(
+        "    numerator  {:>10} -> {:>10} B  ({:+.1}%)",
+        seeded.true_resident(),
+        released.true_resident(),
+        100.0 * (released.true_resident() as f64 - seeded.true_resident() as f64)
+            / seeded.true_resident() as f64
+    );
+    println!(
+        "    denominator{:>10} -> {:>10} B  ({:+.1}%)",
+        seeded.image,
+        released.image,
+        100.0 * (released.image as f64 - seeded.image as f64) / seeded.image as f64
+    );
+    println!(
+        "    ratio      {:>9.2}x -> {:>9.2}x  ({:+.1}%)",
+        seeded.amplification(),
+        released.amplification(),
+        100.0 * (released.amplification() - seeded.amplification()) / seeded.amplification()
+    );
+    println!(
+        "    then the read sweep put the ratio at {:.2}x, {:.1}% of the way back to seeded",
+        swept.amplification(),
+        if (seeded.amplification() - released.amplification()).abs() < f64::EPSILON {
+            0.0
+        } else {
+            100.0 * (swept.amplification() - released.amplification())
+                / (seeded.amplification() - released.amplification())
+        }
+    );
+    println!();
+
+    // --- THE INVARIANTS, which hold whichever way the ratio goes.
+    assert!(
+        seeded.true_resident() > released.true_resident(),
+        "the dump-then-release recovered nothing ({} -> {} resident), so every figure above is the \
+         bare-release case and the sweep had nothing to undo. A release refuses a dirty block, so \
+         this means the dump did not run -- check the dump_before_evict arm of \
+         `apply_storage_eviction` before reading these columns as a result.",
+        seeded.true_resident(),
+        released.true_resident()
+    );
+    assert_eq!(
+        STRINGS, answered,
+        "{answered} of {STRINGS} keys answered after the release. Releasing is only free if the \
+         node stays routable and the next read loads its pages back, so a shortfall is data loss \
+         wearing a reclaim figure -- and it would invalidate the swept column, which assumes the \
+         sweep touched every key."
+    );
+    assert_eq!(
+        seeded.keys, released.keys,
+        "the key count moved across the release, which is data loss, not reclaim"
+    );
+    assert_eq!(
+        seeded.keys, swept.keys,
+        "the key count moved across the read sweep; a read must not change membership"
+    );
+    assert!(
+        swept.true_resident() >= released.true_resident(),
+        "the resident numerator FELL across a read sweep ({} -> {}). Reads load pages back, so the \
+         swept shard cannot be smaller than the released one -- something else released during the \
+         sweep and the put-back column is attributing it to reads.",
+        released.true_resident(),
+        swept.true_resident()
+    );
+    // --- AND THE DENOMINATOR MUST STILL DESCRIBE THE SAME DATA. If the encoded image shrank while
+    // --- every key is still readable, the ratio improved by losing index content rather than by
+    // --- freeing memory, and that is a different claim entirely.
+    assert!(
+        released.image > 0 && swept.image > 0,
+        "the encoded index image went to zero ({} released, {} swept) while every key still reads, \
+         so the denominator stopped describing the shard",
+        released.image,
+        swept.image
+    );
+}
+
+/// WHAT FOLDING THE BLOCK REFS INTO THE SLOT WOULD SAVE, WHICH IS THE ONE-STRUCTURE SHAPE.
+///
+/// # THE REPRESENTATION IS ALREADY RIGHT. THE CONTAINER IS NOT.
+///
+/// `BlockRefs` is already a tagged union -- `One(BlockLookupRef)` inline, `Many(Vec<_>)` out of
+/// line -- pinned at **24 bytes**, with `size_of::<BlockRefs>() == size_of::<Vec<BlockLookupRef>>()`
+/// pinned beside it. That is the shape a compact per-object node wants: the common case in the
+/// struct, a pointer beyond it. Nothing here proposes changing it.
+///
+/// What costs is **where it is held**. `object_block_lookup` is
+/// `BTreeMap<ModelKey, BTreeMap<ModelKey, BlockRefs>>`, and it measures **72.4 B/key** to hold a
+/// 24-byte value under a 16-byte key. Payload is 40; so roughly **32 B/key is B-tree node**, paid
+/// for a second lookup structure keyed by the same object key the slot map is already keyed by.
+///
+/// # WHY THIS PAIR, WHEN CONSOLIDATION WAS ALREADY REFUSED
+///
+/// `what_consolidating_three_holders_would_cost` prices folding `strings`, the series map and the
+/// selection map into one entry and reports a **break-even at 78% key overlap** against a measured
+/// **50%** -- below break-even, so it costs. That refusal is correct **and it is a different pair**.
+/// Those three are different KINDS: a key lives in one of them, so a consolidated entry carries two
+/// empty arms per key and the union is mostly padding.
+///
+/// `strings` and `object_block_lookup` are not different kinds. **Every stored object has both** --
+/// a slot, and the refs naming its blocks -- so the overlap is ~100%, which is the arm of that same
+/// measurement where consolidation WINS. The 78% figure does not apply, and nothing has priced
+/// this pair.
+///
+/// # AND IT IS NOT THE REFUSED CHANGE EITHER
+///
+/// `ObjectBlockLookup`'s doc refuses two things on three pinned grounds
+/// (`an_integer_addressed_lookup_serves_another_objects_refs`): addressing page->object identity by
+/// a `u64` rather than the object key, and dropping that identity -- which would write an index
+/// whose pages name no object, because `impl Serialize for CoreIndex` composes each page's written
+/// key from this map in every build.
+///
+/// **Relocating the identity into the slot is neither.** It stays keyed by the object key, and the
+/// written field can still be composed -- from the slot map rather than from a second map. Those
+/// refusals are about REPRESENTATION and DELETION; this is about WHERE IT LIVES.
+///
+/// # WHAT IS MEASURED
+///
+/// Two shapes over the same N objects, every object in both holders:
+///
+///   * **ARM A, what ships** -- `HashMap<ModelKey, ObjectSlot>` beside
+///     `BTreeMap<ModelKey, BTreeMap<ModelKey, BlockRefs>>`.
+///   * **ARM B, one structure** -- one `HashMap<ModelKey, Folded>` where `Folded` holds the slot
+///     and the existing `BlockRefs` union together.
+///
+/// At TWO key counts, both exactly 7/8 of a power of two, so both hash tables sit at 100% usable
+/// load. That is the phase discipline `the_amplification_set_at_two_arms_four_times_apart` uses and
+/// for its reason: a hashbrown table's cost per key is a step function of n, so two arms in
+/// different phases can differ by 2x with nothing to give it away. The saving is reported as a
+/// SLOPE as well as a per-key figure, and the two must agree.
+///
+/// # WHAT IT DOES NOT CLAIM
+///
+/// Not that the fold is implementable as it stands. The lookup is **nested, model then key**, and
+/// is walked by model where a flat per-object entry would need a scan; that cost is real and is not
+/// priced here, which makes this figure a **CEILING on the saving**. The write path and the
+/// serializer would both have to take their identity from the slot.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_folding_the_block_refs_into_the_slot_would_save -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds four maps at two corpus sizes under the counting allocator; run by name"]
+fn what_folding_the_block_refs_into_the_slot_would_save() {
+    use crate::engine::object_record::ObjectSlot;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+
+    /// 7/8 of 2,048 -- the most a 2,048-bucket table holds, so the table is exactly full.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+
+    /// The one-structure entry: the slot and the refs union it already has, together.
+    ///
+    /// `Clone` because `deep_heap_bytes` weighs by cloning and cannot weigh a shape it cannot copy.
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct Folded {
+        slot: ObjectSlot,
+        refs: BlockRefs,
+    }
+
+    let key = |i: usize| -> Arc<str> { Arc::from(format!("k{i:08}").as_str()) };
+    // The single-block arm, which our corpus is ~99.9% of.
+    // `BlockLookupRef` is { routing_bucket: u32, block_ref_key: u64 } and derives no Default, so
+    // both fields are given. 16 B, pinned.
+    let one_ref = || BlockRefs::One(BlockLookupRef { routing_bucket: 7, block_ref_key: 2 });
+
+    // ARM A: the two shapes that ship, the same keys in both, keys SHARED between them because the
+    // adoption puts every holder on one allocation -- so what two maps cost over one is the key
+    // FIELD and the containers, never the characters.
+    let weigh_ships = |n: usize| -> (u64, u64) {
+        let model: Arc<str> = Arc::from("strings");
+        let mut slots: HashMap<Arc<str>, ObjectSlot> = HashMap::new();
+        let mut lookup: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>> = BTreeMap::new();
+        for i in 0..n {
+            let k = key(i);
+            slots.insert(Arc::clone(&k), ObjectSlot::default());
+            lookup.entry(Arc::clone(&model)).or_default().insert(k, one_ref());
+        }
+        assert_eq!(n, slots.len(), "arm A: the slot map must hold every key");
+        assert_eq!(
+            n,
+            lookup.get(&model).map(|inner| inner.len()).unwrap_or(0),
+            "arm A: the lookup must hold every key under the one model, or the two arms are not \
+             over the same population and the difference is a population difference"
+        );
+        (deep_heap_bytes(&slots), deep_heap_bytes(&lookup))
+    };
+
+    // ARM B: one map, the folded entry.
+    let weigh_folded = |n: usize| -> u64 {
+        let mut folded: HashMap<Arc<str>, Folded> = HashMap::new();
+        for i in 0..n {
+            folded.insert(key(i), Folded { slot: ObjectSlot::default(), refs: one_ref() });
+        }
+        assert_eq!(n, folded.len(), "arm B: the folded map must hold every key");
+        deep_heap_bytes(&folded)
+    };
+
+    // --- THE WIDTHS, because every figure below follows from them and a width that moved would
+    // --- otherwise show up only as a changed total.
+    println!();
+    println!("  WIDTHS");
+    for (name, w) in [
+        ("ModelKey (Arc<str>)", std::mem::size_of::<Arc<str>>()),
+        ("ObjectSlot", std::mem::size_of::<ObjectSlot>()),
+        ("BlockRefs (One|Many union)", std::mem::size_of::<BlockRefs>()),
+        ("Folded { slot, refs }", std::mem::size_of::<Folded>()),
+        ("bucket today: (key, slot)+1", std::mem::size_of::<(Arc<str>, ObjectSlot)>() + 1),
+        ("bucket folded: (key, Folded)+1", std::mem::size_of::<(Arc<str>, Folded)>() + 1),
+    ] {
+        println!("    {name:<32} {w:>4} B");
+    }
+
+    let (slots1, look1) = weigh_ships(ONE_X);
+    let folded1 = weigh_folded(ONE_X);
+    let (slots4, look4) = weigh_ships(FOUR_X);
+    let folded4 = weigh_folded(FOUR_X);
+
+    let ships1 = slots1 + look1;
+    let ships4 = slots4 + look4;
+    let span = (FOUR_X - ONE_X) as f64;
+
+    println!();
+    println!("  {:<34} {:>11} {:>11} {:>10}", "", "1x (1,792)", "4x (7,168)", "slope B/k");
+    for (name, a, b) in [
+        ("A: slots HashMap", slots1, slots4),
+        ("A: object_block_lookup BTreeMap", look1, look4),
+        ("A: the two together", ships1, ships4),
+        ("B: one folded HashMap", folded1, folded4),
+    ] {
+        println!("  {name:<34} {a:>11} {b:>11} {:>10.1}", (b as i64 - a as i64) as f64 / span);
+    }
+
+    let ships_slope = (ships4 - ships1) as f64 / span;
+    let folded_slope = (folded4 as i64 - folded1 as i64) as f64 / span;
+    let per_key_1x = (ships1 as f64 - folded1 as f64) / ONE_X as f64;
+    let per_key_4x = (ships4 as f64 - folded4 as f64) / FOUR_X as f64;
+
+    println!();
+    println!("  PER KEY");
+    println!(
+        "    what ships  {:>7.1} B/key at 1x, {:>7.1} at 4x, marginal {:>7.1}",
+        ships1 as f64 / ONE_X as f64,
+        ships4 as f64 / FOUR_X as f64,
+        ships_slope
+    );
+    println!(
+        "    folded      {:>7.1} B/key at 1x, {:>7.1} at 4x, marginal {:>7.1}",
+        folded1 as f64 / ONE_X as f64,
+        folded4 as f64 / FOUR_X as f64,
+        folded_slope
+    );
+    println!();
+    println!(
+        "  THE FOLD SAVES {:.1} B/key at 1x, {:.1} at 4x, {:.1} MARGINAL ({:.1}% of the pair)",
+        per_key_1x,
+        per_key_4x,
+        ships_slope - folded_slope,
+        100.0 * (ships_slope - folded_slope) / ships_slope
+    );
+    println!();
+
+    // --- THE ARMS MUST DIFFER, or every slope above is noise.
+    assert!(
+        ships4 > ships1 && folded4 > folded1,
+        "an arm did not grow across a 4x corpus ({ships1} -> {ships4} ships, {folded1} -> \
+         {folded4} folded), so there is no slope to take"
+    );
+    // --- THE FOLD MUST ACTUALLY BE CHEAPER. If it is not, say so HERE rather than in prose: the
+    // --- one-structure shape would be a regression and the nested lookup would earn its place on
+    // --- footprint as well as on the three pinned grounds.
+    assert!(
+        folded_slope < ships_slope,
+        "the folded shape costs {folded_slope:.1} B/key marginal against {ships_slope:.1} for the \
+         two maps it replaces, so folding the refs into the slot is a REGRESSION. Do not propose \
+         the one-structure shape on footprint grounds."
+    );
+    // --- AND THE SAVING MUST BE PER-KEY, not a constant divided by keys. The arms are 4.0x apart,
+    // --- so a constant term shows up as a per-key saving that moves between them.
+    assert!(
+        (per_key_1x - per_key_4x).abs() <= 0.25 * per_key_1x.abs().max(1.0),
+        "the saving reads {per_key_1x:.1} B/key at {ONE_X} keys and {per_key_4x:.1} at {FOUR_X}. \
+         Those must agree: a figure that moves across a 4.0x corpus is a constant divided by keys \
+         wearing a per-key label, which is what this arm's two-corpus shape exists to catch."
+    );
+}
