@@ -247,7 +247,7 @@ Exit criteria:
 Exit criteria:
 
 - new node can serve reads after snapshot + replay
-- old local pages are not required from the dead leader
+- old local blocks are not required from the dead leader
 
 ### Milestone 4: AWS test
 

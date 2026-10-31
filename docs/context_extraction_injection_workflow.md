@@ -39,7 +39,7 @@ TemporalStore context models as normal production traffic:
    `ContextEntityModel` for extracted entity attributes keyed by tenant/node/entity hash.
 2. `ContextSegment` is the public benchmark/pipeline name for the timestamped evidence segment
    stored as `ContextEventModel`. It owns the timestamp key, event id hash, source text, source
-   ref, confidence/importance, and related entity node hashes. The page stores timestamp-keyed
+   ref, confidence/importance, and related entity node hashes. The block stores timestamp-keyed
    segment entries; the segment text is not stored separately from the block entry.
 3. `ContextIndexRef` stores secondary indexes such as `source:<source_id_hash> -> entity/segment`.
    Benchmark replay uses this index to prove a source or conversation turn can route back to the
@@ -178,15 +178,15 @@ The harness verifies:
 ## Context Model Conformance
 
 The current TemporalStore context module registers first-class LLM context model names on top of
-existing hash/feature page primitives:
+existing hash/feature block primitives:
 
 | model | Model id | Rust model descriptor | Key family | Primitive |
 | --- | ---: | --- | --- | --- |
 | `ContextNodeModel` | `9` | `ContextNodeModel` | `ctx:node` | hash/object metadata, L0/L1 summaries |
-| `ContextEventModel` / `ContextSegment` | `10` | `ContextEventModel` | `ctx:event` | timestamp-keyed segment page |
-| `ContextIndexModel` | `11` | `ContextIndexModel` | `ctxidx` | timestamped feature page |
-| `ContextAuditModel` | `12` | `ContextAuditModel` | `ctx:audit` | timestamped feature page |
-| `ContextDirtyModel` | `13` | `ContextDirtyModel` | `ctx:dirty` | timestamped feature page |
+| `ContextEventModel` / `ContextSegment` | `10` | `ContextEventModel` | `ctx:event` | timestamp-keyed segment block |
+| `ContextIndexModel` | `11` | `ContextIndexModel` | `ctxidx` | timestamped feature block |
+| `ContextAuditModel` | `12` | `ContextAuditModel` | `ctx:audit` | timestamped feature block |
+| `ContextDirtyModel` | `13` | `ContextDirtyModel` | `ctx:dirty` | timestamped feature block |
 | `ContextEntityModel` | `18` | `ContextEntityModel` | `ctx:entity` | hash/object extracted entity attributes |
 
 Rust exposes the same model IDs through `context_model_descriptors()`, uses the same object-key

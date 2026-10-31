@@ -157,7 +157,7 @@ old cache entries naturally stop matching.
 Index refs are small, but too many still cost real resources:
 
 - More writes per event or resource chunk.
-- More pages/blocks to compact and cache.
+- More blocks/blocks to compact and cache.
 - More prefix scans and index intersections during retrieval.
 - More debug/audit noise.
 - More duplicated strings if index names are stored as text in exported records.

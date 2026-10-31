@@ -276,7 +276,7 @@ Future production optimizations:
 - compact postings for high-value dimensions;
 - code-generated row decoders;
 - vectorized decode and predicate evaluation;
-- row group/page pruning by timestamp and field stats.
+- row group/block pruning by timestamp and field stats.
 
 ## Retention And Truncation
 
@@ -298,7 +298,7 @@ For production:
 - keep enough raw tail for explainability and recent exact queries;
 - compact older rows into buckets;
 - mark old raw rows GC eligible after bucket/safety checks;
-- rely on generic TemporalStore page/block compaction for physical reclaim.
+- rely on generic TemporalStore block/block compaction for physical reclaim.
 
 ## Example: Recommendation Features
 

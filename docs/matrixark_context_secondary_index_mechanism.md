@@ -157,7 +157,7 @@ Use the parent adjacency key:
 ctx:child:{tenant_hash}:{parent_hash}
 ```
 
-Then page through children by timestamp/rank/child hash. Do not scan all nodes for `parent_hash`.
+Then block through children by timestamp/rank/child hash. Do not scan all nodes for `parent_hash`.
 
 Good scan:
 

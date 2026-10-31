@@ -11,7 +11,7 @@ looks like versus the shared conformance test corpus.
 Rust TemporalStore is intentionally Rust-native. The production surfaces are
 HTTP/JSON, RESP, tonic-style service contracts, Rust SDK/client paths, shared
 store replay, and OpenRaft-backed readiness evidence. brpc/thrift wire
-compatibility and byte-for-byte page/log layout are not part of the Rust
+compatibility and byte-for-byte block/log layout are not part of the Rust
 runtime contract unless separately re-scoped.
 
 ## Top-Level Crate Map
@@ -122,7 +122,7 @@ of maintaining parallel product implementations.
 
 ## Storage And Cache
 
-Rust storage keeps a Rust-native page envelope and log format. conformance is
+Rust storage keeps a Rust-native block envelope and log format. conformance is
 tracked as behavior and migration/replay conformance, not byte-for-byte internal
 layout conformance.
 
@@ -139,16 +139,16 @@ Important files:
 
 Storage recovery is designed around the order:
 
-1. extent/page manifest inspection
-2. page segment inspection
+1. extent/block manifest inspection
+2. block segment inspection
 3. checkpoint or slot dump manifest
 4. index-log tail
 5. WAL tail
 
 The current readiness posture emphasizes:
 
-- orphan page detection
-- missing and stale page references
+- orphan block detection
+- missing and stale block references
 - corrupt block/index/WAL/snapshot evidence
 - follower-cursor safe GC
 - cache pressure and refill

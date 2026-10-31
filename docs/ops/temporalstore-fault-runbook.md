@@ -79,7 +79,7 @@ Immediate actions:
 Recovery checks:
 - Lag and apply lag both return to `0`.
 - No stale snapshot rejection is repeating.
-- Storage recovery report has no unreadable page refs, corrupt segments, or
+- Storage recovery report has no unreadable block refs, corrupt segments, or
   owner mismatches.
 
 ## Disk Or Storage Pressure

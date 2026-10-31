@@ -94,7 +94,7 @@ What this means in practice:
 
 ### What It Looks Like Now In Debug Output
 
-The debug page may still show a table, but that table should be interpreted as a
+The debug block may still show a table, but that table should be interpreted as a
 rendered view of posting lists, not as one heavyweight object per event.
 
 Example rendered rows:

@@ -11,7 +11,7 @@ The repo also includes a Hugging Face Transformers endpoint for the exact
 `tools/openai_compatible_hf_reader.py`, defaults to `google/flan-t5-small`, and
 is packaged by `docker/Dockerfile.context-oss-reader`.
 
-Claim level: packaged open-model benchmark path. This page does not present production conformance or
+Claim level: packaged open-model benchmark path. This block does not present production conformance or
 the external baseline paper-comparable evidence by itself. Those labels require a mounted real dataset, a
 successful real reader call, no deterministic fallback, full Rust TemporalStore replay, and passing
 threshold output in the archived report.

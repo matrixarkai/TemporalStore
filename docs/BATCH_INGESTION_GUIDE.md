@@ -117,13 +117,13 @@ want under a scheduler or in a log-sensitive environment.
 
 ## 4a. The ingestion portal (no terminal required)
 
-For customers who would rather not run a CLI, the gateway serves a page at
+For customers who would rather not run a CLI, the gateway serves a block at
 **`/v1/admin/ingestion`**. Point a browser at it, paste an admin key, name a directory or a list of
-paths, and start the import; the page shows each job's progress, rate and ETA, and lists failures as
+paths, and start the import; the block shows each job's progress, rate and ETA, and lists failures as
 they happen. It also renders the deployment's model configuration and any warnings, so a
 misconfigured encoder is visible before a large import rather than after.
 
-Fetching the page needs no credentials; every action on it calls an admin-gated endpoint, so the page
+Fetching the block needs no credentials; every action on it calls an admin-gated endpoint, so the block
 is inert without a key.
 
 **Configure the boundary first.** Jobs may only read documents beneath a configured root:
@@ -519,7 +519,7 @@ Only two changes cannot affect what the encoder sees, and therefore cannot affec
 clock and 79% of the bytes**, measured end to end on real 1 MB documents with retrieval verified
 unchanged at 4/8 hit@5.
 
-Everything else on this page — text cap, window, chunk size — trades retrieval for speed or memory
+Everything else on this block — text cap, window, chunk size — trades retrieval for speed or memory
 in one direction or the other. There is no third free lever; the remaining constraint is encoder
 hardware.
 

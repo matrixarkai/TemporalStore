@@ -184,7 +184,7 @@ Use for replay, governance, and debugging why a context pack was returned.
 
 ## Storage Mapping
 
-TemporalStore context models reuse existing page primitives.
+TemporalStore context models reuse existing block primitives.
 
 ```text
 ContextNodeModel         Hash page object, field = meta

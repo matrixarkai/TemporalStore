@@ -2,7 +2,7 @@
 
 The proxy in front of TemporalStore is the process that every client request
 passes through before it reaches a data node. That position makes it the right
-place to answer three operational questions, and this page describes how each is
+place to answer three operational questions, and this block describes how each is
 configured.
 
 1. **Whose data is this proxy allowed to serve?** — account scope

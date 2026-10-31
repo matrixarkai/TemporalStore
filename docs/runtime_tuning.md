@@ -79,7 +79,7 @@ bash tools/run_ssd_blockcache_smoke_ubuntu22.sh
 
 **The default is `1023` — 1,024 buckets — and it was `4294967295` up to this
 release.** The whole `u32` range is 4.29 billion buckets, so every key landed alone
-in a bucket of its own by construction and this page then told an operator to set
+in a bucket of its own by construction and this block then told an operator to set
 1,024 before the first ingest: the shipped default was not the configuration the
 documentation said to run. The new value was chosen by sweeping 255 / 1,023 / 4,095
 / 65,535 at two corpus sizes rather than copied from the example below; the table
@@ -132,11 +132,11 @@ actually set aside, and a container change moves the rounding between them.
 
 | end | buckets | blocks a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record | dump + release unit | read path, entries / lookup |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| `255` | 256 | 156 / 168 | 113.8 (−58.9%) | **114.1 (−59.2%)** | 0.0201 (−86.1%) | 168 pages | 6.42 |
-| `1023` | 1,024 | 39 / 50 | 119.3 (−56.9%) | **120.2 (−57.0%)** | 0.0803 (−44.5%) | 50 pages | 4.54 |
-| `4095` | 4,096 | 10 / 21 | 140.7 (−49.2%) | 144.1 (−48.4%) | 0.3207 (+121.9%) | 21 pages | 2.91 |
-| `65535` | 28,120 occupied of 65,536 | 1 / 6 | 243.0 (−12.3%) | 252.7 (−9.5%) | 0.7649 (+429.1%) | 6 pages | 0.83 |
-| `4294967295` | 40,000 | 1 / 1 | 277.0 | 279.3 | 0.1446 | 1 page | 0.00 |
+| `255` | 256 | 156 / 168 | 113.8 (−58.9%) | **114.1 (−59.2%)** | 0.0201 (−86.1%) | 168 blocks | 6.42 |
+| `1023` | 1,024 | 39 / 50 | 119.3 (−56.9%) | **120.2 (−57.0%)** | 0.0803 (−44.5%) | 50 blocks | 4.54 |
+| `4095` | 4,096 | 10 / 21 | 140.7 (−49.2%) | 144.1 (−48.4%) | 0.3207 (+121.9%) | 21 blocks | 2.91 |
+| `65535` | 28,120 occupied of 65,536 | 1 / 6 | 243.0 (−12.3%) | 252.7 (−9.5%) | 0.7649 (+429.1%) | 6 blocks | 0.83 |
+| `4294967295` | 40,000 | 1 / 1 | 277.0 | 279.3 | 0.1446 | 1 block | 0.00 |
 
 4,000 routed records, where the same bucket counts produce a tenth of the fill:
 
@@ -162,7 +162,7 @@ moves with the record count, which the engine does not know when it loads a shar
 narrower range and one much larger by a wider one, and the figures above are what to
 choose from.
 
-**A prior version of this table had the sign wrong.** It reported 413.1 B a page at
+**A prior version of this table had the sign wrong.** It reported 413.1 B a block at
 4,000 records on `1023` — a *loss* of 25.4% — against the 183.4 measured now. The
 `Many` arm of the block index was a `BTreeMap` when that figure was taken and is a
 flat sorted `Vec` now, which changed the sign of the byte column while leaving the
@@ -311,7 +311,7 @@ existed:
   narrow one, not because anything moved. The store stayed on its 938 buckets.
 * **Narrowing** (the default then `1023`) leaves the store on its original 2,000
   buckets, and **all 2,000 of them sit above the shard's own end**. Every record is
-  still readable, which is what makes this quiet: the pages are simply outside every
+  still readable, which is what makes this quiet: the blocks are simply outside every
   per-bucket sweep the shard runs — the dump's bucket selection, eviction's victim
   sampling, the reclaim floor and the release pass all enumerate the bucket map
   against the shard's own range.
@@ -321,7 +321,7 @@ values after the writes, after a dump, and after a restart that recovered from t
 on-disk artifacts.
 
 Both arms are now unreachable through a normal load: the narrowing one is refused,
-and the widening one is refused too. Widening leaves every page *inside* the new
+and the widening one is refused too. Widening leaves every block *inside* the new
 range, so it loses nothing — but it routes every subsequent write to a bucket a
 re-read of the same key would not compute, so it is not a safe operation either and
 is refused for the same reason.

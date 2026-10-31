@@ -1,10 +1,10 @@
 # The customer portal
 
-Seven pages served by the gateway itself, at `/v1/admin/*`. They exist so a customer running
+Seven blocks served by the gateway itself, at `/v1/admin/*`. They exist so a customer running
 MatrixArk as a managed service can configure it, prove it works, fill it, use it, and watch it —
 without shell access to the host.
 
-| Page | Path | What it is for |
+| Block | Path | What it is for |
 | --- | --- | --- |
 | Overview | `/v1/admin` | Where the deployment stands: a checklist of the things that fail quietly |
 | Setup & metrics | `/v1/admin/setup` | Choose the models, store the provider key, tune 79 settings, probe the endpoints, read live traffic |
@@ -14,28 +14,28 @@ without shell access to the host.
 | API keys | `/v1/admin/portal` | Create, list, rotate and revoke keys; per-key usage |
 | API | `/v1/admin/api` | Every route this deployment serves, its scope, and a curl that runs |
 
-Fetching any page needs no credentials. Every **action** on a page calls an authenticated endpoint,
-so a page is inert without a key — the same posture the key portal has always had.
+Fetching any block needs no credentials. Every **action** on a block calls an authenticated endpoint,
+so a block is inert without a key — the same posture the key portal has always had.
 
 **Five of them are generated.** Overview, Setup, Skills & resources, Explore and API are emitted by
-`tools/portal/build_portal_pages.py` so they share one stylesheet and one nav, and so adding a page
-updates the nav on every other page in the same step. Do not hand-edit those five: change the
+`tools/portal/build_portal_pages.py` so they share one stylesheet and one nav, and so adding a block
+updates the nav on every other block in the same step. Do not hand-edit those five: change the
 script and re-run it. `api_key_portal.html` and `ingestion_portal.html` are hand-maintained and only
 have their nav block refreshed. `test_matrixark_portal_pages` copies the directory, re-runs the
-generator in the copy, and requires every page to come out byte-identical.
+generator in the copy, and requires every block to come out byte-identical.
 
 ---
 
 ## Overview
 
 `GET /v1/admin/overview` (admin scope) returns the deployment's setup state as an ordered
-checklist, computed server-side so the page makes one request and so the same answer is available
+checklist, computed server-side so the block makes one request and so the same answer is available
 to anything scripting a deployment check.
 
 Every item on it is something that **fails quietly**: an unconfigured extraction provider still
 answers `200`, an unset ingestion root only surfaces when an import is refused, and an empty store
 looks exactly like a store whose retrieval is broken. Each is phrased as the thing to do next
-rather than as the flag that is off, and carries a link to the page that fixes it.
+rather than as the flag that is off, and carries a link to the block that fixes it.
 
 **Each unfinished item also carries `how`** — the steps, in order, for the state it is in.
 "No model is configured" says what is wrong and leaves a customer to work out where the setting
@@ -97,7 +97,7 @@ change saved on click is one nobody reviewed.
 
 #### Changing the embedding model
 
-This is the one setting on the page that can silently invalidate data you already have. Changing it
+This is the one setting on the block that can silently invalidate data you already have. Changing it
 does not re-encode anything: existing vectors stay in the old model's space, vectors from two
 models cannot be compared, and those memories stop matching queries.
 
@@ -193,10 +193,10 @@ models and nothing else, and a wall of tuning knobs above the fold is how the tw
 matter get missed. A filter searches label, help text and variable name at once, and opens whatever
 group the matches are in.
 
-**Twelve of the 79 are marked required**, and *only what I must set* narrows the page to them.
+**Twelve of the 79 are marked required**, and *only what I must set* narrows the block to them.
 Everything else is a tuning knob with a defensible default; these have none that is right in
 production, because the right value is a decision about your deployment — which model, whose key,
-where the documents are. A page that presents all 79 as equals answers "what can I change" and
+where the documents are. A block that presents all 79 as equals answers "what can I change" and
 leaves "what must I set" unanswered, and the second is the only question a customer setting up
 actually has. A test keeps the mark honest: a required key must exist, must not be a tuning knob,
 and a secret is required only alongside the variable that names its destination.
@@ -210,7 +210,7 @@ portal sets is the deployment-wide fallback.
 ### What is not writable
 
 Storage locations, cluster addresses, worker counts, bind addresses and the auth mode appear on the
-setup page as a **read-only deployment inventory**. Repointing a storage directory or a metaserver
+setup block as a **read-only deployment inventory**. Repointing a storage directory or a metaserver
 address from a browser form does not reconfigure a running deployment, it strands its data; turning
 auth off from inside the authenticated surface is a hole with no upside. So they sit outside the
 writable registry entirely rather than being editable fields with a warning label. A variable whose
@@ -229,7 +229,7 @@ Each setting drives one environment variable, named on the field, and is labelle
   syntactically per call, behaviourally frozen.
 * Most **embedding** and **behaviour** settings are read per call, so those are live.
 
-A save response names exactly which keys are waiting on a restart, and the page says so rather than
+A save response names exactly which keys are waiting on a restart, and the block says so rather than
 reporting a change as applied when it is not.
 
 **This is verified, not asserted.** `test_matrixark_gateway_config_audit` walks the AST of every
@@ -271,7 +271,7 @@ which drops the stored override rather than storing an empty string.
 ### Moving a configuration
 
 `GET /v1/admin/config/export` emits exactly what `POST /v1/admin/config` accepts, so "make staging
-behave like production" is one request rather than 79 fields read off one page and retyped into
+behave like production" is one request rather than 79 fields read off one block and retyped into
 another. By default it carries only the settings that differ from a built-in default;
 `?include_defaults=1` emits everything.
 
@@ -280,7 +280,7 @@ everything" would clear the target's working key and break the deployment it was
 configure. The response names what it left out, so the import always ends with "now set the key" —
 deliberately.
 
-The setup page exposes this as *export* (downloads a file), *copy as curl*, and a paste box that
+The setup block exposes this as *export* (downloads a file), *copy as curl*, and a paste box that
 applies one.
 
 ### What changed, and when
@@ -352,10 +352,10 @@ walks the record log, so an unbounded caller-supplied limit is a full-store scan
 
 `/v1/skills/update` is what makes the catalog usable rather than only readable: without it a
 superseded playbook keeps competing for pack slots with its replacement, and the only way to retire
-one was to edit the registry out of band. The catalog page exposes it as an Enable/Disable button
+one was to edit the registry out of band. The catalog block exposes it as an Enable/Disable button
 per skill, alongside a text filter over everything on the row and a resource-type filter.
 
-Selecting a row on the catalog page reads the stored text through `POST /v1/resource/content` — the
+Selecting a row on the catalog block reads the stored text through `POST /v1/resource/content` — the
 chunks retrieval will actually draw from, not the source file on disk.
 
 ---
@@ -375,7 +375,7 @@ own data before pointing a workload at it:
   moment later may not see it yet.
 * **Upload a document** — `POST /v1/ingest_file`, which streams the file to the blob tier and
   ingests it in one call. Choose whether it is stored as a skill or a resource, and its visibility.
-  For a whole directory, the Ingestion page is the right tool.
+  For a whole directory, the Ingestion block is the right tool.
 * **Browse** — `GET /v1/users`, `GET /v1/memories`, and a memory's record plus its change history.
 * **mem0 API** — a console over every method of the mem0 API, listed by the name you call it by
   rather than by the URL that serves it. See below.
@@ -472,7 +472,7 @@ documents are slow.
 a record of can only be retried for the ones it listed, and a retry button that quietly covered the
 first 500 of a larger problem would be worse than no button.
 
-### Seeing it from the landing page
+### Seeing it from the landing block
 
 `GET /v1/admin/overview` carries an `imports` summary, and the overview shows a live strip while
 anything is running: percentage, the document it is on, and an ETA. Across concurrent imports the
@@ -480,10 +480,10 @@ ETA reported is the one that finishes **last**, not the sum — summing them wou
 takes as long as all of them together, which is only true if they run one after another.
 
 Failures waiting for a retry become a checklist item of their own. An import that ended with work
-outstanding is otherwise a state you only find by opening the Ingestion page, which is not where
+outstanding is otherwise a state you only find by opening the Ingestion block, which is not where
 anyone starts.
 
-The page paces itself from what it finds: four seconds while an import is moving, thirty when
+The block paces itself from what it finds: four seconds while an import is moving, thirty when
 nothing is, and nothing at all from a hidden tab.
 
 ### Retrying
@@ -507,7 +507,7 @@ and the store held fewer. Both are now retried, honouring `retry-after` where th
 capped so one header cannot park an import.
 
 `matrixark_ingestion_documents_retryable` is a gauge: non-zero after an import means work is
-waiting for someone to press retry, which was otherwise visible only to whoever opened the page.
+waiting for someone to press retry, which was otherwise visible only to whoever opened the block.
 
 ### Uploading from the browser
 
@@ -518,7 +518,7 @@ still has the only upload-progress event there is — and then *extracting* once
 the wire, which is the difference between "stuck at 100%" and "nearly there".
 
 A failed upload keeps its `File` and offers **Retry**. That retry works only while the tab is open,
-and the page says so: the bytes came from the browser and were never on the server, so nothing else
+and the block says so: the bytes came from the browser and were never on the server, so nothing else
 could resend them. A bulk import from a server directory is the retryable-after-a-restart path.
 
 ---
@@ -668,18 +668,18 @@ perform stay reported as not performed.
 
 ## The status strip
 
-Every page carries a live strip in the nav: what is waiting to be encoded, the import that is
+Every block carries a live strip in the nav: what is waiting to be encoded, the import that is
 running, requests and failures, and how many configuration warnings are live. Each segment links to
-the page that owns it, so it is a way in as well as a readout.
+the block that owns it, so it is a way in as well as a readout.
 
 It exists because status used to be per-page. The stream already carried all of this, and two of the
-seven pages subscribed — so *"is my upload done"* depended on being on the right page, and the page
+seven blocks subscribed — so *"is my upload done"* depended on being on the right block, and the block
 you upload from was not one of them.
 
-**One connection per page.** The gateway holds a task per stream, so a page opening a second to draw
-one strip costs twice the server work for nothing on screen. A page that already runs its own stream
-(Setup, Overview) claims it synchronously and hands frames to the strip; only pages without one
-connect. The claim has to be synchronous — the page's script runs before the strip's, but its stream
+**One connection per block.** The gateway holds a task per stream, so a block opening a second to draw
+one strip costs twice the server work for nothing on screen. A block that already runs its own stream
+(Setup, Overview) claims it synchronously and hands frames to the strip; only blocks without one
+connect. The claim has to be synchronous — the block's script runs before the strip's, but its stream
 starts when a fetch resolves, and claiming there would be too late for both to avoid connecting. A
 hidden tab drops its connection and reconnects on return.
 
@@ -696,30 +696,30 @@ what makes a draining backlog look like it is draining rather than stuck. Deferr
 draining, and so does *unknown*.
 
 **Anything can watch the same frames.** The strip takes subscribers, so a panel that needs live
-state uses the connection the page already has rather than opening its own. Two do:
+state uses the connection the block already has rather than opening its own. Two do:
 
 * a **batch started on Explore is watched on Explore** — it used to print a job id and a link to
-  another page, which is a dead end at the moment a customer most wants to see something happen. A
+  another block, which is a dead end at the moment a customer most wants to see something happen. A
   job missing from one frame is not treated as finished until it has actually been seen running,
   because a submission can be accepted before it appears;
 * **Skills & resources follows the store** — ingest elsewhere, come back, and the list used to be
   whatever it was when the button was last pressed. It re-lists when the stored total changes, not
   on a clock, so a quiet deployment does no work and a busy one keeps up. It will not list before
-  the customer has listed once (the page has no scope until then), will not re-list more than once
+  the customer has listed once (the block has no scope until then), will not re-list more than once
   every few seconds during an import, and does nothing in a hidden tab.
 
-The strip's script is tested by running it: the page as shipped, through a small DOM stub, against
+The strip's script is tested by running it: the block as shipped, through a small DOM stub, against
 real frames. A strip whose source contains the word "unknown" and never reaches that branch greps
 identically and is a different product. Four deliberate breakages — rendering unknown as zero,
 drawing before the first frame, dropping the retry count, keeping a stale colour on a hidden
 segment — each turn tests red.
 
-Every page's scripts are also **executed** at load against a stub, which catches two things nothing
-else here would. A stray brace produces a page that serves 200, renders its markup and does nothing,
+Every block's scripts are also **executed** at load against a stub, which catches two things nothing
+else here would. A stray brace produces a block that serves 200, renders its markup and does nothing,
 with the error visible only in a browser console. And a subscription written as
 `if (false) { …onFrame(…) }` satisfies any check that greps for the call: the first version of these
 tests passed with the catalogue's subscription disabled exactly that way. The stub lists each browser
-API a page reaches for rather than answering everything through a catch-all, because a catch-all
+API a block reaches for rather than answering everything through a catch-all, because a catch-all
 would also swallow a call into something that does not exist — which is the class of bug the harness
 is for.
 
@@ -729,10 +729,10 @@ is for.
 
 `GET /v1/admin/events` (admin scope) is a server-sent event stream carrying this deployment's live
 state: traffic counters, imports in progress, the encoding backlog and the configuration-warning
-count. The overview and setup pages read it and show **live** in the corner.
+count. The overview and setup blocks read it and show **live** in the corner.
 
-It replaces polling. Three pages were each running their own timers against three endpoints, so an
-import that finished between two polls left a stale bar on screen until the next one, and a page
+It replaces polling. Three blocks were each running their own timers against three endpoints, so an
+import that finished between two polls left a stale bar on screen until the next one, and a block
 left open cost three requests every few seconds whether or not anything had changed.
 
 Design notes worth keeping:
@@ -838,7 +838,7 @@ would print a false statement next to a storage choice.
 The portal produces the launch artifact; it never launches. `POST /v1/admin/deployment/plan`
 returns, alongside the plan, a cloud-init script and the `aws ec2 run-instances` command that runs
 it — plus the command that destroys it again. The gateway holds no cloud credentials, and creating
-billable infrastructure is not something a web page should do on a click. It also means the same
+billable infrastructure is not something a web block should do on a click. It also means the same
 artifact works by hand, from Terraform, or in CI, and that all of it is testable without an account.
 
 Two details in the generated script are load-bearing rather than cosmetic:
@@ -894,7 +894,7 @@ scrape_configs:
 each raft node publish at `/metrics` on the same listener they serve their service routes on. The
 engine dashboard queries only the second set, so importing it against the gateway produces twelve
 blank panels — and a blank panel reads as an idle cluster rather than as a query aimed at the wrong
-process. The setup page prints this config with the engine host filled in from the datanode this
+process. The setup block prints this config with the engine host filled in from the datanode this
 deployment is configured to dial, so what you copy resolves.
 
 ### What it exports
@@ -923,7 +923,7 @@ would let any client create unbounded series in the operator's Prometheus.
 ### Grafana
 
 The dashboards and alert rules are **served by the gateway** at
-`GET /v1/admin/monitoring/{gateway|ingestion|engine|alerts|engine-alerts}`, and the setup page
+`GET /v1/admin/monitoring/{gateway|ingestion|engine|alerts|engine-alerts}`, and the setup block
 lists them in a table with what each covers and which target feeds it.
 The portal used to name a repo path, which a customer running this as a managed service cannot
 reach — and even with a checkout, the file on their disk is whatever their copy is rather than what
@@ -936,7 +936,7 @@ this build emits, which is exactly the drift the dashboard test exists to preven
 * `docs/ops/matrixark-ingestion-dashboard.json` — bulk import progress and backlog.
 * `docs/ops/temporalstore-dashboard.json` — everything that is not the edge: Raft commit, apply and
   lease; the metaserver scheduler and topology; proxy routing, admission and quarantine; object and
-  page store lifecycle; cache pressure; data node lifecycle; ingestion lag and dead letters; replica
+  block store lifecycle; cache pressure; data node lifecycle; ingestion lag and dead letters; replica
   replay; and the scale SLO. Reads from the engine job, not the gateway job.
 * `tools/temporalstore-prometheus/matrixark-gateway-alerts.yml` — gateway alert rules.
 * `docs/ops/temporalstore-alerts.yml` — engine alert rules: Raft majority loss and stalled applies,
@@ -975,9 +975,9 @@ healthy while retrieval runs on hash vectors.
 
 ## Accessibility
 
-Every outcome on these pages lands by replacing the contents of a `div` — a save confirmation, a
+Every outcome on these blocks lands by replacing the contents of a `div` — a save confirmation, a
 probe verdict, an upload failure. Focus never moves, so without help none of it is announced and
-the page silently does something. Those regions carry `role="status"` and `aria-live="polite"`, and
+the block silently does something. Those regions carry `role="status"` and `aria-live="polite"`, and
 the Explore tab strip carries the `tab`/`tabpanel` roles that its `aria-selected` implies.
 
 The shared `--faint` token carries the help text under every field, which makes it body copy rather
@@ -986,7 +986,7 @@ for normal text, on exactly the prose that explains what each setting does. It i
 4.95:1. A lighter grey looks tidier and puts it back under 3:1, so the reason is written next to
 the token.
 
-Both schemes are checked at 375 px with no horizontal overflow on any page.
+Both schemes are checked at 375 px with no horizontal overflow on any block.
 
 
 ---
@@ -994,7 +994,7 @@ Both schemes are checked at 375 px with no horizontal overflow on any page.
 ## Ingestion
 
 Bulk import resolves every path inside `MATRIXARK_INGESTION_ROOT`; with it unset, submitting
-server-side paths is refused outright rather than defaulting to the whole filesystem. The page now
+server-side paths is refused outright rather than defaulting to the whole filesystem. The block now
 says so at the top, with a link to the setting, instead of letting the first sign be a refused
 submission after the operator has typed out a directory and a glob. Single documents can be
 uploaded from Explore regardless.
@@ -1002,14 +1002,14 @@ uploaded from Explore regardless.
 
 ---
 
-## The API page
+## The API block
 
 `/v1/admin/api` renders `GET /v1/admin/routes` — 45 routes across Health, Memory, Catalogue, Blobs,
-Administration and the portal pages, each with the scope a key must carry and a `curl` built against
+Administration and the portal blocks, each with the scope a key must carry and a `curl` built against
 the host you are reading it on. The key is left as `$MATRIXARK_API_KEY` rather than pasted in, so a
 copied command is never a copied credential.
 
-Neither the page nor the JSON needs credentials: it is the published contract, and every route it
+Neither the block nor the JSON needs credentials: it is the published contract, and every route it
 names enforces its own access.
 
 Two tests keep it honest, and both are about the same failure — documentation that drifts is worse

@@ -107,7 +107,7 @@ distributed durability.
   a few-hundred-op workload for latency percentiles. Numbers above are from an 800-op /
   400-string-op / 3-node run.
 - `storage_crash --mode corrupt-page` and `storage_production_harness` fail for reasons
-  **unrelated to this work**: the former assumes a page `.seg` exists immediately after a
+  **unrelated to this work**: the former assumes a block `.seg` exists immediately after a
   write (invalid under the dump-cadence model where blocks materialize at dump); the latter
   carries a stale migration corpus referencing a command that no longer exists.
   Both are pre-existing and tracked separately.

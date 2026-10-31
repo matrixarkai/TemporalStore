@@ -301,7 +301,7 @@ Future production work should add stronger failover semantics, clearer read cons
 
 ## Hot And Cold Serving
 
-TemporalStore keeps hot objects and indexes in memory. Page/block data can be cached locally and persisted through shared streams.
+TemporalStore keeps hot objects and indexes in memory. Block/block data can be cached locally and persisted through shared streams.
 
 The serving hierarchy is:
 

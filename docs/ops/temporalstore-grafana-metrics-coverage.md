@@ -117,7 +117,7 @@ Replica replay progress on the receiving side.
 
 Carried on the engine dashboard's replay panel. This family has no dedicated alert: replay failures
 surface through the data node's lifecycle counters, and duplicating them here would produce two
-pages for one fault.
+blocks for one fault.
 
 **Blank means:** no secondary replica is configured.
 

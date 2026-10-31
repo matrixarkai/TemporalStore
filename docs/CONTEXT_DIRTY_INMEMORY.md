@@ -5,7 +5,7 @@ Status: implemented (Rust +). Landed on `main` in commit
 
 ## Problem
 
-Summary-dirty markers used to be a persisted, timestamp-keyed page family
+Summary-dirty markers used to be a persisted, timestamp-keyed block family
 (`ctx:dirty:{tenant}:{node}`, model `ContextDirtyModel`, id 13). Every event write
 appended a new dirty marker, and a single event also propagates dirtiness up to its
 parent summary nodes. So dirty records grew as **O(events × propagation fan-out)**
@@ -18,7 +18,7 @@ produced `summary_refresh.dirty_hashes` with 6 hashes (self + propagated parents
 
 ## Change
 
-Replace the persisted `ctx:dirty` page family with an **in-memory, coalescing map
+Replace the persisted `ctx:dirty` block family with an **in-memory, coalescing map
 keyed by the dirty object key** (`ctx:dirty:{tenant}:{node}`).
 
 - `MarkSummaryDirty` no longer writes a block. It upserts a single entry per node,
@@ -91,4 +91,4 @@ against the project's `compile_commands.json` flags.
   process-local map is not visible to a worker in another process. On the current
   single-node deployment the hashmap is strictly better.
 - Remove the now-vestigial persisted `context_dirty` field and the `ContextDirtyModel`
-  page family once no snapshot compatibility concerns remain.
+  block family once no snapshot compatibility concerns remain.
