@@ -23,7 +23,7 @@ fn what_one_read_allocates() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -86,7 +86,7 @@ fn does_the_read_cache_actually_hit() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -209,7 +209,7 @@ fn where_a_warm_reads_allocations_go() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -398,7 +398,7 @@ fn a_batch_is_written_as_one_record() {
         let engine = TemporalEngine::with_local_dirs(
             32 * 1024 * 1024,
             dir.join("cache"),
-            dir.join("pages"),
+            dir.join("blocks"),
             dir.join("indexes"),
         );
         engine.load_shard(1);
@@ -443,7 +443,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard_with(LoadShardRequest {
@@ -568,7 +568,7 @@ fn object_manager_runtime_report_tracks_residency_layout_and_delete_markers_pari
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard_with(LoadShardRequest {
@@ -670,7 +670,7 @@ fn bucket_dump_manifest_validation_rejects_checksum_and_missing_slabs() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -754,7 +754,7 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
     // stored inside the dumped index. We reproduce the same tail-ahead-of-index
     // divergence deterministically (no bulk env) by appending straight to the WAL.
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
@@ -831,7 +831,7 @@ fn reversed_range_bounds_return_empty_not_a_lock_poisoning_panic() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -884,7 +884,7 @@ fn batch_execute_on_unloaded_shard_returns_a_batch_level_topology_error() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     // Shard 1 is deliberately NOT loaded.
@@ -930,7 +930,7 @@ fn dump_selection_prioritizes_the_least_recently_dumped_bucket_not_the_lowest_id
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -995,7 +995,7 @@ fn delete_drop_eviction_emits_a_wal_delete_marker_and_does_not_resurrect() {
     // WAL sequence advance) and that a reload -- which replays the WAL past the anchor -- does not
     // bring the key back.
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
@@ -1053,7 +1053,7 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
     // to hit disk. Assert the on-disk index CHANGED -- i.e. the relocated partial state was durably
     // persisted (it stays byte-identical without the fix).
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(16, dir.path().join("cache"), &blocks, &indexes);
     engine.load_shard(1);
@@ -1133,7 +1133,7 @@ fn sync_write_surfaces_wal_commit_failure_instead_of_acking_ok() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &indexes,
     );
     engine.load_shard(1);
@@ -1172,7 +1172,7 @@ fn bucket_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1190,7 +1190,7 @@ fn bucket_dump_manifest_install_restores_index_and_rejects_partial_or_stale() {
     let restore_engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restore-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("restore-indexes"),
     );
     restore_engine.load_shard(1);
@@ -1269,7 +1269,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1327,7 +1327,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     let restore_engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restore-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("restore-indexes"),
     );
     assert!(
@@ -1441,7 +1441,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     let restarted = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache-restarted"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     restarted.load_shard(1);
@@ -1481,7 +1481,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
     let mismatch_restore = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("mismatch-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("mismatch-indexes"),
     );
     assert!(
@@ -1513,7 +1513,7 @@ fn bucket_dump_install_markers_report_interrupted_prepare() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1561,7 +1561,7 @@ fn bucket_dump_install_roll_forward_completes_safe_installed_marker() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1611,7 +1611,7 @@ fn bucket_dump_install_roll_forward_retries_safe_prepare_marker() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1663,7 +1663,7 @@ fn bucket_dump_recovery_reports_broken_manifest_parent_chain() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1713,7 +1713,7 @@ fn bucket_dump_manifest_prune_keeps_latest_parent_chain_and_removes_obsolete_for
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1811,7 +1811,7 @@ fn torn_manifest_does_not_hide_valid_manifests() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &index_dir,
     );
     engine.load_shard(1);
@@ -1844,7 +1844,7 @@ fn dump_clears_dumped_buckets_so_they_are_not_redumped() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1900,7 +1900,7 @@ fn a_follower_behind_every_dump_is_reported_and_keeps_the_oldest() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1957,7 +1957,7 @@ fn bucket_dump_manifest_prune_is_blocked_by_lagging_follower_cursor() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2032,7 +2032,7 @@ fn bucket_dump_manifest_prune_is_blocked_by_raft_snapshot_reference() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2129,7 +2129,7 @@ fn the_reclaim_plan_pairs_each_manifest_with_its_own_fingerprints() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2181,7 +2181,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2402,7 +2402,7 @@ fn storage_wal_index_gc_reclaim_requires_durable_generation_and_retention_releas
     let restarted = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restart-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     restarted.load_shard(1);
@@ -2445,7 +2445,7 @@ fn the_lifecycle_purge_re_checks_liveness_and_returns_a_live_slab() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2544,7 +2544,7 @@ fn a_single_pinned_slab_does_not_suppress_the_other_candidates() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2627,7 +2627,7 @@ fn storage_block_gc_blocks_all_retention_dependencies_before_reclaim() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2722,7 +2722,7 @@ fn bucket_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2762,7 +2762,7 @@ fn bucket_dump_manifest_rejects_generation_mismatch_and_conflicts() {
     let restore_engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restore-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("restore-indexes"),
     );
     restore_engine.load_shard(1);
@@ -2797,7 +2797,7 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2866,7 +2866,7 @@ fn bucket_dump_manifest_rejects_bucket_summary_mismatch() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2908,7 +2908,7 @@ fn bucket_dump_manifest_rejects_byte_accounting_mismatch() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2945,7 +2945,7 @@ fn bucket_dump_manifest_rejects_non_canonical_bucket_and_block_slab_ids() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3006,7 +3006,7 @@ fn storage_lifecycle_plan_and_boundary_report_cover_dirty_and_orphan_slabs() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3083,7 +3083,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3162,7 +3162,7 @@ fn storage_log_compatibility_report_counts_jsonl_sequences_and_native_gaps() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3216,7 +3216,7 @@ fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3276,7 +3276,7 @@ fn storage_production_readiness_policy_can_block_dirty_dump_lag_and_missing_mani
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3324,7 +3324,7 @@ fn storage_production_readiness_policy_can_promote_warnings_to_blockers() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3364,7 +3364,7 @@ fn storage_production_readiness_blocks_corrupt_live_block_slabs() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3413,7 +3413,7 @@ fn storage_lifecycle_apply_warms_cache_from_block_index() {
     let engine = TemporalEngine::with_local_dirs(
         32,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3471,7 +3471,7 @@ fn storage_cache_warmup_report_filters_buckets_and_counts_cache_hits() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3528,7 +3528,7 @@ fn storage_cache_inspection_reports_bucket_entries_and_invalidates_bucket() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3588,7 +3588,7 @@ fn storage_cache_inspection_reports_bucket_entries_and_invalidates_bucket() {
 fn tiny_cache_dump_load_restart_refills_from_disk_block_cache() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let restore_index_dir = dir.path().join("restore-indexes");
     let engine = TemporalEngine::with_local_dirs(32, &cache_dir, &block_dir, &index_dir);
@@ -3711,7 +3711,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3818,7 +3818,7 @@ fn storage_lifecycle_plan_matches_delayed_and_limited_dirty_bucket_dump_policy()
 #[test]
 fn cross_shard_block_reclaim_retains_another_shards_live_slab() {
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     // Tiny cache so reads hit the slab on disk rather than an in-memory copy.
     let engine =
@@ -3936,7 +3936,7 @@ fn expired_feature_key_reads_empty_consistently_across_feature_reads() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -4016,7 +4016,7 @@ fn expired_feature_key_reads_empty_consistently_across_feature_reads() {
 #[test]
 fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -4096,7 +4096,7 @@ fn storage_manager_cycle_is_a_noop_while_shard_is_recovering() {
 #[test]
 fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -4159,7 +4159,7 @@ fn corrupt_wal_scan_refuses_load_rather_than_truncating() {
 #[test]
 fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -4292,7 +4292,7 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -4391,7 +4391,7 @@ fn bucket_runtime_flags_match_full_sweep() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -4565,7 +4565,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -4704,7 +4704,7 @@ fn single_block_components_are_held_inline() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -4807,7 +4807,7 @@ fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -4897,7 +4897,7 @@ fn what_each_address_field_actually_ranges_over() {
     let engine = TemporalEngine::with_local_dirs(
         2 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -4981,7 +4981,7 @@ fn how_many_times_one_object_key_is_stored() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5096,7 +5096,7 @@ fn the_nested_lookup_still_serializes_as_the_flat_composite() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5146,7 +5146,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5222,7 +5222,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5290,7 +5290,7 @@ fn deleting_an_object_does_not_allocate_per_block_scanned() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5342,7 +5342,7 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5460,7 +5460,7 @@ fn dumping_the_block_index_does_not_copy_it_first() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5521,7 +5521,7 @@ fn the_block_index_dump_is_ordered_by_its_written_key() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5612,7 +5612,7 @@ fn a_command_does_not_allocate_to_check_expiry() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5657,7 +5657,7 @@ fn the_block_index_still_writes_string_keys() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5750,7 +5750,7 @@ fn does_delete_scale_with_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5815,7 +5815,7 @@ fn how_many_blocks_does_a_wide_hash_hold() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5860,7 +5860,7 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -5933,7 +5933,7 @@ fn which_site_visits_the_blocks() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5980,7 +5980,7 @@ fn does_writing_scale_with_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -6079,7 +6079,7 @@ fn the_block_index_entry_count_falls_when_entries_go() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -6160,7 +6160,7 @@ fn what_the_lifecycle_plan_costs_alone() {
         let engine = TemporalEngine::with_local_dirs(
             16 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -6314,7 +6314,7 @@ fn where_the_index_reclaim_time_goes() {
         let engine = TemporalEngine::with_local_dirs(
             16 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -6362,7 +6362,7 @@ fn the_resident_bucket_count_is_not_the_routing_range() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -6407,7 +6407,7 @@ fn the_stats_report_a_floor_on_what_the_bucket_index_costs() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -6476,7 +6476,7 @@ fn the_index_wire_keys_are_what_they_were() {
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -6751,7 +6751,7 @@ fn writing_a_message_does_not_cost_its_nodes_history() {
         let engine = TemporalEngine::with_local_dirs(
             32 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -6795,7 +6795,7 @@ fn what_a_key_costs_the_index_in_live_heap() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -6858,7 +6858,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -7376,7 +7376,7 @@ fn what_a_write_costs_across_every_subsystem() {
     for value_len in [64usize, 256, 1024, 4096] {
         let dir = tempfile::tempdir().unwrap();
         let wal_dir = dir.path().join("wal");
-        let blocks_dir = dir.path().join("pages");
+        let blocks_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         std::fs::create_dir_all(&wal_dir).unwrap();
 
@@ -7483,7 +7483,7 @@ fn what_an_index_log_record_costs() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             index_dir.clone(),
         );
         engine.load_shard(1);
@@ -7537,7 +7537,7 @@ fn block_index_identity_string_cardinality() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -7676,7 +7676,7 @@ fn object_block_lookup_refs_per_object_census() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -7793,7 +7793,7 @@ fn per_record_structure_census() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -7965,7 +7965,7 @@ fn dirty_bucket_count_matches_the_unshortened_scan() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -8056,7 +8056,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -8162,7 +8162,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -8361,7 +8361,7 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         // The range travels on the load request, NOT the environment: the datanode binary reads
@@ -8446,7 +8446,7 @@ fn bucket_maintenance_per_write_does_not_grow_with_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8522,7 +8522,7 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8592,7 +8592,7 @@ fn an_evicted_async_write_is_served_from_its_wal_record() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8652,7 +8652,7 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8710,7 +8710,7 @@ fn a_carried_block_is_what_reaches_the_log_record() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8777,7 +8777,7 @@ fn a_reclaim_plan_does_not_authorize_dropping_writes_that_landed_after_it() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8851,7 +8851,7 @@ fn a_manifest_created_after_a_prune_plan_is_not_pruned_by_it() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8915,7 +8915,7 @@ fn a_block_in_wal_block_still_reads_back_after_a_shard_reload() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8977,7 +8977,7 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -9056,7 +9056,7 @@ fn an_async_write_records_where_its_block_lives() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -9111,7 +9111,7 @@ fn a_synchronous_write_puts_its_block_in_its_record() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -9176,7 +9176,7 @@ fn a_recorded_outcome_matches_the_index_entry_the_command_produced() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -9244,7 +9244,7 @@ fn a_record_carries_no_outcomes_unless_asked() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -9295,7 +9295,7 @@ fn two_engines_in_one_process_do_not_read_each_others_blocks() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join(format!("{name}-cache")),
-            dir.path().join(format!("{name}-pages")),
+            dir.path().join(format!("{name}-blocks")),
             dir.path().join(format!("{name}-index")),
         );
         engine.load_shard(1);
@@ -9380,7 +9380,7 @@ fn one_engines_retention_floor_ignores_another_engines_registrations() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join(format!("{name}-cache")),
-            dir.path().join(format!("{name}-pages")),
+            dir.path().join(format!("{name}-blocks")),
             dir.path().join(format!("{name}-index")),
         );
         engine.load_shard(1);
@@ -9433,7 +9433,7 @@ fn every_mutating_command_records_what_it_did() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -9586,7 +9586,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
     let ran = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("ran-cache"),
-        dir.path().join("ran-pages"),
+        dir.path().join("ran-blocks"),
         dir.path().join("ran-index"),
     );
     ran.load_shard(1);
@@ -9856,7 +9856,7 @@ fn a_shard_rebuilt_from_outcomes_equals_one_rebuilt_from_commands() {
     let installed = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("inst-cache"),
-        dir.path().join("inst-pages"),
+        dir.path().join("inst-blocks"),
         dir.path().join("inst-index"),
     );
     installed.load_shard(1);
@@ -9905,7 +9905,7 @@ fn what_delaying_a_dump_saves_and_costs() {
         let engine = TemporalEngine::with_local_dirs(
             1 << 20,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -9958,7 +9958,7 @@ fn what_one_expiry_round_costs_as_deadlines_accumulate() {
         let engine = TemporalEngine::with_local_dirs(
             1 << 24,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -10251,7 +10251,7 @@ fn the_storage_cycle_records_how_long_its_stages_take() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -10307,7 +10307,7 @@ fn the_storage_cycle_records_how_long_its_stages_take() {
 fn a_cold_reload_rebuilds_the_shard_from_what_the_writes_recorded() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     let workload = vec![
@@ -10640,7 +10640,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         let ran = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("ran-cache"),
-            dir.path().join("ran-pages"),
+            dir.path().join("ran-blocks"),
             dir.path().join("ran-index"),
         );
         ran.load_shard(1);
@@ -10694,7 +10694,7 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         let installed = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("inst-cache"),
-            dir.path().join("inst-pages"),
+            dir.path().join("inst-blocks"),
             dir.path().join("inst-index"),
         );
         installed.load_shard(1);
@@ -10753,7 +10753,7 @@ fn a_record_carrying_results_is_smaller_than_one_carrying_the_operation() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -10817,7 +10817,7 @@ fn a_record_encoded_as_protobuf_reads_back_identical() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -10967,7 +10967,7 @@ fn a_record_encoded_as_protobuf_reads_back_identical() {
 fn binary_records_survive_a_reload_through_a_real_log_file() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     const WRITES: usize = 64;
@@ -11062,7 +11062,7 @@ fn recording_results_still_coalesces_fsyncs() {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);
@@ -11135,7 +11135,7 @@ fn a_group_commit_write_keeps_the_block_it_staged() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -11190,7 +11190,7 @@ fn a_numeric_component_travels_as_a_number_and_returns_intact() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -11304,7 +11304,7 @@ fn a_new_node_catching_up_installs_what_the_origin_recorded() {
     let origin = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("origin-cache"),
-        dir.path().join("origin-pages"),
+        dir.path().join("origin-blocks"),
         dir.path().join("origin-indexes"),
     );
     origin.load_shard(1);
@@ -11374,7 +11374,7 @@ fn a_new_node_catching_up_installs_what_the_origin_recorded() {
     let newcomer = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("new-cache"),
-        dir.path().join("new-pages"),
+        dir.path().join("new-blocks"),
         dir.path().join("new-indexes"),
     );
     newcomer.load_shard(1);
@@ -11420,7 +11420,7 @@ fn a_new_node_catching_up_installs_what_the_origin_recorded() {
 fn reclaim_leaves_every_surviving_record_readable_and_the_shard_rebuildable() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     const WRITES: usize = 120;
@@ -11526,7 +11526,7 @@ fn a_torn_or_corrupted_tail_never_half_applies() {
     for (label, corrupt_interior) in [("torn tail", false), ("corrupted interior", true)] {
         let dir = tempfile::tempdir().unwrap();
         let cache = dir.path().join("cache");
-        let blocks = dir.path().join("pages");
+        let blocks = dir.path().join("blocks");
         let indexes = dir.path().join("indexes");
         {
             let engine = TemporalEngine::with_local_dirs(
@@ -11602,7 +11602,7 @@ fn a_raft_apply_records_what_it_did_in_the_engine_log() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -11645,7 +11645,7 @@ fn a_raft_apply_records_what_it_did_in_the_engine_log() {
 fn the_served_index_rebuilds_from_the_log_with_no_snapshot() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     let expected;
@@ -11778,7 +11778,7 @@ fn a_secondary_serves_reads_for_every_kind_it_caught_up_on() {
     let origin = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("origin-cache"),
-        dir.path().join("origin-pages"),
+        dir.path().join("origin-blocks"),
         dir.path().join("origin-indexes"),
     );
     origin.load_shard(1);
@@ -11831,7 +11831,7 @@ fn a_secondary_serves_reads_for_every_kind_it_caught_up_on() {
     let secondary = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("second-cache"),
-        dir.path().join("origin-pages"),
+        dir.path().join("origin-blocks"),
         dir.path().join("second-indexes"),
     );
     secondary.load_shard(1);
@@ -11898,7 +11898,7 @@ fn a_secondary_serves_reads_for_every_kind_it_caught_up_on() {
 fn a_read_is_answered_from_memory_before_disk_and_the_counters_say_which() {
     let dir = tempfile::tempdir().unwrap();
     let cache = dir.path().join("cache");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     const KEYS: usize = 40;
@@ -12012,7 +12012,7 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         // Said to THIS engine. `TS_ENGINE_CONCURRENT_COMMIT` used to carry it, which meant the
@@ -12095,7 +12095,7 @@ fn a_checkpoint_index_names_no_place_only_this_process_can_reach() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -12166,7 +12166,7 @@ fn what_a_live_record_is_made_of() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -12283,7 +12283,7 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -12377,7 +12377,7 @@ fn a_replay_leaves_nothing_staged_for_the_next_write_to_adopt() {
     // reused, in a server across requests and here across tests, so "the next write" is
     // routinely someone else entirely.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -12434,7 +12434,7 @@ fn an_async_write_is_never_lost_across_a_restart() {
     // to catch an intermittent one and reports the watermark it chose when it does.
     for attempt in 0..120 {
         let dir = tempfile::tempdir().unwrap();
-        let block_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
@@ -12536,7 +12536,7 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
     // names a block-store address a crash may leave unwritten, and no registration recovers a
     // block that was never stored.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -12649,7 +12649,7 @@ fn a_record_carrying_its_blocks_states_results_instead_of_the_operation() {
 #[test]
 fn what_the_log_resident_registry_does_under_sustained_writes() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -12720,7 +12720,7 @@ fn what_the_log_resident_registry_does_under_sustained_writes() {
 fn what_eight_records_per_ingest_cost() {
     fn write_and_measure(batched: bool, ingests: usize) -> (u64, u64, u64) {
         let dir = tempfile::tempdir().unwrap();
-        let block_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
@@ -12811,7 +12811,7 @@ fn registrations_plateau_instead_of_tracking_writes() {
     let before_sweeps = crate::engine::RESIDENT_SWEEPS.load(std::sync::atomic::Ordering::Relaxed);
 
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
@@ -12901,7 +12901,7 @@ fn registrations_plateau_instead_of_tracking_writes() {
 #[test]
 fn a_batch_leaves_nothing_staged_for_the_next_write_to_adopt() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -12939,7 +12939,7 @@ fn a_batch_leaves_nothing_staged_for_the_next_write_to_adopt() {
 fn which_records_still_carry_an_operation() {
     fn audit(label: &str, async_storage: bool, batched: bool) -> (usize, usize, usize) {
         let dir = tempfile::tempdir().unwrap();
-        let block_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         let engine = TemporalEngine::with_local_dirs(
             2 * 1024 * 1024,
@@ -13049,7 +13049,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -13193,7 +13193,7 @@ fn reclaim_clamps_to_the_slowest_cursor_instead_of_refusing_at_it() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -13378,7 +13378,7 @@ fn a_clamped_reclaim_still_serves_what_it_kept_after_a_restart() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -13443,7 +13443,7 @@ fn a_clamped_reclaim_still_serves_what_it_kept_after_a_restart() {
     let restarted = TemporalEngine::with_local_dirs(
         4 * 1024,
         dir.path().join("restart-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     restarted.load_shard(1);
@@ -13503,7 +13503,7 @@ fn the_dump_drain_looks_at_each_dirty_object_once() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         assert!(
@@ -13618,7 +13618,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
     let engine = TemporalEngine::with_local_dirs(
         2 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -13762,7 +13762,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     let engine = TemporalEngine::with_local_dirs(
         2 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -13869,7 +13869,7 @@ fn what_one_block_costs_to_index() {
     let engine = TemporalEngine::with_local_dirs(
         2 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -13987,7 +13987,7 @@ fn which_parts_of_a_block_address_are_populated() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -14083,7 +14083,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -14182,7 +14182,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -14345,7 +14345,7 @@ fn does_a_feature_window_cost_the_window_or_the_series() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -14476,7 +14476,7 @@ fn does_appending_one_point_cost_the_series() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -14595,7 +14595,7 @@ fn does_a_sequence_count_narrow_the_read() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -14726,7 +14726,7 @@ fn what_the_score_ordered_zset_reads_cost() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -14856,7 +14856,7 @@ fn score_ordered_zset_reads_answer_the_same_before_and_after() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -14998,7 +14998,7 @@ fn is_a_push_expensive_because_of_the_list_or_the_cache() {
         let engine = TemporalEngine::with_local_dirs(
             256 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -15104,7 +15104,7 @@ fn what_a_fixed_list_slice_costs_as_the_list_grows() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -15220,7 +15220,7 @@ fn what_the_hash_family_costs_as_a_hash_grows() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -15339,7 +15339,7 @@ fn what_the_hash_family_costs_as_a_hash_grows() {
 #[test]
 fn a_zset_survives_a_restart_with_its_scores_order_and_removals() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
 
     let members: Vec<(String, f64)> = (0..64)
@@ -15520,7 +15520,7 @@ fn does_a_write_cost_track_an_objects_component_count() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -15656,7 +15656,7 @@ fn why_a_membership_test_costs_more_than_a_write() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -15754,7 +15754,7 @@ fn which_commands_rebuild_the_whole_index_per_call() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -15862,7 +15862,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -15953,7 +15953,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     let engine = TemporalEngine::with_local_dirs(
         32 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -16083,7 +16083,7 @@ fn the_cache_namespaces_a_record_can_actually_use() {
     let engine = TemporalEngine::with_local_dirs(
         32 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -16173,7 +16173,7 @@ fn a_wide_parent_keeps_its_newest_children_for_scoring() {
     let engine = TemporalEngine::with_local_dirs(
         32 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -16361,7 +16361,7 @@ fn a_context_write_leaves_the_record_namespaces_empty() {
     let engine = TemporalEngine::with_local_dirs(
         32 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -16466,7 +16466,7 @@ fn a_filtered_sequence_query_returns_fewer_rows_than_match() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -16572,7 +16572,7 @@ fn a_counter_increment_rewrites_the_whole_series() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -16714,7 +16714,7 @@ fn which_write_paths_cost_their_collection() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -16778,7 +16778,7 @@ fn which_write_paths_cost_their_collection() {
 #[test]
 fn a_set_survives_a_restart_with_its_members_and_removals() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
 
     let members: Vec<String> = (0..64).map(|index| format!("m-{index:04}")).collect();
@@ -16887,7 +16887,7 @@ fn a_set_survives_a_restart_with_its_members_and_removals() {
 #[test]
 fn a_list_survives_a_restart_with_its_order_across_both_ends() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
 
     let engine = TemporalEngine::with_local_dirs(
@@ -16984,7 +16984,7 @@ fn a_list_push_files_its_index_item_under_the_pushed_entry() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -17149,7 +17149,7 @@ fn which_removals_cost_their_collection() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17218,7 +17218,7 @@ fn what_a_feature_write_costs_against_its_series() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17298,7 +17298,7 @@ fn which_series_writers_cost_their_series() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17401,7 +17401,7 @@ fn does_a_counter_write_cost_more_after_many_writes() {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17512,7 +17512,7 @@ fn what_one_entry_costs_in_each_structure() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17610,7 +17610,7 @@ fn does_a_narrow_read_pay_for_the_whole_collection() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17729,7 +17729,7 @@ fn what_a_message_write_costs_in_bytes_as_history_grows() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17847,7 +17847,7 @@ fn what_a_bigger_read_cache_buys() {
         let engine = TemporalEngine::with_local_dirs(
             cache_bytes,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -17929,7 +17929,7 @@ fn what_the_string_family_costs_against_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -18086,7 +18086,7 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -18170,7 +18170,7 @@ fn a_requested_bucket_list_reaches_the_lifecycle_planner() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -18241,7 +18241,7 @@ fn what_a_summary_write_costs_as_its_own_node_fills() {
         let engine = TemporalEngine::with_local_dirs(
             32 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -18296,7 +18296,7 @@ fn which_children_a_limited_query_returns() {
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -18416,7 +18416,7 @@ fn a_reclaim_that_drops_whole_segments_reports_them() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -18971,7 +18971,7 @@ fn dumped_shard_with_keys_in_range(
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard_with(LoadShardRequest {
@@ -19673,7 +19673,7 @@ fn eviction_releases_the_index_it_used_to_leave_resident() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -19763,7 +19763,7 @@ fn a_shard_released_and_reloaded_comes_back_whole() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -20103,7 +20103,7 @@ fn restore_round_trip_counts(
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &source_index_dir,
     );
     engine.load_shard(SHARD);
@@ -20186,7 +20186,7 @@ fn restore_round_trip_counts(
     let restored = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("restore-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &restore_index_dir,
     );
     if install_before_load {
@@ -20314,7 +20314,7 @@ fn a_restore_reads_the_highest_anchored_manifest_not_the_newest_one() {
 
     let dir = tempfile::tempdir().unwrap();
     let source_index_dir = dir.path().join("indexes");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
@@ -20663,7 +20663,7 @@ fn the_newest_dump_manifest_alone_restores_the_buckets_it_does_not_name() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &source_index_dir,
     );
     load_dumpcost_shard(&engine, SHARD);
@@ -20761,7 +20761,7 @@ fn the_newest_dump_manifest_alone_restores_the_buckets_it_does_not_name() {
     let restored = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("restore-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &restore_index_dir,
     );
     assert!(
@@ -20850,7 +20850,7 @@ fn the_bounded_readability_probe_reaches_a_block_outside_its_first_window() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -20984,7 +20984,7 @@ fn the_readability_probe_window_advances_by_its_budget_at_both_corpus_sizes() {
         let engine = TemporalEngine::with_local_dirs(
             16 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -21082,7 +21082,7 @@ fn a_block_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(
@@ -21196,7 +21196,7 @@ fn dirty_index_fixture(dir: &std::path::Path, records: usize) -> TemporalEngine 
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     assert!(
@@ -21450,7 +21450,7 @@ fn raft_snapshot_slab_retention_is_decided_by_a_log_sequence_not_a_slab_id() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

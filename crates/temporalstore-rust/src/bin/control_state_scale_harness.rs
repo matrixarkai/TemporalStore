@@ -700,7 +700,7 @@ fn main() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 30, // 1 GiB in-memory cache so the working set stays hot
         storage_root.join("cache"),
-        storage_root.join("pages"),
+        storage_root.join("blocks"),
         storage_root.join("indexes"),
     );
     let shard = 1u64;

@@ -12,7 +12,7 @@ fn test_engine() -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2634,7 +2634,7 @@ fn context_skill_registry_supports_updates_and_retrieval_selection() {
 fn parsed_resource_and_skill_chunks_feed_rust_ingestion_and_retrieval() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache");
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
@@ -3472,7 +3472,7 @@ fn which_ingest_write_grows_with_the_store() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -3616,7 +3616,7 @@ fn does_the_per_ingest_reconstruct_explain_the_growth() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -3712,7 +3712,7 @@ fn where_does_an_adds_corpus_proportional_cost_live() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -3864,7 +3864,7 @@ fn what_one_add_allocates_as_the_corpus_grows() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -3927,7 +3927,7 @@ fn what_a_retrieve_allocates() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -4091,7 +4091,7 @@ fn what_a_retrieve_decodes_per_candidate() {
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -4191,7 +4191,7 @@ fn what_one_add_costs_end_to_end() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5174,7 +5174,7 @@ fn does_a_summary_write_rebuild_the_whole_index() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -5259,7 +5259,7 @@ fn what_every_api_costs_on_the_same_store() {
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);

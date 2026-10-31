@@ -86,7 +86,7 @@ fn write_corpus(engine: &TemporalEngine) {
 #[test]
 fn a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_index_names() {
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     let engine =

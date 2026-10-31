@@ -315,7 +315,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(

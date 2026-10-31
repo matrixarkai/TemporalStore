@@ -63,7 +63,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -843,7 +843,7 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
         64 * 1024 * 1024,
         target_dir.path().join("cache"),
         // The blocks live where the source wrote them; only the index is restored.
-        source_dir.path().join("pages"),
+        source_dir.path().join("blocks"),
         target_dir.path().join("indexes"),
     );
     load_on(&target, NARROW_END);

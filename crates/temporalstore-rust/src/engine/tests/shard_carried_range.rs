@@ -78,7 +78,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -807,7 +807,7 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
         64 * 1024 * 1024,
         target_dir.path().join("cache"),
         // The pages live where the source wrote them; only the index is restored.
-        source_dir.path().join("pages"),
+        source_dir.path().join("blocks"),
         target_dir.path().join("indexes"),
     );
     load_on(&target, NARROW_END);
@@ -1178,7 +1178,7 @@ fn a_manifest_install_records_the_range_it_filed_under() {
     let unloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         unloaded_dir.path().join("cache"),
-        source_dir.path().join("pages"),
+        source_dir.path().join("blocks"),
         unloaded_dir.path().join("indexes"),
     );
     let unloaded_index_dir = unloaded_dir.path().join("indexes");
@@ -1221,7 +1221,7 @@ fn a_manifest_install_records_the_range_it_filed_under() {
     let loaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         loaded_dir.path().join("cache"),
-        source_dir.path().join("pages"),
+        source_dir.path().join("blocks"),
         loaded_dir.path().join("indexes"),
     );
     load_on(&loaded, NARROW_END);

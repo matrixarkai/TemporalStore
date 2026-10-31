@@ -49,7 +49,7 @@ fn engine_on_shard(dir: &std::path::Path) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ));
     engine.load_shard(SHARD);

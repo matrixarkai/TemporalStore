@@ -76,7 +76,7 @@ fn load_corpus() -> StorageMigrationCorpus {
 
 fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let mut engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
@@ -204,7 +204,7 @@ async fn verify_shared_store_replay(case: &StorageMigrationCase, mode: SharedSto
     let follower_dir = tempfile::tempdir().unwrap();
     let follower = new_engine(
         follower_dir.path(),
-        &follower_dir.path().join("pages"),
+        &follower_dir.path().join("blocks"),
         &follower_dir.path().join("indexes"),
         case.shard_id,
     );

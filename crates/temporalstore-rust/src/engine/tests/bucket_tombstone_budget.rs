@@ -372,7 +372,7 @@ fn tomb_engine(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         1 << 20,
         dir.join("tomb-cache"),
-        dir.join("tomb-pages"),
+        dir.join("tomb-blocks"),
         dir.join("tomb-indexes"),
     )
 }

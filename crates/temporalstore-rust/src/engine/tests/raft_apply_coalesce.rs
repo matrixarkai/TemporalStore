@@ -27,7 +27,7 @@ fn new_engine(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(1);

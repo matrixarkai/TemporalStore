@@ -324,7 +324,7 @@ struct Boundary {
 /// new one under `reader` over the same page and index directories.
 fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     let set_entries_written;

@@ -69,7 +69,7 @@ fn recover_and_print(root: PathBuf) {
 
 fn corrupt_first_block_slab(root: PathBuf) {
     let slab_path = root
-        .join("pages")
+        .join("blocks")
         .join("block_segment_00000000000000000000.seg");
     let mut file = fs::OpenOptions::new()
         .read(true)
@@ -94,7 +94,7 @@ fn open_engine(root: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         256,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     )
 }

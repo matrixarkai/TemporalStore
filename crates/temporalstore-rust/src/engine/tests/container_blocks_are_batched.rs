@@ -98,7 +98,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -397,7 +397,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
 #[test]
 fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let fields: Vec<(String, Vec<u8>)> = (0..FOLDABLE_ELEMENTS)
         .map(|index| (format!("f{index:04}"), bytes_of(VALUE_WIDTH, index)))

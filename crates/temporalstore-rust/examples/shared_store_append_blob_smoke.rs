@@ -16,7 +16,7 @@ fn test_engine(root: &std::path::Path, role: &str) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         1024,
         root.join(format!("{role}-cache")),
-        root.join(format!("{role}-pages")),
+        root.join(format!("{role}-blocks")),
         root.join(format!("{role}-index")),
     )
 }

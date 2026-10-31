@@ -109,7 +109,7 @@ fn in_situ_charge_per_record(records: usize) -> (f64, f64) {
     let engine = TemporalEngine::with_local_dirs(
         MEMORY_CAPACITY,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

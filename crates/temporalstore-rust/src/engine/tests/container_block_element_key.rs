@@ -88,7 +88,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -1148,7 +1148,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
 #[test]
 fn a_framed_block_reads_back_after_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     println!(
         "\n=== framed pages across a reload ===\n  store path {} characters",

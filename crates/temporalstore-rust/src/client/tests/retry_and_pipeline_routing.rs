@@ -373,7 +373,7 @@ fn table_routes_keys_to_shards_and_pipeline_splits_batches() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

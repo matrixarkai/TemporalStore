@@ -238,7 +238,7 @@ fn run_iteration(opts: &Options, iter: usize) -> IterationReport {
             TemporalEngine::with_local_dirs(
                 opts.memory_capacity_bytes,
                 base.join("cache"),
-                base.join("pages"),
+                base.join("blocks"),
                 base.join("indexes"),
             )
         })

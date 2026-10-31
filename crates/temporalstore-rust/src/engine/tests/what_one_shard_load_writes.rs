@@ -52,7 +52,7 @@ fn engine_over(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }

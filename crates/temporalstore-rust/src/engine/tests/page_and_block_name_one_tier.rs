@@ -141,7 +141,7 @@ fn mirror_engine(dir: &std::path::Path, cache_name: &str) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.join(cache_name),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(1);

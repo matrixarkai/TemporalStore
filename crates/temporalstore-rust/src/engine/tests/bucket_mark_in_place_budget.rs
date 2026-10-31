@@ -184,7 +184,7 @@ fn mip_engine(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         1 << 20,
         dir.join("mip-cache"),
-        dir.join("mip-pages"),
+        dir.join("mip-blocks"),
         dir.join("mip-indexes"),
     )
 }

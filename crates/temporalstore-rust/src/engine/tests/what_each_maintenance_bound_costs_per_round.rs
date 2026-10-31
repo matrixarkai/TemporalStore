@@ -99,7 +99,7 @@ fn seeded(dir: &std::path::Path) -> (TemporalEngine, usize) {
     let engine = TemporalEngine::with_local_dirs(
         1 << 24,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(SHARD);

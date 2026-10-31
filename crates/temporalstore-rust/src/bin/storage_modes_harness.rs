@@ -238,7 +238,7 @@ async fn replay_dynamic_shared_store(
     let follower = TemporalEngine::with_local_dirs(
         1024,
         unique_child("dynamic-storage-mode-cache"),
-        unique_child("dynamic-storage-mode-pages"),
+        unique_child("dynamic-storage-mode-blocks"),
         unique_child("dynamic-storage-mode-index"),
     );
     follower.load_shard(shard_id);
@@ -311,7 +311,7 @@ async fn run_shared_store_mode(
     let follower = TemporalEngine::with_local_dirs(
         1024,
         unique_child("storage-mode-cache"),
-        unique_child("storage-mode-pages"),
+        unique_child("storage-mode-blocks"),
         unique_child("storage-mode-index"),
     );
     follower.load_shard(shard_id);

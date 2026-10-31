@@ -5010,7 +5010,7 @@ mod tests {
         TemporalEngine::with_local_dirs(
             cache_bytes,
             root.join(format!("{role}-cache")),
-            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-blocks")),
             root.join(format!("{role}-index")),
         )
     }
@@ -5111,7 +5111,7 @@ mod tests {
     #[test]
     fn delete_read_miss_survives_wal_replay_recovery() {
         let dir = tempfile::tempdir().unwrap();
-        let blocks = dir.path().join("pages");
+        let blocks = dir.path().join("blocks");
         let indexes = dir.path().join("indexes");
 
         let engine =
@@ -5865,7 +5865,7 @@ mod tests {
         // enumerates it while the in-memory index still references it.
         let slab0 = dir
             .path()
-            .join("primary-pages")
+            .join("primary-blocks")
             .join("block_segment_00000000000000000000.seg");
         std::fs::remove_file(&slab0).unwrap();
         assert!(!primary.block_store().slab_ids().unwrap().contains(&0));

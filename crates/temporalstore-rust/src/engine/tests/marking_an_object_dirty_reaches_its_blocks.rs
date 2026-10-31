@@ -326,7 +326,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         let engine = crate::TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         assert!(
@@ -452,7 +452,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     let engine = crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     assert!(

@@ -39,7 +39,7 @@ fn manifest_install_materializes_index_under_bulk_mode() {
     let engine = TemporalEngine::with_local_dirs(
         4096,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         &index_dir,
     );
     engine.load_shard(SHARD_ID);

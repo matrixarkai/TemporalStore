@@ -2532,7 +2532,7 @@ fn block_store_dir_from_env() -> String {
             // served instead of coming up empty beside it.
             temporalstore_rust::env_flag::directory_default_preferring_canonical(
                 "target/temporalstore-blocks",
-                "target/temporalstore-pages",
+                "target/temporalstore-blocks",
             )
         })
 }
@@ -3161,7 +3161,7 @@ mod tests {
         TemporalEngine::with_local_dirs(
             cache_bytes,
             root.join(format!("{role}-cache")),
-            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-blocks")),
             root.join(format!("{role}-index")),
         )
     }
@@ -3724,7 +3724,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("index"),
         );
         engine.load_shard(7);

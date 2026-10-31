@@ -5031,7 +5031,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         cache_bytes,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
         matrixark_proxy_block_store_options(),
     );
@@ -9193,7 +9193,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1 << 20,
             root.join("bar-cache"),
-            root.join("bar-pages"),
+            root.join("bar-blocks"),
             root.join("bar-index"),
         );
         engine.load_shard(DEFAULT_SHARD_ID);
@@ -11483,7 +11483,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1 << 20,
             root.join(format!("{role}-cache")),
-            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-blocks")),
             root.join(format!("{role}-index")),
         );
         engine.load_shard(DEFAULT_SHARD_ID);

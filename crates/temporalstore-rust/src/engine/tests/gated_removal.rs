@@ -161,7 +161,7 @@ fn entry_counts(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
 #[test]
 fn a_gated_removal_stays_removed_across_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let victim = member_bytes(2);
     let victim_component = hex::encode(&victim);

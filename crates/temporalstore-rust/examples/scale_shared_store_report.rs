@@ -97,7 +97,7 @@ fn node_engine(root: &std::path::Path, node: &str) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         8 * 1024 * 1024,
         root.join(format!("{node}-cache")),
-        root.join(format!("{node}-pages")),
+        root.join(format!("{node}-blocks")),
         root.join(format!("{node}-index")),
     );
     engine.load_shard(SHARD);

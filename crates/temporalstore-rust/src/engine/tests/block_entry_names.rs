@@ -173,7 +173,7 @@ pub(super) fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ))
 }
@@ -1883,7 +1883,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         let engine = crate::engine::TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
 
@@ -1929,7 +1929,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         let reloaded = crate::engine::TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         reloaded.load_shard(7);
@@ -2118,7 +2118,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(SHARD);
@@ -2524,7 +2524,7 @@ fn an_ungated_store_is_refused_before_it_is_served() {
     let engine = crate::engine::TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         indexes,
     );
     // THE LOAD'S OWN STATUS, CHECKED. A first draft of this guard did not, and every counter read

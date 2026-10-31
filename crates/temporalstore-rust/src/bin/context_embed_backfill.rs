@@ -236,7 +236,7 @@ fn main() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     let load_started = Instant::now();

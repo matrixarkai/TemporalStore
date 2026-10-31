@@ -45,7 +45,7 @@ fn open_engine(root: &Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         256,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     )
 }
@@ -79,7 +79,7 @@ fn durable_lengths_path(root: &Path) -> PathBuf {
 }
 
 fn record_durable_slab_lengths(root: &Path) {
-    let blocks = root.join("pages");
+    let blocks = root.join("blocks");
     let mut lines = String::new();
     if let Ok(entries) = fs::read_dir(&blocks) {
         for entry in entries.flatten() {
@@ -127,7 +127,7 @@ fn powerloss(root: PathBuf, scope: &str) {
             // reports when the directory it wiped was already empty -- the writes would simply
             // never have reached a page -- and the two are indistinguishable in the recovery
             // line. So count the slabs FIRST and refuse to call it a power cut otherwise.
-            let slabs = fs::read_dir(root.join("pages"))
+            let slabs = fs::read_dir(root.join("blocks"))
                 .map(|entries| {
                     entries
                         .flatten()
@@ -141,7 +141,7 @@ fn powerloss(root: PathBuf, scope: &str) {
                 slabs > 0,
                 "wipe-nondurable found NO page slabs to lose, so whatever recovery reports next                  is not a statement about surviving a power cut"
             );
-            let _ = fs::remove_dir_all(root.join("pages"));
+            let _ = fs::remove_dir_all(root.join("blocks"));
             let _ = fs::remove_dir_all(root.join("indexes").join("indexlogs"));
             // Drop any base index snapshot (only the WAL survives a power cut here).
             if let Ok(entries) = fs::read_dir(root.join("indexes")) {
@@ -168,7 +168,7 @@ fn powerloss(root: PathBuf, scope: &str) {
                     durable.insert(name.to_string(), len.parse().unwrap_or(0));
                 }
             }
-            if let Ok(entries) = fs::read_dir(root.join("pages")) {
+            if let Ok(entries) = fs::read_dir(root.join("blocks")) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) != Some("seg") {
@@ -196,7 +196,7 @@ fn powerloss(root: PathBuf, scope: &str) {
         // record). Reconcile-on-open must drop the torn record and replay must rebuild it.
         "torn-tail" => {
             let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
-            if let Ok(entries) = fs::read_dir(root.join("pages")) {
+            if let Ok(entries) = fs::read_dir(root.join("blocks")) {
                 for entry in entries.flatten() {
                     let path = entry.path();
                     if path.extension().and_then(|e| e.to_str()) != Some("seg") {

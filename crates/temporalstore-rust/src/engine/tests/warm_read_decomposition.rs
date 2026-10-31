@@ -127,7 +127,7 @@ fn engine_at(dir: &std::path::Path) -> (TemporalEngine, usize) {
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(1);
@@ -142,7 +142,7 @@ fn engine_at_named(dir: &std::path::Path) -> (TemporalEngine, usize) {
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -459,7 +459,7 @@ fn a_warm_read_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     // A NARROW routing range, so the thirty-two keys land in distinguishable buckets instead of
@@ -554,7 +554,7 @@ fn a_write_stamps_the_recency_of_the_bucket_its_key_belongs_to() {
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -705,7 +705,7 @@ fn a_batched_write_stamps_the_recency_of_the_buckets_its_keys_belong_to() {
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {

@@ -649,7 +649,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
