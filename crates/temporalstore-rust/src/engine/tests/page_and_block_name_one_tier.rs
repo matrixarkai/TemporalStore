@@ -109,14 +109,7 @@ fn mirror_groups(
 /// the clauses in the test below refuse every other way of shrinking this population --
 /// including the one that used to work, which was to leave the roster alone and change a
 /// number.
-const TWINNED_ON_SHARD_STATS: &[(&str, [&str; 2])] = &[
-    (
-        "block_index_entries",
-        ["block_index_entries", "page_index_entries"],
-    ),
-    ("block_reads", ["block_reads", "page_reads"]),
-    ("block_writes", ["block_writes", "page_writes"]),
-];
+const TWINNED_ON_SHARD_STATS: &[(&str, [&str; 2])] = &[];
 
 /// Canonical tier names on the canonical shard stats that are DOWN to one spelling, with
 /// the spelling that survived.
@@ -128,7 +121,11 @@ const TWINNED_ON_SHARD_STATS: &[(&str, [&str; 2])] = &[
 /// pair count can never tell apart from the right one: dropping `block_reads` and keeping
 /// `page_reads` lowers the count by exactly as much as dropping `page_reads` does, and
 /// leaves the tier published under the word this crate has decided is not canonical.
-const SINGLE_ON_SHARD_STATS: &[(&str, &str)] = &[];
+const SINGLE_ON_SHARD_STATS: &[(&str, &str)] = &[
+    ("block_index_entries", "block_index_entries"),
+    ("block_reads", "block_reads"),
+    ("block_writes", "block_writes"),
+];
 
 /// The page-spelled keys the published storage contract carries.
 ///

@@ -446,8 +446,11 @@ fn apply_shard_storage_metrics(
 
     for shard in shards {
         let storage = &shard.storage;
-        let reported_block_entries = storage.page_index_entries.max(shard.total_records as u64);
-        let block_entries = storage.block_index_entries.max(reported_block_entries);
+        // ONE VARIABLE WHERE THERE WERE TWO, because the page-spelled stat the first one read
+        // is retired and both were reading one quantity under two names.
+        let block_entries = storage
+            .block_index_entries
+            .max(shard.total_records as u64);
         let object_entries = storage.object_index_entries.max(shard.total_records as u64);
         // NOT `storage.bucket_entries`: that is the routing RANGE, so this metric reported
         // u32::MAX per shard -- summed across shards -- regardless of the real index size.
@@ -457,16 +460,10 @@ fn apply_shard_storage_metrics(
         add(metrics, "object_index_entry_count", object_entries);
         add(metrics, "slot_index_entry_count", bucket_entries);
         add(metrics, "slot_object_ref_count", object_entries);
-        add(metrics, "slot_page_ref_count", reported_block_entries);
-        add(metrics, "page_index_entry_count", reported_block_entries);
+        add(metrics, "slot_page_ref_count", block_entries);
+        add(metrics, "page_index_entry_count", block_entries);
         add(metrics, "block_index_entry_count", block_entries);
-        add(metrics, "page_address_count", reported_block_entries);
-        add(metrics, "page_reads", storage.page_reads);
-        add(
-            metrics,
-            "page_writes",
-            storage.page_writes.max(reported_block_entries),
-        );
+        add(metrics, "page_address_count", block_entries);
         add(metrics, "block_reads", storage.block_reads);
         add(
             metrics,
