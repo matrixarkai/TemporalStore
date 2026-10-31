@@ -334,7 +334,7 @@ fn walk() -> Vec<(Shape, Carried)> {
     println!();
     println!("WHAT A RECORD CARRIES, PER WRITE SHAPE, AT THE SHIPPED DEFAULTS");
     println!(
-        "{:<27} {:>7} {:>9} {:>7} {:>6} {:>7} {:>8} {:>9} {:>5} {:>11}",
+        "{:<27} {:>7} {:>9} {:>7} {:>6} {:>7} {:>8} {:>9} {:>6} {:>11}",
         "shape",
         "records",
         "operation",
@@ -348,7 +348,7 @@ fn walk() -> Vec<(Shape, Carried)> {
     );
     for (shape, counts) in &measured {
         println!(
-            "{:<27} {:>7} {:>9} {:>7} {:>6} {:>7} {:>8} {:>9} {:>5} {:>11}",
+            "{:<27} {:>7} {:>9} {:>7} {:>6} {:>7} {:>8} {:>9} {:>6} {:>11}",
             shape.label,
             counts.records,
             counts.records_with_an_operation,
