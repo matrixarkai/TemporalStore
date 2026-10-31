@@ -1238,7 +1238,7 @@ fn default_storage_manager_min_undumped_wal_records() -> u64 {
 /// It bounds what the record threshold cannot: a thousand records says nothing about how many
 /// bytes they are. Whichever threshold is reached first releases the dump.
 fn default_storage_manager_min_undumped_wal_bytes() -> u64 {
-    96 * 1024 * 1024
+    128 * 1024 * 1024
 }
 
 impl Default for StorageManagerOptions {
@@ -1351,10 +1351,11 @@ impl Default for StorageManagerOptions {
 ///   256                        244       19,742
 ///
 /// So a cap now costs a bounded lag behind the head rather than all reclaim, and buys a bounded
-/// dump per round. 64 is the value this shipped with before mx#1439; the comparison point in the
-/// design this follows is 200 slots per round.
+/// dump per round. 200 buckets is what a round can carry at the shipped loop rate: the table above
+/// puts 256 at 244 ms of dump work, and the ceiling has to leave the rest of the cycle -- expiry,
+/// eviction, block reclaim, compaction, the index sweep -- room inside the same round.
 fn default_storage_manager_max_dump_buckets_per_round() -> usize {
-    64
+    crate::engine::reports::DEFAULT_MAX_DUMP_BUCKETS_PER_ROUND
 }
 
 fn default_storage_manager_stage_enabled() -> bool {
