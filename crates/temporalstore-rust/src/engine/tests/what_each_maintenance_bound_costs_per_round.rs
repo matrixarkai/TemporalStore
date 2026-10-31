@@ -974,3 +974,79 @@ fn the_shipped_byte_ceiling_is_zero_or_at_least_one_slab() {
          stops rather than slows. Use 0 for no bound, or a whole number of slab targets"
     );
 }
+
+/// THE BOUNDS AND THE INTERVAL ARE ONE SETTING, and this is the arithmetic that says so.
+///
+/// A round's worst case is each stage's bound times what one unit of that stage costs. The
+/// interval decides how often that round runs. If the worst-case round is longer than the
+/// interval, the loop does not run at its interval -- it runs back to back, and the interval
+/// stops being a setting. So the two have to be changed together, and in that order.
+///
+/// THE COSTS HERE ARE MEASURED, NOT GUESSED, and each is cited where it was measured:
+///
+///   compaction, ~200 us per relocated block ref, almost independent of page size
+///       -- `engine::compaction`'s own note on COMPACTION_ROUND_BLOCK_REFS, which is why that
+///          bound is denominated in refs rather than bytes
+///   expiry, ~201.5 us per hot bucket at 20k objects
+///       -- the note on `max_expire_hot_buckets_per_round` in `data_node`
+///
+/// The dump is the other large stage and it is bounded in buckets, but its per-bucket cost is a
+/// function of bucket size rather than a constant, so it is left out rather than guessed at. That
+/// makes this a LOWER bound on the worst-case round, which is the safe direction for a guard: the
+/// real round is longer than what this computes, never shorter.
+///
+/// WHAT THIS GOES RED ON: shortening the interval without lowering the bounds, or raising a bound
+/// without lengthening the interval. At the shipped values the compaction stage alone is already
+/// 40% of the interval, so there is not much headroom to spend.
+#[test]
+fn the_shipped_bounds_fit_inside_the_shipped_interval() {
+    let interval_ms = crate::data_node::StorageManagerRuntimeOptions::default().interval_ms;
+    assert!(interval_ms > 0, "a zero interval is a spin, not a loop");
+    let interval_us = interval_ms * 1_000;
+
+    // Compaction: refs x measured per-ref cost.
+    const MEASURED_COMPACTION_US_PER_REF: u64 = 200;
+    let compaction_refs = 2_048_u64; // engine::compaction::COMPACTION_ROUND_BLOCK_REFS
+    let compaction_us = compaction_refs * MEASURED_COMPACTION_US_PER_REF;
+
+    // Expiry: hot buckets x measured per-bucket cost. The cold window is bounded separately and
+    // its per-bucket cost is a load from the store rather than a constant, so it is not added.
+    const MEASURED_EXPIRY_US_PER_HOT_BUCKET: u64 = 202;
+    let shipped = StorageManagerCycleRequest::default();
+    let expiry_us =
+        shipped.max_expire_hot_buckets_per_round as u64 * MEASURED_EXPIRY_US_PER_HOT_BUCKET;
+
+    let accounted_us = compaction_us + expiry_us;
+
+    eprintln!("  interval                {interval_ms} ms ({interval_us} us)");
+    eprintln!(
+        "  compaction              {compaction_refs} refs x {MEASURED_COMPACTION_US_PER_REF} us \
+         = {compaction_us} us ({:.0}% of the interval)",
+        compaction_us as f64 * 100.0 / interval_us as f64
+    );
+    eprintln!(
+        "  expiry (hot)            {} buckets x {MEASURED_EXPIRY_US_PER_HOT_BUCKET} us = \
+         {expiry_us} us ({:.0}%)",
+        shipped.max_expire_hot_buckets_per_round,
+        expiry_us as f64 * 100.0 / interval_us as f64
+    );
+    eprintln!(
+        "  accounted for           {accounted_us} us ({:.0}% of the interval), dump and the \
+         remaining stages not included",
+        accounted_us as f64 * 100.0 / interval_us as f64
+    );
+    eprintln!(
+        "  a {interval_ms} ms round affords about {} compaction refs at the measured per-ref cost",
+        interval_us / MEASURED_COMPACTION_US_PER_REF
+    );
+
+    assert!(
+        accounted_us < interval_us,
+        "the two stages whose per-unit cost is measured already want {accounted_us} us of a \
+         {interval_us} us interval, and the dump is not counted. Lower the per-round bounds before \
+         shortening the interval, or lengthen the interval before raising a bound -- a worst-case \
+         round longer than the interval means the loop runs back to back and the interval is not \
+         the setting it looks like. A {interval_ms} ms round affords about {} compaction refs.",
+        interval_us / MEASURED_COMPACTION_US_PER_REF
+    );
+}
