@@ -3145,13 +3145,22 @@ pub(crate) fn execute_on_shard(
                     mutated,
                 };
             }
+            // BOUNDED THE WAY ITS SIBLING IS. `FeatureDetail` beside this computes
+            // `count.unwrap_or(feature_max_size).min(feature_max_size)`, so a caller that names no
+            // count gets the configured cap and one that names a larger number still gets the cap.
+            // This arm took `usize::MAX`, so a detail read with no count returned EVERY bucket in
+            // the window -- on a key that has been counting for a week at minute precision that is
+            // ten thousand points materialised into one response, decided by the caller omitting an
+            // argument rather than by any configuration. Every query in the model this follows
+            // carries its own bound for the same reason.
+            let limit = count.unwrap_or(feature_max_size).min(feature_max_size);
             let points = shard
                 .control_state()
                 .get(&key[..])
                 .map(|series| {
                     series
                         .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                        .take(count.unwrap_or(usize::MAX))
+                        .take(limit)
                         .map(|(timestamp_ms, amount)| FeaturePoint {
                             timestamp_ms: *timestamp_ms,
                             value: amount.to_string().into_bytes(),
