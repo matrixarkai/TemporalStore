@@ -195,9 +195,6 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
     }
 }
 
-/// Distinct count over `[start_ms, end_ms]`. Exact (BTreeSet union) when no bucket in the window
-/// is sketched; otherwise everything (exact buckets folded in + sketched buckets merged) is
-/// combined into one HLL and estimated.
 /// One stretch of the distinct series to read: a precision code, and an inclusive window of
 /// bucket starts within it.
 type ChangeSpan = (u64, u64, u64);
