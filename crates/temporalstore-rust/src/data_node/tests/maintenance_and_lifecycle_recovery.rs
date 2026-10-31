@@ -314,7 +314,9 @@ fn a_large_log_dumps_on_bytes_while_the_record_count_still_says_wait() {
 #[test]
 fn the_shipped_default_bounds_the_log_by_size() {
     let options = StorageManagerOptions::default();
-    assert_eq!(options.min_undumped_wal_bytes, 96 * 1024 * 1024);
+    // An EXACT pin, not a range, so that moving the shipped default has to come here and say
+    // so. It did its job: the default moved to 128 MiB and this went red.
+    assert_eq!(options.min_undumped_wal_bytes, 128 * 1024 * 1024);
     assert!(
         options.min_undumped_wal_bytes > 0,
         "with no byte threshold the record count alone decides, and a record count does not \
@@ -4019,10 +4021,23 @@ fn the_periodic_loop_actually_reclaims_the_index_log() {
     // same way it grew the write-ahead log.
     //
     // The fixture is large on purpose. The shipped gate needs BOTH triggers, ANDed: at least
-    // `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` (768 KiB) of index log AND at least 40%
-    // removable. Measured, an index-log record is about 59 B, so 8,000 records is 477 KB and the
-    // byte gate declines -- correctly. 16,000 reaches 943 KB and it fires. Testing at a tuned-down
-    // threshold would exercise a gate no deployment runs.
+    // `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` of index log AND at least
+    // `DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS` removable. Testing at a tuned-down
+    // threshold would exercise a gate no deployment runs, so the fixture is sized to the shipped
+    // one instead.
+    //
+    // The size is read off `what_the_index_gc_gate_says`, the ignored printer below, not computed
+    // from a remembered record width. It prints, at 16,000 records:
+    //
+    //   bytes_before=893504 threshold=1048576 usage=0bp trigger=5000bp
+    //
+    // which is 55.84 B per index-log record, so the byte trigger alone needs 18,779 records. This
+    // asks for 24,000, about 1.34 MB, a 28% margin over the trigger. 16,000 was enough while the
+    // trigger stood at 768 KiB; when it moved to 1 MiB the fixture fell 155 KB short and the stage
+    // CORRECTLY declined, which is what red looked like: `16000 before, 16000 after`.
+    //
+    // The margin is not decoration. A fixture sized to just clear a trigger turns any later
+    // change in record width into a mystery failure in a test whose subject is not record width.
     fn index_log_records(engine: &TemporalEngine, shard_id: crate::types::ShardId) -> usize {
         engine
             .index_log_store()
@@ -4055,7 +4070,7 @@ fn the_periodic_loop_actually_reclaims_the_index_log() {
         (runtime, before)
     }
 
-    const RECORDS: usize = 16_000;
+    const RECORDS: usize = 24_000;
 
     let (runtime, before) = runtime_with_records(RECORDS);
     assert!(before > 0, "the fixture must write index-log records, got {before}");
@@ -4098,7 +4113,7 @@ fn the_periodic_loop_actually_reclaims_the_index_log() {
 #[test]
 #[ignore]
 fn what_the_index_gc_gate_says() {
-    for records in [8_000usize, 16_000, 32_000] {
+    for records in [16_000usize, 20_000, 24_000, 32_000] {
         let engine = TemporalEngine::default();
         engine.load_shard(1);
         for index in 0..records {
@@ -4159,7 +4174,7 @@ fn what_the_index_gc_gate_says() {
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_the_index_gc_gate_costs -- --ignored --nocapture
 ///
-/// The gate needs BOTH triggers, ANDed: at least 768 KiB of index log AND at least 40% removable.
+/// The gate needs BOTH triggers, ANDed: at least 1 MiB of index log AND at least 50% removable.
 /// It establishes the second by scanning the WHOLE log and decoding every record -- and only then
 /// checks the first, which is a file length. So every round below the byte threshold pays a full
 /// scan to learn it was never eligible.
@@ -10931,7 +10946,11 @@ fn a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses() {
         .join("src")
         .join("bin")
         .join("server")
-        .join("metrics.rs");
+        // `server/metrics.rs` until #2406 renamed every file in this tree for its subsystem.
+        // A path held in a string is invisible to a rename, so that PR left this reading a
+        // file that no longer exists and this test went red -- in the one suite step that is
+        // `continue-on-error`, so nothing reported it. It is pinned in the hard gate now.
+        .join("server_metrics.rs");
     let text = std::fs::read_to_string(&renderer)
         .unwrap_or_else(|err| panic!("cannot read {}: {err}", renderer.display()));
     assert!(
@@ -10947,6 +10966,159 @@ fn a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses() {
         text.contains("(\"storage_manager\", stats.storage_manager_runs)"),
         "the exported storage_manager job counter must read storage_manager_runs, the field the \
          scheduler increments; if this moved, the scrape no longer reports what this test proved"
+    );
+}
+
+/// Every source path a test spells out must still name a file that is there.
+///
+/// `a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses` pins the link
+/// between an exported metric and the field it reads by READING THE RENDERER'S SOURCE BY PATH.
+/// #2406 renamed that file -- `src/bin/server/metrics.rs` to `server_metrics.rs`, an `R100`
+/// pure rename -- and a path held in a string literal is invisible to a rename. No `mod`, no
+/// `use`, nothing for the compiler to object to. The test had been failing with
+/// `No such file or directory` ever since, in the one suite step that is `continue-on-error`.
+///
+/// So this walks the crate's own sources, collects every path built out of
+/// `Path::new(env!("CARGO_MANIFEST_DIR")).join(..).join(..)`, and requires each to exist. It
+/// is the general form of that break: cheap, and it fails at the rename rather than whenever
+/// somebody next reads a timed-out log.
+///
+/// A `.join()` chain may carry COMMENT LINES between its links, so the collector steps over
+/// comments and whitespace as trivia. It does NOT strip comments first: a `//` stripper eats a `"//..."`
+/// inside a string literal and then pairs the surviving quote with one on another line.
+#[test]
+fn every_source_path_a_test_spells_out_still_names_a_file() {
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        let Ok(entries) = std::fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().and_then(|ext| ext.to_str()) == Some("rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    /// Step over whitespace and whole `//` comment lines -- the trivia that may sit between
+    /// one `.join(..)` and the next.
+    fn skip_trivia(bytes: &[u8], mut at: usize) -> usize {
+        loop {
+            while at < bytes.len() && bytes[at].is_ascii_whitespace() {
+                at += 1;
+            }
+            if bytes[at..].starts_with(b"//") {
+                while at < bytes.len() && bytes[at] != b'\n' {
+                    at += 1;
+                }
+                continue;
+            }
+            return at;
+        }
+    }
+
+    /// `.join("literal")` at `at`, if that is what is there.
+    fn take_join(bytes: &[u8], at: usize) -> Option<(String, usize)> {
+        let rest = &bytes[at..];
+        let open = b".join(\"";
+        if !rest.starts_with(open) {
+            return None;
+        }
+        let from = at + open.len();
+        let len = bytes[from..].iter().position(|&b| b == b'"')?;
+        let text = std::str::from_utf8(&bytes[from..from + len]).ok()?.to_string();
+        let after = from + len + 1;
+        if !bytes[after..].starts_with(b")") {
+            return None;
+        }
+        Some((text, after + 1))
+    }
+
+    let crate_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let mut sources = Vec::new();
+    rust_files(&crate_root.join("src"), &mut sources);
+    assert!(
+        sources.len() > 100,
+        "premise: walked the crate's sources, found only {}",
+        sources.len()
+    );
+
+    const ANCHOR: &str = "CARGO_MANIFEST_DIR\")";
+    // The chain this guard exists for; the denominator below demands it.
+    const MUST_FIND: &str = "src/bin/server/server_metrics.rs";
+    let mut checked = 0usize;
+    let mut saw_must_find = false;
+    let mut missing: Vec<String> = Vec::new();
+
+    for source in &sources {
+        let Ok(text) = std::fs::read_to_string(source) else {
+            continue;
+        };
+        let bytes = text.as_bytes();
+        let mut search = 0usize;
+        while let Some(found) = text[search..].find(ANCHOR) {
+            let mut at = search + found + ANCHOR.len();
+            // the anchor may be wrapped in `Path::new(..)`, so allow one closing paren
+            if bytes[at..].starts_with(b")") {
+                at += 1;
+            }
+            let mut parts: Vec<String> = Vec::new();
+            loop {
+                let link_at = skip_trivia(bytes, at);
+                match take_join(bytes, link_at) {
+                    Some((part, next)) => {
+                        parts.push(part);
+                        at = next;
+                    }
+                    None => break,
+                }
+            }
+            search = search + found + ANCHOR.len();
+            if parts.is_empty() {
+                continue;
+            }
+            let mut candidate = crate_root.to_path_buf();
+            for part in &parts {
+                candidate.push(part);
+            }
+            checked += 1;
+            if parts.join("/") == MUST_FIND {
+                saw_must_find = true;
+            }
+            if !candidate.exists() {
+                let line = text[..search].matches('\n').count() + 1;
+                missing.push(format!(
+                    "{}:{} names {} which is not there",
+                    source.strip_prefix(crate_root).unwrap_or(source).display(),
+                    line,
+                    parts.join("/"),
+                ));
+            }
+        }
+    }
+
+    // ---- Denominator, as a KNOWN ANSWER rather than a count. "nothing missing" has to be
+    // distinguishable from "found nothing", and from a collector that stops at the first
+    // comment inside a chain and so only ever builds a directory name that happens to exist.
+    // The first version of this scan, written outside the tree, reported zero missing while
+    // failing in exactly that way; what caught it was demanding a path it had to find.
+    //
+    // That path is the one this guard exists for, and its chain is comment-interrupted, so
+    // requiring it also pins the trivia-skipping above.
+    assert!(
+        saw_must_find,
+        "premise: the collector did not find {MUST_FIND} among the {checked} paths it \
+         collected, so it is not reading chains the way this crate writes them"
+    );
+
+    assert!(
+        missing.is_empty(),
+        "{} of {checked} spelled-out source paths no longer name a file -- a path in a string \
+         literal is invisible to a rename:\n  {}",
+        missing.len(),
+        missing.join("\n  "),
     );
 }
 
