@@ -1,6 +1,6 @@
 # Shared Store Replication
 
-The Rust code now has a first shared-store replication path for WAL, index, and page segment replication. It is implemented in `crates/temporalstore-rust/src/shared_store.rs` and uses the existing `ObjectStore` abstraction from `temporalstore-snapshot`, so the same path can be backed by local files in tests and S3-compatible storage later.
+The Rust code now has a first shared-store replication path for WAL, index, and block segment replication. It is implemented in `crates/temporalstore-rust/src/shared_store.rs` and uses the existing `ObjectStore` abstraction from `temporalstore-snapshot`, so the same path can be backed by local files in tests and S3-compatible storage later.
 
 ## Object Layout
 
@@ -21,7 +21,7 @@ The Rust code now has a first shared-store replication path for WAL, index, and 
       manifest.json
 ```
 
-The replicated index is the engine's persisted shard index JSON. Page segments are copied as immutable segment files. WAL entries are ordered JSON records:
+The replicated index is the engine's persisted shard index JSON. Block segments are copied as immutable segment files. WAL entries are ordered JSON records:
 
 ```json
 {
@@ -108,9 +108,9 @@ The primary can publish:
 For production, this should become stricter:
 
 - publish committed WAL entries only after Raft commit
-- checkpoint index/page segments at a consistent log index
+- checkpoint index/block segments at a consistent log index
 - publish a manifest last, or reuse the S3 snapshot manifest path, so followers never install mixed generations
-- include checksums and page/index generation ids
+- include checksums and block/index generation ids
 
 ## Replica Restore Path
 
@@ -121,7 +121,7 @@ new replica -> restore_latest_checkpoint -> load_shard -> replay_wal(checkpoint_
 ```
 
 `restore_latest_checkpoint` downloads the latest visible checkpoint manifest, verifies the index and
-page segment checksums, installs the index/page files locally, and returns the checkpoint's
+block segment checksums, installs the index/block files locally, and returns the checkpoint's
 `checkpoint_wal_index`. The engine then loads the restored index from local disk. `replay_wal`
 scans ordered WAL objects after the checkpoint and applies each command to the local engine.
 
@@ -136,13 +136,13 @@ shared store wal -> command replay -> catch up after checkpoint
 ## Current Guarantees
 
 - Object-store abstraction is shared with the snapshot crate.
-- Checkpoint manifest is written after index/page objects, so followers only restore visible checkpoints.
-- Checkpoint manifest records the durable WAL sequence covered by the index/page generation.
-- Index and page segment byte size plus SHA-256 are verified before install.
-- Follower restores page bytes and index bytes from shared store.
-- Follower can read restored data by following `BlockAddress` into local page files.
+- Checkpoint manifest is written after index/block objects, so followers only restore visible checkpoints.
+- Checkpoint manifest records the durable WAL sequence covered by the index/block generation.
+- Index and block segment byte size plus SHA-256 are verified before install.
+- Follower restores block bytes and index bytes from shared store.
+- Follower can read restored data by following `BlockAddress` into local block files.
 - Follower can replay WAL entries after the restored checkpoint.
-- Unit tests validate checkpoint restore, later WAL replay, and corrupt page rejection.
+- Unit tests validate checkpoint restore, later WAL replay, and corrupt block rejection.
 - A standard compatibility test validates shared-store bootstrap plus catch-up across string, hash,
   and feature data.
 - Shared-store storage supports sync publish, async queued publish, bounded flush, and persisted
@@ -203,7 +203,7 @@ files used by each Raft replica.
 - integration with real Raft commit index
 - WAL/checkpoint GC tied to Raft snapshot/install state (the periodic pass above is anchored
   on the shared checkpoint, not on a Raft snapshot)
-- S3 multipart upload and range-read optimization for large page segment sets
+- S3 multipart upload and range-read optimization for large block segment sets
 - concurrency control so followers do not install a partially uploaded generation
 
 Shared-store replication is now present as a working local path, but production should connect it to Raft snapshots or a manifest-based checkpoint before using it for live multi-node failover.

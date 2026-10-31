@@ -57,7 +57,7 @@ After restart:
 
 - lifecycle snapshot restores the same shard ids and load generations.
 - read/write admission policy matches metaserver topology.
-- hot cache may be cold, but memory miss -> page/disk read -> refill succeeds.
+- hot cache may be cold, but memory miss -> block/disk read -> refill succeeds.
 - Prometheus reports cache, page-store, WAL, ingestion, and lifecycle counters.
 
 ## Proxy And Client Checks
@@ -83,7 +83,7 @@ Rollback immediately when any of these happen:
 - metaserver publishes an unsafe topology transition
 - data-node lifecycle snapshot is rejected as stale or incompatible
 - proxy preflight reports stale topology after forced refresh
-- storage recovery reports corrupt live page bytes or missing index refs
+- storage recovery reports corrupt live block bytes or missing index refs
 - ingestion duplicate/dead-letter rate exceeds the deployment error budget
 - Raft or shared-store replay cannot catch up a follower before the drain timeout
 

@@ -40,7 +40,7 @@ TemporalStore context models as normal production traffic:
 2. `ContextSegment` is the public benchmark/pipeline name for the timestamped evidence segment
    stored as `ContextEventModel`. It owns the timestamp key, event id hash, source text, source
    ref, confidence/importance, and related entity node hashes. The page stores timestamp-keyed
-   segment entries; the segment text is not stored separately from the page entry.
+   segment entries; the segment text is not stored separately from the block entry.
 3. `ContextIndexRef` stores secondary indexes such as `source:<source_id_hash> -> entity/segment`.
    Benchmark replay uses this index to prove a source or conversation turn can route back to the
    exact timestamped segment before retrieval/injection.

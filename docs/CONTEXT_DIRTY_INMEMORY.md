@@ -21,7 +21,7 @@ produced `summary_refresh.dirty_hashes` with 6 hashes (self + propagated parents
 Replace the persisted `ctx:dirty` page family with an **in-memory, coalescing map
 keyed by the dirty object key** (`ctx:dirty:{tenant}:{node}`).
 
-- `MarkSummaryDirty` no longer writes a page. It upserts a single entry per node,
+- `MarkSummaryDirty` no longer writes a block. It upserts a single entry per node,
   keeping the **latest `event_time_ms`** and the **max `propagate_depth`**, and
   incrementing a mark count. Repeated marks for the same node — including the
   propagated parent nodes — collapse into one entry. 500 marks on one node → 1 entry.

@@ -82,12 +82,12 @@ figure without its key count therefore means nothing here.
 **The resident bound.** `index_resident_limit_bytes` ships at **64 MiB a shard**. At 39.4 B/key
 that bound is reached at roughly **1.7 M keys in one shard**, which is the scale it is a bound at.
 
-**What the routing range buys.** A page's bucket is `start + hash(object_key) % (end - start + 1)`,
-so the range sets the modulus and therefore how many pages share a bucket. On the shipped
+**What the routing range buys.** A block's bucket is `start + hash(object_key) % (end - start + 1)`,
+so the range sets the modulus and therefore how many blocks share a bucket. On the shipped
 `0..1023`, per **routed record**, incompressible values, one shard — two allocator columns, because
 the rounding is exactly what a change of container shape moves:
 
-| routed records | `0..1023` asked / charged | whole keyspace asked / charged | pages a bucket holds (p50 / max) |
+| routed records | `0..1023` asked / charged | whole keyspace asked / charged | blocks a bucket holds (p50 / max) |
 |---:|---:|---:|---:|
 | 4,000 | 94.8 / 107.0 B/rec | 187.3 / 197.1 B/rec | 4 / 8 |
 | 40,000 | **52.8 / 54.0 B/rec** | 186.5 / 198.1 B/rec | 39 / 50 |
@@ -158,7 +158,7 @@ off. The backend is resolved before the engine is built, and publishes the reaso
 chose. The budget is `TS_CACHE_MEMORY_BYTES` (16 MiB default), and it is the only one: the
 resident index named above takes no cache call, so there is no second cache to bound.
 
-**Pages are packed**, so one window read of adjacent instants typically decodes one block, and a
+**Blocks are packed**, so one window read of adjacent instants typically decodes one block, and a
 multi-point read memoizes each block for the duration of the query.
 
 **The read/write asymmetry, measured.** A three-node cluster, consensus write path against replica

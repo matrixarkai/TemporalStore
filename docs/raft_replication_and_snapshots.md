@@ -118,7 +118,7 @@ Covered locally:
   downloaded manifest and `index.bin` payload before install, including shard id,
   last log index, byte size, and SHA-256 checksum
 - chunked timestamped KV commands are covered across data-Raft command serialization,
-  packed page storage layout, follower reads, and snapshot install
+  packed block storage layout, follower reads, and snapshot install
 
 ## Missing For Production Raft Conformance
 
