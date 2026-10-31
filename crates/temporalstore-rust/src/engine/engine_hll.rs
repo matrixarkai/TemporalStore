@@ -199,19 +199,29 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
 /// is sketched; otherwise everything (exact buckets folded in + sketched buckets merged) is
 /// combined into one HLL and estimated.
 pub(crate) fn count_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
-    let bounds = crate::engine::timestamp_range_bounds(start_ms, end_ms);
     let Some(series) = shard.control_state_changes.get(key) else {
         return 0;
+    };
+    // ACROSS EVERY PRECISION, because this series is bucketed by the same write path as the
+    // counters and its keys carry a precision code in the same high bits. Reading it with a bare
+    // instant range would have found only the untagged buckets -- every distinct member written
+    // at a named precision would have gone missing from the count.
+    let buckets = || {
+        super::product_model::CONTROL_STATE_PRECISION_CODES
+            .iter()
+            .flat_map(|code| {
+                series.range(super::product_model::control_state_precision_bounds(
+                    *code, start_ms, end_ms,
+                ))
+            })
     };
     // EXACT WHENEVER THE WHOLE WINDOW IS EXACT, which is the behaviour this had when the two
     // representations lived in two maps: one sketched bucket anywhere in the range makes the whole
     // answer an estimate, because an HLL cannot be unmerged back into members.
-    let any_sketch = series
-        .range(bounds)
-        .any(|(_, bucket)| matches!(bucket, DistinctBucket::Sketch(_)));
+    let any_sketch = buckets().any(|(_, bucket)| matches!(bucket, DistinctBucket::Sketch(_)));
     if !any_sketch {
         let mut unique = BTreeSet::new();
-        for (_, bucket) in series.range(bounds) {
+        for (_, bucket) in buckets() {
             if let DistinctBucket::Exact(values) = bucket {
                 unique.extend(values.iter().cloned());
             }
@@ -219,7 +229,7 @@ pub(crate) fn count_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms
         return unique.len() as i64;
     }
     let mut merged = Hll::new();
-    for (_, bucket) in series.range(bounds) {
+    for (_, bucket) in buckets() {
         match bucket {
             DistinctBucket::Exact(values) => {
                 for v in values {

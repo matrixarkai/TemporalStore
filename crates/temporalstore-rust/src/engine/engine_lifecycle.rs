@@ -1494,7 +1494,9 @@ impl TemporalEngine {
         let mut counters: Vec<_> = shard.control_state().iter().collect();
         counters.sort_by(|left, right| left.0.cmp(right.0));
         for (key, series) in counters {
-            for (bucket_ms, total) in series {
+            for (bucket_key, total) in series {
+                // The START this bucket names, not its packed key.
+                let bucket_ms = super::product_model::control_state_bucket_start_ms(*bucket_key);
                 out.push_str(&format!("control_counter {key} at={bucket_ms} total={total}
 "));
             }
@@ -1511,7 +1513,8 @@ impl TemporalEngine {
         let mut changes: Vec<_> = shard.control_state_changes.iter().collect();
         changes.sort_by(|left, right| left.0.cmp(right.0));
         for (key, buckets) in changes {
-            for (bucket_ms, bucket) in buckets {
+            for (bucket_key, bucket) in buckets {
+                let bucket_ms = super::product_model::control_state_bucket_start_ms(*bucket_key);
                 // THE REPRESENTATION IS NAMED, because `members=` on a sketched bucket would read
                 // as an exact count and it is an estimate. A dump that silently rounds is worse
                 // than one that says which kind of number it is holding.
