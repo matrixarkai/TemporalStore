@@ -270,8 +270,8 @@ def validate_no_enterprise_object_store() -> None:
             continue
         if "MORP1" in path.read_text(encoding="utf-8", errors="replace"):
             offenders.append(
-                f"{relative_path}: a src/bin/ executable speaks the enterprise object-store "
-                "wire protocol -- that server is enterprise-only"
+                f"{relative_path}: a src/bin/ executable speaks the object-store wire "
+                "protocol -- that is the store itself rather than a client of it"
             )
 
     if offenders:
