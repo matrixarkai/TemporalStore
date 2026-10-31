@@ -192,7 +192,11 @@ jobs:
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_byte_ceiling_below_one_slab_would_stop_the_collector_dead \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_byte_ceiling_is_zero_or_at_least_one_slab \
-            engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval ; do
+            engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval \
+            data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
+            data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
+            data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
+            data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/gate.log
