@@ -226,6 +226,12 @@ jobs:
       # so that step can report success having finished no tests. And this workflow runs no
       # unfiltered suite -- every invocation is an --exact named filter -- so a guard runs here
       # only if its name is pinned. That is why this step exists.
+      #
+      # the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency is here for the same
+      # reason and is not a ratio identity: it is the TRIPWIRE under the key-character
+      # refusal in index_bytes_per_key, which holds that the 32.0 B/key Arc<str> row cannot
+      # be cut because an arena span needs a raw-entry table this crate does not depend on.
+      # A refusal that nothing re-checks is a comment, and a comment does not fail.
       - name: cargo test (published ratio guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -233,7 +239,8 @@ jobs:
           for t in \
             engine::tests::the_write_window_closes_at_compaction::the_write_window_closes_at_compaction \
             engine::tests::the_user_byte_write_ratio::the_user_byte_write_ratio \
-            engine::tests::the_user_byte_write_ratio::no_string_row_is_removed_outside_its_door ; do
+            engine::tests::the_user_byte_write_ratio::no_string_row_is_removed_outside_its_door \
+            engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
