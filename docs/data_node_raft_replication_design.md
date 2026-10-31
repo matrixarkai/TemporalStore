@@ -10,7 +10,7 @@ The target production mode is:
 client write -> current shard leader -> serialize deterministic command/mutation -> Raft propose -> quorum commit -> FSM apply on leader and followers -> client ack
 ```
 
-Local file remains the node-local persistence layer. Raft is the replication and failover layer. Shared/object storage can still be used later for snapshots, backups, and cold page archive, but it is not required for normal write replication.
+Local file remains the node-local persistence layer. Raft is the replication and failover layer. Shared/object storage can still be used later for snapshots, backups, and cold block archive, but it is not required for normal write replication.
 
 This mode must be separate from the existing paths:
 
@@ -98,7 +98,7 @@ Snapshot payload:
 - last applied Raft index
 - last applied WAL sequence
 - index stream snapshot or serialized index metadata
-- page stream data needed by live index addresses
+- block stream data needed by live index addresses
 - local WAL range needed after snapshot
 
 Recommended first implementation:
@@ -267,7 +267,7 @@ Exit criteria:
 1. Do not ack a strong write before Raft quorum commit.
 2. Do not promote a replica that has not applied the committed index selected by the metaserver/raft group.
 3. Do not allow write commands on non-leader partitions.
-4. Do not delete local pages until the snapshot/index no longer references them.
+4. Do not delete local blocks until the snapshot/index no longer references them.
 5. Do not use replica reads as strong reads unless read-index or required-applied-index is checked.
 
 ## Product Semantics

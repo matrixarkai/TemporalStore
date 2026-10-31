@@ -32,7 +32,7 @@ Immediate actions:
 - Keep writes on the current leader only.
 - Do not transfer leadership to the lagging node.
 - Check the node's WAL directory, page-store directory, and process logs for
-  fsync, checksum, snapshot, or page read errors.
+  fsync, checksum, snapshot, or block read errors.
 - If the follower is only behind, let catch-up run. If lag keeps growing, remove
   the follower from voters before restarting it.
 
@@ -55,7 +55,7 @@ Immediate actions:
 - Freeze writes at proxy admission if possible.
 - Prefer the side with current majority and highest committed index.
 - Isolate stale leaders from clients and peers.
-- Do not manually copy page or WAL files between nodes.
+- Do not manually copy block or WAL files between nodes.
 
 Recovery checks:
 - Exactly one `temporalstore_raft_node_commit_index{role="leader"}` series remains per group.
@@ -95,7 +95,7 @@ Immediate actions:
 - Run lifecycle planning in dry-run mode first; apply dump, compaction, GC, and
   cache invalidation only when the report shows no follower-cursor retention
   conflict.
-- Refuse page GC while checkpoint, page, or WAL data is still needed by a
+- Refuse block GC while checkpoint, block, or WAL data is still needed by a
   known follower cursor.
 
 Recovery checks:

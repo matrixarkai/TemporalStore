@@ -245,7 +245,7 @@ TemporalStore separates logical memory lifecycle from physical storage reclaim:
 - Context GC can mark raw events eligible after compression and retention.
 - Cache eviction only frees memory.
 - Physical reclaim requires tombstones plus page/block compaction or safe skip.
-- Cold scans for compression/GC should not promote pages into the hot cache.
+- Cold scans for compression/GC should not promote blocks into the hot cache.
 
 That makes context storage sustainable without losing the serving memories that
 are still useful.

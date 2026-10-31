@@ -105,7 +105,7 @@ TemporalStore should support multiple online-serving models in the same cluster.
 | TemporalAggregate | bucketed counters/sums/min/max | `device_id -> failed logins in last 30 min` |
 | Risk / Frequency Cap | bounded counters by entity and dimension | `campaign_id:user_id -> impressions in last hour` |
 | Sequence Feature | timestamped behavior rows | `user_id -> recent clicked item ids` |
-| Large Object / Page-backed State | objects that may outgrow memory | long profile blobs or cold sequence pages |
+| Large Object / Page-backed State | objects that may outgrow memory | long profile blobs or cold sequence blocks |
 | AI Context / GPU Metadata | session memory, prefix/cache refs, retrieval state | `tenant:model:prefix_hash -> cache location and reuse stats` |
 
 This is the key product claim: the user should not need a different online store for every feature shape. TemporalStore should be usable as the default online serving feature store, while temporal windows, filtered aggregates, distinct state, sequences, and risk/frequency features are the product wedge that makes it different from a plain online KV/cache.

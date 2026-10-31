@@ -23,7 +23,7 @@ The main Rust crate exposes the following public modules from
 | --- | --- |
 | `types` | Shared command, response, table, shard, feature, sequence, control-state, context, storage, and readiness types. |
 | `engine` | Core execution engine, shard state, command dispatch, durable writes, storage/cache integration, admin reports. |
-| `lock_store` | Page envelopes, page addresses, packed timestamp/value page records, slot dump/load and recovery helpers. |
+| `lock_store` | Block envelopes, block addresses, packed timestamp/value block records, slot dump/load and recovery helpers. |
 | `cache` | Memory and disk block cache accounting, admission/eviction stats, cache refill behavior. |
 | `index_log` | Durable index-log append/replay path used by engine recovery. |
 | `wal` | Durable write-ahead log append/replay path. |
@@ -128,7 +128,7 @@ layout conformance.
 
 Important files:
 
-- `block_store.rs`: page segments, page addresses, page envelopes, packed
+- `block_store.rs`: block segments, block addresses, block envelopes, packed
   timestamp/value records, slot dump/load metadata, corruption/recovery helpers.
 - `cache.rs`: block-cache stats, hit/miss/fill counters, admission and eviction
   accounting.
@@ -149,7 +149,7 @@ The current readiness posture emphasizes:
 
 - orphan page detection
 - missing and stale page references
-- corrupt page/index/WAL/snapshot evidence
+- corrupt block/index/WAL/snapshot evidence
 - follower-cursor safe GC
 - cache pressure and refill
 - shared-store sync/async replay
