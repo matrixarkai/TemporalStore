@@ -241,6 +241,28 @@ jobs:
               || { echo "::error::$t did not pass"; exit 1; }
           done
 
+          # AND THE IGNORED GUARDS, which need --ignored and CANNOT share the loop above:
+          # with --ignored, cargo runs ONLY ignored tests, so the three names above would each
+          # report 0 and the count assertion would fail. Same assertion, applied separately.
+          #
+          # every_published_ratio_is_rederivable_from_published_counters is the guard that every
+          # published amplification ratio can be re-derived from the counters published beside it.
+          # It was running in CI NEVER: it is #[ignore]d, and this workflow runs no unfiltered
+          # suite, so an ignored guard runs only if its name is pinned AND --ignored is passed.
+          for t in \
+            engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters ; do
+            echo "--- $t (ignored) ---"
+            cargo test --release -p temporalstore-rust --lib "$t" \
+              -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/ratio_gate.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or no longer #[ignore]d"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/ratio_gate.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # Bin unit tests are not covered by --lib/--tests, so a failing test in a
       # service binary can sit on main unnoticed. Run the proxy bin's suite as a
       # hard gate. Deliberately NOT --bins: some bin test harnesses run servers
