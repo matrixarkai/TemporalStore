@@ -12004,3 +12004,218 @@ const _: () =
 const _: () = assert!(
     std::mem::align_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 8
 );
+
+/// WHAT THE LOOKUP'S SORTED KEY ORDER IS WORTH TO THE PUBLISHED DENOMINATOR.
+///
+/// # THE HALF THIS ARM CLOSES
+///
+/// `what_an_arena_for_the_key_characters_would_save` splits a 36.6 B/key ceiling into 20.6 on the
+/// payload row and 16.0 on the holder slots, and leaves one quarter of it UNPRICED: `strings` is a
+/// `HashMap`, so `hashbrown::HashTable` is the right shape for its 8 bytes, but
+/// `object_block_lookup` is a `BTreeMap` with no raw-entry API and no comparator hook, so its 8
+/// bytes need the container changed as well. That note says the question is whether the iteration
+/// order is load-bearing, and that it was not established. This establishes it.
+///
+/// # THE READERS DO NOT CARE. THE COMPRESSOR DOES.
+///
+/// `ObjectBlockLookup` keeps `by_model` private and exposes exactly two order-revealing methods,
+/// `iter` and `values`. Renaming both and building `--all-targets --features alloc-probe` produced
+/// **24 `E0599` diagnostics**, which is the caller set counted by the compiler rather than by a
+/// grep over a method name. Twenty-two are tests. The two in production are both **commutative**:
+///
+///   * `BlockKeysByPosition::from_lookup` fills two `HashMap`s, keyed by
+///     `(routing_bucket, block_ref_key)` and by handle, so each identity lands in one slot
+///     whatever order it is reached in.
+///   * `object_manager_stats` sums `BlockRefs::len` over `values()`.
+///
+/// So no production READER depends on the order, and the ground-2 refusal of an integer address
+/// (the written-key inversion) does not rest on it either.
+///
+/// **But the served index is ZSTD-COMPRESSED** -- level 3, under both container codecs, the
+/// msgpack default and the JSON one -- and the denominator of the published amplification figure
+/// is `encode_index_bytes(shard).len()`, which is that compressed length. Sorted keys share long
+/// prefixes with their neighbours and land inside the match window; shuffled keys do not. So
+/// swapping the container would move the published ratio **through the compressor**, with nothing
+/// about resident memory changed.
+///
+/// That is the basis-mixing trap this campaign keeps walking into, in its most flattering
+/// direction: the index would look BETTER -- a larger denominator is a smaller ratio -- while the
+/// 8 bytes bought are real and the improvement in the headline is not.
+///
+/// # WHAT THIS MEASURES, AND WHAT IT DELIBERATELY DOES NOT
+///
+/// It isolates the MECHANISM: the same key corpus, the same `rmp_serde` shape, the same zstd
+/// level, differing in NOTHING but the order of the entries. Both arms encode a `Vec<(String,
+/// u64)>`, so the framing bytes are identical between them and the delta is the order alone.
+///
+/// It is NOT the shift in the denominator itself. That would need the real image encoded twice
+/// with the lookup in two orders, which means changing a production container to find out what
+/// changing a production container costs. The isolation bounds the effect and names its sign,
+/// which is what a refusal needs; a reader wanting the exact denominator shift has to build it.
+///
+/// The shuffle is a FIXED-SEED LCG, not a hash. A hash-ordered arm would be seeded per process
+/// and this figure would not reproduce.
+///
+/// rust-internal: measures this crate's own encoder, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_the_lookups_sorted_key_order_is_worth_to_the_published_denominator -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "compresses two key corpora twice over; run by name"]
+fn what_the_lookups_sorted_key_order_is_worth_to_the_published_denominator() {
+    /// The level `wrap_index_json` and `encode_index_msgpack` both pass to zstd.
+    const LEVEL: i32 = 3;
+    const ONE_X: usize = 1_792;
+    const FOUR_X: usize = 7_168;
+
+    // A fixed-seed LCG, so the shuffled arm is the SAME permutation on every run and on every
+    // machine. Numerical Recipes' constants; the generator is not the subject, reproducibility is.
+    let shuffled_order = |n: usize| -> Vec<usize> {
+        let mut order: Vec<usize> = (0..n).collect();
+        let mut state: u32 = 0x5EED_1234;
+        for index in (1..n).rev() {
+            state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+            let pick = (state >> 8) as usize % (index + 1);
+            order.swap(index, pick);
+        }
+        order
+    };
+
+    let measure = |keys: usize| -> (usize, usize, usize) {
+        // The lookup's own key shape, so this is the corpus the 32.0 row is measured on.
+        let entries: Vec<(String, u64)> =
+            (0..keys).map(|i| (format!("amp-{i:06}"), i as u64)).collect();
+
+        let sorted_body = rmp_serde::to_vec(&entries).expect("msgpack encodes the sorted body");
+        let shuffled: Vec<(String, u64)> =
+            shuffled_order(keys).into_iter().map(|i| entries[i].clone()).collect();
+        let shuffled_body =
+            rmp_serde::to_vec(&shuffled).expect("msgpack encodes the shuffled body");
+
+        // THE FRAMING IS IDENTICAL, ASSERTED. Both arms hold the same entries in the same shape,
+        // so the uncompressed bytes must be the same length -- if they are not, the two arms differ
+        // in something besides order and the delta below is not the order's.
+        assert_eq!(
+            sorted_body.len(),
+            shuffled_body.len(),
+            "the two orders encoded to different uncompressed lengths ({} against {}), so they \
+             differ in more than the order and this arm is not measuring the order",
+            sorted_body.len(),
+            shuffled_body.len()
+        );
+
+        let sorted = zstd::stream::encode_all(sorted_body.as_slice(), LEVEL)
+            .expect("zstd compresses the sorted body");
+        let shuffled_out = zstd::stream::encode_all(shuffled_body.as_slice(), LEVEL)
+            .expect("zstd compresses the shuffled body");
+        (sorted_body.len(), sorted.len(), shuffled_out.len())
+    };
+
+    let (raw1, sorted1, shuffled1) = measure(ONE_X);
+    let (raw4, sorted4, shuffled4) = measure(FOUR_X);
+    assert_eq!(4 * ONE_X, FOUR_X, "the arms must be exactly 4.0x apart");
+
+    let per = |bytes: usize, keys: usize| bytes as f64 / keys as f64;
+    println!();
+    println!("  WHAT THE SORTED ORDER IS WORTH TO ZSTD, AT THE LEVEL THE INDEX IS WRITTEN AT");
+    println!("  (level {LEVEL}; same entries, same msgpack shape, only the order differs)");
+    println!();
+    println!(
+        "    {:<34} {:>12} {:>12} {:>10}",
+        "B/key", "1x (1,792)", "4x (7,168)", "delta"
+    );
+    for (name, a, b) in [
+        ("uncompressed body", per(raw1, ONE_X), per(raw4, FOUR_X)),
+        ("zstd, SORTED (what ships)", per(sorted1, ONE_X), per(sorted4, FOUR_X)),
+        ("zstd, SHUFFLED", per(shuffled1, ONE_X), per(shuffled4, FOUR_X)),
+    ] {
+        println!("    {name:<34} {a:>12.2} {b:>12.2} {:>10.2}", b - a);
+    }
+    let cost1 = per(shuffled1, ONE_X) - per(sorted1, ONE_X);
+    let cost4 = per(shuffled4, FOUR_X) - per(sorted4, FOUR_X);
+    println!();
+    println!(
+        "    LOSING THE SORTED ORDER ADDS {cost1:.2} B/key at 1x, {cost4:.2} at 4x \
+         ({:.1}% and {:.1}% of the compressed body)",
+        100.0 * cost1 / per(sorted1, ONE_X),
+        100.0 * cost4 / per(sorted4, FOUR_X)
+    );
+    println!();
+    println!("    THE DENOMINATOR OF THE PUBLISHED RATIO IS THIS COMPRESSED LENGTH, so a container");
+    println!("    swap INFLATES it and so LOWERS the published amplification -- while nothing about");
+    println!("    resident memory has changed. The 8 B/key is real; that improvement is not.");
+    println!();
+
+    // --- AND AGAINST THE REAL DENOMINATOR, MEASURED HERE rather than copied from the arm that
+    // --- publishes it. A figure quoted across arms goes stale; this one cannot.
+    let real_denominator_per_key = {
+        use crate::types::{Command, ExecuteRequest};
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), 1023);
+        for index in 0..ONE_X {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("amp-{index:06}"),
+                    value: vec![b'v'; 256],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        let candidates: Vec<u32> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        };
+        let lifecycle =
+            engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_buckets: candidates.clone(),
+                max_dump_buckets_per_round: candidates.len(),
+                ..Default::default()
+            });
+        std::hint::black_box(&lifecycle);
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        crate::engine::encode_index_bytes(shard).len() as f64 / ONE_X as f64
+    };
+    assert!(
+        real_denominator_per_key > 0.0,
+        "the encoded image came out empty, so there is no denominator to compare against"
+    );
+    println!("  AGAINST THE REAL DENOMINATOR, MEASURED ON THIS SHARD RATHER THAN QUOTED");
+    println!(
+        "    the whole encoded index is {real_denominator_per_key:.1} B/key at {ONE_X} keys"
+    );
+    println!(
+        "    losing the sorted order adds {cost4:.2} B/key to it, which is {:.1}% of the denominator",
+        100.0 * cost4 / real_denominator_per_key
+    );
+    println!("    a larger denominator is a SMALLER published ratio, so the swap would report an");
+    println!("    improvement it did not make. Price the 8 B/key against an UNCHANGED denominator.");
+    println!();
+
+    // --- THE SIGN, which is the whole refusal: sorted compresses better.
+    assert!(
+        sorted1 < shuffled1 && sorted4 < shuffled4,
+        "the shuffled order compressed to no more than the sorted one ({sorted1} vs {shuffled1} \
+         at {ONE_X}, {sorted4} vs {shuffled4} at {FOUR_X}). The refusal rests on sorted keys \
+         sharing prefixes with their neighbours inside zstd's match window -- if that has stopped \
+         being true at this level and this key shape, a container swap no longer moves the \
+         published denominator and the `object_block_lookup` half of the slot saving is cleared of \
+         this objection. Re-price it rather than loosening this assertion."
+    );
+    // --- AND THE COST MUST AGREE ACROSS THE 4.0x, or it is a constant wearing a per-key label.
+    assert!(
+        (cost1 - cost4).abs() <= 0.25 * cost1.abs().max(0.1),
+        "losing the sorted order costs {cost1:.2} B/key at {ONE_X} keys and {cost4:.2} at \
+         {FOUR_X}. Those must agree, or the figure is a constant divided by keys."
+    );
+    // --- AND BOTH ARMS MUST ACTUALLY COMPRESS, so the comparison is not of two incompressible
+    // --- blobs where the order could not matter either way.
+    assert!(
+        sorted4 * 2 < raw4,
+        "the sorted body compressed {raw4} bytes to {sorted4}, under 2:1. These keys are highly \
+         repetitive, so a poor ratio means the body is not what this arm thinks it is."
+    );
+}
