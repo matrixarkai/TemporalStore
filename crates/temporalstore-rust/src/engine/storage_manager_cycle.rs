@@ -152,6 +152,7 @@ impl TemporalEngine {
         .map(str::to_string)
         .collect::<Vec<_>>();
         let plan_request = StorageLifecycleRequest {
+            item_amplification_full_dump_ppm: 0,
             shard_id: request.shard_id,
             selected_dump_buckets: request.selected_dump_buckets.clone(),
             max_dump_buckets_per_round: request.max_dump_buckets_per_round,

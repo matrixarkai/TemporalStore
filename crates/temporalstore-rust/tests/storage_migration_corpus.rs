@@ -110,6 +110,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     );
 
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+        item_amplification_full_dump_ppm: 0,
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,

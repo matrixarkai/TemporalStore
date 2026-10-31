@@ -2451,6 +2451,7 @@ fn planning_a_maintenance_round_reads_no_blocks() {
         write_string(&engine, &format!("round-{index:04}"), b"value");
     }
     let lifecycle = StorageLifecycleRequest {
+        item_amplification_full_dump_ppm: 0,
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 64,
@@ -2554,6 +2555,7 @@ fn what_the_plan_phase_costs() {
         let rounds = 5;
         for _ in 0..rounds {
             let _ = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+                item_amplification_full_dump_ppm: 0,
                 shard_id: 1,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: 64,
@@ -2681,6 +2683,7 @@ fn the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log() {
     engine.load_shard(1);
 
     let lifecycle = |min_records: u64, min_bytes: u64| StorageLifecycleRequest {
+        item_amplification_full_dump_ppm: 0,
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 0,
@@ -3144,6 +3147,7 @@ fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
         .expect("a bucket must hold a claim after three writes");
 
     let plan = engine.storage_lifecycle_plan(StorageLifecycleRequest {
+        item_amplification_full_dump_ppm: 0,
         shard_id: 1,
         selected_dump_buckets: Vec::new(),
         max_dump_buckets_per_round: 1,

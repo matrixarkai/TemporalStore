@@ -1514,6 +1514,7 @@ fn runtime_storage_lifecycle_scheduler_runs_periodically() {
     let scheduler = runtime.start_storage_lifecycle_scheduler(
         Duration::from_millis(5),
         StorageLifecycleRequest {
+            item_amplification_full_dump_ppm: 0,
             shard_id: 1,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,

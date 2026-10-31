@@ -197,6 +197,7 @@ pub(super) fn execute_task(inner: &DataNodeRuntimeInner, task: &QueuedTask) -> D
                 inner
                     .engine
                     .storage_lifecycle_plan(StorageLifecycleRequest {
+                        item_amplification_full_dump_ppm: 0,
                         shard_id: request.shard_id,
                         selected_dump_buckets: Vec::new(),
                         max_dump_buckets_per_round: 0,

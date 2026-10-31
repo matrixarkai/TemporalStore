@@ -227,6 +227,7 @@ impl DataNodeRuntime {
             .inner
             .engine
             .storage_lifecycle_plan(StorageLifecycleRequest {
+                item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
@@ -448,6 +449,7 @@ impl DataNodeRuntime {
                     .safe_to_reclaim);
         if options.enable_wal_reclaim && wal_reclaim_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+                item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
@@ -820,6 +822,7 @@ impl DataNodeRuntime {
         // invalidation would zero.
         if options.enable_memory_reclaim && cache_pressure {
             let response = self.apply_storage_lifecycle(StorageLifecycleRequest {
+                item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
@@ -1019,6 +1022,7 @@ impl DataNodeRuntime {
         });
         if options.enable_index_gc {
             let index_gc_request = StorageLifecycleRequest {
+                item_amplification_full_dump_ppm: 0,
                 shard_id,
                 selected_dump_buckets: Vec::new(),
                 // UNBOUNDED, and load-bearing -- do not cap this.
