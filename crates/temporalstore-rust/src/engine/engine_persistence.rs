@@ -1227,6 +1227,13 @@ impl TemporalEngine {
                 ),
                 live_user_bytes: state.live_user_bytes,
                 live_objects_with_logical_size: state.live_objects_with_logical_size,
+                // AMPLIFICATION IN ITEMS, which is the one space figure here that can move:
+                // both terms are counts, so neither rounds to a slab the way the byte
+                // denominator below does.
+                item_space_amplification_ppm: Self::ppm_ratio(
+                    state.durable_items,
+                    state.live_objects_with_logical_size,
+                ),
                 space_amplification_ppm: Self::ppm_ratio(
                     block_store_slabs.total_known_physical_bytes,
                     block_store_slabs.live_physical_bytes,

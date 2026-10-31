@@ -258,6 +258,22 @@ pub(super) struct ShardState {
     /// being read as a whole one.
     #[serde(skip)]
     pub(super) live_objects_with_logical_size: u64,
+    /// HOW MANY ITEM RECORDS THE DURABLE FORM HOLDS, superseded ones included.
+    ///
+    /// The numerator of an amplification figure counted in ITEMS rather than bytes, and the
+    /// reason it exists is that our byte-based `space_amplification_ppm` cannot leave 1.000x:
+    /// its denominator is slab-granular and blind at both ends, so a true 5.0x publishes as
+    /// 1.000x. A count has no such floor -- it does not round to a slab and cannot be blind at
+    /// an end -- so the same question asked of counts gets an answer that moves.
+    ///
+    /// RISES ON EVERY WRITE, INCLUDING AN OVERWRITE, because an overwrite leaves the record it
+    /// superseded in the durable form until a dump rewrites it. A dump re-serializes from the
+    /// live set, so `mark_items_dumped` sets this back to the live count and the ratio returns
+    /// to exactly 1.0 -- which is what makes a fixed bound a TRIGGER rather than a figure that
+    /// climbs with uptime, the same distinction that keeps `lifetime_write_amplification_ppm`
+    /// ungateable while the windowed one is gateable.
+    #[serde(skip)]
+    pub(super) durable_items: u64,
     // THE EXPIRY LEDGER IS A DOMAIN OF `u64_ledgers` NOW, behind `expires_at_ms()` and
     // `expires_at_ms_mut()`. It is a `u64` per object key, which is what the other two
     // domains are, so the merge adds a domain key and no union. The deadline-ORDERED
@@ -8461,6 +8477,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // covered count is published beside the total rather than the total alone.
         live_user_bytes: _,
         live_objects_with_logical_size: _,
+        // Also `#[serde(skip)]`: a decoded image has counted no items, and 0 is the honest
+        // value rather than a claim that the durable form holds nothing.
+        durable_items: _,
         promote_scan_done: _,
         evict_sampler: _,
         routing_range_start: _,
@@ -9200,7 +9219,21 @@ impl ShardState {
             }
         }
         self.live_user_bytes = self.live_user_bytes.saturating_add(installed);
+        // ONE MORE ITEM RECORD IN THE DURABLE FORM, on BOTH arms above. An overwrite does not
+        // reduce what is stored: it adds a record and leaves the superseded one until a dump
+        // rewrites the live set. Counting only the `None` arm would make this the live count
+        // again and the ratio 1.0 by construction.
+        self.durable_items = self.durable_items.saturating_add(1);
         true
+    }
+
+    /// THEIR RESET: a dump re-serializes from the live set, so the durable item count becomes
+    /// the live count and the item ratio returns to exactly 1.0.
+    ///
+    /// Exactly, not approximately. A reset that left the figure above 1.0 would make a fixed
+    /// bound unreachable downward and so unusable as a trigger.
+    pub(super) fn mark_items_dumped(&mut self) {
+        self.durable_items = self.live_objects_with_logical_size;
     }
 
     /// Drop one string row, keeping the live user-byte totals in step. THE ONE REMOVAL DOOR.

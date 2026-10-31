@@ -484,6 +484,25 @@ pub struct ShardCanonicalStorageStats {
     /// the whole live set, and anything less means it describes a subset and reads high.
     #[serde(default)]
     pub live_objects_with_logical_size: u64,
+
+    /// PARTS PER MILLION -- amplification counted in ITEMS: durable item records over live
+    /// objects.
+    ///
+    /// WHY A SECOND SPACE FIGURE, AND WHY IT IS COUNTED RATHER THAN WEIGHED.
+    /// `space_amplification_ppm` below divides bytes by bytes and CANNOT LEAVE 1.000x: its
+    /// denominator is slab-granular and blind at both ends, so a store at a true 5.0x
+    /// publishes as 1.000x. Repairing that denominator is a separate change. This asks the
+    /// same question of quantities that cannot be blind -- a count does not round to a slab --
+    /// so it answers with a figure that moves.
+    ///
+    /// THE NUMERATOR RISES ON EVERY WRITE, an overwrite included, because the superseded
+    /// record stays in the durable form until a dump rewrites the live set. A dump sets the
+    /// numerator to the live count, so this returns to exactly 1.0 and a fixed bound on it is
+    /// a TRIGGER rather than a number that climbs with uptime.
+    ///
+    /// AS COMPLETE AS `live_objects_with_logical_size`, which is its denominator, so the same
+    /// coverage caveat applies: a partial count makes this read HIGH, never low.
+    pub item_space_amplification_ppm: u64,
     /// Physical bytes the store occupies per physical byte that is live, in PARTS PER MILLION.
     ///
     /// `total_known_physical_bytes / live_physical_bytes` from the slab summary. What pushes it
