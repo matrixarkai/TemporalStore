@@ -81,12 +81,29 @@ impl TemporalStoreTable {
         end_ms: u64,
         aggregator: impl Into<String>,
     ) -> Result<i64, ClientError> {
+        self.control_state_query_with_precision(key, start_ms, end_ms, aggregator, None)
+    }
+
+    /// The same question asked AT a precision.
+    ///
+    /// For a distinct aggregator this is what lets the answer be covered by the coarse level the
+    /// write stored beside it, instead of merging every fine bucket in the window. `None` is the
+    /// unnamed read: every precision in the window, which is what `control_state_query` asks.
+    pub fn control_state_query_with_precision(
+        &self,
+        key: impl Into<String>,
+        start_ms: u64,
+        end_ms: u64,
+        aggregator: impl Into<String>,
+        precision_ms: Option<u64>,
+    ) -> Result<i64, ClientError> {
         match self
             .execute(Command::ControlStateQuery {
                 key: key.into(),
                 start_ms,
                 end_ms,
                 aggregator: aggregator.into(),
+                precision_ms,
             })?
             .response
         {

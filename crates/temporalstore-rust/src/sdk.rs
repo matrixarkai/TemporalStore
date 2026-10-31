@@ -378,6 +378,8 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             start_ms: command.start_ms,
             end_ms: command.end_ms,
             aggregator: command.family,
+            // 0 is the wire's "no precision named", which is not the same request as precision 0.
+            precision_ms: (command.precision_ms != 0).then_some(command.precision_ms),
         },
         v1::command::Kind::ContextNodeUpsert(command) => {
             let node = command

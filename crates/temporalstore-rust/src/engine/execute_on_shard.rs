@@ -3050,17 +3050,38 @@ pub(crate) fn execute_on_shard(
             // The bucket's identity is (precision, start), not start alone -- two precisions
             // used to share a cell whenever their truncations agreed. `control_state_bucket_key`
             // carries both in the `u64` the series already holds.
-            let bucket_ms = control_state_bucket_key(timestamp_ms, precision_ms);
-            stage_component_outcome(
-                shard_id,
-                "control_change",
-                &key,
-                Some(bucket_ms.to_string()),
-                block_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
-                None,
-                Some(value.clone()),
-            );
-            hll::record_change(shard, &key, bucket_ms, value);
+            // EVERY LEVEL OF THE LADDER, not just the one the caller named. A distinct
+            // count over a wide window otherwise has to merge every fine bucket in it -- a week
+            // at minute precision is 10,080 merges. Set union is idempotent, so a member held at
+            // two levels is still one member at each and no read can count it twice.
+            let levels = precision_ms
+                .filter(|precision_ms| *precision_ms > 0)
+                .map(control_state_precision_levels)
+                .unwrap_or_default();
+            let buckets: Vec<u64> = if levels.is_empty() {
+                // No precision named, or not one the format defines: the single untagged bucket.
+                vec![control_state_bucket_key(timestamp_ms, precision_ms)]
+            } else {
+                levels
+                    .iter()
+                    .map(|level_ms| control_state_bucket_key(timestamp_ms, Some(*level_ms)))
+                    .collect()
+            };
+            for bucket_ms in buckets {
+                // One outcome PER LEVEL. A replay that installs outcomes instead of re-executing
+                // the command rebuilds exactly what was staged, so a level that is not staged is
+                // a level that does not survive recovery.
+                stage_component_outcome(
+                    shard_id,
+                    "control_change",
+                    &key,
+                    Some(bucket_ms.to_string()),
+                    block_routing_bucket(&key, start_routing_bucket, end_routing_bucket),
+                    None,
+                    Some(value.clone()),
+                );
+                hll::record_change(shard, &key, bucket_ms, value.clone());
+            }
             if let Some(ttl_ms) = ttl_ms {
                 let expires_at = resolve_now_ms().saturating_add(ttl_ms);
                 crate::engine::set_expiry(shard, key.clone(), expires_at);
@@ -3110,6 +3131,7 @@ pub(crate) fn execute_on_shard(
             start_ms,
             end_ms,
             aggregator,
+            precision_ms,
         } => {
             if remove_if_expired(shard, &key) {
                 mutated = true;
@@ -3120,7 +3142,14 @@ pub(crate) fn execute_on_shard(
             }
             if is_control_state_change_aggregator(&aggregator) {
                 CommandResponse::Integer {
-                    value: count_control_state_changes(shard, &key, start_ms, end_ms),
+                    // A distinct count naming a precision is covered by the coarse level the
+                    // write stored beside it, instead of merging every fine bucket in the window.
+                    value: match precision_ms.filter(|precision_ms| *precision_ms > 0) {
+                        Some(precision_ms) => count_control_state_changes_at_precision(
+                            shard, &key, precision_ms, start_ms, end_ms,
+                        ),
+                        None => count_control_state_changes(shard, &key, start_ms, end_ms),
+                    },
                 }
             } else if control_rollup_enabled && control_rollup::is_sum_family(&aggregator) {
                 CommandResponse::Integer {
@@ -3307,7 +3336,18 @@ pub(crate) fn execute_on_shard(
                 *series.entry(bucket_ms).or_default() += amount;
             }
             let value = if is_control_state_change_aggregator(&aggregator) {
-                count_control_state_changes(shard, &key, start_ms, end_ms)
+                // Names a precision, so the distinct count is covered with the coarse level the
+                // write stored beside it rather than by merging every fine bucket in the window.
+                match precision_ms.filter(|precision_ms| *precision_ms > 0) {
+                    Some(precision_ms) => count_control_state_changes_at_precision(
+                        shard,
+                        &key,
+                        precision_ms,
+                        start_ms,
+                        end_ms,
+                    ),
+                    None => count_control_state_changes(shard, &key, start_ms, end_ms),
+                }
             } else {
                 let values = shard
                     .control_state()

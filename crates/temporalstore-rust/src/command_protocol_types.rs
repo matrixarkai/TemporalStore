@@ -1598,6 +1598,17 @@ pub enum Command {
         start_ms: u64,
         end_ms: u64,
         aggregator: String,
+        /// The precision this question is asked at, when the caller knows it.
+        ///
+        /// A distinct count is not a sum, so a wide window otherwise has to merge every fine
+        /// bucket it covers. Naming the precision lets the read be covered by the coarser level
+        /// the write stored beside it -- a week at minute precision is 10,080 merges unnamed and
+        /// 7 day-level reads named.
+        ///
+        /// Defaulted, so a caller that does not set it is answered exactly as before: across
+        /// every precision in the window.
+        #[serde(default)]
+        precision_ms: Option<u64>,
     },
     ControlStateDetail {
         key: String,

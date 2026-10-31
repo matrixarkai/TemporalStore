@@ -137,6 +137,7 @@ fn gen_command(rng: &mut Rng) -> Command {
                 start_ms,
                 end_ms,
                 aggregator: ["sum", "count", "min", "max"][rng.below(4) as usize].to_string(),
+                precision_ms: None,
             }
         }
         14 => Command::CommonDelete { key: rng.any_key() },
@@ -216,6 +217,7 @@ fn read_snapshot(engine: &TemporalEngine) -> Vec<String> {
                 start_ms: 0,
                 end_ms: u64::MAX,
                 aggregator: "sum".to_string(),
+                precision_ms: None,
             },
         );
         probe(
@@ -235,6 +237,7 @@ fn read_snapshot(engine: &TemporalEngine) -> Vec<String> {
                 start_ms: 0,
                 end_ms: u64::MAX,
                 aggregator: "change".to_string(),
+                precision_ms: None,
             },
         );
     }
@@ -742,6 +745,7 @@ fn oracle_mismatch(engine: &TemporalEngine, model: &RefModel) -> Option<String> 
                     start_ms: 0,
                     end_ms: u64::MAX,
                     aggregator: aggregator.to_string(),
+                    precision_ms: None,
                 },
             ) {
                 CommandResponse::Integer { value } => {
@@ -767,6 +771,7 @@ fn oracle_mismatch(engine: &TemporalEngine, model: &RefModel) -> Option<String> 
                 start_ms: 0,
                 end_ms: u64::MAX,
                 aggregator: "change".to_string(),
+                precision_ms: None,
             },
         ) {
             CommandResponse::Integer { value } => {

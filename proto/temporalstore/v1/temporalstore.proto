@@ -353,6 +353,9 @@ message ControlStateQuery {
   string family = 2;
   uint64 start_ms = 3;
   uint64 end_ms = 4;
+  // The precision the question is asked at. 0 means none was named, and the answer then covers
+  // every precision in the window -- which is what every caller predating this field gets.
+  uint64 precision_ms = 5;
 }
 
 message ContextNode {

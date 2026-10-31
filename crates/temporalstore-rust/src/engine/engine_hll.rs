@@ -198,22 +198,99 @@ pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, v
 /// Distinct count over `[start_ms, end_ms]`. Exact (BTreeSet union) when no bucket in the window
 /// is sketched; otherwise everything (exact buckets folded in + sketched buckets merged) is
 /// combined into one HLL and estimated.
+/// One stretch of the distinct series to read: a precision code, and an inclusive window of
+/// bucket starts within it.
+type ChangeSpan = (u64, u64, u64);
+
+/// Distinct count over `[start_ms, end_ms]` at EVERY precision.
+///
+/// This is the answer for a caller that cannot name a precision, which is every caller that
+/// existed before a bucket carried one. Reading the series with a bare instant range would find
+/// only the untagged buckets, so every member written at a named precision would go missing.
 pub(crate) fn count_changes(shard: &ShardState, key: &str, start_ms: u64, end_ms: u64) -> i64 {
+    let spans: Vec<ChangeSpan> = super::product_model::CONTROL_STATE_PRECISION_CODES
+        .iter()
+        .map(|code| (*code, start_ms, end_ms))
+        .collect();
+    count_changes_spans(shard, key, &spans)
+}
+
+/// Distinct count over `[start_ms, end_ms]` for a caller that NAMES a precision, covered with the
+/// coarse level the write stored alongside it.
+///
+/// # WHY THIS IS NOT THE SAME READ WITH A FILTER
+///
+/// A distinct count is not a sum, so a wide window cannot be assembled by adding its fine buckets
+/// -- every one of them has to be MERGED, because a member in two of them is one member. At minute
+/// precision a day is 1,440 merges and a week is 10,080.
+///
+/// The write stores each member at its own precision and at one coarser level, so the merge can be
+/// done at the coarse level instead: the aligned interior of the window is covered by coarse
+/// buckets, and only the ragged edges are read at the named precision. A week becomes 7 day-level
+/// reads plus at most two partial days.
+///
+/// Combining the levels cannot double-count, because set union is idempotent -- a member held in
+/// both its minute bucket and its hour bucket is still one member in each.
+pub(crate) fn count_changes_at_precision(
+    shard: &ShardState,
+    key: &str,
+    precision_ms: u64,
+    start_ms: u64,
+    end_ms: u64,
+) -> i64 {
+    if start_ms > end_ms {
+        return 0;
+    }
+    let levels = super::product_model::control_state_precision_levels(precision_ms);
+    let Some(fine_ms) = levels.first().copied() else {
+        // Not a precision the format defines, so it has no ladder and no code of its own: answer
+        // it the way a caller naming no precision is answered.
+        return count_changes(shard, key, start_ms, end_ms);
+    };
+    let code_of = |precision_ms: u64| {
+        super::product_model::control_state_precision_code(precision_ms).unwrap_or(0)
+    };
+    let fine_code = code_of(fine_ms);
+
+    let mut spans: Vec<ChangeSpan> = Vec::with_capacity(3);
+    match levels.get(1).copied() {
+        // The coarsest precision has no coarser partner, so there is nothing to cover it with.
+        None => spans.push((fine_code, start_ms, end_ms)),
+        Some(coarse_ms) => {
+            let end_exclusive = end_ms.saturating_add(1);
+            // The span of whole coarse buckets that lies ENTIRELY inside the window. A coarse
+            // bucket holds its whole span, so a partially covered one would contribute members
+            // from outside the window.
+            let interior_lo = start_ms.div_ceil(coarse_ms) * coarse_ms;
+            let interior_hi = (end_exclusive / coarse_ms) * coarse_ms;
+            if interior_lo < interior_hi {
+                spans.push((code_of(coarse_ms), interior_lo, interior_hi - 1));
+                if start_ms < interior_lo {
+                    spans.push((fine_code, start_ms, interior_lo - 1));
+                }
+                if interior_hi <= end_ms {
+                    spans.push((fine_code, interior_hi, end_ms));
+                }
+            } else {
+                // Narrower than one coarse bucket: the named precision is the only level that can
+                // answer it without reaching outside the window.
+                spans.push((fine_code, start_ms, end_ms));
+            }
+        }
+    }
+    count_changes_spans(shard, key, &spans)
+}
+
+fn count_changes_spans(shard: &ShardState, key: &str, spans: &[ChangeSpan]) -> i64 {
     let Some(series) = shard.control_state_changes.get(key) else {
         return 0;
     };
-    // ACROSS EVERY PRECISION, because this series is bucketed by the same write path as the
-    // counters and its keys carry a precision code in the same high bits. Reading it with a bare
-    // instant range would have found only the untagged buckets -- every distinct member written
-    // at a named precision would have gone missing from the count.
     let buckets = || {
-        super::product_model::CONTROL_STATE_PRECISION_CODES
-            .iter()
-            .flat_map(|code| {
-                series.range(super::product_model::control_state_precision_bounds(
-                    *code, start_ms, end_ms,
-                ))
-            })
+        spans.iter().flat_map(|(code, lo, hi)| {
+            series.range(super::product_model::control_state_precision_bounds(
+                *code, *lo, *hi,
+            ))
+        })
     };
     // EXACT WHENEVER THE WHOLE WINDOW IS EXACT, which is the behaviour this had when the two
     // representations lived in two maps: one sketched bucket anywhere in the range makes the whole
