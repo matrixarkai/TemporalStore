@@ -10021,6 +10021,16 @@ fn every_maintenance_round_is_bounded_by_default() {
     // ceiling, and how long a vacated slab stays readable after the collector decides it is dead.
     assert_eq!(request.max_dump_buckets_per_round, 200);
     assert_eq!(request.block_gc_delayed_destroy_grace_ms, 24 * 3_600 * 1_000);
+    // The two the block-reclaim stage enforces and reports but which no production policy set:
+    // `with_slab_garbage_floor` wrote 0 into both, and 0 is no bound.
+    assert_eq!(request.block_gc_max_destroy_slabs_per_round, 500);
+    // AND THIS ONE SHIPS AT 0 ON PURPOSE, which is why it is absent from the non-zero loop below.
+    // The byte budget is applied as `selected + candidate.bytes > ceiling` with `selected` at 0,
+    // so a ceiling under one slab target rejects the first candidate and every candidate after it,
+    // for ever. At a 1 GiB slab target there is no useful value below one slab, and a bound that
+    // stops the stage is worse than no bound. `the_shipped_byte_ceiling_is_zero_or_at_least_one_slab`
+    // is what keeps it that way.
+    assert_eq!(request.block_gc_max_destroy_physical_bytes_per_round, 0);
 
     for (name, bound) in [
         ("index_gc_max_entries_per_round", request.index_gc_max_entries_per_round as u64),
@@ -10043,6 +10053,10 @@ fn every_maintenance_round_is_bounded_by_default() {
         (
             "block_gc_delayed_destroy_grace_ms",
             request.block_gc_delayed_destroy_grace_ms,
+        ),
+        (
+            "block_gc_max_destroy_slabs_per_round",
+            request.block_gc_max_destroy_slabs_per_round as u64,
         ),
     ] {
         assert!(bound > 0, "{name} is zero, which is not a bound at all");

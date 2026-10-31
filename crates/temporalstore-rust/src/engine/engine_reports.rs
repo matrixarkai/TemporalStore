@@ -3428,6 +3428,18 @@ pub struct StorageManagerCycleRequest {
     /// (today's behavior). The garbage-ratio GC gate, expressed against slabs.
     #[serde(default = "default_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
+    /// Slabs this round may destroy. 0 means no bound.
+    ///
+    /// Reaches `BlockStoreGcPolicy::max_destroy_slabs`, which `block_store_gc` enforces and
+    /// reports through `skipped_by_budget_count`.
+    #[serde(default = "default_block_gc_max_destroy_slabs_per_round")]
+    pub block_gc_max_destroy_slabs_per_round: usize,
+    /// Physical bytes this round may destroy. 0 means no bound, and 0 is what ships -- see
+    /// [`DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND`] for why a ceiling below one slab
+    /// target stops the collector permanently rather than bounding it. When both are set,
+    /// whichever is reached first stops the round and the remainder is the next round's candidates.
+    #[serde(default = "default_block_gc_max_destroy_physical_bytes_per_round")]
+    pub block_gc_max_destroy_physical_bytes_per_round: u64,
     /// Bytes the active data slab must hold before the prepare stage rolls a fresh one.
     ///
     /// Zero means "whatever the process is configured for", which is what a caller with no
@@ -3507,6 +3519,45 @@ pub const DEFAULT_INDEX_RESIDENT_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// already be in place rather than being added in a hurry.
 pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 5_000;
 
+/// Slabs one round may destroy, and physical bytes one round may destroy.
+///
+/// THE ENFORCEMENT ALREADY EXISTED AND NOTHING SET IT. `block_store_gc` counts every candidate it
+/// turns away into `skipped_by_budget_count` / `skipped_by_budget_physical_bytes`, so the budget
+/// is both applied and reported -- but the only constructor the scheduled cycle used,
+/// `BlockStoreGcPolicy::with_slab_garbage_floor`, writes `max_destroy_slabs: 0` and
+/// `max_destroy_physical_bytes: 0` into every policy it builds, and 0 in these two fields means
+/// NO BOUND. A production round therefore destroyed every eligible slab, and the two
+/// `skipped_by_budget_*` figures were 0 in every round because nothing could ever be skipped.
+///
+/// Destroying a slab is an unlink plus the accounting that follows it, and the round holds the
+/// store while it happens, so this is the ceiling that keeps one round's reclaim off the write
+/// path. What it leaves behind is the next round's candidate set, highest-garbage first, and the
+/// budget `continue`s rather than `break`s, so a candidate turned away does not shut the round:
+/// a smaller one behind it is still taken.
+///
+/// 500 is the operational value and it is a CEILING, not a throttle: at
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` of one gibibyte, 500 slabs is more than any round reaches, so
+/// this bounds the pathological round rather than the ordinary one. That is the right shape for
+/// this stage -- the reason to have it is that `0` admitted an unbounded round at all, and the two
+/// `skipped_by_budget_*` figures the stage reports could never be anything but 0 while it did.
+pub const DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND: usize = 500;
+
+/// The byte half of the same ceiling -- and it ships at 0, NO BOUND, on purpose.
+///
+/// A sub-slab byte ceiling does not bound this stage, it switches it off for ever. The budget is
+/// applied per candidate as `selected_physical_bytes + candidate.bytes > max_destroy_physical_bytes`,
+/// and `selected_physical_bytes` starts at 0, so when one slab is larger than the whole ceiling the
+/// FIRST candidate already exceeds it -- and so does every other, round after round.
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` is `1 << 30`, one gibibyte, so any ceiling below that selects
+/// nothing and the collector never destroys a slab again while it is in force. The count ceiling
+/// beside this one has no such edge: it compares a LENGTH against a LENGTH, so a ceiling of n
+/// always admits n candidates.
+///
+/// `a_byte_ceiling_below_one_slab_would_stop_the_collector_dead` measures that, and
+/// `the_shipped_byte_ceiling_is_zero_or_at_least_one_slab` is the guard: this value may go non-zero
+/// only at or above one slab target, whatever the slab target becomes.
+pub const DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND: u64 = 0;
+
 /// Dirty buckets one round may dump.
 ///
 /// A dump re-serializes a bucket index, so this is the per-round ceiling on the most expensive
@@ -3567,6 +3618,12 @@ fn default_eviction_batch_limit() -> usize {
 }
 fn default_block_gc_min_slab_garbage_basis_points() -> u64 {
     DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS
+}
+fn default_block_gc_max_destroy_slabs_per_round() -> usize {
+    DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND
+}
+fn default_block_gc_max_destroy_physical_bytes_per_round() -> u64 {
+    DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND
 }
 fn default_index_resident_limit_bytes() -> u64 {
     DEFAULT_INDEX_RESIDENT_LIMIT_BYTES
@@ -3629,6 +3686,9 @@ impl Default for StorageManagerCycleRequest {
             index_gc_commit_dirty_buckets_before_truncation: true,
             block_gc_min_slab_garbage_basis_points:
                 DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
+            block_gc_max_destroy_slabs_per_round: DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND,
+            block_gc_max_destroy_physical_bytes_per_round:
+                DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
             prepare_slab_target_bytes: 0,
         }
     }

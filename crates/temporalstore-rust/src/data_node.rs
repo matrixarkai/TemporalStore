@@ -1351,9 +1351,19 @@ impl Default for StorageManagerOptions {
 ///   256                        244       19,742
 ///
 /// So a cap now costs a bounded lag behind the head rather than all reclaim, and buys a bounded
-/// dump per round. 200 buckets is what a round can carry at the shipped loop rate: the table above
-/// puts 256 at 244 ms of dump work, and the ceiling has to leave the rest of the cycle -- expiry,
-/// eviction, block reclaim, compaction, the index sweep -- room inside the same round.
+/// dump per round. The two columns are RECORDS and BYTES, not milliseconds: a higher cap leaves
+/// LESS behind, 436 records and 35,238 bytes at 64 against 244 and 19,742 at 256, because a round
+/// that dumps more buckets advances the reclaim floor further. 200 sits in that range, bounding
+/// the dump while keeping the lag and the retained log near their lowest measured values.
+///
+/// THE CAP IS NOT ONLY A COST, IT IS A GATE ON ANOTHER STAGE. The dump advances the index-log
+/// retain floor, so the ceiling decides how many index-log records are REMOVABLE before any
+/// index-GC bound is consulted -- and the usage-ratio trigger is a ratio over that set.
+/// `a_capped_dump_throttles_what_index_gc_can_remove` measures it: a ceiling of 0 leaves 20,001
+/// records removable at 10,000 bp and the sweep applies; 200 leaves 200 at 99 bp and the sweep
+/// declines entirely. Lowering this value therefore throttles index reclaim as well as the dump,
+/// which is the shape mx#1439 hit, arriving through the ratio gate rather than through a stuck
+/// floor at 0.
 fn default_storage_manager_max_dump_buckets_per_round() -> usize {
     crate::engine::reports::DEFAULT_MAX_DUMP_BUCKETS_PER_ROUND
 }
@@ -1599,7 +1609,22 @@ impl Default for StorageManagerRuntimeOptions {
             initial_backoff_ms: 250,
             max_backoff_ms: 5_000,
             request: StorageManagerCycleRequest {
-                max_dump_buckets_per_round: 16,
+                // The ceiling the RUNNING LOOP uses, which is the only one that decides what a
+                // production round dumps. It was 16 while the decode default and
+                // `StorageManagerOptions` both said 200 -- three defaults for one bound, and the
+                // lowest of the three was the live one.
+                //
+                // 16 is not a smaller 200 on this bound. The dump ceiling and the index-log sweep
+                // are IN SERIES: the dump advances the index-log retain floor, so the ceiling
+                // decides how many records are removable before any index-GC bound is consulted,
+                // and the usage-ratio trigger is a RATIO. Measured in
+                // `a_capped_dump_throttles_what_index_gc_can_remove`: a ceiling of 0 leaves
+                // 20,001 records removable at 10,000 bp and the sweep applies; a ceiling of 200
+                // leaves 200 at 99 bp and the sweep DECLINES ENTIRELY. A ceiling of 16 holds that
+                // share lower still. A cap on the dump does not slow index reclaim down, it stops
+                // it, for as many rounds as the dirty set stays ahead of the ceiling.
+                max_dump_buckets_per_round:
+                    crate::engine::reports::DEFAULT_MAX_DUMP_BUCKETS_PER_ROUND,
                 warm_cache: true,
                 ..StorageManagerCycleRequest::default()
             },

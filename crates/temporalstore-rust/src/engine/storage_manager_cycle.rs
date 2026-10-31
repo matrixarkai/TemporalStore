@@ -519,10 +519,21 @@ impl TemporalEngine {
                 // garbage-ratio victim selection: collect the highest-garbage slabs first,
                 // keeping slabs below the garbage floor. Floor 0 (the default) collects every
                 // eligible slab as before.
-                BlockStoreGcPolicy::with_slab_garbage_floor(
-                    request.block_gc_min_slab_garbage_basis_points,
-                    None,
-                ),
+                // THE WHOLE POLICY, not the garbage-floor constructor. That constructor writes
+                // `max_destroy_slabs: 0` and `max_destroy_physical_bytes: 0`, and 0 in those two
+                // fields means NO BOUND -- so while it was the only policy the scheduled cycle
+                // built, a production round destroyed every eligible slab and the
+                // `skipped_by_budget_*` figures it reports could never be anything but 0.
+                BlockStoreGcPolicy {
+                    max_destroy_slabs: request.block_gc_max_destroy_slabs_per_round,
+                    max_destroy_physical_bytes: request
+                        .block_gc_max_destroy_physical_bytes_per_round,
+                    max_utility_score: None,
+                    min_age_ms: None,
+                    min_slab_garbage_basis_points: Some(
+                        request.block_gc_min_slab_garbage_basis_points,
+                    ),
+                },
                 true,
                 Some(reclaimable_block_slab_ids.clone()),
             ) {

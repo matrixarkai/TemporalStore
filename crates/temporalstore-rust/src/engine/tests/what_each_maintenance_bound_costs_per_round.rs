@@ -725,56 +725,151 @@ fn a_capped_dump_throttles_what_index_gc_can_remove() {
     );
 }
 
-/// WHAT AN IDLE ROUND WALKS, which is what decides how often the loop may run.
+/// WHAT AN IDLE ROUND WALKS, STAGE BY STAGE -- which is what decides how often the loop may run.
 ///
-/// The per-round bounds say how much work a round does when there IS work. The loop interval is
-/// decided by the other case: what a round costs when there is NOTHING to do, because that is
-/// most rounds on most shards. A round that walks the whole live page set when the dirty set is
-/// empty cannot be run often, whatever its bounds say.
+/// The per-round bounds say how much work a round does when there IS work. How often the loop may
+/// run is decided by the other case: what a round costs when there is NOTHING to do, because that
+/// is most rounds on most shards. The two multiply.
 ///
-/// COUNTED, NOT TIMED. Wall time on this box measures the other tenants; the quantity that
-/// decides the interval is how many live-page entries a round charges, and that is exact.
+/// COUNTED, NOT TIMED, AND ATTRIBUTED PER STAGE. Wall time on this box measures the other
+/// tenants. `StorageManagerStageReport.walk.live_block_entries` is read-and-cleared at each stage
+/// boundary, so the stage rows tile the round and say WHICH stage charged the walk. The
+/// process-wide `live_block_scan_entries()` counter cannot: every live-block materialization in
+/// the process charges it, from any stage and any concurrent shard, so a total of N says nothing
+/// about where N came from. Measuring the total first and reading it as the whole-shard survey is
+/// the mistake this test exists to avoid making again.
 ///
-/// `storage_manager_cycle` already tests for this: `bucket_summaries.is_some()` decides
-/// `live_block_summaries_measured`, and the reap-metrics stage says in as many words that a round
-/// with no dirty slot "did not walk the live pages". This asserts that the skip is real and
-/// states what an idle round therefore costs.
+/// THE SURVEY ITSELF IS ALREADY CONDITIONAL. `storage_lifecycle_methods` builds the plan with
+/// `shard_has_dirty_objects.then(|| self.bucket_storage_summaries(request.shard_id))`, so a round
+/// with an empty dirty index does not survey the live page set at all, and
+/// `live_block_summaries_measured` on the report is false. This asserts that skip is real, and
+/// prints what the idle round charges ANYWAY, per stage, because that residue -- not the survey
+/// -- is what bounds the interval.
 #[test]
-fn an_idle_round_does_not_walk_the_live_page_set() {
+fn an_idle_round_skips_the_whole_shard_survey_and_what_it_still_walks() {
     let dir = tempfile::tempdir().unwrap();
     let (engine, _due) = seeded(dir.path());
 
-    // DENOMINATOR FIRST: a round with work must charge the walk, or "an idle round charges
-    // nothing" is a claim about an instrument that never moves.
-    crate::engine::reset_live_block_scan_entries();
-    let _busy = one_round(&engine, true);
-    let busy_entries = crate::engine::live_block_scan_entries();
+    // DENOMINATOR FIRST: a round with work must survey, or "an idle round does not" is a claim
+    // about a flag that is false in every round.
+    let busy = engine.run_storage_manager_cycle(round(true));
     assert!(
-        busy_entries > 0,
-        "DENOMINATOR: a round on a freshly seeded store must charge live-page entries, or this \
-         instrument cannot tell a walking round from a skipping one"
+        busy.pressure_signals.live_block_summaries_measured,
+        "DENOMINATOR: a round on a freshly seeded store must survey the live page set, or this \
+         report field cannot tell a surveying round from a skipping one"
     );
+    let busy_entries: u64 = busy.stages.iter().map(|stage| stage.walk.live_block_entries).sum();
+    eprintln!("  BUSY round: survey={} entries={busy_entries}", busy.pressure_signals.live_block_summaries_measured);
+    for stage in &busy.stages {
+        if stage.walk.live_block_entries > 0 {
+            eprintln!("    {:<18} {}", stage.stage, stage.walk.live_block_entries);
+        }
+    }
 
-    // Drain, so the next rounds have nothing to do.
-    for _ in 0..3 {
-        let _ = one_round(&engine, true);
+    // Drain, so the next rounds have nothing left to do.
+    for _ in 0..4 {
+        let _ = engine.run_storage_manager_cycle(round(true));
     }
 
     let rounds = 5;
-    crate::engine::reset_live_block_scan_entries();
+    let mut idle_entries_total: u64 = 0;
+    let mut surveyed_while_idle = 0usize;
+    let mut per_stage: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
     for _ in 0..rounds {
+        let report = engine.run_storage_manager_cycle(round(true));
+        if report.pressure_signals.live_block_summaries_measured {
+            surveyed_while_idle += 1;
+        }
+        for stage in &report.stages {
+            idle_entries_total += stage.walk.live_block_entries;
+            *per_stage.entry(stage.stage.clone()).or_default() += stage.walk.live_block_entries;
+        }
+    }
+    let per_idle = idle_entries_total as f64 / rounds as f64;
+
+    eprintln!(
+        "  IDLE: {rounds} rounds, {surveyed_while_idle} of them surveyed; {idle_entries_total} \
+         entries in total, {per_idle:.0} each"
+    );
+    for (stage, entries) in &per_stage {
+        if *entries > 0 {
+            eprintln!("    {stage:<18} {} total, {:.0} per round", entries, *entries as f64 / rounds as f64);
+        }
+    }
+
+    // THE SKIP IS THE CLAIM. A drained shard has no dirty object, so no round may survey.
+    assert_eq!(
+        surveyed_while_idle, 0,
+        "{surveyed_while_idle} of {rounds} drained rounds surveyed the whole live page set. The \
+         plan gates that on `shard_has_dirty_objects`; if a drained shard still reads dirty, the \
+         gate is open on every idle round and the loop interval cannot be shortened"
+    );
+
+    // AND WHAT IT STILL WALKS, as a rate against the shipped interval: the residue is what a
+    // shorter interval multiplies.
+    let interval_ms = crate::data_node::StorageManagerRuntimeOptions::default().interval_ms;
+    assert!(interval_ms > 0, "a zero interval is a spin, not a loop");
+    let entries_per_second = per_idle * 1_000.0 / interval_ms as f64;
+    eprintln!(
+        "  at the shipped {interval_ms} ms interval that is {entries_per_second:.0} live-page \
+         entries a second; the same residue on a 30 ms loop would be {:.0} a second",
+        per_idle * 1_000.0 / 30.0
+    );
+
+    const IDLE_ENTRIES_PER_SECOND_CEILING: f64 = 700_000.0;
+    assert!(
+        entries_per_second <= IDLE_ENTRIES_PER_SECOND_CEILING,
+        "an idle loop charges {entries_per_second:.0} live-page entries a second ({per_idle:.0} \
+         per round at a {interval_ms} ms interval), over the {IDLE_ENTRIES_PER_SECOND_CEILING:.0} \
+         this pair is allowed. The interval and what an idle round walks are ONE setting: bound \
+         the residue first, then shorten the interval -- not the other way round"
+    );
+}
+
+/// WHAT ONE ROUND COSTS IN TIME on an idle shard, against the interval that decides how often it
+/// runs. The counted walk above is the durable quantity; this is the wall-clock distribution that
+/// says whether the loop can keep up at all, printed rather than asserted tightly because this
+/// box carries other tenants.
+///
+/// The only assertion is the one that does not depend on how loaded the box is: a round must fit
+/// inside its own interval. A loop whose round takes longer than its interval does not run at the
+/// interval -- it runs back to back, and the interval stops being a setting at all.
+#[test]
+fn an_idle_round_fits_inside_the_loop_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, _due) = seeded(dir.path());
+
+    // Drain first: this measures the idle case, which is most rounds on most shards.
+    for _ in 0..4 {
         let _ = one_round(&engine, true);
     }
-    let idle_entries = crate::engine::live_block_scan_entries();
-    let per_idle = idle_entries as f64 / rounds as f64;
+
+    let rounds = 40;
+    let mut micros: Vec<u128> = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let started = std::time::Instant::now();
+        let _ = engine.run_storage_manager_cycle(round(true));
+        micros.push(started.elapsed().as_micros());
+    }
+    micros.sort_unstable();
+    let at = |q: f64| micros[((micros.len() as f64 - 1.0) * q).round() as usize];
+    let p50 = at(0.50);
+    let p90 = at(0.90);
+    let p99 = at(0.99);
+    let worst = *micros.last().unwrap();
+
+    let interval_ms = crate::data_node::StorageManagerRuntimeOptions::default().interval_ms;
     eprintln!(
-        "  one round with work charged {busy_entries} live-page entries; {rounds} idle rounds \
-         charged {idle_entries} in total, {per_idle:.0} each"
+        "  {rounds} idle rounds, us: p50={p50} p90={p90} p99={p99} max={worst}; interval \
+         {interval_ms} ms"
     );
+
+    let interval_us = interval_ms as u128 * 1_000;
     assert!(
-        per_idle < busy_entries as f64,
-        "an idle round must cost LESS than a round with work, or the interval cannot be shortened \
-         at all: {per_idle:.0} per idle round against {busy_entries} for a round with work"
+        p50 < interval_us,
+        "the median idle round takes {p50} us against a {interval_ms} ms interval ({interval_us} \
+         us): the loop cannot run at its interval, so the interval is not the setting it looks \
+         like"
     );
 }
 
@@ -808,5 +903,74 @@ fn what_the_unexercised_bounds_would_need() {
         "  slab garbage threshold is {} bp; a collectable slab carries 10000 bp, so every \
          candidate clears it",
         shipped.block_gc_min_slab_garbage_basis_points
+    );
+}
+
+/// WHY THE BLOCK-RECLAIM BYTE CEILING SHIPS AT 0, measured on the budget arithmetic itself.
+///
+/// `block_store_gc` applies the byte budget per candidate as
+/// `selected_physical_bytes + candidate.bytes > max_destroy_physical_bytes`, and
+/// `selected_physical_bytes` starts the round at 0. So the comparison for the FIRST candidate is
+/// `candidate.bytes > ceiling` -- and if one slab is bigger than the whole ceiling, that is true
+/// for the first candidate, for every candidate behind it, and for every round after. The stage
+/// does not do less work; it does none, and keeps doing none.
+///
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` is `1 << 30`. A ceiling of 1 MiB is 1/1024 of one slab.
+///
+/// THE COUNT CEILING HAS NO SUCH EDGE, which is the half of this worth remembering: it compares a
+/// LENGTH against a LENGTH (`selected.len() >= max_destroy_slabs`), so a ceiling of n admits
+/// exactly n candidates whatever they weigh. A budget over a quantity whose UNIT is larger than
+/// the budget is not a small budget, it is a closed gate -- and only the byte budget here is over
+/// such a quantity.
+#[test]
+fn a_byte_ceiling_below_one_slab_would_stop_the_collector_dead() {
+    let slab_target = crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
+    let would_be_ceiling: u64 = 1024 * 1024;
+
+    // A single slab at the shipped target against the ceiling that was nearly shipped.
+    assert!(
+        slab_target > would_be_ceiling,
+        "DENOMINATOR: this test only says something while one slab is larger than the ceiling it \
+         warns about: slab target {slab_target}, ceiling {would_be_ceiling}"
+    );
+
+    // The arithmetic the budget performs, for the first candidate of a round.
+    let selected_so_far: u64 = 0;
+    let first_candidate_bytes = slab_target;
+    let first_candidate_rejected =
+        selected_so_far.saturating_add(first_candidate_bytes) > would_be_ceiling;
+    assert!(
+        first_candidate_rejected,
+        "a {would_be_ceiling}-byte ceiling must reject a {first_candidate_bytes}-byte first \
+         candidate, or the hazard this documents does not exist"
+    );
+
+    // And the count ceiling, the same round, does not have the edge.
+    let count_ceiling = 500_usize;
+    let selected_count = 0_usize;
+    assert!(
+        selected_count < count_ceiling,
+        "a count ceiling of {count_ceiling} must admit the first candidate whatever it weighs"
+    );
+
+    eprintln!(
+        "  slab target {slab_target} B; a {would_be_ceiling} B ceiling rejects the first candidate \
+         and every one behind it, so the stage never destroys a slab again"
+    );
+}
+
+/// THE GUARD. The block-reclaim byte ceiling may be 0 (no bound) or at least one slab target --
+/// never between. Anything between is the closed gate measured above, and it goes red here rather
+/// than in production, whatever the slab target later becomes.
+#[test]
+fn the_shipped_byte_ceiling_is_zero_or_at_least_one_slab() {
+    let ceiling = crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND;
+    let slab_target = crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
+    assert!(
+        ceiling == 0 || ceiling >= slab_target,
+        "the block-reclaim byte ceiling is {ceiling}, between 0 and one slab target of \
+         {slab_target}. The budget compares `selected + candidate.bytes > ceiling` from a \
+         `selected` of 0, so a ceiling under one slab rejects every candidate for ever: the stage \
+         stops rather than slows. Use 0 for no bound, or a whole number of slab targets"
     );
 }
