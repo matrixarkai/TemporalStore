@@ -45,7 +45,7 @@ fn build(root: &Path) -> TemporalEngine {
     for sub in ["cache", "pages", "indexes"] {
         fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
-    TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("pages"), root.join("indexes"))
+    TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("blocks"), root.join("indexes"))
 }
 
 fn set(engine: &TemporalEngine, key: &str, value: &str) {

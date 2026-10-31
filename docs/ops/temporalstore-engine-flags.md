@@ -99,7 +99,7 @@ Where this node is and what it talks to. Set by whoever provisions the node; not
 | `TS_MATRIXOBJECT_STORE_DIR` | — | config | 1 | — |
 | `TS_META_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_META_RAFT_NODE_ID` | 1 | nothing | 1 | — |
-| `TS_PAGE_STORE_DIR` | — | config | 1 | — |
+| `TS_PAGE_STORE_DIR` | — | config | 1 | previous spelling of `TS_BLOCK_STORE_DIR`, still accepted |
 | `TS_PROXY_ADVERTISED_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_BIND_ADDR` | — | config, launch | 1 | — |
 | `TS_PROXY_LOCATION` | — | nothing | 1 | — |

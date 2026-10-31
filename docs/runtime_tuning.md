@@ -99,7 +99,7 @@ remedy is one small file per shard, and it needs the range the store was built o
 
 A routing bucket is derived by hashing the key, so on the whole `u32` range every key
 landed in a bucket of its own and each one materialized a `BucketNode` carrying its
-own page index and object sets. All of that per-bucket machinery was then paid **per
+own block index and object sets. All of that per-bucket machinery was then paid **per
 record**. Counted in-process at 20,000 records on the old default, `bucket_map` held
 20,000 buckets — one per record.
 
@@ -130,7 +130,7 @@ actually set aside, and a container change moves the rounding between them.
 
 40,000 routed records:
 
-| end | buckets | pages a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record | dump + release unit | read path, entries / lookup |
+| end | buckets | blocks a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record | dump + release unit | read path, entries / lookup |
 | ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
 | `255` | 256 | 156 / 168 | 113.8 (−58.9%) | **114.1 (−59.2%)** | 0.0201 (−86.1%) | 168 pages | 6.42 |
 | `1023` | 1,024 | 39 / 50 | 119.3 (−56.9%) | **120.2 (−57.0%)** | 0.0803 (−44.5%) | 50 pages | 4.54 |
@@ -140,7 +140,7 @@ actually set aside, and a container change moves the rounding between them.
 
 4,000 routed records, where the same bucket counts produce a tenth of the fill:
 
-| end | buckets | pages a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record |
+| end | buckets | blocks a bucket (p50 / MAX) | request B / record | chunk B / record | allocations / record |
 | ---: | ---: | ---: | ---: | ---: | ---: |
 | `255` | 256 | 16 / 21 | 130.3 (−53.2%) | 132.6 (−52.8%) | 0.2008 (+38.2%) |
 | `1023` | 1,024 | 4 / 8 | 183.4 (−34.1%) | 191.9 (−31.6%) | 0.7625 (+425.0%) |
@@ -157,14 +157,14 @@ default is the widest range that still reaches the amortisation floor.
 
 **And no fixed bucket count is right for every corpus.** The fill a range produces
 moves with the record count, which the engine does not know when it loads a shard:
-`1023` sits at 3.91 pages a bucket for a 4,000-record store and 39.06 for a
+`1023` sits at 3.91 blocks a bucket for a 4,000-record store and 39.06 for a
 40,000-record one. A store much smaller than 40,000 records is better served by a
 narrower range and one much larger by a wider one, and the figures above are what to
 choose from.
 
 **A prior version of this table had the sign wrong.** It reported 413.1 B a page at
 4,000 records on `1023` — a *loss* of 25.4% — against the 183.4 measured now. The
-`Many` arm of the page index was a `BTreeMap` when that figure was taken and is a
+`Many` arm of the block index was a `BTreeMap` when that figure was taken and is a
 flat sorted `Vec` now, which changed the sign of the byte column while leaving the
 allocation column almost exactly as it was (+425% then, +425.0% now). Nothing
 failed, because the guard behind the figure deliberately asserts the *mechanism*
@@ -192,9 +192,9 @@ matrixark_rust_datanode
 ### Changing the range on a populated store
 
 **A load refuses when the range disagrees with the range the store was built on.**
-A page's bucket is written onto its address when the page is appended, and a reopened
+A block's bucket is written onto its address when the block is appended, and a reopened
 range is consulted only for an address that carries no bucket of its own — so
-changing the range on a populated store re-files nothing, and every page stays where
+changing the range on a populated store re-files nothing, and every block stays where
 the old range put it. The engine therefore records the range a store was built under
 in `shard-<id>.routing-range.json` beside the base index, reads it *before* decoding
 anything, and refuses the load with `routing_range_mismatch` when the two disagree,
@@ -224,7 +224,7 @@ data silently, the load asks instead of guessing.
 Not from the *spread* of its buckets — a whole-keyspace store whose keys all happen to
 fall below 1024 looks exactly like a store built on `0..1023`, and a guess that is
 usually right is the failure this stamp exists to prevent. But from the buckets
-themselves: as the section above says, **a page's bucket was written onto its address**,
+themselves: as the section above says, **a block's bucket was written onto its address**,
 beside the object key the bucket was derived from. A bucket is
 `start + FNV-1a-64(object_key) % width`, so for every stored address
 
@@ -306,7 +306,7 @@ every record perfectly; that is what made this state quiet enough to need a refu
 This is what the refusal prevents, driven both ways over 2,000 records before it
 existed:
 
-* **Widening** (`1023` then the default) is safe. Every record readable, every page
+* **Widening** (`1023` then the default) is safe. Every record readable, every block
   present, nothing outside the new range — because the wide range contains the
   narrow one, not because anything moved. The store stayed on its 938 buckets.
 * **Narrowing** (the default then `1023`) leaves the store on its original 2,000

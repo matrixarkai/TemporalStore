@@ -152,13 +152,13 @@ fn main() {
         .unwrap_or_else(default_root);
     fs::create_dir_all(root.join("cache-a")).expect("create cache-a");
     fs::create_dir_all(root.join("cache-b")).expect("create cache-b");
-    fs::create_dir_all(root.join("pages")).expect("create pages");
+    fs::create_dir_all(root.join("blocks")).expect("create pages");
     fs::create_dir_all(root.join("indexes")).expect("create indexes");
 
     let engine = TemporalEngine::with_local_dirs(
         TINY_CACHE_BYTES,
         root.join("cache-a"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     engine.load_shard(SHARD_ID);
@@ -176,7 +176,7 @@ fn main() {
     let restarted = TemporalEngine::with_local_dirs(
         TINY_CACHE_BYTES,
         root.join("cache-b"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     restarted.load_shard(SHARD_ID);
@@ -199,7 +199,7 @@ fn main() {
     let second_restarted = TemporalEngine::with_local_dirs(
         TINY_CACHE_BYTES,
         root.join("cache-d"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     second_restarted.load_shard(SHARD_ID);
@@ -212,7 +212,7 @@ fn main() {
     let async_restarted = TemporalEngine::with_local_dirs(
         ASYNC_WARMUP_CACHE_BYTES,
         root.join("cache-c"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     async_restarted.load_shard(SHARD_ID);

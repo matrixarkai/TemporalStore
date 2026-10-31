@@ -2525,7 +2525,16 @@ fn raft_config_from_env() -> RaftConfig {
 /// sets neither name keeps their blocks.
 fn block_store_dir_from_env() -> String {
     temporalstore_rust::env_flag::env_value_any(&["TS_BLOCK_STORE_DIR", "TS_PAGE_STORE_DIR"])
-        .unwrap_or_else(|| "target/temporalstore-pages".to_string())
+        .unwrap_or_else(|| {
+            // THE DEFAULT MOVED WITH THE VOCABULARY, AND A MOVED DEFAULT IS A DATA MIGRATION for
+            // anyone who set neither variable -- see
+            // `directory_default_preferring_canonical`, which keeps an existing directory being
+            // served instead of coming up empty beside it.
+            temporalstore_rust::env_flag::directory_default_preferring_canonical(
+                "target/temporalstore-blocks",
+                "target/temporalstore-blocks",
+            )
+        })
 }
 
 fn block_store_options_from_env() -> BlockStoreOptions {
@@ -3152,7 +3161,7 @@ mod tests {
         TemporalEngine::with_local_dirs(
             cache_bytes,
             root.join(format!("{role}-cache")),
-            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-blocks")),
             root.join(format!("{role}-index")),
         )
     }
@@ -3715,7 +3724,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("index"),
         );
         engine.load_shard(7);

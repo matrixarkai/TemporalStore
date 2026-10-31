@@ -73,7 +73,7 @@ fn a_real_dump_manifest() -> DumpFixture {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(SHARD);
@@ -158,7 +158,7 @@ fn a_restore_target(dir: &std::path::Path) -> (TemporalEngine, std::path::PathBu
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.join("restore-cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         &index_dir,
     );
     (engine, index_dir)
@@ -238,7 +238,7 @@ fn engine_over_a_planted_base_index(stamp: u32) -> (tempfile::TempDir, TemporalE
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         indexes,
     );
     (dir, engine)

@@ -87,7 +87,7 @@ pub(super) fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -1980,7 +1980,7 @@ fn the_loaded_range_is_reachable_from_the_state_the_bucket_set_reader_already_ta
 #[ignore = "seeds a store and reloads it; run by name"]
 fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_its_buckets() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     // --- Build a store on the NARROW range, the way an operator who read the tuning doc would. ---

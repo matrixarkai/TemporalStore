@@ -83,7 +83,7 @@ fn share_engine(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         1 << 20,
         dir.join("share-cache"),
-        dir.join("share-pages"),
+        dir.join("share-blocks"),
         dir.join("share-indexes"),
     )
 }

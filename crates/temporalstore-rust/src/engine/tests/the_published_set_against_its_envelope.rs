@@ -122,7 +122,7 @@ fn the_published_set_against_its_envelope() {
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -153,7 +153,7 @@ fn the_published_set_against_its_envelope() {
     let flat = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         flat_dir.path().join("cache"),
-        flat_dir.path().join("pages"),
+        flat_dir.path().join("blocks"),
         flat_dir.path().join("indexes"),
     );
     flat.load_shard(1);

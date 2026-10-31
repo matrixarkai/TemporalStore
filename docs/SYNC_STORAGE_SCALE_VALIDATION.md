@@ -56,7 +56,7 @@ replica lag converges 800 → **0** after replay.
 **Single-node crash recovery** (`storage_crash_harness`: write aborts mid-flight via
 `SIGABRT`, then a fresh engine reloads): WAL replayed (`wal_records = 2`),
 `all_live_pages_readable = true`, `slab_integrity.integrity_ok = true`, **0** corrupt /
-unreadable / orphan / missing-owner page refs. The mid-write crash loses nothing —
+unreadable / orphan / missing-owner block refs. The mid-write crash loses nothing —
 durability rides on the per-write WAL fsync, and reload replays it.
 
 **Real multi-process node down → up → catch up** (`raft_secondary_replication_harness`,
@@ -108,6 +108,6 @@ distributed durability.
   400-string-op / 3-node run.
 - `storage_crash --mode corrupt-page` and `storage_production_harness` fail for reasons
   **unrelated to this work**: the former assumes a page `.seg` exists immediately after a
-  write (invalid under the dump-cadence model where pages materialize at dump); the latter
+  write (invalid under the dump-cadence model where blocks materialize at dump); the latter
   carries a stale migration corpus referencing a command that no longer exists.
   Both are pre-existing and tracked separately.

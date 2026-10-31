@@ -59,7 +59,7 @@ fn engine_at(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -809,11 +809,11 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
 
     /// One eviction round, with the bytes and the time it spent bracketed around it.
     fn round(engine: &TemporalEngine, dir: &std::path::Path, label: &'static str) -> Arm {
-        let before = bytes_under(&dir.join("indexes")) + bytes_under(&dir.join("pages"));
+        let before = bytes_under(&dir.join("indexes")) + bytes_under(&dir.join("blocks"));
         let clock = std::time::Instant::now();
         let report = engine.apply_storage_eviction(1, 1, BATCH, true, false);
         let round_micros = clock.elapsed().as_micros();
-        let after = bytes_under(&dir.join("indexes")) + bytes_under(&dir.join("pages"));
+        let after = bytes_under(&dir.join("indexes")) + bytes_under(&dir.join("blocks"));
         assert_eq!(
             report.skipped_reason, "",
             "{label}: the gate declined, so this arm measures a refusal: {report:?}"
@@ -865,9 +865,9 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
         .len() as u64;
     let _ = engine_c.cache().invalidate_shard(1);
     // Batch 0 means NO limit here, so the one changed bucket is certainly a victim.
-    let before_c = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("pages"));
+    let before_c = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("blocks"));
     let report_c = engine_c.apply_storage_eviction(1, 1, 0, true, false);
-    let after_c = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("pages"));
+    let after_c = bytes_under(&dir_c.path().join("indexes")) + bytes_under(&dir_c.path().join("blocks"));
     let arm_c = Arm {
         label: "C one object changed",
         manifests: report_c.dump_manifest_ids.len(),

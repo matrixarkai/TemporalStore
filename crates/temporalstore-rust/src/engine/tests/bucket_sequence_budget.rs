@@ -197,7 +197,7 @@ fn seq_engine(dir: &std::path::Path, name: &str) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         1 << 20,
         dir.join(format!("{name}-cache")),
-        dir.join(format!("{name}-pages")),
+        dir.join(format!("{name}-blocks")),
         dir.join(format!("{name}-indexes")),
     )
 }

@@ -306,7 +306,7 @@ fn main() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     engine.load_shard(1);
@@ -2909,7 +2909,7 @@ fn verify_restart_replay(
     let restored = TemporalEngine::with_local_dirs(
         1024 * 1024,
         root.join("cache-restart"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     restored.load_shard(1);
@@ -2947,7 +2947,7 @@ fn verify_shared_store_replay(
             let follower = TemporalEngine::with_local_dirs(
                 1024 * 1024,
                 follower_root.join("cache"),
-                follower_root.join("pages"),
+                follower_root.join("blocks"),
                 follower_root.join("indexes"),
             );
             follower.load_shard(1);
@@ -3104,7 +3104,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024 * 1024,
             root.join("cache"),
-            root.join("pages"),
+            root.join("blocks"),
             root.join("indexes"),
         );
         engine.load_shard(1);

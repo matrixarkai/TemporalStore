@@ -88,10 +88,10 @@ pub struct ObjectIndexDivergenceReport {
     pub reconstructs: u64,
     /// A live page named an object its bucket's list did not hold. The list gains it; nothing
     /// already filed moves.
-    #[serde(rename = "pages_named_an_object_the_list_lacked", alias = "blocks_named_an_object_the_list_lacked")]
+    #[serde(rename = "blocks_named_an_object_the_list_lacked", alias = "pages_named_an_object_the_list_lacked")]
     pub blocks_named_an_object_the_list_lacked: u64,
     /// The list held an object no live page names. The list drops it, leaving a placeholder.
-    #[serde(rename = "list_held_an_object_no_page_names", alias = "list_held_an_object_no_block_names")]
+    #[serde(rename = "list_held_an_object_no_block_names", alias = "list_held_an_object_no_page_names")]
     pub list_held_an_object_no_block_names: u64,
     /// How many of those reached the log, which is rate-limited, so a quiet log cannot be mistaken
     /// for a zero count.
@@ -399,7 +399,7 @@ pub struct StorageRecoveryReport {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBlockError {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -409,7 +409,7 @@ pub struct StorageRecoveryBlockError {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoveryBlockOwnerMismatch {
     pub object_key: String,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub expected_object_id: u64,
@@ -475,7 +475,7 @@ pub struct StorageFeatureBlockError {
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub kind: String,
     pub key: String,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -488,7 +488,7 @@ pub struct StorageFeatureBlockTimestampMismatch {
     pub kind: String,
     pub key: String,
     pub timestamp_ms: u64,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -519,7 +519,7 @@ impl StorageObjectLifecycleReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageRecoverySlabLiveReport {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -733,7 +733,7 @@ pub struct StoragePhysicalBlockIndex {
     pub component: Option<String>,
     #[serde(rename = "routing_slot")]
     pub routing_bucket: u32,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub length: u64,
@@ -1133,7 +1133,7 @@ pub struct StorageLifecyclePlan {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageReclaimCandidate {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub live_physical_bytes: u64,
@@ -1178,7 +1178,7 @@ pub struct StorageBlockGcReplayCursor {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBlockGcDependencyBlock {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub dependency: String,
     #[serde(default)]
@@ -2078,7 +2078,20 @@ pub struct StorageFollowerCursorSafetySample {
 pub struct StorageGcSnapshot {
     #[serde(rename = "tombstone_records")]
     pub delete_marker_records: u64,
-    #[serde(rename = "stale_page_tombstones", alias = "stale_block_tombstones")]
+    // THIS PAIR NEEDS NO WRITER FLIP, AND ITS ALIAS WAS A COLLISION.
+    //
+    // The canonical spelling is already published, by the SIBLING FIELD below -- these two are a
+    // twin pair carrying one quantity under both words, not one field with two names. So the
+    // reader-widening alias added here claimed a name a sibling already emitted: a document
+    // carrying `stale_block_tombstones` is then ambiguous, serde resolves it to the FIRST
+    // declaration, and `stale_block_delete_markers` silently stops being populated from the wire
+    // with every other value intact. Flipping this field's `rename` on top of that made both
+    // fields emit one key.
+    //
+    // `no_two_fields_of_one_struct_claim_one_wire_name` in `block_store.rs` now fails on exactly
+    // this shape. Retiring the page-spelled twin is a published-report change and is not this
+    // change.
+    #[serde(rename = "stale_page_tombstones")]
     pub stale_page_delete_markers: u64,
     #[serde(rename = "stale_block_tombstones")]
     pub stale_block_delete_markers: u64,

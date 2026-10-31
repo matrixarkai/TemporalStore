@@ -110,7 +110,7 @@ fn main() {
     let engine = TemporalEngine::with_local_dirs(
         cache_bytes,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     if trace_stages {

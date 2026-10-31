@@ -279,7 +279,7 @@ ctx:event:{tenant}:{node}
 
 1. Keep `ContextEvent` timestamp-keyed by ingestion time.
 2. Keep `ContextIndexRef` as a native internal posting/ref mechanism, not a verbose serving data model.
-3. Stop exporting every index ref into ContextPack/debug pages by default.
+3. Stop exporting every index ref into ContextPack/debug blocks by default.
 4. Cap index fanout per object and per resource import.
 5. Add a native conformance candidate scan API that applies scope and filter predicates before returning rows.
 6. Move keyword indexing to dictionary ids.

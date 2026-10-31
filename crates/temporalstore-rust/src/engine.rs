@@ -2902,7 +2902,7 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// against committed bytes instead.
 ///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 27;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 28;
 
 /// Serialize a shard index, stamping the current format version.
 ///

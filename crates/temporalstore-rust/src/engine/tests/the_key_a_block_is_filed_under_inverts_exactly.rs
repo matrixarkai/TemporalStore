@@ -182,7 +182,7 @@ fn seed(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u32) -> 
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -1210,7 +1210,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
 
     let dir = tempfile::tempdir().expect("tempdir");
     let cache = dir.path().join("cache");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
 
     let index_path = indexes.join(format!("shard-{SHARD}.index.json"));

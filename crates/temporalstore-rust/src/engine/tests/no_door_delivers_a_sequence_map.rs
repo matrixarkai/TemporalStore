@@ -146,7 +146,7 @@ fn engine_over_dirs(dir: &std::path::Path, index_subdir: &str) -> (TemporalEngin
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         &index_dir,
     );
     (engine, index_dir)

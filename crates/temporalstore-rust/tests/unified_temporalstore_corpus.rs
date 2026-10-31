@@ -423,7 +423,7 @@ fn response_kind(response: &CommandResponse) -> &'static str {
 
 fn run_engine_case(case: &UnifiedCase) {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let mut engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
@@ -466,7 +466,7 @@ fn run_engine_case(case: &UnifiedCase) {
 
 fn run_client_case(case: &UnifiedCase) {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = Arc::new(Mutex::new(new_engine(
         dir.path(),
@@ -1886,7 +1886,7 @@ fn verify_proxy_route_quarantine_recovery() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2040,7 +2040,7 @@ fn verify_proxy_topology_churn_convergence() {
     let engine_a = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir_a.path().join("cache"),
-        dir_a.path().join("pages"),
+        dir_a.path().join("blocks"),
         dir_a.path().join("indexes"),
     );
     engine_a.load_shard(1);
@@ -2051,7 +2051,7 @@ fn verify_proxy_topology_churn_convergence() {
     let engine_b = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir_b.path().join("cache"),
-        dir_b.path().join("pages"),
+        dir_b.path().join("blocks"),
         dir_b.path().join("indexes"),
     );
     engine_b.load_shard(1);
@@ -3514,7 +3514,7 @@ fn load_storage_migration_case(case_name: &str) -> StorageMigrationCase {
 
 fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let mut engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
@@ -3559,7 +3559,7 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
 
 fn verify_storage_recovery_reconciles_bucket_index_to_model_views(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = new_engine(dir.path(), &block_dir, &index_dir, case.shard_id);
 
@@ -3575,7 +3575,7 @@ fn verify_storage_fault_matrix(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
     let engine = new_engine(
         dir.path(),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
         case.shard_id,
     );
@@ -3612,7 +3612,7 @@ fn verify_storage_follower_safe_gc(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
     let engine = new_engine(
         dir.path(),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
         case.shard_id,
     );
@@ -3670,7 +3670,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(shard_id);
@@ -3838,7 +3838,7 @@ fn verify_storage_wal_index_gc_generation_retention(shard_id: u64) {
     let restarted = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("restart-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     restarted.load_shard(shard_id);
@@ -3864,7 +3864,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(shard_id);
@@ -3947,7 +3947,7 @@ fn verify_storage_cache_replacement_policy_soak(shard_id: u64) {
     let engine = TemporalEngine::with_local_dirs(
         32,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(shard_id);
@@ -4083,7 +4083,7 @@ fn verify_storage_cache_replacement_policy_soak(shard_id: u64) {
     let drop_engine = TemporalEngine::with_local_dirs(
         64,
         drop_dir.path().join("cache"),
-        drop_dir.path().join("pages"),
+        drop_dir.path().join("blocks"),
         drop_dir.path().join("indexes"),
     );
     drop_engine.load_shard(shard_id + 1);
@@ -4126,7 +4126,7 @@ fn verify_storage_cache_refill_pressure(shard_id: u64) {
     let engine = TemporalEngine::with_local_dirs(
         32,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(shard_id);
@@ -4216,7 +4216,7 @@ fn verify_storage_cold_read_after_eviction(shard_id: u64) {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(shard_id);
@@ -4302,7 +4302,7 @@ fn verify_storage_cache_refill(case: &StorageMigrationCase) {
     let dir = tempfile::tempdir().unwrap();
     let engine = new_engine(
         dir.path(),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
         case.shard_id,
     );
@@ -4360,7 +4360,7 @@ async fn verify_storage_shared_store_replay(
     let follower_dir = tempfile::tempdir().unwrap();
     let follower = new_engine(
         follower_dir.path(),
-        &follower_dir.path().join("pages"),
+        &follower_dir.path().join("blocks"),
         &follower_dir.path().join("indexes"),
         case.shard_id,
     );
@@ -4394,7 +4394,7 @@ fn verify_storage_stream_backed_slab_runtime() {
 
 fn verify_random_size_reopen_scan() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = new_engine(dir.path(), &block_dir, &index_dir, 1);
 
@@ -4468,7 +4468,7 @@ fn verify_random_size_reopen_scan() {
 
 fn verify_cross_block_large_values() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,

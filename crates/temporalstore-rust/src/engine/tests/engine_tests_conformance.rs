@@ -244,7 +244,7 @@ fn read_snapshot(engine: &TemporalEngine) -> Vec<String> {
 
 fn run_one_sequence(seed: u64, maintenance: bool) -> Result<(), String> {
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &blocks, &indexes);
@@ -798,7 +798,7 @@ fn run_one_oracle_sequence(seed: u64) -> Result<(), String> {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -855,7 +855,7 @@ fn debug_minimize_seed() {
     }
     for prefix_len in 1..=commands.len() {
         let dir = tempfile::tempdir().unwrap();
-        let blocks = dir.path().join("pages");
+        let blocks = dir.path().join("blocks");
         let indexes = dir.path().join("indexes");
         let engine =
             TemporalEngine::with_local_dirs(1 << 20, dir.path().join("a"), &blocks, &indexes);

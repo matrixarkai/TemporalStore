@@ -26,7 +26,7 @@ fn engine() -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         4096,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     engine.load_shard(SHARD_ID);

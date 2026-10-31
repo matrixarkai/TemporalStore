@@ -592,7 +592,7 @@ pub struct IndexLogRecord {
 /// TTL-only or whole-object tombstone), and a META item carries the compaction anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexItemKind {
-    #[serde(rename = "page", alias = "block")]
+    #[serde(rename = "block", alias = "page")]
     Block,
     #[serde(rename = "object")]
     Object,
@@ -1327,9 +1327,10 @@ impl IndexItem {
 /// table never has to be complete and a new model costs nothing until it is added here.
 /// The item kind, as a number.
 ///
-/// The item taxonomy in the design this follows is an enum -- an integer on the wire. Ours was
-/// three words, `"page"`, `"object"` and `"meta"`, written once per item, and `"page"` is nearly
-/// every item a shard writes.
+/// The item taxonomy this follows is an enum -- an integer on the wire. Ours was three words,
+/// `"page"`, `"object"` and `"meta"`, written once per item, and the block kind was nearly every
+/// item a shard writes. The word is now spelled `"block"` wherever the enum is serialized
+/// directly; this encoding writes the number either way, and the inverse below reads both words.
 ///
 /// The numbers are fixed by this function and its inverse; a kind added later takes the next one
 /// and must never take another kind's. A name is still read, so a log written before this decodes
@@ -1360,7 +1361,14 @@ where
 
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<IndexItemKind, E> {
             match value {
-                "page" => Ok(IndexItemKind::Block),
+                // BOTH SPELLINGS, AND THIS IS A SECOND DECODER FOR THE SAME TOKEN. The enum's own
+                // serde `rename`/`alias` does not reach this visitor: the row writes the kind
+                // through `item_kind_as_number` and reads it back here, so widening the enum left
+                // this arm single-form. A log written before the number encoding spells the kind
+                // `page`, and anything that serializes the enum directly now spells it `block`;
+                // both have to land on the same variant or an index-log replay refuses a row it
+                // wrote itself.
+                "block" | "page" => Ok(IndexItemKind::Block),
                 "object" => Ok(IndexItemKind::Object),
                 "meta" => Ok(IndexItemKind::Meta),
                 other => Err(E::custom(format!("unknown item kind {other}"))),
@@ -1822,9 +1830,9 @@ pub struct SlabCatalogEntry {
     pub created_unix_ms: Option<u64>,
     #[serde(default)]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_page_id", alias = "first_block_id", default)]
+    #[serde(rename = "first_block_id", alias = "first_page_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", alias = "last_block_id", default)]
+    #[serde(rename = "last_block_id", alias = "last_page_id", default)]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub version: u64,

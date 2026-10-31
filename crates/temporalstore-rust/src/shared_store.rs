@@ -180,9 +180,9 @@ pub struct SharedStoreBlockSlab {
     // `byte_size` above is the slab's physical byte size.
     #[serde(default)]
     pub logical_bytes: u64,
-    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub created_unix_ms: Option<u64>,
@@ -5010,7 +5010,7 @@ mod tests {
         TemporalEngine::with_local_dirs(
             cache_bytes,
             root.join(format!("{role}-cache")),
-            root.join(format!("{role}-pages")),
+            root.join(format!("{role}-blocks")),
             root.join(format!("{role}-index")),
         )
     }
@@ -5111,7 +5111,7 @@ mod tests {
     #[test]
     fn delete_read_miss_survives_wal_replay_recovery() {
         let dir = tempfile::tempdir().unwrap();
-        let blocks = dir.path().join("pages");
+        let blocks = dir.path().join("blocks");
         let indexes = dir.path().join("indexes");
 
         let engine =
@@ -5865,7 +5865,7 @@ mod tests {
         // enumerates it while the in-memory index still references it.
         let slab0 = dir
             .path()
-            .join("primary-pages")
+            .join("primary-blocks")
             .join("block_segment_00000000000000000000.seg");
         std::fs::remove_file(&slab0).unwrap();
         assert!(!primary.block_store().slab_ids().unwrap().contains(&0));

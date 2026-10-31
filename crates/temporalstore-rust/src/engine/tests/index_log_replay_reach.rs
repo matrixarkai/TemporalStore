@@ -71,7 +71,7 @@ fn the_default_load_path_does_not_fold_the_index_log_and_the_checked_one_does() 
     let _rolling = RollingThreshold;
 
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
@@ -330,7 +330,7 @@ fn base_with_deadlines_and_anchor_less_deltas(
     keys: usize,
     with_content: usize,
 ) -> AnchorLessFixture {
-    let blocks = dir.join("pages");
+    let blocks = dir.join("blocks");
     let indexes = dir.join("indexes");
     let engine = TemporalEngine::with_local_dirs(1 << 20, dir.join("cache"), &blocks, &indexes);
     engine.load_shard(SHARD);
@@ -470,7 +470,7 @@ fn the_fold_applies_an_anchor_less_delta_no_base_anchor_can_reflect() {
     let reader = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-reader"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     let loaded = reader
@@ -603,7 +603,7 @@ fn every_record_the_fold_met_was_decided_by_its_own_anchor() {
     let reader = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-reader"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     crate::index_log::probe::reset();

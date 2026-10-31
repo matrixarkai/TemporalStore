@@ -1,10 +1,10 @@
 # Object Store Backends
 
 The stream layer now has a URI-based backend boundary instead of hardcoding one remote object
-store. This lets the same page, index, and WAL code choose storage by URI.
+store. This lets the same block, index, and WAL code choose storage by URI.
 
 Redis is intentionally not listed here. This layer stores appendable blobs and stream metadata for
-page/index/WAL persistence; Redis belongs at the serving protocol/cache layer, not the durable
+block/index/WAL persistence; Redis belongs at the serving protocol/cache layer, not the durable
 object-store layer.
 
 | URI scheme | Backend | Current status |

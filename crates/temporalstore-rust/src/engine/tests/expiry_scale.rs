@@ -253,7 +253,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             index_dir.clone(),
         )
     };
@@ -341,7 +341,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -370,7 +370,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             index_dir.clone(),
         );
         engine.load_shard(1);
@@ -385,7 +385,7 @@ fn the_deadline_index_is_rebuilt_on_load_manifest_install_and_wal_replay() {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             index_dir.clone(),
         );
         engine.load_shard(1);
@@ -916,7 +916,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
             TemporalEngine::with_local_dirs(
                 1024,
                 dir.path().join("cache"),
-                dir.path().join("pages"),
+                dir.path().join("blocks"),
                 index_dir.clone(),
             )
         };
@@ -956,7 +956,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         seed_and_sweep(&engine);
@@ -977,7 +977,7 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
             TemporalEngine::with_local_dirs(
                 1024,
                 dir.path().join("cache"),
-                dir.path().join("pages"),
+                dir.path().join("blocks"),
                 index_dir.clone(),
             )
         };
@@ -1210,7 +1210,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     let due_key = |index: usize| format!("zzz-due-{index:04}");
 
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
@@ -1577,14 +1577,14 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
         label: &str,
     ) -> u64 {
         let root = scratch.join(label.replace(' ', "-"));
-        copy_tree(blocks, &root.join("pages"));
+        copy_tree(blocks, &root.join("blocks"));
         copy_tree(indexes, &root.join("indexes"));
         crate::engine::lifecycle::LAST_REPLAY_WATERMARK
             .store(NO_LOAD_RECORDED, std::sync::atomic::Ordering::SeqCst);
         let reader = TemporalEngine::with_local_dirs(
             1 << 20,
             root.join("cache"),
-            root.join("pages"),
+            root.join("blocks"),
             root.join("indexes"),
         );
         reader.load_shard(1);
@@ -1616,7 +1616,7 @@ fn wal_reclaim_never_frees_what_the_default_load_path_replays() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let probes = dir.path().join("probes");
     let engine =
@@ -2209,7 +2209,7 @@ fn a_with_options_deadline_survives_recovery() {
         TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             index_dir.clone(),
         )
     };
@@ -2900,7 +2900,7 @@ fn a_delta_record_carries_a_deadline_a_write_armed_and_one_it_moved() {
     let persist_key = "persist-target";
 
     let dir = tempfile::tempdir().unwrap();
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &blocks, &indexes);
@@ -3746,7 +3746,7 @@ fn cache_pass_fixture(
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

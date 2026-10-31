@@ -41,7 +41,7 @@ fn per_write_served_index_cost_report() {
         std::fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
     let engine =
-        TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("pages"), &index_dir);
+        TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("blocks"), &index_dir);
     engine.load_shard(SHARD_ID);
 
     let batch = 100usize;

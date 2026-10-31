@@ -43,7 +43,7 @@ fn new_engine(root: &PathBuf) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         CACHE_BYTES,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     let loaded = engine.load_shard_with(LoadShardRequest {

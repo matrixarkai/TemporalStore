@@ -842,7 +842,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -959,7 +959,7 @@ fn probe_engine_on_for_record(
     let engine = std::sync::Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ));
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -1511,7 +1511,7 @@ fn a_context_node_write_lands_in_the_hash_field_not_in_context_nodes() {
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

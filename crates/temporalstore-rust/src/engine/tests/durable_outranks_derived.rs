@@ -137,7 +137,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -2403,8 +2403,8 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
         // The pages are copied so the addresses resolve; the log is rebuilt from the records.
         let copy = std::process::Command::new("cp")
             .arg("-a")
-            .arg(source.path().join("pages"))
-            .arg(into.path().join("pages"))
+            .arg(source.path().join("blocks"))
+            .arg(into.path().join("blocks"))
             .status()
             .expect("the page directory copies");
         assert!(copy.success(), "copying the pages failed, so the fixture has no store");
@@ -2840,8 +2840,8 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
         // the page has to be reachable or it would exercise the fallback instead.
         let copied = std::process::Command::new("cp")
             .arg("-a")
-            .arg(source.path().join("pages"))
-            .arg(into.path().join("pages"))
+            .arg(source.path().join("blocks"))
+            .arg(into.path().join("blocks"))
             .status()
             .expect("the page directory copies");
         assert!(copied.success(), "copying the pages failed");

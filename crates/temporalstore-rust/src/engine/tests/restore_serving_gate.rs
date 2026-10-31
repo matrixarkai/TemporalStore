@@ -65,7 +65,7 @@ fn a_load_that_replays_a_wal_suffix_runs_with_the_serving_gate_shut() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &index_dir,
     );
     engine.load_shard(SHARD);
@@ -76,7 +76,7 @@ fn a_load_that_replays_a_wal_suffix_runs_with_the_serving_gate_shut() {
     let restarted = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("restart-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &index_dir,
     );
     // Cleared so the assertion below cannot be satisfied by some earlier replay in this process.
@@ -134,7 +134,7 @@ fn a_dump_install_onto_a_loaded_shard_replays_with_the_serving_gate_shut() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &source_index_dir,
     );
     engine.load_shard(SHARD);
@@ -162,7 +162,7 @@ fn a_dump_install_onto_a_loaded_shard_replays_with_the_serving_gate_shut() {
     let restored = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("restore-cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &restore_index_dir,
     );
     // The already-loaded shard the install lands on.

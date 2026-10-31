@@ -65,7 +65,7 @@ fn publish_cost(keys: usize, named: usize) -> PublishCost {
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(SHARD);

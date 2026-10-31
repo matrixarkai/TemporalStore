@@ -63,7 +63,7 @@ fn seeded_runtime(dir: &std::path::Path, keys: usize) -> DataNodeRuntime {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -747,7 +747,7 @@ fn the_evict_gates_cache_terms_are_process_wide_not_per_shard() {
     let engine = TemporalEngine::with_local_dirs(
         SHIPPED_CACHE_MEMORY_BUDGET as usize,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     for shard_id in [1u32, 2u32] {
@@ -1280,7 +1280,7 @@ fn the_evict_gate_reads_only_this_shards_own_bytes() {
     let engine = TemporalEngine::with_local_dirs(
         SHIPPED_CACHE_MEMORY_BUDGET as usize,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     for shard_id in [1u32, 2u32] {
@@ -1818,7 +1818,7 @@ fn nothing_acknowledged_is_lost_when_the_bound_releases_and_the_shard_reloads() 
     let reloaded = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = reloaded.load_shard_with(crate::control::LoadShardRequest {
@@ -2327,7 +2327,7 @@ fn the_shipped_defaults_release_blocks_and_keep_every_record_when_the_bound_is_c
     let reloaded = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = reloaded.load_shard_with(crate::control::LoadShardRequest {
@@ -2737,7 +2737,7 @@ fn a_round_that_skips_a_band_in_use_keeps_every_acknowledged_record() {
     let reloaded = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = reloaded.load_shard_with(crate::control::LoadShardRequest {

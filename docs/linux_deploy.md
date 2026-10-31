@@ -151,7 +151,7 @@ The installer:
 
 - optionally builds release binaries with Cargo;
 - installs the four Rust binaries into the install prefix;
-- creates persistent cache/page/index/cursor/log directories;
+- creates persistent cache/block/index/cursor/log directories;
 - starts metaserver and datanode;
 - validates health and smoke write/read;
 - optionally writes Codex hook wrappers.
@@ -203,7 +203,7 @@ Persistent storage:
 
 ```text
 ~/.local/share/temporalstore/cache
-~/.local/share/temporalstore/pages
+~/.local/share/temporalstore/blocks
 ~/.local/share/temporalstore/indexes
 ~/.local/share/temporalstore/replica-replay-cursors
 ~/.local/share/temporalstore/logs

@@ -61,7 +61,7 @@ growth of users + corpus), `--root`.
 ## Scope
 
 This exercises the **real datanode storage engine** (MultiLayerCache memory/disk tiering, block
-store, packed pages, per-shard state) and the **namespace/table → shard → datanode partition
+store, packed blocks, per-shard state) and the **namespace/table → shard → datanode partition
 routing** in-process, across parallel datanodes. It is the storage-and-partitioning half of the
 distributed service. The **metaserver/proxy TCP process wiring** (route lookup, registration,
 heartbeat, proxy forwarding) is covered separately by `distributed_raft_harness`,

@@ -274,7 +274,7 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     load_on(&engine);
@@ -351,7 +351,7 @@ fn a_list_keeps_its_present_elements_and_loses_its_popped_one_under_the_collapse
 fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
     println!("\n=== list, gate on, popped, then reopened ===");
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     {
         let engine = engine_on(&dir.path().join("cache"), &blocks, &indexes);
@@ -426,7 +426,7 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
 fn a_gated_list_comes_back_through_wal_replay() {
     println!("\n=== a gated list through WAL replay, no index file ===");
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     {
         let engine = engine_on(&dir.path().join("cache-writer"), &blocks, &indexes);
@@ -500,7 +500,7 @@ fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     load_on(&engine);
@@ -571,7 +571,7 @@ fn the_projection_collapses_every_container_kind() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     load_on(&engine);
@@ -698,7 +698,7 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(
             &dir.path().join("cache"),
-            &dir.path().join("pages"),
+            &dir.path().join("blocks"),
             &dir.path().join("indexes"),
         );
         load_on(&engine);
@@ -823,7 +823,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     load_on(&engine);
@@ -887,7 +887,7 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(
         &dir.path().join("cache"),
-        &dir.path().join("pages"),
+        &dir.path().join("blocks"),
         &dir.path().join("indexes"),
     );
     load_on(&engine);
