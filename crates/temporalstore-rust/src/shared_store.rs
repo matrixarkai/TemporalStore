@@ -1542,6 +1542,7 @@ where
             offset_index_reads: 0,
             range_bytes_read: 0,
         };
+        let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
         for (wal_index, entry) in wal_entries {
             if wal_index <= after_wal_index {
                 continue;
@@ -1554,10 +1555,14 @@ where
             }
             // Both command and outcome records advance the same sequence.
             expected = wal_index + 1;
-            Self::apply_replayed_wal_entry(shard_id, wal_index, entry, engine)?;
+            window.push((wal_index, entry));
             report.applied += 1;
             report.last_wal_index = wal_index;
+            if window.len() >= REPLAY_APPLY_WINDOW {
+                Self::apply_replayed_window(shard_id, &mut window, engine)?;
+            }
         }
+        Self::apply_replayed_window(shard_id, &mut window, engine)?;
         Ok(report)
     }
 
@@ -1573,6 +1578,36 @@ where
         engine: &TemporalEngine,
     ) -> Result<ReplayReport, SharedStoreReplicationError> {
         self.replay_wal(shard_id, after_wal_index, engine).await
+    }
+
+    /// Applies one window of replayed entries under a single durable barrier.
+    ///
+    /// The barrier is checked FIRST, whatever the applies said: a window whose barrier failed is
+    /// not durable even where every command in it answered ok, and
+    /// `replay_wal_strict_with_cursor` saves a cursor on a successful return -- after which
+    /// `gc_wal_before_cursor_safe` may delete the very entries that did not reach disk.
+    fn apply_replayed_window(
+        shard_id: ShardId,
+        window: &mut Vec<(u64, SharedStoreWalEntry)>,
+        engine: &TemporalEngine,
+    ) -> Result<(), SharedStoreReplicationError> {
+        if window.is_empty() {
+            return Ok(());
+        }
+        let last_in_window = window.last().map(|(index, _)| *index).unwrap_or_default();
+        let (applied, commit) = engine.apply_one_coalesced_batch(|| {
+            for (wal_index, entry) in window.drain(..) {
+                Self::apply_replayed_wal_entry(shard_id, wal_index, entry, engine)?;
+            }
+            Ok::<(), SharedStoreReplicationError>(())
+        });
+        if let Err(err) = commit {
+            return Err(SharedStoreReplicationError::ApplyFailed {
+                wal_index: last_in_window,
+                status: Status::error("shared_wal_commit_failed", err),
+            });
+        }
+        applied
     }
 
     fn apply_replayed_wal_entry(
@@ -1642,6 +1677,15 @@ where
         // on the lookup. Measured at 42.50% of the program's instructions before this, and
         // asserted below by `offset_index_reads`, which now counts the entries it served
         // from one load rather than the loads it performed.
+        // ---- AND THE APPLIES GO IN WINDOWS, one durable barrier each.
+        //
+        // The engine's per-command fdatasync is what this loop actually waits on: measured at
+        // roughly 900 us a replayed entry against roughly 100 with the barrier coalesced, on the
+        // five-node scale report. The entries are already durable in THIS log, so one barrier per
+        // window is as strong as one per entry -- see `apply_one_coalesced_batch`, which is also
+        // why the window is buffered rather than the scope held across the read below: the scope
+        // is a thread-local and this loop awaits.
+        let mut window: Vec<(u64, SharedStoreWalEntry)> = Vec::with_capacity(REPLAY_APPLY_WINDOW);
         for (wal_index, metadata) in offset_metadata.range((after_wal_index + 1)..) {
             if *wal_index != expected {
                 return Err(SharedStoreReplicationError::ReplayGap {
@@ -1652,13 +1696,17 @@ where
             let (entry, range_bytes_read) = self
                 .read_wal_entry_with_offset_metadata(shard_id, *wal_index, metadata)
                 .await?;
-            Self::apply_replayed_wal_entry(shard_id, *wal_index, entry, engine)?;
+            window.push((*wal_index, entry));
             report.applied += 1;
             report.last_wal_index = *wal_index;
             report.offset_index_reads += 1;
             report.range_bytes_read += range_bytes_read;
             expected += 1;
+            if window.len() >= REPLAY_APPLY_WINDOW {
+                Self::apply_replayed_window(shard_id, &mut window, engine)?;
+            }
         }
+        Self::apply_replayed_window(shard_id, &mut window, engine)?;
         Ok(Some(report))
     }
 
@@ -2488,6 +2536,27 @@ where
         Ok(manifest)
     }
 }
+
+/// How many replayed entries share one durable barrier.
+///
+/// The entries are already durable in the shared log, so the only thing a per-entry fdatasync
+/// buys is a shorter re-replay after a crash mid-replay -- and a replay that crashes re-reads
+/// from its last saved cursor anyway, which only moves when a replay returns successfully. So
+/// the window trades at most this many entries of re-read for one barrier instead of this many.
+///
+/// 256 because the win is almost all in the first order of magnitude -- a per-entry fdatasync is
+/// roughly 800 us of the 900 us an entry measured on the scale report -- while the buffer is
+/// bounded at 256 entries of already-read bytes rather than the whole log.
+const REPLAY_APPLY_WINDOW: usize = 256;
+
+// WHAT THE MID-LOOP APPLY IS FOR, said because a plant showed it is not what it looks like.
+// Removing it -- leaving only the apply after the loop -- loses NO entries: the window simply
+// grows to the whole log and one barrier covers all of it, and every test here still passed.
+// So it bounds BUFFERED ENTRIES and the time to the first barrier, not correctness. The two
+// applies that ARE correctness are the tail ones, one per replay path, and dropping either is
+// refused by `a_replay_applies_every_entry_across_its_barrier_windows` and
+// `an_indexed_replay_applies_every_entry_across_its_barrier_windows` respectively -- which is
+// why both layouts have their own test rather than one standing for both.
 
 impl SharedStoreReplicator<FileObjectStore> {
     /// Conformance LAZY restore for the shared-filesystem backend: install the served
@@ -5022,6 +5091,201 @@ mod tests {
         let replicator = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
             .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
         (store, replicator)
+    }
+
+    #[tokio::test]
+    async fn a_replay_applies_every_entry_across_its_barrier_windows() {
+        // The replay applies in windows of `REPLAY_APPLY_WINDOW` so that one durable barrier
+        // covers each window instead of one per entry -- measured at roughly 900 us an entry
+        // against roughly 100. What that must not change is WHAT gets applied, and the two ways
+        // it could go wrong are both about window boundaries:
+        //
+        // * the tail window, applied after the loop, could be dropped -- which loses up to
+        //   `REPLAY_APPLY_WINDOW - 1` entries and nothing else would notice;
+        // * the mid-loop window could be dropped, which loses the first whole window.
+        //
+        // So the corpus is deliberately NOT a multiple of the window: it crosses the boundary
+        // twice and leaves a short tail, and every key is read back afterwards.
+        let entries = REPLAY_APPLY_WINDOW * 2 + 7;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, writer) = test_shared_store(dir.path());
+        for index in 1..=entries as u64 {
+            writer
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index: index,
+                    command: Some(Command::StringSet {
+                        key: format!("key-{index:06}"),
+                        value: format!("value-{index:06}").into_bytes(),
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let reader = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
+        let follower = test_engine_with_cache(dir.path(), "follower", 1 << 20);
+        follower.load_shard(1);
+        let report = reader.replay_wal_strict(1, 0, &follower).await.unwrap();
+        println!(
+            "REPLAYWINDOWS window={REPLAY_APPLY_WINDOW} entries={entries} applied={} last={}",
+            report.applied, report.last_wal_index
+        );
+        assert_eq!(report.applied, entries, "every entry has to be applied");
+        assert_eq!(report.last_wal_index, entries as u64);
+
+        // EVERY key, not a sample: a dropped window is a contiguous run, and a sample of three
+        // keys can miss one. The first and last of each window are where a boundary error lands.
+        for index in 1..=entries as u64 {
+            let got = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("key-{index:06}"),
+                },
+            });
+            assert_eq!(
+                got.response,
+                CommandResponse::Bytes {
+                    value: Some(format!("value-{index:06}").into_bytes())
+                },
+                "entry {index} of {entries} was not applied -- window {} of the replay",
+                index as usize / REPLAY_APPLY_WINDOW
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn an_indexed_replay_applies_every_entry_across_its_barrier_windows() {
+        // THE DEFAULT PATH, and the one the windows were harder to get right on.
+        // `ProtobufAppendBlob` replays through `replay_wal_from_offset_metadata`, which AWAITS a
+        // range read per entry -- so its window cannot be held open across the loop the way the
+        // other path's can. It buffers instead, and `apply_one_coalesced_batch` takes a
+        // non-async closure so that holding it open is a compile error rather than a comment.
+        //
+        // The other two window tests drive `JsonPerKey`, which is the compatibility layout. If
+        // only those existed, the production path would have no test of its boundaries at all.
+        let entries = REPLAY_APPLY_WINDOW * 2 + 11;
+        let dir = tempfile::tempdir().unwrap();
+        let store = Arc::new(FileObjectStore::new(dir.path().join("objects")));
+        let writer = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        assert_eq!(
+            writer.wal_append_mode,
+            SharedStoreWalAppendMode::ProtobufAppendBlob,
+            "this test is about the indexed layout, and the default is no longer it"
+        );
+        for index in 1..=entries as u64 {
+            writer
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index: index,
+                    command: Some(Command::StringSet {
+                        key: format!("key-{index:06}"),
+                        value: format!("value-{index:06}").into_bytes(),
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+
+        let reader = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone());
+        let follower = test_engine_with_cache(dir.path(), "indexed-follower", 1 << 20);
+        follower.load_shard(1);
+        let report = reader.replay_wal_strict(1, 0, &follower).await.unwrap();
+        println!(
+            "REPLAYWINDOWSINDEXED window={REPLAY_APPLY_WINDOW} entries={entries} applied={} \
+             index_reads={}",
+            report.applied, report.offset_index_reads
+        );
+        assert_eq!(report.applied, entries, "every entry has to be applied");
+        // Not vacuous: if this had fallen back to the union reader it would be testing the other
+        // path again, and `offset_index_reads` is what tells the two apart.
+        assert_eq!(
+            report.offset_index_reads as usize, entries,
+            "this should have gone through the offset index, and served {} entries from it",
+            report.offset_index_reads
+        );
+        for index in 1..=entries as u64 {
+            let got = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("key-{index:06}"),
+                },
+            });
+            assert_eq!(
+                got.response,
+                CommandResponse::Bytes {
+                    value: Some(format!("value-{index:06}").into_bytes())
+                },
+                "entry {index} of {entries} was not applied -- window {} of the replay",
+                index as usize / REPLAY_APPLY_WINDOW
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_replay_resumed_from_a_cursor_also_crosses_its_windows() {
+        // The same, from a non-zero start, because `after_wal_index` shifts every window boundary
+        // and the tail with it. A replay resumed from a cursor is the production shape; a replay
+        // from zero is the first one only.
+        let entries = REPLAY_APPLY_WINDOW + 5;
+        let resume_after = 3u64;
+        let dir = tempfile::tempdir().unwrap();
+        let (store, writer) = test_shared_store(dir.path());
+        for index in 1..=entries as u64 {
+            writer
+                .publish_wal_entry(SharedStoreWalEntry {
+                    shard_id: 1,
+                    wal_index: index,
+                    command: Some(Command::StringSet {
+                        key: format!("key-{index:06}"),
+                        value: format!("value-{index:06}").into_bytes(),
+                    }),
+                    staged_blocks: Vec::new(),
+                    outcomes: Vec::new(),
+                })
+                .await
+                .unwrap();
+        }
+        let reader = SharedStoreReplicator::new(TEST_CLUSTER_ID, store.clone())
+            .with_wal_append_mode(SharedStoreWalAppendMode::JsonPerKey);
+        let follower = test_engine_with_cache(dir.path(), "resumed", 1 << 20);
+        follower.load_shard(1);
+        let report = reader
+            .replay_wal_strict(1, resume_after, &follower)
+            .await
+            .unwrap();
+        assert_eq!(report.applied, entries - resume_after as usize);
+        for index in (resume_after + 1)..=entries as u64 {
+            let got = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("key-{index:06}"),
+                },
+            });
+            assert!(
+                matches!(got.response, CommandResponse::Bytes { value: Some(_) }),
+                "entry {index} was not applied after resuming at {resume_after}"
+            );
+        }
+        // And the entries below the cursor are NOT applied, which is what `after_wal_index` means.
+        for index in 1..=resume_after {
+            let got = follower.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringGet {
+                    key: format!("key-{index:06}"),
+                },
+            });
+            assert_eq!(
+                got.response,
+                CommandResponse::Bytes { value: None },
+                "entry {index} is below the cursor and must not have been applied"
+            );
+        }
     }
 
     #[tokio::test]
