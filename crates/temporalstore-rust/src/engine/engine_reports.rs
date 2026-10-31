@@ -3349,7 +3349,7 @@ pub struct StorageManagerCycleRequest {
     /// Buckets evicted per round. **Zero means no limit**, as it does on every other bound in
     /// this request -- not "evict nothing", which is what the sampled selection used to read it
     /// as while the exhaustive selection read it as "evict everything".
-    #[serde(default)]
+    #[serde(default = "default_eviction_batch_limit")]
     pub eviction_batch_limit: usize,
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
@@ -3367,15 +3367,15 @@ pub struct StorageManagerCycleRequest {
     /// 26.6 B/key and the whole resident index from 326.3 to 130.6 B/key, with every read still
     /// answering. The shard's own index figure was 1,430,016 B there, so a bound below that fires;
     /// a deployment sizing this picks the resident index it is willing to hold per shard.
-    #[serde(default)]
+    #[serde(default = "default_index_resident_limit_bytes")]
     pub index_resident_limit_bytes: u64,
     // `eviction_delete_drop` WAS HERE AND IS RETIRED. A stored request that still carries it parses
     // and is ignored. The arm it selected deleted acknowledged records to reclaim memory; see the
     // retirement note on `StorageManagerOptions` for the measurement, and
     // `data_node::tests::evict_dump_drop` for both halves of it.
-    #[serde(default)]
+    #[serde(default = "default_max_expire_hot_buckets_per_round")]
     pub max_expire_hot_buckets_per_round: usize,
-    #[serde(default)]
+    #[serde(default = "default_max_expire_cold_buckets_per_round")]
     pub max_expire_cold_buckets_per_round: usize,
     #[serde(default)]
     pub expire_hot_cursor: Option<String>,
@@ -3395,11 +3395,11 @@ pub struct StorageManagerCycleRequest {
     pub block_gc_raft_install_floor_slab_id: Option<u64>,
     #[serde(default)]
     pub block_gc_delayed_destroy_grace_ms: u64,
-    #[serde(default)]
+    #[serde(default = "default_index_gc_index_log_bytes_threshold")]
     pub index_gc_index_log_bytes_threshold: u64,
-    #[serde(default)]
+    #[serde(default = "default_index_gc_usage_ratio_trigger_basis_points")]
     pub index_gc_usage_ratio_trigger_basis_points: u64,
-    #[serde(default)]
+    #[serde(default = "default_index_gc_max_entries_per_round")]
     pub index_gc_max_entries_per_round: usize,
     /// Whether index-log truncation waits for the buckets it describes to be dumped.
     ///
@@ -3413,7 +3413,7 @@ pub struct StorageManagerCycleRequest {
     /// Reclaim only slabs whose garbage ratio is at least this many basis points
     /// (garbage = 10_000 - slab live-fraction). 0 reclaims every eligible slab
     /// (today's behavior). The garbage-ratio GC gate, expressed against slabs.
-    #[serde(default)]
+    #[serde(default = "default_block_gc_min_slab_garbage_basis_points")]
     pub block_gc_min_slab_garbage_basis_points: u64,
     /// Bytes the active data slab must hold before the prepare stage rolls a fresh one.
     ///
@@ -3485,6 +3485,44 @@ pub const DEFAULT_INDEX_RESIDENT_LIMIT_BYTES: u64 = 64 * 1024 * 1024;
 /// offering partially-live slabs as candidates -- which is exactly when a threshold should
 /// already be in place rather than being added in a hurry.
 pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 4_000;
+
+/// THE DECODE DEFAULTS FOR THE PER-ROUND BOUNDS, each naming the constant beside it.
+///
+/// These exist because a bare `#[serde(default)]` on a `usize` or a `u64` decodes an ABSENT
+/// field to the FIELD TYPE default -- 0 -- and not to this struct's `Default`, which is where
+/// the bounds are set. Both cycle endpoints build the request from a parsed body, so an absent
+/// field is what every caller who does not name one sends: the bounds reached callers of
+/// `Default::default()` and no HTTP caller at all, and 0 in each of these means NO bound rather
+/// than a small one. Exactly the reasoning already written on
+/// `index_gc_commit_dirty_buckets_before_truncation`, carried across to the numbers.
+///
+/// Naming a bound 0 explicitly still asks for an unbounded round: serde consults a default only
+/// for an ABSENT field, so this is a default and not a floor.
+/// `a_cycle_request_that_names_no_bound_still_arrives_bounded` asserts both halves.
+fn default_index_gc_max_entries_per_round() -> usize {
+    DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND
+}
+fn default_index_gc_index_log_bytes_threshold() -> u64 {
+    DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD
+}
+fn default_index_gc_usage_ratio_trigger_basis_points() -> u64 {
+    DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS
+}
+fn default_max_expire_hot_buckets_per_round() -> usize {
+    DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND
+}
+fn default_max_expire_cold_buckets_per_round() -> usize {
+    DEFAULT_MAX_EXPIRE_COLD_BUCKETS_PER_ROUND
+}
+fn default_eviction_batch_limit() -> usize {
+    DEFAULT_EVICTION_BATCH_LIMIT
+}
+fn default_block_gc_min_slab_garbage_basis_points() -> u64 {
+    DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS
+}
+fn default_index_resident_limit_bytes() -> u64 {
+    DEFAULT_INDEX_RESIDENT_LIMIT_BYTES
+}
 
 impl Default for StorageManagerCycleRequest {
     fn default() -> Self {
