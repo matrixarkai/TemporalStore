@@ -1007,7 +1007,7 @@ pub enum StreamKind {
 pub struct StreamReadRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub offset: u64,
     pub size: u64,
@@ -1023,7 +1023,7 @@ pub struct StreamReadResponse {
 pub struct ScanStreamRequest {
     pub shard_id: ShardId,
     pub stream_kind: StreamKind,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub start_offset: u64,
     pub end_offset: u64,
@@ -1076,8 +1076,8 @@ mod tests {
         };
         let read_json = serde_json::to_value(&read).expect("a request serializes");
         assert_eq!(
-            read_json["page_segment_id"], SLAB,
-            "StreamReadRequest no longer writes its durable field name: {read_json}"
+            read_json["block_segment_id"], SLAB,
+            "StreamReadRequest no longer writes its canonical durable field name: {read_json}"
         );
         assert!(
             read_json.get("block_slab_id").is_none(),
@@ -1112,7 +1112,7 @@ mod tests {
         };
         let scan_json = serde_json::to_value(&scan).expect("a request serializes");
         assert_eq!(
-            scan_json["page_segment_id"], SLAB,
+            scan_json["block_segment_id"], SLAB,
             "ScanStreamRequest no longer writes its durable field name: {scan_json}"
         );
         assert!(

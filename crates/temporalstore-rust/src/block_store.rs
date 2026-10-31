@@ -1026,7 +1026,7 @@ pub struct BlockStoreSlabLive {
 /// points at. Across the whole store it is not, and this is where that shows.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabLiveFraction {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     /// Total logical bytes ever appended to this slab. Only ever grows, which is correct FOR A
@@ -1043,7 +1043,7 @@ pub struct BlockStoreSlabLiveFraction {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreGcUtilityCandidate {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub bytes: u64,
     #[serde(default)]
@@ -1177,7 +1177,7 @@ pub struct BlockStoreGcPolicyPlan {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreDelayedDestroySlabReport {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1350,7 +1350,7 @@ pub struct BlockStoreSlabDescriptor {
     /// ever do.
     #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub state: BlockStoreSlabState,
     pub physical_bytes: u64,
@@ -1359,9 +1359,9 @@ pub struct BlockStoreSlabDescriptor {
     pub created_unix_ms: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub updated_unix_ms: Option<u64>,
-    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     #[serde(default)]
     pub readable_prefix_physical_bytes: u64,
@@ -1457,7 +1457,7 @@ pub struct BlockStoreSlabSummary {
 pub struct BlockStoreSlabUsage {
     #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     #[serde(alias = "storage_zone_id", default)]
     pub storage_slab_id: u64,
@@ -1481,9 +1481,9 @@ pub struct BlockStoreSlabUsage {
     pub reclaimable_block_store_used_bytes: u64,
     #[serde(alias = "purged_page_store_used_bytes")]
     pub purged_block_store_used_bytes: u64,
-    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
 }
 
@@ -1517,9 +1517,9 @@ pub struct StreamBackedSlabRuntimeReport {
     pub logical_bytes: u64,
     #[serde(default)]
     pub stream_record_count: u64,
-    #[serde(rename = "first_page_id", alias = "first_block_id", default)]
+    #[serde(rename = "first_block_id", alias = "first_page_id", default)]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", alias = "last_block_id", default)]
+    #[serde(rename = "last_block_id", alias = "last_page_id", default)]
     pub last_block_id: Option<u64>,
     #[serde(alias = "page_id_continuity_ready", default)]
     pub block_id_continuity_ready: bool,
@@ -1570,7 +1570,7 @@ pub struct StreamBackedSlabRuntimeReport {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabReport {
-    #[serde(rename = "page_segment_id", alias = "block_segment_id")]
+    #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
     pub physical_bytes: u64,
     pub logical_bytes: u64,
@@ -1595,9 +1595,9 @@ pub struct BlockStoreSlabReport {
     #[serde(alias = "routing_slot_count")]
     pub routing_bucket_count: u64,
     pub compressed_records: u64,
-    #[serde(rename = "first_page_id", alias = "first_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "first_block_id", alias = "first_page_id", default, skip_serializing_if = "Option::is_none")]
     pub first_block_id: Option<u64>,
-    #[serde(rename = "last_page_id", alias = "last_block_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "last_block_id", alias = "last_page_id", default, skip_serializing_if = "Option::is_none")]
     pub last_block_id: Option<u64>,
     /// ALWAYS `None` TODAY -- see `routing_bucket_count`. With
     /// `skip_serializing_if = "Option::is_none"` this means the field is absent from the
@@ -3691,6 +3691,230 @@ mod tests {
         );
     }
 
+    /// NO TWO FIELDS OF ONE SERDE STRUCT MAY CLAIM THE SAME WIRE NAME.
+    ///
+    /// A field's wire names are its `rename` -- or its identifier, when it has none -- plus every
+    /// `alias`. When two fields of one struct claim the same name the result is not a compile
+    /// error and not a decode error:
+    ///
+    ///   * on DECODE serde resolves the name to the FIRST declaration, so the other field is
+    ///     never populated from the wire. Every other value in the document lands, so the symptom
+    ///     is one field that is always its `default` -- a zero in a report, or an empty map in an
+    ///     index -- with nothing failing anywhere.
+    ///   * on ENCODE, if both claim it as the emitted name, the key is written TWICE and which one
+    ///     a reader keeps is the reader's business.
+    ///
+    /// THIS IS NOT HYPOTHETICAL AND IT IS WHY THIS GUARD EXISTS. Widening a reader by adding an
+    /// alias is normally free, which is exactly what makes it easy to add one that a sibling field
+    /// already emits: `StorageGcSnapshot` carried
+    /// `rename = "stale_page_tombstones", alias = "stale_block_tombstones"` on one field while the
+    /// field below it emitted `stale_block_tombstones` outright. The twin pair exists on purpose --
+    /// one quantity published under both words -- so the alias was aimed at a name that was never
+    /// a second spelling of that field at all.
+    ///
+    /// The denominators are asserted first, because a walk that found nothing would hold this
+    /// vacuously.
+    #[test]
+    fn no_two_fields_of_one_struct_claim_one_wire_name() {
+        fn attribute_value<'a>(attributes: &'a str, key: &str) -> Option<&'a str> {
+            let after = attributes.split_once(key)?.1;
+            after.split_once('"').map(|(value, _)| value)
+        }
+        fn attribute_values(attributes: &str, key: &str) -> Vec<String> {
+            let mut found = Vec::new();
+            let mut rest = attributes;
+            while let Some((_, after)) = rest.split_once(key) {
+                match after.split_once('"') {
+                    Some((value, tail)) => {
+                        found.push(value.to_string());
+                        rest = tail;
+                    }
+                    None => break,
+                }
+            }
+            found
+        }
+        fn field_name(line: &str) -> Option<String> {
+            let line = line.trim();
+            if !line.ends_with(',') {
+                return None;
+            }
+            let (head, _) = line.split_once(':')?;
+            let head = head.trim();
+            let head = head.rsplit(' ').next().unwrap_or(head);
+            if head.is_empty() || !head.starts_with(|c: char| c.is_ascii_lowercase() || c == '_') {
+                return None;
+            }
+            if !head
+                .chars()
+                .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
+            {
+                return None;
+            }
+            Some(head.to_string())
+        }
+
+        let crates_root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .expect("the crate directory has a parent")
+            .to_path_buf();
+        let mut files = Vec::new();
+        let mut pending_dirs = vec![crates_root];
+        while let Some(path) = pending_dirs.pop() {
+            let Ok(entries) = std::fs::read_dir(&path) else {
+                continue;
+            };
+            for entry in entries.flatten() {
+                let entry_path = entry.path();
+                if entry_path.is_dir() {
+                    if entry_path.file_name().and_then(|n| n.to_str()) == Some("target") {
+                        continue;
+                    }
+                    pending_dirs.push(entry_path);
+                } else if entry_path.extension().and_then(|e| e.to_str()) == Some("rs") {
+                    files.push(entry_path);
+                }
+            }
+        }
+
+        let mut structs_walked = 0_usize;
+        let mut fields_walked = 0_usize;
+        let mut collisions: Vec<String> = Vec::new();
+
+        for file in &files {
+            let Ok(text) = std::fs::read_to_string(file) else {
+                continue;
+            };
+            let lines: Vec<&str> = text.lines().collect();
+            let mut index = 0_usize;
+            while index < lines.len() {
+                let header = lines[index].trim();
+                let is_struct = header.ends_with('{')
+                    && header
+                        .split_once("struct ")
+                        .is_some_and(|(before, _)| before.is_empty() || before.starts_with("pub"));
+                if !is_struct {
+                    index += 1;
+                    continue;
+                }
+                let name = header
+                    .split_once("struct ")
+                    .map(|(_, rest)| rest.trim_end_matches('{').trim())
+                    .unwrap_or("?")
+                    .to_string();
+                let mut is_serde = false;
+                let mut look_back = index;
+                while look_back > 0 {
+                    let previous = lines[look_back - 1].trim();
+                    if previous.starts_with("#[") {
+                        if previous.contains("Serialize") || previous.contains("Deserialize") {
+                            is_serde = true;
+                        }
+                        look_back -= 1;
+                        continue;
+                    }
+                    if previous.is_empty() || previous.starts_with("//") {
+                        look_back -= 1;
+                        continue;
+                    }
+                    break;
+                }
+
+                let mut claims: std::collections::BTreeMap<String, Vec<(String, usize, &str)>> =
+                    std::collections::BTreeMap::new();
+                let mut depth = 1_i32;
+                let mut cursor = index + 1;
+                let mut attributes = String::new();
+                while cursor < lines.len() && depth > 0 {
+                    let line = lines[cursor];
+                    depth += line.matches('{').count() as i32;
+                    depth -= line.matches('}').count() as i32;
+                    if depth <= 0 {
+                        break;
+                    }
+                    let trimmed = line.trim();
+                    if trimmed.starts_with("#[") {
+                        attributes.push_str(trimmed);
+                        attributes.push(' ');
+                        cursor += 1;
+                        continue;
+                    }
+                    if trimmed.is_empty() || trimmed.starts_with("//") {
+                        cursor += 1;
+                        continue;
+                    }
+                    if is_serde && !attributes.contains("skip)") {
+                        if let Some(field) = field_name(trimmed) {
+                            fields_walked += 1;
+                            let emitted = attribute_value(&attributes, "rename = \"")
+                                .map(str::to_string)
+                                .unwrap_or_else(|| field.clone());
+                            claims.entry(emitted).or_default().push((
+                                field.clone(),
+                                cursor + 1,
+                                "emitted",
+                            ));
+                            for alias in attribute_values(&attributes, "alias = \"") {
+                                claims.entry(alias).or_default().push((
+                                    field.clone(),
+                                    cursor + 1,
+                                    "accepted",
+                                ));
+                            }
+                        }
+                    }
+                    attributes.clear();
+                    cursor += 1;
+                }
+                if is_serde {
+                    structs_walked += 1;
+                    for (wire, claimants) in &claims {
+                        let distinct: std::collections::BTreeSet<&String> =
+                            claimants.iter().map(|(field, _, _)| field).collect();
+                        if distinct.len() > 1 {
+                            let who = claimants
+                                .iter()
+                                .map(|(field, line, kind)| format!("{field} ({kind}, line {line})"))
+                                .collect::<Vec<_>>()
+                                .join(" and ");
+                            collisions.push(format!(
+                                "{}: {name} publishes the wire name {wire:?} from more than one \
+                                 field -- {who}",
+                                file.display()
+                            ));
+                        }
+                    }
+                }
+                index = cursor;
+            }
+        }
+
+        assert!(
+            structs_walked > 100,
+            "the walk found only {structs_walked} serde-derived struct(s) over {} file(s), so \
+             every check below would hold vacuously",
+            files.len()
+        );
+        assert!(
+            fields_walked > 1_000,
+            "the walk found only {fields_walked} field(s), so every check below would hold \
+             vacuously"
+        );
+        println!(
+            "walked {structs_walked} serde structs and {fields_walked} fields over {} files",
+            files.len()
+        );
+        assert!(
+            collisions.is_empty(),
+            "{} field pair(s) claim one wire name:\n{}\n\nA name claimed twice is resolved to the \
+             FIRST declaration on decode, so the other field is never populated from the wire and \
+             nothing fails. If the two fields are a twin pair publishing one quantity under both \
+             words, neither needs an alias to the other -- they already both reach the wire.",
+            collisions.len(),
+            collisions.join("\n")
+        );
+    }
+
     /// A rename may not quietly drop a durable name.
     ///
     /// The vocabulary migration -- page to block, zone to slab, slot to bucket -- is deliberate and
@@ -4182,9 +4406,12 @@ const RETIRED_NAMES: &[&str] = &[
     /// because `Option` defaulting is exactly what the silent drop looks like and two `None`s
     /// compare equal -- an equality check alone is how this bug would pass.
     ///
-    /// This widens the reader ONLY. Nothing here moves a byte any writer emits, and no stamp is
-    /// owed: `a_durable_name_is_never_quietly_dropped` above still finds all three page spellings,
-    /// because they are still what is written.
+    /// THE READER TAKES BOTH; THE WRITER HAS SINCE MOVED TO THE BLOCK SPELLING. This test is the
+    /// installed-base half and stays exactly as it was: the frozen document below is what earlier
+    /// builds wrote, and it must keep loading. `a_durable_name_is_never_quietly_dropped` above
+    /// still finds all three page spellings because they are now the ALIASES, which is what that
+    /// guard accepts -- it asks that a durable name still be accepted, not that it still be
+    /// emitted.
     #[test]
     fn the_slab_descriptor_reader_takes_the_block_spelling_and_the_page_spelling() {
         // Frozen, page-spelled, and NOT regenerated: this records the shape an older build wrote.
@@ -4361,23 +4588,34 @@ const RETIRED_NAMES: &[&str] = &[
                 .sum()
         };
 
-        // THE STORED NAMES WHOSE READER TAKES THE SET. Each emits the page spelling and must also
-        // ACCEPT the block one, as an EQUALITY rather than a floor -- a floor passes when a site
-        // is added without its alias, which is the whole failure this exists to catch.
+        // THE STORED NAMES WHOSE READER TAKES THE SET. Each now emits the BLOCK spelling and must
+        // still ACCEPT the page one, as an EQUALITY rather than a floor -- a floor passes when a
+        // site is added without its alias, which is the whole failure this exists to catch.
+        //
+        // THE WRITER MOVED, AND THAT IS WHY THE PAIR READS THIS WAY ROUND. It used to be
+        // (page, block): emit the stored page name, accept the block one. The reader was widened
+        // first, so every spelling a store on disk can carry is still accepted, and only then did
+        // the writer flip -- what any earlier build wrote still loads through the alias, and what
+        // this build writes is the canonical spelling. Reversing the pair without reversing the
+        // attributes is what this equality refuses.
         for (stored, accepted) in [
-            ("page_segment_id", "block_segment_id"),
-            ("first_page_id", "first_block_id"),
-            ("last_page_id", "last_block_id"),
-            ("page", "block"),
-            ("object_page_layouts", "object_block_layouts"),
-            ("stale_page_tombstones", "stale_block_tombstones"),
+            ("block_segment_id", "page_segment_id"),
+            ("first_block_id", "first_page_id"),
+            ("last_block_id", "last_page_id"),
+            ("block", "page"),
+            ("blocks", "pages"),
+            ("object_block_layouts", "object_page_layouts"),
+            // `stale_block_tombstones` is deliberately NOT here: its page spelling is a
+            // SIBLING FIELD on the same struct rather than an alias, so pairing them would
+            // require two fields to claim one wire name. See
+            // `no_two_fields_of_one_struct_claim_one_wire_name` below.
             (
-                "pages_named_an_object_the_list_lacked",
                 "blocks_named_an_object_the_list_lacked",
+                "pages_named_an_object_the_list_lacked",
             ),
             (
-                "list_held_an_object_no_page_names",
                 "list_held_an_object_no_block_names",
+                "list_held_an_object_no_page_names",
             ),
         ] {
             let emits = format!("rename = {:?}", stored);
@@ -4386,9 +4624,9 @@ const RETIRED_NAMES: &[&str] = &[
             let paired = count_in_attributes(&accepts);
             assert!(
                 emitting > 0,
-                "no field emits the stored name `{stored}` any more. If the writer moved, that is \
-                 a format change this guard is not the place to approve; if the name is genuinely \
-                 gone, remove it from this list in the same change"
+                "no field emits the canonical name `{stored}` any more. The writer flip put it there, so its loss is \
+                 a rename this guard has not been told about, or a removal; either way the list \
+                 below has to move in the same change"
             );
             assert_eq!(
                 emitting, paired,
@@ -4402,38 +4640,29 @@ const RETIRED_NAMES: &[&str] = &[
             println!("  {stored} -> emitted at {emitting} site(s), all accepting {accepted}");
         }
 
-        // AND THE ONE THAT IS DELIBERATELY SINGLE-FORM, PINNED SO RE-ATTEMPTING IT FAILS.
+        // THE DECLINE THAT USED TO LIVE HERE HAS BEEN LIFTED, AND THIS RECORDS WHY RATHER THAN
+        // JUST DISAPPEARING.
         //
-        // `pages` on `object_record::BlockLayout` is NOT an oversight and must not be swept in
-        // with the list above. `page_and_block_name_one_tier`'s
-        // `the_stored_object_layout_emits_the_page_spelling_and_reads_one_back` asserts in its
-        // DECODE clause that the block spelling is REFUSED -- `from_str::<BlockLayout>(..)
-        // .is_err()` -- on the stated ground that an accepted alias there would make "which
-        // spelling is on disk" the open question rather than "whether to move it".
+        // `pages` on `object_record::BlockLayout` was deliberately single-form, pinned here so
+        // that re-attempting the alias failed, because
+        // `the_stored_object_layout_emits_the_page_spelling_and_reads_one_back` asserted in its
+        // DECODE clause that the block spelling was REFUSED. The stated ground was that an
+        // accepted alias there would make "which spelling is on disk" the open question rather
+        // than "whether to move it".
         //
-        // So adding `alias = "blocks"` is not a reader widening here, it is the deletion of an
-        // assertion whose purpose is to deny that alias. That may still be the right call one
-        // day; it is a redesign of that guard and is decided there, not reached by extending the
-        // table above. A comment would not fail when someone extends it. This does.
-        for (stored, refused) in [("pages", "blocks")] {
-            let emits = format!("rename = {:?}", stored);
-            let accepts = format!("rename = {:?}, alias = {:?}", stored, refused);
-            let emitting = count_in_attributes(&emits);
-            let paired = count_in_attributes(&accepts);
-            assert!(
-                emitting > 0,
-                "nothing emits `{stored}` any more, so this decline is about a name that is gone"
-            );
-            assert_eq!(
-                paired, 0,
-                "`{stored}` now also accepts `{refused}` at {paired} site(s). That is the alias \
-                 `the_stored_object_layout_emits_the_page_spelling_and_reads_one_back` refuses by \
-                 assertion, so one of the two is now wrong. If taking the set here is intended, \
-                 change that guard's DECODE clause in the same commit and move this row into the \
-                 table above -- do not satisfy this one by deleting the other."
-            );
-            println!("  {stored} -> emitted at {emitting} site(s), single-form by decision");
-        }
+        // That question has now been answered rather than avoided: the writer moved, so the
+        // canonical spelling is what goes to disk and `pages` is the alias an earlier build's
+        // layout is read through. The guard that refused the alias was rewritten in the same
+        // change -- it is now
+        // `the_stored_object_layout_emits_the_block_spelling_and_reads_both_back`, and its decode
+        // clause drives BOTH spellings and asserts they land on the same layout. That assertion is
+        // strictly stronger than the refusal it replaced: a refusal only says the other spelling
+        // is not accepted, while this says the two names mean the same thing.
+        //
+        // What keeps the pair honest is the `("blocks", "pages")` row in the table above, which
+        // holds the same equality as every other stored name. The pin that demanded "change that
+        // guard's DECODE clause in the same commit and move this row into the table above" was
+        // satisfied exactly that way, which is the only reason this block is gone.
     }
 
     #[test]
@@ -4934,7 +5163,7 @@ const RETIRED_NAMES: &[&str] = &[
             .as_array()
             .unwrap()
             .iter()
-            .find(|slab| slab["page_segment_id"] == serde_json::json!(first.block_slab_id()))
+            .find(|slab| slab["block_segment_id"] == serde_json::json!(first.block_slab_id()))
             .unwrap()
             .clone()]);
         fs::write(
@@ -5296,6 +5525,8 @@ const RETIRED_NAMES: &[&str] = &[
         // DENOMINATOR: the manifest really has descriptors, and they really agree to begin with.
         // The KEYS read here are the on-disk spelling and are deliberately not the Rust one:
         // "bands" and "band_id" are the format, `slabs` and `stored_slab_id` are the code.
+        // The slab id is read under `block_segment_id` because that is what THIS build writes; a
+        // manifest from an older build spells it `page_segment_id` and loads through the alias.
         let entries = manifest["bands"].as_array_mut().expect("bands array");
         assert!(
             entries.len() >= 3,
@@ -5304,7 +5535,7 @@ const RETIRED_NAMES: &[&str] = &[
         for entry in entries.iter() {
             assert_eq!(
                 entry["band_id"].as_u64(),
-                entry["page_segment_id"].as_u64(),
+                entry["block_segment_id"].as_u64(),
                 "they agree before the edit"
             );
         }
@@ -5414,8 +5645,8 @@ const RETIRED_NAMES: &[&str] = &[
                 "every descriptor keeps its on-disk id key: {entry}"
             );
             assert!(
-                entry.get("page_segment_id").is_some(),
-                "and the slab-id key it already had: {entry}"
+                entry.get("block_segment_id").is_some(),
+                "and the slab-id key this build writes: {entry}"
             );
             assert!(
                 entry.get("stored_slab_id").is_none(),
