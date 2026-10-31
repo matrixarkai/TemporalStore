@@ -682,7 +682,12 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
 /// would be a guard that cannot fail, which is worse than no entry: it reads as covered.
 ///
 /// So this key is pinned where it is EMITTED instead, on both halves of the round trip.
-const PAGE_SPELLED_RECORD_KEYS: &[&str] = &["pages"];
+///
+/// THE WRITER HAS SINCE MOVED, so the emitted key is `blocks` and `pages` is the alias a store
+/// written by an earlier build is read through. The decode clause below drives BOTH spellings and
+/// asserts they land on the same layout, which is the guarantee that replaced the old clause
+/// asserting the block spelling was refused.
+const BLOCK_SPELLED_RECORD_KEYS: &[&str] = &["blocks"];
 
 /// The stored layout emits the page spelling, and still reads one back.
 ///
@@ -698,7 +703,7 @@ const PAGE_SPELLED_RECORD_KEYS: &[&str] = &["pages"];
 ///      retained wire name from an accepted alias, and those have opposite consequences for a
 ///      store already on disk.
 #[test]
-fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
+fn the_stored_object_layout_emits_the_block_spelling_and_reads_both_back() {
     use crate::engine::object_record::BlockLayout;
 
     // ---- CLAUSE 1: ENCODE ----
@@ -711,11 +716,11 @@ fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
         .map(|key| key.as_str())
         .collect();
     assert_eq!(
-        emitted, PAGE_SPELLED_RECORD_KEYS,
+        emitted, BLOCK_SPELLED_RECORD_KEYS,
         "the stored object layout emits {emitted:?} and this file declares \
-         {PAGE_SPELLED_RECORD_KEYS:?}. A key that LEFT is a change to what is already on disk, \
-         not a rename -- every multi-block object record written by every older build carries \
-         the old spelling, and a reader that stops accepting it stops finding those blocks"
+         {BLOCK_SPELLED_RECORD_KEYS:?}. This build writes the canonical spelling; the page \
+         spelling survives only as the alias the DECODE clause below drives, so a key that left \
+         this set is a writer move and a key that arrived is a second spelling going to disk"
     );
 
     // ---- CLAUSE 2: THE IDENTIFIER IS NOT THE CONTRACT ----
@@ -730,11 +735,10 @@ fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
     )
     .expect("the stored-record source must be readable");
     assert!(
-        declared.contains(r#"rename = "pages""#),
-        "`object_record.rs` no longer carries an explicit rename to the page spelling. Either \
-         the wire name moved -- which the ENCODE clause also catches -- or the FIELD was \
-         renamed to the wire name, which leaves the emitted set unchanged and silently \
-         retires the canonical identifier instead"
+        declared.contains(r#"rename = "blocks", alias = "pages""#),
+        "`object_record.rs` no longer carries the canonical rename with the page alias beside \
+         it. Dropping the ALIAS is the dangerous half: the emitted set does not move, so the \
+         ENCODE clause stays green while every layout an earlier build wrote stops loading"
     );
     assert!(
         declared.contains("    blocks: Vec<StoredBlock>,"),
@@ -760,33 +764,39 @@ fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
         "the substitution changed nothing, so the clause below is comparing the payload against \
          itself and would pass however the layout decodes"
     );
-    assert!(
-        serde_json::from_str::<BlockLayout>(&as_block_spelled).is_err(),
-        "the block spelling was also accepted, so `pages` is an ALIAS and not the wire name. \
-         That is a different contract from the one this file documents: it would mean new \
-         writes may already be going out under the canonical spelling, and the retirement \
-         question becomes which spelling is on disk rather than whether to move it"
+    let canonical: BlockLayout = serde_json::from_str(&as_block_spelled).expect(
+        "a layout written under the canonical spelling -- which is what THIS build emits -- must \
+         load, or the writer flip has produced bytes its own reader cannot take",
+    );
+    assert_eq!(
+        canonical.len(),
+        decoded.len(),
+        "the canonical spelling decoded to {} blocks and the stored one to {}. They are one key \
+         under two names, so a difference means one of them is dropping the blocks behind it",
+        canonical.len(),
+        decoded.len()
     );
 }
 
 /// THE INDEX-LOG ITEM KIND TAKES BOTH SPELLINGS, AND THIS IS THE VARIANT SHAPE RATHER THAN A FIELD.
 ///
-/// `IndexItemKind::Block` is tagged `page` on the wire. It is not a field name: it is the VALUE of
-/// an index-log item's kind, and the index log is replayed on recovery, so the token is read back
-/// out of bytes an older build wrote. `serde(rename)` on a variant replaces the accepted token
-/// exactly as it does on a field, so the reader was single-form here too -- and a unit-variant
-/// enum has no `default` to fall back to, which makes this one LOUD rather than silent: an item
-/// tagged `block` was a decode error, and a decode error on an index-log replay is a store that
-/// will not come up.
+/// `IndexItemKind::Block` is tagged `block` on the wire as of the writer flip, and `page` is the
+/// token it still ACCEPTS. It is not a field name: it is the VALUE of an index-log item's kind,
+/// and the index log is replayed on recovery, so the stored token is read back out of bytes an
+/// older build wrote. `serde(rename)` on a variant replaces the accepted token exactly as it does
+/// on a field, so the reader had to be widened BEFORE the writer moved -- and a unit-variant enum
+/// has no `default` to fall back to, which makes this one LOUD rather than silent in both
+/// directions: an unaccepted token is a decode error, and a decode error on an index-log replay is
+/// a store that will not come up.
 ///
 /// FOUR CLAUSES, and the last two are not padding:
 ///
-///   1. the writer still emits `page`, so the frozen token below is what is actually on disk.
-///      Without this the reader arms could both be passing against a token nothing writes.
-///   2. the frozen `page` token still decodes to `Block`.
-///   3. the `block` token decodes to `Block`. This one is driven from a literal NOTHING WRITES,
-///      which is what keeps it from being a round trip: clause 1 reads the writer, clause 3 reads
-///      a byte string the writer has never produced.
+///   1. the writer emits `block`, which is the flip this release carries. Without this clause the
+///      reader arms could both pass while the writer sat wherever it happened to be.
+///   2. the frozen `page` token still decodes to `Block`. This is now the clause driven from a
+///      literal THIS BUILD NO LONGER WRITES, which is what keeps it honest: it is the installed
+///      base on disk, not a round trip through the current writer.
+///   3. the `block` token decodes to `Block`, so what clause 1 writes is what the reader takes.
 ///   4. `object` and `meta` still decode to themselves. An alias that collided with a sibling
 ///      token would make one variant unreachable, and serde reports a duplicate token for unit
 ///      variants at NEITHER compile nor decode time -- the first declaration simply wins, so the
@@ -795,16 +805,25 @@ fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
 fn the_index_log_item_kind_reader_takes_the_block_spelling_and_the_page_spelling() {
     use crate::index_log::IndexItemKind;
 
-    // Frozen. Every build through `SHARD_INDEX_FORMAT_VERSION` 27 tags a block item with this.
+    // Frozen, and READ-ONLY from here: every build through `SHARD_INDEX_FORMAT_VERSION` 27
+    // tagged a block item with this, and those bytes are still on disk.
     const ITEM_KIND_AT_STAMP_27: &str = r#""page""#;
 
-    // ---- CLAUSE 1: THE WRITER STILL EMITS IT ----
+    // What this build writes.
+    const ITEM_KIND_WRITTEN_NOW: &str = r#""block""#;
+
+    // ---- CLAUSE 1: THE WRITER EMITS THE CANONICAL TOKEN ----
     assert_eq!(
         serde_json::to_string(&IndexItemKind::Block).expect("the item kind must serialize"),
-        ITEM_KIND_AT_STAMP_27,
-        "[CLAUSE writer] a block item is no longer tagged `page` on the wire, so the frozen token \
-         this guard reads back is not what any store holds. That is a format move and is not \
-         approved here"
+        ITEM_KIND_WRITTEN_NOW,
+        "[CLAUSE writer] a block item is not tagged `block` on the wire. The reader accepts both \
+         tokens, so this is the only clause that says which one goes to disk -- and an item \
+         written under the retired token would be read by a future build that has dropped the \
+         alias as an unknown variant, which fails the whole replay"
+    );
+    assert_ne!(
+        ITEM_KIND_WRITTEN_NOW, ITEM_KIND_AT_STAMP_27,
+        "the two tokens are the same string, so clauses 2 and 3 are one clause twice"
     );
 
     // ---- CLAUSE 2: THE STORED TOKEN STILL LANDS ----
@@ -816,10 +835,11 @@ fn the_index_log_item_kind_reader_takes_the_block_spelling_and_the_page_spelling
         "[CLAUSE stored-tag] the stored `page` token decoded to {stored:?} rather than `Block`"
     );
 
-    // ---- CLAUSE 3: SO DOES THE CANONICAL ONE, FROM A LITERAL NOTHING WRITES ----
-    let canonical: IndexItemKind = serde_json::from_str(r#""block""#).expect(
-        "an index-log item tagged `block` must decode, or the writer can never converge -- and \
-         unlike a named field this fails LOUDLY, taking the whole replay with it",
+    // ---- CLAUSE 3: AND SO DOES THE ONE THE WRITER NOW EMITS ----
+    let canonical: IndexItemKind = serde_json::from_str(ITEM_KIND_WRITTEN_NOW).expect(
+        "an index-log item tagged `block` must decode -- this build writes that token, so a \
+         failure here is a store whose own replay cannot read what it just wrote, and unlike a \
+         named field it fails LOUDLY and takes the whole replay with it",
     );
     assert_eq!(
         canonical,
