@@ -53,7 +53,7 @@ max_background_queue_depth = 128       # TS_SERVER_MAX_BACKGROUND_QUEUE_DEPTH  c
 heartbeat_interval_ms = 3000           # TS_SERVER_HEARTBEAT_INTERVAL_MS  ms between metaserver heartbeats
 location = ""                          # TS_SERVER_LOCATION     topology/zone label (informational)
 cache_dir = "target/temporalstore-cache"      # TS_CACHE_DIR       hot record cache directory
-page_store_dir = "target/temporalstore-pages" # TS_PAGE_STORE_DIR  durable data-block (slab) directory
+block_store_dir = "target/temporalstore-blocks" # TS_BLOCK_STORE_DIR (TS_PAGE_STORE_DIR still accepted)  durable data-block (slab) directory
 # blob_store_dir = "target/temporalstore-pages/blobs"  # TS_BLOB_STORE_DIR  streamed attachment tier (default = <page_store_dir>/blobs)
 index_dir = "target/temporalstore-indexes"    # TS_INDEX_DIR       served-index directory
 cache_memory_bytes = 16777216          # TS_CACHE_MEMORY_BYTES  in-memory record cache budget (bytes, 16 MiB)

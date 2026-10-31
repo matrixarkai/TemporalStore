@@ -140,8 +140,77 @@ pub fn env_number_first<T: std::str::FromStr>(names: &[&str], default: T) -> T {
         .unwrap_or(default)
 }
 
+/// The canonical directory default, unless the PREVIOUS spelling is the one that already exists.
+///
+/// A MOVED DEFAULT IS A DATA MIGRATION for every deployment that set neither spelling of the
+/// variable. Moving it outright would bring the process up pointing at an empty directory while
+/// the real blocks sat beside it under the old name, serving nothing, with no error anywhere --
+/// the same silent-miss shape a renamed stored key has, arriving through the filesystem instead.
+///
+/// So the canonical name is chosen only when the previous directory is not already there: an
+/// existing store keeps being served under the name it was created with, and a fresh one is
+/// created under the canonical name. When BOTH exist the canonical one wins, because that is the
+/// one this build writes and a deployment that wants the other has an explicit variable for it.
+///
+/// This is the filesystem's version of accepting both spellings, and it is NOT a substitute for
+/// moving the data: it keeps an old directory readable rather than declaring it canonical.
+pub fn directory_default_preferring_canonical(canonical: &str, previous: &str) -> String {
+    if !std::path::Path::new(canonical).exists() && std::path::Path::new(previous).exists() {
+        return previous.to_string();
+    }
+    canonical.to_string()
+}
+
 #[cfg(test)]
 mod tests {
+
+    /// The moved default picks the directory that EXISTS, and the canonical one otherwise.
+    ///
+    /// Four arms, because the interesting one is the third: with only the previous directory on
+    /// disk the canonical name must NOT be returned. An implementation that simply returned the
+    /// canonical name passes the first, second and fourth arms.
+    #[test]
+    fn a_moved_directory_default_keeps_serving_the_directory_that_exists() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let canonical = root.path().join("blocks");
+        let previous = root.path().join("pages");
+        let c = canonical.to_string_lossy().to_string();
+        let p = previous.to_string_lossy().to_string();
+
+        // ARM 1: neither exists -- a fresh deployment is created under the canonical name.
+        assert_eq!(
+            super::directory_default_preferring_canonical(&c, &p),
+            c,
+            "a fresh deployment must be created under the canonical name"
+        );
+
+        // ARM 2: only the canonical one exists.
+        std::fs::create_dir_all(&canonical).expect("create canonical");
+        assert_eq!(
+            super::directory_default_preferring_canonical(&c, &p),
+            c,
+            "a store already under the canonical name must keep it"
+        );
+
+        // ARM 3: ONLY THE PREVIOUS ONE EXISTS. This is the arm the rename exists for.
+        std::fs::remove_dir_all(&canonical).expect("remove canonical");
+        std::fs::create_dir_all(&previous).expect("create previous");
+        assert_eq!(
+            super::directory_default_preferring_canonical(&c, &p),
+            p,
+            "a store created under the previous name was left unreachable: the process would come \
+             up on an empty directory with the blocks still on disk beside it"
+        );
+
+        // ARM 4: both exist -- the canonical one wins, because it is what this build writes.
+        std::fs::create_dir_all(&canonical).expect("re-create canonical");
+        assert_eq!(
+            super::directory_default_preferring_canonical(&c, &p),
+            c,
+            "with both present the canonical name must win"
+        );
+    }
+
     use super::*;
 
     #[test]

@@ -88,10 +88,17 @@ ts_profile_perf_flags() {
 
 # --- data directories --------------------------------------------------------
 ts_profile_dirs() {
-  export TS_BLOCK_STORE_DIR="${TS_BLOCK_STORE_DIR:-${TS_PAGE_STORE_DIR:-${TS_PROFILE_DATA}/pages}}"
+  # Same rule as the container entrypoint: an existing profile keeps the directory it was
+  # created with, a new one is created under the canonical name.
+  if [ -d "${TS_PROFILE_DATA}/pages" ] && [ ! -d "${TS_PROFILE_DATA}/blocks" ]; then
+    _ts_default_block_dir="${TS_PROFILE_DATA}/pages"
+  else
+    _ts_default_block_dir="${TS_PROFILE_DATA}/blocks"
+  fi
+  export TS_BLOCK_STORE_DIR="${TS_BLOCK_STORE_DIR:-${TS_PAGE_STORE_DIR:-${_ts_default_block_dir}}}"
   export TS_CACHE_DIR="${TS_CACHE_DIR:-${TS_PROFILE_DATA}/cache}"
   export TS_INDEX_DIR="${TS_INDEX_DIR:-${TS_PROFILE_DATA}/index}"
-  export TS_BLOB_STORE_DIR="${TS_BLOB_STORE_DIR:-${TS_PROFILE_DATA}/pages/blobs}"
+  export TS_BLOB_STORE_DIR="${TS_BLOB_STORE_DIR:-${TS_BLOCK_STORE_DIR}/blobs}"
   mkdir -p "$TS_BLOCK_STORE_DIR" "$TS_CACHE_DIR" "$TS_INDEX_DIR" "$TS_BLOB_STORE_DIR" \
            "$(dirname "$TS_PROFILE_LOG")"
 }
