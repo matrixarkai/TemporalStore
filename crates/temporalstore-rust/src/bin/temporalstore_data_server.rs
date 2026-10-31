@@ -378,7 +378,7 @@ fn main() {
         info!(
             raft_shard_id = state.raft_shard_id,
             local_node_id = state.local_node_id,
-            "storage maintenance will skip page compaction on a shard this node does not lead"
+            "storage maintenance will skip block compaction on a shard this node does not lead"
         );
     }
 
@@ -1378,7 +1378,7 @@ fn restore_shared_index_before_load(
                     checkpoint_id = %manifest.checkpoint_id,
                     checkpoint_wal_index = manifest.checkpoint_wal_index,
                     block_slabs = manifest.block_slabs.len(),
-                    "restored shard index and lazy page addresses from shared checkpoint (pre-load)"
+                    "restored shard index and lazy block addresses from shared checkpoint (pre-load)"
                 );
                 manifest.checkpoint_wal_index
             }
@@ -2110,7 +2110,7 @@ fn wire_matrixobject_durability(
         )) {
             Ok(manifest) => {
                 println!(
-                    "restored shard {shard_id} index and lazy page addresses from matrixobject checkpoint {} (WAL tail from {})",
+                    "restored shard {shard_id} index and lazy block addresses from matrixobject checkpoint {} (WAL tail from {})",
                     manifest.checkpoint_id, manifest.checkpoint_wal_index
                 );
                 // Read the restored on-disk index into memory before the tail replay, which
@@ -2365,7 +2365,7 @@ fn wire_matrixobject_networked_durability(
                     checkpoint_id = %manifest.checkpoint_id,
                     checkpoint_wal_index = manifest.checkpoint_wal_index,
                     block_slabs = manifest.block_slabs.len(),
-                    "restored shard index and lazy page addresses from networked matrixobject checkpoint"
+                    "restored shard index and lazy block addresses from networked matrixobject checkpoint"
                 );
                 manifest.checkpoint_wal_index
             }

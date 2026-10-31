@@ -515,12 +515,12 @@ mod every_result_can_be_found_again_tests {
         // page set this helper failed to build: the covered result is covered on its own.
         assert!(
             every_result_can_be_found_again(std::slice::from_ref(&covered), &blocks),
-            "a result whose own page IS staged must be covered, or the mixed case says nothing"
+            "a result whose own block IS staged must be covered, or the mixed case says nothing"
         );
         // THE CONCLUSION.
         assert!(
             !every_result_can_be_found_again(&[covered, uncovered], &blocks),
-            "a result whose own page was never staged is not recoverable because a SIBLING's was"
+            "a result whose own block was never staged is not recoverable because a SIBLING's was"
         );
     }
 
@@ -541,7 +541,7 @@ mod every_result_can_be_found_again_tests {
                 std::slice::from_ref(&names_only_an_address(3, "c")),
                 &[]
             ),
-            "a result that states nothing and has no page must NOT be recoverable"
+            "a result that states nothing and has no block must NOT be recoverable"
         );
         // THE CONCLUSION, each of the three statements on its own so one carrying the others is
         // not mistaken for all three working.
@@ -552,7 +552,7 @@ mod every_result_can_be_found_again_tests {
         ] {
             assert!(
                 every_result_can_be_found_again(std::slice::from_ref(&item), &[]),
-                "a result stating {label} needs no page and must be recoverable with none staged"
+                "a result stating {label} needs no block and must be recoverable with none staged"
             );
         }
     }
@@ -10882,7 +10882,7 @@ mod tests {
         let overhead = encoded.len() as f64 / block.len() as f64;
         assert!(
             overhead < 1.6,
-            "a staged page should cost about a third over its contents, got {overhead:.2}x              ({} bytes of record for {} bytes of page)",
+            "a staged block should cost about a third over its contents, got {overhead:.2}x              ({} bytes of record for {} bytes of block)",
             encoded.len(),
             block.len()
         );

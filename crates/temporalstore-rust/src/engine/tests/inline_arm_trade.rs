@@ -266,7 +266,7 @@ impl ArmCensus {
         for (held, count) in &self.held {
             if *held <= 4 || held % 8 == 0 || *held == self.widest() {
                 println!(
-                    "      {held:>4} page(s): {count:>6} buckets ({:>7.3}% of {buckets})",
+                    "      {held:>4} block(s): {count:>6} buckets ({:>7.3}% of {buckets})",
                     pct(*count)
                 );
             }
@@ -311,7 +311,7 @@ fn one_real_block(engine: &TemporalEngine) -> BlockIndex {
             return block.clone();
         }
     }
-    panic!("a seeded store holds a page");
+    panic!("a seeded store holds a block");
 }
 
 // =============================================================================================
@@ -1138,7 +1138,7 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
     crate::engine::state::reset_block_lookup_entries_examined();
     let found = crate::engine::state::find_block(&single, &single[0].0);
     let one_entry = crate::engine::state::block_lookup_entries_examined();
-    assert!(found.is_ok(), "the fixture's own page must be found in its own list");
+    assert!(found.is_ok(), "the fixture's own block must be found in its own list");
     assert_eq!(
         1, one_entry,
         "a bisection over a list of one examined {one_entry} entries, not one"
@@ -1247,7 +1247,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
 
     // An empty block index allocates nothing, which is the other half of "free".
     let empty = BlockIndexMap::default();
-    assert!(empty.is_empty(), "a default page index must hold no pages");
+    assert!(empty.is_empty(), "a default block index must hold no blocks");
     assert_eq!(0, empty.len(), "a default page index must be length zero");
 
     // AND "NO BLOCKS" MUST NOT DEPEND ON WHICH SPELLING OF IT YOU ARE HOLDING.
@@ -1273,7 +1273,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     assert_eq!(
         0,
         un_normalised.len(),
-        "a page index holding an empty list reported {} pages",
+        "a block index holding an empty list reported {} blocks",
         un_normalised.len()
     );
     // The negative control on that pair: a list with something in it must NOT read as empty, or the
@@ -1281,7 +1281,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     let one_block = BlockIndexMap::Many(vec![(1u64, one_real_block_free_standing())]);
     assert!(
         !one_block.is_empty(),
-        "a page index holding one page reported itself empty, so `is_empty` answers a constant"
+        "a block index holding one block reported itself empty, so `is_empty` answers a constant"
     );
     assert_eq!(1, one_block.len(), "a one-entry list must report one page");
 

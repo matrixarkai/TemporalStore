@@ -143,12 +143,12 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     assert_eq!(
         0,
         crate::engine::container_blocks::unframed_container_removal_count(),
-        "the removal could not frame a tombstone page, so the pages say nothing about it"
+        "the removal could not frame a tombstone block, so the blocks say nothing about it"
     );
     assert_eq!(
         0,
         crate::engine::execute_on_shard::tombstone_append_failure_count(),
-        "the removal could not append its tombstone page"
+        "the removal could not append its tombstone block"
     );
 
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -221,7 +221,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         derived.blocks_read, derived.live_only_blocks
     );
     println!(
-        "  the resident map holds {} member(s); the pages derive {} live and {} removed",
+        "  the resident map holds {} member(s); the blocks derive {} live and {} removed",
         served.len(),
         derived.live.len(),
         derived.removed.len()
@@ -241,7 +241,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     // DENOMINATORS FIRST. A zero on either side makes every comparison below empty.
     assert!(
         derived.blocks_read > 0,
-        "DENOMINATOR: no pages read for this object"
+        "DENOMINATOR: no blocks read for this object"
     );
     assert_eq!(
         MEMBERS - 1,
@@ -298,7 +298,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         .collect();
     assert_eq!(
         served, derived_members,
-        "the membership derived from the pages is not the membership the resident map holds"
+        "the membership derived from the blocks is not the membership the resident map holds"
     );
 
     // AND THE DERIVED VALUES ARE THE MEMBERS THEMSELVES, which for a set is what #2017 measured the

@@ -79,7 +79,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
         "memory and disk cache entries carry hotness and routing-slot metadata".to_string(),
         "pressure eviction chooses victims with weighted hotness/LRU scoring".to_string(),
         "cache pressure selects victims by routing-slot/object group before individual block, Matching Evicter slot-first pressure behavior".to_string(),
-        "pin-aware eviction skip counters preserve active page/block handles".to_string(),
+        "pin-aware eviction skip counters preserve active block/block handles".to_string(),
         "eviction reason counters distinguish cold, low-hit, stale, and pressure paths".to_string(),
         "shared case storage_cache_replacement_policy_soak exercises repeated pressure rounds, memory/disk pressure, dump-before-evict, delete/drop eviction, cold read refill, async writeback backpressure, and bucketed latency histograms through TemporalStore storage".to_string(),
     ];
@@ -100,7 +100,7 @@ pub fn storage_ssd_cache_pressure_readiness_report() -> StorageSsdCachePressureR
     let matrixcache_zero_copy_pinned_handle_evidence = vec![
         "cache entries expose pinned state and pinned byte accounting through CacheEntryInfo and CacheStats".to_string(),
         "capacity eviction skips pinned memory and SSD entries and increments pinned-skip counters".to_string(),
-        "pin and unpin APIs preserve active page/block handles while invalidation clears stale pinned state".to_string(),
+        "pin and unpin APIs preserve active block/block handles while invalidation clears stale pinned state".to_string(),
     ];
     let matrixcache_dram_pmem_ssd_placement_ready = true;
     let matrixcache_dram_pmem_ssd_placement_evidence = vec![
@@ -263,7 +263,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "slot ownership validation reports missing owner refs, owner mismatches, and model-map fallback refs"
             .to_string(),
-        "ElementEntry carries segment/offset/length plus optional page id, object id, routing slot, band id, and checksum"
+        "ElementEntry carries segment/offset/length plus optional block id, object id, routing slot, band id, and checksum"
             .to_string(),
     ];
     let native_object_manager_runtime_ready = true;
@@ -272,7 +272,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "runtime report exposes dirty/loading/meta/TTL object counters and dirty slot generations"
             .to_string(),
-        "runtime report exposes object/page layout classes and transition counters".to_string(),
+        "runtime report exposes object/block layout classes and transition counters".to_string(),
         "runtime report blocks readiness on missing owner metadata, owner mismatches, and object-id reuse conflicts"
             .to_string(),
     ];
@@ -296,7 +296,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
             .to_string(),
         "slab roll seals previous bands and opens a new active stream band".to_string(),
         "band manifests persist active/sealed/delayed-destroy/purged lifecycle states".to_string(),
-        "stream envelopes carry checksum, page id, object id, routing slot, band id, and compression metadata"
+        "stream envelopes carry checksum, block id, object id, routing slot, band id, and compression metadata"
             .to_string(),
     ];
     let stream_backed_slab_runtime_blockers = vec![
@@ -307,10 +307,10 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let model_layout_compaction_evidence = vec![
         "ShardCompactionReport exposes model_layout_compaction_ready".to_string(),
         "compaction rewrites live page refs by model family".to_string(),
-        "packed timestamped Feature/Sequence/Context layouts preserve shared page refs"
+        "packed timestamped Feature/Sequence/Context layouts preserve shared block refs"
             .to_string(),
         "tombstone object ids are preserved across compaction".to_string(),
-        "stale page density and slot layout transition counts are reported".to_string(),
+        "stale block density and slot layout transition counts are reported".to_string(),
     ];
     let model_layout_compaction_blockers = Vec::new();
     let mature_background_storage_manager_ready = true;
@@ -323,7 +323,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         "block-store GC candidates report PageGc-style total/used/stale bytes and utility basis points".to_string(),
         "evict phase performs shard-scoped cache invalidation with entry/byte accounting".to_string(),
         "expire phase sweeps TTL metadata and persists removals through index-log".to_string(),
-        "compact phase calls model-layout/tombstone page compaction".to_string(),
+        "compact phase calls model-layout/tombstone block compaction".to_string(),
         "index-GC phase prunes slot dump manifests and rolls forward interrupted installs".to_string(),
         "WAL/index-log reclaim is tied to durable slot dump generations and shared case storage_wal_index_gc_generation_retention validates lagging follower cursor and Raft snapshot blockers before bounded index-GC can truncate logs".to_string(),
         "page-GC dependency planning fails closed for live refs, slot dump manifests, shared-store follower cursors, checkpoint floors, Raft snapshot refs, Raft install floors, and delayed-destroy grace via shared case storage_gc_dependency_retention_matrix".to_string(),
@@ -334,7 +334,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let mature_background_storage_manager_blockers = Vec::new();
     let merged_dump_load_policy_ready = true;
     let merged_dump_load_policy_evidence = vec![
-        "StorageMergedDumpLoadPolicyReport coordinates dirty-slot dump selection, checksum/generation validation, multi-slot merged manifest source coverage, load preflight, load-version handoff apply/mismatch rejection, restart-during-install recovery, replay boundary, roll-forward/rollback marker counters, interrupted-install recovery counters, stale object/page conflict counts, follower-safe retention, and index-GC".to_string(),
+        "StorageMergedDumpLoadPolicyReport coordinates dirty-slot dump selection, checksum/generation validation, multi-slot merged manifest source coverage, load preflight, load-version handoff apply/mismatch rejection, restart-during-install recovery, replay boundary, roll-forward/rollback marker counters, interrupted-install recovery counters, stale object/block conflict counts, follower-safe retention, and index-GC".to_string(),
         "merged policy fails closed for missing manifests, unsafe load preflight, stale installs, broken manifest chains, blocked retention, and index-GC gaps".to_string(),
         "shared corpus case storage_merged_dump_load_policy validates restore-engine install and stale-load rejection".to_string(),
     ];
@@ -350,13 +350,13 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
     let rust_storage_lifecycle_behavior_evidence = vec![
         "slot-first ownership index is updated on object writes/deletes and validated during recovery"
             .to_string(),
-        "slot dump/load manifests validate slot summaries, page refs, sequence boundaries, and install safety"
+        "slot dump/load manifests validate slot summaries, block refs, sequence boundaries, and install safety"
             .to_string(),
         "local/shared-store replay covers sync and async storage paths with follower-cursor retention"
             .to_string(),
-        "compaction preserves model layout, tombstones, stale page density, and slot transition counts"
+        "compaction preserves model layout, tombstones, stale block density, and slot transition counts"
             .to_string(),
-        "cache pressure/refill validates cold page reads through ElementEntry and cache refill"
+        "cache pressure/refill validates cold block reads through ElementEntry and cache refill"
             .to_string(),
     ];
 
@@ -365,16 +365,16 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         missing.push("Rust storage lifecycle behavior evidence".to_string());
     }
     if !orphan_block_detection_ready {
-        missing.push("orphan page detection".to_string());
+        missing.push("orphan block detection".to_string());
     }
     if !missing_block_ref_detection_ready {
-        missing.push("missing page reference detection".to_string());
+        missing.push("missing block reference detection".to_string());
     }
     if !stale_block_ref_detection_ready {
-        missing.push("stale page reference detection".to_string());
+        missing.push("stale block reference detection".to_string());
     }
     if !corrupt_block_index_wal_snapshot_evidence_ready {
-        missing.push("corrupt page/index/wal/snapshot evidence".to_string());
+        missing.push("corrupt block/index/wal/snapshot evidence".to_string());
     }
     if !follower_cursor_safe_gc_ready {
         missing.push("follower-cursor and Raft-snapshot safe GC".to_string());
@@ -389,7 +389,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         missing.push("unified storage corpus evidence".to_string());
     }
     if !first_class_bucket_object_block_index_ready {
-        missing.push("first-class slot/object/page ownership index".to_string());
+        missing.push("first-class slot/object/block ownership index".to_string());
     }
     if !native_object_manager_runtime_ready {
         missing.push("native ObjectManager runtime mechanics".to_string());
@@ -401,7 +401,7 @@ pub fn storage_production_posture_report() -> StorageProductionPostureReport {
         missing.push("stream-backed band runtime".to_string());
     }
     if !model_layout_compaction_ready {
-        missing.push("page compaction tied to model layout and tombstones".to_string());
+        missing.push("block compaction tied to model layout and tombstones".to_string());
     }
     if !mature_background_storage_manager_ready {
         missing.push(

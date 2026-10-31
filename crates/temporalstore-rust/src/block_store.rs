@@ -5407,7 +5407,7 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(
             serde_json::to_value(&address).unwrap().get("sha256"),
             None,
-            "an index written now omits the digest; the page envelope carries it"
+            "an index written now omits the digest; the block envelope carries it"
         );
         assert_eq!(
             serde_json::json!(sha256_hex(b"address-contract")),

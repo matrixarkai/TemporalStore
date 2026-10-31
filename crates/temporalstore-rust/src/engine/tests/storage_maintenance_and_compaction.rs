@@ -323,7 +323,7 @@ fn what_the_compaction_budget_buys() {
             .expect("compaction should run");
         let elapsed = started.elapsed();
         eprintln!(
-            "  [budget] {:>9} KiB -> first round {:>9.1} ms, {:>6} page refs moved",
+            "  [budget] {:>9} KiB -> first round {:>9.1} ms, {:>6} block refs moved",
             budget / 1024,
             elapsed.as_secs_f64() * 1000.0,
             report.rewritten_block_refs,
@@ -356,7 +356,7 @@ fn what_a_whole_shard_compaction_costs() {
         let report = engine.compact_shard_blocks(1).expect("compaction runs");
         let elapsed = started.elapsed();
         println!(
-            "  [compaction] {objects:>6} objects -> {:>7.1} ms holding the shard, {} page refs rewritten ({:.1} us each)",
+            "  [compaction] {objects:>6} objects -> {:>7.1} ms holding the shard, {} block refs rewritten ({:.1} us each)",
             elapsed.as_secs_f64() * 1000.0,
             report.rewritten_block_refs,
             elapsed.as_secs_f64() * 1_000_000.0 / report.rewritten_block_refs.max(1) as f64,
@@ -951,7 +951,7 @@ fn context_models_match_keys_timeline_blocks_and_filters() {
     let recovery = engine.storage_recovery_report(1);
     assert!(
         recovery.total_block_refs >= 5,
-        "context pages should be visible to recovery accounting"
+        "context blocks should be visible to recovery accounting"
     );
 }
 
@@ -2442,7 +2442,7 @@ fn cold_index_block_address_reads_from_disk_cache_or_block_store_and_refills_mem
     let block_key = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        let address = shard.string_address("cold-key").expect("indexed page address");
+        let address = shard.string_address("cold-key").expect("indexed block address");
         assert_ne!(address.block_slab_id(), HOT_BLOCK_SLAB_ID);
         // THE SAME DERIVATION THE READ PATH USES: the page cache key's slot is the KEY's bucket
         // over the range the shard is stamped with, not a field on the address.
@@ -3777,7 +3777,7 @@ fn what_reading_one_summary_actually_costs() {
         let mut bytes = Vec::new();
         for _ in 0..5 {
             bytes = super::read_block_bytes(&engine.cache, &engine.block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "context_summary", &object_key, None), routing_bucket)
-                .expect("the page must read, or the split below is measuring a None");
+                .expect("the block must read, or the split below is measuring a None");
         }
         let read = read_probe.stop();
 
@@ -4347,7 +4347,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
             for (field_key, block) in bucket.block_index.iter() {
                 let object_key = named
                     .get(&(*routing_bucket, *field_key))
-                    .expect("every page walked above was named beside it");
+                    .expect("every block walked above was named beside it");
                 rows.push(format!(
                     "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
                     object_key,
@@ -4429,7 +4429,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
         let only_before = before.iter().filter(|row| !after.contains(row)).count();
         let only_after = after.iter().filter(|row| !before.contains(row)).count();
         println!(
-            "  corpus {rung:>4}: {} page/index rows   only-before {only_before}   only-after {only_after}",
+            "  corpus {rung:>4}: {} block/index rows   only-before {only_before}   only-after {only_after}",
             before.len(),
         );
         for row in before.iter().filter(|row| !after.contains(row)).take(2) {
@@ -5302,7 +5302,7 @@ fn is_a_put_expensive_to_store_or_to_evict() {
         println!("  STORING dominates: the cost is paid by every put, pressure or not.");
     } else {
         println!("  EVICTING dominates: a cache with room is cheap and one under pressure is not,");
-        println!("  so the fix is to stop admitting pages that will be evicted before they are");
+        println!("  so the fix is to stop admitting blocks that will be evicted before they are");
         println!("  read again, rather than to make the store itself cheaper.");
     }
 
@@ -5462,7 +5462,7 @@ fn what_the_block_cache_costs_per_call() {
     }
 
     println!();
-    println!("  call                     allocs   bytes    (1 KB page, cache too small to hold it)");
+    println!("  call                     allocs   bytes    (1 KB block, cache too small to hold it)");
     println!("  CacheKey::page_with_slot {:>7.2} {:>7.0}", per(key_allocs), per(key_bytes));
     println!("  get (misses)             {:>7.2} {:>7.0}", per(miss_allocs), per(miss_bytes));
     println!("  put (stores + evicts)    {:>7.2} {:>7.0}", per(put_allocs), per(put_bytes));
@@ -5472,7 +5472,7 @@ fn what_the_block_cache_costs_per_call() {
              per(key_bytes) + per(miss_bytes) + per(put_bytes));
     println!();
     println!("  The read path calls all three on every miss. Whichever dominates is where the");
-    println!("  read path's memory goes, and a page nothing will ask for again pays it for");
+    println!("  read path's memory goes, and a block nothing will ask for again pays it for");
     println!("  nothing.");
 
     assert!(key_allocs + miss_allocs + put_allocs > 0, "measured nothing");
@@ -5528,7 +5528,7 @@ fn where_a_block_read_miss_allocates() {
             })
             .collect()
     };
-    assert!(addresses.len() >= 8, "need several pages: {}", addresses.len());
+    assert!(addresses.len() >= 8, "need several blocks: {}", addresses.len());
     let block_store = &engine.block_store;
 
     const ROUNDS: u64 = 100;
@@ -5542,7 +5542,7 @@ fn where_a_block_read_miss_allocates() {
         let probe = crate::alloc_probe::Probe::start();
         let got = block_store.read(address);
         let counts = probe.stop();
-        assert!(got.is_ok(), "the page must read back from the block store");
+        assert!(got.is_ok(), "the block must read back from the block store");
         store_allocs += counts.allocs;
         store_bytes += counts.alloc_bytes;
     }
@@ -5555,7 +5555,7 @@ fn where_a_block_read_miss_allocates() {
         let probe = crate::alloc_probe::Probe::start();
         let got = super::read_block_bytes(&engine.cache, block_store, 1, address, crate::engine::hashing::BlockIdentity::of(1, "string", key, None), *routing_bucket);
         let counts = probe.stop();
-        assert!(got.is_some(), "the page must read back");
+        assert!(got.is_some(), "the block must read back");
         whole_allocs += counts.allocs;
         whole_bytes += counts.alloc_bytes;
     }
@@ -5573,8 +5573,8 @@ fn where_a_block_read_miss_allocates() {
     if per(store_allocs) > per(whole_allocs) - per(store_allocs) {
         println!("  the BLOCK STORE dominates: the read itself is the cost, and caching it is cheap.");
     } else {
-        println!("  the CACHE dominates: reading the page is cheap and storing it is not, so an");
-        println!("  admission policy that declined to cache a page nothing will ask for again");
+        println!("  the CACHE dominates: reading the block is cheap and storing it is not, so an");
+        println!("  admission policy that declined to cache a block nothing will ask for again");
         println!("  would remove most of a miss.");
     }
 
@@ -5637,7 +5637,7 @@ fn what_a_block_read_costs_hit_against_miss() {
                     Some(super::hashing::block_routing_bucket(key, start, end)),
                 )
             })
-            .expect("the writes above put at least one page in the index")
+            .expect("the writes above put at least one block in the index")
     };
 
     let cache = &engine.cache;
@@ -5646,8 +5646,8 @@ fn what_a_block_read_costs_hit_against_miss() {
     // Warm once: the first read of anything touches one-off structures that would otherwise be
     // counted against whichever arm ran first.
     let warm = super::read_block_shared(cache, block_store, 1, &address.address(), crate::engine::hashing::BlockIdentity::of(1, "string", &object_key, None), routing_bucket)
-        .expect("the page reads back");
-    assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
+        .expect("the block reads back");
+    assert!(!warm.is_empty(), "an empty block would make every number below meaningless");
 
     const ROUNDS: u64 = 100;
 
@@ -5657,7 +5657,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         let probe = crate::alloc_probe::Probe::start();
         let got = super::read_block_shared(cache, block_store, 1, &address.address(), crate::engine::hashing::BlockIdentity::of(1, "string", &object_key, None), routing_bucket);
         let counts = probe.stop();
-        assert!(got.is_some(), "the page must read back on the hit path");
+        assert!(got.is_some(), "the block must read back on the hit path");
         hit_allocs += counts.allocs;
         hit_bytes += counts.alloc_bytes;
     }
@@ -5691,7 +5691,7 @@ fn what_a_block_read_costs_hit_against_miss() {
             })
             .collect()
     };
-    assert!(addresses.len() >= 8, "need several pages to cycle through: {}", addresses.len());
+    assert!(addresses.len() >= 8, "need several blocks to cycle through: {}", addresses.len());
     let small_cache = &small.cache;
     let small_blocks = &small.block_store;
     for (routing_bucket, key, address) in &addresses {
@@ -5705,7 +5705,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         let probe = crate::alloc_probe::Probe::start();
         let got = super::read_block_shared(small_cache, small_blocks, 1, address, crate::engine::hashing::BlockIdentity::of(1, "string", key, None), *routing_bucket);
         let counts = probe.stop();
-        assert!(got.is_some(), "the page must read back on the miss path");
+        assert!(got.is_some(), "the block must read back on the miss path");
         miss_allocs += counts.allocs;
         miss_bytes += counts.alloc_bytes;
     }
@@ -5719,7 +5719,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         let probe = crate::alloc_probe::Probe::start();
         let got = super::read_block_bytes(small_cache, small_blocks, 1, address, crate::engine::hashing::BlockIdentity::of(1, "string", key, None), *routing_bucket);
         let counts = probe.stop();
-        assert!(got.is_some(), "the page must read back");
+        assert!(got.is_some(), "the block must read back");
         owning_allocs += counts.allocs;
         owning_bytes += counts.alloc_bytes;
     }
@@ -5742,7 +5742,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         per(miss_bytes) - per(owning_bytes)
     );
     println!("  delegates to on a miss -- the Arc::from is the difference. Positive means the");
-    println!("  zero-copy read is the more expensive one whenever the page is not already cached.");
+    println!("  zero-copy read is the more expensive one whenever the block is not already cached.");
 
     assert!(hit_allocs > 0, "measured nothing on the hit path");
     assert!(
@@ -5831,7 +5831,7 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
                 .get(super::constants::CONTEXT_NODE_FIELD)
                 .map(|address| (key.clone(), address.clone()))
         })
-        .expect("the ingest wrote at least one context node page");
+        .expect("the ingest wrote at least one context node block");
     let routing_bucket = {
         let (start, end) = shard.routing_range();
         Some(super::hashing::block_routing_bucket(&object_key, start, end))
@@ -5842,17 +5842,17 @@ fn what_the_two_halves_of_a_node_fetch_cost() {
 
     // Warm: the first read of a block touches one-off structures.
     let warm = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
-        .expect("the page reads back");
-    assert!(!warm.is_empty(), "an empty page would make every number below meaningless");
+        .expect("the block reads back");
+    assert!(!warm.is_empty(), "an empty block would make every number below meaningless");
 
     let probe = crate::alloc_probe::Probe::start();
     let bytes = super::read_block_bytes(cache, block_store, 1, &address, crate::engine::hashing::BlockIdentity::of(1, "hash", &object_key, Some(super::constants::CONTEXT_NODE_FIELD)), routing_bucket)
-        .expect("the page reads back");
+        .expect("the block reads back");
     let read_allocs = probe.stop().allocs;
 
     let probe = crate::alloc_probe::Probe::start();
     let node = super::context::context_from_bytes::<crate::types::ContextNode>(&bytes)
-        .expect("the page decodes to a node");
+        .expect("the block decodes to a node");
     let decode_allocs = probe.stop().allocs;
 
     println!(
@@ -7428,7 +7428,7 @@ fn what_grows_outside_the_shard_index() {
     println!("  A slab descriptor is on the order of 100 bytes, so at {slab_per:.4} descriptors per");
     println!("  record it accounts for roughly {:.1} bytes of the ~842 unattributed.", slab_per * 100.0);
     if slab_per * 100.0 < 100.0 {
-        println!("  That is nowhere near enough: the page store is NOT where the memory goes, and");
+        println!("  That is nowhere near enough: the block store is NOT where the memory goes, and");
         println!("  the remaining structure is somewhere these counts do not reach.");
     }
 
@@ -8178,7 +8178,7 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
     let walked = crate::engine::live_block_scan_entries();
     let sites = crate::engine::live_block_scan_sites_snapshot();
     assert!(report.is_ok(), "compaction failed: {report:?}");
-    eprintln!("  [compaction] {walked} entries for {live_blocks} live pages, {} site(s)", sites.len());
+    eprintln!("  [compaction] {walked} entries for {live_blocks} live blocks, {} site(s)", sites.len());
     for (site, entries) in &sites {
         eprintln!("    {:>5.1}x  {site}", *entries as f64 / live_blocks as f64);
     }
@@ -8506,7 +8506,7 @@ guard never ran and nothing here is measuring the warm-up",
     );
     assert_eq!(
         control_warmed, shipped_warmed,
-        "the arms must warm the same pages for their read counts to be comparable",
+        "the arms must warm the same blocks for their read counts to be comparable",
     );
     assert!(
         control.block_reads_total > 0 && shipped.block_reads_total > 0,
@@ -8517,7 +8517,7 @@ cached and neither arm is a subject for the claim below",
     );
     assert_eq!(
         control.block_reads_total, shipped.block_reads_total,
-        "the arms read a different number of pages ({} vs {}), so the counts are not comparable",
+        "the arms read a different number of blocks ({} vs {}), so the counts are not comparable",
         control.block_reads_total, shipped.block_reads_total,
     );
 
@@ -8732,7 +8732,7 @@ fn what_the_compaction_preamble_walks() {
     );
 
     eprintln!(
-        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_blocks} live pages)",
+        "  [preamble] {:<38} {total:>8} entries = {:>5.1}x the shard ({live_blocks} live blocks)",
         "SUM OF STANDALONE CALLS",
         total as f64 / live_blocks as f64,
     );
@@ -9106,7 +9106,7 @@ fn who_walks_the_shard() {
     );
 
     eprintln!(
-        "  [who] apply_storage_lifecycle -> {total} entries = {:>4.1}x the shard ({live_blocks} live pages)",
+        "  [who] apply_storage_lifecycle -> {total} entries = {:>4.1}x the shard ({live_blocks} live blocks)",
         total as f64 / live_blocks as f64,
     );
     let mut rows: Vec<(&String, &u64)> = sites.iter().collect();
@@ -9325,7 +9325,7 @@ fn what_each_plan_call_walks() {
         });
     });
 
-    eprintln!("  [per-call] shard holds {live_blocks} live pages");
+    eprintln!("  [per-call] shard holds {live_blocks} live blocks");
 }
 
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_a_bounded_bucket_range_saves -- --ignored --nocapture --test-threads=1
@@ -9386,7 +9386,7 @@ fn what_a_bounded_bucket_range_saves() {
     println!("  slot map          {wide_buckets:>13} {narrow_buckets:>12}");
     println!("  slot recency      {wide_recency:>13} {narrow_recency:>12}");
     println!("  object index      {wide_objects:>13} {narrow_objects:>12}");
-    println!("  page index        {wide_blocks:>13} {narrow_blocks:>12}");
+    println!("  block index        {wide_blocks:>13} {narrow_blocks:>12}");
     println!();
     println!("  live memory       {:>11.0} B {:>10.0} B  per record",
              per(wide_live), per(narrow_live));
@@ -9394,7 +9394,7 @@ fn what_a_bounded_bucket_range_saves() {
              per(wide_live) - per(narrow_live),
              100.0 * (per(wide_live) - per(narrow_live)) / per(wide_live));
     println!();
-    println!("  The object and page indexes still hold one entry per record either way -- an");
+    println!("  The object and block indexes still hold one entry per record either way -- an");
     println!("  object has to be findable. What collapses is the PER-SLOT overhead: one slot");
     println!("  node per record becomes one per 1024 records, and slot recency with it.");
 
@@ -9591,7 +9591,7 @@ fn what_each_home_costs() {
     println!("     per-entry heap at all, and ObjectIndex is inline while a slot holds one object.");
     println!();
     println!("  Order is fixed and matters: a structure that owns its keys frees them, so an");
-    println!("  earlier row is credited with anything a later row merely borrowed. The page index");
+    println!("  earlier row is credited with anything a later row merely borrowed. The block index");
     println!("  is not freed separately because it goes with the slot map it lives in -- which is");
     println!("  why the slot map is the largest row and why bounding the slot range only recovers");
     println!("  the per-slot part of it, not the per-object part.");
@@ -10036,7 +10036,7 @@ fn a_bounded_compaction_round_resumes_instead_of_rolling_again() {
     );
     assert!(
         relocated >= KEYS as usize,
-        "the rounds together must move at least every key's page, moved {relocated}"
+        "the rounds together must move at least every key's block, moved {relocated}"
     );
 
     // The control: with the real budget a compaction finishes in one round, leaving nothing
@@ -10547,7 +10547,7 @@ fn an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report() {
 
     for measurement in [&small, &large] {
         eprintln!(
-            "{} records ({} live pages): idle {}x, one dirty bucket {}x",
+            "{} records ({} live blocks): idle {}x, one dirty bucket {}x",
             measurement.records,
             measurement.live_blocks,
             measurement.idle_multiple,

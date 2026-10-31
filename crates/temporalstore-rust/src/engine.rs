@@ -2351,7 +2351,7 @@ impl TemporalEngine {
             storage_manager_stage_order: storage_manager.native_stage_order,
             blockers,
             evidence: vec![
-                "slot/object/page authority is reported from the first-class slot index"
+                "slot/object/block authority is reported from the first-class slot index"
                     .to_string(),
                 "block addresses expose segment, offset, length, block id, object id, routing slot and band id, plus a payload checksum when checksum recording is enabled"
                     .to_string(),

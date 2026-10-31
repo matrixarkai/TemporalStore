@@ -405,7 +405,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
             .unwrap_or_else(|error| panic!("{what}: the inline arm refused a row it should hold: {error}"));
         assert!(
             matches!(record.page_address(), BlockAddress::One(_)),
-            "{what}: a log-resident page should take the inline arm"
+            "{what}: a log-resident block should take the inline arm"
         );
         let (back_address, back_model) = record
             .into_object_rows(None)
@@ -436,7 +436,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
                 .unwrap_or_else(|error| panic!("{what}: the layout arm refused: {error}"));
         assert!(
             matches!(record.page_address(), BlockAddress::Many(_)),
-            "{what}: an identified page should take the layout arm"
+            "{what}: an identified block should take the layout arm"
         );
         assert_eq!(1, layout.len(), "{what}: one page should produce a one-page layout");
         let (back_address, back_model) = record
@@ -482,7 +482,7 @@ fn the_inline_arm_takes_ordinal_zero_and_refuses_a_nonzero_one_by_name() {
     // THE REFUSING SIDE.
     let identified = ElementEntry::from_parts(5, 64, 128, Some(7), Some(7));
     let refusal = ObjectRecord::from_object_rows(&identified, 1, None, false)
-        .expect_err("the inline arm accepted a nonzero page ordinal it has no room for");
+        .expect_err("the inline arm accepted a nonzero block ordinal it has no room for");
     assert_eq!(
         ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline { block_id: 7 },
         refusal,
@@ -897,7 +897,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
         100.0 * needs_layout as f64 / total as f64
     );
     println!(
-        "  {with_generation} carry a generation; the largest page ordinal seen is {largest_ordinal}"
+        "  {with_generation} carry a generation; the largest block ordinal seen is {largest_ordinal}"
     );
 
     // THE CLASSIFICATION IS CHECKED AGAINST THE CONVERTER, not trusted. Every address goes through

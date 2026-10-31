@@ -744,7 +744,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
             removed.is_some(),
             "the durable map did not hold fb-two, so this fixture cannot create the state it needs"
         );
-        println!("[fallback] removed fb-two from the durable map, leaving its page entry");
+        println!("[fallback] removed fb-two from the durable map, leaving its block entry");
     }
 
     engine.unload_shard(1);
@@ -1762,7 +1762,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     assert_ne!(
         live_address.length(),
         absent_address.length(),
-        "the two addresses are identical, so this fixture cannot tell a live page from an absent one"
+        "the two addresses are identical, so this fixture cannot tell a live block from an absent one"
     );
     let live_blocks: usize = shard
         .bucket_index
@@ -1794,7 +1794,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         .map(|members| members.keys().cloned().collect())
         .unwrap_or_default();
     println!(
-        "[resurrect] {live_blocks} live page(s); restored {} of 2 carried element(s)",
+        "[resurrect] {live_blocks} live block(s); restored {} of 2 carried element(s)",
         restored.len()
     );
 
@@ -1999,7 +1999,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     let outcomes: usize = records.iter().map(|record| record.outcomes.len()).sum();
     let staged: usize = records.iter().map(|record| record.staged_blocks.len()).sum();
     println!(
-        "[pay] {} records, {outcomes} outcomes, {staged} staged pages",
+        "[pay] {} records, {outcomes} outcomes, {staged} staged blocks",
         records.len()
     );
 
@@ -2030,7 +2030,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
                 ContainerBlockDecode::NotFramed => not_framed += 1,
                 ContainerBlockDecode::Corrupt(why) => {
                     corrupt += 1;
-                    println!("[pay] a staged page is CORRUPT: {why}");
+                    println!("[pay] a staged block is CORRUPT: {why}");
                 }
             }
         }
@@ -2051,7 +2051,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     );
     assert_eq!(
         expected, recovered,
-        "the field names recovered from the staged pages are not the ones written"
+        "the field names recovered from the staged blocks are not the ones written"
     );
 
     // (3b) WHAT A COLD REPLAY READS TODAY. The baseline for the whole trade: if this is already
@@ -2406,8 +2406,8 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
             .arg(source.path().join("blocks"))
             .arg(into.path().join("blocks"))
             .status()
-            .expect("the page directory copies");
-        assert!(copy.success(), "copying the pages failed, so the fixture has no store");
+            .expect("the block directory copies");
+        assert!(copy.success(), "copying the blocks failed, so the fixture has no store");
         let fresh = engine_on(into.path());
         let log = fresh.write_ahead_log_store();
         for record in &records {
@@ -2704,7 +2704,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     });
     let carried: usize = records.iter().map(|r| r.staged_blocks.len()).sum();
     println!(
-        "[unreachable] {} records, {carried} carried pages, several-under-one-object={ambiguous}",
+        "[unreachable] {} records, {carried} carried blocks, several-under-one-object={ambiguous}",
         records.len()
     );
     assert!(
@@ -2843,8 +2843,8 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
             .arg(source.path().join("blocks"))
             .arg(into.path().join("blocks"))
             .status()
-            .expect("the page directory copies");
-        assert!(copied.success(), "copying the pages failed");
+            .expect("the block directory copies");
+        assert!(copied.success(), "copying the blocks failed");
         let fresh = engine_on(into.path());
         let log = fresh.write_ahead_log_store();
         for record in &records {

@@ -351,7 +351,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
     assert_eq!(
         1,
         folded_blocks.len(),
-        "the members resolve to {} pages after the fold, so there is no shared page to rewrite off",
+        "the members resolve to {} blocks after the fold, so there is no shared block to rewrite off",
         folded_blocks.len()
     );
 
@@ -870,7 +870,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     assert_eq!(
         2,
         blocks_before.len(),
-        "the two members resolve to {} distinct page(s), so neither is alone on one",
+        "the two members resolve to {} distinct block(s), so neither is alone on one",
         blocks_before.len()
     );
     assert_eq!(

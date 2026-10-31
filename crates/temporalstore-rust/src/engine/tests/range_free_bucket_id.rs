@@ -411,7 +411,7 @@ fn a_fixed_bucket_count_cannot_reproduce_the_fills_the_range_produces() {
             assert_eq!(
                 fill.blocks(),
                 keys.len(),
-                "0..{end} at {records} records accounted for {} pages over {} keys",
+                "0..{end} at {records} records accounted for {} blocks over {} keys",
                 fill.blocks(),
                 keys.len()
             );
@@ -458,7 +458,7 @@ fn the_fill_instrument_reproduces_the_published_figure() {
     assert_eq!(
         LARGE,
         fill.blocks(),
-        "the instrument accounted for {} pages over {LARGE} keys",
+        "the instrument accounted for {} blocks over {LARGE} keys",
         fill.blocks()
     );
     assert_eq!(
@@ -471,13 +471,13 @@ fn the_fill_instrument_reproduces_the_published_figure() {
     assert_eq!(
         39,
         fill.percentile(0.50),
-        "the published p50 fill at 40,000 records on 0..1023 is 39 pages; this instrument says {}",
+        "the published p50 fill at 40,000 records on 0..1023 is 39 blocks; this instrument says {}",
         fill.percentile(0.50)
     );
     assert_eq!(
         50,
         fill.max(),
-        "the published MAX fill at 40,000 records on 0..1023 is 50 pages; this instrument says {}",
+        "the published MAX fill at 40,000 records on 0..1023 is 50 blocks; this instrument says {}",
         fill.max()
     );
 }

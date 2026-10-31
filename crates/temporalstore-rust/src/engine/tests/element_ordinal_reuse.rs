@@ -658,7 +658,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         let tombstoned = tombstoned_blocks_of(&engine, kind, key);
 
         println!(
-            "  {kind:<5} {key:<14} {:<12} live pages {} -> {}, entries carrying deleted=true: {}",
+            "  {kind:<5} {key:<14} {:<12} live blocks {} -> {}, entries carrying deleted=true: {}",
             if whole_object { "whole-object" } else { "per-element" },
             before.len(),
             after.len(),
@@ -695,7 +695,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         } else {
             assert!(
                 after.len() < before.len(),
-                "{kind}/{key}: the delete left {} live pages of {}, so it did not remove",
+                "{kind}/{key}: the delete left {} live blocks of {}, so it did not remove",
                 after.len(),
                 before.len()
             );
@@ -785,7 +785,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
     assert_eq!(
         seeded.len(),
         held.len(),
-        "DENOMINATOR: {} pages for {} members seeded",
+        "DENOMINATOR: {} blocks for {} members seeded",
         seeded.len(),
         held.len()
     );
@@ -939,7 +939,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     assert_eq!(
         blocks_of(&engine, "zset", "eo-tombstone").len(),
         1,
-        "DENOMINATOR: the seed did not file a page, so nothing below is being observed"
+        "DENOMINATOR: the seed did not file a block, so nothing below is being observed"
     );
     let held_before_delete = tombstone_holds(&engine, object_id);
 
@@ -1118,7 +1118,7 @@ fn a_high_water_mark_lives_only_where_the_rebuild_recomputes_it() {
         assert_eq!(
             seeded_blocks,
             survivors.len() + 1,
-            "DENOMINATOR: {seeded_blocks} pages for {} elements seeded",
+            "DENOMINATOR: {seeded_blocks} blocks for {} elements seeded",
             survivors.len() + 1
         );
         assert_eq!(
@@ -1330,7 +1330,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
         };
         assert_eq!(
             live_entries, 1,
-            "DENOMINATOR: {kind}/{key} holds {live_entries} live pages, not the one this arm reads"
+            "DENOMINATOR: {kind}/{key} holds {live_entries} live blocks, not the one this arm reads"
         );
         let derived = crate::engine::container_membership::derive_membership(
             kind,
@@ -1350,7 +1350,7 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
         assert_eq!(
             derived.live.len(),
             1,
-            "{kind}/{key} derives {} live element(s) from its pages, not the one this arm reads",
+            "{kind}/{key} derives {} live element(s) from its blocks, not the one this arm reads",
             derived.live.len()
         );
         derived
@@ -1977,7 +1977,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let named: Vec<usize> = census.iter().filter_map(|row| row.2).collect();
             assert!(
                 !named.is_empty(),
-                "DENOMINATOR: {range_label} / {size_label} produced no page carrying a component"
+                "DENOMINATOR: {range_label} / {size_label} produced no block carrying a component"
             );
             assert_eq!(
                 named.len(),
@@ -2036,7 +2036,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let routed_census = component_census(&routed);
             assert!(
                 !routed_census.is_empty(),
-                "DENOMINATOR: the routed control seeded no page at all"
+                "DENOMINATOR: the routed control seeded no block at all"
             );
             let routed_named = routed_census.iter().filter(|row| row.2.is_some()).count();
             println!(
@@ -2908,7 +2908,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     assert_eq!(
         blocks_of(&engine, "zset", "eo-fold").len(),
         2,
-        "DENOMINATOR: the fixture did not file two pages"
+        "DENOMINATOR: the fixture did not file two blocks"
     );
 
     // The shape a fold produces for ONE element: a page entry with no durable map entry.

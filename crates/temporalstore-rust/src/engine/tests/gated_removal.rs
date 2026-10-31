@@ -223,7 +223,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
              the folded page is supposed to still carry it"
         );
         println!(
-            "  the pages still state {} member(s), including the removed one",
+            "  the blocks still state {} member(s), including the removed one",
             stated.len()
         );
 
@@ -258,7 +258,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     let resident = resident_members(&reloaded, "removal/set");
     let stated = components_the_blocks_state(&reloaded, "removal/set");
     println!(
-        "  after reload: durable holds {} member(s); pages state {}",
+        "  after reload: durable holds {} member(s); blocks state {}",
         resident.len(),
         stated.len()
     );

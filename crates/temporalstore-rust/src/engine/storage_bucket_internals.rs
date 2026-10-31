@@ -1973,7 +1973,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     );
     if resurrections_refused > 0 {
         eprintln!(
-            "rebuild_unserialized_model_maps: {resurrections_refused} persisted hash field(s) named              a page the bucket index does not hold and were not restored"
+            "rebuild_unserialized_model_maps: {resurrections_refused} persisted hash field(s) named              a block the bucket index does not hold and were not restored"
         );
     }
 }
@@ -4916,7 +4916,7 @@ pub(super) fn insert_container_tombstone_entry(
     // being a deleted one, the filing above was removed deliberately and has to come back.
     debug_assert!(
         block.deleted,
-        "a tombstone page is no longer `deleted`, so the object-lookup filing removed here is          needed again: a non-deleted page DOES belong in the lookup"
+        "a tombstone block is no longer `deleted`, so the object-lookup filing removed here is          needed again: a non-deleted block DOES belong in the lookup"
     );
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
 }
@@ -6191,12 +6191,12 @@ pub(super) mod object_index_divergence {
 
     pub(crate) fn note_block_named_an_object_the_list_lacked(object_id: u64) {
         let seen = BLOCKS_NAMED_AN_OBJECT_THE_LIST_LACKED.fetch_add(1, Ordering::Relaxed) + 1;
-        record("a live page named an object its bucket list did not hold", object_id, seen);
+        record("a live block named an object its bucket list did not hold", object_id, seen);
     }
 
     pub(crate) fn note_list_held_an_object_no_block_names(object_id: u64) {
         let seen = LIST_HELD_AN_OBJECT_NO_BLOCK_NAMES.fetch_add(1, Ordering::Relaxed) + 1;
-        record("a bucket list held an object no live page names", object_id, seen);
+        record("a bucket list held an object no live block names", object_id, seen);
     }
 
     fn record(what: &'static str, object_id: u64, seen: u64) {
@@ -8084,7 +8084,7 @@ mod released_supplement_guards {
         let resident_key = releasable_bucket(&mut shard, 9, "resident-key");
         assert_ne!(
             released_key, resident_key,
-            "the two fixture keys must differ, or one page overwrote the other",
+            "the two fixture keys must differ, or one block overwrote the other",
         );
 
         let before = filings(&shard);
@@ -8128,12 +8128,12 @@ mod released_supplement_guards {
         assert_eq!(
             after.get(&released_key),
             Some(&Some(7)),
-            "the page of the RELEASED bucket lost the bucket it is filed in",
+            "the block of the RELEASED bucket lost the bucket it is filed in",
         );
         assert_eq!(
             after.get(&resident_key),
             Some(&Some(9)),
-            "the page of the bucket that was NOT released moved, which is a different defect",
+            "the block of the bucket that was NOT released moved, which is a different defect",
         );
     }
 
@@ -8642,7 +8642,7 @@ mod release_refusal_guards {
         let moved = node
             .block_index
             .get(&FIXTURE_HANDLE)
-            .expect("the fixture's one page")
+            .expect("the fixture's one block")
             .clone();
         shard.bucket_index.object_block_lookup.remove("string", &key);
         shard.bucket_index.bucket_map.insert(
@@ -8655,7 +8655,7 @@ mod release_refusal_guards {
 
         assert!(
             outcome.released_buckets.is_empty(),
-            "a bucket holding a page whose key routes elsewhere was released: {outcome:?}",
+            "a bucket holding a block whose key routes elsewhere was released: {outcome:?}",
         );
         assert_eq!(outcome.released_blocks, 0, "{outcome:?}");
         assert_eq!(outcome.refused_buckets, 1, "{outcome:?}");
@@ -8912,7 +8912,7 @@ mod release_walk_scale {
         // VACUITY FLOOR, on the measured denominator rather than on the constants.
         assert!(
             large_live > small_live,
-            "the two stores must differ in live pages, got {small_live} and {large_live}",
+            "the two stores must differ in live blocks, got {small_live} and {large_live}",
         );
         assert_eq!(
             (small_buckets, large_buckets),
@@ -8922,7 +8922,7 @@ mod release_walk_scale {
         assert_eq!(
             (small_blocks, large_blocks),
             (4, 4),
-            "both sizes must release the same four pages",
+            "both sizes must release the same four blocks",
         );
         assert!(
             small > 0 && large > 0,
@@ -8965,7 +8965,7 @@ mod release_walk_scale {
                     .get(&victim)
                     .map(|bucket| bucket.block_index.len()),
                 Some(1),
-                "the reload must have installed the page it released",
+                "the reload must have installed the block it released",
             );
             (materialized, live_blocks)
         }
@@ -8975,11 +8975,11 @@ mod release_walk_scale {
 
         assert!(
             large_live > small_live,
-            "the two stores must differ in live pages, got {small_live} and {large_live}",
+            "the two stores must differ in live blocks, got {small_live} and {large_live}",
         );
         assert_eq!(
             small, 1,
-            "reloading one bucket materialized {small} entries out of {small_live} live pages",
+            "reloading one bucket materialized {small} entries out of {small_live} live blocks",
         );
         assert_eq!(
             small, large,
@@ -9047,7 +9047,7 @@ mod live_block_scan_coverage {
         assert_eq!(
             shard.strings().len(),
             BUCKETS as usize,
-            "one live page per bucket",
+            "one live block per bucket",
         );
         assert_eq!(
             shard.bucket_index.bucket_map.len(),
@@ -9093,7 +9093,7 @@ mod live_block_scan_coverage {
         assert_eq!(
             entries.len(),
             BUCKETS as usize,
-            "the walk must materialize every indexed page, or there is nothing to charge for",
+            "the walk must materialize every indexed block, or there is nothing to charge for",
         );
         assert_eq!(
             counted,
@@ -9146,7 +9146,7 @@ mod live_block_scan_coverage {
         assert_eq!(
             entries.len(),
             live_blocks,
-            "the supplement must put the released page back into the answer",
+            "the supplement must put the released block back into the answer",
         );
         assert_eq!(
             counted,
@@ -9439,7 +9439,7 @@ mod model_kind_registry_guards {
         );
         assert!(
             !by_code.contains_key(&0),
-            "a kind packs as 0, which is the byte a bucket holding no page writes",
+            "a kind packs as 0, which is the byte a bucket holding no block writes",
         );
     }
 
@@ -9496,7 +9496,7 @@ mod model_kind_registry_guards {
         for name in ["zset", "list"] {
             let codes = packed
                 .get(name)
-                .unwrap_or_else(|| panic!("the report carries no `{name}` page"));
+                .unwrap_or_else(|| panic!("the report carries no `{name}` block"));
             let expected = ModelKind::from_stored_name(name)
                 .expect("both are live kinds")
                 .report_code();

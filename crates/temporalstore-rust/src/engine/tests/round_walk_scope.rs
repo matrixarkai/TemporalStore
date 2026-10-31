@@ -680,7 +680,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         let blocks_before = collect_live_block_entries(shard).len();
         assert!(
             blocks_before > 0,
-            "{label}: the fixture stored no page, so there is nothing to file anywhere"
+            "{label}: the fixture stored no block, so there is nothing to file anywhere"
         );
 
         // Put the model-map addresses into the state an older index decodes into. The bucket index
@@ -1065,7 +1065,7 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
         "across five points the scoped walk skipped no page at all, so the saving this file \
          exists to price is zero and every figure below is vacuous"
     );
-    println!("  pages the scoped walk did not visit, summed over the five points: {saved_total}");
+    println!("  blocks the scoped walk did not visit, summed over the five points: {saved_total}");
 }
 
 /// THE RESTART CASE, DRIVEN. WALK EVERYTHING.

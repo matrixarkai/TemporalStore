@@ -340,21 +340,21 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     println!();
     println!("    buckets in the map                      {bucket_total:>6}");
     println!("    dirty objects left by the dump          {after_dump:>6}");
-    println!("    pages held by the widest object         {widest_object:>6}");
+    println!("    blocks held by the widest object         {widest_object:>6}");
     println!();
     println!("    buckets with a count, via the SET       {:>6}", by_set.len());
     println!("    buckets with a count, via the PAGES     {:>6}", by_objects.len());
     println!("    total, via the SET (the authority)      {set_total:>6}");
     println!("    total, distinct objects via the PAGES   {object_total:>6}");
     println!("    total, dirty PAGES                      {block_total:>6}");
-    println!("    set members with NO live page at all    {set_members_with_no_block:>6}");
+    println!("    set members with NO live block at all    {set_members_with_no_block:>6}");
     println!();
     println!("    the producer's loop visited              {producer_visits:>6}  (one per dirty bucket)");
     println!("    a page walk would have to visit         {block_total_in_shard:>6}  (every page in the shard)");
     println!();
     println!("    after the dump: {after_dump} dirty object(s) in {after_dump_set_buckets} bucket(s), {after_dump_nodes_dirty} node(s) still reading dirty");
     println!();
-    println!("    bucket   set  set>0  node.dirty  page>0   objects  pages   node.gen  summ.gen");
+    println!("    bucket   set  set>0  node.dirty  block>0   objects  blocks   node.gen  summ.gen");
     // THE UNION OF EVERY BUCKET EITHER SIDE NAMES, so a bucket one method knows and the other
     // does not shows up as a row rather than being absent from the comparison.
     let every_bucket: BTreeSet<u32> = by_set
@@ -431,7 +431,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         })
         .collect();
     println!(
-        "    dirty bucket(s) with NO dirty page that the node still reports: {:?}",
+        "    dirty bucket(s) with NO dirty block that the node still reports: {:?}",
         node_carries_what_no_block_does
     );
     println!();
@@ -529,7 +529,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          of the finding. Say so rather than leaving this assertion asserting nothing"
     );
     println!(
-        "    {} of {} dirty bucket(s) the page walk cannot see at all: {}",
+        "    {} of {} dirty bucket(s) the block walk cannot see at all: {}",
         invisible_buckets.len(),
         by_set.len(),
         invisible_buckets.join(" ")
@@ -555,7 +555,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          itself is wrong, not just its support"
     );
     println!(
-        "    dirty bucket(s) the page walk sees and still under-counts: {}",
+        "    dirty bucket(s) the block walk sees and still under-counts: {}",
         short_but_visible.join(" ")
     );
     println!();

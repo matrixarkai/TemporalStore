@@ -136,7 +136,7 @@ pub fn native_feature_sequence_golden_corpus_report() -> GoldenCorpusReport {
         &mut cases,
         "native_sequence_add_status",
         add_rows.status.ok,
-        "sequence rows append through timestamped KV pages",
+        "sequence rows append through timestamped KV blocks",
     );
 
     let sequence_query = engine.execute(ExecuteRequest {
@@ -167,7 +167,7 @@ pub fn native_feature_sequence_golden_corpus_report() -> GoldenCorpusReport {
         block_layout.packed_feature_blocks >= 1
             && block_layout.unique_feature_block_refs < block_layout.indexed_feature_points
             && !block_layout.has_errors(),
-        "Timestamped feature/sequence values share packed pages without layout errors",
+        "Timestamped feature/sequence values share packed blocks without layout errors",
     );
 
     let total_cases = cases.len();

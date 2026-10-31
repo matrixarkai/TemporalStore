@@ -281,11 +281,11 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
     let second_bytes = b"field-f1-bytes-which-differ".to_vec();
     assert_ne!(
         first_bytes, second_bytes,
-        "the two pages must differ or serving one for the other is undetectable"
+        "the two blocks must differ or serving one for the other is undetectable"
     );
 
     println!("\n=== read_block over one record carrying two pages of one key ===");
-    println!("  identity                          pages  correct  wrong bytes  missing");
+    println!("  identity                          blocks  correct  wrong bytes  missing");
 
     // THE PRODUCT'S OWN IDENTITY, since the component left `stable_block_object_id`. It was
     // reachable only as a simulation when this module was written; it is now simply the id.
@@ -440,7 +440,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     seed_routed_strings(&engine);
 
     println!("\n=== pages per identity, grouped two ways ===");
-    println!("  kind    grouped by        pages  groups  p50  p90  p99  MAX  unreachable   share");
+    println!("  kind    grouped by        blocks  groups  p50  p90  p99  MAX  unreachable   share");
     let mut rows: Vec<(&str, &str, usize, usize)> = Vec::new();
     for kind in ["hash", "string"] {
         let blocks = live_blocks(&engine, kind);
@@ -491,7 +491,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     assert_eq!(
         hash_blocks,
         CONTAINER_KEYS * MEMBERS_PER_KEY,
-        "the hash arm exercised {hash_blocks} pages, not {}",
+        "the hash arm exercised {hash_blocks} blocks, not {}",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     assert_eq!(
@@ -516,7 +516,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     let (_, string_with_element) = find("string", "id + element");
     assert_eq!(
         string_blocks, ROUTED_KEYS,
-        "CONTROL NOT EXERCISED: {string_blocks} string pages, not {ROUTED_KEYS}"
+        "CONTROL NOT EXERCISED: {string_blocks} string blocks, not {ROUTED_KEYS}"
     );
     assert_eq!(
         (string_id_only, string_with_element),
@@ -603,9 +603,9 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
     };
 
     println!("\n=== can the READ side see a page ordinal? ===");
-    println!("  hash pages, WAL-resident            {resident}");
+    println!("  hash blocks, WAL-resident            {resident}");
     println!("  ...of which carry an ordinal        {with_ordinal}");
-    println!("  hash pages with a durable address   {durable}");
+    println!("  hash blocks with a durable address   {durable}");
 
     assert!(
         resident > 0,
@@ -695,7 +695,7 @@ fn what_an_element_named_block_adds_to_the_record() {
     }
 
     println!("\n=== what the element identity adds to a carried page ===");
-    println!("  pages  element        wire B/page  chunk B   disk bare  disk named  disk B/page   share");
+    println!("  blocks  element        wire B/block  chunk B   disk bare  disk named  disk B/block   share");
     let mut wire_rows: Vec<(&str, i64)> = Vec::new();
     let mut disk_rows: Vec<(usize, &str, f64)> = Vec::new();
     for blocks in [25usize, 200usize] {
@@ -832,7 +832,7 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     let (named_allocs, named_bytes) = measure(Some("f7"));
 
     println!("\n=== carried_block allocations for {BLOCKS} staged pages ===");
-    println!("  element          allocs   bytes   allocs/page   B/page");
+    println!("  element          allocs   bytes   allocs/block   B/block");
     for (label, allocs, bytes) in [
         ("CONTROL: none", bare_allocs, bare_bytes),
         ("hash field f7", named_allocs, named_bytes),
@@ -907,11 +907,11 @@ fn how_many_blocks_one_record_carries() {
     sizes.sort();
 
     println!("\n=== pages per record, over the whole seeded log ===");
-    println!("  records carrying pages  pages  p50  p90  p99  MAX  records with >1 page");
+    println!("  records carrying blocks  blocks  p50  p90  p99  MAX  records with >1 block");
     let multi = sizes.iter().filter(|size| **size > 1).count();
     assert!(
         !sizes.is_empty(),
-        "DENOMINATOR: no record in this log carries a page, so every figure below is vacuous"
+        "DENOMINATOR: no record in this log carries a block, so every figure below is vacuous"
     );
     println!(
         "  {:>22} {carried_blocks:>6} {:>4} {:>4} {:>4} {:>4} {multi:>21}",
@@ -929,11 +929,11 @@ fn how_many_blocks_one_record_carries() {
     );
     assert!(
         sizes.last().copied().unwrap_or(0) > 1,
-        "the largest record in this log carries {} page(s)",
+        "the largest record in this log carries {} block(s)",
         sizes.last().copied().unwrap_or(0)
     );
     println!(
-        "  VERDICT: {multi} of {} page-carrying records hold more than one page, MAX {}.",
+        "  VERDICT: {multi} of {} page-carrying records hold more than one block, MAX {}.",
         sizes.len(),
         sizes.last().copied().unwrap_or(0)
     );
@@ -1001,7 +1001,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
     let decoded = decode_wal_line(&encoded).expect("the record decodes");
 
     println!("\n=== every carried page round-trips, bytes AND element ===");
-    println!("  page  element        bytes in  bytes out  element out");
+    println!("  block  element        bytes in  bytes out  element out");
     assert_eq!(
         decoded.staged_blocks.len(),
         blocks.len(),
@@ -1033,10 +1033,10 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
         );
         assert_eq!(
             before.object_id, after.object_id,
-            "page {i}'s object id did not survive the round trip"
+            "block {i}'s object id did not survive the round trip"
         );
     }
-    println!("  VERDICT: {} pages in, {} out, bytes and elements identical. Nothing the record guaranteed was traded away.", blocks.len(), decoded.staged_blocks.len());
+    println!("  VERDICT: {} blocks in, {} out, bytes and elements identical. Nothing the record guaranteed was traded away.", blocks.len(), decoded.staged_blocks.len());
 }
 
 // =================================================================================================
@@ -1113,7 +1113,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
     load_on(&engine);
 
     println!("\n=== hash field names recovered after a reload, per key ===");
-    println!("  key        pages  names recovered");
+    println!("  key        blocks  names recovered");
     let mut total_recovered = 0usize;
     for k in 0..CONTAINER_KEYS {
         let key = format!("h{k}");

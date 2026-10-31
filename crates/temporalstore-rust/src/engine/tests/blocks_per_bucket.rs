@@ -149,7 +149,7 @@ impl BlocksPerBucket {
     fn report(&self, label: &str) {
         println!("\n=== {label} ===");
         println!(
-            "  buckets={} pages={} mean={:.4} widest bucket={} page(s)",
+            "  buckets={} blocks={} mean={:.4} widest bucket={} block(s)",
             self.buckets(),
             self.blocks(),
             self.mean(),
@@ -158,7 +158,7 @@ impl BlocksPerBucket {
         let buckets = self.buckets();
         for (held, count) in self.counts.iter() {
             println!(
-                "  {held:>6} page(s) : {count:>8} buckets  ({:>7.3}%)",
+                "  {held:>6} block(s) : {count:>8} buckets  ({:>7.3}%)",
                 if buckets == 0 {
                     0.0
                 } else {
@@ -375,7 +375,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
         );
         assert!(
             hist.blocks() > 0,
-            "denominator: no page entries, so the structure this module is about is absent"
+            "denominator: no block entries, so the structure this module is about is absent"
         );
     }
 
@@ -394,7 +394,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
         );
         assert!(
             hist.widest() >= 2,
-            "routed arm {index}: the widest bucket holds {} page(s)",
+            "routed arm {index}: the widest bucket holds {} block(s)",
             hist.widest()
         );
     }
@@ -410,7 +410,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
         );
         assert!(
             hist.mean() >= 2.0,
-            "container arm {index}: mean {:.4} pages a bucket",
+            "container arm {index}: mean {:.4} blocks a bucket",
             hist.mean()
         );
     }
@@ -434,7 +434,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
         routed[1].single_block_fraction()
     );
     println!(
-        "  container : {:.5} -> {:.5} single-page fraction  (mean {:.2} -> {:.2} pages/bucket)",
+        "  container : {:.5} -> {:.5} single-page fraction  (mean {:.2} -> {:.2} blocks/bucket)",
         container[0].single_block_fraction(),
         container[1].single_block_fraction(),
         container[0].mean(),
@@ -849,7 +849,7 @@ fn what_each_shape_of_the_block_index_would_cost() {
             true,
         ),
         (
-            "two pages inline before the map is earned",
+            "two blocks inline before the map is earned",
             size_of::<MirrorInlineTwo>(),
             size_of::<MirrorNode<MirrorInlineTwo>>(),
             false,
@@ -961,7 +961,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
     assert_eq!(
         size_of::<BlockIndexMap>(),
         size_of::<MirrorLiveBlockIndex>(),
-        "the mirror of the live page index has drifted from the declaration"
+        "the mirror of the live block index has drifted from the declaration"
     );
     assert_eq!(
         size_of::<BucketNode>(),
@@ -977,17 +977,17 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
     );
     for (name, index, node) in [
         (
-            "as it stands: the whole page entry inline",
+            "as it stands: the whole block entry inline",
             size_of::<BlockIndexMap>(),
             size_of::<MirrorNode<BlockIndexMap>>(),
         ),
         (
-            "the single page's ADDRESS inline, map behind a pointer",
+            "the single block's ADDRESS inline, map behind a pointer",
             size_of::<MirrorInlineAddress>(),
             size_of::<MirrorNode<MirrorInlineAddress>>(),
         ),
         (
-            "ONE WORD: the page in the field, or a pointer",
+            "ONE WORD: the block in the field, or a pointer",
             size_of::<MirrorOneWordInline>(),
             size_of::<MirrorNode<MirrorOneWordInline>>(),
         ),
@@ -1018,7 +1018,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
         size_of::<MirrorBlockAddressOnly>()
     );
     println!(
-        "  the whole page entry as declared      : {:>4} B",
+        "  the whole block entry as declared      : {:>4} B",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -1046,7 +1046,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
     // --- THE TWO ECONOMIES, each measured. ---
     println!("\n=== removing a field rather than narrowing one, priced ===");
     for (name, width) in [
-        ("the page entry as declared", size_of::<BlockIndex>()),
+        ("the block entry as declared", size_of::<BlockIndex>()),
         (
             "with `deleted` gone (a size of zero means deleted)",
             size_of::<MirrorBlockNoDeleted>(),
@@ -1327,7 +1327,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
     );
     assert!(
         single_block > 0,
-        "denominator: no bucket holds exactly one page, so the shape under test is unreached"
+        "denominator: no bucket holds exactly one block, so the shape under test is unreached"
     );
 
     let keys: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
@@ -1397,7 +1397,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
     println!("\n=== one clone of the bucket map, by the counting allocator ===");
     println!("  store path length held at {path_length} characters");
     println!(
-        "  buckets={buckets}  single-page={single_block}  pages={}",
+        "  buckets={buckets}  single-page={single_block}  blocks={}",
         hist.blocks()
     );
     println!(
@@ -1408,7 +1408,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
         ("the real bucket map, as production built it", real_bytes, real_calls, real_calls),
         ("control partner: real nodes, harness order", partner_bytes, partner_calls, partner_calls),
         ("mirror, live index           [CONTROL]", live_bytes, live_calls, live_calls),
-        ("mirror, single page boxed", boxed_bytes, boxed_calls, boxed_calls - boxes),
+        ("mirror, single block boxed", boxed_bytes, boxed_calls, boxed_calls - boxes),
         ("mirror, live index, FULL tree", live_full_bytes, live_full_calls, live_full_calls),
         ("mirror, boxed, FULL tree", boxed_full_bytes, boxed_full_calls, boxed_full_calls - boxes),
     ] {
@@ -1503,7 +1503,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
         slots_per_bucket
     );
     println!(
-        "  the boxed page, charged               : {:>8} B a bucket that holds one page",
+        "  the boxed block, charged               : {:>8} B a bucket that holds one block",
         size_of::<BlockIndex>()
     );
     println!(
@@ -1641,14 +1641,14 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     let inline: Vec<(u64, MirrorInlineBlockIndex)> = listed
         .iter()
         .map(|(handle, index)| {
-            let block = index.get(handle).expect("the page is there").clone();
+            let block = index.get(handle).expect("the block is there").clone();
             (*handle, MirrorInlineBlockIndex::One(*handle, block))
         })
         .collect();
     let boxed: Vec<(u64, MirrorBoxedBlockIndex)> = listed
         .iter()
         .map(|(handle, index)| {
-            let block = index.get(handle).expect("the page is there").clone();
+            let block = index.get(handle).expect("the block is there").clone();
             (*handle, MirrorBoxedBlockIndex::One(*handle, Box::new(block)))
         })
         .collect();
@@ -1658,19 +1658,19 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
         listed
             .iter()
             .all(|(_, index)| matches!(index, BlockIndexMap::One(..))),
-        "the shipped arm is not holding its pages behind pointers, so the treatment did not run"
+        "the shipped arm is not holding its blocks behind pointers, so the treatment did not run"
     );
     assert!(
         inline
             .iter()
             .all(|(_, index)| matches!(index, MirrorInlineBlockIndex::One(..))),
-        "the inline mirror is not holding its pages inline, so the treatment did not run"
+        "the inline mirror is not holding its blocks inline, so the treatment did not run"
     );
     assert!(
         boxed
             .iter()
             .all(|(_, index)| matches!(index, MirrorBoxedBlockIndex::One(..))),
-        "the boxed arm is not holding its pages behind a pointer, so the treatment did not run"
+        "the boxed arm is not holding its blocks behind a pointer, so the treatment did not run"
     );
 
     let read_inline = || {
@@ -1742,11 +1742,11 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
     // --- Every arm must have read the same blocks, or they are not comparable. ---
     assert_eq!(
         checksum_inline, checksum_boxed,
-        "the inline and boxed arms summed different pages, so they are not reading one page set"
+        "the inline and boxed arms summed different blocks, so they are not reading one block set"
     );
     assert_eq!(
         checksum_inline, checksum_listed,
-        "the inline and shipped arms summed different pages, so they are not reading one page set"
+        "the inline and shipped arms summed different blocks, so they are not reading one block set"
     );
     assert_ne!(
         0, checksum_inline,
@@ -1871,18 +1871,18 @@ fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &Bloc
     // covered where it is now observable, rather than compared where it no longer exists.
     assert_eq!(
         left.model_id, right.model_id,
-        "{context}: page {handle} changed model_id"
+        "{context}: block {handle} changed model_id"
     );
     // THE COMPONENT COMPARISON IS GONE WITH THE FIELD. It was one of the six identity terms this
     // helper compared, and the entry has no seventh name to change.
     assert_eq!(
         left.address, right.address,
-        "{context}: page {handle} changed address"
+        "{context}: block {handle} changed address"
     );
     assert_eq!(left.dirty, right.dirty, "{context}: page {handle} changed dirty");
     assert_eq!(
         left.deleted, right.deleted,
-        "{context}: page {handle} changed deleted"
+        "{context}: block {handle} changed deleted"
     );
     // THE LOG-RESIDENT COMPARISON IS GONE RATHER THAN REWRITTEN, because it could no longer
     // fail. It used to compare a STORED flag; it now reads an accessor that is a pure function of
@@ -1900,7 +1900,7 @@ fn assert_same_block_set(context: &str, left: &BlockIndexMap, right: &BlockIndex
     assert_eq!(
         left_entries.len(),
         right_entries.len(),
-        "{context}: the page set holds {} entries against {}",
+        "{context}: the block set holds {} entries against {}",
         left_entries.len(),
         right_entries.len()
     );
@@ -1908,7 +1908,7 @@ fn assert_same_block_set(context: &str, left: &BlockIndexMap, right: &BlockIndex
     let right_handles: Vec<u64> = right_entries.iter().map(|(handle, _)| *handle).collect();
     assert_eq!(
         left_handles, right_handles,
-        "{context}: the page set's handles are not the same handles in the same order"
+        "{context}: the block set's handles are not the same handles in the same order"
     );
     for ((handle, left_block), (_, right_block)) in left_entries.iter().zip(right_entries.iter()) {
         assert_same_block(context, *handle, left_block, right_block);
@@ -1950,10 +1950,10 @@ fn assert_same_block_set(context: &str, left: &BlockIndexMap, right: &BlockIndex
 fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set() {
     let mut live = BlockSlabLiveIndex::default();
     let mut index = BlockIndexMap::default();
-    assert!(index.is_empty(), "a fresh page index holds nothing");
+    assert!(index.is_empty(), "a fresh block index holds nothing");
     assert!(
         matches!(index, BlockIndexMap::Empty),
-        "a fresh page index is not in the Empty shape"
+        "a fresh block index is not in the Empty shape"
     );
 
     // --- One block, held in the single-block arm, whose entry is behind a pointer. ---
@@ -1975,7 +1975,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     }
     assert!(
         matches!(index, BlockIndexMap::Many(_)),
-        "four pages are not being held in a map, so the promotion did not happen"
+        "four blocks are not being held in a map, so the promotion did not happen"
     );
     assert_eq!(4, index.len(), "four pages, four entries");
     let grown_control = index.clone();
@@ -1983,7 +1983,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // The block that was there before the promotion must have survived it, field for field.
     let survived = index
         .get(&first_handle)
-        .expect("the page held inline before the promotion is gone after it -- silent data loss");
+        .expect("the block held inline before the promotion is gone after it -- silent data loss");
     assert_same_block("across the promotion into a map", first_handle, &first, survived);
 
     // Every one of the four is present and is its own block, compared one at a time.
@@ -1991,7 +1991,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
         let seed = offset as u64 + 1;
         let held = index
             .get(handle)
-            .unwrap_or_else(|| panic!("page {handle} (seed {seed}) is not in the grown index"));
+            .unwrap_or_else(|| panic!("block {handle} (seed {seed}) is not in the grown index"));
         assert_same_block("in the grown index", *handle, &block_for(seed).1, held);
     }
 
@@ -2007,18 +2007,18 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     for handle in handles.iter().skip(1) {
         let removed = index
             .remove(handle, &mut live, crate::engine::state::StaleCause::Removed)
-            .unwrap_or_else(|| panic!("removing page {handle} answered nothing"));
+            .unwrap_or_else(|| panic!("removing block {handle} answered nothing"));
         std::hint::black_box(&removed);
     }
     assert_eq!(1, index.len(), "one page should remain");
     assert!(
         matches!(index, BlockIndexMap::One(..)),
-        "an index drained back to one page did not return to the single-page arm"
+        "an index drained back to one block did not return to the single-page arm"
     );
 
     // --- THE STRONG FORM. The surviving block set is EQUAL to what it was before the round trip. ---
     assert_same_block_set(
-        "after growing to four pages and shrinking back to one",
+        "after growing to four blocks and shrinking back to one",
         &single_control,
         &index,
     );
@@ -2029,11 +2029,11 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // this file, which is why the negative probe is here.
     assert!(
         index.get(&first_handle.wrapping_add(1)).is_none(),
-        "a one-entry page index answered a lookup for a handle it does not hold"
+        "a one-entry block index answered a lookup for a handle it does not hold"
     );
     assert!(
         index.get(&first_handle).is_some(),
-        "a one-entry page index did not answer a lookup for the handle it does hold"
+        "a one-entry block index did not answer a lookup for the handle it does hold"
     );
 
     // --- Iterating a one-entry index yields the one block, not nothing. ---
@@ -2046,8 +2046,8 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // --- And out the other end: removing the last block returns the index to Empty. ---
     let last = index
         .remove(&first_handle, &mut live, crate::engine::state::StaleCause::Removed)
-        .expect("the last page is gone before it was removed");
-    assert_same_block("the last page removed", first_handle, &first, &last);
+        .expect("the last block is gone before it was removed");
+    assert_same_block("the last block removed", first_handle, &first, &last);
     assert!(
         matches!(index, BlockIndexMap::Empty),
         "an emptied index did not return to the Empty shape"
@@ -2064,19 +2064,19 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     }
     assert!(
         matches!(retained, BlockIndexMap::Many(_)),
-        "four pages are not in a map"
+        "four blocks are not in a map"
     );
     let keep = retained_handles[2];
     retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _block| *handle == keep);
     assert_eq!(1, retained.len(), "retain should have left exactly one page");
     assert!(
         matches!(retained, BlockIndexMap::One(..)),
-        "a list that `retain` drops to one page must give up its buffer for the single-page arm"
+        "a list that `retain` drops to one block must give up its buffer for the single-page arm"
     );
     let survivor = retained
         .get(&keep)
-        .expect("the page retain was told to keep is gone");
-    assert_same_block("the page retain kept", keep, &block_for(12).1, survivor);
+        .expect("the block retain was told to keep is gone");
+    assert_same_block("the block retain kept", keep, &block_for(12).1, survivor);
 
     // --- And retain the last block away, which is the collapse that DOES still happen. ---
     retained.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _block| false);
@@ -2102,7 +2102,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     }
     assert!(
         matches!(emptied, BlockIndexMap::Many(_)),
-        "four pages are not in a map, so the case below is not the case it is named for"
+        "four blocks are not in a map, so the case below is not the case it is named for"
     );
     emptied.retain(&mut live, crate::engine::state::StaleCause::Removed, |_handle, _block| false);
     assert_eq!(0, emptied.len(), "retain should have left nothing");
@@ -2153,7 +2153,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     assert_eq!(
         1,
         components.len(),
-        "two entries of one object at one address are ONE page in this index, and it holds {}",
+        "two entries of one object at one address are ONE block in this index, and it holds {}",
         components.len()
     );
     assert_same_block(
@@ -2193,7 +2193,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
         .insert(&untouched_key, untouched_block, &mut live);
     assert!(
         matches!(untouched.block_index, BlockIndexMap::One(..)),
-        "the untouched node is not holding its one page in the single-page arm"
+        "the untouched node is not holding its one block in the single-page arm"
     );
 
     // A node that grew to four blocks and shrank back to the same single block.
@@ -2216,7 +2216,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
         round_tripped
             .block_index
             .remove(handle, &mut live, crate::engine::state::StaleCause::Removed)
-            .expect("removing a page answered nothing");
+            .expect("removing a block answered nothing");
     }
     assert!(
         matches!(round_tripped.block_index, BlockIndexMap::One(..)),
@@ -2413,7 +2413,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     let (_, routed_buckets, routed_blocks, routed_nodes, routed_blocks_bytes) = rows[0];
     let (_, container_buckets, container_blocks, container_nodes, container_blocks_bytes) = rows[1];
     assert!(routed_buckets > 0 && container_buckets > 0, "denominator: a workload holds no buckets");
-    assert!(routed_blocks > 0 && container_blocks > 0, "denominator: a workload holds no pages");
+    assert!(routed_blocks > 0 && container_blocks > 0, "denominator: a workload holds no blocks");
 
     // In the routed store the two terms are within a whisker of each other, because there is one
     // block per bucket and the block entry IS most of the node.
@@ -2422,7 +2422,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
         100.0 * routed_blocks_bytes as f64 / routed_nodes as f64
     );
     println!(
-        "  container : the page entry is {:.1}x the node total",
+        "  container : the block entry is {:.1}x the node total",
         container_blocks_bytes as f64 / container_nodes as f64
     );
     assert!(

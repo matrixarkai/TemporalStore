@@ -529,7 +529,7 @@ fn relieving_memory_reclaims_no_space_and_reclaiming_space_is_its_own_call() {
     );
     assert_eq!(
         report.dropped_object_count, 0,
-        "the eviction round deleted {} records; relieving memory releases pages and never deletes",
+        "the eviction round deleted {} records; relieving memory releases blocks and never deletes",
         report.dropped_object_count
     );
 

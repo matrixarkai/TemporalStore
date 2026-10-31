@@ -480,7 +480,7 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
         );
         let counts = crate::engine::maintenance_block_read_counts();
         println!(
-            "  {records:>6} records -> ONE round read {} pages, {} of them under a shard guard",
+            "  {records:>6} records -> ONE round read {} blocks, {} of them under a shard guard",
             counts.block_reads_total, counts.block_reads_under_guard
         );
         (counts.block_reads_under_guard, counts.block_reads_total)
@@ -626,7 +626,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     );
     assert_eq!(
         slabs_from_live_reports, slabs_from_id_list,
-        "the slabs with live pages and the reported live-slab id list disagree"
+        "the slabs with live blocks and the reported live-slab id list disagree"
     );
 
     // The ownership validation's findings are carried on the lifecycle report. Both now come

@@ -2073,7 +2073,7 @@ mod tests {
             ("every field populated", everything),
             ("zero shard and sequence", zeroed),
             ("with metadata", with_metadata),
-            ("with staged pages", with_blocks),
+            ("with staged blocks", with_blocks),
         ]
     }
 
@@ -2349,7 +2349,7 @@ mod tests {
             assert_eq!(
                 decoded.staged_blocks.len(),
                 record.staged_blocks.len(),
-                "staged pages for {label}"
+                "staged blocks for {label}"
             );
         }
     }

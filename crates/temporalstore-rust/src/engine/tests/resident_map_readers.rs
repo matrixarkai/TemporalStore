@@ -1196,15 +1196,15 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     // THE SUBJECTS: an element whose page is gone is not resurrected.
     assert!(
         !set_members.contains(&b"set-subject".to_vec()),
-        "`fill_absent_elements` resurrected a set member whose page is in no bucket"
+        "`fill_absent_elements` resurrected a set member whose block is in no bucket"
     );
     assert!(
         !zset_members.contains(&b"zset-subject".to_vec()),
-        "`fill_absent_elements` resurrected a zset member whose page is in no bucket"
+        "`fill_absent_elements` resurrected a zset member whose block is in no bucket"
     );
     assert!(
         !list_seqs.contains(&(i64::MAX - 3)),
-        "`fill_absent_elements` resurrected a list element whose page is in no bucket"
+        "`fill_absent_elements` resurrected a list element whose block is in no bucket"
     );
     println!("  all three subjects dropped, all three controls kept");
 }
@@ -1422,7 +1422,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 /// rust-internal: calls the engine's own reconcile directly, then the command surface
 #[test]
 fn the_merge_runs_even_when_no_set_block_survived() {
-    for (label, keep_one_member) in [("no set page decoded", false), ("one set page alive", true)] {
+    for (label, keep_one_member) in [("no set block decoded", false), ("one set block alive", true)] {
         let dir = tempfile::tempdir().expect("tempdir");
         let engine = engine_on(dir.path());
         load_on(&engine);

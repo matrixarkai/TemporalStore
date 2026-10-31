@@ -302,7 +302,7 @@ fn a_shard_with_no_live_model_block_establishes_nothing() {
     assert_eq!(
         (checks, rebuilds, blocks),
         (1, 0, 0),
-        "one check, no rebuild, no page offered"
+        "one check, no rebuild, no block offered"
     );
 
     // SECOND HALF, after the first and not folded into it: a WHOLLY empty shard, where the
@@ -336,7 +336,7 @@ fn an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole() {
     shard.bucket_index.object_block_lookup.clear();
     assert!(
         !shard.strings().is_empty(),
-        "VACUITY: with no model page this would be answered by the no-model-page arm instead"
+        "VACUITY: with no model block this would be answered by the no-model-page arm instead"
     );
 
     reset_promote_model_map_check_counts();
@@ -345,7 +345,7 @@ fn an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole() {
 
     assert!(
         promoted,
-        "an index naming nothing cannot already name 32 live model-map pages"
+        "an index naming nothing cannot already name 32 live model-map blocks"
     );
     assert_eq!((checks, rebuilds), (1, 1), "one check, and it rebuilt");
     assert_eq!(blocks, 32, "VACUITY: the walk must still have been offered every page");
@@ -439,7 +439,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
             None,
             &orphan_address,
         ),
-        "VACUITY: the page must really be absent from the index before the check is asked"
+        "VACUITY: the block must really be absent from the index before the check is asked"
     );
 
     reset_promote_model_map_check_counts();
@@ -466,7 +466,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
             None,
             &orphan_address,
         ),
-        "the rebuild behind the check must leave the index naming the page only the maps had"
+        "the rebuild behind the check must leave the index naming the block only the maps had"
     );
     // The CONTROL on the repair: it re-derived the whole shard, not just the orphan.
     let mut named = 0u64;
@@ -485,7 +485,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
     assert_eq!(
         named,
         orphan + 1,
-        "the rebuild must leave every one of the {} pages named",
+        "the rebuild must leave every one of the {} blocks named",
         orphan + 1
     );
 }
@@ -512,7 +512,7 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     let (mut control, released_buckets) = shard_with_unfiled(64, Some(released_group));
     assert!(
         !released_buckets.is_empty(),
-        "the fixture left no page unfiled, so neither half below is presenting a missing page"
+        "the fixture left no block unfiled, so neither half below is presenting a missing block"
     );
     reset_promote_model_map_check_counts();
     let control_promoted =
@@ -527,7 +527,7 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     assert_eq!(
         (control_rebuilds, control_blocks),
         (1, 64),
-        "control: rebuilt, 64 pages walked"
+        "control: rebuilt, 64 blocks walked"
     );
 
     // THE ARM. The identical fixture, plus the release record.
@@ -546,7 +546,7 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     assert_eq!(
         (rebuilds, blocks),
         (0, 64),
-        "the arm: no rebuild, and the same 64 pages walked"
+        "the arm: no rebuild, and the same 64 blocks walked"
     );
 }
 
@@ -575,7 +575,7 @@ fn the_check_does_not_allocate_per_block_it_walks() {
         );
         assert_eq!(
             blocks, count,
-            "VACUITY: a check offered no pages is cheap for the wrong reason"
+            "VACUITY: a check offered no blocks is cheap for the wrong reason"
         );
         (after.0 - before.0, blocks)
     }

@@ -125,7 +125,7 @@ fn the_control_state_mutators_keep_the_consolidated_map_right_through_removals()
     assert_eq!(
         probe.address().block_id(),
         Some(0),
-        "the inline arm now round-trips a nonzero page ordinal. If that is deliberate, this          assertion and the note above are stale; if it is not, a page ordinal is being silently          zeroed on the compactor write-back path"
+        "the inline arm now round-trips a nonzero block ordinal. If that is deliberate, this          assertion and the note above are stale; if it is not, a block ordinal is being silently          zeroed on the compactor write-back path"
     );
 
     // Mutating a key that is not there must change nothing and say so.

@@ -135,7 +135,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     println!("\n=== after a WHOLE sweep ===");
 
     let (blocks, entries, batches, folded) = sweep_once();
-    println!("  pages {blocks}  entries {entries}  batches {batches}  folded {folded}");
+    println!("  blocks {blocks}  entries {entries}  batches {batches}  folded {folded}");
 
     // FLOORS, ON THE REACHING OF THE PATH. `entries == pages` is satisfied by 0 == 0, so a sweep
     // that lost the object entirely would pass the claim below without these.
@@ -146,7 +146,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     );
     assert!(
         blocks > 0 && entries > 0,
-        "{blocks} page(s) and {entries} entr(ies) after the sweep, so the object did not survive it"
+        "{blocks} block(s) and {entries} entr(ies) after the sweep, so the object did not survive it"
     );
     // AND THE FOLD ACTUALLY SHARED A PAGE, which is what makes one-entry-a-page a smaller number
     // than one-entry-an-element rather than the same number by coincidence. Without this, a

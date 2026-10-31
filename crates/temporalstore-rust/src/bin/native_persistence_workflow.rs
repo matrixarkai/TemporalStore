@@ -152,7 +152,7 @@ fn main() {
         .unwrap_or_else(default_root);
     fs::create_dir_all(root.join("cache-a")).expect("create cache-a");
     fs::create_dir_all(root.join("cache-b")).expect("create cache-b");
-    fs::create_dir_all(root.join("blocks")).expect("create pages");
+    fs::create_dir_all(root.join("blocks")).expect("create blocks");
     fs::create_dir_all(root.join("indexes")).expect("create indexes");
 
     let engine = TemporalEngine::with_local_dirs(

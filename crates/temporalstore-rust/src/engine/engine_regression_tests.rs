@@ -74,7 +74,7 @@ impl BlockObjects {
     pub(super) fn at(&self, routing_bucket: u32, handle: u64) -> &std::sync::Arc<str> {
         self.by_position.get(&(routing_bucket, handle)).unwrap_or_else(|| {
             panic!(
-                "no page is filed at bucket {routing_bucket} handle {handle} in the index this                  was taken from"
+                "no block is filed at bucket {routing_bucket} handle {handle} in the index this                  was taken from"
             )
         })
     }

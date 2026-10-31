@@ -247,7 +247,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     );
     assert!(
         cache.stats().disk_bytes > 0,
-        "persistent page read should populate block-cache files"
+        "persistent block read should populate block-cache files"
     );
 
     let target_block_key = {
@@ -266,7 +266,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     assert_eq!(
         cache.get_memory(&target_block_key),
         None,
-        "target page block should have been evicted from memory"
+        "target block block should have been evicted from memory"
     );
 
     let disk_hits_before = cache.stats().disk_hits;
@@ -295,7 +295,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     assert_eq!(
         cache.get_memory(&target_block_key),
         Some(target_value),
-        "disk block hit should promote the page block into memory"
+        "disk block hit should promote the block block into memory"
     );
 }
 
@@ -371,7 +371,7 @@ fn cache_replacement_policy_soak() {
         let address = shard
             .strings()
             .get("soak-target")
-            .expect("target page address")
+            .expect("target block address")
             .clone();
         let (start, end) = shard.routing_range();
         CacheKey::page_with_slot(
@@ -420,12 +420,12 @@ fn cache_replacement_policy_soak() {
     assert_eq!(
         engine.cache().get_memory(&target_block_key),
         Some(target_value.clone()),
-        "cold read should refill memory from disk cache or page store"
+        "cold read should refill memory from disk cache or block store"
     );
     assert!(
         engine.cache().stats().disk_hits > disk_hits_before
             || engine.block_store().stats().reads > block_reads_before,
-        "cold read should be backed by disk cache or persistent page store"
+        "cold read should be backed by disk cache or persistent block store"
     );
     engine.cache().clear_memory_for_test();
     assert_eq!(engine.cache().get_memory(&target_block_key), None);
@@ -653,16 +653,16 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     assert_eq!(
         restarted_block_store.stats().reads,
         1,
-        "restart should miss memory and load the persisted page once"
+        "restart should miss memory and load the persisted block once"
     );
     assert_eq!(
         restarted_cache.get_memory(&target_block_key),
         Some(target_value.clone()),
-        "persistent page read should refill the memory cache"
+        "persistent block read should refill the memory cache"
     );
     assert!(
         restarted_cache.stats().disk_bytes > 0,
-        "persistent page read should also write the disk block cache"
+        "persistent block read should also write the disk block cache"
     );
 
     restarted_cache.clear_memory_for_test();
@@ -693,7 +693,7 @@ fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     assert_eq!(
         restarted_cache.get_memory(&target_block_key),
         Some(target_value),
-        "disk block hit should promote the page block back into memory"
+        "disk block hit should promote the block block back into memory"
     );
 }
 
@@ -941,7 +941,7 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
     // At least one hot page must have spilled to a durable slab (proves the handler fired).
     assert!(
         engine.block_store().stats().writes > 0,
-        "evicted hot pages must spill to a durable slab"
+        "evicted hot blocks must spill to a durable slab"
     );
 
     // Drop EVERY cache tier for the shard so the only surviving copy of the target is the durable
@@ -963,7 +963,7 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
         CommandResponse::Bytes {
             value: Some(target_value)
         },
-        "an acked async write must not read as missing after its hot page is evicted"
+        "an acked async write must not read as missing after its hot block is evicted"
     );
     // The value came from the durable spilled slab, confirming the redirect fallback was used.
     assert!(
@@ -1398,7 +1398,7 @@ fn control_state_coalesced_write_survives_restart_via_wal_replay() {
     assert_eq!(
         engine.block_store().stats().writes,
         0,
-        "coalesced control-state writes must not materialize a per-write page"
+        "coalesced control-state writes must not materialize a per-write block"
     );
     assert!(
         engine.write_ahead_log_store().stats(1).writes >= 4,
@@ -2352,7 +2352,7 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     assert_eq!(
         live_timestamps(&restarted),
         before,
-        "reload must not resurrect the evicted feature points that still physically live in the page"
+        "reload must not resurrect the evicted feature points that still physically live in the block"
     );
 }
 
@@ -2396,7 +2396,7 @@ fn object_lifecycle_snapshot_matches_the_recovery_report() {
     for index in 0..60 {
         write_string(&engine, &format!("life-{index:04}"), b"a longer replacement value");
     }
-    check(&engine, "60 overwrites leaving stale pages");
+    check(&engine, "60 overwrites leaving stale blocks");
 
     for index in 0..30 {
         engine.execute(ExecuteRequest {
@@ -2475,7 +2475,7 @@ fn planning_a_maintenance_round_reads_no_blocks() {
     let live_blocks = engine.live_block_count_for_test(1);
     assert!(
         live_blocks >= 300,
-        "the fixture must hold pages worth reading: {live_blocks}"
+        "the fixture must hold blocks worth reading: {live_blocks}"
     );
 
     let before = engine.block_store().stats().reads;
@@ -2485,7 +2485,7 @@ fn planning_a_maintenance_round_reads_no_blocks() {
     let surveyed = crate::engine::live_block_scan_entries();
     assert_eq!(
         planned, 0,
-        "planning read {planned} pages with {live_blocks} live -- it is scanning the store"
+        "planning read {planned} blocks with {live_blocks} live -- it is scanning the store"
     );
     // NON-VACUITY: the plan must have inspected the shard, or "it read 0 pages" is the report of
     // a call that did nothing.
@@ -2524,7 +2524,7 @@ zero-read count above proves nothing"
     let applied = engine.block_store().stats().reads.saturating_sub(before);
     assert_eq!(
         applied, 0,
-        "applying read {applied} pages with {live_blocks} live -- it is scanning the store"
+        "applying read {applied} blocks with {live_blocks} live -- it is scanning the store"
     );
 }
 
@@ -3532,7 +3532,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_blocks() {
         .expect("dump + reclaim must fire");
     let floor = report
         .wal_retention_floor
-        .expect("the staged async page must register a WAL retention floor");
+        .expect("the staged async block must register a WAL retention floor");
     assert!(
         floor <= report.wal_anchor,
         "the floor ({floor}) pins a record below the dump anchor ({})",
@@ -3542,7 +3542,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_blocks() {
     assert_eq!(
         read_string(&engine, "async-key"),
         Some(b"async-value".to_vec()),
-        "the async write's page must survive the WAL sweep"
+        "the async write's block must survive the WAL sweep"
     );
 }
 
@@ -4054,13 +4054,13 @@ fn feature_append_chunks_and_persists_timestamped_kv_blocks() {
     };
     assert!(
         addresses.len() > 1,
-        "large timestamped KV batch should be split into page chunks"
+        "large timestamped KV batch should be split into block chunks"
     );
     let mut persisted_timestamps = Vec::new();
     for address in &addresses {
         // The address carries no object id; the entry derives one from its terms.
         let bytes = engine.block_store().read(address).unwrap();
-        let chunk = decode_feature_block(&bytes).expect("persisted packed page chunk");
+        let chunk = decode_feature_block(&bytes).expect("persisted packed block chunk");
         assert!(!chunk.is_empty());
         assert!(bytes.len() <= TIMESTAMPED_KV_BLOCK_TARGET_BYTES + 12 * 1024);
         persisted_timestamps.extend(chunk.into_iter().map(|point| point.timestamp_ms));
@@ -4298,7 +4298,7 @@ fn feature_recovery_reports_duplicate_timestamps_inside_packed_block() {
             Some(stable_block_object_id(1, "feature", "layout-feature")),
             Some(block_routing_bucket("layout-feature", 0, u32::MAX)),
         )
-        .expect("duplicate packed page append");
+        .expect("duplicate packed block append");
 
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
@@ -4349,7 +4349,7 @@ fn feature_recovery_reports_corrupt_packed_timestamped_block() {
             Some(stable_block_object_id(1, "feature", "corrupt-feature")),
             Some(block_routing_bucket("corrupt-feature", 0, u32::MAX)),
         )
-        .expect("corrupt packed page append");
+        .expect("corrupt packed block append");
 
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
@@ -4412,7 +4412,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
             )),
             Some(block_routing_bucket("versioned-feature", 0, u32::MAX)),
         )
-        .expect("unsupported packed page append");
+        .expect("unsupported packed block append");
 
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");

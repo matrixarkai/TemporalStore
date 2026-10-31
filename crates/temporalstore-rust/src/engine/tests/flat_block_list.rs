@@ -170,7 +170,7 @@ impl Lengths {
 
     fn report(&self, label: &str) {
         println!(
-            "  {label}: {} buckets, {} pages | p50 {} p90 {} p99 {} MAX {} | mean {:.4}",
+            "  {label}: {} buckets, {} blocks | p50 {} p90 {} p99 {} MAX {} | mean {:.4}",
             self.buckets(),
             self.blocks(),
             self.percentile(0.50),
@@ -247,7 +247,7 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
             for (held, count) in &lengths.counts {
                 if *held <= 4 || held % 8 == 0 || *held == lengths.widest() {
                     println!(
-                        "      {held:>4} page(s): {count:>6} buckets ({:>7.3}%)",
+                        "      {held:>4} block(s): {count:>6} buckets ({:>7.3}%)",
                         100.0 * *count as f64 / lengths.buckets().max(1) as f64
                     );
                 }
@@ -391,17 +391,17 @@ fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
     assert_eq!(
         forwards.len(),
         blocks.len(),
-        "the fixture filed {} of {} pages, so the walk below is not over the set it claims",
+        "the fixture filed {} of {} blocks, so the walk below is not over the set it claims",
         forwards.len(),
         blocks.len()
     );
     assert_eq!(
         forwards, backwards,
-        "filling the same pages in the opposite order produced a different walk"
+        "filling the same blocks in the opposite order produced a different walk"
     );
     assert_eq!(
         forwards, shuffled,
-        "filling the same pages in a third order produced a different walk"
+        "filling the same blocks in a third order produced a different walk"
     );
     assert!(
         forwards.windows(2).all(|pair| pair[0] < pair[1]),
@@ -453,7 +453,7 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     let handles = walk(&index);
     assert!(
         handles.len() > 16,
-        "only {} pages survived the churn; the list is too short to say anything about order",
+        "only {} blocks survived the churn; the list is too short to say anything about order",
         handles.len()
     );
     assert!(
@@ -504,7 +504,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
     assert_eq!(
         1,
         live.tally(5).block_refs,
-        "one page filed once left {} live ref(s) on its slab, not 1",
+        "one block filed once left {} live ref(s) on its slab, not 1",
         live.tally(5).block_refs
     );
     let again = index.insert(&only_key, only.clone(), &mut live);
@@ -562,14 +562,14 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         assert_eq!(
             block_index_handle(target_key, target),
             handle,
-            "the rewrite was filed under a handle that is not the page's own"
+            "the rewrite was filed under a handle that is not the block's own"
         );
         assert!(
             walk(&index).windows(2).all(|pair| pair[0] < pair[1]),
             "the list stopped being sorted after a duplicate insert at length {length}"
         );
         // And the page that came back is the one just written, not the one it displaced.
-        let stored = index.get(&handle).expect("the rewritten page is findable");
+        let stored = index.get(&handle).expect("the rewritten block is findable");
         assert_eq!(
             target.address, stored.address,
             "the duplicate insert left the displaced address in place"
@@ -611,7 +611,7 @@ fn replacing_a_block_discharges_the_address_it_displaced() {
     let before = live.tally(4);
     assert_eq!(
         6, before.block_refs,
-        "the fixture charged {} pages to slab 4, not the six it filed",
+        "the fixture charged {} blocks to slab 4, not the six it filed",
         before.block_refs
     );
     let (replayed_key, replayed) = &blocks[3];
@@ -997,7 +997,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
                         .map(|(handle, block)| {
                             let key = named.get(handle).unwrap_or_else(|| {
                                 panic!(
-                                    "the page at handle {handle} is named by nothing beside it,                                      so this fixture cannot hand it on"
+                                    "the block at handle {handle} is named by nothing beside it,                                      so this fixture cannot hand it on"
                                 )
                             });
                             (std::sync::Arc::clone(key), block.clone())
@@ -1018,7 +1018,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let multi = by_bucket.iter().filter(|b| b.len() > 1).count();
         assert!(
             multi > 0,
-            "{records}: no bucket held more than one page, so there is no container to compare"
+            "{records}: no bucket held more than one block, so there is no container to compare"
         );
 
         let mut trees: Vec<BTreeMap<u64, BlockIndex>> = Vec::with_capacity(by_bucket.len());
@@ -1046,7 +1046,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         assert_eq!(
             trees.iter().map(|t| t.len()).sum::<usize>(),
             lists.iter().map(|l| l.len()).sum::<usize>(),
-            "{records}: the two containers hold different numbers of pages"
+            "{records}: the two containers hold different numbers of blocks"
         );
         assert!(
             tree_bytes > 0 && tree_allocs > 0 && list_bytes > 0 && list_allocs > 0,
@@ -1450,10 +1450,10 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     }
     // ONE OBJECT NAMES THE WHOLE LIST: `sorted_list` builds components of `bag`.
     let written =
-        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&list, &["bag"])).expect("the page index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&list, &["bag"])).expect("the block index serializes");
     assert!(
         written.len() > 1_000,
-        "the fixture wrote {} bytes for 24 pages; too small to be the index",
+        "the fixture wrote {} bytes for 24 blocks; too small to be the index",
         written.len()
     );
 
@@ -1464,15 +1464,15 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         backwards.insert(&object_key, entry.clone(), &mut live);
     }
     let written_backwards =
-        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&backwards, &["bag"])).expect("the page index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&backwards, &["bag"])).expect("the block index serializes");
     assert_eq!(
         written, written_backwards,
-        "the same pages filled in the opposite order wrote different bytes"
+        "the same blocks filled in the opposite order wrote different bytes"
     );
 
     // And it loads back as the same walk, through the same `From<BTreeMap<String, BlockIndex>>`
     // the stored shape has always been read by.
-    let loaded: BlockIndexMap = serde_json::from_slice(&written).expect("the page index loads");
+    let loaded: BlockIndexMap = serde_json::from_slice(&written).expect("the block index loads");
     assert_eq!(
         walk(&list),
         walk(&loaded),
@@ -1496,7 +1496,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         injected.insert(&object_key, entry, &mut live);
     }
     let with_injection =
-        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&injected, &["bag"])).expect("the page index serializes");
+        serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&injected, &["bag"])).expect("the block index serializes");
     assert_ne!(
         written, with_injection,
         "altering one page of twenty-four left the written bytes unchanged; this comparison \
@@ -1622,7 +1622,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
                     named
                         .get(handle)
                         .unwrap_or_else(|| {
-                            panic!("the page at handle {handle} is named by nothing beside it")
+                            panic!("the block at handle {handle} is named by nothing beside it")
                         })
                         .to_string(),
                 );
@@ -1641,11 +1641,11 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     let missing: Vec<&String> = keys.iter().filter(|key| !listed_keys.contains(*key)).collect();
     assert!(
         missing.is_empty(),
-        "{} written key(s) have no page in any list; the first few are {:?}",
+        "{} written key(s) have no block in any list; the first few are {:?}",
         missing.len(),
         missing.iter().take(5).collect::<Vec<_>>()
     );
-    println!("  {total} pages in {distinct} distinct handles over {} written keys; residual 0", keys.len());
+    println!("  {total} blocks in {distinct} distinct handles over {} written keys; residual 0", keys.len());
 
     // THE PLANTED LOSS. Take one page out from under the index and confirm the count above sees
     // it -- a residual that reads zero because it cannot count is worse than none.
@@ -1665,13 +1665,13 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
                 if let Some((handle, block)) = bucket.block_index.iter().next() {
                     let beside = keys
                         .identity_of(bucket, *handle, block)
-                        .expect("the page the index holds is named beside it");
+                        .expect("the block the index holds is named beside it");
                     found =
                         Some((bucket.routing_bucket, *handle, beside.object_key.to_string()));
                     break;
                 }
             }
-            found.expect("the index held at least one page to plant a loss in")
+            found.expect("the index held at least one block to plant a loss in")
         };
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
@@ -1703,5 +1703,5 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         "a planted removal of the page for {planted} moved the count from {total} to {after}; the \
          residual instrument cannot see a lost page and its zero above says nothing"
     );
-    println!("  the planted loss of one page for {planted} was recovered exactly");
+    println!("  the planted loss of one block for {planted} was recovered exactly");
 }

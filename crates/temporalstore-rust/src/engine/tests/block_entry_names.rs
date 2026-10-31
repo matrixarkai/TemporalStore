@@ -98,7 +98,7 @@ impl NameSpread {
     fn report(&self, label: &str) {
         println!("\n=== {label} ===");
         println!(
-            "  buckets={} pages={} widest bucket={} page(s)",
+            "  buckets={} blocks={} widest bucket={} block(s)",
             self.buckets(),
             self.blocks(),
             Self::widest(&self.blocks_held)
@@ -350,7 +350,7 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
         .chain(narrow_container.iter())
     {
         assert!(spread.buckets() > 0, "denominator: no routing buckets in this arm");
-        assert!(spread.blocks() > 0, "denominator: no page entries in this arm");
+        assert!(spread.blocks() > 0, "denominator: no block entries in this arm");
     }
 
     // --- 1. `component` is a PER-PAGE fact, in both ranges. ---
@@ -476,7 +476,7 @@ impl KeyAllocationCensus {
 
     fn report(&self, label: &str) {
         println!("\n=== {label} ===");
-        println!("  objects={} pages={}", self.objects, self.blocks);
+        println!("  objects={} blocks={}", self.objects, self.blocks);
         println!(
             "  object_key : objects holding >1 allocation = {} , widest = {}",
             Self::objects_holding_more_than_one(&self.object_key),
@@ -488,7 +488,7 @@ impl KeyAllocationCensus {
             Self::widest(&self.model_id)
         );
         println!(
-            "  surplus object-key allocations = {} ({:.4} a page), {} B ({:.2} B a page)",
+            "  surplus object-key allocations = {} ({:.4} a block), {} B ({:.2} B a block)",
             self.surplus_object_key_allocations,
             if self.blocks == 0 {
                 0.0
@@ -999,15 +999,15 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
     let plain = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         block: &block_fixture(3, (false, false)),
     })
-    .expect("a page entry serializes");
+    .expect("a block entry serializes");
     let all_flags = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         block: &block_fixture(3, (true, true)),
     })
-    .expect("a page entry serializes");
+    .expect("a block entry serializes");
     let over_wide = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         block: &block_fixture(u64::MAX, (false, false)),
     })
-    .expect("a page entry serializes");
+    .expect("a block entry serializes");
 
     println!("PLAIN     = {plain}");
     println!("ALL_FLAGS = {all_flags}");
@@ -1098,7 +1098,7 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
     }
     assert_ne!(
         plain, all_flags,
-        "the flags must reach the stored form, or a dirty page would load clean"
+        "the flags must reach the stored form, or a dirty block would load clean"
     );
     assert_ne!(
         plain, over_wide,
@@ -1223,7 +1223,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     assert_eq!(
         expected.len(),
         loaded.len(),
-        "the page COUNT moved: {} written, {} loaded",
+        "the block COUNT moved: {} written, {} loaded",
         expected.len(),
         loaded.len()
     );
@@ -1234,7 +1234,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     // --- Anti-vacuity: the fixture has to hold the shapes the claim is about. ---
     assert!(
         loaded.len() >= 5,
-        "the fixture holds {} pages; it is supposed to hold a multi-page object",
+        "the fixture holds {} blocks; it is supposed to hold a multi-page object",
         loaded.len()
     );
     // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
@@ -1446,7 +1446,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     assert_eq!(
         0,
         canonical.matches(STORED_NAMED_HANDLE).count(),
-        "the element-named page handle must be gone from the expectation, not left as it was"
+        "the element-named block handle must be gone from the expectation, not left as it was"
     );
     assert_eq!(
         1,
@@ -1623,7 +1623,7 @@ fn what_a_container_store_charges_the_allocator_a_block() {
         assert!(census.blocks > 0, "denominator: nothing seeded");
         assert!(
             census.blocks / census.objects >= 100,
-            "{label}: {} pages over {} objects; the container case is not reached",
+            "{label}: {} blocks over {} objects; the container case is not reached",
             census.blocks,
             census.objects
         );
@@ -1726,7 +1726,7 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
     for bucket in shard.bucket_index.bucket_map.values() {
         blocks += bucket.block_index.iter().count();
     }
-    assert!(blocks > 0, "no pages were recorded; nothing was measured");
+    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
     assert_eq!(
         1,
         std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
@@ -1790,7 +1790,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     let got = block_tuples(&decoded);
     assert!(
         want.len() >= 16,
-        "the fixture holds {} pages; too few to tell a correct decode from an empty one",
+        "the fixture holds {} blocks; too few to tell a correct decode from an empty one",
         want.len()
     );
     assert_eq!(want, got, "the index did not come back page for page");
@@ -1800,7 +1800,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     injected[0].3 = injected[0].3.wrapping_add(1);
     assert_ne!(
         injected, want,
-        "the page comparison cannot report a difference when one is injected"
+        "the block comparison cannot report a difference when one is injected"
     );
 
     // --- Is the payload the binary container, which is the form the stamp guards? ---
@@ -2234,7 +2234,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         .expect("the checked load must return a shard state");
 
     let blocks = super::blocks_with_identity(&folded.bucket_index);
-    println!("=== after the fold: {} page(s) ===", blocks.len());
+    println!("=== after the fold: {} block(s) ===", blocks.len());
     for (_, _, object_key, block) in &blocks {
         println!(
             "  key={:?} kind={} slab={} off={} len={} log_backed={}",
@@ -2277,9 +2277,9 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         assert_eq!(LENGTH, block.address.length(), "{label}: length moved");
         assert!(
             block.log_backed(),
-            "{label}: the page must come back WAL-resident, which is the shape the hazard is about"
+            "{label}: the block must come back WAL-resident, which is the shape the hazard is about"
         );
-        assert!(!block.deleted, "{label}: the page must not come back deleted");
+        assert!(!block.deleted, "{label}: the block must not come back deleted");
     }
 
     // And the object is named by the bucket that holds it, which is what a per-object read

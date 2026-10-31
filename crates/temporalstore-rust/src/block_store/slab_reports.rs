@@ -379,7 +379,7 @@ impl BlockStore {
             );
         }
         if !block_id_continuity_ready {
-            blockers.push("stream page ids are not contiguous across bands".to_string());
+            blockers.push("stream block ids are not contiguous across bands".to_string());
         }
 
         let runtime_ready = blockers.is_empty();

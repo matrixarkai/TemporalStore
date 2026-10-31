@@ -343,7 +343,7 @@ fn every_container_block_carries_its_own_ordinal_rather_than_zero() {
     for (kind, key) in &kinds {
         let ordinals = ordinals_of(&engine, kind, key);
         println!(
-            "  {kind:<5} pages={:<3} ordinals={:?}",
+            "  {kind:<5} blocks={:<3} ordinals={:?}",
             ordinals.len(),
             ordinals
                 .iter()
@@ -367,11 +367,11 @@ fn every_container_block_carries_its_own_ordinal_rather_than_zero() {
     assert_eq!(
         checked,
         kinds.len() * MEMBERS,
-        "the sweep checked {checked} pages over {} kinds, not {}",
+        "the sweep checked {checked} blocks over {} kinds, not {}",
         kinds.len(),
         kinds.len() * MEMBERS
     );
-    println!("  [denominator] {checked} pages over {} kinds", kinds.len());
+    println!("  [denominator] {checked} blocks over {} kinds", kinds.len());
 }
 
 // =================================================================================================
@@ -409,7 +409,7 @@ fn a_string_block_is_left_at_zero_which_is_the_control() {
         assert_eq!(
             ordinals.len(),
             1,
-            "a string key holds one page, not {}",
+            "a string key holds one block, not {}",
             ordinals.len()
         );
         seen += ordinals.len();
@@ -476,7 +476,7 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
         set_blocks.len()
     );
     let set_ordinal = ordinal_for_component(&engine, "set", "cpo-ow-set", &component)
-        .expect("the member's page is present");
+        .expect("the member's block is present");
 
     for i in 0..REWRITES {
         write(
@@ -492,11 +492,11 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
     assert_eq!(
         hash_blocks.len(),
         1,
-        "a hash of one field rewritten {REWRITES} times holds {} pages, not 1",
+        "a hash of one field rewritten {REWRITES} times holds {} blocks, not 1",
         hash_blocks.len()
     );
     let hash_ordinal = ordinal_for_component(&engine, "hash", "cpo-ow-hash", "the-one-field")
-        .expect("the field's page is present");
+        .expect("the field's block is present");
 
     println!(
         "\n=== overwrite === after {REWRITES} rewrites of ONE element: set ordinal {:?}, hash \
@@ -779,7 +779,7 @@ fn deletion_still_finds_its_element_by_component() {
     let doomed_component = hex::encode(doomed);
     assert!(
         ordinal_for_component(&engine, "set", key, &doomed_component).is_some(),
-        "the member about to be deleted has no page, so the delete below would prove nothing"
+        "the member about to be deleted has no block, so the delete below would prove nothing"
     );
 
     write(
@@ -926,7 +926,7 @@ fn hash_len_still_answers_the_entry_count() {
     );
     assert_eq!(
         blocks, FIELDS,
-        "the page count is {blocks} for {FIELDS} fields, so HLEN and the index disagree"
+        "the block count is {blocks} for {FIELDS} fields, so HLEN and the index disagree"
     );
 }
 

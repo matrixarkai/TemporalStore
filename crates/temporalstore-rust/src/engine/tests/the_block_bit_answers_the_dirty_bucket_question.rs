@@ -175,7 +175,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     println!();
     println!("    dirty objects in the set      {object_count:>5}");
     println!("    buckets in the map            {bucket_count:>5}");
-    println!("    pages across those buckets    {blocks:>5}");
+    println!("    blocks across those buckets    {blocks:>5}");
     println!("    dirty buckets via the SET     {:>5}", via_objects.len());
     println!("    dirty buckets via the PAGE    {:>5}", via_blocks.len());
     println!();

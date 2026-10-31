@@ -48,7 +48,7 @@ impl TemporalEngine {
         self.block_store.sync_durable().map_err(|err| {
             Status::error(
                 "slot_dump_failed",
-                format!("page durability barrier failed before dump capture: {err}"),
+                format!("block durability barrier failed before dump capture: {err}"),
             )
         })?;
         self.wal_store.flush(shard_id).map_err(|err| {
@@ -662,7 +662,7 @@ impl TemporalEngine {
         if !missing.is_empty() {
             return Err(Status::error(
                 "slot_dump_missing_block_segments",
-                format!("slot dump references missing page segments: {missing:?}"),
+                format!("slot dump references missing block segments: {missing:?}"),
             ));
         }
         let mut restored = crate::engine::decode_index_bytes(&manifest.index_bytes)
@@ -722,7 +722,7 @@ impl TemporalEngine {
         if manifest.block_slab_ids != canonical_block_slab_ids {
             return Err(Status::error(
                 "slot_dump_block_segment_ids_not_canonical",
-                "slot dump manifest page segment ids must be sorted and unique",
+                "slot dump manifest block segment ids must be sorted and unique",
             ));
         }
         let all_live_block_entries = collect_live_block_entries(&restored);
@@ -756,7 +756,7 @@ impl TemporalEngine {
             return Err(Status::error(
                 "slot_dump_live_ref_mismatch",
                 format!(
-                    "slot dump expected {} live page refs but index has {}",
+                    "slot dump expected {} live block refs but index has {}",
                     manifest.live_block_refs,
                     live_block_entries.len()
                 ),
@@ -769,7 +769,7 @@ impl TemporalEngine {
             return Err(Status::error(
                 "slot_dump_slot_summary_mismatch",
                 format!(
-                    "slot dump slot summaries do not match restored index page ownership: manifest={actual_bucket_summaries:?} restored={expected_bucket_summaries:?}"
+                    "slot dump slot summaries do not match restored index block ownership: manifest={actual_bucket_summaries:?} restored={expected_bucket_summaries:?}"
                 ),
             ));
         }
@@ -866,7 +866,7 @@ impl TemporalEngine {
         {
             return Err(Status::error(
                 "slot_dump_generation_mismatch",
-                "slot dump manifest generation id does not match its sequence, slots, pages, and index checksum",
+                "slot dump manifest generation id does not match its sequence, slots, blocks, and index checksum",
             ));
         }
         let mut unreadable_block_refs = 0usize;
@@ -1444,7 +1444,7 @@ impl TemporalEngine {
                 return Err(Status::error(
                     "slot_dump_unreadable_block_refs",
                     format!(
-                        "slot dump has {} unreadable page refs covering {} bytes",
+                        "slot dump has {} unreadable block refs covering {} bytes",
                         preflight.unreadable_block_ref_count, preflight.unreadable_block_bytes
                     ),
                 ));

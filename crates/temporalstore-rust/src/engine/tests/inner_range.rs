@@ -341,7 +341,7 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
         assert_eq!(
             total,
             keys.len(),
-            "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {total} pages",
+            "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {total} blocks",
             keys.len()
         );
         assert_eq!(
@@ -442,7 +442,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     assert_eq!(
         filed_narrow,
         keys.len(),
-        "{filed_narrow} of {} pages are filed where the shard's own range puts them",
+        "{filed_narrow} of {} blocks are filed where the shard's own range puts them",
         keys.len()
     );
     assert_eq!(
@@ -452,7 +452,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     );
 
     let (total, now, before) = reader_attribution(shard);
-    println!("  {total} reconstructed pages filed on 0..{NARROW_END}");
+    println!("  {total} reconstructed blocks filed on 0..{NARROW_END}");
     println!("    readers agree with the filing, NEW expression: {now} of {total}");
     println!("    readers agree with the filing, OLD expression: {before} of {total}");
     assert_eq!(
@@ -669,7 +669,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
         assert_eq!(
             blocks,
             keys.len(),
-            "reopened on 0..{wrote_on}: {blocks} of {} pages survived the restore",
+            "reopened on 0..{wrote_on}: {blocks} of {} blocks survived the restore",
             keys.len()
         );
         assert_eq!(

@@ -502,7 +502,7 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
         );
         assert!(
             buckets_seen > 0,
-            "{label}: the bucket index holds a second address per page and must not read zero"
+            "{label}: the bucket index holds a second address per block and must not read zero"
         );
 
         c.report(label);
@@ -771,7 +771,7 @@ fn only_one_of_the_two_address_cross_checks_on_a_read_can_fire() {
     let dir = tempfile::tempdir().expect("tempdir");
     let store = BlockStore::new(dir.path());
 
-    let payload = b"a page whose header states which block of its object it is".to_vec();
+    let payload = b"a block whose header states which block of its object it is".to_vec();
     let object_id = 0x0123_4567_89ab_cdefu64;
     let routing_bucket = 4_155_475_953u32;
 
@@ -786,14 +786,14 @@ fn only_one_of_the_two_address_cross_checks_on_a_read_can_fire() {
     assert_eq!(
         Some(3),
         good.block_id(),
-        "denominator: the page under test must not be block zero, or the presence half below          cannot tell a skipped check from one that defaults the absent field to zero"
+        "denominator: the block under test must not be block zero, or the presence half below          cannot tell a skipped check from one that defaults the absent field to zero"
     );
 
     // DENOMINATOR: the honest address reads back, and really carries all three fields under test.
     assert_eq!(
         payload,
         store.read(&good).expect("the honest address must read back"),
-        "denominator: the unmodified address reads its page"
+        "denominator: the unmodified address reads its block"
     );
     assert!(good.block_id().is_some(), "fixture must produce an address carrying page_id");
 
@@ -1596,7 +1596,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
          ({distinct_blocks} distinct pages over {long_entries} entries)"
     );
     println!(
-        "  the per-series page table saves {:.1} bytes/entry ({:.1}%) on a coalescing series",
+        "  the per-series block table saves {:.1} bytes/entry ({:.1}%) on a coalescing series",
         long_btree_per - long_table_per,
         100.0 * (long_btree_per - long_table_per) / long_btree_per,
     );
@@ -2025,7 +2025,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
                 .map(|beside| std::sync::Arc::clone(beside.object_key))
                 .unwrap_or_else(|| {
                     panic!(
-                        "the page at handle {handle} is named by nothing beside it, so this                          footprint report has no object to attribute it to"
+                        "the block at handle {handle} is named by nothing beside it, so this                          footprint report has no object to attribute it to"
                     )
                 });
             *blocks_per_object.entry(block.object_id(1, &named_key)).or_default() += 1;
@@ -2251,7 +2251,7 @@ fn the_warm_block_is_found_under_the_key_the_other_side_wrote() {
                 shard_id: 1,
                 command: Command::StringSet {
                     key: key.clone(),
-                    value: b"a page read through its bucket".to_vec(),
+                    value: b"a block read through its bucket".to_vec(),
                 },
             });
             assert!(response.status.ok, "write {key}: {:?}", response.status);
@@ -2301,7 +2301,7 @@ fn the_warm_block_is_found_under_the_key_the_other_side_wrote() {
         assert_eq!(
             engine
                 .string_block_cache_key_for_test(1, &keys[0])
-                .expect("the page is indexed"),
+                .expect("the block is indexed"),
             read_key,
             "the engine's own page-cache-key accessor and the key the read path builds disagree"
         );
@@ -2821,7 +2821,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     );
     assert_eq!(
         2, report.live_block_ref_count,
-        "both pages must be counted, or the fold is not what this test claims"
+        "both blocks must be counted, or the fold is not what this test claims"
     );
     let state = report.objects.first().expect("one object");
     assert_eq!(
@@ -3042,7 +3042,7 @@ fn what_deriving_the_block_identity_costs_at_the_read_path() {
          and in both cases the cost printed below is not the cost of the change"
     );
 
-    println!("--- what a read pays to name its own page, over {read} reads ---");
+    println!("--- what a read pays to name its own block, over {read} reads ---");
     println!(
         "  routing-bucket hash passes: {bucket_passes} ({:.2} a read), key bytes walked: \
          {bucket_bytes} ({:.2} a read)",

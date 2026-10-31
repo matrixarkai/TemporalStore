@@ -384,7 +384,7 @@ fn the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range() {
         assert_eq!(
             0,
             buckets_outside(&contents, 0, NARROW_END),
-            "the shard holds 0..{NARROW_END} and some page is filed outside it: {:?}",
+            "the shard holds 0..{NARROW_END} and some block is filed outside it: {:?}",
             contents.keys().collect::<Vec<_>>()
         );
     }
@@ -436,7 +436,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
         }
         let contents = bucket_contents(shard);
         println!(
-            "  stamped 0..{stamp}: {} pages over {} buckets",
+            "  stamped 0..{stamp}: {} blocks over {} buckets",
             block_total(&contents),
             contents.len()
         );
@@ -503,7 +503,7 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     assert_eq!(
         RECORDS,
         block_total(&before),
-        "the fixture starts with {} pages, not {RECORDS}",
+        "the fixture starts with {} blocks, not {RECORDS}",
         block_total(&before)
     );
     assert_eq!(
@@ -521,7 +521,7 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     let after = bucket_contents(shard);
 
     println!(
-        "  before: {} pages / {} buckets     after: {} pages / {} buckets",
+        "  before: {} blocks / {} buckets     after: {} blocks / {} buckets",
         block_total(&before),
         before.len(),
         block_total(&after),
@@ -530,7 +530,7 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     assert_eq!(
         block_total(&before),
         block_total(&after),
-        "a page was lost or duplicated by an upsert that only re-files one key"
+        "a block was lost or duplicated by an upsert that only re-files one key"
     );
     assert_eq!(
         0,
@@ -746,7 +746,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
         );
         assert!(
             block_total(&contents) >= RECORDS,
-            "reopened on 0..{write_end}: {} pages for {RECORDS} records",
+            "reopened on 0..{write_end}: {} blocks for {RECORDS} records",
             block_total(&contents)
         );
         assert_eq!(
@@ -832,7 +832,7 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
     );
     assert!(
         block_total(&contents) >= RECORDS,
-        "{} pages for {RECORDS} records after the install",
+        "{} blocks for {RECORDS} records after the install",
         block_total(&contents)
     );
     assert_eq!(

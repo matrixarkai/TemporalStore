@@ -316,7 +316,7 @@ fn append_timestamped_kv_blocks_inner(
         if addresses.len() != chunk_points.len() {
             return Err(BlockStoreError::Io(std::io::Error::new(
                 std::io::ErrorKind::UnexpectedEof,
-                "batch page append returned fewer addresses than chunks",
+                "batch block append returned fewer addresses than chunks",
             )));
         }
         for ((chunk, packed), address) in chunk_points.into_iter().zip(encoded_blocks).zip(addresses)
@@ -425,7 +425,7 @@ pub(super) fn decode_feature_block_strict(bytes: &[u8]) -> PackedFeatureBlockDec
         return match serde_json::from_slice::<PackedFeatureBlock>(payload) {
             Ok(block) if block.version == 1 => PackedFeatureBlockDecode::Packed(block.points),
             Ok(block) => PackedFeatureBlockDecode::Corrupt(format!(
-                "unsupported packed feature page version {}",
+                "unsupported packed feature block version {}",
                 block.version
             )),
             Err(err) => PackedFeatureBlockDecode::Corrupt(format!(
@@ -444,7 +444,7 @@ pub(super) fn decode_feature_block_strict(bytes: &[u8]) -> PackedFeatureBlockDec
 fn decode_binary_feature_block(payload: &[u8]) -> PackedFeatureBlockDecode {
     let Some((count_bytes, mut rest)) = split_at_checked(payload, 4) else {
         return PackedFeatureBlockDecode::Corrupt(
-            "packed feature page ends before its point count".to_string(),
+            "packed feature block ends before its point count".to_string(),
         );
     };
     let count = u32::from_le_bytes([count_bytes[0], count_bytes[1], count_bytes[2], count_bytes[3]])
@@ -453,7 +453,7 @@ fn decode_binary_feature_block(payload: &[u8]) -> PackedFeatureBlockDecode {
     // remaining bytes is a torn or forged page -- and this is checked BEFORE reserving for it.
     if count.saturating_mul(FEATURE_POINT_HEADER_BYTES) > rest.len() {
         return PackedFeatureBlockDecode::Corrupt(format!(
-            "packed feature page declares {count} points but holds {} bytes",
+            "packed feature block declares {count} points but holds {} bytes",
             rest.len()
         ));
     }
@@ -461,7 +461,7 @@ fn decode_binary_feature_block(payload: &[u8]) -> PackedFeatureBlockDecode {
     for index in 0..count {
         let Some((header, tail)) = split_at_checked(rest, FEATURE_POINT_HEADER_BYTES) else {
             return PackedFeatureBlockDecode::Corrupt(format!(
-                "packed feature page ends inside the header of point {index}"
+                "packed feature block ends inside the header of point {index}"
             ));
         };
         let timestamp_ms = u64::from_le_bytes([
@@ -470,7 +470,7 @@ fn decode_binary_feature_block(payload: &[u8]) -> PackedFeatureBlockDecode {
         let length = u32::from_le_bytes([header[8], header[9], header[10], header[11]]) as usize;
         let Some((value, tail)) = split_at_checked(tail, length) else {
             return PackedFeatureBlockDecode::Corrupt(format!(
-                "point {index} declares {length} bytes and the page has {}",
+                "point {index} declares {length} bytes and the block has {}",
                 tail.len()
             ));
         };
@@ -482,7 +482,7 @@ fn decode_binary_feature_block(payload: &[u8]) -> PackedFeatureBlockDecode {
     }
     if !rest.is_empty() {
         return PackedFeatureBlockDecode::Corrupt(format!(
-            "packed feature page has {} bytes after its last point",
+            "packed feature block has {} bytes after its last point",
             rest.len()
         ));
     }
@@ -658,7 +658,7 @@ mod block_encoding_tests {
             if before == 0 { 0.0 } else { (before as f64 - after as f64) / before as f64 * 100.0 }
         };
         println!(
-            "  page of one 400 B point: {json_bytes} B as JSON, {binary_bytes} B as bytes"
+            "  block of one 400 B point: {json_bytes} B as JSON, {binary_bytes} B as bytes"
         );
         println!(
             "  encode x{rounds}: json {json_encode_ns} ns, bytes {binary_encode_ns} ns, {:.1}% saved",
@@ -691,7 +691,7 @@ mod block_encoding_tests {
             assert_eq!(
                 decode_feature_block(&encoded).as_deref(),
                 Some(points.as_slice()),
-                "a page of {} point(s) did not decode back",
+                "a block of {} point(s) did not decode back",
                 points.len()
             );
         }
@@ -706,11 +706,11 @@ mod block_encoding_tests {
         for points in fixtures() {
             let owned = PackedFeatureBlock { version: 1, points: points.to_vec() };
             let mut json_block = FEATURE_BLOCK_MAGIC.to_vec();
-            json_block.append(&mut serde_json::to_vec(&owned).expect("owned page serialises"));
+            json_block.append(&mut serde_json::to_vec(&owned).expect("owned block serialises"));
             assert_eq!(
                 decode_feature_block(&json_block).as_deref(),
                 Some(points.as_slice()),
-                "a JSON page of {} point(s) stopped reading",
+                "a JSON block of {} point(s) stopped reading",
                 points.len()
             );
         }
@@ -734,10 +734,10 @@ mod block_encoding_tests {
                 // A prefix shorter than the magic cannot claim to be one of our pages.
                 PackedFeatureBlockDecode::Legacy => assert!(
                     cut < FEATURE_BLOCK_BINARY_MAGIC.len(),
-                    "a truncation at {cut} was read as an unframed page"
+                    "a truncation at {cut} was read as an unframed block"
                 ),
                 PackedFeatureBlockDecode::Packed(got) => panic!(
-                    "a page truncated at {cut} decoded as {} point(s)",
+                    "a block truncated at {cut} decoded as {} point(s)",
                     got.len()
                 ),
             }

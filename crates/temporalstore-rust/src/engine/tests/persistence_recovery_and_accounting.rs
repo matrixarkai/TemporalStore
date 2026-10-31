@@ -1104,13 +1104,13 @@ fn partial_compaction_failure_durably_persists_the_consistent_partial_index() {
         blocks.display(),
         slabs.len()
     );
-    let k2_slab = slabs.last().expect("at least two page slabs after the roll").clone();
+    let k2_slab = slabs.last().expect("at least two block slabs after the roll").clone();
     fs::write(&k2_slab, b"").unwrap();
 
     let result = engine.compact_shard_blocks(1);
     assert!(
         result.is_err(),
-        "compaction must fail when a live page's slab is unreadable, got {result:?}"
+        "compaction must fail when a live block's slab is unreadable, got {result:?}"
     );
     let index_after = fs::read(engine.index_path(1)).unwrap();
     assert_ne!(
@@ -2522,7 +2522,7 @@ fn the_lifecycle_purge_re_checks_liveness_and_returns_a_live_slab() {
         CommandResponse::Bytes {
             value: Some(b"payload-in-slab-zero".to_vec())
         },
-        "the key whose page lives in the restored slab still reads back"
+        "the key whose block lives in the restored slab still reads back"
     );
 }
 
@@ -2987,7 +2987,7 @@ fn bucket_dump_manifest_rejects_non_canonical_bucket_and_block_slab_ids() {
             .block_slab_ids
             .first()
             .copied()
-            .expect("page segment id should exist"),
+            .expect("block segment id should exist"),
     );
     duplicate_block_slab.dump_generation_id = bucket_dump_generation_id(&duplicate_block_slab);
     duplicate_block_slab.checksum = bucket_dump_manifest_checksum(&duplicate_block_slab).unwrap();
@@ -4650,7 +4650,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
         in_set_with_no_block,
     );
     if let Some(sample) = in_set_not_flagged.first() {
-        println!("  e.g. in the set, no dirty page: {sample}");
+        println!("  e.g. in the set, no dirty block: {sample}");
     }
 }
 
@@ -4863,10 +4863,10 @@ fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
 
     // Anti-vacuity first: with no blocks, or one block per kind, "everything is shared" is true for
     // free and proves nothing.
-    assert!(blocks > 0, "no pages were recorded; nothing was measured");
+    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
     assert!(
         blocks > first_of_kind.len(),
-        "only {} pages for {} kinds -- no kind repeats, so sharing is untested",
+        "only {} blocks for {} kinds -- no kind repeats, so sharing is untested",
         blocks,
         first_of_kind.len()
     );
@@ -4940,7 +4940,7 @@ fn what_each_address_field_actually_ranges_over() {
             derived_slab = derived_slab.max(a.slab_id().unwrap_or(0));
         }
     }
-    assert!(blocks > 0, "no pages were recorded; nothing was measured");
+    assert!(blocks > 0, "no blocks were recorded; nothing was measured");
 
     let bits = |v: u64| if v == 0 { 0 } else { 64 - v.leading_zeros() };
     println!(
@@ -5045,7 +5045,7 @@ fn how_many_times_one_object_key_is_stored() {
             .bucket_map
             .values()
             .any(|bucket| !bucket.block_index.is_empty()),
-        "the store holds no page at all, so the page index's absence from the holder list above          says nothing about where this key is held"
+        "the store holds no block at all, so the block index's absence from the holder list above          says nothing about where this key is held"
     );
 
     let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
@@ -5199,10 +5199,10 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     }
 
     // Anti-vacuity: with nothing checked, "all shared" is true for free.
-    assert!(checked > 0, "no page was matched to a lookup entry; nothing was measured");
+    assert!(checked > 0, "no block was matched to a lookup entry; nothing was measured");
     assert_eq!(
         shared, checked,
-        "{shared} of {checked} pages are handed an object key that is the lookup's own          allocation; for the rest the read path made a COPY of the text, which is the duplication          this change removed reappearing one level out"
+        "{shared} of {checked} blocks are handed an object key that is the lookup's own          allocation; for the rest the read path made a COPY of the text, which is the duplication          this change removed reappearing one level out"
     );
 }
 
@@ -5258,14 +5258,14 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             assert_ne!(
                 block.object_id(1, object_key),
                 0,
-                "a page filed from an address with no object id must still report the computed one"
+                "a block filed from an address with no object id must still report the computed one"
             );
             // Cross-checked against what the write path recorded, rather than by recomputing
             // the same function and comparing it with itself: the bucket's object index was
             // populated from the id the write path actually used.
             assert!(
                 bucket.object_index.contains(&block.object_id(1, object_key)),
-                "the id the page reports must be the one the write path filed it under"
+                "the id the block reports must be the one the write path filed it under"
             );
         }
     }
@@ -5327,7 +5327,7 @@ fn deleting_an_object_does_not_allocate_per_block_scanned() {
     let growth = wide.saturating_sub(narrow);
     assert!(
         growth < 180,
-        "deleting scanned 180 more pages and allocated {growth} more times          ({narrow} at 20 fields, {wide} at 200) -- that is per-page allocation"
+        "deleting scanned 180 more blocks and allocated {growth} more times          ({narrow} at 20 fields, {wide} at 200) -- that is per-page allocation"
     );
 }
 
@@ -5442,7 +5442,7 @@ fn installing_the_same_block_twice_replaces_it() {
             block_refs: 2,
             bytes: 8
         },
-        "two distinct 4-byte pages on slab 1"
+        "two distinct 4-byte blocks on slab 1"
     );
 }
 
@@ -5481,7 +5481,7 @@ fn dumping_the_block_index_does_not_copy_it_first() {
             .bucket_map
             .values()
             .find(|b| !b.block_index.is_empty())
-            .expect("the writes must produce pages");
+            .expect("the writes must produce blocks");
 
         let probe = crate::alloc_probe::Probe::start();
         let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["dumped"]))
@@ -5493,7 +5493,7 @@ fn dumping_the_block_index_does_not_copy_it_first() {
 
     let small = dump_a_shard_of(20);
     let large = dump_a_shard_of(200);
-    println!("dump allocations: {small} at 20 pages, {large} at 200 pages");
+    println!("dump allocations: {small} at 20 blocks, {large} at 200 blocks");
 
     // An upper bound passes most easily when nothing was measured, so prove the probe saw work.
     assert!(small > 0, "the probe must observe the dump: {small}");
@@ -5504,7 +5504,7 @@ fn dumping_the_block_index_does_not_copy_it_first() {
     let per_block = (large.saturating_sub(small)) as f64 / 180.0;
     assert!(
         per_block < 2.0,
-        "dumping cost {per_block:.2} allocations per page ({small} at 20, {large} at 200)"
+        "dumping cost {per_block:.2} allocations per block ({small} at 20, {large} at 200)"
     );
 }
 
@@ -5543,7 +5543,7 @@ fn the_block_index_dump_is_ordered_by_its_written_key() {
         .bucket_map
         .values()
         .find(|b| b.block_index.len() > 4)
-        .expect("the writes must produce several pages in one bucket");
+        .expect("the writes must produce several blocks in one bucket");
 
     let json = serde_json::to_string(&crate::engine::state::BlockIndexNamedBy(&bucket.block_index, &["ordered"]))
         .expect("the index serializes");
@@ -5673,7 +5673,7 @@ fn the_block_index_still_writes_string_keys() {
         .bucket_map
         .values()
         .find(|bucket| !bucket.block_index.is_empty())
-        .expect("the write must produce a page");
+        .expect("the write must produce a block");
 
     // In memory: a handle, not text.
     let (handle, block) = bucket.block_index.iter().next().expect("one page");
@@ -5703,7 +5703,7 @@ fn the_block_index_still_writes_string_keys() {
     assert_eq!(restored.len(), bucket.block_index.len());
     assert!(
         restored.iter().all(|(handle, _)| *handle > 0),
-        "every loaded page gets a handle"
+        "every loaded block gets a handle"
     );
 }
 
@@ -5844,7 +5844,7 @@ fn how_many_blocks_does_a_wide_hash_hold() {
             .iter()
             .map(|(_m, _o, refs)| refs.len())
             .sum();
-        println!("fields {fields:5}  pages {blocks:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
+        println!("fields {fields:5}  blocks {blocks:6}  buckets {buckets:4}  lookup refs {lookup_refs:6}");
     }
 }
 
@@ -6896,14 +6896,14 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .bucket_map
             .values()
             .find(|bucket| bucket.block_index.len() == 1)
-            .expect("the write must produce a bucket holding one page");
+            .expect("the write must produce a bucket holding one block");
         // THE SINGLE-BLOCK ARM, WHICH NOW HOLDS ITS ENTRY BEHIND A POINTER. The arm survives; what
         // it costs the node does not. It used to hold the whole entry inline, so every bucket in
         // the map paid the width of an entry whether or not it held exactly one block -- and at the
         // shipped routing range almost none does.
         assert!(
             matches!(bucket.block_index, BlockIndexMap::One(..)),
-            "a bucket holding one page must take the single-page arm; it holds {} page(s)",
+            "a bucket holding one block must take the single-page arm; it holds {} block(s)",
             bucket.block_index.len()
         );
     }
@@ -6930,7 +6930,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
             .expect("three fields must share a bucket");
         assert!(
             matches!(bucket.block_index, BlockIndexMap::Many(_)),
-            "several pages belong in a map"
+            "several blocks belong in a map"
         );
     }
 
@@ -7030,7 +7030,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // arm must never disagree with `len()`, whatever the entries are.
         assert!(
             matches!(bucket.block_index, BlockIndexMap::Many(_)),
-            "a page index holding five entries must be in the multi-entry arm"
+            "a block index holding five entries must be in the multi-entry arm"
         );
     }
 
@@ -7467,7 +7467,7 @@ fn what_a_write_costs_across_every_subsystem() {
             println!("    INDEXFILE {value_len:>5}B  {size:>9} B  {name}");
         }
         println!(
-            "  AMP-STEADY value {value_len:>5}B | index before {indexes:>9} -> {trail:?}              | settled {settled:>9} ({:>5.2}x) | pages {:>9} ({:>5.2}x)",
+            "  AMP-STEADY value {value_len:>5}B | index before {indexes:>9} -> {trail:?}              | settled {settled:>9} ({:>5.2}x) | blocks {:>9} ({:>5.2}x)",
             settled as f64 / user_bytes as f64,
             tree_bytes(&blocks_dir),
             tree_bytes(&blocks_dir) as f64 / user_bytes as f64,
@@ -7635,7 +7635,7 @@ fn block_index_identity_string_cardinality() {
     // with no components would decide the component question by construction" -- and that is now
     // true of every possible corpus, since an entry has no element name. A floor no fixture can
     // satisfy is not a floor; lowering it to zero would have been the move its own comment forbids.
-    assert!(blocks > 0, "the page index is empty; nothing was measured");
+    assert!(blocks > 0, "the block index is empty; nothing was measured");
     // AND THE LOOKUP NAMES SOMETHING, or the object-key row below is a row of zeroes that reads
     // as "no key text in this store" instead of "the lookup was not walked".
     assert!(
@@ -7953,7 +7953,7 @@ fn per_record_structure_census() {
     assert_eq!(strings, RECORDS, "every record should have a string entry");
     assert_eq!(
         page_index_entries, RECORDS,
-        "every record should have exactly one live page ref"
+        "every record should have exactly one live block ref"
     );
     assert!(
         buckets <= 1024,
@@ -8147,7 +8147,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
         .bucket_index
         .object_component_block_refs
         .expect("the total should be established once the lookup has been built");
-    assert!(walked > 0, "workload produced no component page refs to compare");
+    assert!(walked > 0, "workload produced no component block refs to compare");
     assert_eq!(
         maintained, walked,
         "maintained component page-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
@@ -8439,7 +8439,7 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
     // ratio is undefined once it reaches zero. 4x the objects must not buy more than a constant.
     assert!(
         large <= 2.0,
-        "per-write bucket maintenance should not scan pages at a narrow routing range, got {large:.1} visits/write at 800 objects (200 objects: {small:.1})"
+        "per-write bucket maintenance should not scan blocks at a narrow routing range, got {large:.1} visits/write at 800 objects (200 objects: {small:.1})"
     );
     assert!(
         large <= small + 2.0,
@@ -8712,7 +8712,7 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
         CommandResponse::Bytes {
             value: Some(b"derived-page-value".to_vec())
         },
-        "a derived page must not read back as missing once its cache entry is gone"
+        "a derived block must not read back as missing once its cache entry is gone"
     );
 }
 
@@ -8766,10 +8766,10 @@ fn a_carried_block_is_what_reaches_the_log_record() {
         .iter()
         .filter_map(|(_, line)| crate::wal::decode_wal_line(line).ok())
         .find(|record| !record.staged_blocks.is_empty())
-        .expect("the record must carry pages");
+        .expect("the record must carry blocks");
     assert_eq!(
         logged.staged_blocks, carried,
-        "the carried pages belong on the record, not this node's re-derivation"
+        "the carried blocks belong on the record, not this node's re-derivation"
     );
 }
 
@@ -9032,7 +9032,7 @@ fn a_wal_resident_block_records_where_it_lives_in_the_index() {
 
     assert!(
         engine.wal_resident_block_count(1) > 0,
-        "the index must carry where the page went"
+        "the index must carry where the block went"
     );
 
     // Take the shard down and back up: the resolver's table is dropped, so what comes back has
@@ -9374,14 +9374,14 @@ fn two_engines_in_one_process_do_not_read_each_others_blocks() {
         CommandResponse::Bytes {
             value: Some(b"from-first".to_vec())
         },
-        "the first engine read the wrong engine's page"
+        "the first engine read the wrong engine's block"
     );
     assert_eq!(
         second_read,
         CommandResponse::Bytes {
             value: Some(b"from-second".to_vec())
         },
-        "the second engine read the wrong engine's page"
+        "the second engine read the wrong engine's block"
     );
 }
 
@@ -12091,7 +12091,7 @@ fn how_many_served_addresses_only_this_process_can_resolve() {
         let synthetic = engine.synthetic_address_count_for_test(1);
         let resident = engine.wal_resident_block_count(1);
         println!(
-            "[synthetic] {label}: {synthetic} served address(es) resolvable only in-process, {resident} log-resident page(s) tracked"
+            "[synthetic] {label}: {synthetic} served address(es) resolvable only in-process, {resident} log-resident block(s) tracked"
         );
 
         // And after a flush, which is what a checkpoint exports.
@@ -12387,7 +12387,7 @@ fn what_the_log_resident_registry_holds_after_a_dump() {
     let after_materialise = engine.registration_count_for_test(1);
     let synthetic_left = engine.synthetic_address_count_for_test(1);
     println!(
-        "[registry] after materialising: {moved} page(s) moved, {after_materialise} registration(s) left, {synthetic_left} synthetic address(es) left"
+        "[registry] after materialising: {moved} block(s) moved, {after_materialise} registration(s) left, {synthetic_left} synthetic address(es) left"
     );
 
     // Whatever the counts, every value must still read -- a registry that shrank too far would
@@ -12926,7 +12926,7 @@ fn registrations_plateau_instead_of_tracking_writes() {
             CommandResponse::Bytes {
                 value: Some(vec![b'v'; 128])
             },
-            "object-{index:05} was lost when its page was moved out"
+            "object-{index:05} was lost when its block was moved out"
         );
     }
 }
@@ -13831,7 +13831,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
                 source_kind: crate::context_workflow::ContextSourceKind::Incident,
                 source_id: "IDX-1".to_string(),
                 title: "index membership".to_string(),
-                body: "does this page reach the bucket index".to_string(),
+                body: "does this block reach the bucket index".to_string(),
                 timestamp_ms: 1_000,
                 provider: crate::context_workflow::ContextModelProviderConfig::default(),
             }],
@@ -13954,7 +13954,7 @@ fn what_one_block_costs_to_index() {
             let _ = block;
         }
     }
-    assert!(entries > 0, "the workload must produce pages, or this measures nothing");
+    assert!(entries > 0, "the workload must produce blocks, or this measures nothing");
 
     let per_entry_heap = heap as f64 / entries as f64;
     let map_key_b = ref_key_bytes as f64 / entries as f64;
@@ -14081,7 +14081,7 @@ fn which_parts_of_a_block_address_are_populated() {
             compactable += usize::from(a.compact_slab_address().is_some());
         }
     }
-    assert!(blocks > 0, "the workload must produce pages, or this measures nothing");
+    assert!(blocks > 0, "the workload must produce blocks, or this measures nothing");
 
     let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
     println!(
@@ -14174,7 +14174,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
             // expression. That is the shape the comment above rejects for the bucket.
         }
     }
-    assert!(blocks > 0, "the workload must produce pages, or this measures nothing");
+    assert!(blocks > 0, "the workload must produce blocks, or this measures nothing");
 
     let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
     println!(
@@ -15830,16 +15830,16 @@ fn which_commands_rebuild_the_whole_index_per_call() {
     );
 
     let cases: Vec<(&str, Box<dyn Fn(usize) -> Command>)> = vec![
-        ("StringSet     (files pages)", Box::new(|n: usize| Command::StringSet {
+        ("StringSet     (files blocks)", Box::new(|n: usize| Command::StringSet {
             key: format!("probe-{n}"),
             value: b"v".to_vec(),
         })),
-        ("ListPush      (files pages)", Box::new(|n: usize| Command::ListPush {
+        ("ListPush      (files blocks)", Box::new(|n: usize| Command::ListPush {
             key: "feed".to_string(),
             member: format!("e-{n}").into_bytes(),
             left: false,
         })),
-        ("SeenCheck      (no page)", Box::new(|n: usize| Command::SeenCheck {
+        ("SeenCheck      (no block)", Box::new(|n: usize| Command::SeenCheck {
             key: "seen".to_string(),
             member: format!("m-{n}").into_bytes(),
             window_ms: 60_000,
@@ -15861,7 +15861,7 @@ fn which_commands_rebuild_the_whole_index_per_call() {
                 author_id: 1,
             }],
         })),
-        ("ControlChange  (no page)", Box::new(|n: usize| Command::ControlStateChangeAdd {
+        ("ControlChange  (no block)", Box::new(|n: usize| Command::ControlStateChangeAdd {
             key: "visitors".to_string(),
             timestamp_ms: 1_000 + n as u64,
             value: format!("v-{n}").into_bytes(),
@@ -15949,7 +15949,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     let before = snapshot(&engine);
     assert!(
         before.len() >= 64,
-        "the fixture must leave real pages to reconstruct, found {}",
+        "the fixture must leave real blocks to reconstruct, found {}",
         before.len()
     );
 
@@ -16072,7 +16072,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     assert_eq!(
         index_before,
         block_rows(&engine),
-        "a batched no-page command changed the page index, so skipping the rebuild after it          leaves the index stale"
+        "a batched no-page command changed the block index, so skipping the rebuild after it          leaves the index stale"
     );
 
     // The positive control, and it is not optional: both assertions below are `== 0`, and zero is
@@ -16100,7 +16100,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     );
     assert_eq!(
         batch_visits, 0,
-        "a no-page command rebuilt the whole index because it arrived in a batch: {batch_visits}          page visits against {alone_visits} for the same command sent alone"
+        "a no-page command rebuilt the whole index because it arrived in a batch: {batch_visits}          block visits against {alone_visits} for the same command sent alone"
     );
 }
 
@@ -18114,7 +18114,7 @@ fn what_the_string_family_costs_against_the_store() {
          store and not a log roll landing in the sample: {survivors:?}"
     );
     assert!(scaling > 3.0, "the scaling control reported {scaling:.2}x -- probe cannot see growth");
-    println!("  A string is one page per key, so declaring or not should not matter here.");
+    println!("  A string is one block per key, so declaring or not should not matter here.");
 }
 
 #[test]
@@ -18192,7 +18192,7 @@ fn an_entity_upsert_does_not_report_its_block_uncovered() {
         .collect();
     assert!(
         stray.is_empty(),
-        "an entity upsert reported its own page uncovered, so every entity write rebuilds the          whole bucket index: {stray:?}"
+        "an entity upsert reported its own block uncovered, so every entity write rebuilds the          whole bucket index: {stray:?}"
     );
 }
 
@@ -18883,9 +18883,9 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert_eq!(
         maintained_refs,
         engine.live_block_count_for_test(1) as u64,
-        "the maintained page-ref total disagrees with the live page count"
+        "the maintained page-ref total disagrees with the live block count"
     );
-    assert!(maintained_refs >= KEYS as u64, "{maintained_refs} pages counted for {KEYS} keys");
+    assert!(maintained_refs >= KEYS as u64, "{maintained_refs} blocks counted for {KEYS} keys");
 
     // 2. OVERWRITE, at a different length so a byte drift cannot cancel.
     for index in 0..KEYS {
@@ -18930,7 +18930,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
             .iter()
             .map(|(_, block_refs, _)| block_refs)
             .sum::<u64>(),
-        "the deletes left the tally and the walk disagreeing about how many pages are live"
+        "the deletes left the tally and the walk disagreeing about how many blocks are live"
     );
 
     // 4. COMPACTION RELOCATIONS.
@@ -18945,7 +18945,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert!(after_compaction.slabs_compared > 0, "{after_compaction:?}");
     assert!(
         after_compaction.is_clean(),
-        "the tally drifted over {} relocated pages: {after_compaction:?}",
+        "the tally drifted over {} relocated blocks: {after_compaction:?}",
         compaction.rewritten_block_refs
     );
 
@@ -19110,7 +19110,7 @@ fn a_released_bucket_serves_every_key_it_held() {
     };
     assert_eq!(
         resident_blocks, 0,
-        "{released_blocks} pages were reported released but {resident_blocks} are still filed"
+        "{released_blocks} blocks were reported released but {resident_blocks} are still filed"
     );
 
     for index in 0..KEYS {
@@ -19246,13 +19246,13 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
     }
 
     let before = block_listing(&engine);
-    assert!(!before.is_empty(), "the fixture filed no pages");
+    assert!(!before.is_empty(), "the fixture filed no blocks");
 
     let (released_buckets, _, _) = engine.release_all_releasable_bucket_index_blocks(1);
     assert!(released_buckets > 0, "nothing was released");
     assert!(
         block_listing(&engine).is_empty(),
-        "the release left page entries behind"
+        "the release left block entries behind"
     );
 
     for routing_bucket in engine.released_bucket_index_buckets(1) {
@@ -19261,7 +19261,7 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
     assert_eq!(
         block_listing(&engine),
         before,
-        "the reloaded page list is not the one that was released"
+        "the reloaded block list is not the one that was released"
     );
 }
 
@@ -19295,7 +19295,7 @@ fn a_write_into_a_released_bucket_loads_it_back_first() {
 
     assert!(
         !engine.released_bucket_index_buckets(1).contains(&target),
-        "the bucket stayed registered as released after a write filed a page into it"
+        "the bucket stayed registered as released after a write filed a block into it"
     );
     let shards = engine.shards.read().expect("shards lock poisoned");
     let bucket = shards
@@ -19530,7 +19530,7 @@ fn every_delete_against_a_released_bucket_settles_its_own_object() {
         engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
         released_buckets > 0 && released_blocks > 0,
-        "nothing was released ({released_buckets} buckets / {released_blocks} pages)"
+        "nothing was released ({released_buckets} buckets / {released_blocks} blocks)"
     );
     let released: std::collections::BTreeSet<u32> =
         engine.released_bucket_index_buckets(1).into_iter().collect();
@@ -19607,7 +19607,7 @@ fn a_delete_against_a_released_bucket_leaves_its_bucket_mates() {
         engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
         released_buckets > 0 && released_blocks > 0,
-        "nothing was released ({released_buckets} buckets / {released_blocks} pages)"
+        "nothing was released ({released_buckets} buckets / {released_blocks} blocks)"
     );
 
     let mut by_bucket: std::collections::BTreeMap<u32, Vec<usize>> =
@@ -19744,7 +19744,7 @@ fn eviction_releases_the_index_it_used_to_leave_resident() {
     );
     assert!(
         report.bucket_index_buckets_released > 0 && report.bucket_index_blocks_released > 0,
-        "eviction released no index: {} buckets / {} pages, {} refused",
+        "eviction released no index: {} buckets / {} blocks, {} refused",
         report.bucket_index_buckets_released,
         report.bucket_index_blocks_released,
         report.bucket_index_release_refused,
@@ -20954,7 +20954,7 @@ shard, so this test cannot distinguish a moving window from a fixed one",
     );
     assert_eq!(
         first.probed_block_refs, budget,
-        "the first round read {} pages against a budget of {budget}",
+        "the first round read {} blocks against a budget of {budget}",
         first.probed_block_refs,
     );
     // The SECOND denominator, and the one that stops this test passing vacuously: the planted
@@ -21060,11 +21060,11 @@ fn the_readability_probe_window_advances_by_its_budget_at_both_corpus_sizes() {
     // budget" is not what the cursors would show even when the code is right.
     assert!(
         small_total > 3 * budget,
-        "small arm holds {small_total} live pages, which is under three windows of {budget}",
+        "small arm holds {small_total} live blocks, which is under three windows of {budget}",
     );
     assert!(
         large_total > 3 * budget,
-        "large arm holds {large_total} live pages, which is under three windows of {budget}",
+        "large arm holds {large_total} live blocks, which is under three windows of {budget}",
     );
     // And the arms must actually differ in size, or this measured one corpus twice.
     assert!(
@@ -21091,7 +21091,7 @@ budget each round, not restart at the front",
     assert_eq!(
         small_probed,
         vec![budget; 3],
-        "small arm read {small_probed:?} pages a round against a budget of {budget}",
+        "small arm read {small_probed:?} blocks a round against a budget of {budget}",
     );
     assert_eq!(
         large_probed,
@@ -21164,7 +21164,7 @@ fn a_block_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
         .values()
         .map(|bucket| bucket.block_index.len())
         .sum();
-    assert!(blocks_before > 0, "fixture stored no pages, so this measures nothing");
+    assert!(blocks_before > 0, "fixture stored no blocks, so this measures nothing");
 
     // NO STRIP, BECAUSE THERE IS NOTHING TO STRIP. This used to clear the routing bucket off every
     // block's address so the summary walk would take its fallback; an address carries no bucket, so
@@ -21224,7 +21224,7 @@ naming the real bucket carries none of its pages.",
     let summarised_blocks: u64 = summaries.iter().map(|summary| summary.block_ref_count).sum();
     assert_eq!(
         summarised_blocks, blocks_before as u64,
-        "{blocks_before} pages went in and {summarised_blocks} came out of the summaries",
+        "{blocks_before} blocks went in and {summarised_blocks} came out of the summaries",
     );
 }
 

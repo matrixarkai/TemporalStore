@@ -492,7 +492,7 @@ fn a_removal_carries_no_block() {
         assert_eq!(
             counts.blocks_in_the_record,
             0,
-            "removal cell {} carried {} pages, so it is not the no-page cell it is labelled",
+            "removal cell {} carried {} blocks, so it is not the no-page cell it is labelled",
             shape.label.trim(),
             counts.blocks_in_the_record
         );

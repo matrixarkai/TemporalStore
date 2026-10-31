@@ -1053,7 +1053,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     assert_eq!(
         0,
         crate::engine::corrupt_container_block_count(),
-        "a read met a container page it could not walk"
+        "a read met a container block it could not walk"
     );
 
     // AND THE STORED PAGES REALLY ARE FRAMED, which nothing above this line establishes.
@@ -1078,22 +1078,22 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
         ("list", "list-key", format!("{:016x}", 1_u64 << 63)),
     ];
     let mut framed_kinds = 0usize;
-    println!("  stored page shapes:");
+    println!("  stored block shapes:");
     for (kind, key, component) in &stored {
         let frame = engine
             .container_block_frame_for_test(1, kind, key, Some(component.as_str()))
-            .unwrap_or_else(|| panic!("no stored page for {kind} {key} component {component}"));
+            .unwrap_or_else(|| panic!("no stored block for {kind} {key} component {component}"));
         match crate::engine::container_blocks::decode_container_block(&frame) {
             crate::engine::container_blocks::ContainerBlockDecode::Framed { spelling, items, .. } => {
                 assert_eq!(
                     1,
                     items.len(),
-                    "{kind} wrote {} items in one page, and nothing batches yet",
+                    "{kind} wrote {} items in one block, and nothing batches yet",
                     items.len()
                 );
                 assert!(
                     !items[0].deleted,
-                    "{kind} wrote a live element and the page says it was removed"
+                    "{kind} wrote a live element and the block says it was removed"
                 );
                 let named = crate::engine::container_blocks::component_from_element_key(
                     spelling,
@@ -1102,7 +1102,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
                 .unwrap_or_else(|| panic!("{kind}'s page key spells no component"));
                 assert_eq!(
                     component, &named,
-                    "{kind}'s page names element {named} where its index entry names {component}"
+                    "{kind}'s block names element {named} where its index entry names {component}"
                 );
                 println!(
                     "    {kind:>5}  {} bytes, spelling {spelling:?}, names {named}",
@@ -1115,7 +1115,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     }
     assert_eq!(
         4, framed_kinds,
-        "only {framed_kinds} kinds stored a framed page"
+        "only {framed_kinds} kinds stored a framed block"
     );
 
     println!(
@@ -1325,7 +1325,7 @@ fn a_framed_block_reads_back_after_a_reload() {
     assert_eq!(
         0,
         crate::engine::corrupt_container_block_count(),
-        "the reload met a container page it could not walk"
+        "the reload met a container block it could not walk"
     );
     println!(
         "  reloaded: {} hash fields, {} set members, {} list elements, {} zset members -- all read back off storage",
@@ -1369,7 +1369,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
     let installed = engine.install_unframed_hash_block_for_test(1, "mixed", "legacy", &legacy_value);
     assert!(
         installed,
-        "the fixture could not install an unframed page, so this test proves nothing"
+        "the fixture could not install an unframed block, so this test proves nothing"
     );
 
     let got = match read(
@@ -1385,7 +1385,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
     assert_eq!(
         Some(legacy_value.clone()),
         got,
-        "an unframed page did not read back its own bytes"
+        "an unframed block did not read back its own bytes"
     );
 
     // And the framed one beside it still answers, so the two shapes coexist.
@@ -1404,7 +1404,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
     assert_eq!(
         0,
         crate::engine::corrupt_container_block_count(),
-        "reading an unframed page was scored as a corrupt frame"
+        "reading an unframed block was scored as a corrupt frame"
     );
     println!(
         "\n=== both shapes in one store ===\n  unframed page {} bytes read back exactly; framed page beside it still answers",

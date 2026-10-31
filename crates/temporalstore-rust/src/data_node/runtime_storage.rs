@@ -507,7 +507,7 @@ impl DataNodeRuntime {
                     shard_id,
                     moved,
                     resident,
-                    "storage manager moved log-resident pages into the block store"
+                    "storage manager moved log-resident blocks into the block store"
                 );
             }
             // Dumping and spilling make the log RECLAIMABLE. Neither frees a byte of it.

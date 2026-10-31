@@ -257,21 +257,21 @@ impl BlocksPerBucket {
                 self.counts.iter().map(|(h, c)| (*h, *c)).collect();
             for (held, count) in rows.iter().take(16) {
                 println!(
-                    "        {held:>6} page(s): {count:>6} buckets ({:>7.3}% of {buckets})",
+                    "        {held:>6} block(s): {count:>6} buckets ({:>7.3}% of {buckets})",
                     100.0 * *count as f64 / buckets.max(1) as f64
                 );
             }
             println!("        ...");
             for (held, count) in rows.iter().rev().take(16).rev() {
                 println!(
-                    "        {held:>6} page(s): {count:>6} buckets ({:>7.3}% of {buckets})",
+                    "        {held:>6} block(s): {count:>6} buckets ({:>7.3}% of {buckets})",
                     100.0 * *count as f64 / buckets.max(1) as f64
                 );
             }
         } else {
             for (held, count) in &self.counts {
                 println!(
-                    "        {held:>6} page(s): {count:>6} buckets ({:>7.3}% of {buckets})",
+                    "        {held:>6} block(s): {count:>6} buckets ({:>7.3}% of {buckets})",
                     100.0 * *count as f64 / buckets.max(1) as f64
                 );
             }
@@ -619,7 +619,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
     println!("WHERE THE STRUCTURES LAND, PER RECORD -- THE TWO DIVIDE DIFFERENTLY");
     println!(
         "  {:<9} {:<12} {:>14} {:>14} {:>12} {:>12}",
-        "records", "range", "node B/rec", "page B/rec", "pages/bkt", "keys/bkt"
+        "records", "range", "node B/rec", "block B/rec", "pages/bkt", "keys/bkt"
     );
     for (cell, hist) in &cells {
         println!(
@@ -828,7 +828,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
     for (range, buckets, blocks, widest, ..) in &runs {
         assert!(
             *blocks >= MEMBERS,
-            "an arm on 0..{range} filed {blocks} pages for {MEMBERS} components"
+            "an arm on 0..{range} filed {blocks} blocks for {MEMBERS} components"
         );
         assert_eq!(
             1, *buckets,
@@ -837,7 +837,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         );
         assert!(
             *widest > 1,
-            "an arm on 0..{range} has a widest bucket of {widest} page, so nothing was grouped"
+            "an arm on 0..{range} has a widest bucket of {widest} block, so nothing was grouped"
         );
     }
 

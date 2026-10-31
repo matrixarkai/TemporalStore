@@ -152,7 +152,7 @@ fn report_histogram(label: &str, samples: &[usize]) {
         sorted[sorted.len() - 1],
         total as f64 / sorted.len() as f64,
     );
-    print!("    pages/bucket histogram:");
+    print!("    blocks/bucket histogram:");
     for (value, count) in counts.iter().take(8) {
         let share = *count as f64 * 100.0 / sorted.len() as f64;
         print!("  {value}x{count} ({share:.2}%)");
@@ -216,13 +216,13 @@ fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
 
             println!("\n--- {range_label}, {records} records ---");
             println!(
-                "  buckets={} page entries={} model-map addresses={} addresses total={}",
+                "  buckets={} block entries={} model-map addresses={} addresses total={}",
                 addresses.buckets,
                 addresses.block_entries,
                 addresses.model_map,
                 addresses.total()
             );
-            report_histogram("pages per bucket", &addresses.blocks_per_bucket);
+            report_histogram("blocks per bucket", &addresses.blocks_per_bucket);
 
             let address_bytes = width * addresses.total();
             let per_record = address_bytes as f64 / records as f64;

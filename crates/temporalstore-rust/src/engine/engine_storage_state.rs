@@ -4365,7 +4365,7 @@ impl BlockIndexNamedBy<'_> {
             .collect();
         if let Some(at) = used.iter().position(|hit| !hit) {
             panic!(
-                "this fixture names the object {:?}, which accounts for none of the {} page(s)                  in the map; a name left behind by a fixture that stopped writing it would go on                  passing",
+                "this fixture names the object {:?}, which accounts for none of the {} block(s)                  in the map; a name left behind by a fixture that stopped writing it would go on                  passing",
                 self.1[at],
                 paired.len()
             );
@@ -7900,7 +7900,7 @@ mod component_lookup_tests {
         assert_eq!(
             3,
             refs_under_the_only_slot(&index, "k"),
-            "three pages of one object did not accumulate in its slot"
+            "three blocks of one object did not accumulate in its slot"
         );
         assert_eq!(
             Some(3),
@@ -8017,7 +8017,7 @@ mod component_lookup_tests {
         assert_eq!(
             None,
             index.block_refs_for("hash", "k", Some("f0")),
-            "a lookup by element name resolved the object's pages"
+            "a lookup by element name resolved the object's blocks"
         );
         assert_eq!(
             2,
@@ -8037,7 +8037,7 @@ mod component_lookup_tests {
         assert_eq!(
             2,
             refs_under_the_only_slot(&index, "k"),
-            "a removal by element name took the object's pages with it"
+            "a removal by element name took the object's blocks with it"
         );
         assert_eq!(
             Some(2),
@@ -9938,7 +9938,7 @@ mod does_the_sharing_survive_a_decode {
         let without_pass = distinct_key_allocations(&decoded, key);
         repack_decoded_btrees(&mut decoded);
         let with_pass = distinct_key_allocations(&decoded, key);
-        println!("  with a page index: {without_pass} distinct before the pass, {with_pass} after");
+        println!("  with a block index: {without_pass} distinct before the pass, {with_pass} after");
 
         // THE DISCRIMINATING ARM. If the pass did nothing, these two would be equal -- so this is
         // what stops the assertion below passing on a no-op.
@@ -9965,7 +9965,7 @@ mod does_the_sharing_survive_a_decode {
         // So the pass now collapses all three allocations a decode scattered, not two of them.
         assert_eq!(
             with_pass, 1,
-            "every holder must adopt the page index's handle: the ordered map and the hashed ones"
+            "every holder must adopt the block index's handle: the ordered map and the hashed ones"
         );
         assert!(
             with_pass < without_pass,
@@ -10052,7 +10052,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
         let b = serde_json::to_vec(&with).expect("encoding a shard failed");
         assert_ne!(
             a, b,
-            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-page record's pages are"
+            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-page record's blocks are"
         );
 
         let back: ShardState =
@@ -10113,7 +10113,7 @@ mod the_dirty_index_adopts_the_block_indexs_handle_after_the_fact {
         assert_eq!(
             Some(handle.as_ptr()),
             dirty.key_ptr(key),
-            "after adopting, the index must hold the page index's allocation"
+            "after adopting, the index must hold the block index's allocation"
         );
         drop(lookup);
     }

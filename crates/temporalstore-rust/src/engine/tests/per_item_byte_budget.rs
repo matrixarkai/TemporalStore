@@ -1070,7 +1070,7 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
         ranked.sort_by_key(|(_, width, count)| std::cmp::Reverse(width * count));
 
         println!("\n=== {label}: per-item structures ranked by size_of x count ===");
-        println!("  records={} buckets={} page entries={} model-map addresses={}",
+        println!("  records={} buckets={} block entries={} model-map addresses={}",
             counts.records, counts.bucket_nodes, counts.block_index_entries,
             counts.model_map_addresses);
         println!(
@@ -1115,7 +1115,7 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
             ));
         }
         println!(
-            "  payload without double-counting the nested page entries: {} B, {:.2} B/record",
+            "  payload without double-counting the nested block entries: {} B, {:.2} B/record",
             counted,
             counted as f64 / counts.records as f64
         );
@@ -1413,7 +1413,7 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         .max_by_key(|field| field.size)
         .expect("BucketNode has fields");
     println!(
-        "  widest field: {} at {} B of {size} ({:.1}% of the structure) -- the page index is {} B",
+        "  widest field: {} at {} B of {size} ({:.1}% of the structure) -- the block index is {} B",
         widest.name,
         widest.size,
         100.0 * widest.size as f64 / size as f64,
@@ -1699,7 +1699,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         ("with the countdown back at two words as well", wide_ttl),
         ("the packed-flag mirror, which must equal the live shape", packed),
         ("with the two transient log claims hoisted out", hoisted),
-        ("with the page entry held INLINE again (before)", inline_block),
+        ("with the block entry held INLINE again (before)", inline_block),
         ("with a single-page arm re-added, behind a pointer", boxed),
     ] {
         println!(
@@ -2270,7 +2270,7 @@ fn what_the_bucket_node_costs_at_two_large_corpus_sizes() {
 
         println!("\n=== {label} ===");
         println!(
-            "  records={} buckets={} page entries={}",
+            "  records={} buckets={} block entries={}",
             counts.records, counts.bucket_nodes, counts.block_index_entries
         );
         println!(
@@ -3105,7 +3105,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
         assert_eq!(
             buckets,
             block_arms.iter().sum::<usize>(),
-            "the page arm census counted {} buckets against {buckets}",
+            "the block arm census counted {} buckets against {buckets}",
             block_arms.iter().sum::<usize>()
         );
         println!(

@@ -369,7 +369,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
             .bucket_map
             .iter()
             .find(|(_, bucket)| !bucket.block_index.is_empty())
-            .expect("the workload filed at least one page")
+            .expect("the workload filed at least one block")
             .0;
         let bucket = shard
             .bucket_index
@@ -482,7 +482,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     assert_eq!(
         before_clean.blocks_named_an_object_the_list_lacked,
         after_clean.blocks_named_an_object_the_list_lacked,
-        "a rebuild with nothing planted found a page naming an object its list lacked"
+        "a rebuild with nothing planted found a block naming an object its list lacked"
     );
     println!(
         "\n  VERDICT: the counter moved on the plant and not on the clean rebuild, over \

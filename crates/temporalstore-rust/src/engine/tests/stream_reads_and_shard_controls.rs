@@ -324,7 +324,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     assert_eq!(
         1,
         hash_blocks.len(),
-        "the served index records {} page entries for the one-field hash `h`, not one",
+        "the served index records {} block entries for the one-field hash `h`, not one",
         hash_blocks.len()
     );
     let hash_block = hash_blocks[0];
@@ -333,12 +333,12 @@ fn control_api_reads_and_scans_index_log_stream() {
     // STORED form, which is the thing the width step removed.
     assert!(
         hash_block.get("component").is_none() && hash_block.get("c").is_none(),
-        "the served index still writes an element name on a page entry: {hash_block}"
+        "the served index still writes an element name on a block entry: {hash_block}"
     );
     let address = hash_block
         .get("address")
         .or_else(|| hash_block.get("a"))
-        .expect("the recorded page carries its address");
+        .expect("the recorded block carries its address");
     // ONE WORD, NOT TWO FIELDS. The slab id and the offset are the two halves of `a`, so the
     // served index carries the word and the slab is the high 32 bits of it -- there is no `ps`
     // key to read any more, and this asserts that there is not, so a reader that went back to
@@ -716,7 +716,7 @@ fn recovery_validates_all_timestamped_kv_block_families() {
     );
     assert!(
         report.feature_block_layout.packed_timestamped_blocks > 0,
-        "no packed pages at all, so the assertion above proved nothing"
+        "no packed blocks at all, so the assertion above proved nothing"
     );
     assert_eq!(
         report.feature_block_layout.legacy_timestamped_value_blocks, 0,
@@ -2134,8 +2134,8 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
         .bucket_index
         .bucket_map
         .get(&derived_bucket)
-        .expect("the bucket the key routes to should be rebuilt from the string page");
-    assert!(!bucket.block_index.is_empty(), "the page should be re-indexed");
+        .expect("the bucket the key routes to should be rebuilt from the string block");
+    assert!(!bucket.block_index.is_empty(), "the block should be re-indexed");
     assert_eq!(
         bucket.dirty_generation, 7,
         "dirty_generation must survive the rebuild"
@@ -2907,7 +2907,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
         assert_eq!(
             *label,
             BucketLayoutState::SingleObject,
-            "a bucket holding {count} object and no resident page is a single-object bucket"
+            "a bucket holding {count} object and no resident block is a single-object bucket"
         );
     }
 
@@ -2928,14 +2928,14 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
         .count();
     assert_eq!(
         labelled_empty, 0,
-        "{labelled_empty} of {} buckets holding objects but no resident page were labelled empty",
+        "{labelled_empty} of {} buckets holding objects but no resident block were labelled empty",
         many_object_half.len()
     );
     for (count, label) in many_object_half.iter().zip(&many_object_labels) {
         assert_eq!(
             *label,
             BucketLayoutState::MultiObject,
-            "a bucket holding {count} objects and no resident page is a multi-object bucket"
+            "a bucket holding {count} objects and no resident block is a multi-object bucket"
         );
     }
 
@@ -2945,7 +2945,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
         assert_eq!(
             classify_bucket_layout(0, block_count),
             BucketLayoutState::Empty,
-            "a bucket holding no objects is empty whatever its page count"
+            "a bucket holding no objects is empty whatever its block count"
         );
     }
 }
@@ -2992,7 +2992,7 @@ fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
     );
     assert_eq!(
         report.block_ref_count, 0,
-        "every fixture bucket has an emptied page index"
+        "every fixture bucket has an emptied block index"
     );
     assert_eq!(
         report.empty_buckets, 1,
@@ -3251,7 +3251,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
     assert_eq!(
         block_here.records.len(),
         1,
-        "premise: the page stream holds bytes at offset zero"
+        "premise: the block stream holds bytes at offset zero"
     );
 
     let index_here = engine.scan_stream(ScanStreamRequest {
@@ -3304,7 +3304,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
     assert_eq!(
         block_past.records.len(),
         0,
-        "premise: nothing lives at {PAST} in the page stream"
+        "premise: nothing lives at {PAST} in the block stream"
     );
     assert!(
         block_past.end_of_stream,

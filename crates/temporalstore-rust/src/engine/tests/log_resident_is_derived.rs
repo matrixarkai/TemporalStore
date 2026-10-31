@@ -158,7 +158,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // key that spells it and the decoder reads it back out of that key. So the wrapper takes the
     // page alone, and the two names this fixture used to hand it are asserted ABSENT below.
     let named = crate::engine::state::BlockEntryAt { block: &block };
-    let encoded = serde_json::to_string(&named).expect("a page entry serializes");
+    let encoded = serde_json::to_string(&named).expect("a block entry serializes");
     println!("[log-resident] stored entry: {encoded}");
 
     assert!(

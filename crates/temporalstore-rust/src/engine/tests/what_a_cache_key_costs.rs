@@ -105,7 +105,7 @@ fn what_a_cache_key_costs() {
     let logical = matrixcache::CacheKey::string(1, key);
     let physical = engine
         .string_block_cache_key_for_test(1, key)
-        .expect("the key is indexed, so it has a page key");
+        .expect("the key is indexed, so it has a block key");
 
     let struct_bytes = std::mem::size_of::<matrixcache::CacheKey>();
 
@@ -172,7 +172,7 @@ fn what_a_cache_key_costs() {
     let slab_digits = physical
         .record_key
         .strip_prefix("segment-")
-        .expect("a page record_key is the segment prefix plus digits");
+        .expect("a block record_key is the segment prefix plus digits");
     assert!(
         slab_digits.parse::<u64>().is_ok(),
         "the page record_key's tail {slab_digits:?} is not a u64, so it carries something other \
@@ -181,7 +181,7 @@ fn what_a_cache_key_costs() {
     let parts: Vec<&str> = physical
         .selector
         .strip_prefix("slot-")
-        .expect("a page selector starts with the slot prefix")
+        .expect("a block selector starts with the slot prefix")
         .split(':')
         .collect();
     assert_eq!(parts.len(), 3, "the page selector {:?} did not split into bucket:offset:length", &*physical.selector);

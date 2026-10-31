@@ -237,7 +237,7 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
     // compile, still pass, and print three zeroes that read as a measurement.
     debug_assert!(
         seen_keys.is_empty(),
-        "the first pass recorded a key allocation on a page entry, which has no key field"
+        "the first pass recorded a key allocation on a block entry, which has no key field"
     );
     out
 }
@@ -484,7 +484,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     seen.components_held_outside
                 );
                 println!(
-                    "  nodes inline {} B, page heap at capacity {} B, out of line {} B",
+                    "  nodes inline {} B, block heap at capacity {} B, out of line {} B",
                     seen.node_inline_request(),
                     seen.block_heap_request,
                     seen.out_of_line_request()
@@ -513,7 +513,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     seen.block_heap_request
                 );
                 println!(
-                    "    shipped/returned {:.4}   shortfall {} B, {:.2} B a page",
+                    "    shipped/returned {:.4}   shortfall {} B, {:.2} B a block",
                     shipped_block_term as f64 / freed_bytes as f64,
                     freed_bytes as i64 - shipped_block_term as i64,
                     (freed_bytes as i64 - shipped_block_term as i64) as f64 / seen.blocks as f64
@@ -640,7 +640,7 @@ fn both_arms() -> (tempfile::TempDir, TemporalEngine, IndexWalk) {
     assert_eq!(
         seen.blocks,
         keys.len() as u64,
-        "the fixture holds {} pages for {} seeded keys",
+        "the fixture holds {} blocks for {} seeded keys",
         seen.blocks,
         keys.len()
     );
@@ -711,7 +711,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
         reconstruct_nodes(&seen, node_width) + reconstruct_block_heap(&seen, entry_width, pair_stride);
     let reported = engine.bucket_index_resident_bytes(1);
     println!(
-        "  {} buckets ({} boxed, {} lists holding {} entries in {} of capacity), {} pages",
+        "  {} buckets ({} boxed, {} lists holding {} entries in {} of capacity), {} blocks",
         seen.buckets, seen.arm_one, seen.arm_many, seen.list_len, seen.list_capacity, seen.blocks
     );
     println!("  published {reported} B, reconstructed {reconstructed} B");
@@ -855,7 +855,7 @@ fn the_published_floor_is_the_node_term_of_the_published_total() {
     let floor = stats.storage.bucket_index_resident_bytes_floor;
     let total = stats.storage.bucket_index_resident_bytes;
     println!(
-        "  floor {floor} B, total {total} B, page heap {} B over {} buckets",
+        "  floor {floor} B, total {total} B, block heap {} B over {} buckets",
         seen.block_heap_request, seen.buckets
     );
     assert!(

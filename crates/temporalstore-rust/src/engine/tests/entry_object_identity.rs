@@ -177,7 +177,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
             }
             let Some((_, named)) = keys.live_identity(bucket.routing_bucket, *handle) else {
                 panic!(
-                    "a live page at handle {handle} is named by nothing beside it, so this                      denominator would be short by one"
+                    "a live block at handle {handle} is named by nothing beside it, so this                      denominator would be short by one"
                 )
             };
             by_key
@@ -308,7 +308,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     for (object_key, ids) in &by_key {
         let distinct: BTreeSet<u64> = ids.iter().copied().collect();
         println!(
-            "  {object_key:<8} pages={:<4} distinct ids={:<4}",
+            "  {object_key:<8} blocks={:<4} distinct ids={:<4}",
             ids.len(),
             distinct.len()
         );
@@ -450,7 +450,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     let id = block.object_id(1, &block_key);
     assert_ne!(
         0, id,
-        "the fixture page carries no object id, so the comparison below is vacuous"
+        "the fixture block carries no object id, so the comparison below is vacuous"
     );
     assert!(
         !written.contains(&id.to_string()),

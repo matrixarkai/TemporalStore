@@ -456,7 +456,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     assert_eq!(
         blocks_before,
         addresses.len(),
-        "captured {} address(es) for {blocks_before} live page(s)",
+        "captured {} address(es) for {blocks_before} live block(s)",
         addresses.len()
     );
 
@@ -538,7 +538,7 @@ fn reopened_set(object_key: &str, fold: bool) -> (TemporalEngine, tempfile::Temp
             let (batches, folded) = crate::engine::container_batch_counts();
             assert!(
                 batches > 0 && folded > 0,
-                "the folded arm folded nothing: {batches} batch(es), {folded} page(s)"
+                "the folded arm folded nothing: {batches} batch(es), {folded} block(s)"
             );
         }
     }
@@ -579,7 +579,7 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
              wrong answer"
         );
         println!(
-            "  {label:<9} pages={blocks:<3} entries={live:<4} reads={reads:<4} reads/member={:.3}",
+            "  {label:<9} blocks={blocks:<3} entries={live:<4} reads={reads:<4} reads/member={:.3}",
             reads as f64 / MEMBERS as f64
         );
         reads_by_arm.push((label, reads));

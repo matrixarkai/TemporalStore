@@ -617,7 +617,7 @@ impl TemporalEngine {
                     block_slab_id: *block_slab_id,
                     dependency: "live_block_ref".to_string(),
                     owner_id: format!("shard:{shard_id}"),
-                    reason: "indexed live page references still point at this page segment"
+                    reason: "indexed live block references still point at this block segment"
                         .to_string(),
                     ..StorageBlockGcDependencyBlock::default()
                 });
@@ -633,7 +633,7 @@ impl TemporalEngine {
                     block_slab_id: *block_slab_id,
                     dependency: "slot_dump_manifest".to_string(),
                     owner_id,
-                    reason: "slot dump manifest still names this page segment".to_string(),
+                    reason: "slot dump manifest still names this block segment".to_string(),
                     ..StorageBlockGcDependencyBlock::default()
                 });
             }
@@ -648,7 +648,7 @@ impl TemporalEngine {
                         owner_id: cursor.cursor_id.clone(),
                         retain_from_block_slab_id: Some(cursor.retain_from_block_slab_id),
                         reason: if cursor.reason.is_empty() {
-                            "shared-store replay cursor has not advanced past this page segment"
+                            "shared-store replay cursor has not advanced past this block segment"
                                 .to_string()
                         } else {
                             cursor.reason.clone()
@@ -667,7 +667,7 @@ impl TemporalEngine {
                         dependency: "raft_snapshot_ref".to_string(),
                         owner_id: snapshot.snapshot_id.clone(),
                         retain_from_block_slab_id: Some(snapshot.index_log_sequence),
-                        reason: "Raft snapshot reference has not released this page segment floor"
+                        reason: "Raft snapshot reference has not released this block segment floor"
                             .to_string(),
                         ..StorageBlockGcDependencyBlock::default()
                     });
@@ -682,7 +682,7 @@ impl TemporalEngine {
                     dependency: "checkpoint_snapshot_floor".to_string(),
                     owner_id: format!("checkpoint:{shard_id}"),
                     retain_from_block_slab_id: checkpoint_snapshot_floor,
-                    reason: "checkpoint/snapshot floor still retains this page segment".to_string(),
+                    reason: "checkpoint/snapshot floor still retains this block segment".to_string(),
                     ..StorageBlockGcDependencyBlock::default()
                 });
             }
@@ -695,7 +695,7 @@ impl TemporalEngine {
                     dependency: "raft_snapshot_install_floor".to_string(),
                     owner_id: format!("raft-install:{shard_id}"),
                     retain_from_block_slab_id: raft_snapshot_install_floor,
-                    reason: "Raft snapshot install floor still retains this page segment"
+                    reason: "Raft snapshot install floor still retains this block segment"
                         .to_string(),
                     ..StorageBlockGcDependencyBlock::default()
                 });
@@ -713,7 +713,7 @@ impl TemporalEngine {
                             owner_id: format!("delayed-destroy:{block_slab_id}"),
                             retain_until_unix_ms: Some(retain_until),
                             reason:
-                                "delayed-destroy grace period has not elapsed for this page segment"
+                                "delayed-destroy grace period has not elapsed for this block segment"
                                     .to_string(),
                             ..StorageBlockGcDependencyBlock::default()
                         });

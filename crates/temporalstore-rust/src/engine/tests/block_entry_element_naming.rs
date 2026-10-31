@@ -814,10 +814,10 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     let encoded = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         block: &nameless_entry,
     })
-    .expect("a page entry serializes");
+    .expect("a block entry serializes");
     assert!(
         encoded.len() > 32,
-        "the encoded page entry is {} B, too short for the absence assertion below to mean anything",
+        "the encoded block entry is {} B, too short for the absence assertion below to mean anything",
         encoded.len()
     );
     assert!(
@@ -826,7 +826,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
          rests on is not what the encoder produces: {encoded}"
     );
     let decoded = serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&encoded)
-        .expect("a component-less page entry decodes")
+        .expect("a component-less block entry decodes")
         .into_parts_from_key(&crate::engine::state::block_index_written_key(
             "ef-wire-probe",
             &nameless_entry,
@@ -1066,7 +1066,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         "the fold filed {nameless_entries_in_index} hash page(s) at the planted address for this \
          key, not the one this test needs -- leg B has not built the state leg C is about"
     );
-    println!("[leg B] the fold filed 1 hash page naming no field, under `{nameless_key}`");
+    println!("[leg B] the fold filed 1 hash block naming no field, under `{nameless_key}`");
 
     // THE COUNTS, TAKEN BEFORE ANY DERIVE RUNS, as a BEFORE/AFTER pair rather than as an absolute,
     // because the absolute is a property of the page index this test builds and the claim is about

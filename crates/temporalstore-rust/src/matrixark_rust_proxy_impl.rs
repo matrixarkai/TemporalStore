@@ -5019,7 +5019,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
         .filter(|value| *value > 0)
         .unwrap_or_else(default_engine_cache_bytes);
     eprintln!(
-        "engine page cache: {} MiB for {} ({})",
+        "engine block cache: {} MiB for {} ({})",
         cache_bytes / (1024 * 1024),
         root.display(),
         if env::var("MATRIXARK_RUST_PROXY_CACHE_BYTES").is_ok() {
@@ -10221,7 +10221,7 @@ mod tests {
                 .expect("publish selected visibility");
         assert!(
             publish_output.count.unwrap_or_default() > 0,
-            "first targeted publish should persist selected hot pages"
+            "first targeted publish should persist selected hot blocks"
         );
         assert_eq!(
             publish_output.extra.get("matrixark_visibility_key_count"),

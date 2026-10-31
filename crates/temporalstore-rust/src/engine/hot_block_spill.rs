@@ -122,7 +122,7 @@ fn spill_evicted_hot_block(
                 shard_id,
                 offset,
                 error = %err,
-                "failed to spill evicted hot page to a durable slab"
+                "failed to spill evicted hot block to a durable slab"
             );
         }
     }

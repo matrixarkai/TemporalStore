@@ -88,7 +88,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
     assert_eq!(
         1,
         addresses.len(),
-        "the {ENTRIES} entries must share ONE address to stand for a batched page; they span {}",
+        "the {ENTRIES} entries must share ONE address to stand for a batched block; they span {}",
         addresses.len(),
     );
     let keys: std::collections::BTreeSet<&str> =
@@ -162,6 +162,6 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
          assertions above are satisfied by a function that always says yes"
     );
     println!(
-        "[sibling-handles] all four container kinds converge on the page; `string` does not"
+        "[sibling-handles] all four container kinds converge on the block; `string` does not"
     );
 }

@@ -290,7 +290,7 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     let (string_blocks, string_rows) = blocks_and_index_rows(&engine, "string", &string_keys);
 
     println!("\n=== bucket.object_index rows against live pages ===");
-    println!("  kind     keys  pages  rows  rows/page");
+    println!("  kind     keys  blocks  rows  rows/block");
     for (kind, keys, blocks, rows) in [
         ("hash", hash_keys.len(), hash_blocks, hash_rows),
         ("string", string_keys.len(), string_blocks, string_rows),
@@ -305,12 +305,12 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     assert_eq!(
         hash_blocks,
         CONTAINER_KEYS * MEMBERS_PER_KEY,
-        "the container arm exercised {hash_blocks} pages, not {}",
+        "the container arm exercised {hash_blocks} blocks, not {}",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     assert_eq!(
         string_blocks, ROUTED_KEYS,
-        "CONTROL NOT EXERCISED: {string_blocks} string pages, not {ROUTED_KEYS}"
+        "CONTROL NOT EXERCISED: {string_blocks} string blocks, not {ROUTED_KEYS}"
     );
 
     // THE DELIVERABLE.
@@ -350,7 +350,7 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     }
     per_key.sort();
     println!(
-        "  pages per (kind,key) over {} keys: p50={} p90={} p99={} MAX={}",
+        "  blocks per (kind,key) over {} keys: p50={} p90={} p99={} MAX={}",
         per_key.len(),
         percentile(&per_key, 50.0),
         percentile(&per_key, 90.0),
@@ -423,7 +423,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     assert_eq!(
         live_block_count(&engine, "hash", KEY),
         FIELDS,
-        "DENOMINATOR: the seed did not file {FIELDS} pages, so nothing below is being observed"
+        "DENOMINATOR: the seed did not file {FIELDS} blocks, so nothing below is being observed"
     );
     assert!(
         !tombstone_holds(&engine, object_id),
@@ -431,7 +431,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     );
 
     println!("\n=== one id over {FIELDS} elements, deleted one at a time ===");
-    println!("  deleted  live pages  tombstoned");
+    println!("  deleted  live blocks  tombstoned");
 
     // --- ARM 1: ONE ELEMENT OF MANY. ---
     write(
