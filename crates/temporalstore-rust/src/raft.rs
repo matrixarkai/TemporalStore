@@ -1177,6 +1177,11 @@ pub struct RaftPeerPipelineRuntimeState {
     pub append_requests: u64,
     pub append_accepted: u64,
     pub append_rejected: u64,
+    /// Appends refused because they carried a DIFFERENT term for an index at or below the commit
+    /// point. Overwriting a committed entry is forbidden, so a non-zero count here is a bug in
+    /// the SENDER -- it is not a condition this node may absorb by truncating its own log.
+    #[serde(default)]
+    pub committed_overwrite_rejections: u64,
     pub inflight_entries: u64,
     pub inflight_bytes: u64,
     pub append_queue_depth: u64,
@@ -5879,10 +5884,26 @@ fn append_entry(node: &mut RaftNode, entry: RaftLogEntry) {
         if existing.term == entry.term {
             return;
         }
+        // Raft §5.3 one step further: THE CONFLICT IS FLOORED AT THE COMMIT POINT. A
+        // conflicting entry at or below `commit_index` would overwrite an entry this group has
+        // already committed, which Raft forbids, so it is refused here instead of absorbed.
+        // Without the floor the truncation below rewinds `applied` while `max_applied_index`
+        // deliberately stays put, and the apply loops then SKIP the replacement entry -- the
+        // apply cursor advances over a command that never ran and the state machine keeps the
+        // superseded one. Refusing is what makes that state unreachable rather than papered over.
+        if entry.index <= node.commit_index {
+            node.pipeline_state.committed_overwrite_rejections = node
+                .pipeline_state
+                .committed_overwrite_rejections
+                .saturating_add(1);
+            return;
+        }
         node.log.retain(|existing| existing.index < entry.index);
         node.applied.retain(|applied| *applied < entry.index);
         node.applied_index = node.applied.iter().next_back().copied().unwrap_or_default();
-        // max_applied_index is intentionally NOT lowered (monotonic exactly-once floor).
+        // max_applied_index is intentionally NOT lowered (monotonic exactly-once floor); with the
+        // floor above, nothing can rewind the log below it any more, so the floor can no longer
+        // be reached by an entry that has not actually been applied.
     }
     node.log.push(entry);
 }
@@ -7878,8 +7899,28 @@ fn new_meta_node(id: RaftNodeId, role: RaftRole) -> MetaRaftNode {
 }
 
 fn append_meta_entry(node: &mut MetaRaftNode, entry: MetaLogEntry) {
-    if node.log.last().map(|last| last.index) >= Some(entry.index) {
+    if let Some(existing) = node.log.iter().find(|existing| existing.index == entry.index) {
+        // The rule the data path spells out, which this path did not have: an entry already
+        // present with the SAME term IS the same entry, so a duplicate or reordered append is a
+        // no-op. Truncating on a bare index collision deleted committed suffix entries.
+        if existing.term == entry.term {
+            return;
+        }
+        // And the same commit floor: a different term at or below the commit point would
+        // overwrite a committed entry.
+        if entry.index <= node.commit_index {
+            return;
+        }
         node.log.retain(|existing| existing.index < entry.index);
+        // Rewind `applied` WITH the log. Leaving it behind means `applied.insert` returns false
+        // for the replacement entry's index, `apply_meta_committed` skips it, and the node keeps
+        // the superseded command having never run the one that replaced it.
+        node.applied.retain(|applied| *applied < entry.index);
+    } else if node.log.last().map(|last| last.index) >= Some(entry.index) {
+        // No entry at this index, but the log already reaches past it: a hole. Trim as before so
+        // the log stays ordered by index -- the trims and searches downstream assume that.
+        node.log.retain(|existing| existing.index < entry.index);
+        node.applied.retain(|applied| *applied < entry.index);
     }
     node.log.push(entry);
 }

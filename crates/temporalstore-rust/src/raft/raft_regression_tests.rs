@@ -41,3 +41,5 @@ mod snapshot_large_store;
 mod snapshot_scale;
 #[path = "tests/snapshot_scope.rs"]
 mod snapshot_scope;
+#[path = "tests/the_conflict_is_floored_at_the_commit_point.rs"]
+mod the_conflict_is_floored_at_the_commit_point;
