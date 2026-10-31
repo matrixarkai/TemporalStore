@@ -3434,10 +3434,12 @@ pub struct StorageManagerCycleRequest {
     /// reports through `skipped_by_budget_count`.
     #[serde(default = "default_block_gc_max_destroy_slabs_per_round")]
     pub block_gc_max_destroy_slabs_per_round: usize,
-    /// Physical bytes this round may destroy. 0 means no bound, and 0 is what ships -- see
-    /// [`DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND`] for why a ceiling below one slab
-    /// target stops the collector permanently rather than bounding it. When both are set,
-    /// whichever is reached first stops the round and the remainder is the next round's candidates.
+    /// Physical bytes this round may destroy. 0 means no bound; one slab target is what ships.
+    ///
+    /// A SPENDING bound -- see [`DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND`]. The
+    /// first candidate of a round is always admitted and the round yields once the budget is
+    /// spent, so no value here can switch the stage off. When both ceilings are set, whichever is
+    /// reached first ends the round and the remainder is the next round's candidates.
     #[serde(default = "default_block_gc_max_destroy_physical_bytes_per_round")]
     pub block_gc_max_destroy_physical_bytes_per_round: u64,
     /// Bytes the active data slab must hold before the prepare stage rolls a fresh one.
@@ -3542,21 +3544,31 @@ pub const DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS: u64 = 5_000;
 /// `skipped_by_budget_*` figures the stage reports could never be anything but 0 while it did.
 pub const DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND: usize = 500;
 
-/// The byte half of the same ceiling -- and it ships at 0, NO BOUND, on purpose.
+/// The byte half of the same ceiling, and it is a SPENDING bound.
 ///
-/// A sub-slab byte ceiling does not bound this stage, it switches it off for ever. The budget is
-/// applied per candidate as `selected_physical_bytes + candidate.bytes > max_destroy_physical_bytes`,
-/// and `selected_physical_bytes` starts at 0, so when one slab is larger than the whole ceiling the
-/// FIRST candidate already exceeds it -- and so does every other, round after round.
-/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` is `1 << 30`, one gibibyte, so any ceiling below that selects
-/// nothing and the collector never destroys a slab again while it is in force. The count ceiling
-/// beside this one has no such edge: it compares a LENGTH against a LENGTH, so a ceiling of n
-/// always admits n candidates.
+/// The budget asks whether it has already been spent -- `selected_physical_bytes >= ceiling` --
+/// not whether the next candidate would overshoot it. So the first candidate of a round always
+/// goes through and the round yields once the budget is gone. That is what makes every value of
+/// this ceiling safe, and the reason it matters is the unit: a slab targets
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES`, one gibibyte. Under the overshoot form this once had, any
+/// value below one slab target rejected the first candidate and every candidate behind it, for
+/// ever -- a budget whose unit exceeds the budget is a closed gate, not a small bound -- which is
+/// why it had to ship at 0 meaning NO BOUND.
 ///
-/// `a_byte_ceiling_below_one_slab_would_stop_the_collector_dead` measures that, and
-/// `the_shipped_byte_ceiling_is_zero_or_at_least_one_slab` is the guard: this value may go non-zero
-/// only at or above one slab target, whatever the slab target becomes.
-pub const DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND: u64 = 0;
+/// ONE SLAB TARGET is the operational value, denominated in this store's own unit rather than in
+/// bytes chosen against some other granularity. At the shipped slab target that means a round
+/// destroys ONE slab and yields, which is the smallest write-path hold this stage can have:
+/// destroying a slab is an unlink plus the accounting that follows it, and the round holds the
+/// store while it happens. What a bounded round leaves behind is the next round's candidate set,
+/// highest-garbage first, so bounding costs round count and not progress.
+///
+/// The count ceiling beside this one stays the bound that BINDS whenever slabs are small, since it
+/// compares a length against a length. At the default slab target this byte ceiling is reached
+/// first, which is deliberate, and
+/// `block_store::tests::a_sub_slab_byte_budget_admits_one_slab_then_yields` drives the planner to
+/// show it admitting rather than refusing.
+pub const DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND: u64 =
+    crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
 
 /// Dirty buckets one round may dump.
 ///
