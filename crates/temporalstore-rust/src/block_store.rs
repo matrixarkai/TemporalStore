@@ -4335,15 +4335,55 @@ const RETIRED_NAMES: &[&str] = &[
             sources.len()
         );
 
+        // COUNTED OVER ATTRIBUTE LINES ONLY, WHICH IS NOT A TIDINESS CHOICE.
+        //
+        // `rename = "pages"` also occurs inside a STRING LITERAL, in
+        // `page_and_block_name_one_tier`'s source-text clause that pins that very attribute. A
+        // whole-file substring count sees two sites for `pages` and one paired attribute, and
+        // fails against a file that is entirely correct. Restricting the haystack to lines whose
+        // trimmed form opens with `#[serde(` keeps the real attributes and drops the quotation,
+        // and it is the same discrimination every count in this guard needs.
+        let attribute_lines: Vec<&str> = sources
+            .lines()
+            .map(str::trim)
+            .filter(|line| line.starts_with("#[serde("))
+            .collect();
+        assert!(
+            attribute_lines.len() > 100,
+            "the walk found only {} serde attribute line(s) over {files_read} files; every count \
+             below would be zero and the equalities would hold vacuously",
+            attribute_lines.len()
+        );
+        let count_in_attributes = |needle: &str| -> usize {
+            attribute_lines
+                .iter()
+                .map(|line| line.matches(needle).count())
+                .sum()
+        };
+
+        // THE STORED NAMES WHOSE READER TAKES THE SET. Each emits the page spelling and must also
+        // ACCEPT the block one, as an EQUALITY rather than a floor -- a floor passes when a site
+        // is added without its alias, which is the whole failure this exists to catch.
         for (stored, accepted) in [
             ("page_segment_id", "block_segment_id"),
             ("first_page_id", "first_block_id"),
             ("last_page_id", "last_block_id"),
+            ("page", "block"),
+            ("object_page_layouts", "object_block_layouts"),
+            ("stale_page_tombstones", "stale_block_tombstones"),
+            (
+                "pages_named_an_object_the_list_lacked",
+                "blocks_named_an_object_the_list_lacked",
+            ),
+            (
+                "list_held_an_object_no_page_names",
+                "list_held_an_object_no_block_names",
+            ),
         ] {
             let emits = format!("rename = {:?}", stored);
             let accepts = format!("rename = {:?}, alias = {:?}", stored, accepted);
-            let emitting = sources.matches(&emits).count();
-            let paired = sources.matches(&accepts).count();
+            let emitting = count_in_attributes(&emits);
+            let paired = count_in_attributes(&accepts);
             assert!(
                 emitting > 0,
                 "no field emits the stored name `{stored}` any more. If the writer moved, that is \
@@ -4360,6 +4400,39 @@ const RETIRED_NAMES: &[&str] = &[
                 emitting - paired
             );
             println!("  {stored} -> emitted at {emitting} site(s), all accepting {accepted}");
+        }
+
+        // AND THE ONE THAT IS DELIBERATELY SINGLE-FORM, PINNED SO RE-ATTEMPTING IT FAILS.
+        //
+        // `pages` on `object_record::BlockLayout` is NOT an oversight and must not be swept in
+        // with the list above. `page_and_block_name_one_tier`'s
+        // `the_stored_object_layout_emits_the_page_spelling_and_reads_one_back` asserts in its
+        // DECODE clause that the block spelling is REFUSED -- `from_str::<BlockLayout>(..)
+        // .is_err()` -- on the stated ground that an accepted alias there would make "which
+        // spelling is on disk" the open question rather than "whether to move it".
+        //
+        // So adding `alias = "blocks"` is not a reader widening here, it is the deletion of an
+        // assertion whose purpose is to deny that alias. That may still be the right call one
+        // day; it is a redesign of that guard and is decided there, not reached by extending the
+        // table above. A comment would not fail when someone extends it. This does.
+        for (stored, refused) in [("pages", "blocks")] {
+            let emits = format!("rename = {:?}", stored);
+            let accepts = format!("rename = {:?}, alias = {:?}", stored, refused);
+            let emitting = count_in_attributes(&emits);
+            let paired = count_in_attributes(&accepts);
+            assert!(
+                emitting > 0,
+                "nothing emits `{stored}` any more, so this decline is about a name that is gone"
+            );
+            assert_eq!(
+                paired, 0,
+                "`{stored}` now also accepts `{refused}` at {paired} site(s). That is the alias \
+                 `the_stored_object_layout_emits_the_page_spelling_and_reads_one_back` refuses by \
+                 assertion, so one of the two is now wrong. If taking the set here is intended, \
+                 change that guard's DECODE clause in the same commit and move this row into the \
+                 table above -- do not satisfy this one by deleting the other."
+            );
+            println!("  {stored} -> emitted at {emitting} site(s), single-form by decision");
         }
     }
 
