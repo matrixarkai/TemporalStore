@@ -46,18 +46,21 @@ const SHARD: ShardId = 1;
 
 /// Records the fixture writes, and the reason it is this large.
 ///
-/// The index-GC gate is ANDed: at least `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` (768 KiB) of
-/// index log AND at least `DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS` (40%) of its records
-/// removable. An index-log record is about 59 B, so 8,000 records is 477 KB and the byte gate
-/// declines -- correctly -- while 16,000 reaches 943 KB and it fires. That measurement is
-/// `the_periodic_loop_actually_reclaims_the_index_log`, which is where this number comes from.
-/// The gate is exercised at the SHIPPED threshold; tuning the threshold down to suit the fixture
-/// would exercise a gate no deployment runs.
-const RECORDS: usize = 16_000;
+/// The index-GC gate is ANDed: at least `DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD` (1 MiB) of
+/// index log AND at least `DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS` (50%) of its records
+/// removable. Measured on this fixture, an index-log record is 58.1 B: 16,000 records came to
+/// 929,688 B, which is UNDER the 1,048,576 B gate, so 16,000 would have the stage decline and the
+/// arms below would compare two rounds that both did nothing. 20,000 records is about 1,162,000 B
+/// and clears it with margin. The gate is exercised at the SHIPPED threshold; tuning the threshold
+/// down to suit the fixture would exercise a gate no deployment runs.
+///
+/// The byte figure is asserted below rather than trusted, because it is the thing that decides
+/// whether this file measures anything at all.
+const RECORDS: usize = 20_000;
 
 /// One key in this many is written with a deadline already in the past.
 ///
-/// 16,000 / 50 = 320 due keys, which must EXCEED `DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND` (128)
+/// 20,000 / 50 = 400 due keys, which must EXCEED `DEFAULT_MAX_EXPIRE_HOT_BUCKETS_PER_ROUND` (100)
 /// or the hot bound cannot be shown to bite at all. A fixture that cannot exceed a bound runs
 /// green while measuring nothing, so that margin is ASSERTED below rather than assumed.
 const DEADLINE_EVERY: usize = 50;
@@ -128,6 +131,18 @@ fn round(bounded: bool) -> StorageManagerCycleRequest {
         enable_index_gc: true,
         eviction_memory_pressure_threshold: 1,
         load_cold_buckets_for_expire: true,
+        // HELD CONSTANT ACROSS BOTH ARMS, and not varied with the others, because it is upstream
+        // of the index-GC bounds rather than beside them. The dump is what advances the index-log
+        // retain floor, and `index_gc_commit_dirty_buckets_before_truncation` will not truncate
+        // past buckets the dump has not covered -- so a ceiling on the dump decides how much is
+        // REMOVABLE before any index-GC bound is consulted. Measured on this fixture: uncapped
+        // leaves 16,001 records removable, capped at the shipped 200 leaves 200, and the
+        // usage-ratio trigger then declines at 99 bp. Varying it here would have the index-GC
+        // arms differ in their denominator instead of in their bound.
+        //
+        // The interaction is measured on its own by
+        // `a_capped_dump_throttles_what_index_gc_can_remove`.
+        max_dump_buckets_per_round: 0,
         index_gc_max_entries_per_round: usize_bound(shipped.index_gc_max_entries_per_round),
         index_gc_index_log_bytes_threshold: u64_bound(shipped.index_gc_index_log_bytes_threshold),
         index_gc_usage_ratio_trigger_basis_points: u64_bound(
@@ -352,13 +367,13 @@ fn a_cycle_request_that_names_no_bound_still_arrives_bounded() {
 ///
 /// ```text
 ///   ROUND 1                        at 0       shipped    what the bound did
-///   index-log records swept       16,001      15,536     bounds the TAIL PIECE only, see below
-///   index-log bytes freed        929,688     866,601     93% of the bytes still freed
-///   due keys taken (hot)             320         128     bit exactly, 2.5x fewer
+///   index-log records swept       20,001      20,001     NOTHING: all of it was sealed pieces
+///   index-log bytes freed      1,162,728   1,127,927     both arms swept the log to its floor
+///   due keys taken (hot)             400         100     bit exactly, 4.0x fewer
 ///   due keys taken (cold)              0           0     NOT EXERCISED, see the ignored arm
-///   eviction victims chosen       15,680          16     bit exactly, 980x fewer
+///   eviction victims chosen       19,600          10     bit exactly, 1,960x fewer
 ///   cache entries removed              0           0     the cost was CHOOSING, not freeing
-///   round wall time (ms)         212,458      12,095     17.6x cheaper (two runs: 23.3x, 17.6x)
+///   round wall time (ms)         341,076       9,591     35.6x cheaper
 /// ```
 ///
 /// A BOUNDED ROUND IS ONE TO TWO ORDERS OF MAGNITUDE CHEAPER, AND THE ROUND CANNOT SAY WHICH
@@ -437,6 +452,21 @@ fn each_shipped_bound_bites_and_the_round_does_less_work() {
         bound.index_gc_skipped_reason
     );
     assert!(
+        free.index_log_bytes_before >= shipped.index_gc_index_log_bytes_threshold,
+        "DENOMINATOR: the fixture must clear the shipped byte gate, or both arms decline and the \
+         comparison is between two rounds that did nothing: {} B of index log against a {} B \
+         threshold. Raise RECORDS, never lower the threshold",
+        free.index_log_bytes_before,
+        shipped.index_gc_index_log_bytes_threshold
+    );
+    assert!(
+        free.usage_ratio_bp >= shipped.index_gc_usage_ratio_trigger_basis_points,
+        "DENOMINATOR: the fixture must clear the shipped removable-share trigger: {} bp against \
+         {} bp",
+        free.usage_ratio_bp,
+        shipped.index_gc_usage_ratio_trigger_basis_points
+    );
+    assert!(
         free.removable > shipped.index_gc_max_entries_per_round,
         "DENOMINATOR: more records must be removable ({}) than the budget ({}) allows, or the \
          budget is never reached",
@@ -451,16 +481,31 @@ fn each_shipped_bound_bites_and_the_round_does_less_work() {
         !free.budget_exhausted,
         "a sweep with no budget cannot report having exhausted one"
     );
-    assert!(
-        bound.budget_exhausted,
-        "the budgeted record loop must have reached its budget, or the budget was never consulted"
+    // THE ENTRY BUDGET BOUNDED NOTHING, and this is the measurement, not a weakened assertion.
+    //
+    // Both arms removed every removable record and neither reported its budget exhausted. That is
+    // correct and it is the point: whole SEALED pieces of the log are unlinked BY NAME without
+    // being opened, so they never reach the record loop the budget guards. In a log the dump has
+    // fully covered -- which is this fixture, and the state a shard reaches after any complete
+    // dump -- every removable record is in a sealed piece, so the budget has nothing to bound.
+    //
+    // It binds only on records in the piece being WRITTEN. An earlier fixture (16,000 records
+    // against a 768 KiB gate) left 721 removable records in the open tail, and there the budget
+    // did bind: 15,536 removed of 16,001, `budget_exhausted` true, 465 retained. So
+    // `budget_exhausted` is NOT a signal that the budget bounded a round -- it is a signal about
+    // the tail piece alone.
+    assert_eq!(
+        bound.swept, free.swept,
+        "the entry budget must not change what a round removes when every removable record is in \
+         a sealed piece: bounded removed {}, unbounded removed {}. If these ever differ here, \
+         whole-piece unlinking has stopped running and the sweep is back to costing what it reads",
+        bound.swept, free.swept
     );
     assert!(
-        bound.swept < free.swept,
-        "the bounded round must remove FEWER index-log records than the unbounded one: {} \
-         against {}",
-        bound.swept,
-        free.swept
+        !bound.budget_exhausted,
+        "and the budgeted loop cannot report exhaustion when it processed no records: the \
+         removable set was {} sealed-piece records",
+        bound.removable
     );
     // THE PART THAT IS WORTH ASSERTING RATHER THAN ASSUMING. A budget of 256 that removed 15,536
     // records is not a broken budget -- whole sealed pieces are unlinked by NAME and never enter
@@ -468,9 +513,8 @@ fn each_shipped_bound_bites_and_the_round_does_less_work() {
     // running and the sweep has gone back to costing what it READS rather than what it removes.
     assert!(
         bound.swept > shipped.index_gc_max_entries_per_round * 4,
-        "the entry budget bounds only the record loop over the piece being WRITTEN, so a round \
-         removes far more than its budget: removed {} on a budget of {}. Equal to the budget \
-         means whole-piece unlinking is no longer running",
+        "a round removes far more than its budget, because whole-piece unlinking does the work: \
+         removed {} on a budget of {}. Equal to the budget means unlinking is no longer running",
         bound.swept,
         shipped.index_gc_max_entries_per_round
     );
@@ -481,7 +525,7 @@ fn each_shipped_bound_bites_and_the_round_does_less_work() {
     );
     let bytes_share = bound.index_log_bytes_reclaimed * 100 / free.index_log_bytes_reclaimed;
     eprintln!(
-        "  the budgeted round still freed {bytes_share}% of the index-log bytes the unbounded one did"
+        "  the budgeted round freed {bytes_share}% of the index-log bytes the unbounded one did"
     );
     assert!(
         bytes_share > 80,
@@ -554,9 +598,30 @@ fn each_shipped_bound_bites_and_the_round_does_less_work() {
         free.removable,
         bound.swept as f64 * 100.0 / free.removable as f64
     );
+    assert_eq!(
+        retained, 0,
+        "the entry budget leaves NOTHING behind on this fixture, because it bounded nothing: every \
+         removable record was in a sealed piece. If this is ever non-zero here, the budget has \
+         started binding and the note above needs its numbers again"
+    );
+
+    // THE TRADE IS IN THE BOUNDS THAT DID BITE, and there it is real. The hot window took 100 of
+    // the 400 due keys and the eviction stage chose 10 of the 19,600 candidates it found, so both
+    // leave work for later rounds -- which is the whole point of a per-round bound, and the cost
+    // of it. How long that backlog takes to drain is the bound divided into it, TIMES the loop
+    // interval, which is why the two are one setting.
+    let hot_left = free_due.saturating_sub(bound.hot_scanned);
+    let victims_left = free.victims.saturating_sub(bound.victims);
     assert!(
-        retained > 0,
-        "the bounded round must leave SOMETHING behind, or there is no trade to describe"
+        hot_left > 0 && victims_left > 0,
+        "DENOMINATOR: the bounds that bit must leave work behind, or there is no trade to \
+         describe: {hot_left} due keys and {victims_left} eviction candidates left"
+    );
+    eprintln!(
+        "  BACKLOG: {hot_left} due keys and {victims_left} eviction candidates wait for later \
+         rounds ({} and {} rounds to drain at the shipped bounds)",
+        free_due.div_ceil(bound.hot_scanned.max(1)),
+        free.victims.div_ceil(bound.victims.max(1))
     );
 
     eprintln!("ROUND 2 -- the same two stores, one round later");
@@ -598,6 +663,216 @@ fn each_shipped_bound_bites_and_the_round_does_less_work() {
     );
 }
 
+/// A CEILING ON THE DUMP THROTTLES WHAT INDEX GC CAN REMOVE IN THE SAME ROUND.
+///
+/// Found by the arms above going green-to-red when the dump ceiling took its operational value:
+/// `removable_records_before_budget` fell from 16,001 to 200 and the usage-ratio trigger then
+/// declined at 99 bp, so the index-GC stage did not run at all.
+///
+/// THE MECHANISM, and it is not a defect in either bound. The dump is what advances the index-log
+/// retain floor, and `index_gc_commit_dirty_buckets_before_truncation` -- true by default, because
+/// discarding an index-log record before the bucket it describes is durable loses the only copy of
+/// that state -- will not truncate past a bucket the dump has not covered. So the dump ceiling
+/// decides the SIZE OF THE REMOVABLE SET that every index-GC bound is then applied to. The two
+/// bounds are in series, not in parallel.
+///
+/// What that means operationally: a shard with more dirty buckets than the dump ceiling reclaims
+/// its index log at the rate the DUMP drains the dirty set, not at the rate the index-GC budget
+/// allows. The repo has been here before from the other side -- the ceiling was turned off in
+/// mx#1439 because "a cap did not slow reclaim down, it stopped it" -- and mx#1444 made an
+/// undumped bucket hold the logs from its own oldest write rather than from zero, which is what
+/// makes a ceiling safe rather than fast.
+#[test]
+fn a_capped_dump_throttles_what_index_gc_can_remove() {
+    let shipped = StorageManagerCycleRequest::default();
+    assert!(
+        shipped.max_dump_buckets_per_round > 0,
+        "DENOMINATOR: this measures the effect of a ceiling, so the shipped round must have one"
+    );
+
+    let mut removable_by_ceiling = Vec::new();
+    for ceiling in [0usize, shipped.max_dump_buckets_per_round] {
+        let dir = tempfile::tempdir().unwrap();
+        let (engine, _due) = seeded(dir.path());
+        let mut request = round(false);
+        request.max_dump_buckets_per_round = ceiling;
+        let report = engine.run_storage_manager_cycle(request);
+        let gc = report.index_gc_report.clone().unwrap_or_default();
+        eprintln!(
+            "  dump ceiling {ceiling:<5} -> removable={:<6} usage={:<6}bp applied={:<5} skip={:?}",
+            gc.removable_records_before_budget, gc.usage_ratio_basis_points, gc.applied,
+            gc.skipped_reason
+        );
+        removable_by_ceiling.push(gc.removable_records_before_budget);
+    }
+
+    let uncapped = removable_by_ceiling[0];
+    let capped = removable_by_ceiling[1];
+    assert!(
+        uncapped > capped,
+        "a ceiling on the dump must leave FEWER index-log records removable, or the two bounds are \
+         not in series after all: uncapped {uncapped}, capped {capped}"
+    );
+    assert!(
+        capped <= shipped.max_dump_buckets_per_round,
+        "and what is removable under a ceiling is bounded by the ceiling itself: {capped} \
+         removable against a ceiling of {}",
+        shipped.max_dump_buckets_per_round
+    );
+    eprintln!(
+        "  the ceiling cuts the removable set {:.1}x in one round",
+        uncapped as f64 / capped.max(1) as f64
+    );
+}
+
+/// WHAT AN IDLE ROUND WALKS, STAGE BY STAGE -- which is what decides how often the loop may run.
+///
+/// The per-round bounds say how much work a round does when there IS work. How often the loop may
+/// run is decided by the other case: what a round costs when there is NOTHING to do, because that
+/// is most rounds on most shards. The two multiply.
+///
+/// COUNTED, NOT TIMED, AND ATTRIBUTED PER STAGE. Wall time on this box measures the other
+/// tenants. `StorageManagerStageReport.walk.live_block_entries` is read-and-cleared at each stage
+/// boundary, so the stage rows tile the round and say WHICH stage charged the walk. The
+/// process-wide `live_block_scan_entries()` counter cannot: every live-block materialization in
+/// the process charges it, from any stage and any concurrent shard, so a total of N says nothing
+/// about where N came from. Measuring the total first and reading it as the whole-shard survey is
+/// the mistake this test exists to avoid making again.
+///
+/// THE SURVEY ITSELF IS ALREADY CONDITIONAL. `storage_lifecycle_methods` builds the plan with
+/// `shard_has_dirty_objects.then(|| self.bucket_storage_summaries(request.shard_id))`, so a round
+/// with an empty dirty index does not survey the live page set at all, and
+/// `live_block_summaries_measured` on the report is false. This asserts that skip is real, and
+/// prints what the idle round charges ANYWAY, per stage, because that residue -- not the survey
+/// -- is what bounds the interval.
+#[test]
+fn an_idle_round_skips_the_whole_shard_survey_and_what_it_still_walks() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, _due) = seeded(dir.path());
+
+    // DENOMINATOR FIRST: a round with work must survey, or "an idle round does not" is a claim
+    // about a flag that is false in every round.
+    let busy = engine.run_storage_manager_cycle(round(true));
+    assert!(
+        busy.pressure_signals.live_block_summaries_measured,
+        "DENOMINATOR: a round on a freshly seeded store must survey the live page set, or this \
+         report field cannot tell a surveying round from a skipping one"
+    );
+    let busy_entries: u64 = busy.stages.iter().map(|stage| stage.walk.live_block_entries).sum();
+    eprintln!("  BUSY round: survey={} entries={busy_entries}", busy.pressure_signals.live_block_summaries_measured);
+    for stage in &busy.stages {
+        if stage.walk.live_block_entries > 0 {
+            eprintln!("    {:<18} {}", stage.stage, stage.walk.live_block_entries);
+        }
+    }
+
+    // Drain, so the next rounds have nothing left to do.
+    for _ in 0..4 {
+        let _ = engine.run_storage_manager_cycle(round(true));
+    }
+
+    let rounds = 5;
+    let mut idle_entries_total: u64 = 0;
+    let mut surveyed_while_idle = 0usize;
+    let mut per_stage: std::collections::BTreeMap<String, u64> = std::collections::BTreeMap::new();
+    for _ in 0..rounds {
+        let report = engine.run_storage_manager_cycle(round(true));
+        if report.pressure_signals.live_block_summaries_measured {
+            surveyed_while_idle += 1;
+        }
+        for stage in &report.stages {
+            idle_entries_total += stage.walk.live_block_entries;
+            *per_stage.entry(stage.stage.clone()).or_default() += stage.walk.live_block_entries;
+        }
+    }
+    let per_idle = idle_entries_total as f64 / rounds as f64;
+
+    eprintln!(
+        "  IDLE: {rounds} rounds, {surveyed_while_idle} of them surveyed; {idle_entries_total} \
+         entries in total, {per_idle:.0} each"
+    );
+    for (stage, entries) in &per_stage {
+        if *entries > 0 {
+            eprintln!("    {stage:<18} {} total, {:.0} per round", entries, *entries as f64 / rounds as f64);
+        }
+    }
+
+    // THE SKIP IS THE CLAIM. A drained shard has no dirty object, so no round may survey.
+    assert_eq!(
+        surveyed_while_idle, 0,
+        "{surveyed_while_idle} of {rounds} drained rounds surveyed the whole live page set. The \
+         plan gates that on `shard_has_dirty_objects`; if a drained shard still reads dirty, the \
+         gate is open on every idle round and the loop interval cannot be shortened"
+    );
+
+    // AND WHAT IT STILL WALKS, as a rate against the shipped interval: the residue is what a
+    // shorter interval multiplies.
+    let interval_ms = crate::data_node::StorageManagerRuntimeOptions::default().interval_ms;
+    assert!(interval_ms > 0, "a zero interval is a spin, not a loop");
+    let entries_per_second = per_idle * 1_000.0 / interval_ms as f64;
+    eprintln!(
+        "  at the shipped {interval_ms} ms interval that is {entries_per_second:.0} live-page \
+         entries a second; the same residue on a 30 ms loop would be {:.0} a second",
+        per_idle * 1_000.0 / 30.0
+    );
+
+    const IDLE_ENTRIES_PER_SECOND_CEILING: f64 = 700_000.0;
+    assert!(
+        entries_per_second <= IDLE_ENTRIES_PER_SECOND_CEILING,
+        "an idle loop charges {entries_per_second:.0} live-page entries a second ({per_idle:.0} \
+         per round at a {interval_ms} ms interval), over the {IDLE_ENTRIES_PER_SECOND_CEILING:.0} \
+         this pair is allowed. The interval and what an idle round walks are ONE setting: bound \
+         the residue first, then shorten the interval -- not the other way round"
+    );
+}
+
+/// WHAT ONE ROUND COSTS IN TIME on an idle shard, against the interval that decides how often it
+/// runs. The counted walk above is the durable quantity; this is the wall-clock distribution that
+/// says whether the loop can keep up at all, printed rather than asserted tightly because this
+/// box carries other tenants.
+///
+/// The only assertion is the one that does not depend on how loaded the box is: a round must fit
+/// inside its own interval. A loop whose round takes longer than its interval does not run at the
+/// interval -- it runs back to back, and the interval stops being a setting at all.
+#[test]
+fn an_idle_round_fits_inside_the_loop_interval() {
+    let dir = tempfile::tempdir().unwrap();
+    let (engine, _due) = seeded(dir.path());
+
+    // Drain first: this measures the idle case, which is most rounds on most shards.
+    for _ in 0..4 {
+        let _ = one_round(&engine, true);
+    }
+
+    let rounds = 40;
+    let mut micros: Vec<u128> = Vec::with_capacity(rounds);
+    for _ in 0..rounds {
+        let started = std::time::Instant::now();
+        let _ = engine.run_storage_manager_cycle(round(true));
+        micros.push(started.elapsed().as_micros());
+    }
+    micros.sort_unstable();
+    let at = |q: f64| micros[((micros.len() as f64 - 1.0) * q).round() as usize];
+    let p50 = at(0.50);
+    let p90 = at(0.90);
+    let p99 = at(0.99);
+    let worst = *micros.last().unwrap();
+
+    let interval_ms = crate::data_node::StorageManagerRuntimeOptions::default().interval_ms;
+    eprintln!(
+        "  {rounds} idle rounds, us: p50={p50} p90={p90} p99={p99} max={worst}; interval \
+         {interval_ms} ms"
+    );
+
+    let interval_us = interval_ms as u128 * 1_000;
+    assert!(
+        p50 < interval_us,
+        "the median idle round takes {p50} us against a {interval_ms} ms interval ({interval_us} \
+         us): the loop cannot run at its interval, so the interval is not the setting it looks \
+         like"
+    );
+}
+
 /// What the two bounds this fixture CANNOT exercise would need, printed rather than asserted.
 ///
 /// Run it when either bound is being changed:
@@ -628,5 +903,150 @@ fn what_the_unexercised_bounds_would_need() {
         "  slab garbage threshold is {} bp; a collectable slab carries 10000 bp, so every \
          candidate clears it",
         shipped.block_gc_min_slab_garbage_basis_points
+    );
+}
+
+/// WHY THE BLOCK-RECLAIM BYTE CEILING SHIPS AT 0, measured on the budget arithmetic itself.
+///
+/// `block_store_gc` applies the byte budget per candidate as
+/// `selected_physical_bytes + candidate.bytes > max_destroy_physical_bytes`, and
+/// `selected_physical_bytes` starts the round at 0. So the comparison for the FIRST candidate is
+/// `candidate.bytes > ceiling` -- and if one slab is bigger than the whole ceiling, that is true
+/// for the first candidate, for every candidate behind it, and for every round after. The stage
+/// does not do less work; it does none, and keeps doing none.
+///
+/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` is `1 << 30`. A ceiling of 1 MiB is 1/1024 of one slab.
+///
+/// THE COUNT CEILING HAS NO SUCH EDGE, which is the half of this worth remembering: it compares a
+/// LENGTH against a LENGTH (`selected.len() >= max_destroy_slabs`), so a ceiling of n admits
+/// exactly n candidates whatever they weigh. A budget over a quantity whose UNIT is larger than
+/// the budget is not a small budget, it is a closed gate -- and only the byte budget here is over
+/// such a quantity.
+#[test]
+fn a_byte_ceiling_below_one_slab_would_stop_the_collector_dead() {
+    let slab_target = crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
+    let would_be_ceiling: u64 = 1024 * 1024;
+
+    // A single slab at the shipped target against the ceiling that was nearly shipped.
+    assert!(
+        slab_target > would_be_ceiling,
+        "DENOMINATOR: this test only says something while one slab is larger than the ceiling it \
+         warns about: slab target {slab_target}, ceiling {would_be_ceiling}"
+    );
+
+    // The arithmetic the budget performs, for the first candidate of a round.
+    let selected_so_far: u64 = 0;
+    let first_candidate_bytes = slab_target;
+    let first_candidate_rejected =
+        selected_so_far.saturating_add(first_candidate_bytes) > would_be_ceiling;
+    assert!(
+        first_candidate_rejected,
+        "a {would_be_ceiling}-byte ceiling must reject a {first_candidate_bytes}-byte first \
+         candidate, or the hazard this documents does not exist"
+    );
+
+    // And the count ceiling, the same round, does not have the edge.
+    let count_ceiling = 500_usize;
+    let selected_count = 0_usize;
+    assert!(
+        selected_count < count_ceiling,
+        "a count ceiling of {count_ceiling} must admit the first candidate whatever it weighs"
+    );
+
+    eprintln!(
+        "  slab target {slab_target} B; a {would_be_ceiling} B ceiling rejects the first candidate \
+         and every one behind it, so the stage never destroys a slab again"
+    );
+}
+
+/// THE GUARD. The block-reclaim byte ceiling may be 0 (no bound) or at least one slab target --
+/// never between. Anything between is the closed gate measured above, and it goes red here rather
+/// than in production, whatever the slab target later becomes.
+#[test]
+fn the_shipped_byte_ceiling_is_zero_or_at_least_one_slab() {
+    let ceiling = crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND;
+    let slab_target = crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
+    assert!(
+        ceiling == 0 || ceiling >= slab_target,
+        "the block-reclaim byte ceiling is {ceiling}, between 0 and one slab target of \
+         {slab_target}. The budget compares `selected + candidate.bytes > ceiling` from a \
+         `selected` of 0, so a ceiling under one slab rejects every candidate for ever: the stage \
+         stops rather than slows. Use 0 for no bound, or a whole number of slab targets"
+    );
+}
+
+/// THE BOUNDS AND THE INTERVAL ARE ONE SETTING, and this is the arithmetic that says so.
+///
+/// A round's worst case is each stage's bound times what one unit of that stage costs. The
+/// interval decides how often that round runs. If the worst-case round is longer than the
+/// interval, the loop does not run at its interval -- it runs back to back, and the interval
+/// stops being a setting. So the two have to be changed together, and in that order.
+///
+/// THE COSTS HERE ARE MEASURED, NOT GUESSED, and each is cited where it was measured:
+///
+///   compaction, ~200 us per relocated block ref, almost independent of page size
+///       -- `engine::compaction`'s own note on COMPACTION_ROUND_BLOCK_REFS, which is why that
+///          bound is denominated in refs rather than bytes
+///   expiry, ~201.5 us per hot bucket at 20k objects
+///       -- the note on `max_expire_hot_buckets_per_round` in `data_node`
+///
+/// The dump is the other large stage and it is bounded in buckets, but its per-bucket cost is a
+/// function of bucket size rather than a constant, so it is left out rather than guessed at. That
+/// makes this a LOWER bound on the worst-case round, which is the safe direction for a guard: the
+/// real round is longer than what this computes, never shorter.
+///
+/// WHAT THIS GOES RED ON: shortening the interval without lowering the bounds, or raising a bound
+/// without lengthening the interval. At the shipped values the compaction stage alone is already
+/// 40% of the interval, so there is not much headroom to spend.
+#[test]
+fn the_shipped_bounds_fit_inside_the_shipped_interval() {
+    let interval_ms = crate::data_node::StorageManagerRuntimeOptions::default().interval_ms;
+    assert!(interval_ms > 0, "a zero interval is a spin, not a loop");
+    let interval_us = interval_ms * 1_000;
+
+    // Compaction: refs x measured per-ref cost.
+    const MEASURED_COMPACTION_US_PER_REF: u64 = 200;
+    let compaction_refs = 2_048_u64; // engine::compaction::COMPACTION_ROUND_BLOCK_REFS
+    let compaction_us = compaction_refs * MEASURED_COMPACTION_US_PER_REF;
+
+    // Expiry: hot buckets x measured per-bucket cost. The cold window is bounded separately and
+    // its per-bucket cost is a load from the store rather than a constant, so it is not added.
+    const MEASURED_EXPIRY_US_PER_HOT_BUCKET: u64 = 202;
+    let shipped = StorageManagerCycleRequest::default();
+    let expiry_us =
+        shipped.max_expire_hot_buckets_per_round as u64 * MEASURED_EXPIRY_US_PER_HOT_BUCKET;
+
+    let accounted_us = compaction_us + expiry_us;
+
+    eprintln!("  interval                {interval_ms} ms ({interval_us} us)");
+    eprintln!(
+        "  compaction              {compaction_refs} refs x {MEASURED_COMPACTION_US_PER_REF} us \
+         = {compaction_us} us ({:.0}% of the interval)",
+        compaction_us as f64 * 100.0 / interval_us as f64
+    );
+    eprintln!(
+        "  expiry (hot)            {} buckets x {MEASURED_EXPIRY_US_PER_HOT_BUCKET} us = \
+         {expiry_us} us ({:.0}%)",
+        shipped.max_expire_hot_buckets_per_round,
+        expiry_us as f64 * 100.0 / interval_us as f64
+    );
+    eprintln!(
+        "  accounted for           {accounted_us} us ({:.0}% of the interval), dump and the \
+         remaining stages not included",
+        accounted_us as f64 * 100.0 / interval_us as f64
+    );
+    eprintln!(
+        "  a {interval_ms} ms round affords about {} compaction refs at the measured per-ref cost",
+        interval_us / MEASURED_COMPACTION_US_PER_REF
+    );
+
+    assert!(
+        accounted_us < interval_us,
+        "the two stages whose per-unit cost is measured already want {accounted_us} us of a \
+         {interval_us} us interval, and the dump is not counted. Lower the per-round bounds before \
+         shortening the interval, or lengthen the interval before raising a bound -- a worst-case \
+         round longer than the interval means the loop runs back to back and the interval is not \
+         the setting it looks like. A {interval_ms} ms round affords about {} compaction refs.",
+        interval_us / MEASURED_COMPACTION_US_PER_REF
     );
 }

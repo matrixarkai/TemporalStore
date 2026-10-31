@@ -167,7 +167,7 @@ impl Default for EvictionSamplerConfig {
         Self {
             samples: 5,
             pool_size: 64,
-            scan_turns: 4,
+            scan_turns: 1,
         }
     }
 }
