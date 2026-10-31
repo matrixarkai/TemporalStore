@@ -1962,7 +1962,7 @@ impl TemporalEngine {
                 match (item.kind.as_str(), component.as_deref()) {
                     ("string", _) => {
                         super::mark_bucket_index_object_deleted(shard, &item.object_key);
-                        shard.strings_mut().remove(item.object_key.as_str());
+                        shard.remove_string_row(item.object_key.as_str());
                     }
                     ("hash", Some(field)) => {
                         // `&field.to_string()` because this kind's element IS a `String` and the replayed item

@@ -224,7 +224,9 @@ jobs:
         run: |
           set -o pipefail
           for t in \
-            engine::tests::the_write_window_closes_at_compaction::the_write_window_closes_at_compaction ; do
+            engine::tests::the_write_window_closes_at_compaction::the_write_window_closes_at_compaction \
+            engine::tests::the_user_byte_write_ratio::the_user_byte_write_ratio \
+            engine::tests::the_user_byte_write_ratio::no_string_row_is_removed_outside_its_door ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --test-threads=1 2>&1 | tee /tmp/ratio_gate.log
