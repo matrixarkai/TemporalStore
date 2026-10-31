@@ -113,7 +113,7 @@ Chunking rules:
 - Markdown, HTML, text, and logs: heading-aware sections first, then bounded token/character windows.
 - CSV, TSV, and XLSX: row-group/table chunks rather than one tiny row per chunk.
 - JSON and JSONL: top-level object/path chunks or record groups.
-- PDF, PPTX, and DOCX: page, slide, paragraph, and table-derived chunks with source position metadata.
+- PDF, PPTX, and DOCX: block, slide, paragraph, and table-derived chunks with source position metadata.
 - Code and directories: preserve relative paths; use symbol-aware parsing when available, otherwise bounded token windows.
 - Images/scanned PDFs: emit VLM/OCR-derived caption chunks when the provider command is configured; otherwise keep parse warnings.
 

@@ -62,7 +62,7 @@ Request shape:
 ```
 
 Send only visible local context: open files, selected text, tool outputs,
-terminal summaries, current page refs, and explicit local summaries. Do not send
+terminal summaries, current block refs, and explicit local summaries. Do not send
 hidden/internal prompt context. MatrixArk dedupes local refs and fills only the
 remaining budget with remote context.
 

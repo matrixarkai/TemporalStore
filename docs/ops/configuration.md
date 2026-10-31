@@ -1,6 +1,6 @@
 # Where configuration lives
 
-One page for the question "I want to change X — where do I put it, and what wins?"
+One block for the question "I want to change X — where do I put it, and what wins?"
 
 TemporalStore is configured by **environment variables**. Everything else — the config file, the
 operator portal, the tenant policy knobs — is a way of setting those variables or of describing
@@ -88,7 +88,7 @@ differ in the leaf name as well:
 
 **The variable is the same in every row** — the two registries have never disagreed about which
 variable a key means, and a test asserts that. Only the key differs, so if you set one and cannot
-find it on the page, search for the variable name instead.
+find it on the block, search for the variable name instead.
 
 The last row is not a mistake: the engine still honours `TS_INDEX_DUMP_OPLOG_GAP_BYTES`, the
 previous name of that variable, and the config file keeps the older word in its key for that

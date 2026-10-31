@@ -1,6 +1,6 @@
 # Metaserver Production Raft And Meta Management Contract
 
-This page captures the production metaserver responsibilities that must be proven before we call the
+This block captures the production metaserver responsibilities that must be proven before we call the
 TemporalStore metaserver production-ready. The shape follows the root/meta-server split from the
 MatrixObject design: the metaserver owns cluster metadata, placement, topology readiness, and
 membership orchestration; data nodes own serving data.

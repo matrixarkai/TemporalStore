@@ -11,7 +11,7 @@ Keys are time-ordered, writes are append-structured, and every workload below is
 temporal index rather than from several stores that each keep their own idea of time. It runs
 locally with one Docker command and scales out to a replicated, shared-storage cluster.
 
-**Every figure on this page is measured, and carries its denominator and its conditions** — store
+**Every figure on this block is measured, and carries its denominator and its conditions** — store
 size, routing range, payload size, node count. Each one names what reproduces it, and all of them
 were re-measured on `main` for this document except the one that says it was not. Where a limit is
 real it is stated plainly, and [What this store is bad at](#what-this-store-is-bad-at) is a section
@@ -342,7 +342,7 @@ embedding model means re-embedding the corpus.
 
 ## What this store is bad at
 
-A page that only lists what works is less useful than one that does not.
+A block that only lists what works is less useful than one that does not.
 
 - **Writes scale sublinearly with concurrency, and the cost comes back as latency.** On the durable
   shared-storage write path, 400 writes a run on one box: **471 writes/s at 2 concurrent writers,
@@ -457,7 +457,7 @@ cargo run -p temporalstore-rust --bin storage_modes_harness
 cargo run -p temporalstore-rust --bin raft_secondary_replication_harness
 ```
 
-Reproducing the figures on this page: the byte and allocation measurements need the counting
+Reproducing the figures on this block: the byte and allocation measurements need the counting
 allocator, which is a Cargo feature and test-only, and they are `#[ignore]`d because they seed
 stores and weigh them — so they run by name:
 

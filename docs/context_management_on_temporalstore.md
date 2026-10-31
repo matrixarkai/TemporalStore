@@ -6,7 +6,7 @@ embeddings, and compact retrieval indexes so agents can recall useful context
 without scanning whole transcripts or stuffing every old message into the next
 prompt.
 
-This page is the GitHub-friendly entry point for the context system. It links to
+This block is the GitHub-friendly entry point for the context system. It links to
 the deeper manuals and keeps the first open-source surface focused on the
 serving path: context, features, and control-state capabilities.
 
@@ -57,7 +57,7 @@ scope, node, entity, resource, and topic.
 | `ContextSummary` | L0/L1 summaries for sessions, nodes, and promoted topics. | Stored separately from events; retrieval uses latest serving value. |
 | `ContextEmbedding` | Vector for event text, summaries, resources, or entities. | Model metadata is grouped; records should avoid repeating long model strings. |
 | `ContextIndex` | Compact secondary-index postings. | Used for prefiltering by type/topic/entity/time bucket before candidate fetch. |
-| `ResourceChunk` | Durable chunk of a file, PDF, web page, repo, or other resource. | Large raw files live in object storage; chunks reference stable `raw_uri`. |
+| `ResourceChunk` | Durable chunk of a file, PDF, web block, repo, or other resource. | Large raw files live in object storage; chunks reference stable `raw_uri`. |
 | `SkillSection` | Reusable instructions or procedures. | Shared by tenant/global scope and filtered by access before scoring. |
 | `ContextPack` | Final compact prompt context. | Contains selected content and lightweight telemetry, not verbose audit/debug state. |
 
@@ -152,7 +152,7 @@ That gives both precise session continuity and broader user memory.
 
 ## Resources And Skills
 
-Resource files can be local files, PDFs, web pages, repositories, or object
+Resource files can be local files, PDFs, web blocks, repositories, or object
 store URIs. Large raw files should live in S3, MatrixObject, or another object
 store. TemporalStore keeps hot serving chunks, summaries, embeddings, and
 indexes.
@@ -229,9 +229,9 @@ Important lifecycle distinction:
 
 - Cache eviction frees memory only.
 - Logical GC marks records eligible for deletion.
-- Physical reclaim requires tombstones plus page/block compaction or safe skip.
+- Physical reclaim requires tombstones plus block/block compaction or safe skip.
 - Context GC marks raw-event eligibility; the generic TemporalStore storage
-  lifecycle reclaims physical pages and blocks for all capabilities.
+  lifecycle reclaims physical blocks and blocks for all capabilities.
 
 ## First Open-Source Surface
 

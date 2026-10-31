@@ -316,13 +316,13 @@ agent-context systems:
   disabled user, revoked key, and expired key all block context calls before
   TemporalStore data is touched.
 
-## Registration And Console Pages
+## Registration And Console Blocks
 
 The local operations UI includes
 `tools/temporalstore-monitoring-ui/access-management.html` for admins to see the
 account, tenant, user, session, API-key, and audit tool map.
 
-That page is intentionally static-friendly: it generates request payloads and
+That block is intentionally static-friendly: it generates request payloads and
 explains governance controls without requiring a live billing backend. A hosted
 MatrixArk Cloud control plane can wire the same fields directly into the MCP
 admin tools.

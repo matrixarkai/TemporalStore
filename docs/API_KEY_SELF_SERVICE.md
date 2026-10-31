@@ -103,7 +103,7 @@ or customer-admin manage keys and watch usage from a browser. It is committed at
 GET /v1/admin/portal        ->  200 text/html  (the static page; NO auth to fetch)
 ```
 
-Fetching the static page needs no auth, but the page is **inert without a valid admin key**: every
+Fetching the static block needs no auth, but the block is **inert without a valid admin key**: every
 action button calls one of the admin-gated JSON endpoints above with the admin bearer key the
 operator pastes into the **Connection** panel. That key is held in `sessionStorage` for the tab only
 (never hardcoded, never persisted to disk) and sent as `Authorization: Bearer <key>`.

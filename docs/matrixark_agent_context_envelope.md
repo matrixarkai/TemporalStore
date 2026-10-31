@@ -28,7 +28,7 @@ Codex can integrate with MatrixArk through MCP calls or lifecycle hooks. The cur
 | Workspace clues | `cwd`, `workspace_root`, `project_root`, repository path | Store as metadata; useful for node defaults and replay. |
 | Local context refs | open files, active files, selected text, buffers, terminal output, tool outputs | Pass to `retrieve.local_context` so MatrixArk can dedupe and fill remaining prompt budget. |
 | Resource/skill files | `raw_uri`, `path`, `file_path`, `document_path`, `SKILL.md` | Ingest as resource/skill; parse/chunk/embed/extract. |
-| Browser/app context | current URL, page title, visible selection, screenshots/asset refs when the agent exposes them | Store as metadata or resource refs. |
+| Browser/app context | current URL, block title, visible selection, screenshots/asset refs when the agent exposes them | Store as metadata or resource refs. |
 | Feedback signals | accepted refs, rejected refs, `context_pack_id`, confirmation/correction text | Store as feedback memory and replayable audit. |
 
 Codex does not automatically expose a stable MatrixArk account/user schema. For local hooks, default identity comes from config/env (`MATRIXARK_ACCOUNT_ID`, `MATRIXARK_TENANT_ID`, `MATRIXARK_USER_ID`) or local defaults. For cloud/product mode, MatrixArk API keys and optional SSO mapping become authoritative.

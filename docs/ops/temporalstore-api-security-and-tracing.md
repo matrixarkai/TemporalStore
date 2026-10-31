@@ -1,7 +1,7 @@
 # TemporalStore API Security And Tracing
 
-This page records the production replacement contract for non-Raft service APIs.
-Raft peer transport has a separate mTLS/auth readiness gate; this page covers
+This block records the production replacement contract for non-Raft service APIs.
+Raft peer transport has a separate mTLS/auth readiness gate; this block covers
 client, proxy, metaserver, data-node, Redis-compatible, ingestion, and admin
 HTTP/JSON or tonic-facing APIs.
 

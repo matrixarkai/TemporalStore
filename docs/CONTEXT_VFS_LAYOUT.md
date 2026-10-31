@@ -47,7 +47,7 @@ L0/L1/L2 correspond to the baseline memory system's abstract / overview / full-c
 Every key is **tenant-scoped**: `{tenant_hash}` is always the first segment, so tenant
 isolation is carried in the key itself.
 
-| family      | key format                                                | model                                   | page type            |
+| family      | key format                                                | model                                   | block type            |
 | ----------- | --------------------------------------------------------- | --------------------------------------- | -------------------- |
 | node        | `ctx:node:{t}:{node}`                                      | ContextNode (l0/l1 meta)                | hash / object        |
 | event       | `ctx:event:{t}:{node}`                                     | ContextEvent timeline                   | feature (ts-keyed)   |
@@ -83,5 +83,5 @@ Key derivation lives in `crates/temporalstore-rust/src/engine/engine_context.rs`
 
 The context VFS is `tsctx://tenant/{id}/node/{id}/{l0|l1|event/...}` addressing over a
 `tenant → user → session (/conversation | /profile | /resources)` tree, physically stored as
-~10 tenant-scoped `ctx:*` key families that reuse hash/feature page primitives — with
+~10 tenant-scoped `ctx:*` key families that reuse hash/feature block primitives — with
 summary-dirty tracking now held in memory rather than on disk.

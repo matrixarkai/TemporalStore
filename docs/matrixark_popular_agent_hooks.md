@@ -75,7 +75,7 @@ contract to Claude Code and other agents after validation.
 
 Agents should not send hidden/internal prompt context. They should send only
 visible local context: open buffers, selected text, file refs, tool outputs,
-terminal summaries, browser/page refs, and user-approved summaries.
+terminal summaries, browser/block refs, and user-approved summaries.
 
 MatrixArk routing rules:
 

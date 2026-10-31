@@ -47,7 +47,7 @@ Rust production surfaces are HTTP/JSON, RESP, tonic/gRPC, Rust SDKs, harnesses,
 and MatrixArk MCP integration. Do not add brpc or thrift to Rust unless the
 project explicitly re-scopes that work.
 
-Rust storage keeps its native page/log format. compatibility is proven by
+Rust storage keeps its native block/log format. compatibility is proven by
 migration/replay and shared logical reads, not byte-for-byte internal layout.
 
 ## Pull Request Checklist

@@ -55,7 +55,7 @@ called this a 62% win; the ratio says 35%.
 Two further results from the same run:
 
 * **The release is durable under reads.** A full sweep of all 40,000 keys put back **0.0%**. Every
-  key answered; `pages` stayed at 1,580 of the original 40,080. Existing arms check readability on a
+  key answered; `blocks` stayed at 1,580 of the original 40,080. Existing arms check readability on a
   16-key sample -- 0.04% of this corpus -- so this is the first evidence at full coverage.
 * It is paid in **read latency**, not memory: the swept reads are served without repopulating the
   index, and that run took 33 minutes.
@@ -153,7 +153,7 @@ residual of **0.0**, so nothing in the row is unaccounted:
 
 | term | B/key | unit |
 |---|---|---|
-| `block_index Many: Vec<(u64, BlockIndex)>` | **33.8** | pages in a list (exactly 32.0 a page) |
+| `block_index Many: Vec<(u64, BlockIndex)>` | **33.8** | blocks in a list (exactly 32.0 a block) |
 | `object_index Many: Box<ObjectSlots>` | **19.4** | multi-object buckets |
 | `BTreeMap node arrays (BucketNode held INLINE)` | 3.3 | buckets |
 | `block_index One: Box<BlockIndex>` | -1.3 | single-page buckets (empties as buckets fill) |
@@ -189,7 +189,7 @@ being full-range FNV hashes as what forbids it. A separate validity bitmap is a 
 -- 8 bytes and a bit -- and nothing refuses it.
 
 **The per-page handle is derivable.** The list pair is `(u64 handle, BlockIndex)` at exactly 32.0
-bytes a page. The handle is `block_index_handle(object_key, &block)`, which the code already
+bytes a block. The handle is `block_index_handle(object_key, &block)`, which the code already
 recomputes when it needs to know which object owns a block. So the stored `u64` is a **cache, not an
 identity**: droppable for a rescan of the bucket's objects, worth another **8 B/key**. The trade is
 bytes against a rescan, not a correctness question.
@@ -197,7 +197,7 @@ bytes against a rescan, not a correctness question.
 ### What the baseline itself understates
 
 `list capacity (unseen)` read **8,584 against 7,168** blocks in the list arm -- about **20%** of the
-page lists is reserved capacity. A clone probe weighs a `Vec` at its LENGTH, while the production
+block lists is reserved capacity. A clone probe weighs a `Vec` at its LENGTH, while the production
 resident model charges `capacity * size_of::<(u64, BlockIndex)>()`. So that row's true resident cost
 is nearer **40.5 B/key than 33.8**, and the **212.4 B/key baseline understates the numerator**. This
 cuts against the target rather than for it, and the arm prints the capacity so it cannot be quietly

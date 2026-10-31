@@ -119,7 +119,7 @@ readiness work:
 - common string, TTL, existence, and delete commands
 - hash multi-set/multi-get commands
 - set add/member commands
-- packed timestamp/value Feature pages
+- packed timestamp/value Feature blocks
 - Sequence rows in the feature-row shape
 - Control State counter/window query
 - Context node upsert/get

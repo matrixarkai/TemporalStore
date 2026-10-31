@@ -103,7 +103,7 @@ The primary can publish:
 
 1. `publish_wal_entry` for each committed mutation command.
 2. `publish_index` after the shard index is durable locally.
-3. `publish_page_segments` for local page segment files.
+3. `publish_page_segments` for local block segment files.
 
 For production, this should become stricter:
 

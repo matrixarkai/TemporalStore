@@ -2,7 +2,7 @@
 
 Last validated: 2026-06-23
 
-This page records the repository-level open-source readiness contract for the
+This block records the repository-level open-source readiness contract for the
 Rust TemporalStore worktree.
 
 ## Required Public Files

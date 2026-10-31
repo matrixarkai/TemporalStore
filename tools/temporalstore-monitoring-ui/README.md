@@ -23,7 +23,7 @@ Covered views:
 - Context runtime configuration for extraction, traversal, resources, and summaries
 - Open-source model registry for embeddings, reranking, extraction, summaries, and VLM/document parsing
 - Operator console for query extraction, tree traversal, resource ingestion, pack replay, feedback, and summary refresh
-- Agent Context Envelope page for the minimal message/hook payload MatrixArk expects from AI agents
+- Agent Context Envelope block for the minimal message/hook payload MatrixArk expects from AI agents
 - Access management for local agent accounts, API-key application, key rotation,
   key revocation, user/session isolation, and audit logs
 - Diagnostics and trace samples

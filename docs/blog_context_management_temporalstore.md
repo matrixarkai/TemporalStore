@@ -11,7 +11,7 @@ ingestion/extraction/retrieval pipeline works.
 
 ## Related MatrixArk Blogs And Manuals
 
-This page is the product-level technical blog. It intentionally summarizes and
+This block is the product-level technical blog. It intentionally summarizes and
 links to the deeper MatrixArk context writeups:
 
 - [Context ingestion, extraction, retrieval manual](context_ingestion_extraction_retrieval_manual.md)
@@ -35,7 +35,7 @@ TemporalStore matches that shape:
 - bounded time-window scans for recent memory;
 - compact secondary-index postings for topic/entity/resource filtering;
 - native batching and async durability policies for high write throughput;
-- page/block storage and cold-scan paths for lifecycle management;
+- block/block storage and cold-scan paths for lifecycle management;
 - and Rust engines that can share the same public contracts.
 
 ## Serving Records
@@ -244,7 +244,7 @@ TemporalStore separates logical memory lifecycle from physical storage reclaim:
 - Temporal compression creates compact summaries/entities.
 - Context GC can mark raw events eligible after compression and retention.
 - Cache eviction only frees memory.
-- Physical reclaim requires tombstones plus page/block compaction or safe skip.
+- Physical reclaim requires tombstones plus block/block compaction or safe skip.
 - Cold scans for compression/GC should not promote blocks into the hot cache.
 
 That makes context storage sustainable without losing the serving memories that
