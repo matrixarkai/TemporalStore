@@ -140,3 +140,85 @@ it carries up to 2x of noise -- which is why every arm here uses two corpora at 
 
 Step 1 is measured and not implemented. The release is measured and ships off. The two rows that
 would close the remaining 40.7 B/key are unpriced.
+
+## Measured: every row now has a figure
+
+The note above left two rows modelled. Both are measured now, and the measurement **killed one
+lever outright, reclassified another, and found two that nothing had priced**.
+
+### `bucket_map` decomposes exactly, and its container saturates
+
+`which_term_carries_the_bucket_map_slope` reproduces the authoritative **55.2 B/key** with a
+residual of **0.0**, so nothing in the row is unaccounted:
+
+| term | B/key | unit |
+|---|---|---|
+| `block_index Many: Vec<(u64, BlockIndex)>` | **33.8** | pages in a list (exactly 32.0 a page) |
+| `object_index Many: Box<ObjectSlots>` | **19.4** | multi-object buckets |
+| `BTreeMap node arrays (BucketNode held INLINE)` | 3.3 | buckets |
+| `block_index One: Box<BlockIndex>` | -1.3 | single-page buckets (empties as buckets fill) |
+| residual | **0.0** | |
+
+**The container cannot be reclaimed, and this is the number that says so.** The node-array term is
+the largest in absolute bytes -- 138,312 B at 1,792 keys -- and its unit is **buckets**, which the
+shipped range caps at 1,024. Its per-key cost runs **77.2 at 1,792 keys to 21.8 at 7,168**, heading
+to zero. A row that vanishes from the asymptote offers nothing to a target set against the
+asymptote. The earlier guess that ~23 B/key of this row was reclaimable container was wrong **in
+kind**, not only in size.
+
+### Boxing the wide arm of `BlockRefs` saves nothing
+
+Measured **0.0 B/key in both holders**: 78.4 -> 78.4 in the lookup that ships, 74.3 -> 74.3 in the
+folded entry. The union is 24 bytes either way.
+
+Its width comes from the **inline** arm -- `One(BlockLookupRef)` at 16 bytes plus a tag, aligned to
+8 -- not from the `Vec`. The pin `size_of::<BlockRefs>() == size_of::<Vec<BlockLookupRef>>()` reads
+as though it names a cause; both are simply 24. Narrowing the union needs `BlockLookupRef` at 12
+bytes, and its own pin already refuses that: a `u32` beside a `u64` pads to the alignment of the
+`u64`, so narrowing either field moves nothing. The arm asserts **equality**, so the dead lever
+fails loudly if a change ever opens it.
+
+### Two levers nothing had priced, both inside `bucket_map`
+
+**The object slot is 16 bytes where 8 would do.** `ObjectSlots` holds `Vec<Option<u64>>`, and
+`Option<u64>` has no niche. `what_a_slot_array_costs_under_churn` measures `32 + 16 a slot` against
+`32 + 8`, and proves the placeholders cost nothing that persists -- 1.000 slots an object at both
+widths across four churn shapes, transient at most 2.000 while a hole is open. So the cost **is the
+width**, worth roughly **8 B/key**. That arm names a reserved id value as the lever and object ids
+being full-range FNV hashes as what forbids it. A separate validity bitmap is a different mechanism
+-- 8 bytes and a bit -- and nothing refuses it.
+
+**The per-page handle is derivable.** The list pair is `(u64 handle, BlockIndex)` at exactly 32.0
+bytes a page. The handle is `block_index_handle(object_key, &block)`, which the code already
+recomputes when it needs to know which object owns a block. So the stored `u64` is a **cache, not an
+identity**: droppable for a rescan of the bucket's objects, worth another **8 B/key**. The trade is
+bytes against a rescan, not a correctness question.
+
+### What the baseline itself understates
+
+`list capacity (unseen)` read **8,584 against 7,168** blocks in the list arm -- about **20%** of the
+page lists is reserved capacity. A clone probe weighs a `Vec` at its LENGTH, while the production
+resident model charges `capacity * size_of::<(u64, BlockIndex)>()`. So that row's true resident cost
+is nearer **40.5 B/key than 33.8**, and the **212.4 B/key baseline understates the numerator**. This
+cuts against the target rather than for it, and the arm prints the capacity so it cannot be quietly
+omitted.
+
+### The arithmetic, with every row measured
+
+| lever | B/key | status |
+|---|---|---|
+| fold `BlockRefs` into the slot entry | **-51.0** | measured |
+| the object slot width, 16 -> 8 | **~-8** | measured basis |
+| the per-page handle, derivable | **~-8** | measured basis, rescan unpriced |
+| key characters in an arena | ~-29 | ceiling (payload plus a narrower table key) |
+| boxing the wide arm | **0** | **measured -- dead** |
+| `bucket_map` container | **0** | **measured -- saturates, dead** |
+| | **~-96** | against **-91.7** needed |
+
+So the target lands at roughly **3.85x** with both `bucket_map` levers taken, and **~4.12x** without
+the handle. **4.0x turns on the handle**, and on the arena figure being a ceiling rather than a
+promise.
+
+None of it is implemented. And the ~20% reserved capacity above means the numerator these levers are
+subtracted from is itself understated, so a figure that lands just under 4.0x on this baseline is
+not yet a figure that lands under 4.0x in production.

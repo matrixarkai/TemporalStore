@@ -10912,3 +10912,505 @@ fn what_folding_the_block_refs_into_the_slot_would_save() {
          wearing a per-key label, which is what this arm's two-corpus shape exists to catch."
     );
 }
+
+/// WHICH TERM CARRIES `bucket_map`'s PER-KEY SLOPE, AND WHETHER ANY OF IT IS CONTAINER.
+///
+/// # WHY THE OBVIOUS ANSWER IS WRONG
+///
+/// `bucket_map` is **55.2 B/key** marginal at the steady state, the second-largest row. The natural
+/// reading is that a `(u64 handle, BlockIndex)` pair is 32 bytes of payload, so the remaining ~23
+/// must be container and therefore reclaimable.
+///
+/// **That reading cannot be right on this range.** `decompose_bucket_map`'s container term is
+/// `BTreeMap node arrays (BucketNode held INLINE)` and its unit is **buckets** -- and the shipped
+/// `0..1023` range caps buckets at 1,024. A per-bucket term SATURATES: it stops growing once every
+/// bucket exists, so it contributes **nothing** to a per-key slope however large it is in absolute
+/// terms. The same is true of `deleted_object_index`, also per bucket.
+///
+/// So the slope has to live in the terms whose unit grows with the corpus -- the page list, the
+/// single-page box, the multi-object arm -- and those are **payload**, not container. If that is
+/// what this measures, then `bucket_map` is not a container-overhead row at all, and the 40.7 B/key
+/// still needed for a 4.0x target cannot be taken from here by tidying a container.
+///
+/// This arm settles it by reporting **every term with its unit and its slope**, at two corpus sizes
+/// 4.0x apart, both exactly 7/8 of a power of two so the string table is at 100% load -- the same
+/// phase discipline as `the_amplification_set_at_two_arms_four_times_apart`, because a figure
+/// compared against that arm's rows has to be taken the same way.
+///
+/// It is deliberately NOT the both-ranges arm. `what_the_bucket_map_footprint_is_made_of_on_both_
+/// routing_ranges` also drives `load_shard`'s whole keyspace, where every key gets its own bucket,
+/// which builds tens of thousands of buckets and clones per bucket. That answers a broader question
+/// at a cost measured in hours; this answers the one question the 4.0x arithmetic turns on.
+///
+/// # A TERM THIS PROBE CANNOT SEE, NAMED SO THE TOTAL IS NOT READ AS COMPLETE
+///
+/// A `Vec` clones to its LENGTH, so the page lists' RESERVED capacity is invisible here. The
+/// production resident-byte model charges those lists at `capacity * size_of::<(u64, BlockIndex)>()`,
+/// so the number an eviction gate reads and the number this reports are different quantities
+/// whenever a list is not exactly full. `list_capacity` is printed beside the measured bytes for
+/// exactly that reason.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib which_term_carries_the_bucket_map_slope -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "seeds and dumps two corpora, then decomposes the bucket map; run by name"]
+fn which_term_carries_the_bucket_map_slope() {
+    const SHIPPED_END: u32 = 1023;
+    /// 7/8 of 2,048, so the string table is exactly full.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+    /// The value width the compared-against arm writes, so the block population matches.
+    const VALUE: usize = 256;
+
+    let weigh = |keys: usize| -> (BucketMapDecomposition, u64) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = probe_engine_on(dir.path(), SHIPPED_END);
+        // SEEDED THE WAY THE ARM THIS IS COMPARED AGAINST SEEDS. A row only lines up with
+        // `the_amplification_set_at_two_arms_four_times_apart`s 55.2 B/key if the fixture
+        // matches it: same key shape, same 256-byte value.
+        for index in 0..keys {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("amp-{index:06}"),
+                    value: vec![b'v'; VALUE],
+                },
+            });
+            assert!(response.status.ok, "write {index}: {:?}", response.status);
+        }
+        // A DUMP, THROUGH THE PRODUCTION LIFECYCLE, AND NOT A RELEASE.
+        //
+        // The first version called `apply_storage_eviction(.., dump, ..)`, which dumps AND
+        // RELEASES. That emptied the block index outright -- `blocks` read 0, every block term
+        // read 0, and the whole slope came back 24.1 B/key against the 55.2 it was meant to
+        // decompose. It measured the RELEASED state while claiming to measure the steady one.
+        let candidates: Vec<u32> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        };
+        assert!(!candidates.is_empty(), "{keys} keys produced no bucket to dump");
+        let lifecycle =
+            engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_buckets: candidates.clone(),
+                max_dump_buckets_per_round: candidates.len(),
+                ..Default::default()
+            });
+        std::hint::black_box(&lifecycle);
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        assert_eq!(
+            keys,
+            shard.strings().len(),
+            "denominator: the shard holds {} keys, not the {keys} seeded",
+            shard.strings().len()
+        );
+        assert_eq!(
+            0,
+            shard.dirty_objects.len(),
+            "the dump left the shard dirty, so this is not the steady state the other arms read"
+        );
+        let whole = deep_heap_bytes(&shard.bucket_index.bucket_map);
+        (decompose_bucket_map(&shard.bucket_index.bucket_map), whole)
+    };
+
+    let (one, whole1) = weigh(ONE_X);
+    let (four, whole4) = weigh(FOUR_X);
+    let span = (FOUR_X - ONE_X) as f64;
+
+    println!();
+    println!("  bucket_map on the shipped 0..{SHIPPED_END} range, after a dump, two arms 4.0x apart");
+    println!();
+    println!("  {:<24} {:>9} {:>9}", "denominator", "1x", "4x");
+    for (name, a, b) in [
+        ("buckets", one.buckets, four.buckets),
+        ("blocks", one.blocks, four.blocks),
+        ("objects", one.objects, four.objects),
+        ("single-block buckets", one.single_block_buckets, four.single_block_buckets),
+        ("multi-block buckets", one.multi_block_buckets, four.multi_block_buckets),
+        ("blocks in the list arm", one.blocks_in_list_arm, four.blocks_in_list_arm),
+        ("list capacity (unseen)", one.list_capacity, four.list_capacity),
+    ] {
+        println!("  {name:<24} {a:>9} {b:>9}");
+    }
+
+    // --- THE PREMISE OF THE WHOLE ARGUMENT, ASSERTED: buckets must SATURATE, or a per-bucket term
+    // --- would still carry slope and the reasoning below does not hold.
+    assert!(
+        four.buckets <= (SHIPPED_END as usize + 1),
+        "{} buckets is not a 0..{SHIPPED_END} population, so this is not the shipped range",
+        four.buckets
+    );
+
+    println!();
+    println!("  {:<46} {:>10} {:>10} {:>10} {:>22}", "term", "1x B", "4x B", "slope B/k", "unit");
+    let mut per_key_slope = 0.0f64;
+    let mut saturating_slope = 0.0f64;
+    for (index, term) in one.terms.iter().enumerate() {
+        let four_term = &four.terms[index];
+        assert_eq!(
+            term.name, four_term.name,
+            "the two decompositions must line up to be differenced"
+        );
+        let slope = (four_term.req as i64 - term.req as i64) as f64 / span;
+        println!(
+            "  {:<46} {:>10} {:>10} {:>10.1} {:>22}",
+            term.name, term.req, four_term.req, slope, term.unit
+        );
+        // A term measured in buckets cannot grow once every bucket exists.
+        if term.unit == "buckets" {
+            saturating_slope += slope;
+        } else {
+            per_key_slope += slope;
+        }
+    }
+
+    let whole_slope = (whole4 as i64 - whole1 as i64) as f64 / span;
+    println!();
+    println!("  whole bucket_map            {whole1:>10} {whole4:>10} {:>10.1}", whole_slope);
+    println!("  terms in PER-BUCKET units (saturating)            {saturating_slope:>8.1} B/key");
+    println!("  terms in PER-PAGE / PER-OBJECT units (growing)    {per_key_slope:>8.1} B/key");
+    let residual = whole_slope - (saturating_slope + per_key_slope);
+    println!("  residual, whole minus the named terms             {residual:>8.1} B/key");
+    println!();
+    println!("  A pair is (u64 handle, BlockIndex) = {} B; BlockIndex alone = {} B",
+        std::mem::size_of::<(u64, BlockIndex)>(),
+        std::mem::size_of::<BlockIndex>()
+    );
+    println!();
+
+    // --- THE FINDING THIS ARM EXISTS TO PIN: a per-bucket term SATURATES, so its per-key
+    // --- contribution FALLS as the corpus grows, and reaches zero at the asymptote.
+    //
+    // The first version asserted the per-bucket slope was ~0 outright and FAILED at 4.6 B/key.
+    // That was wrong about these corpus sizes rather than about the asymptote: buckets ran
+    // 896 -> 1022 against the 1,024 cap, so they were still filling and the term was still
+    // growing. The right claim is that its PER-KEY contribution falls, which is what
+    // saturation means and what makes the row vanish from the asymptote.
+    let per_bucket_per_key = |d: &BucketMapDecomposition, keys: usize| -> f64 {
+        d.terms.iter().filter(|t| t.unit == "buckets").map(|t| t.req).sum::<u64>() as f64
+            / keys as f64
+    };
+    let bucket_term_1x = per_bucket_per_key(&one, ONE_X);
+    let bucket_term_4x = per_bucket_per_key(&four, FOUR_X);
+    println!(
+        "  per-bucket terms, PER KEY: {bucket_term_1x:.1} at 1x -> {bucket_term_4x:.1} at 4x (saturating)"
+    );
+    println!();
+    assert!(
+        bucket_term_4x < bucket_term_1x,
+        "the per-bucket terms cost {bucket_term_1x:.1} B/key at {ONE_X} keys and {bucket_term_4x:.1} at {FOUR_X}. They must FALL: the shipped range caps buckets at 1,024, so a term measured in buckets stops growing while keys keep arriving. If it does not fall, the range is not saturating and this row cannot be dismissed from the asymptote.",
+    );
+    assert!(
+        saturating_slope < per_key_slope,
+        "the per-bucket terms carry {saturating_slope:.1} B/key of slope. They should carry ~0: the \
+         shipped range caps buckets at {}, so a term measured in buckets stops growing once they \
+         all exist. If this is not ~0 the range is not saturating and the per-key reading of every \
+         bucket term is wrong.",
+        SHIPPED_END as usize + 1
+    );
+    // --- AND THE RESIDUAL IS THE CHECK ON THE DECOMPOSITION. A residual absorbs every error in
+    // --- every other term and then reads as a finding, so it is asserted small rather than printed
+    // --- and hoped over.
+    assert!(
+        residual.abs() <= 0.15 * whole_slope.abs().max(1.0),
+        "the named terms account for {:.1} B/key of a {whole_slope:.1} B/key slope, leaving a \
+         residual of {residual:.1}. One of the terms is wrong, or a heap-owning field of BucketNode \
+         is not being weighed at all -- and an unnamed remainder takes up precisely what the named \
+         terms miss, which is how a decomposition comes to be wrong in a term and still add up.",
+        saturating_slope + per_key_slope
+    );
+}
+
+/// WHAT BOXING THE WIDE ARM OF `BlockRefs` WOULD SAVE, IN BOTH THE SHAPE THAT SHIPS AND THE FOLD.
+///
+/// # THE UNION IS 24 BYTES BECAUSE OF THE ARM IT ALMOST NEVER TAKES
+///
+/// `BlockRefs` is `One(BlockLookupRef)` | `Many(Vec<BlockLookupRef>)`, pinned at **24 bytes**, with
+/// `size_of::<BlockRefs>() == size_of::<Vec<BlockLookupRef>>()` pinned beside it -- which names the
+/// cause outright. `BlockLookupRef` is **16 bytes** (a `u32` beside a `u64`, so 12 bytes of field in
+/// 16). A `Vec` is three words. **The union is sized by the wide arm, and the corpus is ~99.9%
+/// single-block**, so every object pays three words for a shape almost none of them uses.
+///
+/// Boxing that arm makes it one word. This measures what the union then costs, and what that is
+/// worth in the two places it is held:
+///
+///   * the shape that ships -- `BTreeMap<ModelKey, BTreeMap<ModelKey, BlockRefs>>`, the value is
+///     the union, so a narrower union is a narrower B-tree pair;
+///   * the folded shape -- the union inside the slot entry, where it sets the hash bucket stride.
+///
+/// It is worth something **independently of the fold**: the lookup holds this value today at 78.4
+/// B/key, and a narrower value is a narrower node whether or not the map is ever folded away.
+///
+/// # THE COST, NAMED RATHER THAN OMITTED
+///
+/// Boxing adds **one allocation per multi-block object**, where today the `Vec`'s own buffer is the
+/// only allocation. On a single-block object there is no allocation either way. So this trades an
+/// extra indirection on the rare arm for a narrower struct on the common one -- which is the same
+/// trade the inline/out-of-line split already makes, pushed one level further. This arm prices the
+/// struct; it does not price the extra allocation, so a wide-object workload must be checked before
+/// the trade is taken.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_boxing_the_wide_arm_would_save -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds six maps at two corpus sizes under the counting allocator; run by name"]
+fn what_boxing_the_wide_arm_would_save() {
+    use crate::engine::object_record::ObjectSlot;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+
+    /// 7/8 of 2,048, so the table is exactly full.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+
+    /// The same union with its wide arm behind one pointer.
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    enum TightRefs {
+        One(BlockLookupRef),
+        Many(Box<Vec<BlockLookupRef>>),
+    }
+
+    /// The folded entry, with each union.
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct FoldedWide {
+        slot: ObjectSlot,
+        refs: BlockRefs,
+    }
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct FoldedTight {
+        slot: ObjectSlot,
+        refs: TightRefs,
+    }
+
+    let key = |i: usize| -> Arc<str> { Arc::from(format!("k{i:08}").as_str()) };
+    let lref = || BlockLookupRef { routing_bucket: 7, block_ref_key: 2 };
+
+    // --- THE WIDTHS FIRST. The whole claim is a width claim, so it is printed and pinned.
+    println!();
+    println!("  WIDTHS");
+    for (name, w) in [
+        ("BlockLookupRef", std::mem::size_of::<BlockLookupRef>()),
+        ("Vec<BlockLookupRef>", std::mem::size_of::<Vec<BlockLookupRef>>()),
+        ("Box<Vec<BlockLookupRef>>", std::mem::size_of::<Box<Vec<BlockLookupRef>>>()),
+        ("BlockRefs (ships)", std::mem::size_of::<BlockRefs>()),
+        ("TightRefs (boxed wide arm)", std::mem::size_of::<TightRefs>()),
+        ("folded entry, wide union", std::mem::size_of::<FoldedWide>()),
+        ("folded entry, tight union", std::mem::size_of::<FoldedTight>()),
+        ("bucket, wide fold", std::mem::size_of::<(Arc<str>, FoldedWide)>() + 1),
+        ("bucket, tight fold", std::mem::size_of::<(Arc<str>, FoldedTight)>() + 1),
+    ] {
+        println!("    {name:<30} {w:>4} B");
+    }
+    assert_eq!(
+        24,
+        std::mem::size_of::<BlockRefs>(),
+        "the shipped union is no longer 24 bytes, so the premise of this arm has moved"
+    );
+    assert!(
+        std::mem::size_of::<TightRefs>() == std::mem::size_of::<BlockRefs>(),
+        "boxing the wide arm NARROWED the union ({} against {}). It did NOT when this was measured: the width comes from the INLINE arm plus its tag, not from the wide arm. So the saving this arm records as unavailable has opened -- re-derive it rather than loosening this assertion.",
+        std::mem::size_of::<TightRefs>(),
+        std::mem::size_of::<BlockRefs>()
+    );
+
+    // --- THE NESTED LOOKUP, with each union. This is the one that pays today.
+    let weigh_lookup_wide = |n: usize| -> u64 {
+        let model: Arc<str> = Arc::from("strings");
+        let mut m: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>> = BTreeMap::new();
+        for i in 0..n {
+            m.entry(Arc::clone(&model)).or_default().insert(key(i), BlockRefs::One(lref()));
+        }
+        deep_heap_bytes(&m)
+    };
+    let weigh_lookup_tight = |n: usize| -> u64 {
+        let model: Arc<str> = Arc::from("strings");
+        let mut m: BTreeMap<Arc<str>, BTreeMap<Arc<str>, TightRefs>> = BTreeMap::new();
+        for i in 0..n {
+            m.entry(Arc::clone(&model)).or_default().insert(key(i), TightRefs::One(lref()));
+        }
+        deep_heap_bytes(&m)
+    };
+    // --- AND THE FOLDED SHAPE, with each union.
+    let weigh_fold_wide = |n: usize| -> u64 {
+        let mut m: HashMap<Arc<str>, FoldedWide> = HashMap::new();
+        for i in 0..n {
+            m.insert(key(i), FoldedWide { slot: ObjectSlot::default(), refs: BlockRefs::One(lref()) });
+        }
+        deep_heap_bytes(&m)
+    };
+    let weigh_fold_tight = |n: usize| -> u64 {
+        let mut m: HashMap<Arc<str>, FoldedTight> = HashMap::new();
+        for i in 0..n {
+            m.insert(key(i), FoldedTight { slot: ObjectSlot::default(), refs: TightRefs::One(lref()) });
+        }
+        deep_heap_bytes(&m)
+    };
+
+    let span = (FOUR_X - ONE_X) as f64;
+    let rows: Vec<(&str, u64, u64)> = vec![
+        ("lookup BTreeMap, wide union", weigh_lookup_wide(ONE_X), weigh_lookup_wide(FOUR_X)),
+        ("lookup BTreeMap, tight union", weigh_lookup_tight(ONE_X), weigh_lookup_tight(FOUR_X)),
+        ("folded HashMap, wide union", weigh_fold_wide(ONE_X), weigh_fold_wide(FOUR_X)),
+        ("folded HashMap, tight union", weigh_fold_tight(ONE_X), weigh_fold_tight(FOUR_X)),
+    ];
+    println!();
+    println!("  {:<32} {:>11} {:>11} {:>10}", "", "1x (1,792)", "4x (7,168)", "slope B/k");
+    for (name, a, b) in &rows {
+        println!("  {name:<32} {a:>11} {b:>11} {:>10.1}", (*b as i64 - *a as i64) as f64 / span);
+    }
+
+    let slope = |a: u64, b: u64| (b as i64 - a as i64) as f64 / span;
+    let look_wide = slope(rows[0].1, rows[0].2);
+    let look_tight = slope(rows[1].1, rows[1].2);
+    let fold_wide = slope(rows[2].1, rows[2].2);
+    let fold_tight = slope(rows[3].1, rows[3].2);
+
+    println!();
+    println!("  WHAT BOXING THE WIDE ARM SAVES, MARGINAL");
+    println!("    in the lookup that ships   {:>6.1} B/key  ({:.1} -> {:.1})", look_wide - look_tight, look_wide, look_tight);
+    println!("    in the folded entry        {:>6.1} B/key  ({:.1} -> {:.1})", fold_wide - fold_tight, fold_wide, fold_tight);
+    println!();
+
+    // --- IT MUST SAVE IN AT LEAST ONE OF THE TWO, or the narrower struct is absorbed by padding
+    // --- or by the container's own rounding and the trade is not available anywhere.
+    // --- THE FINDING: BOXING THE WIDE ARM BUYS NOTHING, AND THIS PINS IT.
+    //
+    // Measured: `BlockRefs` is 24 B and the boxed version is ALSO 24 B, even though
+    // `Box<Vec<BlockLookupRef>>` is 8 where `Vec` was 24. The width is set by the INLINE arm
+    // -- `One(BlockLookupRef)` at 16 B plus a tag, aligned to 8 -- not by the wide arm.
+    //
+    // The pin `size_of::<BlockRefs>() == size_of::<Vec<BlockLookupRef>>()` reads as though it
+    // names a cause. It does not: both happen to be 24. Narrowing this union needs
+    // `BlockLookupRef` at 12 bytes, and its own pin already refuses that -- a `u32` beside a
+    // `u64` pads to the alignment of the `u64`, so narrowing either field moves nothing.
+    //
+    // So this asserts EQUALITY. If a change ever makes the boxed arm narrower, this fails and
+    // says the lever has opened, rather than sitting here as a comment nobody re-checks.
+    assert_eq!(
+        std::mem::size_of::<BlockRefs>(),
+        std::mem::size_of::<TightRefs>(),
+        "boxing the wide arm changed the width of the union. It did not when this was measured, because the width comes from the inline arm plus its tag. If it does now, the saving this arm records as unavailable has become available -- re-derive it rather than loosening this assertion."
+    );
+    assert!(
+        (look_wide - look_tight).abs() < 1.0 && (fold_wide - fold_tight).abs() < 1.0,
+        "the two unions cost different amounts in a holder (lookup {look_wide:.1} against {look_tight:.1}, fold {fold_wide:.1} against {fold_tight:.1}) although they are the same width. Then something other than the width differs and this arm is not measuring what it claims."
+    );
+}
+
+/// WHAT AN ARENA FOR THE KEY CHARACTERS WOULD SAVE, AND WHAT IT CANNOT.
+///
+/// # THE ROW
+///
+/// `Arc<str>` key characters are **32.0 B/key** marginal at the steady state -- the fourth-largest
+/// row, and the only one not held in a map. `arc_str_bytes` charges
+/// `((16 + len + 7) / 8) * 8`: sixteen bytes of strong and weak count, the characters, rounded to
+/// pointer alignment. A twelve-character key therefore costs **32** to hold **12**.
+///
+/// The characters have to exist somewhere. **The refcount header does not.** One arena holding every
+/// key's bytes, addressed by offset and length, pays the bytes plus a span and no header at all.
+/// This measures both at two corpus sizes and charges the span table against the saving, because a
+/// span per key is the cost the arena adds and leaving it out would overstate the win.
+///
+/// # WHAT IT CANNOT DO, STATED SO THE FIGURE IS READ AS A CEILING
+///
+///   * **It needs a raw-entry table and this crate has none.** An 8-byte span cannot hash or
+///     compare without the arena, and std's `HashMap` has no stable raw-entry API; hashbrown is not
+///     a direct dependency. So this is a dependency decision, not a layout change.
+///   * **Reclamation.** An `Arc` refcount frees a key's characters on removal for nothing. An arena
+///     needs compaction to do the same, and a shard that churns keys would fragment it.
+///   * **Sharing already works.** `which_resident_maps_hold_their_own_key_characters` asserts
+///     `strings` shares every key allocation with the bucket index via
+///     `ShardState::adopt_strings_key`, so the header is paid **once per key**, not once per holder.
+///     There is no duplicate left for an arena to collapse -- only the header.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_an_arena_for_the_key_characters_would_save -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "allocates two key corpora twice over under the counting allocator; run by name"]
+fn what_an_arena_for_the_key_characters_would_save() {
+    use std::sync::Arc;
+
+    const ONE_X: usize = 1_792;
+    const FOUR_X: usize = 7_168;
+
+    // The key shape the steady-state arms use, so the 32.0 B/key row is the subject.
+    let key = |i: usize| format!("own-{i:08}");
+
+    let weigh_arcs = |n: usize| -> u64 {
+        let probe = Probe::start();
+        let held: Vec<Arc<str>> = (0..n).map(|i| Arc::from(key(i).as_str())).collect();
+        let bytes = probe.stop().alloc_bytes;
+        std::hint::black_box(&held);
+        bytes
+    };
+    let weigh_arena = |n: usize| -> u64 {
+        let probe = Probe::start();
+        let mut arena: Vec<u8> = Vec::new();
+        let mut spans: Vec<(u32, u16)> = Vec::new();
+        for i in 0..n {
+            let k = key(i);
+            let at = arena.len() as u32;
+            arena.extend_from_slice(k.as_bytes());
+            spans.push((at, k.len() as u16));
+        }
+        let bytes = probe.stop().alloc_bytes;
+        std::hint::black_box((&arena, &spans));
+        bytes
+    };
+
+    let arcs1 = weigh_arcs(ONE_X);
+    let arcs4 = weigh_arcs(FOUR_X);
+    let arena1 = weigh_arena(ONE_X);
+    let arena4 = weigh_arena(FOUR_X);
+    let span = (FOUR_X - ONE_X) as f64;
+
+    let klen = key(0).len();
+    println!();
+    println!("  key length {klen}, so arc_str_bytes charges (({} + {klen} + 7) / 8) * 8 = {}", 16, ((16 + klen + 7) / 8) * 8);
+    println!();
+    println!("  {:<34} {:>11} {:>11} {:>10}", "", "1x (1,792)", "4x (7,168)", "slope B/k");
+    for (name, a, b) in [
+        ("one Arc<str> per key (ships)", arcs1, arcs4),
+        ("one arena plus a span per key", arena1, arena4),
+    ] {
+        println!("  {name:<34} {a:>11} {b:>11} {:>10.1}", (b as i64 - a as i64) as f64 / span);
+    }
+    let arcs_slope = (arcs4 - arcs1) as f64 / span;
+    let arena_slope = (arena4 as i64 - arena1 as i64) as f64 / span;
+    let per_key_1x = (arcs1 as f64 - arena1 as f64) / ONE_X as f64;
+    let per_key_4x = (arcs4 as f64 - arena4 as f64) / FOUR_X as f64;
+    println!();
+    println!(
+        "  THE ARENA SAVES {:.1} B/key at 1x, {:.1} at 4x, {:.1} MARGINAL",
+        per_key_1x,
+        per_key_4x,
+        arcs_slope - arena_slope
+    );
+    println!("  (a CEILING: it needs a raw-entry table this crate does not depend on, and arena compaction)");
+    println!();
+
+    assert!(
+        arena_slope < arcs_slope,
+        "the arena cost {arena_slope:.1} B/key marginal against {arcs_slope:.1} for one Arc each. \
+         It must be cheaper -- the saving is the 16-byte refcount header a key no longer carries -- \
+         so if it is not, the span table has eaten the header and this lever does not exist."
+    );
+    assert!(
+        (per_key_1x - per_key_4x).abs() <= 0.25 * per_key_1x.abs().max(1.0),
+        "the saving reads {per_key_1x:.1} B/key at {ONE_X} keys and {per_key_4x:.1} at {FOUR_X}. \
+         Those must agree, or the figure is a constant divided by keys wearing a per-key label."
+    );
+}
