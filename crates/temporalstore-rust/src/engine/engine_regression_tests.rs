@@ -641,6 +641,8 @@ mod the_amplification_set_under_rewrite;
 mod the_write_window_closes_at_compaction;
 #[path = "tests/what_a_live_user_bytes_denominator_would_cost.rs"]
 mod what_a_live_user_bytes_denominator_would_cost;
+#[path = "tests/the_published_set_against_its_envelope.rs"]
+mod the_published_set_against_its_envelope;
 #[path = "tests/the_user_byte_write_ratio.rs"]
 mod the_user_byte_write_ratio;
 #[path = "tests/whether_a_dead_slab_can_be_reclaimed.rs"]
