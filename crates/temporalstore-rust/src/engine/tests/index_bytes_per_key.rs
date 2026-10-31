@@ -10698,3 +10698,217 @@ fn what_a_release_does_to_the_published_amplification_ratio() {
         swept.image
     );
 }
+
+/// WHAT FOLDING THE BLOCK REFS INTO THE SLOT WOULD SAVE, WHICH IS THE ONE-STRUCTURE SHAPE.
+///
+/// # THE REPRESENTATION IS ALREADY RIGHT. THE CONTAINER IS NOT.
+///
+/// `BlockRefs` is already a tagged union -- `One(BlockLookupRef)` inline, `Many(Vec<_>)` out of
+/// line -- pinned at **24 bytes**, with `size_of::<BlockRefs>() == size_of::<Vec<BlockLookupRef>>()`
+/// pinned beside it. That is the shape a compact per-object node wants: the common case in the
+/// struct, a pointer beyond it. Nothing here proposes changing it.
+///
+/// What costs is **where it is held**. `object_block_lookup` is
+/// `BTreeMap<ModelKey, BTreeMap<ModelKey, BlockRefs>>`, and it measures **72.4 B/key** to hold a
+/// 24-byte value under a 16-byte key. Payload is 40; so roughly **32 B/key is B-tree node**, paid
+/// for a second lookup structure keyed by the same object key the slot map is already keyed by.
+///
+/// # WHY THIS PAIR, WHEN CONSOLIDATION WAS ALREADY REFUSED
+///
+/// `what_consolidating_three_holders_would_cost` prices folding `strings`, the series map and the
+/// selection map into one entry and reports a **break-even at 78% key overlap** against a measured
+/// **50%** -- below break-even, so it costs. That refusal is correct **and it is a different pair**.
+/// Those three are different KINDS: a key lives in one of them, so a consolidated entry carries two
+/// empty arms per key and the union is mostly padding.
+///
+/// `strings` and `object_block_lookup` are not different kinds. **Every stored object has both** --
+/// a slot, and the refs naming its blocks -- so the overlap is ~100%, which is the arm of that same
+/// measurement where consolidation WINS. The 78% figure does not apply, and nothing has priced
+/// this pair.
+///
+/// # AND IT IS NOT THE REFUSED CHANGE EITHER
+///
+/// `ObjectBlockLookup`'s doc refuses two things on three pinned grounds
+/// (`an_integer_addressed_lookup_serves_another_objects_refs`): addressing page->object identity by
+/// a `u64` rather than the object key, and dropping that identity -- which would write an index
+/// whose pages name no object, because `impl Serialize for CoreIndex` composes each page's written
+/// key from this map in every build.
+///
+/// **Relocating the identity into the slot is neither.** It stays keyed by the object key, and the
+/// written field can still be composed -- from the slot map rather than from a second map. Those
+/// refusals are about REPRESENTATION and DELETION; this is about WHERE IT LIVES.
+///
+/// # WHAT IS MEASURED
+///
+/// Two shapes over the same N objects, every object in both holders:
+///
+///   * **ARM A, what ships** -- `HashMap<ModelKey, ObjectSlot>` beside
+///     `BTreeMap<ModelKey, BTreeMap<ModelKey, BlockRefs>>`.
+///   * **ARM B, one structure** -- one `HashMap<ModelKey, Folded>` where `Folded` holds the slot
+///     and the existing `BlockRefs` union together.
+///
+/// At TWO key counts, both exactly 7/8 of a power of two, so both hash tables sit at 100% usable
+/// load. That is the phase discipline `the_amplification_set_at_two_arms_four_times_apart` uses and
+/// for its reason: a hashbrown table's cost per key is a step function of n, so two arms in
+/// different phases can differ by 2x with nothing to give it away. The saving is reported as a
+/// SLOPE as well as a per-key figure, and the two must agree.
+///
+/// # WHAT IT DOES NOT CLAIM
+///
+/// Not that the fold is implementable as it stands. The lookup is **nested, model then key**, and
+/// is walked by model where a flat per-object entry would need a scan; that cost is real and is not
+/// priced here, which makes this figure a **CEILING on the saving**. The write path and the
+/// serializer would both have to take their identity from the slot.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib what_folding_the_block_refs_into_the_slot_would_save -- --ignored --nocapture --test-threads=1
+#[test]
+#[cfg(feature = "alloc-probe")]
+#[ignore = "builds four maps at two corpus sizes under the counting allocator; run by name"]
+fn what_folding_the_block_refs_into_the_slot_would_save() {
+    use crate::engine::object_record::ObjectSlot;
+    use std::collections::{BTreeMap, HashMap};
+    use std::sync::Arc;
+
+    /// 7/8 of 2,048 -- the most a 2,048-bucket table holds, so the table is exactly full.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, and exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+
+    /// The one-structure entry: the slot and the refs union it already has, together.
+    ///
+    /// `Clone` because `deep_heap_bytes` weighs by cloning and cannot weigh a shape it cannot copy.
+    #[derive(Clone)]
+    #[allow(dead_code)]
+    struct Folded {
+        slot: ObjectSlot,
+        refs: BlockRefs,
+    }
+
+    let key = |i: usize| -> Arc<str> { Arc::from(format!("k{i:08}").as_str()) };
+    // The single-block arm, which our corpus is ~99.9% of.
+    // `BlockLookupRef` is { routing_bucket: u32, block_ref_key: u64 } and derives no Default, so
+    // both fields are given. 16 B, pinned.
+    let one_ref = || BlockRefs::One(BlockLookupRef { routing_bucket: 7, block_ref_key: 2 });
+
+    // ARM A: the two shapes that ship, the same keys in both, keys SHARED between them because the
+    // adoption puts every holder on one allocation -- so what two maps cost over one is the key
+    // FIELD and the containers, never the characters.
+    let weigh_ships = |n: usize| -> (u64, u64) {
+        let model: Arc<str> = Arc::from("strings");
+        let mut slots: HashMap<Arc<str>, ObjectSlot> = HashMap::new();
+        let mut lookup: BTreeMap<Arc<str>, BTreeMap<Arc<str>, BlockRefs>> = BTreeMap::new();
+        for i in 0..n {
+            let k = key(i);
+            slots.insert(Arc::clone(&k), ObjectSlot::default());
+            lookup.entry(Arc::clone(&model)).or_default().insert(k, one_ref());
+        }
+        assert_eq!(n, slots.len(), "arm A: the slot map must hold every key");
+        assert_eq!(
+            n,
+            lookup.get(&model).map(|inner| inner.len()).unwrap_or(0),
+            "arm A: the lookup must hold every key under the one model, or the two arms are not \
+             over the same population and the difference is a population difference"
+        );
+        (deep_heap_bytes(&slots), deep_heap_bytes(&lookup))
+    };
+
+    // ARM B: one map, the folded entry.
+    let weigh_folded = |n: usize| -> u64 {
+        let mut folded: HashMap<Arc<str>, Folded> = HashMap::new();
+        for i in 0..n {
+            folded.insert(key(i), Folded { slot: ObjectSlot::default(), refs: one_ref() });
+        }
+        assert_eq!(n, folded.len(), "arm B: the folded map must hold every key");
+        deep_heap_bytes(&folded)
+    };
+
+    // --- THE WIDTHS, because every figure below follows from them and a width that moved would
+    // --- otherwise show up only as a changed total.
+    println!();
+    println!("  WIDTHS");
+    for (name, w) in [
+        ("ModelKey (Arc<str>)", std::mem::size_of::<Arc<str>>()),
+        ("ObjectSlot", std::mem::size_of::<ObjectSlot>()),
+        ("BlockRefs (One|Many union)", std::mem::size_of::<BlockRefs>()),
+        ("Folded { slot, refs }", std::mem::size_of::<Folded>()),
+        ("bucket today: (key, slot)+1", std::mem::size_of::<(Arc<str>, ObjectSlot)>() + 1),
+        ("bucket folded: (key, Folded)+1", std::mem::size_of::<(Arc<str>, Folded)>() + 1),
+    ] {
+        println!("    {name:<32} {w:>4} B");
+    }
+
+    let (slots1, look1) = weigh_ships(ONE_X);
+    let folded1 = weigh_folded(ONE_X);
+    let (slots4, look4) = weigh_ships(FOUR_X);
+    let folded4 = weigh_folded(FOUR_X);
+
+    let ships1 = slots1 + look1;
+    let ships4 = slots4 + look4;
+    let span = (FOUR_X - ONE_X) as f64;
+
+    println!();
+    println!("  {:<34} {:>11} {:>11} {:>10}", "", "1x (1,792)", "4x (7,168)", "slope B/k");
+    for (name, a, b) in [
+        ("A: slots HashMap", slots1, slots4),
+        ("A: object_block_lookup BTreeMap", look1, look4),
+        ("A: the two together", ships1, ships4),
+        ("B: one folded HashMap", folded1, folded4),
+    ] {
+        println!("  {name:<34} {a:>11} {b:>11} {:>10.1}", (b as i64 - a as i64) as f64 / span);
+    }
+
+    let ships_slope = (ships4 - ships1) as f64 / span;
+    let folded_slope = (folded4 as i64 - folded1 as i64) as f64 / span;
+    let per_key_1x = (ships1 as f64 - folded1 as f64) / ONE_X as f64;
+    let per_key_4x = (ships4 as f64 - folded4 as f64) / FOUR_X as f64;
+
+    println!();
+    println!("  PER KEY");
+    println!(
+        "    what ships  {:>7.1} B/key at 1x, {:>7.1} at 4x, marginal {:>7.1}",
+        ships1 as f64 / ONE_X as f64,
+        ships4 as f64 / FOUR_X as f64,
+        ships_slope
+    );
+    println!(
+        "    folded      {:>7.1} B/key at 1x, {:>7.1} at 4x, marginal {:>7.1}",
+        folded1 as f64 / ONE_X as f64,
+        folded4 as f64 / FOUR_X as f64,
+        folded_slope
+    );
+    println!();
+    println!(
+        "  THE FOLD SAVES {:.1} B/key at 1x, {:.1} at 4x, {:.1} MARGINAL ({:.1}% of the pair)",
+        per_key_1x,
+        per_key_4x,
+        ships_slope - folded_slope,
+        100.0 * (ships_slope - folded_slope) / ships_slope
+    );
+    println!();
+
+    // --- THE ARMS MUST DIFFER, or every slope above is noise.
+    assert!(
+        ships4 > ships1 && folded4 > folded1,
+        "an arm did not grow across a 4x corpus ({ships1} -> {ships4} ships, {folded1} -> \
+         {folded4} folded), so there is no slope to take"
+    );
+    // --- THE FOLD MUST ACTUALLY BE CHEAPER. If it is not, say so HERE rather than in prose: the
+    // --- one-structure shape would be a regression and the nested lookup would earn its place on
+    // --- footprint as well as on the three pinned grounds.
+    assert!(
+        folded_slope < ships_slope,
+        "the folded shape costs {folded_slope:.1} B/key marginal against {ships_slope:.1} for the \
+         two maps it replaces, so folding the refs into the slot is a REGRESSION. Do not propose \
+         the one-structure shape on footprint grounds."
+    );
+    // --- AND THE SAVING MUST BE PER-KEY, not a constant divided by keys. The arms are 4.0x apart,
+    // --- so a constant term shows up as a per-key saving that moves between them.
+    assert!(
+        (per_key_1x - per_key_4x).abs() <= 0.25 * per_key_1x.abs().max(1.0),
+        "the saving reads {per_key_1x:.1} B/key at {ONE_X} keys and {per_key_4x:.1} at {FOUR_X}. \
+         Those must agree: a figure that moves across a 4.0x corpus is a constant divided by keys \
+         wearing a per-key label, which is what this arm's two-corpus shape exists to catch."
+    );
+}
