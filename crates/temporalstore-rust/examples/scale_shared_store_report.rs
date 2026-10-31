@@ -232,14 +232,69 @@ async fn main() {
              options.page_size, options.chunk_size, options.max_extent_bytes,
              options.replica_count, options.write_quorum);
 
-    // ---- FOUR POINTS OVER A 16x RANGE. One corpus size cannot tell a flat per-entry cost
-    // ---- from a growing one, and two cannot tell a step from a slope; four can. The top
-    // ---- size stays where it is because the question is the SHAPE, and a fifth point costs
-    // ---- 16x more for the same answer.
-    let sizes = [100usize, 400, 800, 1_600];
+    // ---- FOUR POINTS OVER A 16x RANGE BY DEFAULT. One corpus size cannot tell a flat
+    // ---- per-entry cost from a growing one, and two cannot tell a step from a slope; four
+    // ---- can.
+    //
+    // THE CEILING IS NOW THE CALLER'S, because the default four could only ever answer the
+    // shape up to 1,600 entries, and the append side is still superlinear above it -- the
+    // object-undo extent clone is O(extents) per append and extents grow by two per append.
+    // `MATRIXARK_SCALE_SIZES=100,400,800,1600,3200,6500` sweeps further. Everything below
+    // reads `rounds[0]` and `rounds[1..]`, so the assertions hold at any length.
+    //
+    // AN UNPARSEABLE SIZE IS REFUSED, NOT SKIPPED. A sweep that quietly drops a size it
+    // could not read reports on less than it was asked for and says so nowhere, which is
+    // the shape of every measurement mistake in this repository's notes.
+    let sizes: Vec<usize> = match std::env::var("MATRIXARK_SCALE_SIZES") {
+        Err(_) => vec![100usize, 400, 800, 1_600],
+        Ok(raw) => {
+            let mut parsed = Vec::new();
+            for field in raw.split(',') {
+                let field = field.trim();
+                if field.is_empty() {
+                    continue;
+                }
+                match field.parse::<usize>() {
+                    Ok(0) => panic!(
+                        "MATRIXARK_SCALE_SIZES contains a zero: a round of no entries divides by \
+                         zero in every per-entry column"
+                    ),
+                    Ok(size) => parsed.push(size),
+                    Err(err) => panic!(
+                        "MATRIXARK_SCALE_SIZES has {field:?}, which is not a corpus size: {err}"
+                    ),
+                }
+            }
+            parsed
+        }
+    };
+    // Not vacuous: one point cannot tell a flat per-entry cost from a growing one, and every
+    // assertion below compares `rounds[1..]` against `rounds[0]`, so a single size asserts
+    // nothing at all while still printing a table that looks like a result.
+    assert!(
+        sizes.len() >= 2,
+        "a corpus sweep needs at least two sizes to have a shape, and this one has {}",
+        sizes.len()
+    );
+    // ASCENDING, because the sweep's sentences say "across a {ratio}x corpus" using the first
+    // and last rounds, and a descending or shuffled list makes that ratio read below 1.
+    assert!(
+        sizes.windows(2).all(|pair| pair[0] < pair[1]),
+        "the sizes have to ascend, and they are {sizes:?}"
+    );
+    println!("  sweep: {sizes:?}");
     let mut rounds = Vec::new();
-    for entries in sizes {
-        rounds.push(round(entries, &options).await);
+    for entries in &sizes {
+        // PER-SIZE WALL CLOCK, printed as it goes. The append side is superlinear, so an 8x
+        // corpus can be 64x the work -- and a sweep that prints nothing until the end is
+        // indistinguishable from a hung one at the sizes this now reaches.
+        let began = std::time::Instant::now();
+        let completed = round(*entries, &options).await;
+        println!(
+            "  .. {entries} entries in {:.1} s",
+            began.elapsed().as_secs_f64()
+        );
+        rounds.push(completed);
     }
 
     println!();
