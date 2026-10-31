@@ -2404,7 +2404,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     println!("\n=== which term leads, by workload ===");
     println!(
         "  {:<34} {:>9} {:>9} {:>16} {:>16}",
-        "workload", "buckets", "pages", "BucketNode x n", "BlockIndex x n"
+        "workload", "buckets", "blocks", "BucketNode x n", "BlockIndex x n"
     );
     for (name, buckets, blocks, node_bytes, block_bytes) in &rows {
         println!("  {name:<34} {buckets:>9} {blocks:>9} {node_bytes:>16} {block_bytes:>16}");

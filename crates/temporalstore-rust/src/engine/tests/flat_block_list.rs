@@ -963,7 +963,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
     let mut path_lengths: Vec<usize> = Vec::new();
     println!(
         "  {:>8} {:>8} {:>9} {:>12} {:>12} {:>12} {:>12} {:>9}",
-        "records", "buckets", "pages", "tree B/rec", "tree alc/rec", "list B/rec", "list alc/rec",
+        "records", "buckets", "blocks", "tree B/rec", "tree alc/rec", "list B/rec", "list alc/rec",
         "B ratio"
     );
     let mut ratios: Vec<(usize, f64, f64)> = Vec::new();

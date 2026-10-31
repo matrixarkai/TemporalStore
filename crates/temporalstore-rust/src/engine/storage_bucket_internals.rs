@@ -9336,7 +9336,7 @@ mod model_kind_registry_guards {
             *per_kind.entry(entry.kind.to_string()).or_default() += 1;
         }
         println!("\n=== what the walk emitted, per kind ===");
-        println!("  {:<24} {:>6}", "kind", "pages");
+        println!("  {:<24} {:>6}", "kind", "blocks");
         for (kind, count) in &per_kind {
             println!("  {kind:<24} {count:>6}");
         }
@@ -9480,7 +9480,7 @@ mod model_kind_registry_guards {
             }
         }
         println!("\n=== the packed model byte, per kind, off the report ===");
-        println!("  {:<24} {:>6}  {}", "model_id", "pages", "byte 1");
+        println!("  {:<24} {:>6}  {}", "model_id", "blocks", "byte 1");
         for (model_id, codes) in &packed {
             println!("  {model_id:<24} {:>6}  {codes:?}", codes.len());
         }

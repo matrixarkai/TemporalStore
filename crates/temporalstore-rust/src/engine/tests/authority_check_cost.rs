@@ -147,7 +147,7 @@ fn what_the_authority_check_answers_under_each_projection() {
     println!("\n=== authority check, one call, over a folded set of {MEMBERS} ===");
     println!(
         "  {:>5}  {:>7}  {:>9}  {:>7}  {:>9}",
-        "gate", "checks", "rebuilds", "pages", "promoted"
+        "gate", "checks", "rebuilds", "blocks", "promoted"
     );
 
     let mut rows: Vec<(&str, u64, u64, u64, bool)> = Vec::new();

@@ -334,7 +334,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
         "shape",
         "keys",
         "buckets",
-        "pages",
+        "blocks",
         "payload B/obj",
         "cont. B/obj",
         "d payload",

@@ -167,7 +167,7 @@ fn rewrites_under(gate_on: bool) -> (usize, Vec<u64>, usize, Vec<String>) {
 #[test]
 fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     println!("\n=== one member rewritten {REWRITES} times ===");
-    println!("  {:>5}  {:>6}  {:>9}  {:>24}", "gate", "pages", "resident", "ordinals");
+    println!("  {:>5}  {:>6}  {:>9}  {:>24}", "gate", "blocks", "resident", "ordinals");
 
     let mut rows: Vec<(&str, usize, Vec<u64>, usize)> = Vec::new();
     for (label, gate_on) in [("off", false), ("on", true)] {

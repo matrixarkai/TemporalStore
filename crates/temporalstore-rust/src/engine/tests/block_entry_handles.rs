@@ -710,7 +710,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     );
     println!(
         "  {:<34} {:>7} {:>7} {:>6} {:>10} {:>10} {:>8} {:>8}",
-        "arm", "pages", "entries", "p/obj", "build/pg", "resident/pg", "saved/pg", "NET/pg"
+        "arm", "blocks", "entries", "p/obj", "build/pg", "resident/pg", "saved/pg", "NET/pg"
     );
     for (label, cost, distribution) in &rows {
         let saved = ENTRY_BYTES_A_HANDLE_SAVES as f64;
@@ -876,7 +876,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
     );
     println!(
         "  {:<40} {:>7} {:>7} {:>9} {:>10} {:>11} {:>8}",
-        "arm", "pages", "entries", "entr/page", "build/pg", "resident/pg", "NET/pg"
+        "arm", "blocks", "entries", "entr/page", "build/pg", "resident/pg", "NET/pg"
     );
     for (label, cost, _) in &rows {
         println!(

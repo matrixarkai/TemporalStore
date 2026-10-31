@@ -1793,7 +1793,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     );
     println!(
         "  {:>8} {:>9} {:>8} {:>12} {:>14} {:>16} {:>12}",
-        "objects", "buckets", "obj/bkt", "pages", "slot_index B", "B/object", "json B/object"
+        "objects", "buckets", "obj/bkt", "blocks", "slot_index B", "B/object", "json B/object"
     );
     for reading in readings.iter() {
         println!(
