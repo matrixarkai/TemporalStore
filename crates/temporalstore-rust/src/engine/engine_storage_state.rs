@@ -1569,10 +1569,117 @@ const _: () = assert!(
 ///     free is a value some key hashes to, and the collision would read as a missing object rather
 ///     than as an error. `Option<u64>` has no niche, so a slot is 16 bytes where the run's element
 ///     was 8. `what_a_slot_array_costs_under_churn` prints what a reserved value would buy.
+/// Slot occupancy: one bit a slot, inline while a bucket stays under 65 slots.
+///
+/// The wide arm is `Box<Vec<u64>>` and not `Vec<u64>` so that this enum is two words rather
+/// than four. It is unreachable on the shipped range at the measured distribution; it exists
+/// because a bucket is bounded by the corpus and not by 64.
+#[derive(Debug, Clone, PartialEq, Eq)]
+enum SlotBits {
+    Inline(u64),
+    Wide(Box<Vec<u64>>),
+}
+
+impl Default for SlotBits {
+    fn default() -> Self {
+        SlotBits::Inline(0)
+    }
+}
+
+impl SlotBits {
+    fn get(&self, at: usize) -> bool {
+        let (word, mask) = (at / 64, 1u64 << (at % 64));
+        match self {
+            SlotBits::Inline(bits) => word == 0 && bits & mask != 0,
+            SlotBits::Wide(words) => words.get(word).is_some_and(|bits| bits & mask != 0),
+        }
+    }
+
+    fn set(&mut self, at: usize) {
+        let (word, mask) = (at / 64, 1u64 << (at % 64));
+        if word > 0 {
+            self.spill(word + 1);
+        }
+        match self {
+            SlotBits::Inline(bits) => *bits |= mask,
+            SlotBits::Wide(words) => words[word] |= mask,
+        }
+    }
+
+    fn clear(&mut self, at: usize) {
+        let (word, mask) = (at / 64, 1u64 << (at % 64));
+        match self {
+            SlotBits::Inline(bits) => {
+                if word == 0 {
+                    *bits &= !mask;
+                }
+            }
+            SlotBits::Wide(words) => {
+                if let Some(bits) = words.get_mut(word) {
+                    *bits &= !mask;
+                }
+            }
+        }
+    }
+
+    /// Grow into the wide arm, keeping the bits already set.
+    fn spill(&mut self, words_needed: usize) {
+        match self {
+            SlotBits::Inline(bits) => {
+                let mut words = vec![0u64; words_needed.max(1)];
+                words[0] = *bits;
+                *self = SlotBits::Wide(Box::new(words));
+            }
+            SlotBits::Wide(words) => {
+                if words.len() < words_needed {
+                    words.resize(words_needed, 0);
+                }
+            }
+        }
+    }
+
+    /// Give back words a shortened slot array can no longer reach, and collapse back inline
+    /// when one word is enough again -- a bucket that churned wide and shrank should stop
+    /// paying for the allocation it grew.
+    fn truncate_to(&mut self, words: usize) {
+        if let SlotBits::Wide(held) = self {
+            if held.len() > words {
+                held.truncate(words);
+            }
+            if words <= 1 {
+                let first = held.first().copied().unwrap_or(0);
+                *self = SlotBits::Inline(first);
+            }
+        }
+    }
+}
+
+/// Two words, so the struct it sits in grows by ONE word over the `Option` shape it replaces.
+const _: () = assert!(std::mem::size_of::<SlotBits>() == 16);
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct ObjectSlots {
-    /// Slot `i` holds the id filed there, or `None` for a placeholder.
-    slots: Vec<Option<u64>>,
+    /// Slot `i` holds this id, and holds one at all only if bit `i` of `filled` is set.
+    ///
+    /// EIGHT BYTES A SLOT, WHICH IS WHY THIS IS NOT `Vec<Option<u64>>`. An `Option<u64>` has
+    /// no niche -- object ids are FNV-1a hashes over the shard, kind and key, so they span the
+    /// whole of `u64` and no value can be reserved to mean free -- so it costs SIXTEEN bytes a
+    /// slot. Splitting the occupancy out into a bitmap pays eight bytes and one BIT instead.
+    /// `what_a_slot_array_costs_under_churn` measures the row this comes off.
+    ///
+    /// A reserved id value is still refused, and nothing here reserves one: the bitmap says
+    /// whether a slot is filled, so every one of the 2^64 ids stays a legal id.
+    ids: Vec<u64>,
+    /// Bit `i` set means slot `i` holds an id.
+    ///
+    /// INLINE FOR THE FIRST 64 SLOTS, which is every bucket this range produces: the measured
+    /// distribution is p50 39 and MAX 52 objects a bucket at 40,000 records. A `Vec` here
+    /// would cost a second allocation AND widen the struct by three words, and that widening
+    /// is paid once a BUCKET while the saving is paid once a SLOT -- so on the legacy
+    /// whole-keyspace range, where every key gets a bucket of its own, a `Vec` bitmap would
+    /// have been a REGRESSION. Inline, the struct grows by one word and the trade pays from
+    /// the second slot on.
+    filled: SlotBits,
     /// How many slots hold an id. NOT `slots.len()`, which counts placeholders too.
     ///
     /// `usize` and not the `u8` a 255-slot ceiling would allow: boxed, this struct is 32 bytes with
@@ -1585,7 +1692,7 @@ pub(super) struct ObjectSlots {
 impl ObjectSlots {
     /// Two ids, in the slots they keep.
     fn pair(first: u64, second: u64) -> Self {
-        ObjectSlots { slots: vec![Some(first), Some(second)], valid: 2 }
+        ObjectSlots::from_option_slots(&[Some(first), Some(second)])
     }
 
     /// Slots read back from a stored index, IN THE POSITIONS THEY WERE WRITTEN IN.
@@ -1610,7 +1717,9 @@ impl ObjectSlots {
                 }
             }
         }
-        let mut held = ObjectSlots { valid: slots.iter().filter(|slot| slot.is_some()).count(), slots };
+        // THE STORED SHAPE IS STILL A SEQUENCE OF NULLABLE IDS. This is the one boundary that
+        // converts it, so the written form does not move when the resident form does.
+        let mut held = ObjectSlots::from_option_slots(&slots);
         // Trailing placeholders are not kept, exactly as a removal does not keep them: the
         // positions dropped hold no id, so nothing can be naming them.
         held.drop_trailing_placeholders();
@@ -1622,7 +1731,53 @@ impl ObjectSlots {
     }
 
     fn slot_count(&self) -> usize {
-        self.slots.len()
+        self.ids.len()
+    }
+
+    fn is_filled(&self, at: usize) -> bool {
+        self.filled.get(at)
+    }
+
+    fn mark_filled(&mut self, at: usize) {
+        self.filled.set(at);
+    }
+
+    fn mark_free(&mut self, at: usize) {
+        self.filled.clear(at);
+    }
+
+    /// Build from the stored nullable-id shape.
+    fn from_option_slots(slots: &[Option<u64>]) -> Self {
+        let mut held = ObjectSlots {
+            ids: Vec::with_capacity(slots.len()),
+            filled: SlotBits::default(),
+            valid: 0,
+        };
+        for slot in slots {
+            let at = held.ids.len();
+            held.ids.push(slot.unwrap_or(0));
+            if slot.is_some() {
+                held.mark_filled(at);
+                held.valid += 1;
+            }
+        }
+        held
+    }
+
+    /// The slot array AS THE STORED FORM SEES IT: one nullable id a slot, in order.
+    ///
+    /// `ObjectIndex` has a hand-written `Serialize` that writes this sequence, so this is what
+    /// keeps the written bytes identical now the resident shape is a bitmap. Changing it
+    /// changes the index format.
+    fn slot_view(&self) -> impl Iterator<Item = Option<u64>> + '_ {
+        (0..self.ids.len())
+            .map(move |at| if self.is_filled(at) { Some(self.ids[at]) } else { None })
+    }
+
+    /// The ids and their occupancy, for an iterator that must hand out `&u64` without a
+    /// temporary to borrow from.
+    fn raw(&self) -> (&[u64], &SlotBits) {
+        (&self.ids, &self.filled)
     }
 
     /// A LINEAR WALK, charging what it actually looked at.
@@ -1632,9 +1787,9 @@ impl ObjectSlots {
     /// a valid count.
     fn locate(&self, id: &u64) -> (Option<usize>, u64) {
         let mut examined = 0u64;
-        for (at, slot) in self.slots.iter().enumerate() {
+        for at in 0..self.ids.len() {
             examined += 1;
-            if slot.as_ref() == Some(id) {
+            if self.is_filled(at) && self.ids[at] == *id {
                 return (Some(at), examined);
             }
         }
@@ -1642,7 +1797,11 @@ impl ObjectSlots {
     }
 
     fn id_at(&self, slot: usize) -> Option<u64> {
-        self.slots.get(slot).copied().flatten()
+        if self.is_filled(slot) {
+            self.ids.get(slot).copied()
+        } else {
+            None
+        }
     }
 
     /// FIRST FREE SLOT, ELSE APPEND -- and nothing already filed moves.
@@ -1650,9 +1809,16 @@ impl ObjectSlots {
         if self.locate(&id).0.is_some() {
             return false;
         }
-        match self.slots.iter().position(Option::is_none) {
-            Some(free) => self.slots[free] = Some(id),
-            None => self.slots.push(Some(id)),
+        match (0..self.ids.len()).find(|at| !self.is_filled(*at)) {
+            Some(free) => {
+                self.ids[free] = id;
+                self.mark_filled(free);
+            }
+            None => {
+                let at = self.ids.len();
+                self.ids.push(id);
+                self.mark_filled(at);
+            }
         }
         self.valid += 1;
         true
@@ -1663,7 +1829,7 @@ impl ObjectSlots {
         let Some(at) = self.locate(id).0 else {
             return false;
         };
-        self.slots[at] = None;
+        self.mark_free(at);
         self.valid -= 1;
         self.drop_trailing_placeholders();
         true
@@ -1673,24 +1839,34 @@ impl ObjectSlots {
     /// no id, and every id still filed is below the new length. This is what keeps the array bounded
     /// by the bucket high water mark instead of by its churn.
     fn drop_trailing_placeholders(&mut self) {
-        while self.slots.last().is_some_and(Option::is_none) {
-            self.slots.pop();
+        while !self.ids.is_empty() && !self.is_filled(self.ids.len() - 1) {
+            self.ids.pop();
         }
-    }
-
-    fn iter(&self) -> std::slice::Iter<'_, Option<u64>> {
-        self.slots.iter()
+        // Give back bitmap words the shortened array can no longer reach, so a bucket that
+        // churned wide and shrank does not keep paying for the words it grew.
+        self.filled.truncate_to(self.ids.len().div_ceil(64));
     }
 
     fn into_ids(self) -> Vec<u64> {
-        self.slots.into_iter().flatten().collect()
+        let filled = self.filled;
+        self.ids
+            .into_iter()
+            .enumerate()
+            .filter(|(at, _)| filled.get(*at))
+            .map(|(_, id)| id)
+            .collect()
     }
 }
 
 pub(super) enum ObjectIndexIter<'a> {
     Empty,
     One(std::iter::Once<&'a u64>),
-    Many(std::slice::Iter<'a, Option<u64>>),
+    /// A CURSOR, NOT A SLICE ITERATOR.
+    ///
+    /// The item type is `&'a u64` and the occupancy now lives in a bitmap, so there is no
+    /// `Option<u64>` in memory to borrow from. Walking (ids, filled) by index keeps the item
+    /// a reference into `ids` and leaves every consumer of this iterator untouched.
+    Many { ids: &'a [u64], filled: &'a SlotBits, at: usize },
 }
 
 impl<'a> Iterator for ObjectIndexIter<'a> {
@@ -1701,7 +1877,16 @@ impl<'a> Iterator for ObjectIndexIter<'a> {
             ObjectIndexIter::One(once) => once.next(),
             // Placeholders are skipped: a hole is not an object, and `object_count` is what
             // says how many this will yield.
-            ObjectIndexIter::Many(slots) => slots.find_map(|slot| slot.as_ref()),
+            ObjectIndexIter::Many { ids, filled, at } => {
+                while *at < ids.len() {
+                    let here = *at;
+                    *at += 1;
+                    if filled.get(here) {
+                        return Some(&ids[here]);
+                    }
+                }
+                None
+            }
         }
     }
 }
@@ -1905,7 +2090,10 @@ impl ObjectIndex {
         match self {
             ObjectIndex::Empty => ObjectIndexIter::Empty,
             ObjectIndex::One(id) => ObjectIndexIter::One(std::iter::once(id)),
-            ObjectIndex::Many(slots) => ObjectIndexIter::Many(slots.iter()),
+            ObjectIndex::Many(slots) => {
+                let (ids, filled) = slots.raw();
+                ObjectIndexIter::Many { ids, filled, at: 0 }
+            }
         }
     }
 
@@ -2066,8 +2254,11 @@ impl Serialize for ObjectIndex {
             }
             ObjectIndex::Many(slots) => {
                 let mut seq = serializer.serialize_seq(Some(slots.slot_count()))?;
-                for slot in slots.iter() {
-                    seq.serialize_element(slot)?;
+                // THE WRITTEN SEQUENCE IS UNCHANGED: one nullable id a slot, in order. The
+                // resident shape is a bitmap now; `slot_view` rebuilds exactly what this
+                // wrote before, so the index format does not move.
+                for slot in slots.slot_view() {
+                    seq.serialize_element(&slot)?;
                 }
                 seq.end()
             }

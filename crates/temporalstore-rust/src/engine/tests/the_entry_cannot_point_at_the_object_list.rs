@@ -1112,11 +1112,29 @@ fn the_join_a_name_reader_would_pay_is_a_walk_now_and_was_logarithmic_as_a_sorte
 //    SIZES, AND THE BYTES -- EACH WITH ITS DENOMINATOR.
 // =================================================================================================
 
+/// Slot occupancy, mirrored: inline for the first 64 slots, one allocation beyond.
+///
+/// Two words. The wide arm is boxed so this enum stays two words rather than four, which is what
+/// keeps the struct below from growing by a whole `Vec`.
+#[allow(dead_code)]
+enum MirrorSlotBits {
+    Inline(u64),
+    Wide(Box<Vec<u64>>),
+}
+
 /// The slot array, mirrored. Never constructed -- only its layout is read -- so the fields are dead
 /// by design, exactly as the entry mirrors above are.
+///
+/// THE IDS AND THEIR OCCUPANCY ARE SEPARATE NOW, and that is the point of the shape: an
+/// `Option<u64>` has no niche, so the old `Vec<Option<u64>>` cost SIXTEEN bytes a slot to carry
+/// an eight-byte id. Ids plus a bitmap pay eight bytes and one bit. The struct is one word wider
+/// for it -- paid once a BUCKET, against a saving paid once a SLOT -- which is why the bitmap is
+/// inline rather than a `Vec`: three extra words a bucket would have made this a REGRESSION on
+/// the legacy whole-keyspace range, where every key gets a bucket of its own.
 #[allow(dead_code)]
 struct MirrorObjectSlots {
-    slots: Vec<Option<u64>>,
+    ids: Vec<u64>,
+    filled: MirrorSlotBits,
     valid: usize,
 }
 
@@ -1198,8 +1216,12 @@ fn the_object_index_is_a_tag_and_one_pointer() {
         ("tag", tag_at, align_of::<ObjectIndex>()),
         ("payload", payload_at, size_of::<Box<ObjectSlots>>()),
     ];
+    // THREE FIELDS NOW, AND THE MIDDLE ONE IS THE CHANGE. The ids and their occupancy are held
+    // apart: an `Option<u64>` has no niche, so a `Vec<Option<u64>>` paid sixteen bytes a slot to
+    // carry an eight-byte id. `ids` plus an inline bitmap pay eight bytes and one bit.
     let slots_fields = [
-        ("slots", offset_of!(MirrorObjectSlots, slots), size_of::<Vec<Option<u64>>>()),
+        ("ids", offset_of!(MirrorObjectSlots, ids), size_of::<Vec<u64>>()),
+        ("filled", offset_of!(MirrorObjectSlots, filled), size_of::<MirrorSlotBits>()),
         ("valid", offset_of!(MirrorObjectSlots, valid), size_of::<usize>()),
     ];
 
