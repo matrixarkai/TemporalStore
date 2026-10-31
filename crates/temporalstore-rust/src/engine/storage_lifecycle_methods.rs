@@ -913,6 +913,14 @@ impl TemporalEngine {
             // by the WAL watermark (last_dump_sequence / manifest.wal_sequence, the
             // dumped-log sequence), not by the dirty flag.
             self.clear_dumped_bucket_dirty_state(request.shard_id, manifest);
+            // AND THE ITEM COUNT IS BACK TO THE LIVE SET. A dump re-serializes the live
+            // objects, so every superseded record it replaced is gone from the durable form
+            // -- which is what makes `item_space_amplification_ppm` a trigger.
+            if let Ok(mut shards) = self.shards.write() {
+                if let Some(shard) = shards.get_mut(&request.shard_id) {
+                    shard.mark_items_dumped();
+                }
+            }
         }
         let (cache_entries_removed, cache_disk_bytes_removed) = if request.invalidate_cache {
             self.cache

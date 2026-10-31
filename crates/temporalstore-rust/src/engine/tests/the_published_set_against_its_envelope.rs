@@ -299,3 +299,143 @@ fn the_published_set_against_its_envelope() {
     );
     println!();
 }
+
+/// AMPLIFICATION COUNTED IN ITEMS MOVES, WHICH IS THE WHOLE REASON IT EXISTS.
+///
+/// # THE FIGURE IT SITS BESIDE CANNOT MOVE
+///
+/// `space_amplification_ppm` divides bytes by bytes and is pinned near 1.000x: its denominator is
+/// slab-granular and blind at both ends, so a store at a true 5.0x publishes as 1.000x
+/// (`the_space_ratio_denominator_is_slab_granular_and_blind`). Putting a fixed bound on that field
+/// would be a closed gate -- the same shape as a budget whose unit exceeds the budget, and the same
+/// reason `block_gc_min_slab_garbage_basis_points` is inert today.
+///
+/// `item_space_amplification_ppm` asks the same question of quantities that cannot be blind: item
+/// records in the durable form over live objects. A count does not round to a slab.
+///
+/// # WHAT IS ASSERTED, IN THIS ORDER
+///
+///   1. **NON-VACUITY FIRST.** It must EXCEED 1.0 after overwrites. If a new figure cannot leave
+///      1.0 it has inherited the defect it was built to escape, and everything after this
+///      assertion would be measuring nothing. This is the control, so it comes first.
+///   2. It must return to EXACTLY 1.0 after a dump. Not approximately: a reset that left the
+///      figure above 1.0 would put a fixed bound out of reach downward and so make it unusable as
+///      a trigger, which is precisely what separates a windowed ratio from a lifetime one.
+///   3. The DENOMINATOR must be distinct live objects, not written records. If it counted records
+///      the ratio would be 1.0 by construction and every reading above would be a tautology --
+///      the one-field-two-quantities trap, so it is checked against the key count rather than
+///      trusted.
+///
+/// rust-internal: measures this crate's own published counters, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib amplification_counted_in_items_moves_and_a_dump_resets_it -- --exact --nocapture
+#[test]
+fn amplification_counted_in_items_moves_and_a_dump_resets_it() {
+    const KEYS: usize = 200;
+    const VALUE_LEN: usize = 704;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let write_round = |round: usize| {
+        for index in 0..KEYS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("item-{index:06}"),
+                    value: vec![b'v'; VALUE_LEN],
+                },
+            });
+            assert!(response.status.ok, "round {round} write {index}: {:?}", response.status);
+        }
+    };
+    let figure = || -> (u64, u64) {
+        let storage = engine.shard_stats(1).expect("stats").storage.clone();
+        (storage.item_space_amplification_ppm, storage.live_objects_with_logical_size)
+    };
+
+    // ---------- WRITTEN ONCE: one record an object, so the durable form IS the live set.
+    write_round(0);
+    let (once_ppm, once_live) = figure();
+    println!();
+    println!("  written once          {:>9.3}x over {once_live} live objects", once_ppm as f64 / 1e6);
+    assert_eq!(
+        KEYS as u64, once_live,
+        "denominator: {once_live} live objects for {KEYS} distinct keys written once"
+    );
+    assert_eq!(
+        1_000_000, once_ppm,
+        "written once the item ratio must be exactly 1.0 and read {once_ppm} ppm -- one record an \
+         object is the definition of no amplification"
+    );
+
+    // ---------- OVERWRITTEN: the superseded records are still in the durable form.
+    write_round(1);
+    let (twice_ppm, twice_live) = figure();
+    println!("  overwritten once      {:>9.3}x over {twice_live} live objects", twice_ppm as f64 / 1e6);
+
+    // 3. THE DENOMINATOR IS DISTINCT OBJECTS, NOT RECORDS. Checked before the ratio is read as
+    //    meaning anything: if it had moved with the writes, the ratio would be 1.0 by construction.
+    assert_eq!(
+        KEYS as u64, twice_live,
+        "the denominator moved to {twice_live} after overwriting the SAME {KEYS} keys. It must \
+         count distinct live objects, not written records -- if it counts records this ratio is \
+         1.0 by construction and every figure here is a tautology."
+    );
+    // 1. NON-VACUITY. The reason this field exists is that the byte figure beside it cannot do this.
+    assert!(
+        twice_ppm > 1_000_000,
+        "the item ratio read {twice_ppm} ppm after every key was overwritten, so it did NOT leave \
+         1.0. That is the defect this field was added to escape -- a figure that cannot rise \
+         cannot carry a trigger, and the rest of this arm would be measuring nothing. Check that \
+         `durable_items` is incremented on the overwrite arm of `set_string_logical_size` and not \
+         only on the insert arm."
+    );
+    assert_eq!(
+        2_000_000, twice_ppm,
+        "two records an object should read exactly 2.0x and read {twice_ppm} ppm"
+    );
+
+    // ---------- DUMPED: a dump re-serializes the live set, so the superseded records are gone.
+    let candidates: Vec<u32> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.bucket_map.keys().copied().collect()
+    };
+    assert!(!candidates.is_empty(), "no bucket to dump, so the reset below would be a no-op");
+    let lifecycle = engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+        shard_id: 1,
+        selected_dump_buckets: candidates.clone(),
+        max_dump_buckets_per_round: candidates.len(),
+        ..Default::default()
+    });
+    std::hint::black_box(&lifecycle);
+    let (dumped_ppm, dumped_live) = figure();
+    println!("  after a dump          {:>9.3}x over {dumped_live} live objects", dumped_ppm as f64 / 1e6);
+    println!();
+
+    // 2. EXACTLY 1.0, because a trigger needs a reachable floor.
+    assert_eq!(
+        KEYS as u64, dumped_live,
+        "the dump changed the live object count to {dumped_live}; it rewrites records, it does not \
+         delete objects"
+    );
+    assert_eq!(
+        1_000_000, dumped_ppm,
+        "after a dump the item ratio must be EXACTLY 1.0 and read {dumped_ppm} ppm. A dump \
+         re-serializes the live set, so no superseded record survives it. A reset that left this \
+         above 1.0 would put a fixed bound out of reach downward, which is what makes a lifetime \
+         ratio ungateable."
+    );
+    assert!(
+        dumped_ppm < twice_ppm,
+        "the dump did not lower the ratio ({twice_ppm} -> {dumped_ppm} ppm), so nothing reset and \
+         the figure would climb with uptime rather than tracking the store"
+    );
+}
