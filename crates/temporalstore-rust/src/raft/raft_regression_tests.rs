@@ -43,3 +43,6 @@ mod snapshot_scale;
 mod snapshot_scope;
 #[path = "tests/the_conflict_is_floored_at_the_commit_point.rs"]
 mod the_conflict_is_floored_at_the_commit_point;
+
+#[path = "tests/a_catch_up_carries_the_state_machine_it_replaces.rs"]
+mod a_catch_up_carries_the_state_machine_it_replaces;

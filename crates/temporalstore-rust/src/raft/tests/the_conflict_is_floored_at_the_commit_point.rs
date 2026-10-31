@@ -341,3 +341,47 @@ fn a_same_term_duplicate_above_the_commit_point_does_not_delete_the_suffix() {
          without the term compare the bare index collision truncates it away"
     );
 }
+
+#[test]
+fn a_catch_up_does_not_pull_a_node_backwards() {
+    // `catch_up_live_followers` admits a node on EITHER being behind on the commit point OR
+    // behind on the last log index. A node that is AHEAD on commit and BEHIND on log therefore
+    // reaches the wholesale replacement, which assigns `commit_index = leader_commit_index`
+    // rather than raising it -- so the commit point moves DOWN while `applied`, `applied_index`
+    // and `max_applied_index` stay where they are.
+    //
+    // That is the same disagreement the commit floor exists to prevent, through a third door:
+    // both apply loops skip any entry at or below `max_applied_index`, so after the pull-back
+    // every replacement entry below the old floor is stepped over unexecuted while the apply
+    // cursor advances across it. The engine keeps what it applied from the log that was replaced.
+    let mut node = new_node(2, RaftRole::Follower, SHARD);
+    for index in 1..=10 {
+        append_entry(&mut node, set_entry(index, 1, &format!("v{index}")));
+    }
+    node.commit_index = 10;
+    apply_committed(&mut node);
+    assert_eq!(
+        node.max_applied_index, 10,
+        "fixture: the node must really have applied through 10"
+    );
+
+    // The leader is behind on commit but its log reaches further, which is what admits this node.
+    let leader_log: Vec<RaftLogEntry> = (1..=12)
+        .map(|index| set_entry(index, 2, &format!("leader{index}")))
+        .collect();
+
+    install_leader_snapshot_tail(&mut node, None, leader_log, 5);
+
+    assert!(
+        node.commit_index >= 10,
+        "a catch-up must not lower the commit point: 10 -> {}",
+        node.commit_index
+    );
+    assert!(
+        node.max_applied_index <= node.commit_index,
+        "the exactly-once floor must never exceed the commit point ({} > {}): every entry at or \
+         below the floor is skipped unexecuted while the cursor advances over it",
+        node.max_applied_index,
+        node.commit_index
+    );
+}

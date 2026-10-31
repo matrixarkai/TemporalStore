@@ -64,6 +64,7 @@ impl MetaRaftClusterInner {
         let leader_state = leader.state.clone();
         let leader_snapshot_index = leader.installed_snapshot_index;
         let leader_snapshot_term = leader.installed_snapshot_term;
+        let leader_meta = leader.meta.clone();
         let mut caught_up = Vec::new();
         for node in self
             .nodes
@@ -84,6 +85,7 @@ impl MetaRaftClusterInner {
                     leader_log.clone(),
                     leader_commit_index,
                     leader_state.clone(),
+                    leader_meta.clone(),
                 );
             }
             if node.commit_index >= leader_commit_index {
