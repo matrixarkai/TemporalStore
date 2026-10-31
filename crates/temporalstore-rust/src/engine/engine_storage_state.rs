@@ -4360,8 +4360,15 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 ///
 /// # NO FORMAT STAMP IS OWED, AND IT IS CHECKED RATHER THAN ASSUMED
 ///
-/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex` and is rebuilt
-/// by a full bucket walk on load (`persistence`'s two `rebuild_object_block_lookup` calls). An
+/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex`, and what fills
+/// it on load is the DECODE, which files each page as it reads it.
+///
+/// THE TWO `rebuild_object_block_lookup` CALLS THIS PARAGRAPH USED TO NAME ARE GONE WITH THE
+/// FUNCTION, and the correction is made here rather than left standing because this is the
+/// paragraph a later change reads to decide whether it owes a stamp. The rebuild walked the pages
+/// and read each one's key; the key left the entry at `SHARD_INDEX_FORMAT_VERSION` 27, so there
+/// was nothing left to rebuild FROM. The conclusion below is unchanged -- it never rested on
+/// WHICH pass fills the field, only on the field not being written. An
 /// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it, because the writer
 /// skips it; an index stamped lower is refused by `persistence`'s `<` comparison. So the wire
 /// shape below has no reader a stamp could protect. The one observable difference for a
@@ -4408,6 +4415,52 @@ pub(super) struct ObjectBlockLookup {
 ///      ground 1 again. Object keys arrive from the caller, so there is no funnel to hold a
 ///      uniqueness property the way `block_index_handle`'s single emitter holds its own.
 ///      `an_integer_addressed_lookup_serves_another_objects_refs` drives both halves.
+///   4. RELOCATING IT INTO THE SLOT ENTRY IS A DIFFERENT CHANGE, IT IS THE LARGEST MEASURED LEVER
+///      ON THIS INDEX, AND IT IS BLOCKED ON TWO PRECONDITIONS THAT ARE NOT THIS MAP'S TO MEET.
+///      `index_bytes_per_key::what_folding_the_block_refs_into_the_slot_would_save` prices one
+///      per-object structure -- `{ slot: ObjectSlot, refs: BlockRefs }` held in the consolidated
+///      object map -- at 50.9 B/key at 1,792 keys and 50.9 at 7,168, a SLOPE and not a constant
+///      divided by keys. Grounds 1 to 3 do not cover it: it keeps the object key as the address
+///      and keeps the identity, so it is neither the integer address nor the deletion. What stops
+///      it is where the two halves live, and both halves are measured rather than argued.
+///
+///      FIRST, THE ENCODER CANNOT REACH THE CONSOLIDATED MAP, AND IT REFUSES RATHER THAN WRITING
+///      A KEY NAMING NOTHING. `impl Serialize for CoreIndex` builds
+///      [`BlockKeysByPosition::from_lookup`] over `self.object_block_lookup` in every build, and
+///      [`serialize_block_index`] returns `Err` for a page with no identity beside it. The
+///      consolidated map is `ShardState::objects` -- a SIBLING field of `bucket_index`, on a
+///      struct that DERIVES `Serialize` -- and `BucketNodeAt`'s own note states why that cannot be
+///      bridged: no derive and no `serialize_with` can pass a sibling down, because both see one
+///      field at a time. So moving the refs out of `CoreIndex` without moving the encoder's source
+///      into `CoreIndex`'s reach does not write a bad index. IT STOPS THE SHARD DUMPING AT ALL.
+///      `where_an_objects_refs_could_live::the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field`
+///      drives that refusal, which nothing in the suite did -- the state was reached only
+///      incidentally, by a fixture that forgot to file. The way through is `objects` into
+///      `CoreIndex`, which takes a top-level stored key into the nested `slot_index` map and so
+///      owes a `SHARD_INDEX_FORMAT_VERSION` step, the same bargain the eight series maps took.
+///
+///      SECOND, AND THIS IS WHAT MAKES IT NOT ONE STRUCTURE: FOUR LIVE KINDS -- MEASURED -- FILE
+///      REFS FOR OBJECTS THE CONSOLIDATED MAP HOLDS NO ROW FOR.
+///      `where_an_objects_refs_could_live::which_kinds_file_refs_for_an_object_the_slot_map_has_no_row_for`
+///      drives one object of each kind through the command surface and asks the map for each
+///      entry's row. `hash`, `set`, `zset` and `list` file refs for an object with NO row;
+///      `string`, `feature` and `control_state` have one. The housed column is asserted non-empty,
+///      so the unhoused one cannot be an artefact of an instrument that cannot see a row at all,
+///      and the test FAILS the day every kind is housed -- which is the day this ground expires
+///      and the fold is worth re-opening.
+///
+///      WHY, AND THE FIFTH KIND THE PROBE DOES NOT DRIVE. `objects` has TEN tenant kinds, each
+///      with a door of its own, and `objects_of_kind_mut` is the only way in -- so the tenancy is
+///      enumerable rather than a guess. `Hash`, `Set`, `Zset` and `List` keep their rows in
+///      `RecordedMap`, whose value is the object's ELEMENTS and not an `ObjectSlot`. By the same
+///      enumeration `ContextNode` is unhoused too -- it keeps a bare `ElementEntry` in
+///      `side_tables` -- and it is named here rather than counted in the measurement, because this
+///      probe does not reach it through the command surface.
+///
+///      AND THE TWO WAYS OUT ARE BOTH SHAPES ALREADY REFUSED ABOVE: a carrier row in a DURABLE map
+///      whose iteration feeds the dump manifest digest, so a row that exists only to hold refs
+///      changes what a restore validates; or a second home beside the slot, which is the
+///      two-sources-of-truth ground 2 rejects, decided per filing by a rule no compiler checks.
 const _: () = assert!(std::mem::size_of::<(Arc<str>, BlockRefs)>() == 40);
 /// Pinned on its own, because a width pin admits every alignment that divides it.
 const _: () = assert!(std::mem::align_of::<(Arc<str>, BlockRefs)>() == 8);
