@@ -180,6 +180,144 @@ pub(super) fn control_state_family_key(family: ControlStateFamily, key: &str) ->
     format!("control_state:{}:{key}", control_state_family_name(family))
 }
 
+/// A Control State bucket is identified by the PRECISION IT WAS WRITTEN AT as well as by its
+/// start instant, and this is where that pair is spelled.
+///
+/// # WHY THE PRECISION HAS TO BE PART OF THE IDENTITY
+///
+/// A counter bucket used to be identified by its start instant alone: a write truncated its
+/// timestamp down to a multiple of the precision it named and added its amount there. Two writes
+/// that named DIFFERENT precisions then landed in the SAME bucket whenever the coarser truncation
+/// happened to agree with the finer one -- a per-minute write and a per-hour write at the top of
+/// an hour both reduce to the top of that hour -- and their amounts were summed into one cell with
+/// nothing left to say which precision either belonged to.
+///
+/// That is not an exotic shape. Serving a per-minute rate and a per-day cap off one counter is the
+/// ordinary way to use this model, and it is reachable from a single command:
+/// `ControlStateSetAndGetWithOptions` names a precision, writes at it, and then reads a window.
+/// The read summed every bucket in the window at EVERY precision, so the per-minute answer
+/// included the per-day write, and a cap built on that answer admitted traffic it should have
+/// refused.
+///
+/// The format this model implements never had that problem, because the precision is part of the
+/// stored field's NAME: a field is the precision's code followed by the bucket's start, so two
+/// precisions cannot occupy one field, and a query names the precision it wants and reads only
+/// that precision's fields.
+///
+/// # HOW THE PAIR FITS WHERE ONE NUMBER USED TO
+///
+/// The codes below are the format's own, and they are two digits each for exactly the reason that
+/// matters here: a code is SMALL. Seven bits hold the largest of them, an epoch millisecond needs
+/// forty-one until the year 10889, and both fit in the `u64` a bucket key already is. So the
+/// identity gains the precision WITHOUT the series changing type -- which is what keeps this
+/// change out of the durable paths. `control_state` rides the index snapshot and the WAL; had the
+/// key become a pair, every store holding one and every reader of those stores would have needed a
+/// format migration. The key stays a `u64`, so they do not.
+///
+/// Data written before this change carries code `0`, which is the format's own `DISABLE` -- the
+/// value it uses for a write that names no precision. Old buckets therefore read back as exactly
+/// what they are, untagged, and a read that names no precision still finds them.
+pub(super) const CONTROL_STATE_PRECISION_SHIFT: u32 = 48;
+
+/// Low bits of a bucket key: the bucket's start, in epoch milliseconds.
+pub(super) const CONTROL_STATE_BUCKET_MASK: u64 = (1u64 << CONTROL_STATE_PRECISION_SHIFT) - 1;
+
+/// Every precision code a bucket key can carry, coarsest last, with `0` -- the format's `DISABLE`,
+/// meaning no precision was named -- first.
+///
+/// A read that does not name a precision has to answer across all of them, and it does that by
+/// scanning this list rather than by walking the series: nine range reads of a `BTreeMap` cost
+/// `O(codes * (log n + hits))`, where iterating the series and filtering on each key's low bits
+/// would cost `O(n)` and would get slower the longer a key had been counting.
+pub(super) const CONTROL_STATE_PRECISION_CODES: [u64; 9] = [0, 10, 14, 19, 30, 34, 39, 50, 60];
+
+/// The code the format files a write under, for the precisions it defines.
+///
+/// `None` means this precision is not one of them, and such a write keeps the untagged bucketing it
+/// has always had (code `0`) rather than being given a code of our own invention -- a tag only this
+/// implementation understands would be a divergence dressed up as conformance.
+///
+/// `OneMonth` (code 80) is deliberately absent: a month is not a fixed span of milliseconds, so it
+/// cannot be expressed by the truncation this function's callers perform, and admitting it here
+/// would file calendar-month writes under a code whose buckets are not months.
+pub(super) fn control_state_precision_code(precision_ms: u64) -> Option<u64> {
+    Some(match precision_ms {
+        1_000 => 10,
+        5_000 => 14,
+        10_000 => 19,
+        60_000 => 30,
+        300_000 => 34,
+        600_000 => 39,
+        3_600_000 => 50,
+        86_400_000 => 60,
+        _ => return None,
+    })
+}
+
+/// Compose a bucket key from a precision code and a bucket start.
+pub(super) fn control_state_pack_bucket(code: u64, bucket_start_ms: u64) -> u64 {
+    (code << CONTROL_STATE_PRECISION_SHIFT) | (bucket_start_ms & CONTROL_STATE_BUCKET_MASK)
+}
+
+/// The bucket key a write at `timestamp_ms` naming `precision_ms` belongs in.
+///
+/// With no precision, or one the format does not define, this is the timestamp itself under code
+/// `0` -- byte-for-byte the key such a write has always produced.
+pub(super) fn control_state_bucket_key(timestamp_ms: u64, precision_ms: Option<u64>) -> u64 {
+    let Some(precision_ms) = precision_ms.filter(|precision_ms| *precision_ms > 0) else {
+        return control_state_pack_bucket(0, timestamp_ms);
+    };
+    let start_ms = timestamp_ms - timestamp_ms % precision_ms;
+    control_state_pack_bucket(
+        control_state_precision_code(precision_ms).unwrap_or(0),
+        start_ms,
+    )
+}
+
+/// The bucket START a key names, with its precision code removed.
+///
+/// Every path that hands a bucket key back to a caller as a timestamp, or does time arithmetic on
+/// one, has to go through this: a packed key read as a timestamp is an instant in the year 10889.
+pub(super) fn control_state_bucket_start_ms(bucket_key: u64) -> u64 {
+    bucket_key & CONTROL_STATE_BUCKET_MASK
+}
+
+/// The bucket keys a window covers at ONE precision -- the format's own read shape, where a query
+/// names a precision and scans the fields that carry its code.
+///
+/// Inverted windows are EMPTY rather than a panic, which is the contract `timestamp_range_bounds`
+/// already keeps for the untagged reads: `BTreeMap::range` panics when its start exceeds its end,
+/// and a caller is free to pass a window either way round.
+pub(super) fn control_state_precision_bounds(
+    code: u64,
+    start_ms: u64,
+    end_ms: u64,
+) -> (std::ops::Bound<u64>, std::ops::Bound<u64>) {
+    use std::ops::Bound;
+    if start_ms > end_ms {
+        return (Bound::Included(1), Bound::Excluded(1));
+    }
+    (
+        Bound::Included(control_state_pack_bucket(code, start_ms)),
+        Bound::Included(control_state_pack_bucket(code, end_ms)),
+    )
+}
+
+/// Every bucket a window covers at EVERY precision: what a read that names no precision answers.
+///
+/// Yielded precision-major, so a key counting at one precision -- which is every key written
+/// before this existed, and every key whose caller names one precision -- comes back in exactly
+/// the time order it always did.
+pub(super) fn control_state_window_entries<'a>(
+    series: &'a std::collections::BTreeMap<u64, i64>,
+    start_ms: u64,
+    end_ms: u64,
+) -> impl Iterator<Item = (&'a u64, &'a i64)> + 'a {
+    CONTROL_STATE_PRECISION_CODES
+        .iter()
+        .flat_map(move |code| series.range(control_state_precision_bounds(*code, start_ms, end_ms)))
+}
+
 pub(super) fn control_state_family_name(family: ControlStateFamily) -> &'static str {
     match family {
         ControlStateFamily::Counter => "h",
