@@ -684,7 +684,7 @@ impl TemporalEngine {
                 .collect();
         }
         let _apply_guard = RaftApplyGuard::enter();
-        let batch_guard = RaftApplyBatchGuard::enter();
+        let batch_guard = CoalescedApplyBatchGuard::enter();
         let mut responses = Vec::with_capacity(requests.len());
         for (request, leader_time_ms) in requests {
             let _clock = ReplayClockGuard::enter(leader_time_ms);
@@ -711,6 +711,45 @@ impl TemporalEngine {
             }
         }
         responses
+    }
+
+    /// Apply a batch of commands whose durability is already guaranteed somewhere else,
+    /// coalescing the per-command fdatasync into ONE barrier for the batch.
+    ///
+    /// # WHAT THIS DOES AND DOES NOT WEAKEN
+    ///
+    /// It does NOT weaken durability. `sync` stays true, the WAL bytes are still appended under
+    /// the shard lock in apply order, and the single barrier still completes before this returns.
+    /// What falls is the NUMBER of fdatasyncs: one for the batch instead of one per command. The
+    /// caller is told whether that barrier succeeded and must treat a failure as the whole
+    /// batch's failure -- a batch whose barrier failed is not durable even where every command in
+    /// it answered ok.
+    ///
+    /// # WHY `apply` IS NOT ASYNC
+    ///
+    /// The batch scope is a thread-local. An `await` inside it would hand the scope to whatever
+    /// task the runtime scheduled on this thread next and give that task's writes a barrier
+    /// nobody committed. A non-async closure cannot await, so the hazard is a compile error
+    /// rather than a comment -- which is why a caller with an async read loop has to buffer a
+    /// window of work and hand the window over, instead of holding the scope across its reads.
+    pub(crate) fn apply_one_coalesced_batch<T>(
+        &self,
+        apply: impl FnOnce() -> T,
+    ) -> (T, Result<(), String>) {
+        let guard = CoalescedApplyBatchGuard::enter();
+        let applied = apply();
+        let barrier = guard.take_barrier();
+        drop(guard);
+        let commit = match barrier {
+            // Nothing reserved a sequence: either the batch was empty or every command in it was
+            // a read. There is nothing to make durable and nothing to report.
+            None => Ok(()),
+            Some((shard_id, sequence)) => self
+                .wal_store
+                .commit_barrier(shard_id, sequence)
+                .map_err(|err| format!("durable WAL commit barrier failed: {err}")),
+        };
+        (applied, commit)
     }
 
     pub fn execute_replicated(&self, request: ReplicatedExecuteRequest) -> ExecuteResponse {
@@ -1214,7 +1253,7 @@ impl TemporalEngine {
                 // In a raft apply batch (TS_RAFT_APPLY_COALESCE) reuse the same reserve-only
                 // append: each committed entry appends its bytes with sync=false and RESERVES its
                 // WAL sequence here; the single coalesced fdatasync is issued once for the whole
-                // batch in `execute_raft_apply_batch` (see `raft_apply_batch_active`). WAL order
+                // batch in `execute_raft_apply_batch` (see `coalesced_apply_batch_active`). WAL order
                 // still equals apply order (reservation + byte-append stay under this lock).
                 // The reserve-only branch appends bytes without blocks, so a write carrying
                 // blocks must take the staged branch or they would be dropped on the floor.
@@ -1227,7 +1266,7 @@ impl TemporalEngine {
                     && (self
                         .concurrent_commit
                         .load(std::sync::atomic::Ordering::Relaxed)
-                        || raft_apply_batch_active());
+                        || coalesced_apply_batch_active());
                 // Where each block this write stages ends up, so the index can carry it. Filled
                 // by the append below, which is the first moment the log id exists.
                 let mut wal_resident_updates: Vec<(u64, crate::engine::state::WalResidentBlock)> =
@@ -1379,7 +1418,7 @@ impl TemporalEngine {
                 // under this lock (stack-sampling shows it dominates a warm ingest). Under
                 // flat append anchor off the O(1) cached last sequence (authoritative right after
                 // this write's append) instead; without it the exact `stats()` value is kept.
-                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() || raft_apply_batch_active() {
+                shard.applied_wal_sequence = Some(if self.wal_store.flat_append() || coalesced_apply_batch_active() {
                     self.wal_store.cached_last_sequence(request.shard_id)
                 } else {
                     self.wal_store.stats(request.shard_id).last_sequence
@@ -1505,10 +1544,10 @@ impl TemporalEngine {
         // no-op, so this is byte-identical to the prior in-lock append_with_sync path.
         drop(shards);
         if let Some(barrier_seq) = pending_barrier_seq {
-            if raft_apply_batch_active() {
+            if coalesced_apply_batch_active() {
                 // Defer to the single coalesced barrier issued for the whole batch by
                 // `execute_raft_apply_batch` (the record bytes are already reserved + buffered).
-                record_raft_apply_batch_barrier(request.shard_id, barrier_seq);
+                record_coalesced_apply_batch_barrier(request.shard_id, barrier_seq);
             } else if let Err(err) = self.wal_store.commit_barrier(request.shard_id, barrier_seq) {
                 // The coalesced durable barrier failed: this synchronous write is NOT durable, so
                 // surface the failure instead of acking (mirrors the append_with_sync sync-failure
@@ -5018,23 +5057,35 @@ impl Drop for RaftApplyGuard {
 }
 
 thread_local! {
-    // Set while applying a COMMITTED raft batch under TS_RAFT_APPLY_COALESCE. While set, each
-    // per-command WAL append reserves its sequence with sync=false (append_for_group_commit) and
-    // records the reserved sequence in RAFT_APPLY_BATCH_BARRIER instead of taking its own
-    // fdatasync; `execute_raft_apply_batch` issues ONE coalesced `commit_barrier` for the whole
-    // batch after every command is applied. Thread-local because raft apply runs synchronously on
-    // the apply thread. A raft group is one shard, so the accumulator holds a single (shard, seq).
-    static RAFT_APPLY_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
-    static RAFT_APPLY_BATCH_BARRIER: std::cell::RefCell<Option<(ShardId, u64)>> =
+    // Set while applying a batch of commands THAT ARE ALREADY DURABLE SOMEWHERE ELSE. While set,
+    // each per-command WAL append reserves its sequence with sync=false
+    // (append_for_group_commit) and records the reserved sequence in
+    // COALESCED_APPLY_BATCH_BARRIER instead of taking its own fdatasync; the batch's owner issues
+    // ONE coalesced `commit_barrier` after every command is applied. Thread-local because the
+    // applies run synchronously on one thread, which `apply_one_coalesced_batch` enforces by
+    // taking a non-async closure. One batch covers one shard, so the accumulator holds a single
+    // (shard, seq).
+    //
+    // DURABILITY IS UNCHANGED BY THIS, which is the whole reason it is safe to widen: `sync` stays
+    // true, the bytes are still appended under the shard lock in apply order, and the barrier
+    // still completes before the batch's owner reports success. What drops is the NUMBER of
+    // fdatasyncs -- one per batch instead of one per command.
+    //
+    // TWO OWNERS, and it used to be named after the first: `execute_raft_apply_batch`, where the
+    // raft log is the other durable copy, and the shared-store WAL replay, where the shared log
+    // is. The replay measured 900 us an entry against roughly 100 with the barrier coalesced,
+    // which is what sent it looking for this mechanism rather than building another.
+    static COALESCED_APPLY_BATCH: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    static COALESCED_APPLY_BATCH_BARRIER: std::cell::RefCell<Option<(ShardId, u64)>> =
         const { std::cell::RefCell::new(None) };
 }
 
-fn raft_apply_batch_active() -> bool {
-    RAFT_APPLY_BATCH.with(|cell| cell.get())
+fn coalesced_apply_batch_active() -> bool {
+    COALESCED_APPLY_BATCH.with(|cell| cell.get())
 }
 
-fn record_raft_apply_batch_barrier(shard_id: ShardId, sequence: u64) {
-    RAFT_APPLY_BATCH_BARRIER.with(|cell| {
+fn record_coalesced_apply_batch_barrier(shard_id: ShardId, sequence: u64) {
+    COALESCED_APPLY_BATCH_BARRIER.with(|cell| {
         let mut slot = cell.borrow_mut();
         match *slot {
             Some((existing_shard, existing_seq)) if existing_shard == shard_id => {
@@ -5045,25 +5096,25 @@ fn record_raft_apply_batch_barrier(shard_id: ShardId, sequence: u64) {
     });
 }
 
-/// Drop-guarded batch scope: sets RAFT_APPLY_BATCH on enter (clearing any stale barrier) and clears
-/// it on drop, so a panic mid-batch cannot leave the thread stuck in batch mode.
-struct RaftApplyBatchGuard;
+/// Drop-guarded batch scope: sets COALESCED_APPLY_BATCH on enter (clearing any stale barrier) and
+/// clears it on drop, so a panic mid-batch cannot leave the thread stuck in batch mode.
+struct CoalescedApplyBatchGuard;
 
-impl RaftApplyBatchGuard {
+impl CoalescedApplyBatchGuard {
     fn enter() -> Self {
-        RAFT_APPLY_BATCH.with(|cell| cell.set(true));
-        RAFT_APPLY_BATCH_BARRIER.with(|cell| *cell.borrow_mut() = None);
-        RaftApplyBatchGuard
+        COALESCED_APPLY_BATCH.with(|cell| cell.set(true));
+        COALESCED_APPLY_BATCH_BARRIER.with(|cell| *cell.borrow_mut() = None);
+        CoalescedApplyBatchGuard
     }
 
     fn take_barrier(&self) -> Option<(ShardId, u64)> {
-        RAFT_APPLY_BATCH_BARRIER.with(|cell| cell.borrow_mut().take())
+        COALESCED_APPLY_BATCH_BARRIER.with(|cell| cell.borrow_mut().take())
     }
 }
 
-impl Drop for RaftApplyBatchGuard {
+impl Drop for CoalescedApplyBatchGuard {
     fn drop(&mut self) {
-        RAFT_APPLY_BATCH.with(|cell| cell.set(false));
+        COALESCED_APPLY_BATCH.with(|cell| cell.set(false));
     }
 }
 
