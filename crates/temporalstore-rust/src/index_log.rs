@@ -592,7 +592,7 @@ pub struct IndexLogRecord {
 /// TTL-only or whole-object tombstone), and a META item carries the compaction anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexItemKind {
-    #[serde(rename = "page")]
+    #[serde(rename = "page", alias = "block")]
     Block,
     #[serde(rename = "object")]
     Object,

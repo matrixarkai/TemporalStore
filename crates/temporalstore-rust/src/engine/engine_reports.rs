@@ -88,10 +88,10 @@ pub struct ObjectIndexDivergenceReport {
     pub reconstructs: u64,
     /// A live page named an object its bucket's list did not hold. The list gains it; nothing
     /// already filed moves.
-    #[serde(rename = "pages_named_an_object_the_list_lacked")]
+    #[serde(rename = "pages_named_an_object_the_list_lacked", alias = "blocks_named_an_object_the_list_lacked")]
     pub blocks_named_an_object_the_list_lacked: u64,
     /// The list held an object no live page names. The list drops it, leaving a placeholder.
-    #[serde(rename = "list_held_an_object_no_page_names")]
+    #[serde(rename = "list_held_an_object_no_page_names", alias = "list_held_an_object_no_block_names")]
     pub list_held_an_object_no_block_names: u64,
     /// How many of those reached the log, which is rate-limited, so a quiet log cannot be mistaken
     /// for a zero count.
@@ -2078,7 +2078,7 @@ pub struct StorageFollowerCursorSafetySample {
 pub struct StorageGcSnapshot {
     #[serde(rename = "tombstone_records")]
     pub delete_marker_records: u64,
-    #[serde(rename = "stale_page_tombstones")]
+    #[serde(rename = "stale_page_tombstones", alias = "stale_block_tombstones")]
     pub stale_page_delete_markers: u64,
     #[serde(rename = "stale_block_tombstones")]
     pub stale_block_delete_markers: u64,

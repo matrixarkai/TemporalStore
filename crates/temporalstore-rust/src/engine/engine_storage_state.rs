@@ -472,7 +472,7 @@ pub(super) struct ShardState {
     // inner types already derive Serialize, so carrying it costs only a `default` so
     // that dumps written before this still decode.
     #[serde(default)]
-    #[serde(rename = "object_page_layouts")]
+    #[serde(rename = "object_page_layouts", alias = "object_block_layouts")]
     pub(super) object_block_layouts: super::object_record::BlockLayoutStore,
     /// Per `(key, bucket)` distinct-count state, in whichever representation the bucket holds.
     ///
@@ -5583,7 +5583,7 @@ pub(super) struct TombstoneElement {
     pub(super) object_key: Arc<str>,
     pub(super) model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     pub(super) component: Arc<str>,
-    #[serde(rename = "page")]
+    #[serde(rename = "page", alias = "block")]
     pub(super) block: (u64, u64, u64),
 }
 

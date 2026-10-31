@@ -768,3 +768,78 @@ fn the_stored_object_layout_emits_the_page_spelling_and_reads_one_back() {
          question becomes which spelling is on disk rather than whether to move it"
     );
 }
+
+/// THE INDEX-LOG ITEM KIND TAKES BOTH SPELLINGS, AND THIS IS THE VARIANT SHAPE RATHER THAN A FIELD.
+///
+/// `IndexItemKind::Block` is tagged `page` on the wire. It is not a field name: it is the VALUE of
+/// an index-log item's kind, and the index log is replayed on recovery, so the token is read back
+/// out of bytes an older build wrote. `serde(rename)` on a variant replaces the accepted token
+/// exactly as it does on a field, so the reader was single-form here too -- and a unit-variant
+/// enum has no `default` to fall back to, which makes this one LOUD rather than silent: an item
+/// tagged `block` was a decode error, and a decode error on an index-log replay is a store that
+/// will not come up.
+///
+/// FOUR CLAUSES, and the last two are not padding:
+///
+///   1. the writer still emits `page`, so the frozen token below is what is actually on disk.
+///      Without this the reader arms could both be passing against a token nothing writes.
+///   2. the frozen `page` token still decodes to `Block`.
+///   3. the `block` token decodes to `Block`. This one is driven from a literal NOTHING WRITES,
+///      which is what keeps it from being a round trip: clause 1 reads the writer, clause 3 reads
+///      a byte string the writer has never produced.
+///   4. `object` and `meta` still decode to themselves. An alias that collided with a sibling
+///      token would make one variant unreachable, and serde reports a duplicate token for unit
+///      variants at NEITHER compile nor decode time -- the first declaration simply wins, so the
+///      collision would present as an item kind quietly decoding to the wrong variant.
+#[test]
+fn the_index_log_item_kind_reader_takes_the_block_spelling_and_the_page_spelling() {
+    use crate::index_log::IndexItemKind;
+
+    // Frozen. Every build through `SHARD_INDEX_FORMAT_VERSION` 27 tags a block item with this.
+    const ITEM_KIND_AT_STAMP_27: &str = r#""page""#;
+
+    // ---- CLAUSE 1: THE WRITER STILL EMITS IT ----
+    assert_eq!(
+        serde_json::to_string(&IndexItemKind::Block).expect("the item kind must serialize"),
+        ITEM_KIND_AT_STAMP_27,
+        "[CLAUSE writer] a block item is no longer tagged `page` on the wire, so the frozen token \
+         this guard reads back is not what any store holds. That is a format move and is not \
+         approved here"
+    );
+
+    // ---- CLAUSE 2: THE STORED TOKEN STILL LANDS ----
+    let stored: IndexItemKind = serde_json::from_str(ITEM_KIND_AT_STAMP_27)
+        .expect("an index-log item tagged with the stored spelling must still decode");
+    assert_eq!(
+        stored,
+        IndexItemKind::Block,
+        "[CLAUSE stored-tag] the stored `page` token decoded to {stored:?} rather than `Block`"
+    );
+
+    // ---- CLAUSE 3: SO DOES THE CANONICAL ONE, FROM A LITERAL NOTHING WRITES ----
+    let canonical: IndexItemKind = serde_json::from_str(r#""block""#).expect(
+        "an index-log item tagged `block` must decode, or the writer can never converge -- and \
+         unlike a named field this fails LOUDLY, taking the whole replay with it",
+    );
+    assert_eq!(
+        canonical,
+        IndexItemKind::Block,
+        "[CLAUSE block-tag] the `block` token decoded to {canonical:?} rather than `Block`"
+    );
+
+    // ---- CLAUSE 4: AND NO SIBLING TOKEN WAS CAPTURED ----
+    for (token, expected) in [
+        (r#""object""#, IndexItemKind::Object),
+        (r#""meta""#, IndexItemKind::Meta),
+    ] {
+        let decoded: IndexItemKind = serde_json::from_str(token)
+            .unwrap_or_else(|err| panic!("the item kind token {token} stopped decoding: {err}"));
+        assert_eq!(
+            decoded, expected,
+            "[CLAUSE sibling-tags] {token} decoded to {decoded:?} rather than {expected:?}. An \
+             alias that collided with a sibling token would present exactly like this -- quietly, \
+             because a duplicate token on a unit variant is reported at neither compile nor \
+             decode time and the first declaration wins"
+        );
+    }
+}
