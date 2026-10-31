@@ -242,6 +242,8 @@ mod part4;
 mod expiry_scale;
 #[path = "tests/a_precision_is_part_of_a_bucket_identity.rs"]
 mod a_precision_is_part_of_a_bucket_identity;
+#[path = "tests/a_distinct_write_is_stored_at_two_levels.rs"]
+mod a_distinct_write_is_stored_at_two_levels;
 #[path = "tests/reclaim_dump.rs"]
 mod reclaim_dump;
 #[path = "tests/claim_stamp_hold.rs"]

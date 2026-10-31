@@ -5083,6 +5083,7 @@ fn control_state_distinct_sketch_bounds_high_cardinality() {
                     start_ms: 0,
                     end_ms: 10_000,
                     aggregator: "change".to_string(),
+                    precision_ms: None,
                 },
             })
             .response
@@ -5157,6 +5158,7 @@ fn control_state_distinct_sketch_survives_restart() {
                 start_ms: 0,
                 end_ms: 10_000,
                 aggregator: "change".to_string(),
+                precision_ms: None,
             },
         })
         .response
@@ -5312,6 +5314,7 @@ fn control_state_rollup_matches_raw_scan_through_engine() {
                             start_ms,
                             end_ms,
                             aggregator: aggregator.to_string(),
+                            precision_ms: None,
                         },
                     })
                     .response
@@ -5852,6 +5855,7 @@ fn what_one_control_state_increment_costs_as_the_counter_grows() {
                     start_ms: 0,
                     end_ms: u64::MAX,
                     aggregator: "sum".to_string(),
+                    precision_ms: None,
                 },
             })
             .response
