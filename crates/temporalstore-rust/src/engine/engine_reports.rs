@@ -2585,10 +2585,6 @@ pub fn default_storage_write_contract(
         contract_u64(metric(metrics, "append_durability_failures")),
     );
     contract.insert(
-        "page_writes".to_string(),
-        contract_u64(metric(metrics, "page_writes")),
-    );
-    contract.insert(
         "block_writes".to_string(),
         contract_u64(metric(metrics, "block_writes")),
     );
@@ -2646,8 +2642,8 @@ pub fn default_storage_read_contract(
         contract_u64(metric(metrics, "block_index_lookup_ms")),
     );
     contract.insert(
-        "page_reads".to_string(),
-        contract_u64(metric(metrics, "page_reads")),
+        "block_reads".to_string(),
+        contract_u64(metric(metrics, "block_reads")),
     );
     contract.insert(
         "decode_records_ms".to_string(),

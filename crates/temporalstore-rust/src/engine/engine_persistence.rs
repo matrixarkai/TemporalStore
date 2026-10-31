@@ -1147,11 +1147,10 @@ impl TemporalEngine {
             // themselves stay exactly what was recorded.
             let stale = state.bucket_index.block_slab_live.stale_summary();
             let storage = crate::control::ShardCanonicalStorageStats {
-                page_index_entries: object_manager.block_ref_count as u64,
-                // Live refs, NOT `page_store.writes`: that counter only ever increases, so
+                // Live refs, NOT `block_store.writes`: that counter only ever increases, so
                 // publishing it as an entry count meant the number could never fall after a GC
-                // or a compaction reclaimed anything. `block_*` mirrors `page_*` here the same
-                // way `block_reads` mirrors `page_reads`.
+                // or a compaction reclaimed anything. The page-spelled twin that sat on the line
+                // above is retired, and it carried this same expression.
                 block_index_entries: object_manager.block_ref_count as u64,
                 object_index_entries: object_manager.object_count as u64,
                 bucket_entries: object_manager.routing_bucket_count as u64,
@@ -1293,8 +1292,6 @@ impl TemporalEngine {
                 stale_bytes_by_sweep: stale.swept_bytes,
                 storage_slab_used_bytes: block_store_slabs.live_physical_bytes,
                 storage_slab_stale_bytes: block_store_slabs.reclaimable_physical_bytes,
-                page_reads: block_store.reads,
-                page_writes: block_store.writes,
                 block_reads: block_store.reads,
                 block_writes: block_store.writes,
                 bytes_read: block_store.bytes_read,

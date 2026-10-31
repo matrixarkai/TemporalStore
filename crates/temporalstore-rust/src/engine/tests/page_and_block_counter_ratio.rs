@@ -32,9 +32,7 @@ use super::*;
 #[derive(Debug, Clone, Copy)]
 struct CounterSample {
     name: &'static str,
-    page_reads: u64,
     block_reads: u64,
-    page_writes: u64,
     block_writes: u64,
 }
 
@@ -57,20 +55,12 @@ fn counter_sample(name: &'static str, engine: &TemporalEngine) -> CounterSample 
     let storage = &stats[0].storage;
     let observed = CounterSample {
         name,
-        page_reads: storage.page_reads,
         block_reads: storage.block_reads,
-        page_writes: storage.page_writes,
         block_writes: storage.block_writes,
     };
     println!(
-        "workload {name}: page_reads={} block_reads={} read_ratio={} \
-         page_writes={} block_writes={} write_ratio={}",
-        observed.page_reads,
-        observed.block_reads,
-        counter_ratio(observed.page_reads, observed.block_reads),
-        observed.page_writes,
-        observed.block_writes,
-        counter_ratio(observed.page_writes, observed.block_writes),
+        "workload {name}: block_reads={} block_writes={}",
+        observed.block_reads, observed.block_writes,
     );
     observed
 }
@@ -116,7 +106,7 @@ fn counter_get(engine: &TemporalEngine, key: &str) {
 }
 
 #[test]
-fn block_and_block_counters_are_one_measurement_under_two_names() {
+fn the_block_store_counters_count_calls_and_not_bytes() {
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_path_buf();
     let mut samples: Vec<CounterSample> = Vec::new();
@@ -189,10 +179,6 @@ fn block_and_block_counters_are_one_measurement_under_two_names() {
             after.block_reads, before.block_reads,
             "a cache hit must not reach the block store"
         );
-        assert_eq!(
-            after.page_reads, before.page_reads,
-            "a cache hit must not reach the block store"
-        );
         samples.push(after);
     }
 
@@ -231,27 +217,42 @@ fn block_and_block_counters_are_one_measurement_under_two_names() {
         samples.len()
     );
 
-    // The finding, as a NUMBER: the ratio is exactly one everywhere, never two.
-    for observed in &samples {
-        assert_eq!(
-            observed.page_reads, observed.block_reads,
-            "{}: page_reads {} and block_reads {} are published from one BlockStore counter \
-             and must stay equal (ratio {})",
-            observed.name,
-            observed.page_reads,
-            observed.block_reads,
-            counter_ratio(observed.page_reads, observed.block_reads),
-        );
-        assert_eq!(
-            observed.page_writes, observed.block_writes,
-            "{}: page_writes {} and block_writes {} are published from one BlockStore counter \
-             and must stay equal (ratio {})",
-            observed.name,
-            observed.page_writes,
-            observed.block_writes,
-            counter_ratio(observed.page_writes, observed.block_writes),
-        );
-    }
+    // THE FINDING, AS A NUMBER, NOW THAT THERE IS ONE COUNTER AND NOT TWO.
+    //
+    // This loop used to assert that the two spellings stayed equal. That comparison was evidence
+    // for something, and the something is what is asserted here instead: the counter counts
+    // CALLS. A four-megabyte object is many blocks on disk, so a counter that counted blocks or
+    // bytes would charge a cold read of it more than a cold read of five hundred bytes.
+    let by_name = |wanted: &str| -> CounterSample {
+        *samples
+            .iter()
+            .find(|sample| sample.name == wanted)
+            .unwrap_or_else(|| panic!("the {wanted} workload is missing from the samples"))
+    };
+    let one_cold = by_name("read-one-cold");
+    let large_cold = by_name("read-large-object-cold");
+    let ten_cold = by_name("read-ten-cold");
+
+    assert!(
+        one_cold.block_reads > 0,
+        "premise: a cold read must reach the store, got {}",
+        one_cold.block_reads
+    );
+    assert_eq!(
+        large_cold.block_reads, one_cold.block_reads,
+        "a four-megabyte cold read charged {} store reads and a five-hundred-byte cold read {}. \
+         They are one CALL each; a counter that charged per block or per byte would differ here, \
+         which is the whole claim this workload set exists to measure",
+        large_cold.block_reads, one_cold.block_reads,
+    );
+    assert_eq!(
+        ten_cold.block_reads,
+        10 * one_cold.block_reads,
+        "ten distinct cold reads charged {} and one charged {}; a call counter has to scale with \
+         the number of calls",
+        ten_cold.block_reads,
+        one_cold.block_reads,
+    );
 }
 
 /// The committed fixture must record a shape the engine can actually produce.

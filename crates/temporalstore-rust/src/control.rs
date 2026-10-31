@@ -219,10 +219,11 @@ pub struct ShardStatInfo {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct ShardCanonicalStorageStats {
-    pub page_index_entries: u64,
-    /// The same live count as `page_index_entries` -- block and page are one concept under two
-    /// names, and both are published while the rename is in flight. It is NOT a write counter;
-    /// `block_writes` and `page_writes` are.
+    /// The live block-ref count. It is NOT a write counter; `block_writes` is.
+    ///
+    /// THE PAGE-SPELLED TWIN IS RETIRED. It was a second FIELD carrying this same quantity, not a
+    /// second spelling of this one: both were assigned from `object_manager.block_ref_count` five
+    /// lines apart in `engine/engine_persistence.rs`, so dropping it loses no number.
     pub block_index_entries: u64,
     pub object_index_entries: u64,
     /// The routing RANGE this shard covers -- the hash modulus, `end - start` -- and NOT a count
@@ -821,24 +822,22 @@ pub struct ShardCanonicalStorageStats {
     pub storage_slab_stale_bytes: u64,
     /// How many times the block store was CALLED to read, summed over the shard's lifetime.
     ///
-    /// One per call, not one per byte and not one per page: a four-megabyte object read cold
+    /// One per call, not one per byte and not one per block: a four-megabyte object read cold
     /// counts one, the same as a five-hundred-byte one, and a read served from the memory or
     /// disk cache counts none because it never reaches the store. Incremented at three sites
     /// in `block_store/block_store_read.rs` -- `read`, `read_range`, `read_logical_range`.
-    pub page_reads: u64,
-    /// How many times the block store was CALLED to append, summed over the shard's lifetime.
-    /// Two increment sites, both in `block_store/block_store_append.rs`.
-    pub page_writes: u64,
-    /// The SAME number as `page_reads`, not a second measurement.
     ///
-    /// Block and page are one concept under two names while the rename is in flight, and
-    /// `engine/engine_persistence.rs` assigns both fields from `block_store.reads` four lines apart.
-    /// A committed fixture once recorded `page_reads: 4` beside `block_reads: 2`, which reads
-    /// as two measurements and would make a rename halve a real number; no code path can
-    /// produce that, and `engine::tests::page_and_block_counter_ratio` asserts the ratio is
-    /// one over nine shaped workloads so the claim cannot rot back in.
+    /// THE PAGE-SPELLED TWIN IS RETIRED, AND WHAT MADE THAT SAFE IS WORTH KEEPING. It published
+    /// this same number under the other word: both fields were assigned from `block_store.reads`
+    /// four lines apart. A committed fixture once recorded `page_reads: 4` beside
+    /// `block_reads: 2`, which reads as two measurements and would make a rename halve a real
+    /// number -- no code path could produce it, and the ratio was asserted to be one over nine
+    /// shaped workloads before the twin was dropped. That measurement is why dropping it is a
+    /// rename and not the loss of a number.
     pub block_reads: u64,
-    /// The SAME number as `page_writes`, on the same terms as `block_reads` above.
+    /// How many times the block store was CALLED to append, summed over the shard's lifetime.
+    /// Two increment sites, both in `block_store/block_store_append.rs`. Its page-spelled twin is
+    /// retired on the same terms as `block_reads` above.
     pub block_writes: u64,
     pub bytes_read: u64,
     pub bytes_written: u64,
