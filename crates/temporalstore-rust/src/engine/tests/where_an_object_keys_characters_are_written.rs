@@ -692,7 +692,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         let block_index = node
             .as_object()
             .expect("a bucket node writes an object")
-            .get("page_index")
+            .get("block_index")
             .expect("a bucket node writes `block_index`");
         let in_whole_map = reading.instances_in(block_index);
         let blocks = block_index

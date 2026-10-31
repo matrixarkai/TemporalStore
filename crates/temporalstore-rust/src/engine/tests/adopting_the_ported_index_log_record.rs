@@ -562,11 +562,12 @@ fn the_stamp_this_adoption_was_costed_against() {
     let current = crate::engine::SHARD_INDEX_FORMAT_VERSION;
     println!("SHARD_INDEX_FORMAT_VERSION at the base = {current}");
     assert_eq!(
-        current, 28,
+        current, 29,
         "costed against 24; if this is red the stamp moved and the adoption's cost has to be \
          re-read rather than re-goldened"
     );
-    // RE-READ AT 26 -> 27 AND AGAIN AT 27 -> 28, AS THE MESSAGE ABOVE DEMANDS, AND THE
+    // RE-READ AT 26 -> 27, 27 -> 28 AND AGAIN AT 28 -> 29, AS THE MESSAGE ABOVE DEMANDS,
+    // AND THE
     // COSTING STILL STANDS BOTH TIMES.
     //
     // 28 is the page -> block WRITER flip on every emitted serde key. This module costs the
@@ -575,7 +576,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // arity is unmoved, and `block_ref_key_from_parts` is unchanged. The one thing 28 does
     // touch in this neighbourhood is the item KIND token, which is a value inside a slot and
     // not a slot of its own, so the 550-against-595 comparison for eight block items stands
-    // unaltered.
+    // unaltered. 29 moves a key in the SERVED index's bucket node, which this module
+    // does not cost either: the positional row carries no key names at all.
     //
     // 27 is a PAGE ENTRY dropping the `object_key` and `model_id` it restated from the key it is
     // filed under. This module costs the POSITIONAL index-log row, and the row is untouched: the
@@ -738,8 +740,8 @@ fn the_stamp_this_adoption_was_costed_against() {
     // The pin is kept rather than deleted, for the reason it was added: so a later reader cannot
     // cost the adoption against a tree that has bumped the stamp for an unrelated reason.
     assert!(
-        current != 27 && current != 29,
-        "bracketed, so 28 is exact and not an artefact of the comparison above"
+        current != 28 && current != 30,
+        "bracketed, so 29 is exact and not an artefact of the comparison above"
     );
     // AND THE BRACKET IS DOMINATED BY THE EQUALITY ABOVE IT, noted rather than removed. An
     // `== 14` already excludes 13 and 15; a neighbour inequality beside it can only ever fail

@@ -976,7 +976,7 @@ fn walk(reading: &Reading) -> Walked {
         tally.add("node/field_tails", node.len(), 0);
 
         for (field, value) in node.iter() {
-            if field == "page_index" {
+            if field == "block_index" {
                 tally.add("node/page_index/field_name", klen(field) + 1, klen(field) + 1);
                 continue;
             }
@@ -1015,7 +1015,7 @@ fn walk(reading: &Reading) -> Walked {
             std::collections::BTreeSet::new();
 
         let block_index = node
-            .get("page_index")
+            .get("block_index")
             .expect("a bucket node writes `block_index`");
         block_subtree_bytes += jlen(block_index);
         let blocks = block_index.as_object().expect("the page index writes an object");
@@ -1357,8 +1357,8 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
             .expect("an object");
         for node in bucket_map.values_mut() {
             let block_index = node
-                .get("page_index")
-                .expect("page_index")
+                .get("block_index")
+                .expect("block_index")
                 .as_object()
                 .expect("an object")
                 .clone();
@@ -1427,7 +1427,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                      under `{new_key}`, so this candidate loses a page rather than bytes"
                 );
             }
-            *node.get_mut("page_index").expect("page_index") =
+            *node.get_mut("block_index").expect("block_index") =
                 serde_json::Value::Object(replacement);
         }
     }
@@ -2380,8 +2380,8 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
                 break;
             }
             let blocks = node
-                .get_mut("page_index")
-                .expect("page_index")
+                .get_mut("block_index")
+                .expect("block_index")
                 .as_object_mut()
                 .expect("an object");
             let Some(was) = blocks.keys().next().cloned() else { continue };

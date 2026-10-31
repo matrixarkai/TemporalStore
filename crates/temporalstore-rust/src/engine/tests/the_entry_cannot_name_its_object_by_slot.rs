@@ -1069,7 +1069,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
         members.len()
     );
     assert_eq!(
-        vec!["page_index".to_string()],
+        vec!["block_index".to_string()],
         carrying,
         "the key's characters are carried by {carrying:?} rather than by `block_index` alone, so \
          the page entry is NOT the only member of a stored node that holds them and this ground \
@@ -1168,7 +1168,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     // anything.
     let block_index_text = serde_json::to_string(
         members
-            .get("page_index")
+            .get("block_index")
             .expect("APPARATUS: a stored node has no `block_index` member"),
     )
     .expect("the page rows serialize");
