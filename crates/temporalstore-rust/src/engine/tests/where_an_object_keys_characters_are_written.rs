@@ -697,7 +697,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         let in_whole_map = reading.instances_in(block_index);
         let blocks = block_index
             .as_object()
-            .expect("the page index writes an object");
+            .expect("the block index writes an object");
         let in_values: usize = blocks.values().map(|entry| reading.instances_in(entry)).sum();
         assert!(
             in_whole_map >= in_values,

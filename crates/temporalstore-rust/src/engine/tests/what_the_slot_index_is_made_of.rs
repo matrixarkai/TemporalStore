@@ -358,7 +358,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
         "node/object_index",
         Scale::PerBucket,
         Nature::Redundancy,
-        "the stable object id of each page entry in the same bucket, from its kind and object key",
+        "the stable object id of each block entry in the same bucket, from its kind and object key",
     ),
     ("node/deleted_object_index", Scale::PerBucket, Nature::Identity, ""),
     ("node/tombstone_elements", Scale::PerBucket, Nature::Payload, ""),
@@ -729,7 +729,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     assert_eq!(
         handles_by_written_key.len(),
         blocks,
-        "[CLAUSE join-total] the join names {} page(s) against {blocks} resident",
+        "[CLAUSE join-total] the join names {} block(s) against {blocks} resident",
         handles_by_written_key.len()
     );
 
@@ -1018,7 +1018,7 @@ fn walk(reading: &Reading) -> Walked {
             .get("block_index")
             .expect("a bucket node writes `block_index`");
         block_subtree_bytes += jlen(block_index);
-        let blocks = block_index.as_object().expect("the page index writes an object");
+        let blocks = block_index.as_object().expect("the block index writes an object");
         assert!(
             !blocks.is_empty(),
             "[CLAUSE no-empty-page-index] bucket `{bucket_key}` writes an EMPTY page index, and \
@@ -1058,7 +1058,7 @@ fn walk(reading: &Reading) -> Walked {
             tally.add("page/map_key/separators", 6, 0);
             tally.add("page/map_key/empty_slot_separator", 1, 0);
 
-            let entry = entry_value.as_object().expect("a page entry writes an object");
+            let entry = entry_value.as_object().expect("a block entry writes an object");
             tally.add("entry/open_brace", 1, 0);
             tally.add("entry/field_tails", entry.len(), 0);
             for (field, value) in entry.iter() {
@@ -1121,7 +1121,7 @@ fn walk(reading: &Reading) -> Walked {
             let decoded: crate::ElementEntry = serde_json::from_value(
                 entry
                     .get("address")
-                    .expect("a page entry writes `address`")
+                    .expect("a block entry writes `address`")
                     .clone(),
             )
             .expect("a written address decodes through its own production impl");
@@ -1155,7 +1155,7 @@ fn walk(reading: &Reading) -> Walked {
             // performs none -- which `optional-stays-absent` pins.
             if !entry
                 .get("deleted")
-                .expect("a page entry writes `deleted`")
+                .expect("a block entry writes `deleted`")
                 .as_bool()
                 .expect("`deleted` is written as a boolean")
             {
@@ -1174,7 +1174,7 @@ fn walk(reading: &Reading) -> Walked {
 
     assert_eq!(
         blocks_seen, reading.blocks,
-        "[CLAUSE part-sum] the walk saw {blocks_seen} written page(s) against {} resident",
+        "[CLAUSE part-sum] the walk saw {blocks_seen} written block(s) against {} resident",
         reading.blocks
     );
 
@@ -1365,7 +1365,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
             let mut replacement = serde_json::Map::with_capacity(block_index.len());
             for (block_key, entry_value) in block_index.iter() {
                 let mut entry = entry_value.clone();
-                let fields = entry.as_object_mut().expect("a page entry is an object");
+                let fields = entry.as_object_mut().expect("a block entry is an object");
                 let new_key = match candidate {
                     Candidate::Control
                     | Candidate::EntryDropsAddress
@@ -1734,7 +1734,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         100.0 * whole as f64 / reading.json_len as f64
     );
     println!(
-        "  {} object(s) in {} bucket(s) = {occupancy:.2} per bucket; {} page(s), one an object.",
+        "  {} object(s) in {} bucket(s) = {occupancy:.2} per bucket; {} block(s), one an object.",
         reading.objects, reading.buckets, reading.blocks
     );
     println!(
@@ -1812,7 +1812,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     for reading in readings.iter() {
         assert_eq!(
             reading.blocks, reading.objects,
-            "[CLAUSE one-page-an-object] {} object(s) hold {} page(s)",
+            "[CLAUSE one-page-an-object] {} object(s) hold {} block(s)",
             reading.objects, reading.blocks
         );
     }
@@ -2426,13 +2426,13 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     println!();
     println!("================ THE PAGE KEY IS WRITTEN AND READ ================");
     println!(
-        "  {} object(s), {} page(s), {} bucket(s), baseline `slot_index` {} B.",
+        "  {} object(s), {} block(s), {} bucket(s), baseline `slot_index` {} B.",
         reading.objects,
         reading.blocks,
         reading.buckets,
         baseline.len()
     );
-    println!("  every page key replaced by its handle -> REFUSED: {refusal}");
+    println!("  every block key replaced by its handle -> REFUSED: {refusal}");
     println!(
         "  one character changed in ONE page key's object-key slot moves the decoded index ({} B \
          against {} B) -- under the shape this change replaced it moved NOTHING.",

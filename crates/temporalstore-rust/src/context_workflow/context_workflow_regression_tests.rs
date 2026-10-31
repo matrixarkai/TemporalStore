@@ -4242,7 +4242,7 @@ fn what_one_add_costs_end_to_end() {
 
         let visits = crate::engine::bucket_visit_sites::snapshot();
         for (site, blocks) in crate::engine::layout_by_caller::snapshot().iter().take(4) {
-            println!("      {adds:>4} adds  {blocks:>10} pages  {site}");
+            println!("      {adds:>4} adds  {blocks:>10} blocks  {site}");
         }
         let window = 30.min(timings.len() / 3).max(1);
         let mean = |slice: &[f64]| slice.iter().sum::<f64>() / slice.len() as f64;
@@ -4717,7 +4717,7 @@ fn ingest_scoring_corpus(engine: &TemporalEngine, tenant_hash: u64, count: usize
     let topics = [
         "deploy the ingest service",
         "rotate the storage credentials",
-        "page cache eviction tuning",
+        "block cache eviction tuning",
         "replica failover during upgrade",
     ];
     let mut node_hashes = Vec::new();
@@ -4867,7 +4867,7 @@ fn the_node_copy_ranks_exactly_as_the_summary_lookup_does() {
         "how do we deploy the ingest service",
         "what happens when a replica fails over",
         "who rotates the storage credentials",
-        "page cache eviction",
+        "block cache eviction",
     ] {
         let copied = retrieve_context(
             &with_copy,

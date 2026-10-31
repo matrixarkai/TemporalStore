@@ -323,7 +323,7 @@ fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
 
     for ((rebuild_end, rebuild), contents) in &observed {
         println!(
-            "  0..{rebuild_end} {rebuild}: {} pages in {} buckets",
+            "  0..{rebuild_end} {rebuild}: {} blocks in {} buckets",
             block_total(contents),
             contents.len()
         );
@@ -408,7 +408,7 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
         assert_eq!(
             block_total(&contents),
             keys.len(),
-            "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {} pages",
+            "0..{end_routing_bucket}: the fixture wrote {} keys and the index holds {} blocks",
             keys.len(),
             block_total(&contents)
         );
@@ -419,7 +419,7 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
             .filter(|routing_bucket| *routing_bucket > end_routing_bucket)
             .collect();
         println!(
-            "  0..{end_routing_bucket}: {} live pages in {} buckets, {} buckets outside the range",
+            "  0..{end_routing_bucket}: {} live blocks in {} buckets, {} buckets outside the range",
             block_total(&contents),
             contents.len(),
             outside.len()
@@ -498,7 +498,7 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
         assert_eq!(
             block_total(&contents),
             keys.len(),
-            "0..{end_routing_bucket}: {} pages went in and {} came out of the flush",
+            "0..{end_routing_bucket}: {} blocks went in and {} came out of the flush",
             keys.len(),
             block_total(&contents)
         );
@@ -530,7 +530,7 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
         }
 
         println!(
-            "  0..{end_routing_bucket}: {} pages in {} buckets, witness names {} buckets",
+            "  0..{end_routing_bucket}: {} blocks in {} buckets, witness names {} buckets",
             block_total(&contents),
             contents.len(),
             expected.len()
@@ -592,7 +592,7 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
         assert_eq!(
             block_total(&contents),
             keys.len(),
-            "end={rebuild_end}: {} pages went in and {} came out",
+            "end={rebuild_end}: {} blocks went in and {} came out",
             keys.len(),
             block_total(&contents)
         );
@@ -726,7 +726,7 @@ fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
         .iter()
         .find(|(_, bucket)| !bucket.block_index.is_empty())
         .map(|(routing_bucket, _)| routing_bucket)
-        .expect("some bucket holds a page");
+        .expect("some bucket holds a block");
     let node = shard.bucket_index.bucket_map.remove(&moved_from).expect("the node");
     let moved_to = (0..=NARROW_END)
         .find(|candidate| !shard.bucket_index.bucket_map.contains_key(candidate) && *candidate != moved_from)
@@ -736,12 +736,12 @@ fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
         moved_to,
         crate::engine::state::BucketNode { routing_bucket: moved_to, ..node },
     );
-    assert!(blocks_moved > 0, "the move carried no page");
+    assert!(blocks_moved > 0, "the move carried no block");
 
     let entries = collect_live_block_entries(shard);
     let after = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
     println!(
-        "  moved {blocks_moved} page(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
+        "  moved {blocks_moved} block(s) from bucket {moved_from} to {moved_to}: {} mismatch(es)",
         after.mismatches.len()
     );
     assert_eq!(
@@ -756,7 +756,7 @@ fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
     assert_eq!(
         Some(moved_to),
         named.actual_routing_bucket,
-        "the report must name the bucket the page is FILED in"
+        "the report must name the bucket the block is FILED in"
     );
     assert_eq!(
         moved_from, named.expected_routing_bucket,

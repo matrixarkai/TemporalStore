@@ -161,7 +161,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "chunked snapshot message assembly and stale snapshot rejection are tested"
                     .to_string(),
-                "chunked timestamped KV commands round-trip through the data-Raft command codec and snapshot install rebuilds packed page layout"
+                "chunked timestamped KV commands round-trip through the data-Raft command codec and snapshot install rebuilds packed block layout"
                     .to_string(),
                 "distributed append failures fall back to post-commit snapshot install for lagging followers"
                     .to_string(),
@@ -234,13 +234,13 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "background dump/compact/GC honor in-flight cancellation checkpoints before destructive phases"
                     .to_string(),
-                "local shard_stat_info and object-manager stats report logical objects, page refs, dirty objects, dirty routing slots, and storage bytes"
+                "local shard_stat_info and object-manager stats report logical objects, block refs, dirty objects, dirty routing slots, and storage bytes"
                     .to_string(),
                 "local shard/table/tenant read/write QPS admission is enforced from Config quota fields"
                     .to_string(),
                 "ServerService admin aliases expose runtime stats, preflight, dirty-object, and queued-worker state"
                     .to_string(),
-                "crash recovery reports and tests cover wal, index-log, page stream, and band-manifest ordering"
+                "crash recovery reports and tests cover wal, index-log, block stream, and band-manifest ordering"
                     .to_string(),
                 "data-node service readiness covers execute runtime, async jobs, lifecycle admin, shard-affine workers, local admission, crash recovery reports, tonic/gRPC streaming callbacks, distributed admission, and multi-process lifecycle validation"
                     .to_string(),
@@ -282,8 +282,8 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 && storage_ssd_cache_pressure.production_ready
                 && storage_production_posture.production_ready,
             covered: vec![
-                "local page segment files with page-address indexes".to_string(),
-                "local page compaction rolls to a fresh segment, rewrites live page references, persists the compacted index, and makes old segments GC-eligible"
+                "local block segment files with page-address indexes".to_string(),
+                "local block compaction rolls to a fresh segment, rewrites live block references, persists the compacted index, and makes old segments GC-eligible"
                     .to_string(),
                 "memory plus disk read-through cache with zstd block envelope".to_string(),
                 "shared-store checkpoint/wal replay model and GC tests".to_string(),
@@ -295,7 +295,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "shard index persistence and slot-dump install use temp-file fsync plus rename instead of direct overwrite"
                     .to_string(),
-                "memory cache supports pinned hot/page blocks with eviction skip accounting, inspection, and Prometheus metrics"
+                "memory cache supports pinned hot/block blocks with eviction skip accounting, inspection, and Prometheus metrics"
                     .to_string(),
                 "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, block-store read count, and warmed bytes"
                     .to_string(),
@@ -305,19 +305,19 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage compatibility decision is explicit: Rust log/page formats are migration-only versus binary logs/page headers, with golden conversion/replay required before migration"
                     .to_string(),
-                "chunked timestamped KV page format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
+                "chunked timestamped KV block format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
                     .to_string(),
-                "chunked timestamped KV page recovery strictly rejects malformed or unsupported packed-page payloads"
+                "chunked timestamped KV block recovery strictly rejects malformed or unsupported packed-page payloads"
                     .to_string(),
-                "storage migration corpus converts logical object/page/slot/index/wal exports into Rust-native pages and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
+                "storage migration corpus converts logical object/block/slot/index/wal exports into Rust-native blocks and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
                 "storage migration corpus readiness covers Rust-local converted corpus replay through engine restart, Redis/admin, shared-store sync/async replay, cache warmup, Raft read paths, external binary-artifact export, CI-published golden artifacts, and the unified conformance runner"
                     .to_string(),
                 "local storage production harness combines dump, cache pressure, restart recovery, shared-store replay, and Raft movement into one repeatable gate"
                     .to_string(),
-                "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt page segments"
+                "local storage dump/load fault matrix harness rejects checksum mismatch, partial manifests, missing segments, stale manifests, restart-during-install recovery, and corrupt block segments"
                     .to_string(),
-                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, wal cursor retention, page segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
+                "local/shared-store object manifest dependency matrix covers local file objects, checkpoint manifests, wal cursor retention, block segment manifests, follower-cursor retention, and Raft snapshot manifest retention"
                     .to_string(),
                 "storage cache dependency matrix keeps live external object-store/S3 integration explicitly out of scope while local/shared-store is the production target"
                     .to_string(),
@@ -327,9 +327,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan block detection, missing/stale page-reference detection, corrupt block/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/block ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan page detection, missing/stale page-reference detection, corrupt page/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/page ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan block detection, missing/stale page-reference detection, corrupt block/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/block ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
             ],
             missing: {
@@ -347,15 +347,15 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
             covered: vec![
                 "common/string/hash/set plus Redis compatibility subset".to_string(),
                 "feature append/query/replace/delete/agg and 5k sequence test".to_string(),
-                "feature writes pack many timestamp/value entries into one page and the timestamp index shares that page address, matching the storage shape"
+                "feature writes pack many timestamp/value entries into one block and the timestamp index shares that block address, matching the storage shape"
                     .to_string(),
                 "feature aggregate query covers count/events/sum/avg/min/max/first/last over selected timestamp windows"
                     .to_string(),
-                "large timestamped KV writes split into persisted page chunks while preserving per-timestamp reads"
+                "large timestamped KV writes split into persisted block chunks while preserving per-timestamp reads"
                     .to_string(),
-                "oversized single timestamped values remain readable as one packed page without creating empty chunks"
+                "oversized single timestamped values remain readable as one packed block without creating empty chunks"
                     .to_string(),
-                "feature/sequence binary protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV page layout"
+                "feature/sequence binary protobuf golden corpus exercises filters, aggregates, sequence queries, and packed timestamped KV block layout"
                     .to_string(),
                 "full Rust-local API golden corpus covers feature, sequence, ControlState, Redis-compatible core commands, and admin storage readiness"
                     .to_string(),

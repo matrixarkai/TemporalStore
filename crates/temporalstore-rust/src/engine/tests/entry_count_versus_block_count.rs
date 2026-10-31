@@ -445,7 +445,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         .push(entries);
                 }
                 entry_hist.print(&format!("{kind}: index entries/object"));
-                block_hist.print(&format!("{kind}: distinct pages/object"));
+                block_hist.print(&format!("{kind}: distinct blocks/object"));
 
                 match *kind {
                     // ELEMENT-SCALED. One page and one entry per element, uncapped.
@@ -492,7 +492,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         assert_eq!(
                             entry_hist.max(),
                             1,
-                            "a string key owns one page, so it must own one entry"
+                            "a string key owns one block, so it must own one entry"
                         );
                     }
                     other => panic!("unclassified kind in the fixture: {other}"),
@@ -626,7 +626,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
             second.address.offset(),
             second.address.length()
         ),
-        "the two entries must name the SAME page for this test to be about a shared page at all"
+        "the two entries must name the SAME block for this test to be about a shared block at all"
     );
 
     assert_eq!(
@@ -643,7 +643,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     assert_eq!(
         index.len(),
         1,
-        "one page offered twice filed {} entries, not 1",
+        "one block offered twice filed {} entries, not 1",
         index.len()
     );
 
@@ -663,7 +663,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     assert_eq!(
         index_two.len(),
         2,
-        "two distinct pages filed {} entries, not 2",
+        "two distinct blocks filed {} entries, not 2",
         index_two.len()
     );
 
@@ -673,7 +673,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     assert_ne!(
         block_index_handle(&first_key, &first),
         block_index_handle(&other_object_key, &other_object),
-        "two objects' pages hashed alike, so one object's entry would supersede another's"
+        "two objects' blocks hashed alike, so one object's entry would supersede another's"
     );
     let mut live_three = BlockSlabLiveIndex::default();
     let mut index_three = BlockIndexMap::default();
@@ -682,13 +682,13 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     assert_eq!(
         index_three.len(),
         2,
-        "two objects over one page shape filed {} entries, not 2",
+        "two objects over one block shape filed {} entries, not 2",
         index_three.len()
     );
 
-    println!("one page, offered twice     -> {} entry", index.len());
-    println!("two pages, one object       -> {} entries", index_two.len());
-    println!("one page shape, two objects -> {} entries", index_three.len());
+    println!("one block, offered twice     -> {} entry", index.len());
+    println!("two blocks, one object       -> {} entries", index_two.len());
+    println!("one block shape, two objects -> {} entries", index_three.len());
     println!("so the entry count is the PAGE count, per object");
 }
 
@@ -829,7 +829,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
         .count();
     assert_eq!(
         anonymous, 1,
-        "the series must hold exactly one page entry -- it holds {anonymous}"
+        "the series must hold exactly one block entry -- it holds {anonymous}"
     );
     assert!(
         shard.features().contains_key("fold-f"),
@@ -843,7 +843,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
          durable map is the only source -- if this reddens, the collapse has outrun the durability \
          that makes it safe"
     );
-    println!("every kind files one nameless page entry; the durable maps are what name the elements");
+    println!("every kind files one nameless block entry; the durable maps are what name the elements");
     println!(
         "and `apply_key_states` folds `features` but none of `hashes`/`sets`/`zsets`/`lists`, so \
          the component is the container element's only fold-route copy"
@@ -921,7 +921,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         assert_eq!(
             lengths.len(),
             LARGE_ELEMENTS,
-            "denominator: the fixture wrote {} field pages, not {LARGE_ELEMENTS}",
+            "denominator: the fixture wrote {} field blocks, not {LARGE_ELEMENTS}",
             lengths.len()
         );
         assert!(
@@ -935,7 +935,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
     };
     assert!(
         today_block_bytes > 0,
-        "a field page of zero bytes is not a page, and every ratio below would divide by it"
+        "a field block of zero bytes is not a block, and every ratio below would divide by it"
     );
 
     // A single field read fetches exactly that page, and nothing else resolves through the page
@@ -962,7 +962,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
     }
 
     println!("one field page today: {today_block_bytes} B for a {VALUE_WIDTH} B value");
-    println!("  batch   page bytes   bytes fetched per single-element read   amplification");
+    println!("  batch   block bytes   bytes fetched per single-element read   amplification");
 
     let mut ratios: Vec<(usize, f64)> = Vec::new();
     for batch in [1usize, 8, 32, 128] {
@@ -976,7 +976,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         let block_bytes = encoded.len() as u64;
         assert!(
             block_bytes > 0,
-            "the engine's encoder produced an empty page for a batch of {batch}"
+            "the engine's encoder produced an empty block for a batch of {batch}"
         );
         let amplification = block_bytes as f64 / today_block_bytes as f64;
         println!(
@@ -1054,7 +1054,7 @@ fn the_string_control_has_nothing_for_batching_to_win() {
         let (entries, blocks) = entries_and_blocks(&engine, "string", &key);
         assert_eq!(
             blocks, 1,
-            "a string key must hold its value over one page; {key} holds {blocks}"
+            "a string key must hold its value over one block; {key} holds {blocks}"
         );
         total_entries += entries;
         rows += 1;
@@ -1206,7 +1206,7 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
     assert_eq!(
         (hash_blocks, set_blocks, zset_blocks),
         (LARGE_ELEMENTS, LARGE_ELEMENTS, LARGE_ELEMENTS),
-        "denominator: some kind already shares pages, so the premise is stale for it"
+        "denominator: some kind already shares blocks, so the premise is stale for it"
     );
 
     // READER 1: HLEN RETURNS THE ENTRY COUNT. This is the one that changes answer, not footprint.
@@ -1284,7 +1284,7 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
     );
 
     println!("HLEN        -> {reported} (page-index entries: {hash_entries})  <- returns the count");
-    println!("HGETALL     -> {hash_entries} page reads, one an entry");
-    println!("SMEMBERS    -> {set_entries} page reads, one an entry");
-    println!("ZCARD       -> {reported_zset} from the durable map, reaching the page index for nothing");
+    println!("HGETALL     -> {hash_entries} block reads, one an entry");
+    println!("SMEMBERS    -> {set_entries} block reads, one an entry");
+    println!("ZCARD       -> {reported_zset} from the durable map, reaching the block index for nothing");
 }

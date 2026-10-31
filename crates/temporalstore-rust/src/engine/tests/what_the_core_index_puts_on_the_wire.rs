@@ -207,7 +207,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
     // is asserted, on an index that has pages.
     assert!(
         after.object_block_lookup.is_empty(),
-        "nothing was written and this fixture has no page to file, so nothing can come back"
+        "nothing was written and this fixture has no block to file, so nothing can come back"
     );
     assert!(
         after.kind_pool.is_empty(),
@@ -344,15 +344,15 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     let block_index = encoded
         .get("block_index")
         .and_then(serde_json::Value::as_object)
-        .expect("a node writes its page index as a map");
+        .expect("a node writes its block index as a map");
     assert_eq!(block_index.len(), 1, "one page was inserted");
     let (stored_key, entry) = block_index.iter().next().expect("one entry");
     let entry = entry
         .as_object()
-        .expect("a page entry is written as a map");
+        .expect("a block entry is written as a map");
     let mut members: Vec<&str> = entry.keys().map(String::as_str).collect();
     members.sort_unstable();
-    println!("a page entry writes these members: {members:?}");
+    println!("a block entry writes these members: {members:?}");
     println!("under this stored key: {stored_key}");
 
     // THE CLAIM, AS AN EXACT SET. The object key and the kind are the composite key's second and
@@ -563,7 +563,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     assert_eq!(
         2,
         held.len(),
-        "the decoded map must hold the two live pages, or this comparison has nothing in it"
+        "the decoded map must hold the two live blocks, or this comparison has nothing in it"
     );
     assert_eq!(
         held, filed,
@@ -582,7 +582,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // what the filing rule admits rather than about everything the decoder saw.
     assert!(
         decoded.block_refs_for(KIND, DEAD_OBJECT, None).is_none(),
-        "a deleted page must not reach the lookup, or the claims above hold of any decoder at all"
+        "a deleted block must not reach the lookup, or the claims above hold of any decoder at all"
     );
 }
 
@@ -668,7 +668,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     };
     assert_ne!(
         live_handle, dead_handle,
-        "two pages at different offsets must file under different handles, or this bucket holds one page"
+        "two blocks at different offsets must file under different handles, or this bucket holds one block"
     );
 
     let object: Arc<str> = Arc::from(OBJECT);
@@ -678,15 +678,15 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     // THE CONTROL: the lookup holds the live page and REFUSES the deleted one.
     let refs = index
         .block_refs_for(KIND, OBJECT, None)
-        .expect("the live page files a ref");
+        .expect("the live block files a ref");
     assert_eq!(
         1,
         refs.len(),
-        "a deleted page must not reach the lookup, or the tombstone row is not the only source"
+        "a deleted block must not reach the lookup, or the tombstone row is not the only source"
     );
     assert_eq!(
         live_handle, refs[0].block_ref_key,
-        "the one ref must be the LIVE page's"
+        "the one ref must be the LIVE block's"
     );
 
     // AND THE ROW HOLDS THE DELETED PAGE'S IDENTITY.
@@ -694,7 +694,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
         let node = index.bucket_map.get(&7).expect("the bucket is still there");
         let row = node
             .tombstone_element_at(&dead.address)
-            .expect("the removal filed a row against the deleted page");
+            .expect("the removal filed a row against the deleted block");
         crate::index_log::block_ref_key_from_parts(
             row.model_id.as_str(),
             &row.object_key,
@@ -713,13 +713,13 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
         .and_then(|buckets| buckets.get("7"))
         .and_then(|node| node.get("block_index"))
         .and_then(|blocks| blocks.as_object())
-        .expect("the bucket writes a page index")
+        .expect("the bucket writes a block index")
         .clone();
 
     assert_eq!(
         2,
         blocks.len(),
-        "the encode must write BOTH pages, or the deleted one is not on the wire at all: {:?}",
+        "the encode must write BOTH blocks, or the deleted one is not on the wire at all: {:?}",
         blocks.keys().collect::<Vec<_>>()
     );
     assert!(

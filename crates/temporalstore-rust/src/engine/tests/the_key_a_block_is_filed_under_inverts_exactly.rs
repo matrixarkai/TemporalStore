@@ -506,7 +506,7 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
         }
         assert_eq!(
             HEADLINE_KEYS, checked,
-            "[CLAUSE every-page-inverts] {checked} page(s) were compared rather than {HEADLINE_KEYS}"
+            "[CLAUSE every-page-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
         );
         println!(
             "[every-page-inverts] {shape:?}: {checked} page(s), object key and kind read back out \
@@ -765,7 +765,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     assert_eq!(
         expected.len(),
         rebuilt.len(),
-        "[CLAUSE old-bytes-rebuild-exactly] the fixture holds {} page(s) and {} came back",
+        "[CLAUSE old-bytes-rebuild-exactly] the fixture holds {} block(s) and {} came back",
         expected.len(),
         rebuilt.len()
     );
@@ -904,7 +904,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
         })
         .collect();
     println!("\n=== three distinct addresses, one rendered key ===");
-    for (which, key) in ["log-resident", "first page in a slab", "no generation"]
+    for (which, key) in ["log-resident", "first block in a slab", "no generation"]
         .iter()
         .zip(keys.iter())
     {

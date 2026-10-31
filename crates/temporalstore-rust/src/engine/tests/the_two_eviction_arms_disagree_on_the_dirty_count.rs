@@ -110,14 +110,14 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
     let regime_dir = tempfile::tempdir().expect("tempdir");
     let regime = seeded(regime_dir.path());
     let (blocks, objects) = blocks_and_objects(&regime);
-    println!("dirty pages per bucket:   {blocks:?}");
+    println!("dirty blocks per bucket:   {blocks:?}");
     println!("dirty objects per bucket: {objects:?}");
     let total_blocks: u64 = blocks.values().sum();
     let total_objects: u64 = objects.values().sum();
-    println!("totals: {total_blocks} dirty pages, {total_objects} dirty objects");
+    println!("totals: {total_blocks} dirty blocks, {total_objects} dirty objects");
     assert!(
         total_blocks > 0 && total_objects > 0,
-        "the fixture must be dirty at all: {total_blocks} pages, {total_objects} objects"
+        "the fixture must be dirty at all: {total_blocks} blocks, {total_objects} objects"
     );
     assert!(
         total_blocks > total_objects,

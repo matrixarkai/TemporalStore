@@ -267,7 +267,7 @@ impl BlocksPerObject {
     fn report(&self, label: &str) {
         println!("\n=== {label} ===");
         println!(
-            "  objects={}  pages={}  (denominator for every row below)",
+            "  objects={}  blocks={}  (denominator for every row below)",
             self.objects(),
             self.blocks
         );
@@ -738,7 +738,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
             "{label}: the table was built without allocating, which reads as a probe that is not \
              installed rather than as a free table"
         );
-        assert!(cost.blocks > 0, "{label}: no pages, so every figure on this row is free");
+        assert!(cost.blocks > 0, "{label}: no blocks, so every figure on this row is free");
     }
 
     // --- THE VERDICT, PER POPULATION. ---
@@ -892,7 +892,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
             cost.chunk_bytes >= cost.request_bytes,
             "{label}: chunk column below request column"
         );
-        assert!(cost.blocks > 0, "{label}: no pages measured");
+        assert!(cost.blocks > 0, "{label}: no blocks measured");
     }
 
     // --- BOTH POPULATIONS MUST BE REACHED, or the verdict is decided by the fixture. ---
@@ -1294,7 +1294,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     std::hint::black_box(&lifecycle);
 
     let before = block_triples(&engine);
-    assert!(!before.is_empty(), "the fixture produced no pages to release");
+    assert!(!before.is_empty(), "the fixture produced no blocks to release");
 
     // DRIVEN ON THE FUNCTION ITSELF. `refused_buckets` is one number for eleven different answers,
     // so a fixture that fails a precondition has to say WHICH one -- otherwise it reads as a
@@ -1306,7 +1306,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
         crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates)
     };
     println!(
-        "  released {} buckets holding {} pages, refused {}",
+        "  released {} buckets holding {} blocks, refused {}",
         outcome.released_buckets.len(),
         outcome.released_blocks,
         outcome.refused_buckets
@@ -1326,7 +1326,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     let during = block_triples(&engine);
     assert!(
         during.len() < before.len(),
-        "the release left {} pages of {} resident, so it did not empty a page list",
+        "the release left {} blocks of {} resident, so it did not empty a block list",
         during.len(),
         before.len()
     );
@@ -1350,7 +1350,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     assert_eq!(
         before.len(),
         after.len(),
-        "the reload brought back {} pages against {} released",
+        "the reload brought back {} blocks against {} released",
         after.len(),
         before.len()
     );
@@ -1365,10 +1365,10 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     }
     assert_eq!(
         before.len(), compared,
-        "the element-by-element comparison ran over {compared} of {} pages",
+        "the element-by-element comparison ran over {compared} of {} blocks",
         before.len()
     );
-    println!("  {compared} pages compared element by element, all three names identical");
+    println!("  {compared} blocks compared element by element, all three names identical");
 }
 
 /// Every page's three names and its address identity, sorted, so two walks are comparable.
@@ -2153,7 +2153,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
             if block.address.length() == 0 {
                 zero_length_live += 1;
                 println!(
-                    "  live zero-length page: model={} key={}",
+                    "  live zero-length block: model={} key={}",
                     block.model_id.as_str(),
                     named.at(bucket.routing_bucket, *handle)
                 );
@@ -2174,10 +2174,10 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     assert_eq!(
         2,
         zero_length_live + nonzero_length_live,
-        "the fixture is supposed to produce exactly two live pages and produced {}",
+        "the fixture is supposed to produce exactly two live blocks and produced {}",
         zero_length_live + nonzero_length_live
     );
-    let empty_length = empty_length.expect("the empty write must have produced a page");
+    let empty_length = empty_length.expect("the empty write must have produced a block");
 
     // --- THE MEASURED FACT, which refutes the hypothesis this test was written for. ---
     assert!(

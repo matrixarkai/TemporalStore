@@ -713,7 +713,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
         missing_owner_block_ref_count: ownership.missing_owner_block_ref_count,
         owner_mismatch_block_ref_count: ownership.owner_mismatch_block_ref_count,
         evidence: vec![
-            "runtime owns page refs in the first-class slot index".to_string(),
+            "runtime owns block refs in the first-class slot index".to_string(),
             "runtime tracks dirty generations and dirty routing slots in SlotNode".to_string(),
             "runtime validates owner refs before reporting ready".to_string(),
             "runtime tracks hot/cold/tombstone object state and object-page ownership transitions"
@@ -760,12 +760,12 @@ pub(super) fn object_manager_runtime_report_from_entries(
     if ownership.missing_owner_block_ref_count > 0 {
         report
             .blockers
-            .push("page refs are missing object/routing-slot ownership metadata".to_string());
+            .push("block refs are missing object/routing-slot ownership metadata".to_string());
     }
     if ownership.owner_mismatch_block_ref_count > 0 {
         report
             .blockers
-            .push("page refs disagree with expected object owners".to_string());
+            .push("block refs disagree with expected object owners".to_string());
     }
     // Count live timestamped-kv pages (feature/sequence and the context
     // timeline families). collect_live_block_entries already dedupes packed series

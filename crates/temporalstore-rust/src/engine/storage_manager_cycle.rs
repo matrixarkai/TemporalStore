@@ -1016,16 +1016,16 @@ impl TemporalEngine {
                 || plan.reclaim_candidates.is_empty()
                 || !block_gc_dependency_plan.safe_to_reclaim,
             reason: if !request.enable_block_reclaim {
-                "page reclaim disabled".to_string()
+                "block reclaim disabled".to_string()
             } else if plan.reclaim_candidates.is_empty() {
-                "no stale or delayed-destroy page segments are reclaimable".to_string()
+                "no stale or delayed-destroy block segments are reclaimable".to_string()
             } else if !block_gc_dependency_plan.safe_to_reclaim {
                 format!(
-                    "page GC refused because retained dependencies remain: {}",
+                    "block GC refused because retained dependencies remain: {}",
                     block_gc_dependency_plan.blocker_reasons.join(",")
                 )
             } else {
-                "reclaimed delayed-destroy page segments selected by stale-byte pressure"
+                "reclaimed delayed-destroy block segments selected by stale-byte pressure"
                     .to_string()
             },
             pressure_signal:
@@ -1229,14 +1229,14 @@ impl TemporalEngine {
                 || request.dry_run
                 || (plan.reclaim_candidates.is_empty() && plan.live_block_slab_ids.len() <= 1),
             reason: if !request.enable_block_compaction {
-                "page compaction disabled".to_string()
+                "block compaction disabled".to_string()
             } else if request.dry_run {
-                "dry run reports compaction pressure without rewriting pages".to_string()
+                "dry run reports compaction pressure without rewriting blocks".to_string()
             } else if plan.reclaim_candidates.is_empty() && plan.live_block_slab_ids.len() <= 1 {
-                "compaction skipped because page density does not show stale-segment pressure"
+                "compaction skipped because block density does not show stale-segment pressure"
                     .to_string()
             } else {
-                "rewrote live model page references into a fresh compacted segment".to_string()
+                "rewrote live model block references into a fresh compacted segment".to_string()
             },
             pressure_signal: "model_layout_compaction_debt+stale_segment_density".to_string(),
             pressure_score: pressure_signals
@@ -1299,7 +1299,7 @@ impl TemporalEngine {
             // An unmeasured round says so HERE, in the stage an operator reads for these
             // numbers, rather than leaving them to be read as a shard that emptied itself.
             reason: if live_block_summaries_measured {
-                "reported slot/page/cache pressure metrics for the completed cycle".to_string()
+                "reported slot/block/cache pressure metrics for the completed cycle".to_string()
             } else {
                 "no slot was dirty, so the round did not walk the live pages: the slot and page \
 counts on this stage are NOT MEASURED and read 0, they are not a measurement of zero"

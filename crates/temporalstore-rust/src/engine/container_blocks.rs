@@ -307,10 +307,10 @@ fn take_varint(bytes: &[u8], cursor: &mut usize, what: &str) -> Result<u64, Stri
     loop {
         let byte = *bytes
             .get(*cursor)
-            .ok_or_else(|| format!("container page truncated reading {what}"))?;
+            .ok_or_else(|| format!("container block truncated reading {what}"))?;
         *cursor += 1;
         if shift >= 64 {
-            return Err(format!("container page {what} varint is wider than 64 bits"));
+            return Err(format!("container block {what} varint is wider than 64 bits"));
         }
         value |= u64::from(byte & 0x7f) << shift;
         if byte & 0x80 == 0 {
@@ -328,10 +328,10 @@ fn take_slice<'a>(
 ) -> Result<&'a [u8], String> {
     let end = cursor
         .checked_add(len)
-        .ok_or_else(|| format!("container page {what} length overflows"))?;
+        .ok_or_else(|| format!("container block {what} length overflows"))?;
     let slice = bytes
         .get(*cursor..end)
-        .ok_or_else(|| format!("container page truncated reading {what}"))?;
+        .ok_or_else(|| format!("container block truncated reading {what}"))?;
     *cursor = end;
     Ok(slice)
 }
@@ -466,7 +466,7 @@ pub(super) fn decode_container_block(bytes: &[u8]) -> ContainerBlockDecode {
     // A count wider than the payload can hold items would otherwise reserve on a corrupt number.
     if count > bytes.len() as u64 {
         return ContainerBlockDecode::Corrupt(format!(
-            "container page claims {count} items in {} bytes",
+            "container block claims {count} items in {} bytes",
             bytes.len()
         ));
     }
@@ -483,7 +483,7 @@ pub(super) fn decode_container_block(bytes: &[u8]) -> ContainerBlockDecode {
     }
     if cursor != bytes.len() {
         return ContainerBlockDecode::Corrupt(format!(
-            "container page has {} bytes after its last item",
+            "container block has {} bytes after its last item",
             bytes.len() - cursor
         ));
     }
@@ -551,7 +551,7 @@ fn take_item<'a>(
         let offset = take_varint(bytes, cursor, "value offset")? as usize;
         let tail = key.get(offset..).ok_or_else(|| {
             format!(
-                "container page item {index} names value offset {offset} into a {key_len}-byte key"
+                "container block item {index} names value offset {offset} into a {key_len}-byte key"
             )
         })?;
         return Ok((key, tail.to_vec(), false));

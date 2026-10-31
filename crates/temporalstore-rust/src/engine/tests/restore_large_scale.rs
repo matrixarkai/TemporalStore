@@ -1067,7 +1067,7 @@ fn what_bringing_a_large_shard_back_costs_at_two_corpus_sizes() {
             0.10,
         );
         flat(
-            &format!("the promotion check's pages walked ({})", suffix.short()),
+            &format!("the promotion check's blocks walked ({})", suffix.short()),
             small.per_record(small.promote_blocks),
             large.per_record(large.promote_blocks),
             0.10,
@@ -1252,7 +1252,7 @@ fn summarise(report: &mut Report, arms: &[Restart]) {
             large.manifest_checksum_bytes,
         );
         row("index-log bytes read", small.index_log_bytes_read, large.index_log_bytes_read);
-        row("page bytes read", small.block_bytes_read, large.block_bytes_read);
+        row("block bytes read", small.block_bytes_read, large.block_bytes_read);
         row("page reads", small.page_reads, large.page_reads);
         row(
             "bytes read, attributed",
@@ -1267,7 +1267,7 @@ fn summarise(report: &mut Report, arms: &[Restart]) {
             small.corpus.wal_bytes + small.corpus.index_log_bytes,
             large.corpus.wal_bytes + large.corpus.index_log_bytes,
         );
-        row("promotion-check pages walked", small.promote_blocks, large.promote_blocks);
+        row("promotion-check blocks walked", small.promote_blocks, large.promote_blocks);
         row(
             "net heap bytes not freed",
             small.net_heap_bytes.max(0) as u64,

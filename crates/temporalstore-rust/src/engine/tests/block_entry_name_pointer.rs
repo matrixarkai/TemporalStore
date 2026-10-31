@@ -406,14 +406,14 @@ fn an_entry_names_its_object_from_its_own_terms() {
     );
     // AND IT SURVIVES THE STORED FORM: the id was never written, so nothing about it can be lost.
     let written = serde_json::to_string(&crate::engine::state::BlockEntryAt { block: &entry })
-        .expect("a page entry serializes");
+        .expect("a block entry serializes");
     // AND THE TERMS COME BACK FROM THE KEY, which is where the object key and the kind live now.
     // Rendered by the production renderer rather than hand-written, so the two halves of the round
     // trip are the two halves production uses.
     let stored_key = crate::engine::state::block_index_written_key(&entry_key, &entry);
     let (read_back_key, read_back) =
         serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&written)
-            .expect("a page entry deserializes")
+            .expect("a block entry deserializes")
             .into_parts_from_key(&stored_key)
             .expect("the key the production renderer wrote must invert");
     assert_eq!(read_back.object_id(1, &read_back_key), expected, "the terms survive the stored form");

@@ -61,7 +61,7 @@ fn main() {
     println!("  carrying STAGED PAGES                 {with_staged_blocks}  ({staged_block_bytes} bytes)");
     println!("  undecodable                           {undecodable}");
     println!();
-    println!("With the pages wiped, a value can only come back from a command to re-run, an");
-    println!("outcome that carries the value, or a staged page. A record with none of those");
+    println!("With the blocks wiped, a value can only come back from a command to re-run, an");
+    println!("outcome that carries the value, or a staged block. A record with none of those");
     println!("names an address that no longer exists.");
 }

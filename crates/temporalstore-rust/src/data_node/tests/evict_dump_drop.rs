@@ -929,7 +929,7 @@ fn an_object_unchanged_since_its_dump_is_released_without_being_dumped_again() {
     );
     assert_eq!(
         arm_b.dropped, 0,
-        "arm B deleted {} records. Relieving memory releases pages and never deletes",
+        "arm B deleted {} records. Relieving memory releases blocks and never deletes",
         arm_b.dropped
     );
 

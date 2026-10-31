@@ -208,7 +208,7 @@ fn a_containers_resident_map_still_holds_its_elements_after_a_reload() {
     for (kind, key) in kinds {
         let (len, names) = map_state(&engine, kind, key);
         let entries = live_entries(&engine, kind, key);
-        println!("  {kind:<5} map len {len:>3}   live page entries {entries:>3}");
+        println!("  {kind:<5} map len {len:>3}   live block entries {entries:>3}");
         assert_eq!(
             ELEMENTS, len,
             "DENOMINATOR: {kind}'s resident map holds {len} of {ELEMENTS} BEFORE any reload, so a \
@@ -228,7 +228,7 @@ fn a_containers_resident_map_still_holds_its_elements_after_a_reload() {
         let (len, names) = map_state(&engine, kind, key);
         let entries = live_entries(&engine, kind, key);
         println!(
-            "  {kind:<5} map len {len:>3} (was {len_before})   live page entries {entries:>3} (was {entries_before})"
+            "  {kind:<5} map len {len:>3} (was {len_before})   live block entries {entries:>3} (was {entries_before})"
         );
         if len != *len_before {
             holes.push(format!(

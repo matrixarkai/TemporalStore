@@ -44,7 +44,7 @@ fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
 
     let refusal = record
         .try_set_address(&entry_with_ordinal(Some(7)))
-        .expect_err("a nonzero page ordinal has no room in the inline arm and must be refused");
+        .expect_err("a nonzero block ordinal has no room in the inline arm and must be refused");
     assert_eq!(
         refusal,
         ObjectRecordRefusal::NonZeroBlockOrdinalDoesNotFitInline { block_id: 7 },

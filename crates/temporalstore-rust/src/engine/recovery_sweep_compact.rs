@@ -1528,7 +1528,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             return Err(Status::error(
                 "block_compaction_owner_mismatch",
                 format!(
-                    "refusing compaction because {} live page refs disagree with object/page/slot ownership",
+                    "refusing compaction because {} live block refs disagree with object/block/slot ownership",
                     ownership.mismatches.len()
                 ),
             ));
@@ -2063,7 +2063,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .any(|state| state.object_count > 0);
         let mut model_layout_compaction_blockers = Vec::new();
         if rewritten_object_blocks == 0 {
-            model_layout_compaction_blockers.push("no live page refs were rewritten".to_string());
+            model_layout_compaction_blockers.push("no live block refs were rewritten".to_string());
         }
         if !has_model_layouts {
             model_layout_compaction_blockers.push("model layout report is empty".to_string());
@@ -2104,9 +2104,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             model_layout_compaction_ready: model_layout_compaction_blockers.is_empty(),
             model_layout_compaction_evidence: vec![
                 "compaction rewrites live refs by model layout".to_string(),
-                "packed timestamped model layouts preserve shared page refs".to_string(),
+                "packed timestamped model layouts preserve shared block refs".to_string(),
                 "tombstone object ids are preserved across compaction".to_string(),
-                "stale page density is removed from the compacted live set".to_string(),
+                "stale block density is removed from the compacted live set".to_string(),
                 "slot layout transition counts and states are reported after compaction"
                     .to_string(),
                 "per-model policies expose tombstone density, stale-page density, object-page packing, and cold-page rewrite eligibility".to_string(),

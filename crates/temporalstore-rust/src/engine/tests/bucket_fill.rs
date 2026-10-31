@@ -227,7 +227,7 @@ impl BlocksPerBucket {
     /// readable without ever reporting a mean in place of a count.
     fn report(&self, label: &str) {
         println!(
-            "{label}: {} buckets, {} pages, mean {:.4}, single-page {:.5}, widest {}, multi-page {}",
+            "{label}: {} buckets, {} blocks, mean {:.4}, single-page {:.5}, widest {}, multi-page {}",
             self.buckets(),
             self.blocks(),
             self.mean(),
@@ -238,7 +238,7 @@ impl BlocksPerBucket {
         for (held, count) in &self.counts {
             if *held <= 8 || held % 8 == 0 || *held == self.widest() {
                 println!(
-                    "    {held:>4} page(s): {count:>6} buckets ({:>7.3}%)",
+                    "    {held:>4} block(s): {count:>6} buckets ({:>7.3}%)",
                     100.0 * *count as f64 / self.buckets().max(1) as f64
                 );
             }
@@ -552,7 +552,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
         assert_eq!(
             total(&handles),
             CONTAINERS * MEMBERS,
-            "the index holds {} pages for {} written fields",
+            "the index holds {} blocks for {} written fields",
             total(&handles),
             CONTAINERS * MEMBERS
         );
@@ -737,7 +737,7 @@ fn the_narrow_range_holds_the_same_blocks_the_wide_one_does_bucket_for_bucket() 
          not move, the set equality above compares a store with itself and asserts nothing"
     );
     println!(
-        "  the same {} page handles, regrouped from {wide_buckets} buckets into {narrow_buckets}",
+        "  the same {} block handles, regrouped from {wide_buckets} buckets into {narrow_buckets}",
         wide.len()
     );
 }
@@ -788,7 +788,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
             assert_eq!(
                 handles_before.len(),
                 RECORDS,
-                "{direction}: the store went in holding {} pages for {RECORDS} keys",
+                "{direction}: the store went in holding {} blocks for {RECORDS} keys",
                 handles_before.len()
             );
             engine.flush_shard_index(1);

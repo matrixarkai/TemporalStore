@@ -554,7 +554,7 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
     );
     assert!(
         declares_a_page_size_constant("const PAGE_SIZE: usize = 1 << 20;"),
-        "the constant matcher no longer reports a page size constant"
+        "the constant matcher no longer reports a block size constant"
     );
     assert!(
         !declares_a_page_size_constant("//!   * There is no page SIZE tier: no PAGE_SIZE exists"),
@@ -832,7 +832,7 @@ fn the_index_log_item_kind_reader_takes_the_block_spelling_and_the_page_spelling
     assert_eq!(
         stored,
         IndexItemKind::Block,
-        "[CLAUSE stored-tag] the stored `page` token decoded to {stored:?} rather than `Block`"
+        "[CLAUSE stored-tag] the stored `block` token decoded to {stored:?} rather than `Block`"
     );
 
     // ---- CLAUSE 3: AND SO DOES THE ONE THE WRITER NOW EMITS ----

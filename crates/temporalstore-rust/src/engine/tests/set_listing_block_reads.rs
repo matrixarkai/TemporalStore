@@ -857,7 +857,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
             .into_iter()
             .collect();
     println!(
-        "  resident map {} member(s), served {} member(s), pages state {} member(s)",
+        "  resident map {} member(s), served {} member(s), blocks state {} member(s)",
         in_map.len(),
         served.len(),
         payload_population.len()

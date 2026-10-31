@@ -285,7 +285,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     assert_eq!(
         (1, 1),
         (string_blocks_before, string_entries_before),
-        "the string control must start at one page and one entry"
+        "the string control must start at one block and one entry"
     );
 
     crate::engine::reset_container_batch_counts();
@@ -302,7 +302,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     );
     assert!(
         folded > 0,
-        "the round folded {folded} pages into those batches"
+        "the round folded {folded} blocks into those batches"
     );
     assert!(
         report.rewritten_block_refs > 0,
@@ -311,12 +311,12 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         report.rewritten_block_refs
     );
     println!(
-        "  round: {} refs relocated, {batches} batches written, {folded} element pages folded",
+        "  round: {} refs relocated, {batches} batches written, {folded} element blocks folded",
         report.rewritten_block_refs
     );
     println!(
         "  {:>6}  {:>12}  {:>11}  {:>13}  {:>12}",
-        "kind", "pages before", "pages after", "entries before", "entries after"
+        "kind", "pages before", "blocks after", "entries before", "entries after"
     );
 
     let mut kinds_folded = 0usize;
@@ -327,7 +327,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         );
         assert!(
             blocks_after < *blocks_before,
-            "{kind} holds {blocks_after} pages where it held {blocks_before}, so nothing folded"
+            "{kind} holds {blocks_after} blocks where it held {blocks_before}, so nothing folded"
         );
         // THE ENTRY COUNT FOLDS WITH THE PAGES, AND THAT IS THE ROW THIS ARM EXISTS TO HOLD. It
         // asserted `entries_after == entries_before` for as long as an entry named its element:
@@ -511,7 +511,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
                 crate::types::CommandResponse::Bytes { value: got } => assert_eq!(
                     Some(value.clone()),
                     got,
-                    "hash field {field} did not read back its own value out of a folded page"
+                    "hash field {field} did not read back its own value out of a folded block"
                 ),
                 other => panic!("expected Bytes, got {other:?}"),
             }
@@ -592,7 +592,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     };
     assert_eq!(
         elements, ranged,
-        "the reloaded list did not read back its elements in order out of folded pages"
+        "the reloaded list did not read back its elements in order out of folded blocks"
     );
     // THE FOURTH KIND, AND IT GUARDS A DIFFERENT THING THAN THE THREE ABOVE.
     //
@@ -633,7 +633,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     assert_eq!(
         0,
         crate::engine::corrupt_container_block_count(),
-        "a read met a folded page it could not walk"
+        "a read met a folded block it could not walk"
     );
     println!("  reloaded: every hash field, set member and list element read back");
 }
@@ -692,7 +692,7 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     let smallest_possible = (OVER_CAP_ELEMENTS + cap - 1) / cap;
     assert!(
         blocks_after >= smallest_possible,
-        "{OVER_CAP_ELEMENTS} elements cannot fit in {blocks_after} pages of at most {cap}"
+        "{OVER_CAP_ELEMENTS} elements cannot fit in {blocks_after} blocks of at most {cap}"
     );
     // THE ENTRY COUNT IS THE PAGE COUNT NOW, WHICH IS THE COLLAPSE AND NOT A DRIFT.
     //

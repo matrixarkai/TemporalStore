@@ -291,7 +291,7 @@ fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usiz
     let total: usize = counts.iter().sum();
     let max = counts.last().copied().unwrap_or_default();
     println!(
-        "    {label:<34} {:>7} groups over {:>7} pages  p50 {:>4}  p90 {:>4}  p99 {:>4}  MAX {:>4}",
+        "    {label:<34} {:>7} groups over {:>7} blocks  p50 {:>4}  p90 {:>4}  p99 {:>4}  MAX {:>4}",
         counts.len(),
         total,
         percentile(&counts, 0.50),
@@ -393,7 +393,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 pop.total_buckets, pop.total_blocks
             );
             println!(
-                "  (seeded {} string keys, {} container pages, {} series keys)",
+                "  (seeded {} string keys, {} container blocks, {} series keys)",
                 seeded.strings, seeded.container_blocks, seeded.series_keys
             );
 
@@ -443,13 +443,13 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             );
             assert_eq!(
                 arm_blocks, pop.total_blocks,
-                "{records}/{end}: arm page rows sum to {arm_blocks} against {} pages",
+                "{records}/{end}: arm block rows sum to {arm_blocks} against {} blocks",
                 pop.total_blocks
             );
             // AND THE STORE HOLDS WHAT THE FIXTURE WROTE, so the denominator is not self-checked.
             assert!(
                 pop.total_blocks >= seeded.strings + seeded.container_blocks,
-                "{records}/{end}: the index holds {} pages, fewer than the {} strings plus {} container pages the fixture wrote -- the histogram is not over the fixture",
+                "{records}/{end}: the index holds {} blocks, fewer than the {} strings plus {} container blocks the fixture wrote -- the histogram is not over the fixture",
                 pop.total_blocks,
                 seeded.strings,
                 seeded.container_blocks
@@ -457,7 +457,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             println!("    live arms in this store: {live_arms} of {}", EVERY_ARM.len());
 
             println!(
-                "    pages/bucket   p50 {:>5}  p90 {:>5}  p99 {:>5}  MAX {:>5}   over {} occupied",
+                "    blocks/bucket   p50 {:>5}  p90 {:>5}  p99 {:>5}  MAX {:>5}   over {} occupied",
                 percentile(&pop.blocks_per_bucket, 0.50),
                 percentile(&pop.blocks_per_bucket, 0.90),
                 percentile(&pop.blocks_per_bucket, 0.99),
@@ -476,11 +476,11 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             // --- PAGES PER OBJECT: THE NUMBER THE OBJECT LIST AMORTISES OVER. ---
             assert_eq!(
                 pop.blocks_without_object_id, 0,
-                "{records}/{end}: {} pages carry no object id, so grouping by it would silently merge them under zero",
+                "{records}/{end}: {} blocks carry no object id, so grouping by it would silently merge them under zero",
                 pop.blocks_without_object_id
             );
-            let (_, max_by_id) = report_group("pages per object_id", &pop.by_object_id);
-            let (_, max_by_kind_key) = report_group("pages per (kind, key)", &pop.by_kind_key);
+            let (_, max_by_id) = report_group("blocks per object_id", &pop.by_object_id);
+            let (_, max_by_kind_key) = report_group("blocks per (kind, key)", &pop.by_kind_key);
             widest_object_by_id = widest_object_by_id.max(max_by_id);
             widest_object_by_kind_key = widest_object_by_kind_key.max(max_by_kind_key);
 
@@ -497,11 +497,11 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             );
             assert_eq!(
                 cf_id_groups, cf_key_groups,
-                "CONTROL FAILED at {records}/{end}: component-free pages group into {cf_id_groups} objects by id and {cf_key_groups} by (kind, key). For a page with no component the two groupings ask the same question and must agree exactly; a difference here means the groupings are not measuring what they are named for"
+                "CONTROL FAILED at {records}/{end}: component-free blocks group into {cf_id_groups} objects by id and {cf_key_groups} by (kind, key). For a block with no component the two groupings ask the same question and must agree exactly; a difference here means the groupings are not measuring what they are named for"
             );
             assert_eq!(
                 cf_id_max, cf_key_max,
-                "CONTROL FAILED at {records}/{end}: component-free MAX pages per object is {cf_id_max} by id and {cf_key_max} by (kind, key)"
+                "CONTROL FAILED at {records}/{end}: component-free MAX blocks per object is {cf_id_max} by id and {cf_key_max} by (kind, key)"
             );
             println!(
                 "    CONTROL: component-free groupings agree exactly -- {cf_id_groups} groups, MAX {cf_id_max}, difference 0.00%"
@@ -509,7 +509,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
             series_max_seen = series_max_seen.max(cf_id_max);
 
             println!(
-                "    divergence: MAX pages per object_id {max_by_id} against MAX pages per (kind, key) {max_by_kind_key}"
+                "    divergence: MAX blocks per object_id {max_by_id} against MAX blocks per (kind, key) {max_by_kind_key}"
             );
         }
     }
@@ -524,10 +524,10 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     // --- THE POSITIVE CONTROL: THE INSTRUMENT CAN SEE A MULTI-PAGE OBJECT. ---
     assert!(
         series_max_seen > 1,
-        "THE FIXTURE NEVER REACHED A MULTI-PAGE OBJECT, so this module cannot tell an engine whose objects hold one page from a fixture that could not make one hold two. The series arm is seeded precisely to reach it and its MAX came back {series_max_seen}"
+        "THE FIXTURE NEVER REACHED A MULTI-PAGE OBJECT, so this module cannot tell an engine whose objects hold one block from a fixture that could not make one hold two. The series arm is seeded precisely to reach it and its MAX came back {series_max_seen}"
     );
     println!(
-        "  POSITIVE CONTROL: a component-free (series) object reaches {series_max_seen} pages, so pages-per-object above one IS observable by this instrument"
+        "  POSITIVE CONTROL: a component-free (series) object reaches {series_max_seen} blocks, so pages-per-object above one IS observable by this instrument"
     );
 
     // --- THE FINDING, ON THE ARM THE PROPOSAL IS FOR. ---
@@ -572,7 +572,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         EVERY_ARM.len()
     );
     println!(
-        "  Pages per object: MAX {widest_object_by_id} grouped by the engine's own object id (component IN the hash), MAX {widest_object_by_kind_key} grouped by (kind, key)."
+        "  Blocks per object: MAX {widest_object_by_id} grouped by the engine's own object id (component IN the hash), MAX {widest_object_by_kind_key} grouped by (kind, key)."
     );
 }
 
@@ -695,16 +695,16 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 "\n{records} records of the real kind mix on {width}: {total_buckets} occupied buckets, {total_blocks} pages, name pointer {name_width} B read off the field"
             );
             println!(
-                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} pages ({:.3}% of {total_blocks})",
+                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} blocks ({:.3}% of {total_blocks})",
                 mixed_buckets as f64 * 100.0 / total_buckets as f64,
                 blocks_in_mixed_buckets as f64 * 100.0 / total_blocks as f64
             );
             println!(
-                "    per-bucket dispatch (the layout state) saves {per_bucket_saving:>10} B = {:>7.3} B/page",
+                "    per-bucket dispatch (the layout state) saves {per_bucket_saving:>10} B = {:>7.3} B/block",
                 per_bucket_saving as f64 / total_blocks as f64
             );
             println!(
-                "    per-key decision              saves {per_key_saving:>10} B = {:>7.3} B/page",
+                "    per-key decision              saves {per_key_saving:>10} B = {:>7.3} B/block",
                 per_key_saving as f64 / total_blocks as f64
             );
             let captured = if per_key_saving == 0 {
@@ -716,7 +716,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 "    so the layout state captures {captured:.3}% of what the decision is actually worth"
             );
             println!(
-                "    pages a single per-bucket representation must get wrong: {blocks_represented_wrongly} ({:.3}% of {total_blocks})",
+                "    blocks a single per-bucket representation must get wrong: {blocks_represented_wrongly} ({:.3}% of {total_blocks})",
                 blocks_represented_wrongly as f64 * 100.0 / total_blocks as f64
             );
 
@@ -737,7 +737,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 seen
             };
             println!(
-                "    dispatch: 1 discriminant test per page lookup, paid on {total_blocks} of {total_blocks} pages (100.000%); layout arms actually present: {} ({:?})",
+                "    dispatch: 1 discriminant test per block lookup, paid on {total_blocks} of {total_blocks} blocks (100.000%); layout arms actually present: {} ({:?})",
                 arms_present.len(),
                 arms_present
             );
@@ -814,14 +814,14 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
             pop.total_blocks
         );
         println!(
-            "    rows in the STORED object_index            {stored_rows:>8}  ({:.4} rows per page)",
+            "    rows in the STORED object_index            {stored_rows:>8}  ({:.4} rows per block)",
             stored_rows as f64 / pop.total_blocks as f64
         );
         println!(
-            "    distinct object ids among the pages        {distinct_object_ids:>8}  (the identity IS (kind, key) now)"
+            "    distinct object ids among the blocks        {distinct_object_ids:>8}  (the identity IS (kind, key) now)"
         );
         println!(
-            "    distinct (kind, key) among the pages       {distinct_keys:>8}  (what the proposal would key on -- the same thing)"
+            "    distinct (kind, key) among the blocks       {distinct_keys:>8}  (what the proposal would key on -- the same thing)"
         );
         println!(
             "    so the list the proposal wants and the one already stored are the SAME list: \

@@ -139,7 +139,7 @@ fn powerloss(root: PathBuf, scope: &str) {
                 .unwrap_or(0);
             assert!(
                 slabs > 0,
-                "wipe-nondurable found NO page slabs to lose, so whatever recovery reports next                  is not a statement about surviving a power cut"
+                "wipe-nondurable found NO block slabs to lose, so whatever recovery reports next                  is not a statement about surviving a power cut"
             );
             let _ = fs::remove_dir_all(root.join("blocks"));
             let _ = fs::remove_dir_all(root.join("indexes").join("indexlogs"));

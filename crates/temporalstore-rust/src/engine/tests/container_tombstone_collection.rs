@@ -159,7 +159,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 let recovered =
                     crate::engine::container_blocks::component_from_element_key(spelling, &items[0].key)
                         .unwrap_or_else(|| {
-                            panic!("{kind}: the tombstone page's own key did not read back as a component")
+                            panic!("{kind}: the tombstone block's own key did not read back as a component")
                         });
                 assert_eq!(
                     component, &recovered,
@@ -243,7 +243,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         read(bytes.clone()),
     );
     println!(
-        "older + a later page that does not mention it: {} live, {} removed",
+        "older + a later block that does not mention it: {} live, {} removed",
         with_silence.live.len(),
         with_silence.removed.len()
     );
@@ -272,7 +272,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     assert!(with_removal.is_complete());
     assert!(
         with_removal.removed.contains(&component),
-        "a page that states the removal did not remove the element"
+        "a block that states the removal did not remove the element"
     );
     assert!(!with_removal.live.contains_key(&component));
     // The unrelated element is untouched by either -- a control, so that "removed" above is not the
@@ -299,8 +299,8 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
         &[ContainerBlockWrite::removed(&key)],
     );
 
-    println!("empty-valued page:  {} bytes {:?}", empty.len(), &empty[7..]);
-    println!("tombstone page:     {} bytes {:?}", removed.len(), &removed[7..]);
+    println!("empty-valued block:  {} bytes {:?}", empty.len(), &empty[7..]);
+    println!("tombstone block:     {} bytes {:?}", removed.len(), &removed[7..]);
 
     // DENOMINATOR: both must actually be frames, or "they differ" could be two failures.
     assert!(
@@ -412,7 +412,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
     // THE ORDER IS A FACT ABOUT THE ADDRESSES, asserted before it is relied on.
     assert!(
         append_position(&earlier) < append_position(&later),
-        "the later page does not compare greater, so nothing below is testing ordering"
+        "the later block does not compare greater, so nothing below is testing ordering"
     );
     // AND ACROSS A SLAB ROLL, which is the case a single-slab fixture would not cover and the one a
     // scalar packing of the pair would get wrong. The offset is the HIGHEST one an address can name,
@@ -512,7 +512,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         read_from(blocks.clone()),
     );
     println!(
-        "with the tombstone:    {} live, {} removed, {} pages",
+        "with the tombstone:    {} live, {} removed, {} blocks",
         before.live.len(),
         before.removed.len(),
         before.blocks_read
@@ -532,7 +532,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         read_from(blocks.clone()),
     );
     println!(
-        "tombstone dropped:     {} live, {} removed, {} pages; member live again = {}",
+        "tombstone dropped:     {} live, {} removed, {} blocks; member live again = {}",
         after.live.len(),
         after.removed.len(),
         after.blocks_read,
@@ -547,7 +547,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     );
     assert!(
         after.removed.is_empty(),
-        "the pages still record a removal after the tombstone was dropped, which they cannot"
+        "the blocks still record a removal after the tombstone was dropped, which they cannot"
     );
 
     // AND THE RULE DECLINES EXACTLY THAT ROUND. Three pages in the container, one rewritten.
@@ -560,7 +560,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     // batch is not seen by the second.
     assert!(
         !may_drop_tombstones(3, 3, 2),
-        "the rule permits dropping a tombstone in a round that split the container across two pages"
+        "the rule permits dropping a tombstone in a round that split the container across two blocks"
     );
     // And it PERMITS the total rewrite, which is the comparison design's own answer: the tombstone
     // goes once nothing older survives to name the element.
@@ -572,6 +572,6 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     // The denominator case: a container with no pages must not read as a total rewrite.
     assert!(
         !may_drop_tombstones(0, 0, 1),
-        "a round over a container with no pages reads as a total rewrite"
+        "a round over a container with no blocks reads as a total rewrite"
     );
 }

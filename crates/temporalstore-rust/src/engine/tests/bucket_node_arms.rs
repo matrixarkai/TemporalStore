@@ -324,7 +324,7 @@ impl ArmHistogram {
             );
         }
         println!(
-            "    pages/bucket   p50 {:>6}  p90 {:>6}  p99 {:>6}  MAX {:>6}",
+            "    blocks/bucket   p50 {:>6}  p90 {:>6}  p99 {:>6}  MAX {:>6}",
             Self::percentile(&blocks, 0.50),
             Self::percentile(&blocks, 0.90),
             Self::percentile(&blocks, 0.99),
@@ -447,7 +447,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
         assert_eq!(
             hist.total_blocks(),
             keys * members,
-            "the container fixture wrote {} pages for {} expected",
+            "the container fixture wrote {} blocks for {} expected",
             hist.total_blocks(),
             keys * members
         );
@@ -533,7 +533,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
         assert_every_claimed_arm_has_samples(
             &["multi_block_object"],
             hist,
-            &format!("{blocks} container pages on the whole keyspace"),
+            &format!("{blocks} container blocks on the whole keyspace"),
         );
         assert!(
             hist.occupied_fraction("single_block_object") < 0.01,
@@ -604,7 +604,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
          twelve a `BTreeMap` node is not even filled once and the general arm would be priced \
          against a shape it never reaches"
     );
-    println!("  widest bucket on 0..{NARROW_END} at {LARGE} records: {widest} pages");
+    println!("  widest bucket on 0..{NARROW_END} at {LARGE} records: {widest} blocks");
 }
 
 // =============================================================================================
@@ -634,7 +634,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     assert_eq!(
         24,
         size_of::<BlockIndexMap>(),
-        "the page index is {} bytes in the node, not 24; the accounting below is stale",
+        "the block index is {} bytes in the node, not 24; the accounting below is stale",
         size_of::<BlockIndexMap>()
     );
     assert_eq!(16, size_of::<ObjectIndex>(), "the object index moved");
@@ -674,7 +674,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     assert_eq!(1, simple_block.len(), "a one-entry page list holds exactly one page");
     assert!(
         simple_block.get(&7).is_some(),
-        "a one-entry page list must answer for the handle it holds"
+        "a one-entry block list must answer for the handle it holds"
     );
 
     let mut ids = ObjectIndex::default();
@@ -710,7 +710,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     assert_eq!(
         24,
         size_of::<BlockIndex>(),
-        "a page entry is {} bytes, not 24",
+        "a block entry is {} bytes, not 24",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -929,7 +929,7 @@ fn retag(node: &BucketNode) -> TaggedNode {
             .iter()
             .next()
             .map(|(handle, block)| (*handle, block.clone()))
-            .expect("the simple arm holds exactly one page");
+            .expect("the simple arm holds exactly one block");
         TaggedLayout::simple(SimpleLayout {
             object_id: node.object_index.iter().next().copied().unwrap_or_default(),
             handle,
@@ -1591,7 +1591,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
             continue;
         }
         simple_buckets += 1;
-        let (handle, block) = node.block_index.iter().next().expect("the inline arm holds one page");
+        let (handle, block) = node.block_index.iter().next().expect("the inline arm holds one block");
         let node_at = node as *const BucketNode as usize;
         let address_at = &block.address as *const _ as usize;
         offsets.insert(address_at - node_at);
@@ -1761,7 +1761,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
             continue;
         }
         general_buckets += 1;
-        let (handle, block) = node.block_index.iter().next().expect("a general arm holds pages");
+        let (handle, block) = node.block_index.iter().next().expect("a general arm holds blocks");
         control_live += lines_touched(
             node as *const BucketNode as usize,
             &block.address as *const _ as usize,

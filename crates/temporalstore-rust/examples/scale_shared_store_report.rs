@@ -228,7 +228,7 @@ async fn main() {
     println!();
     println!("  5 nodes: ONE fenced writer, {REPLAYERS} replayers, all over one store");
     println!("  value {VALUE_BYTES} B per entry");
-    println!("  store: page {} chunk {} extent {} replicas {} quorum {}",
+    println!("  store: block {} chunk {} extent {} replicas {} quorum {}",
              options.page_size, options.chunk_size, options.max_extent_bytes,
              options.replica_count, options.write_quorum);
 
@@ -245,7 +245,7 @@ async fn main() {
     println!();
     println!("  THE WRITE SIDE");
     println!();
-    println!("    entries   user KiB   blob KiB   extents   objects   page reads   append ms   us/entry   blob/user   physical/user");
+    println!("    entries   user KiB   blob KiB   extents   objects   block reads   append ms   us/entry   blob/user   physical/user");
     for r in &rounds {
         let physical = r.blob_bytes * options.replica_count as u64;
         println!(
@@ -266,7 +266,7 @@ async fn main() {
     println!();
     println!("  THE READ SIDE, per node and never averaged");
     println!();
-    println!("    entries   node      applied   last   index reads   range KiB   page reads   replay ms   us/entry");
+    println!("    entries   node      applied   last   index reads   range KiB   block reads   replay ms   us/entry");
     for r in &rounds {
         for n in &r.replays {
             println!(
@@ -448,7 +448,7 @@ async fn main() {
     println!();
     let first = &rounds[0];
     let last = &rounds[rounds.len() - 1];
-    println!("    AND SO DID THE READING. Page reads per append moved {:.3} -> {:.3}, and per replayed",
+    println!("    AND SO DID THE READING. Block reads per append moved {:.3} -> {:.3}, and per replayed",
              first.append_chunk_reads as f64 / first.entries as f64,
              last.append_chunk_reads as f64 / last.entries as f64);
     println!("    entry {:.3} -> {:.3}. Both are asserted. This is where a per-operation walk of the",
@@ -473,10 +473,10 @@ async fn main() {
     println!("    double when the corpus doubles -- 374k at 200 entries, 623k at 400, 1,251k at 800.");
     println!("    It is MatrixObject's per-mutation bookkeeping, not this log's shape: begin/end of a");
     println!("    chunk mutation batch builds a replica status whose `physical_bytes` and");
-    println!("    `discarded_bytes` fold over EVERY page the replica holds, and begin also exports a");
+    println!("    `discarded_bytes` fold over EVERY block the replica holds, and begin also exports a");
     println!("    whole-state undo snapshot. Raising the chunk tier to 64 MiB changes it by 2.7%, so it");
-    println!("    is page-count and not chunk-count; raising the page tier to 1 MiB makes it 16x worse,");
-    println!("    because then each append re-checksums one growing page instead of folding over many.");
+    println!("    is page-count and not chunk-count; raising the block tier to 1 MiB makes it 16x worse,");
+    println!("    because then each append re-checksums one growing block instead of folding over many.");
     println!("    Flat appends need that bookkeeping to be maintained rather than recomputed. Until it");
     println!("    is, read the asserted counts for what they say and nothing more.");
     println!();

@@ -140,7 +140,7 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
     // was dirty all along and the mark could be doing nothing.
     assert!(
         !any_block_dirty(&shard, routing_bucket),
-        "the fixture page must start clean"
+        "the fixture block must start clean"
     );
 
     mark_object_dirty(&mut shard, "pushed-object", 0, WHOLE_RANGE_END);
@@ -161,7 +161,7 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
             .get(&routing_bucket)
             .expect("bucket")
             .dirty(),
-        "the sweep must see the bucket as dirty, reading only the pages"
+        "the sweep must see the bucket as dirty, reading only the blocks"
     );
 }
 
@@ -178,7 +178,7 @@ fn an_unmarked_object_leaves_its_blocks_clean() {
 
     assert!(
         !any_block_dirty(&shard, routing_bucket),
-        "marking a different object must not reach this one's pages"
+        "marking a different object must not reach this one's blocks"
     );
     refresh_bucket_runtime_flags(&mut shard);
     assert!(
@@ -188,7 +188,7 @@ fn an_unmarked_object_leaves_its_blocks_clean() {
             .get(&routing_bucket)
             .expect("bucket")
             .dirty(),
-        "a bucket whose pages are all clean must read clean"
+        "a bucket whose blocks are all clean must read clean"
     );
 }
 
@@ -229,7 +229,7 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
     );
     assert!(
         any_block_dirty(&shard, routing_bucket),
-        "and having established it, the push must reach the page"
+        "and having established it, the push must reach the block"
     );
 }
 
@@ -318,7 +318,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     const END_ROUTING_BUCKET: u32 = 0;
 
     println!();
-    println!("  corpus   pages in bucket   FOLD visits   layout   clear_dirty   ttl_rollup   remove_all");
+    println!("  corpus   blocks in bucket   FOLD visits   layout   clear_dirty   ttl_rollup   remove_all");
 
     let mut measured: Vec<(usize, u64, u64)> = Vec::new();
     for rung in [40_usize, 320] {
@@ -402,12 +402,12 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     }
     println!();
     println!(
-        "  pages x{:.1}  ->  fold visits x{:.1}",
+        "  blocks x{:.1}  ->  fold visits x{:.1}",
         measured[1].1 as f64 / measured[0].1.max(1) as f64,
         measured[1].2 as f64 / measured[0].2.max(1) as f64,
     );
     println!(
-        "  a ratio near the page ratio means one write pays for every page its bucket holds;"
+        "  a ratio near the block ratio means one write pays for every block its bucket holds;"
     );
     println!(
         "  a ratio near 1 means the refresh is not walking the corpus and the cost is elsewhere."
@@ -489,7 +489,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     }
     let control_folds = crate::engine::bucket_visit_sites::flag_folds();
     println!(
-        "  positive control: calling the sweep over {CONTROL_BLOCKS} pages charges {control_folds} fold visits"
+        "  positive control: calling the sweep over {CONTROL_BLOCKS} blocks charges {control_folds} fold visits"
     );
     // MOVES, NOT REACHES THE LENGTH. A sweep over 40 pages charges 2, because the folds
     // short-circuit -- that is the finding, not a fault. The control's job is only to prove the

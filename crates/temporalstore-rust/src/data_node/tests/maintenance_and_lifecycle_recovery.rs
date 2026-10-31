@@ -4880,7 +4880,7 @@ fn what_gates_the_periodic_truncation() {
             plan.blocker_reasons,
         );
         eprintln!(
-            "  {label:>13}  log-resident pages still registered: {}",
+            "  {label:>13}  log-resident blocks still registered: {}",
             engine_after.wal_resident_block_count(1)
         );
         // The clamp `gc_before_sequence` actually applies. A permissive plan still cannot drop
@@ -5262,12 +5262,12 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
     let tallied_entries = crate::engine::live_block_scan_entries();
 
     eprintln!("  records={RECORDS} keyspace={KEYSPACE} live_blocks={live_blocks} slabs={slabs}");
-    eprintln!("  REMOVED: live page entries materialized by one reclaim report");
+    eprintln!("  REMOVED: live block entries materialized by one reclaim report");
     eprintln!("    walked  = {walked_entries}");
     eprintln!("    tallied = {tallied_entries}");
     eprintln!("  ADDED: tally charges over the whole ingest");
     eprintln!(
-        "    charges = {charges}  ({:.2} per record, {:.2} per live page)",
+        "    charges = {charges}  ({:.2} per record, {:.2} per live block)",
         charges as f64 / RECORDS as f64,
         charges as f64 / live_blocks as f64
     );
@@ -5308,7 +5308,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
     // silently: a fallback that fires on every round costs the old cost and changes nothing.
     assert_eq!(
         tallied_entries, 0,
-        "the tallied arm still walked {tallied_entries} live page entries -- the fallback fired"
+        "the tallied arm still walked {tallied_entries} live block entries -- the fallback fired"
     );
     assert!(
         walked_entries >= live_blocks,
@@ -10447,7 +10447,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     for drained in &drain_slabs {
         assert!(
             !slabs_after.contains(drained),
-            "slab {drained} was drained but still holds live pages ({slabs_after:?})"
+            "slab {drained} was drained but still holds live blocks ({slabs_after:?})"
         );
     }
     let untouched = slabs_before
@@ -10833,7 +10833,7 @@ fn the_periodic_round_drains_the_holed_slab_and_leaves_the_dense_ones() {
     for drained in &drain_slabs {
         assert!(
             !slabs_after.contains(drained),
-            "the periodic round left slab {drained} holding live pages ({slabs_after:?})"
+            "the periodic round left slab {drained} holding live blocks ({slabs_after:?})"
         );
     }
     let untouched = slabs_before

@@ -526,7 +526,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
         }
     }
     println!();
-    println!("    map                              keys   borrowed   minted   no page entry");
+    println!("    map                              keys   borrowed   minted   no block entry");
     for (name, row) in &tally {
         println!(
             "    {name:<32} {:>4}   {:>8}   {:>6}   {:>13}",

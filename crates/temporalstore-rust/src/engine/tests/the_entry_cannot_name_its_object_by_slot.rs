@@ -1171,7 +1171,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
             .get("block_index")
             .expect("APPARATUS: a stored node has no `block_index` member"),
     )
-    .expect("the page rows serialize");
+    .expect("the block rows serialize");
     let haystack = block_index_text.as_bytes();
     assert!(
         needle.len() <= haystack.len()
@@ -1181,7 +1181,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
         "THE MATCHER'S POSITIVE CONTROL FAILED: the same byte search does not find the key in the \
          page rows that Arm 1 just showed carry it, so its absence from the log says nothing"
     );
-    println!("  the same byte search finds the key in the page rows, so the absence above is real");
+    println!("  the same byte search finds the key in the block rows, so the absence above is real");
 
     println!(
         "\n  REFUSED: the characters have one durable home and it is the field this leg removes. A \

@@ -92,7 +92,7 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
         summaries
             .iter()
             .any(|summary| summary.dirty_generation > 0 && summary.block_ref_count > 0),
-        "case={} should track dirty slot generations and page refs",
+        "case={} should track dirty slot generations and block refs",
         case.name
     );
     let dirty_buckets = summaries
@@ -147,12 +147,12 @@ fn verify_engine_dump_load_recovery(case: &StorageMigrationCase) {
     assert!(!report_manifest.bucket_summaries.is_empty());
     assert!(
         lifecycle.cache_warmup.considered_block_refs > 0,
-        "case={} cache warmup should inspect page refs",
+        "case={} cache warmup should inspect block refs",
         case.name
     );
     assert_eq!(
         lifecycle.cache_warmup.failed_block_refs, 0,
-        "case={} cache warmup should not fail page reads",
+        "case={} cache warmup should not fail block reads",
         case.name
     );
 
@@ -371,7 +371,7 @@ fn assert_clean_recovery(engine: &TemporalEngine, shard_id: u64, case_name: &str
     let recovery = engine.storage_recovery_report(shard_id);
     assert!(
         recovery.all_live_blocks_readable,
-        "case={} live pages should be readable: {:?}",
+        "case={} live blocks should be readable: {:?}",
         case_name, recovery.unreadable_block_refs
     );
     assert!(

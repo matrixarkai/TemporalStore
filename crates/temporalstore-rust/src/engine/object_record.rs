@@ -1009,7 +1009,7 @@ impl std::fmt::Display for ObjectRecordRefusal {
             ),
             Self::BlockSizeDoesNotFit { length } => write!(
                 f,
-                "BlockSizeDoesNotFit: page length {length} is wider than the stored size field"
+                "BlockSizeDoesNotFit: block length {length} is wider than the stored size field"
             ),
             Self::LayoutHandleWithNoLayout { handle } => write!(
                 f,

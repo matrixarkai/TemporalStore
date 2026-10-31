@@ -1772,7 +1772,7 @@ where
         type Value = String;
 
         fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-            formatter.write_str("a page handle, as a string or an unsigned integer")
+            formatter.write_str("a block handle, as a string or an unsigned integer")
         }
 
         fn visit_str<E: serde::de::Error>(self, value: &str) -> Result<String, E> {
@@ -5051,7 +5051,7 @@ mod tests {
             ("an anchor BELOW the base is in the base", Some(4), true, false, false, 5, true),
             ("an anchor AT the base is in the base", Some(5), true, false, false, 5, true),
             ("an anchor ABOVE the base is not", Some(6), true, false, false, 5, false),
-            ("no anchor, page items: no base reflects it", None, true, false, false, 5, false),
+            ("no anchor, block items: no base reflects it", None, true, false, false, 5, false),
             ("no anchor, a folded catalog: no base reflects it", None, false, true, false, 5, false),
             ("no anchor, key-states: no base reflects it", None, false, false, true, 5, false),
             ("no anchor and nothing at all: the legacy whole-index shape", None, false, false, false, 5, true),

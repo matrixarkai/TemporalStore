@@ -270,7 +270,7 @@ impl Histogram {
 
     fn report(&self, label: &str) {
         println!(
-            "{label}: {} buckets holding {} pages, p50 {}, p90 {}, MAX {}",
+            "{label}: {} buckets holding {} blocks, p50 {}, p90 {}, MAX {}",
             self.buckets(),
             self.items(),
             self.percentile(0.50),
@@ -279,7 +279,7 @@ impl Histogram {
         );
         for (held, count) in &self.counts {
             println!(
-                "    {held:>4} page(s): {count:>5} buckets ({:>6.2}% of {})",
+                "    {held:>4} block(s): {count:>5} buckets ({:>6.2}% of {})",
                 100.0 * *count as f64 / self.buckets().max(1) as f64,
                 self.buckets()
             );
@@ -592,7 +592,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     assert_eq!(
         blocks.len(),
         CONTAINER_KEYS * MEMBERS,
-        "the fixture did not reach one page per member: {} pages for {} keys x {} members",
+        "the fixture did not reach one block per member: {} blocks for {} keys x {} members",
         blocks.len(),
         CONTAINER_KEYS,
         MEMBERS
@@ -648,13 +648,13 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     assert_eq!(
         blocks_per_key.len(),
         CONTAINER_KEYS,
-        "the index does not hold pages for every container key"
+        "the index does not hold blocks for every container key"
     );
     let mut covered = 0usize;
     for key in &keys {
         let held = *blocks_per_key
             .get(key)
-            .unwrap_or_else(|| panic!("no pages for {key}"));
+            .unwrap_or_else(|| panic!("no blocks for {key}"));
         let model = model_members(&engine, key);
         assert_eq!(
             model.len(), MEMBERS,
@@ -673,7 +673,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
                 crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
                 &component,
             )
-            .unwrap_or_else(|| panic!("{key}: no page key for member {component}"));
+            .unwrap_or_else(|| panic!("{key}: no block key for member {component}"));
             assert_eq!(
                 MEMBER_WIDTH + 8,
                 block_key.len(),
@@ -685,7 +685,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
                 crate::engine::container_blocks::ElementKeySpelling::ScoreThenMember,
                 &block_key,
             )
-            .unwrap_or_else(|| panic!("{key}: the page key for {component} renders no component"));
+            .unwrap_or_else(|| panic!("{key}: the block key for {component} renders no component"));
             assert_eq!(
                 component, back,
                 "{key}: the member does not survive the page key it is written into. That key is \
@@ -968,7 +968,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         assert_eq!(
             blocks.len(),
             CONTAINER_KEYS * MEMBERS,
-            "the fixture at 0..{end_routing_bucket} did not reach one page per member"
+            "the fixture at 0..{end_routing_bucket} did not reach one block per member"
         );
         let members: usize = keys.iter().map(|key| model_members(&engine, key).len()).sum();
         assert_eq!(
@@ -985,7 +985,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
             .sum();
 
         let hist = zset_blocks_per_bucket(&blocks);
-        hist.report(&format!("0..{end_routing_bucket}, zset pages per bucket"));
+        hist.report(&format!("0..{end_routing_bucket}, zset blocks per bucket"));
         assert!(
             hist.buckets() > 0,
             "no bucket holds a zset page at 0..{end_routing_bucket}, so every figure below would \
@@ -1002,7 +1002,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
         println!("--- 0..{end_routing_bucket}: per member ---");
         println!("  BlockIndex        {index_width:>5} B");
-        println!("  ElementEntry      {address_width:>5} B  (in the model map, points at the page)");
+        println!("  ElementEntry      {address_width:>5} B  (in the model map, points at the block)");
         println!("  component name    {name_per_member:>7.1} B  (measured; {:.1} B of it spelling)",
             spelling_bytes as f64 / members as f64);
         println!("  ------------------------");
@@ -1012,7 +1012,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
             shadow_per_member * MEMBERS as f64
         );
         println!(
-            "  page payload per member {MEMBER_WIDTH} B, so the shadow is {:.1}x the data it names",
+            "  block payload per member {MEMBER_WIDTH} B, so the shadow is {:.1}x the data it names",
             shadow_per_member / MEMBER_WIDTH as f64
         );
 
@@ -1139,7 +1139,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     assert_eq!(
         after.len(),
         before_blocks + 1,
-        "a single-member write did not file exactly one new page"
+        "a single-member write did not file exactly one new block"
     );
     let added: Vec<&ZsetBlock> = after
         .iter()

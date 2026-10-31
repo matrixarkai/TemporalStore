@@ -1622,7 +1622,7 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
             large_releasing.derivations,
         ),
         (
-            "CONTROL arm: live pages in the shard",
+            "CONTROL arm: live blocks in the shard",
             small_live,
             large_live,
         ),
@@ -1880,7 +1880,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
     assert_eq!(
         candidates.len(),
         BATCH,
-        "the fixture offered {} candidate buckets with resident pages, not {BATCH}",
+        "the fixture offered {} candidate buckets with resident blocks, not {BATCH}",
         candidates.len()
     );
 
@@ -2032,7 +2032,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             assert_eq!(
                 bucket.block_index.len(),
                 0,
-                "bucket {routing_bucket} was released but still holds {} resident pages",
+                "bucket {routing_bucket} was released but still holds {} resident blocks",
                 bucket.block_index.len()
             );
             let before = objects_before[routing_bucket];
@@ -2059,7 +2059,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
         let after = live_blocks_after.get(key).copied().unwrap_or_default();
         assert_eq!(
             after, *before,
-            "key {key} had {before} live pages before the release and {after} after"
+            "key {key} had {before} live blocks before the release and {after} after"
         );
     }
 }

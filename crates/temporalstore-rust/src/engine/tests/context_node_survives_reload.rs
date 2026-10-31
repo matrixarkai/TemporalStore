@@ -459,7 +459,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     println!("[orphan] dead-page control after the reconcile: {dead_after} (must be false)");
     assert!(
         !dead_after,
-        "THE LIVE FILTER NEVER FIRES: an element pointing at a page nothing holds also survived,          so the first result above cannot be read as `the page was live`"
+        "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived,          so the first result above cannot be read as `the block was live`"
     );
     // MEASURED, and it REFUTED the prediction this test was written to confirm: a container-only
     // element whose PAGE is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a page
@@ -467,7 +467,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     // page is still there, never whether the index names this element.
     assert!(
         orphan_after,
-        "a container-only element on a LIVE page was dropped, contradicting the measured behaviour          this assertion records"
+        "a container-only element on a LIVE block was dropped, contradicting the measured behaviour          this assertion records"
     );
 }
 
@@ -520,7 +520,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         );
         assert!(
             kept.map(|f| f.get("on-live-page").is_some()).unwrap_or(false),
-            "hashes: an element the derived map never named was dropped even though its page is live"
+            "hashes: an element the derived map never named was dropped even though its block is live"
         );
         assert!(
             !kept.map(|f| f.get("on-dead-page").is_some()).unwrap_or(false),
@@ -552,7 +552,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         );
         assert!(
             kept.map(|m| m.contains_key(b"on-live-page".as_slice())).unwrap_or(false),
-            "sets: an unnamed member on a live page was dropped"
+            "sets: an unnamed member on a live block was dropped"
         );
         assert!(
             !kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
@@ -617,7 +617,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         );
         assert!(
             kept.map(|m| m.contains_key(&1)).unwrap_or(false),
-            "lists: an unnamed sequence on a live page was dropped"
+            "lists: an unnamed sequence on a live block was dropped"
         );
         assert!(
             !kept.map(|m| m.contains_key(&2)).unwrap_or(false),

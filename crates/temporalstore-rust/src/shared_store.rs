@@ -1233,7 +1233,7 @@ where
             tracing::info!(
                 shard_id,
                 blocks = materialised,
-                "materialised in-process-only pages so the checkpoint index can travel"
+                "materialised in-process-only blocks so the checkpoint index can travel"
             );
         }
         block_store.sync_durable()?;
@@ -6909,7 +6909,7 @@ mod tests {
         let round_tripped = loaded.values().next().expect("one entry");
         assert_eq!(
             round_tripped.staged_blocks, entry.staged_blocks,
-            "the pages must survive the trip, not just the command"
+            "the blocks must survive the trip, not just the command"
         );
     }
 

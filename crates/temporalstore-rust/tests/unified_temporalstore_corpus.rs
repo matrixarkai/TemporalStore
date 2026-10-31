@@ -3530,7 +3530,7 @@ fn verify_storage_dump_load_recovery(case: &StorageMigrationCase) {
         summaries
             .iter()
             .any(|summary| summary.dirty_generation > 0 && summary.block_ref_count > 0),
-        "case={} should track dirty generations and page refs",
+        "case={} should track dirty generations and block refs",
         case.name
     );
     let dirty_buckets = summaries
@@ -4257,7 +4257,7 @@ fn verify_storage_cold_read_after_eviction(shard_id: u64) {
 fn string_block_cache_key(engine: &TemporalEngine, shard_id: u64, key: &str) -> CacheKey {
     engine
         .string_block_cache_key_for_test(shard_id, key)
-        .unwrap_or_else(|| panic!("key {key} should have a page address"))
+        .unwrap_or_else(|| panic!("key {key} should have a block address"))
 }
 
 fn assert_cache_latency_histograms_observed(stats: matrixcache::CacheStats) {
@@ -4448,7 +4448,7 @@ fn verify_random_size_reopen_scan() {
     for (_, value) in expected.iter().take(8) {
         assert!(
             block.data.windows(value.len()).any(|window| window == value),
-            "page stream should contain deterministic value of len {}",
+            "block stream should contain deterministic value of len {}",
             value.len()
         );
     }
@@ -4591,7 +4591,7 @@ fn assert_clean_storage_recovery(engine: &TemporalEngine, shard_id: u64, case_na
     let recovery = engine.storage_recovery_report(shard_id);
     assert!(
         recovery.all_live_blocks_readable,
-        "case={} live pages should be readable: {:?}",
+        "case={} live blocks should be readable: {:?}",
         case_name, recovery.unreadable_block_refs
     );
     assert!(

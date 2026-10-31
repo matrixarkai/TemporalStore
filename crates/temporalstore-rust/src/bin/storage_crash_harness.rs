@@ -75,19 +75,19 @@ fn corrupt_first_block_slab(root: PathBuf) {
         .read(true)
         .write(true)
         .open(&slab_path)
-        .expect("page segment should exist before corruption");
+        .expect("block segment should exist before corruption");
     let mut bytes = Vec::new();
-    file.read_to_end(&mut bytes).expect("read page segment");
+    file.read_to_end(&mut bytes).expect("read block segment");
     assert!(
         !bytes.is_empty(),
-        "page segment should contain at least one durable page"
+        "block segment should contain at least one durable block"
     );
     let offset = bytes.len().saturating_sub(1) as u64;
     let corrupted = bytes[offset as usize] ^ 0xff;
     file.seek(SeekFrom::Start(offset))
         .expect("seek corruption byte");
     file.write_all(&[corrupted]).expect("write corruption byte");
-    file.sync_all().expect("sync corrupted page segment");
+    file.sync_all().expect("sync corrupted block segment");
 }
 
 fn open_engine(root: &std::path::Path) -> TemporalEngine {

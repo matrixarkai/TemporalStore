@@ -211,7 +211,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     println!("  entries after:  {live_after} live, {tombstoned_after} tombstoned");
     println!("  addresses the index names: {}", addresses.len());
     println!(
-        "  pages those addresses state {} live component(s); victim still stated: {}",
+        "  blocks those addresses state {} live component(s); victim still stated: {}",
         stated.len(),
         stated.contains(&victim_component)
     );
@@ -235,7 +235,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     );
     assert!(
         derived.blocks_read > 0,
-        "the fold read no page, so its conclusion is about nothing"
+        "the fold read no block, so its conclusion is about nothing"
     );
 
     // ---- THE HOLE IN THE COMPLETENESS SIGNAL, asserted rather than mentioned ----

@@ -427,7 +427,7 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
     println!("  object_key     {entry_total:>5}  {stride_now:>6}");
     println!("  u16 ordinal    {u16_total:>5}  {stride_u16:>6}");
     println!("  u8  ordinal    {u8_total:>5}  {stride_u8:>6}");
-    println!("  saving per page: {saving} bytes of stride");
+    println!("  saving per block: {saving} bytes of stride");
 
     assert_eq!(
         stride_now,
@@ -528,8 +528,8 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
 
     println!("\n=== what an ordinal into the object list would resolve to ===");
     println!("  object-index rows walked : {rows_seen}");
-    println!("  live pages walked        : {blocks_seen}");
-    println!("  pages whose id the entry already answers from its address: {id_already_answered}");
+    println!("  live blocks walked        : {blocks_seen}");
+    println!("  blocks whose id the entry already answers from its address: {id_already_answered}");
 
     assert!(
         blocks_seen > 0 && rows_seen > 0,
@@ -814,9 +814,9 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     let string_net = net_per_block(string_blocks, string_rows);
 
     println!("\n=== the trade, per arm, never averaged -- A CEILING ON THE PRIZE ===");
-    println!("  saving {saving} B/page of stride, name row {row_cost} B");
+    println!("  saving {saving} B/block of stride, name row {row_cost} B");
     println!("  the list's own allocation is NOT charged, so every row below is optimistic");
-    println!("  arm       keys  pages  rows  rows/page  ceiling B/page");
+    println!("  arm       keys  blocks  rows  rows/block  ceiling B/block");
     for (arm, keys, blocks, rows, net) in [
         ("hash", hash_keys.len(), hash_blocks, hash_rows, hash_net),
         ("string", string_keys.len(), string_blocks, string_rows, string_net),
@@ -831,7 +831,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     assert_eq!(
         hash_blocks,
         CONTAINER_KEYS * MEMBERS_PER_KEY,
-        "the container arm exercised {hash_blocks} pages, not {}",
+        "the container arm exercised {hash_blocks} blocks, not {}",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
     assert_eq!(
@@ -910,7 +910,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     per_key.sort();
     let single: usize = per_key.iter().filter(|blocks| **blocks <= 1).count();
     println!(
-        "  pages per (kind,key) over {} keys: p50={} p90={} p99={} MAX={}",
+        "  blocks per (kind,key) over {} keys: p50={} p90={} p99={} MAX={}",
         per_key.len(),
         percentile(&per_key, 50.0),
         percentile(&per_key, 90.0),
@@ -918,7 +918,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
         per_key.last().copied().unwrap_or(0)
     );
     println!(
-        "  keys holding ONE page: {single}/{} ({:.2}%) -- each of them nets exactly zero",
+        "  keys holding ONE block: {single}/{} ({:.2}%) -- each of them nets exactly zero",
         per_key.len(),
         100.0 * single as f64 / per_key.len() as f64
     );
@@ -936,7 +936,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     );
     assert!(
         single > 0,
-        "no key in the sample holds a single page, so the zero-net population is unobserved"
+        "no key in the sample holds a single block, so the zero-net population is unobserved"
     );
 }
 

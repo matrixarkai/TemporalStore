@@ -316,7 +316,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     // ---- THE CASE UNDER TEST ----
     assert_eq!(
         1, with_bare.unframed,
-        "the bare page was counted {} time(s) as unframed, not once",
+        "the bare block was counted {} time(s) as unframed, not once",
         with_bare.unframed
     );
     assert!(

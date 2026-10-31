@@ -264,7 +264,7 @@ impl BlocksPerBucket {
         );
         for (held, count) in &self.counts {
             println!(
-                "        {held:>6} page(s): {count:>6} buckets ({:>7.3}% of {buckets})",
+                "        {held:>6} block(s): {count:>6} buckets ({:>7.3}% of {buckets})",
                 100.0 * *count as f64 / buckets.max(1) as f64
             );
         }
@@ -421,7 +421,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
         assert_eq!(
             0,
             wide.buckets_holding_more_than_one(),
-            "on the shipped default at {records} records {} buckets hold more than one page",
+            "on the shipped default at {records} records {} buckets hold more than one block",
             wide.buckets_holding_more_than_one()
         );
     }
@@ -1137,7 +1137,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
     );
     assert_eq!(
         1, wide_released,
-        "on the shipped default a release of one bucket freed {wide_released} pages, not one"
+        "on the shipped default a release of one bucket freed {wide_released} blocks, not one"
     );
 
     // AND EVERY CANDIDATE COARSENS BOTH, monotonically: the narrower the range the deeper the
@@ -1219,7 +1219,7 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
             format!("0..{end_routing_bucket}")
         };
         println!(
-            "  {label:<24} {} occupied buckets, {} pages, p50 {} MAX {} | arms E{} O{} M{}",
+            "  {label:<24} {} occupied buckets, {} blocks, p50 {} MAX {} | arms E{} O{} M{}",
             hist.buckets(),
             hist.blocks(),
             hist.percentile(0.50),
@@ -1447,7 +1447,7 @@ fn a_store_built_on_the_new_default_round_trips_whole() {
         assert_eq!(
             RECORDS,
             handles.len(),
-            "the store went in holding {} pages for {RECORDS} keys",
+            "the store went in holding {} blocks for {RECORDS} keys",
             handles.len()
         );
         engine.flush_shard_index(1);
@@ -1474,7 +1474,7 @@ fn a_store_built_on_the_new_default_round_trips_whole() {
     assert_eq!(RECORDS, readable, "{readable} of {RECORDS} records came back");
     assert_eq!(
         handles_before, handles_after,
-        "{} page handles went in and {} came back; {} are in one and not the other",
+        "{} block handles went in and {} came back; {} are in one and not the other",
         handles_before.len(),
         handles_after.len(),
         handles_before.symmetric_difference(&handles_after).count()

@@ -205,7 +205,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     let (durable, derived) = both_sources(&engine, KEY);
 
     println!("[fold-hash] durable map names {} field(s): {durable:?}", durable.len());
-    println!("[fold-hash] the pages derive {} live field(s): {derived:?}", derived.len());
+    println!("[fold-hash] the blocks derive {} live field(s): {derived:?}", derived.len());
 
     // THE DENOMINATOR AGAIN, AFTER THE RELOAD, on the side that cannot be empty if the fold ran at
     // all. Without this the set comparison passes on two empty sets.
@@ -274,7 +274,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         found
     };
 
-    println!("[fold-hash] the {} page entries this object holds:", blocks.len());
+    println!("[fold-hash] the {} block entries this object holds:", blocks.len());
     for (handle, component, address) in &blocks {
         println!("    handle {handle:>20}  component {component:<10}  address {address}");
     }
@@ -401,7 +401,7 @@ fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
     );
     assert!(
         !derived.contains("field-1"),
-        "field-1's page still derives as live, so the removal did not happen and the gate is untested",
+        "field-1's block still derives as live, so the removal did not happen and the gate is untested",
     );
     assert!(
         !durable.contains("field-1"),

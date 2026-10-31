@@ -1789,7 +1789,7 @@ impl TemporalEngine {
         carried: &[crate::wal::StagedBlock],
     ) -> OutcomeBlockElements {
         let Some(spelling) = super::container_blocks::ElementKeySpelling::for_kind(&item.kind) else {
-            return OutcomeBlockElements::Unreadable("this kind has no element-key page");
+            return OutcomeBlockElements::Unreadable("this kind has no element-key block");
         };
         let Some(address) = item.resolved_address() else {
             return OutcomeBlockElements::Unreadable("the outcome names no address");
@@ -1832,7 +1832,7 @@ impl TemporalEngine {
                         Some(component) => named.push((component, element.deleted)),
                         None => {
                             return OutcomeBlockElements::Unreadable(
-                                "a page key does not render back as a component",
+                                "a block key does not render back as a component",
                             )
                         }
                     }
@@ -1848,7 +1848,7 @@ impl TemporalEngine {
                 OutcomeBlockElements::Unreadable("the frame's key spelling is not this kind's")
             }
             super::container_blocks::ContainerBlockDecode::NotFramed => {
-                OutcomeBlockElements::Unreadable("the page carries no frame")
+                OutcomeBlockElements::Unreadable("the block carries no frame")
             }
             super::container_blocks::ContainerBlockDecode::Corrupt(_) => {
                 OutcomeBlockElements::Unreadable("the frame could not be walked")
@@ -3100,7 +3100,7 @@ impl TemporalEngine {
                             return Err(Status::error(
                                 "wal_replay_outcome_refused",
                                 format!(
-                                    "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, page {}, component {})",
+                                    "WAL replay could not install a recorded {} outcome at sequence {}; refusing load rather than serving a shard missing it (address {}, block {}, component {})",
                                     item.kind,
                                     record.sequence,
                                     if item.resolved_address().is_some() { "resolved" } else { "UNRESOLVED" },

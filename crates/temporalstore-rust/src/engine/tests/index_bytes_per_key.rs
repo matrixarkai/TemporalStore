@@ -164,7 +164,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
             handles.push(map.insert(&object_key, entry, &mut live));
         }
         if map.len() != FILL as usize {
-            failures.push(format!("BlockIndexMap filled to {} pages, not {FILL}", map.len()));
+            failures.push(format!("BlockIndexMap filled to {} blocks, not {FILL}", map.len()));
         }
         let mut remaining = FILL as usize;
         while remaining > 0 {
@@ -174,7 +174,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
             let want = expected_arm(remaining);
             let got = block_index_map_arm(&map);
             if got != want {
-                failures.push(format!("BlockIndexMap at {remaining} pages is {got}, expected {want}"));
+                failures.push(format!("BlockIndexMap at {remaining} blocks is {got}, expected {want}"));
             }
         }
     }
@@ -201,7 +201,7 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
             let got = block_index_map_arm(&map);
             if got != want {
                 failures.push(format!(
-                    "BlockIndexMap after a retain leaving {remaining} pages is {got}, expected {want}"
+                    "BlockIndexMap after a retain leaving {remaining} blocks is {got}, expected {want}"
                 ));
             }
         }
@@ -865,7 +865,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
             blocks_per_bucket.observe(bucket.block_index.len());
             objects_per_bucket.observe(bucket.object_index.object_count());
         }
-        blocks_per_bucket.report("pages per bucket");
+        blocks_per_bucket.report("blocks per bucket");
         objects_per_bucket.report("objects per bucket");
 
 
@@ -964,7 +964,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         // source, because the size of every saving claimed for dropping a key depends on it.
         assert_eq!(
             dirty_arc_count, dirty_arc_shared,
-            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the same allocation the bucket index holds at {label}, and EVERY ONE OF THEM SHOULD BE. This assertion read `0 == dirty_arc_shared` and pinned the opposite, because `mark_object_dirty` asks the lookup for a handle BEFORE the object's first page is filed, so the allocating arm always won and `insert_inner`'s early return never reconsidered. `DirtyObjectIndex::adopt_shared_key`, called once the page IS filed, closes that. A shortfall here means the adoption stopped running and a second copy of every key is back."
+            "{dirty_arc_shared} of the dirty index's {dirty_arc_count} key allocations are the same allocation the bucket index holds at {label}, and EVERY ONE OF THEM SHOULD BE. This assertion read `0 == dirty_arc_shared` and pinned the opposite, because `mark_object_dirty` asks the lookup for a handle BEFORE the object's first block is filed, so the allocating arm always won and `insert_inner`'s early return never reconsidered. `DirtyObjectIndex::adopt_shared_key`, called once the block IS filed, closes that. A shortfall here means the adoption stopped running and a second copy of every key is back."
         );
 
         // THE ONE FIGURE HERE THAT IS ASSERTED RATHER THAN REPORTED.
@@ -1289,7 +1289,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 series_keys, series_map_keys,
                 "denominator: the feature map holds every series seeded"
             );
-            assert!(bucket_blocks > 0, "denominator: the bucket index must hold pages");
+            assert!(bucket_blocks > 0, "denominator: the bucket index must hold blocks");
             assert!(
                 bucket_count > 0 && bucket_count <= (SHIPPED_END as usize + 1),
                 "denominator: {bucket_count} buckets is not a 0..{SHIPPED_END} population -- the \\
@@ -1362,7 +1362,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
                 objects_per_bucket.observe(bucket.object_index.object_count());
             }
             println!("  what a bucket actually holds on this range:");
-            blocks_per_bucket.report("pages per bucket");
+            blocks_per_bucket.report("blocks per bucket");
             objects_per_bucket.report("objects per bucket");
 
             (
@@ -1561,7 +1561,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
         "denominator: {buckets0} buckets is not a 0..{SHIPPED_END} population"
     );
     assert!(buckets0 < keys, "denominator: one bucket per key means this is the LEGACY range");
-    assert!(pages0 > 0, "denominator: no pages means no block lists to release");
+    assert!(pages0 > 0, "denominator: no blocks means no block lists to release");
     assert_eq!(0, released0, "denominator: the fixture starts with nothing released");
     assert_eq!(
         probe_keys.len(),
@@ -1569,7 +1569,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
         "the fixture cannot read its own keys BEFORE the sequence, so a read afterwards proves nothing"
     );
     println!(
-        "=== before: {keys} keys, {buckets0} buckets, {pages0} pages, {released0} released ==="
+        "=== before: {keys} keys, {buckets0} buckets, {pages0} blocks, {released0} released ==="
     );
     println!(
         "  bucket_map {bm0} B ({:.1} B/key), object_block_lookup {lk0} B ({:.1} B/key), \
@@ -1587,7 +1587,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
     let resident1 = engine.bucket_index_resident_bytes(1);
     let read1 = readable(&engine);
 
-    println!("=== after dump+release: {buckets1} buckets, {pages1} pages, {released1} released ===");
+    println!("=== after dump+release: {buckets1} buckets, {pages1} blocks, {released1} released ===");
     let row = |name: &str, before: u64, after: u64| {
         println!(
             "  {name:<28} {before:>10} -> {after:>10} B   recovered {:>10} B  {:>8.1} B/key  {:>6.1}%",
@@ -1601,10 +1601,10 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
     row("dirty_objects", dr0, dr1);
     row("whole ShardState", whole0, whole1);
     println!(
-        "  modelled resident {resident0} -> {resident1} B (pages * size_of::<BlockIndex>(), a MODEL)"
+        "  modelled resident {resident0} -> {resident1} B (blocks * size_of::<BlockIndex>(), a MODEL)"
     );
     println!(
-        "  pages {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}"
+        "  blocks {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}"
     );
     println!("  reads: {read0} of {} before, {read1} after", probe_keys.len());
 
@@ -1646,7 +1646,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
     );
     assert!(
         pages1 < pages0,
-        "the page count did not fall ({pages0} -> {pages1}), so no block list was emptied"
+        "the block count did not fall ({pages0} -> {pages1}), so no block list was emptied"
     );
     // The headline figure, floored well below what it measures so a regression is visible but noise
     // is not. Measured 55.7% of the whole ShardState clone at 80,000 records.
@@ -1849,7 +1849,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
             req: block_list_req,
             chunk: block_list_chunk,
             count: blocks_in_list_arm,
-            unit: "pages in a list",
+            unit: "blocks in a list",
         },
         BucketMapTerm {
             name: "object_index Many: Box<ObjectSlots>",
@@ -1956,7 +1956,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
 
         // --- DENOMINATORS FIRST, each asserted populated. A zero here reads as "free". ---
         assert!(d.buckets > 0, "denominator: {label} produced no buckets");
-        assert!(d.blocks > 0, "denominator: {label} produced no pages");
+        assert!(d.blocks > 0, "denominator: {label} produced no blocks");
         assert!(d.objects > 0, "denominator: {label} produced no objects");
 
         // --- The container floor: the tree holds every key and value INLINE, so it cannot be
@@ -1986,7 +1986,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
             d.single_block_buckets, d.multi_block_buckets, d.blocks_in_list_arm, d.multi_object_buckets
         );
         println!(
-            "  pages per bucket {:.2}, keys per bucket {:.2}",
+            "  blocks per bucket {:.2}, keys per bucket {:.2}",
             d.blocks as f64 / d.buckets as f64,
             live_keys as f64 / d.buckets as f64
         );
@@ -2089,13 +2089,13 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
 
     // --- THE REGIME CONTROL. Both ranges must have been measured, and they must differ. ---
     assert_eq!(4, bucket_to_block.len(), "all four fixtures must have been measured");
-    println!("=== buckets per page, by fixture (THE REGIME CONTROL) ===");
+    println!("=== buckets per block, by fixture (THE REGIME CONTROL) ===");
     for (label, ratio) in &bucket_to_block {
-        println!("  {label:<34} {ratio:.4} buckets per page");
+        println!("  {label:<34} {ratio:.4} buckets per block");
     }
     println!("=== the container term per PAGE, by fixture ===");
     for (label, bpp) in &per_block_container {
-        println!("  {label:<34} {bpp:>8.1} B/page");
+        println!("  {label:<34} {bpp:>8.1} B/block");
     }
     // Index 2 is the legacy 80,000-record fixture, index 3 the shipped one.
     let (legacy_label, legacy_ratio) = bucket_to_block[2];
@@ -2518,7 +2518,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
                 shard.features().len(),
                 "denominator: the feature map does not hold the base population"
             );
-            assert!(blocks > 0, "denominator: the bucket index must hold pages");
+            assert!(blocks > 0, "denominator: the bucket index must hold blocks");
             assert!(
                 buckets > 0 && buckets <= (SHIPPED_END as usize + 1),
                 "denominator: {buckets} buckets is not a 0..{SHIPPED_END} population -- the fixture \
@@ -2936,7 +2936,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
          this bracket is only valid on the shipped 0..{SHIPPED_END}",
         string_keys + series_map_keys
     );
-    assert!(bucket_blocks > 0, "denominator: the bucket index holds no pages");
+    assert!(bucket_blocks > 0, "denominator: the bucket index holds no blocks");
 
     // --- THE NUMERATOR: the whole live heap the shard index holds. The clone counts shared
     // --- payloads ONCE, so the two `Arc` terms are added back explicitly rather than being
@@ -3457,7 +3457,7 @@ fn how_many_times_a_context_keys_characters_exist() {
             }
         }
     }
-    println!("    page index holds the key          {lookup_holds:>5}");
+    println!("    block index holds the key          {lookup_holds:>5}");
     println!("    ... as a DISTINCT allocation      {lookup_distinct:>5}");
     println!(
         "    adoption: {} calls, {} found no handle, {} moved",
@@ -3481,7 +3481,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     );
     assert_eq!(
         0, lookup_distinct,
-        "{lookup_distinct} of the keys the page index holds are a DISTINCT allocation from the          one the event maps hold, and none should be. This is the assertion that a passing          pair-sharing check cannot make: the pair shared one allocation while a second equal copy          sat in the lookup, and only comparing against the lookup finds it."
+        "{lookup_distinct} of the keys the block index holds are a DISTINCT allocation from the          one the event maps hold, and none should be. This is the assertion that a passing          pair-sharing check cannot make: the pair shared one allocation while a second equal copy          sat in the lookup, and only comparing against the lookup finds it."
     );
     assert_eq!(
         timeline_total, shared_with_series,
@@ -3649,7 +3649,7 @@ fn what_a_per_shard_resident_bound_recovers() {
     assert_eq!(probe_keys.len(), read0, "the fixture cannot read its own keys BEFORE the sequence");
     assert!(resident0 > 0, "denominator: a zero resident figure cannot be bounded");
 
-    println!("=== before: {keys} keys, {buckets0} buckets, {pages0} pages ===");
+    println!("=== before: {keys} keys, {buckets0} buckets, {pages0} blocks ===");
     println!("  this shard's own index resident bytes: {resident0}");
 
     // --- CONTROL 1: a bound of zero is disabled and walks nothing. ---
@@ -3697,7 +3697,7 @@ fn what_a_per_shard_resident_bound_recovers() {
     let resident1 = engine.bucket_index_resident_bytes(1);
     let read1 = readable(&engine);
 
-    println!("=== after the bound fired: {buckets1} buckets, {pages1} pages, {released1} released ===");
+    println!("=== after the bound fired: {buckets1} buckets, {pages1} blocks, {released1} released ===");
     let row = |name: &str, before: u64, after: u64| {
         println!(
             "  {name:<28} {before:>10} -> {after:>10} B   recovered {:>10} B  {:>8.1} B/key  {:>6.1}%",
@@ -3711,7 +3711,7 @@ fn what_a_per_shard_resident_bound_recovers() {
     row("dirty_objects", dr0, dr1);
     row("whole ShardState", whole0, whole1);
     println!("  modelled resident {resident0} -> {resident1} B, bound was {bound} B");
-    println!("  pages {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}");
+    println!("  blocks {pages0} -> {pages1}, buckets {buckets0} -> {buckets1}, keys {keys} -> {keys1}");
     println!("  reads: {read0} of {} before, {read1} after", probe_keys.len());
 
     // --- THE RE-MEASURED WHOLE-INDEX TOTAL, which is the figure that answers "how big is the
@@ -4073,9 +4073,9 @@ fn what_one_key_with_one_block_costs() {
     let read1 = readable(&engine);
 
     println!();
-    println!("  ONE KEY, ONE PAGE -- {keys0} keys, {pages0} pages before, {pages1} after");
+    println!("  ONE KEY, ONE PAGE -- {keys0} keys, {pages0} blocks before, {pages1} after");
     println!(
-        "    before   {before:>10} B   {:>6.1} B/key   (= B/page, one page a key)",
+        "    before   {before:>10} B   {:>6.1} B/key   (= B/block, one block a key)",
         before as f64 / keys0 as f64
     );
     println!(
@@ -5355,7 +5355,7 @@ fn the_series_dedup_keeps_one_of_each_distinct_entry() {
     let block_a_id9 = ElementEntry::from_parts(7, 4_096, 64, Some(9), None);
     assert_ne!(
         block_a_id5, block_a_id9,
-        "the fixture needs two DISTINCT entries on one page, or it tests nothing"
+        "the fixture needs two DISTINCT entries on one block, or it tests nothing"
     );
 
     let mut series = OwnedTimestampedSeries::default();
@@ -6464,7 +6464,7 @@ fn what_choosing_the_next_block_ordinal_costs() {
     println!();
     println!("    BEFORE, measured by this same arm on the parent commit: 16.0 allocs and");
     println!("    59,648 B/call at 400 blocks, 22.0 and 475,584 B/call at 3,200 -- a shard-wide");
-    println!("    position map plus a walk of the bucket's whole page index, to choose one");
+    println!("    position map plus a walk of the bucket's whole block index, to choose one");
     println!("    integer. Both commits answer 400 and 3,200, so the answer did not move.");
 
     // --- THE ANSWER FIRST. A cheap call that answers wrongly is worse than an expensive one. ---
@@ -7953,12 +7953,12 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
     let (_, large_blocks, _, large_bytes) = measured[1];
     println!();
     println!(
-        "  pages x{:.1}  ->  alloc_bytes x{:.1}",
+        "  blocks x{:.1}  ->  alloc_bytes x{:.1}",
         large_blocks as f64 / small_blocks.max(1) as f64,
         large_bytes as f64 / small_bytes.max(1) as f64,
     );
-    println!("  a ratio near the page ratio means one stats read costs the store's size, every read.");
-    println!("  measured at x3.5 for x8.0 pages: a large fixed part, and a part that follows the store.");
+    println!("  a ratio near the block ratio means one stats read costs the store's size, every read.");
+    println!("  measured at x3.5 for x8.0 blocks: a large fixed part, and a part that follows the store.");
 
     // --- NO BOUND ASSERTED ON THE LEVEL. 776 KB a read is a finding, not a budget, and the share of
     // --- it that follows the store is not yet attributed to a line -- so a threshold here would
@@ -8485,7 +8485,7 @@ fn the_amplification_set_in_the_published_format() {
     println!("    physical written  {physical_written:>12} B");
     println!("    physical resident {physical_resident:>12} B");
     println!("    live              {live:>12} B");
-    println!("    payload resident  {payload_resident:>12} B   (the page cache)");
+    println!("    payload resident  {payload_resident:>12} B   (the block cache)");
     println!("    index image       {index_image:>12} B");
     println!("    index resident    {index_resident:>12} B");
     println!("    index log written {:>12} B", log.bytes_written);
@@ -10554,7 +10554,7 @@ fn what_a_release_does_to_the_published_amplification_ratio() {
          plus its series keys -- the corpus is not the one these figures report",
         seeded.keys
     );
-    assert!(seeded.pages > 0, "denominator: no pages means there are no block lists to release");
+    assert!(seeded.pages > 0, "denominator: no blocks means there are no block lists to release");
     assert!(
         seeded.buckets > 0 && seeded.buckets <= (SHIPPED_END as usize + 1),
         "denominator: {} buckets is not a 0..{SHIPPED_END} population",
@@ -10606,7 +10606,7 @@ fn what_a_release_does_to_the_published_amplification_ratio() {
     }
     println!(
         "  {:<26} {:>11} {:>11} {:>11}",
-        "buckets / pages",
+        "buckets / blocks",
         format!("{}/{}", seeded.buckets, seeded.pages),
         format!("{}/{}", released.buckets, released.pages),
         format!("{}/{}", swept.buckets, swept.pages)

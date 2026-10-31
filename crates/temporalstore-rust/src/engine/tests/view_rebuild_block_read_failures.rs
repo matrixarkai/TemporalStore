@@ -160,7 +160,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     let blocks = live_blocks(shard);
     assert!(
         blocks > 0,
-        "DENOMINATOR: {blocks} live pages, so this control is a zero because nothing was read"
+        "DENOMINATOR: {blocks} live blocks, so this control is a zero because nothing was read"
     );
 
     // What a `skip_serializing` map always looks like on load: empty. So the rebuild below is the
@@ -183,11 +183,11 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     );
     assert_eq!(
         0, read_failures,
-        "a clean load reported {read_failures} unreadable pages"
+        "a clean load reported {read_failures} unreadable blocks"
     );
     assert_eq!(
         0, decode_failures,
-        "a clean load reported {decode_failures} undecodable pages"
+        "a clean load reported {decode_failures} undecodable blocks"
     );
     assert_eq!(
         POINTS as usize, rebuilt,
@@ -207,7 +207,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard is loaded");
     let blocks = live_blocks(shard);
-    assert!(blocks > 0, "DENOMINATOR: {blocks} live pages");
+    assert!(blocks > 0, "DENOMINATOR: {blocks} live blocks");
 
     // ARM A -- the same store, read cleanly. This is what the fault arm is compared against, and it
     // is the SAME fixture rather than a second one that might differ for another reason.
@@ -226,7 +226,7 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     let torn = tear_the_blocks(dir.path());
     assert!(
         torn > 0,
-        "DENOMINATOR: {torn} page files torn, so arm B read a healthy store and is arm A again"
+        "DENOMINATOR: {torn} block files torn, so arm B read a healthy store and is arm A again"
     );
     crate::engine::storage_bucket_internals::reset_view_rebuild_block_failure_counts();
     shard.features_mut().clear();

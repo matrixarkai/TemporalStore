@@ -2894,7 +2894,7 @@ fn the_second_pass_stops_at_its_minimum_scan_once_the_first_has_stamped_its_cloc
     );
     assert_eq!(
         second.dropped_object_count, 0,
-        "the second round deleted {} records; relieving memory releases pages and never deletes",
+        "the second round deleted {} records; relieving memory releases blocks and never deletes",
         second.dropped_object_count
     );
 }

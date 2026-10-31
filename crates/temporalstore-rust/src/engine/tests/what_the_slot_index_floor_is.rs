@@ -578,7 +578,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
             .map(|(routing_bucket, _)| *routing_bucket)
             .collect()
     };
-    assert!(!candidates.is_empty(), "the reopened store holds no bucket with a page");
+    assert!(!candidates.is_empty(), "the reopened store holds no bucket with a block");
 
     let outcome = {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
@@ -586,7 +586,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
         crate::engine::storage_bucket_internals::release_bucket_blocks(shard, &candidates)
     };
     println!(
-        "  release: {} of {} candidate bucket(s) released, {} page(s) dropped, {} refused",
+        "  release: {} of {} candidate bucket(s) released, {} block(s) dropped, {} refused",
         outcome.released_buckets.len(),
         candidates.len(),
         outcome.released_blocks,

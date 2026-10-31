@@ -891,7 +891,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
         .ok_or_else(|| {
             Status::error(
                 "block_compaction_failed",
-                "missing container element page bytes during compaction",
+                "missing container element block bytes during compaction",
             )
         })?;
         let cold = !block_memory_resident(cache, shard_id, element.address, Some(routing_bucket));
@@ -1115,7 +1115,7 @@ pub(super) fn compact_block_addresses<'a>(
             .ok_or_else(|| {
                 Status::error(
                     "block_compaction_failed",
-                    "missing page bytes during compaction",
+                    "missing block bytes during compaction",
                 )
             })?;
         // Compaction REWRITES a block that already exists, so it keeps the id that block
@@ -1181,7 +1181,7 @@ pub(super) fn compact_feature_block_addresses(
             .ok_or_else(|| {
                 Status::error(
                     "block_compaction_failed",
-                    "missing feature page bytes during compaction",
+                    "missing feature block bytes during compaction",
                 )
             })?;
         let new_address = block_store

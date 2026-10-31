@@ -313,7 +313,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         let blocks_before: usize = before.values().sum();
         assert!(
             blocks_before > 0,
-            "DENOMINATOR [{}]: the seed filed no page at all, so nothing could be retained",
+            "DENOMINATOR [{}]: the seed filed no block at all, so nothing could be retained",
             arm.label
         );
 

@@ -433,7 +433,7 @@ pub(super) fn logical_range_from_slab(
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
-                "mixed raw bytes after page envelope",
+                "mixed raw bytes after block envelope",
             ));
         }
         if remaining.len() < BLOCK_RECORD_SMALLEST_HEADER_LEN {
@@ -713,7 +713,7 @@ pub(super) fn summarize_slab(
         if remaining.len() < BLOCK_RECORD_HEADER_LEN || !remaining.starts_with(BLOCK_RECORD_MAGIC) {
             return Err(corrupt_block_envelope(
                 &address,
-                "mixed raw bytes after page envelope",
+                "mixed raw bytes after block envelope",
             ));
         }
         if remaining.len() < BLOCK_RECORD_SMALLEST_HEADER_LEN {
@@ -860,7 +860,7 @@ pub(super) fn inspect_slab(slab: &[u8], block_slab_id: u64) -> BlockStoreSlabRep
             record_slab_inspection_error(
                 &mut report,
                 address.offset(),
-                corrupt_block_envelope(&address, "mixed raw bytes after page envelope").to_string(),
+                corrupt_block_envelope(&address, "mixed raw bytes after block envelope").to_string(),
             );
             break;
         }
@@ -1133,7 +1133,7 @@ mod block_record_format_tests {
     /// The checksum is a CRC32C of the payload, in the four bytes after the magic.
     #[test]
     fn the_checksum_is_a_crc32c_of_the_payload() {
-        let payload = b"page payload that is long enough to be interesting";
+        let payload = b"block payload that is long enough to be interesting";
         let encoded =
             encode_block_record(payload, 7, None, None, BlockStoreOptions::default())
                 .expect("encode");
