@@ -577,6 +577,30 @@ pub(super) fn validate_command_preconditions(
                 ));
             }
         }
+        // THE SAME SERIES, SO THE SAME CEILING. `SequenceAdd` appends into `features` exactly as
+        // the three arms above do -- `execute_on_shard` reaches for `features_mut()` under both
+        // names -- but it was not in this block, so the ceiling the other three enforce was
+        // reachable around: a key the feature commands refuse to grow could be grown past it by
+        // sending rows instead of points.
+        //
+        // The cost of the omission is not only the ceiling. Validation runs BEFORE execution, so a
+        // refused command writes nothing; an accepted one serialises every row to JSON and appends
+        // a block per row before `trim_timestamped_series` discards everything past
+        // `feature_max_size`. An unbounded batch therefore bought an unbounded amount of durable
+        // work for data that does not survive the same command.
+        Command::SequenceAdd { key, rows } => {
+            let current = shard
+                .features()
+                .get(&key[..])
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(rows.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
         Command::ContextUpsertNode { tenant_hash, node } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_node(node)?;
