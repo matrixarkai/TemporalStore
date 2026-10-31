@@ -212,7 +212,7 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     ))
     .expect("a node serializes");
     let block_index = written
-        .get("page_index")
+        .get("block_index")
         .and_then(|value| value.as_object())
         .expect("the node writes a page_index object");
 

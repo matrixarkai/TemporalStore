@@ -342,7 +342,7 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     let encoded =
         serde_json::to_value(&crate::engine::state::NodeNamedBy(&bucket, &["an-object"])).expect("a bucket node serializes");
     let block_index = encoded
-        .get("page_index")
+        .get("block_index")
         .and_then(serde_json::Value::as_object)
         .expect("a node writes its page index as a map");
     assert_eq!(block_index.len(), 1, "one page was inserted");
@@ -711,7 +711,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     let blocks = encoded
         .get("bucket_map")
         .and_then(|buckets| buckets.get("7"))
-        .and_then(|node| node.get("page_index"))
+        .and_then(|node| node.get("block_index"))
         .and_then(|blocks| blocks.as_object())
         .expect("the bucket writes a page index")
         .clone();

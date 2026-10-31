@@ -6532,6 +6532,14 @@ fn the_index_wire_keys_are_what_they_were() {
             // address for a different block.
             "a",
             "address",
+            // "block_index" IS "page_index" MOVED, and the move is the writer flip: the bucket
+            // node's block map was written by a hand-rolled `serialize_field` that no attribute
+            // sweep could see. The reader has accepted the set `block_index` / `page_index` /
+            // `page_refs` since the widening, so an index written before the flip still loads;
+            // what the stamp bump beside it pays for is an older binary reading an image written
+            // after it, which would drop the key it does not declare and load every bucket with
+            // an EMPTY block map.
+            "block_index",
             "bucket_map",
             // "b", the older grouping id, is gone: a slab IS the unit, so an address derives it from
             // the address word rather than carrying it. An index written before this still has the
@@ -6586,12 +6594,21 @@ fn the_index_wire_keys_are_what_they_were() {
             // own bucket. So neither appears in this list, and this list is what would have caught
             // them if they did.
             "meta_loaded",
-            "model_id",
+            // "model_id" and "object_key" are GONE, and this list has been red since they went.
+            // A page entry used to restate both as named fields; it now reads them back out of
+            // the composite key it is filed under, which is the key's own second and first slots.
+            // That change measured that the key's characters were never read back -- every entry
+            // in a 2,000-key index replaced by the decimal of its handle re-encoded to a
+            // byte-identical index -- and spent a format stamp on the rollback direction. The
+            // list was not updated with it, so this assertion has been failing on main rather
+            // than guarding anything. Named here rather than quietly dropped, which is this
+            // list's own rule.
             // "o" and "ps" are gone -- merged into "a" at the top of this list.
             "object_index",
-            "object_key",
             "oi",
-            "page_index",
+            // "page_index" is GONE from this list because the writer moved, not because the key
+            // was retired: it is still ACCEPTED, and an index on disk that spells it still loads.
+            // It is listed at the top under its canonical spelling.
             "pi",
             // "routing_slot" here is the BUCKET NODE's own key, not the address's retired "rs" --
             // two different things that read alike. The node still records which bucket it is.

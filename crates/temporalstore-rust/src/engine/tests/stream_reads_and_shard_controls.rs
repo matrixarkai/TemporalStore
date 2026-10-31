@@ -311,7 +311,7 @@ fn control_api_reads_and_scans_index_log_stream() {
         .values()
         .filter_map(|bucket| {
             bucket
-                .get("page_index")
+                .get("block_index")
                 .or_else(|| bucket.get("p"))
                 .and_then(|blocks| blocks.as_object())
         })

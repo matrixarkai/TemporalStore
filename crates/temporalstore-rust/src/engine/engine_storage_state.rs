@@ -6061,7 +6061,7 @@ where
         node.serialize_field("deleted_object_index", &self_.deleted_object_index)?;
         // AT THE BUCKET LEVEL, through `BlockIndexAt`, so the written key is composed where the
         // node's other structures are in scope. The bytes are the ones the map's own impl wrote.
-        node.serialize_field("page_index", block_index)?;
+        node.serialize_field("block_index", block_index)?;
         // THE ELEMENT EACH TOMBSTONE IN THIS BUCKET IS ABOUT, which the entries themselves no
         // longer say. Written LAST so the key is appended to the shape rather than inserted into
         // the middle of it, and `skip_serializing_if` keeps it off every bucket that has never had
@@ -6272,7 +6272,7 @@ impl<'de> Deserialize<'de> for BucketNodeWithBlockKeys {
                         BucketNodeField::DeletedObjectIndex => {
                             once!(deleted_object_index, "deleted_object_index")
                         }
-                        BucketNodeField::BlockIndex => once!(block_index, "page_index"),
+                        BucketNodeField::BlockIndex => once!(block_index, "block_index"),
                         BucketNodeField::TombstoneElements => {
                             once!(tombstone_elements, "tombstone_elements")
                         }
