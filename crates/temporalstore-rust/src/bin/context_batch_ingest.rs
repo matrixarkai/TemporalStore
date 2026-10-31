@@ -127,7 +127,7 @@ fn main() {
     let engine = TemporalEngine::with_local_dirs(
         cache_bytes,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     );
     if warm_cache_in_background {

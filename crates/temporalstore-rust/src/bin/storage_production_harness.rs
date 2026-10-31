@@ -159,7 +159,7 @@ async fn main() {
 
 async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProductionCaseSummary {
     let case_root = root.join(&case.name);
-    let block_dir = case_root.join("pages");
+    let block_dir = case_root.join("blocks");
     let index_dir = case_root.join("indexes");
     let mut engine = new_engine(&case_root, &block_dir, &index_dir, case.shard_id);
     execute_steps(&engine, case.shard_id, &case.operations, &case.name);
@@ -286,7 +286,7 @@ async fn run_shared_store_mode(
     let follower_root = shared_store_root.join(format!("follower-{mode:?}"));
     let follower = new_engine(
         &follower_root,
-        &follower_root.join("pages"),
+        &follower_root.join("blocks"),
         &follower_root.join("indexes"),
         case.shard_id,
     );

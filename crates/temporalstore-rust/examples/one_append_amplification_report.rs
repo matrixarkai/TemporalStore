@@ -86,7 +86,7 @@ fn entry_for(shape: Shape, value: Vec<u8>) -> SharedStoreWalEntry {
     let primary = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("index"),
     );
     primary.load_shard(SHARD);

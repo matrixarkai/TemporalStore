@@ -1504,7 +1504,7 @@ mod compaction_selection_tests {
         let engine = crate::engine::TemporalEngine::with_local_dirs(
             16 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);

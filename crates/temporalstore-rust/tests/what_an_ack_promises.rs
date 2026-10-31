@@ -169,7 +169,7 @@ fn open_engine(root: &Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         256,
         root.join("cache"),
-        root.join("pages"),
+        root.join("blocks"),
         root.join("indexes"),
     )
 }

@@ -37,7 +37,7 @@ fn cold_raw_ingestion_writes_wal_and_avoids_cache_promotion() {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

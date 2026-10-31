@@ -397,7 +397,7 @@ fn engine_without_a_shard(dir: &std::path::Path) -> Arc<TemporalEngine> {
     Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ))
 }
@@ -406,7 +406,7 @@ fn new_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ));
     engine.load_shard(1);
@@ -2358,7 +2358,7 @@ fn the_warm_block_is_found_under_the_key_the_other_side_wrote() {
     let reopened = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-b"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     reopened.load_shard(1);

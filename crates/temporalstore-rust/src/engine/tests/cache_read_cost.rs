@@ -116,7 +116,7 @@ fn engine_at(dir: &std::path::Path, memory_capacity_bytes: usize) -> (TemporalEn
     let engine = TemporalEngine::with_local_dirs(
         memory_capacity_bytes,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(1);
@@ -482,7 +482,7 @@ fn a_warm_serving_read_is_answered_from_memory_and_never_reaches_the_ssd_tier() 
     let engine = TemporalEngine::with_local_dirs(
         256 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

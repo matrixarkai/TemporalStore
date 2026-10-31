@@ -25,7 +25,7 @@ const COMMITTED: u64 = 3;
 fn node_whose_durable_wal_is_broken(dir: &std::path::Path) -> RaftNode {
     let indexes = dir.join("indexes");
     let engine =
-        TemporalEngine::with_local_dirs(1 << 20, dir.join("cache"), dir.join("pages"), &indexes);
+        TemporalEngine::with_local_dirs(1 << 20, dir.join("cache"), dir.join("blocks"), &indexes);
     engine.load_shard(SHARD);
     let baseline = engine.execute(ExecuteRequest {
         shard_id: SHARD,
@@ -224,7 +224,7 @@ fn a_healthy_batch_still_advances_the_apply_floor_to_every_index() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         &indexes,
     );
     engine.load_shard(SHARD);

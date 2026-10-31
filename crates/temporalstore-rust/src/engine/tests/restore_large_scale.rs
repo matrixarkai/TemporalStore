@@ -388,7 +388,7 @@ fn build_corpus(
         let engine = TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.join("cache"),
-            dir.join("pages"),
+            dir.join("blocks"),
             index_dir.clone(),
         );
         engine.load_shard(1);
@@ -440,7 +440,7 @@ fn build_corpus(
         manifest_files,
         manifest_bytes,
         index_log_bytes: dir_bytes(&index_dir.join("indexlogs")),
-        block_bytes: dir_bytes(&dir.join("pages")),
+        block_bytes: dir_bytes(&dir.join("blocks")),
         store_bytes: dir_bytes(dir),
         manifest_anchors,
         slabs_on_disk,
@@ -584,7 +584,7 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
     let engine = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache-restore"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     crate::engine::reset_bucket_dump_manifest_io_counts();

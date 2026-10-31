@@ -23,8 +23,8 @@ export TS_CACHE_DIR="${DATA_DIR}/cache"
 # The canonical directory, unless the previous one is the one that is already there: a container
 # whose volume was created before the rename keeps serving the blocks it holds instead of coming up
 # on an empty directory beside them.
-if [ -d "${DATA_DIR}/pages" ] && [ ! -d "${DATA_DIR}/blocks" ]; then
-  export TS_BLOCK_STORE_DIR="${DATA_DIR}/pages"
+if [ -d "${DATA_DIR}/blocks" ] && [ ! -d "${DATA_DIR}/blocks" ]; then
+  export TS_BLOCK_STORE_DIR="${DATA_DIR}/blocks"
 else
   export TS_BLOCK_STORE_DIR="${DATA_DIR}/blocks"
 fi

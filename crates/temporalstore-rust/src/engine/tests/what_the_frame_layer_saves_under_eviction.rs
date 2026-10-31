@@ -104,7 +104,7 @@ fn what_the_frame_layer_saves_under_eviction() {
     let engine = crate::TemporalEngine::with_local_dirs(
         CACHE_BYTES,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);

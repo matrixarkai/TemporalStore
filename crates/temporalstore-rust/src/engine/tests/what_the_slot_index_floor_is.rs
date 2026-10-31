@@ -230,7 +230,7 @@ fn with_seeded_shard<R>(
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -529,7 +529,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
         TemporalEngine::with_local_dirs(
             64,
             root.join("cache"),
-            root.join("pages"),
+            root.join("blocks"),
             root.join("indexes"),
         )
     }

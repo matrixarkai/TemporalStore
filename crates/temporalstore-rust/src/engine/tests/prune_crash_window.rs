@@ -39,7 +39,7 @@ fn engine_with_three_chained_manifests(dir: &std::path::Path) -> (TemporalEngine
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(SHARD);
@@ -289,7 +289,7 @@ fn the_new_prune_order_has_a_clean_crash_window_and_the_shard_still_loads() {
     let reopened = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     reopened.load_shard(SHARD);

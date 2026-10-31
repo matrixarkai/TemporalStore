@@ -4592,7 +4592,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -4661,7 +4661,7 @@ mod tests {
         let engine_a = TemporalEngine::with_local_dirs(
             1024,
             dir_a.path().join("cache"),
-            dir_a.path().join("pages"),
+            dir_a.path().join("blocks"),
             dir_a.path().join("indexes"),
         );
         engine_a.load_shard(1);
@@ -4671,7 +4671,7 @@ mod tests {
         let engine_b = TemporalEngine::with_local_dirs(
             1024,
             dir_b.path().join("cache"),
-            dir_b.path().join("pages"),
+            dir_b.path().join("blocks"),
             dir_b.path().join("indexes"),
         );
         engine_b.load_shard(1);
@@ -4779,7 +4779,7 @@ mod tests {
         let engine_a = TemporalEngine::with_local_dirs(
             1024,
             dir_a.path().join("cache"),
-            dir_a.path().join("pages"),
+            dir_a.path().join("blocks"),
             dir_a.path().join("indexes"),
         );
         engine_a.load_shard(1);
@@ -4789,7 +4789,7 @@ mod tests {
         let engine_b = TemporalEngine::with_local_dirs(
             1024,
             dir_b.path().join("cache"),
-            dir_b.path().join("pages"),
+            dir_b.path().join("blocks"),
             dir_b.path().join("indexes"),
         );
         engine_b.load_shard(1);
@@ -7616,7 +7616,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8038,7 +8038,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8077,7 +8077,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8136,7 +8136,7 @@ mod tests {
         let engine_a = TemporalEngine::with_local_dirs(
             1024,
             dir_a.path().join("cache"),
-            dir_a.path().join("pages"),
+            dir_a.path().join("blocks"),
             dir_a.path().join("indexes"),
         );
         engine_a.load_shard(1);
@@ -8146,7 +8146,7 @@ mod tests {
         let engine_b = TemporalEngine::with_local_dirs(
             1024,
             dir_b.path().join("cache"),
-            dir_b.path().join("pages"),
+            dir_b.path().join("blocks"),
             dir_b.path().join("indexes"),
         );
         engine_b.load_shard(2);
@@ -8747,7 +8747,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8883,7 +8883,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -8991,7 +8991,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -9189,7 +9189,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -9251,7 +9251,7 @@ mod tests {
         let engine_a = TemporalEngine::with_local_dirs(
             1024,
             dir_a.path().join("cache"),
-            dir_a.path().join("pages"),
+            dir_a.path().join("blocks"),
             dir_a.path().join("indexes"),
         );
         engine_a.load_shard(1);
@@ -9261,7 +9261,7 @@ mod tests {
         let engine_b = TemporalEngine::with_local_dirs(
             1024,
             dir_b.path().join("cache"),
-            dir_b.path().join("pages"),
+            dir_b.path().join("blocks"),
             dir_b.path().join("indexes"),
         );
         engine_b.load_shard(1);
@@ -9366,7 +9366,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -9435,7 +9435,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -9550,7 +9550,7 @@ mod tests {
         let engine = TemporalEngine::with_local_dirs(
             1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);

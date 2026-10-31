@@ -74,7 +74,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -547,7 +547,7 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
 #[test]
 fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let victim = member_bytes(1);
     let survivor = member_bytes(2);
@@ -663,7 +663,7 @@ const CROWD: usize = 12;
 #[test]
 fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks = dir.path().join("pages");
+    let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     let doomed = member_bytes(3);
     let rewritten = member_bytes(5);

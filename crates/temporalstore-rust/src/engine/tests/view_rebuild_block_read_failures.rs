@@ -55,7 +55,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -108,7 +108,7 @@ fn seed_series(engine: &TemporalEngine, key: &str) {
 /// fault arm reading a healthy store.
 fn tear_the_blocks(dir: &std::path::Path) -> usize {
     let mut torn = 0usize;
-    let mut stack = vec![dir.join("pages")];
+    let mut stack = vec![dir.join("blocks")];
     while let Some(path) = stack.pop() {
         let Ok(entries) = std::fs::read_dir(&path) else {
             continue;

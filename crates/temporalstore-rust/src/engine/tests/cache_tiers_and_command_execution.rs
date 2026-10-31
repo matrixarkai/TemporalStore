@@ -11,7 +11,7 @@ fn memory_miss_reads_local_block_file_using_index_address() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let cache = engine.cache();
@@ -78,7 +78,7 @@ fn three_layer_cache_reads_memory_then_block_cache_then_local_file() {
     let engine = TemporalEngine::with_local_dirs(
         1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let cache = engine.cache();
@@ -193,7 +193,7 @@ fn tiny_memory_cache_eviction_refills_from_persistence_then_block_cache() {
     let engine = TemporalEngine::with_local_dirs(
         32,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let cache = engine.cache();
@@ -306,7 +306,7 @@ fn cache_replacement_policy_soak() {
     let engine = TemporalEngine::with_local_dirs(
         32,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -474,7 +474,7 @@ fn cache_replacement_policy_soak() {
     let drop_engine = TemporalEngine::with_local_dirs(
         64,
         drop_dir.path().join("cache"),
-        drop_dir.path().join("pages"),
+        drop_dir.path().join("blocks"),
         drop_dir.path().join("indexes"),
     );
     drop_engine.load_shard(7);
@@ -597,7 +597,7 @@ fn cache_dram_pmem_ssd_tiers_admit_refill_and_evict() {
 #[test]
 fn restarted_engine_refills_tiny_memory_cache_from_persistent_block_cache() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let original =
         TemporalEngine::with_local_dirs(32, dir.path().join("cache-a"), &block_dir, &index_dir);
@@ -710,7 +710,7 @@ fn block_reads_fill_compressed_block_cache() {
     );
     let engine = TemporalEngine::with_cache_block_store_and_index_dir(
         cache.clone(),
-        BlockStore::new(dir.path().join("pages")),
+        BlockStore::new(dir.path().join("blocks")),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -752,7 +752,7 @@ fn local_dirs_constructor_applies_block_store_compression_options() {
     let engine = TemporalEngine::with_local_dirs_and_block_store_options(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
         BlockStoreOptions {
             compression_enabled: false,
@@ -831,7 +831,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -893,7 +893,7 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
     let engine = TemporalEngine::with_local_dirs(
         2048,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -991,7 +991,7 @@ fn set_async_config(engine: &TemporalEngine, shard_id: ShardId) {
 fn atomic_batch_survives_restart_when_complete() {
     // Positive control for gap E3: a fully-persisted atomic batch replays in full on restart.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &block_dir, &index_dir);
@@ -1031,7 +1031,7 @@ fn atomic_batch_is_all_or_nothing_when_commit_marker_lost() {
     // WAL line; on restart the WHOLE batch must be discarded -- never a partially-applied prefix
     // that a retry would double-apply.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1024 * 1024, dir.path().join("cache-a"), &block_dir, &index_dir);
@@ -1131,7 +1131,7 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1178,7 +1178,7 @@ fn durable_execute_overrides_async_storage_for_raft_local_file_path() {
 fn durable_index_survives_restart_and_points_to_block_file() {
     let dir = tempfile::tempdir().unwrap();
     let cache_dir = dir.path().join("cache-a");
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(1024, &cache_dir, &block_dir, &index_dir);
     engine.load_shard(1);
@@ -1215,7 +1215,7 @@ fn async_write_survives_restart_via_wal_replay_like_native() {
     // Startup load replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -1278,7 +1278,7 @@ fn async_write_survives_restart_via_wal_replay_like_native() {
 #[test]
 fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -1365,7 +1365,7 @@ fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
 #[test]
 fn control_state_coalesced_write_survives_restart_via_wal_replay() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -1439,7 +1439,7 @@ fn async_storage_batch_write_records_wal_without_sync_or_index() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1492,7 +1492,7 @@ fn eviction_ranks_victims_least_recently_used_first_like_native() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1543,7 +1543,7 @@ fn wal_replay_gap_refuses_load_like_dataloss() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     // Seed the WAL with a sequence hole {1,2,4} (missing 3) before loading the shard;
@@ -1600,7 +1600,7 @@ fn expiry_sweep_emits_wal_delete_marker_like_native() {
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -1674,7 +1674,7 @@ fn wal_replay_uses_leader_timestamp_for_ttl_deadline_like_native() {
     // the (later) restart clock -- otherwise crash recovery resurrects a key past its
     // deadline with a fresh restart-time+ttl lifetime.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -1778,7 +1778,7 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
     }
 
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let live_now_ms = PinnedLeaderClock::real_now_ms();
 
@@ -1849,7 +1849,7 @@ fn wal_replay_reads_an_unstamped_record_against_the_live_clock() {
 #[test]
 fn wal_replay_conditional_write_uses_leader_clock_for_lazy_expiry_like_native() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -1982,7 +1982,7 @@ fn wal_replay_rearmed_expire_does_not_abort_recovery_like_native() {
     // for every key on the shard). ReplayWal re-applies logged effects without
     // re-checking preconditions. The canary below proves the shard actually recovered.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -2164,7 +2164,7 @@ fn timestamped_models_survive_unload_reload_round_trip() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2282,7 +2282,7 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
     // reconcile-from-pages must keep the persisted (trimmed) membership -- the evicted points
     // must NOT resurrect on reload (writes per-timestamp deleted tombstones for this).
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
@@ -2370,7 +2370,7 @@ fn object_lifecycle_snapshot_matches_the_recovery_report() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2443,7 +2443,7 @@ fn planning_a_maintenance_round_reads_no_blocks() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2543,7 +2543,7 @@ fn what_the_plan_phase_costs() {
         let engine = TemporalEngine::with_local_dirs(
             8 << 20,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -2596,7 +2596,7 @@ fn the_reclaim_planner_sees_the_same_candidates() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2675,7 +2675,7 @@ fn the_wal_byte_threshold_measures_undumped_bytes_not_the_whole_log() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2749,7 +2749,7 @@ fn what_the_slab_survey_costs() {
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2817,7 +2817,7 @@ fn what_a_round_still_reads() {
         let engine = TemporalEngine::with_local_dirs(
             8 << 20,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
@@ -2908,7 +2908,7 @@ fn the_shipped_dump_cap_still_lets_the_log_be_reclaimed() {
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2959,7 +2959,7 @@ fn the_log_stays_bounded_under_continuous_writing() {
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3055,7 +3055,7 @@ fn a_bucket_remembers_its_oldest_undumped_write() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3125,7 +3125,7 @@ fn a_capped_dump_takes_the_oldest_undumped_bucket_first() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3203,7 +3203,7 @@ fn a_capped_dump_still_reclaims() {
     let engine = TemporalEngine::with_local_dirs(
         8 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3275,7 +3275,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
     // MetaItem anchor; below the gap nothing is dumped. Matches
     // index-meta dump background cadence -- never a per-write dump.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &block_dir, &index_dir);
@@ -3324,7 +3324,7 @@ fn manifest_fold_threshold_dump_fires_only_past_the_gap_and_folds_the_catalog() 
 #[test]
 fn a_catalog_dump_waits_out_the_interval_before_the_next_one() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &block_dir, &index_dir);
@@ -3378,7 +3378,7 @@ fn a_catalog_dump_waits_out_the_interval_before_the_next_one() {
 #[test]
 fn counting_a_logs_records_agrees_with_scanning_it() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache"), &block_dir, &index_dir);
@@ -3430,7 +3430,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
     // reclaiming them must SHRINK both files on disk, keep the cadence alive (watermark
     // measured from the post-reclaim length), and leave a reload byte-exact.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &block_dir, &index_dir);
@@ -3501,7 +3501,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_blocks() {
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -3552,7 +3552,7 @@ fn manifest_fold_reload_reconstructs_catalog_with_slab_manifest_deleted() {
     // file, reload -- every acked key must survive AND the slab lifecycle must reconstruct from
     // the folded index-log MetaItem, proving the fold is a lossless catalog source.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-a"), &block_dir, &index_dir);
@@ -3611,7 +3611,7 @@ fn manifest_fold_on_does_not_resurrect_evicted_feature_points_on_reload() {
     // catalog (M1), NOT the per-write served-index delta / key_states nor the WAL config-log, so
     // config-driven feature_max_size eviction stays durable and does not resurrect on reload.
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
@@ -5107,7 +5107,7 @@ fn control_state_distinct_sketch_bounds_high_cardinality() {
 #[test]
 fn control_state_distinct_sketch_survives_restart() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
@@ -5687,7 +5687,7 @@ fn engine_reload_shard_updates_metadata_and_rejects_stale_version() {
 #[test]
 fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
     let dir = tempfile::tempdir().unwrap();
-    let block_dir = dir.path().join("pages");
+    let block_dir = dir.path().join("blocks");
     let index_dir = dir.path().join("indexes");
     let engine = TemporalEngine::with_local_dirs(
         1 << 20,
@@ -5800,7 +5800,7 @@ fn what_one_control_state_increment_costs_as_the_counter_grows() {
         let engine = TemporalEngine::with_local_dirs(
             8 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(1);

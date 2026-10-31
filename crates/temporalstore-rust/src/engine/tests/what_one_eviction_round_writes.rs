@@ -86,7 +86,7 @@ fn sweep(dump_before_evict: bool) -> Vec<(usize, u64, u64, u64, f64)> {
         let engine = TemporalEngine::with_local_dirs(
             64,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         );
         engine.load_shard(SHARD);
@@ -236,7 +236,7 @@ fn round_shape(keys: usize, rounds: u64, interval: u64) -> RoundShape {
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(SHARD);
@@ -409,7 +409,7 @@ fn the_logged_deletion_flush_interval_is_a_real_setting_whose_default_is_not_one
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(SHARD);

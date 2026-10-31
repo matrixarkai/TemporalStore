@@ -89,7 +89,7 @@ fn which_record_the_dirty_bucket_consumers_read() {
     let engine = crate::TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let loaded = engine.load_shard_with(crate::control::LoadShardRequest {

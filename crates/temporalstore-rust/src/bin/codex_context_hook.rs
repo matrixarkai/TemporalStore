@@ -62,7 +62,7 @@ fn main() {
     let engine = TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         args.root.join("cache"),
-        args.root.join("pages"),
+        args.root.join("blocks"),
         args.root.join("indexes"),
     );
     engine.load_shard(1);

@@ -141,7 +141,7 @@ fn no_production_write_hands_the_door_an_ordinal_it_cannot_hold() {
     let engine = crate::engine::TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {

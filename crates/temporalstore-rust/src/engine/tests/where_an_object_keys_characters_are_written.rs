@@ -371,7 +371,7 @@ fn reading_on(
     let engine = TemporalEngine::with_local_dirs(
         64,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     match end_routing_bucket {

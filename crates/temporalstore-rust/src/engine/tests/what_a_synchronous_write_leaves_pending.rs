@@ -51,7 +51,7 @@ fn engine(dir: &std::path::Path) -> crate::TemporalEngine {
     let engine = crate::TemporalEngine::with_local_dirs(
         4 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     );
     engine.load_shard(1);

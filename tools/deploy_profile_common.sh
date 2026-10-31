@@ -90,8 +90,8 @@ ts_profile_perf_flags() {
 ts_profile_dirs() {
   # Same rule as the container entrypoint: an existing profile keeps the directory it was
   # created with, a new one is created under the canonical name.
-  if [ -d "${TS_PROFILE_DATA}/pages" ] && [ ! -d "${TS_PROFILE_DATA}/blocks" ]; then
-    _ts_default_block_dir="${TS_PROFILE_DATA}/pages"
+  if [ -d "${TS_PROFILE_DATA}/blocks" ] && [ ! -d "${TS_PROFILE_DATA}/blocks" ]; then
+    _ts_default_block_dir="${TS_PROFILE_DATA}/blocks"
   else
     _ts_default_block_dir="${TS_PROFILE_DATA}/blocks"
   fi

@@ -2189,7 +2189,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_blocks() {
     let engine = TemporalEngine::with_local_dirs(
         256,
         storage_dir.path().join("cache"),
-        storage_dir.path().join("pages"),
+        storage_dir.path().join("blocks"),
         storage_dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -2222,7 +2222,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_blocks() {
     let recovered = TemporalEngine::with_local_dirs(
         256,
         storage_dir.path().join("cache"),
-        storage_dir.path().join("pages"),
+        storage_dir.path().join("blocks"),
         storage_dir.path().join("indexes"),
     );
     recovered.load_shard(1);

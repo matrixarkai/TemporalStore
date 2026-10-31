@@ -366,7 +366,7 @@ fn every_dirty_bucket_holds_its_one_key_inline() {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);
@@ -1105,7 +1105,7 @@ fn probe_engine(dir: &std::path::Path) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ));
     engine.load_shard(1);
@@ -1203,7 +1203,7 @@ fn probe_engine_on(dir: &std::path::Path, end_routing_bucket: u32) -> Arc<Tempor
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join("cache"),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     ));
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -5027,7 +5027,7 @@ fn what_a_whole_shard_live_block_walk_allocates_per_entry() {
     let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);
@@ -5836,7 +5836,7 @@ fn what_one_hash_field_write_allocates() {
     let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);
@@ -6021,7 +6021,7 @@ fn what_one_append_costs_at_two_series_lengths() {
     let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);
@@ -6379,7 +6379,7 @@ fn what_choosing_the_next_block_ordinal_costs() {
         let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         ));
         engine.load_shard(1);
@@ -6544,7 +6544,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
         let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         ));
         engine.load_shard(1);
@@ -6706,7 +6706,7 @@ fn what_one_set_add_costs_at_two_collection_sizes() {
         let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
             64 * 1024 * 1024,
             dir.path().join("cache"),
-            dir.path().join("pages"),
+            dir.path().join("blocks"),
             dir.path().join("indexes"),
         ));
         engine.load_shard(1);
@@ -8057,7 +8057,7 @@ fn the_published_amplification_ratios_are_the_ratio_they_name() {
     let engine = crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
@@ -8252,7 +8252,7 @@ fn the_published_amplification_ratios_are_the_ratio_they_name() {
     let incompressible = crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         incompressible_dir.path().join("cache"),
-        incompressible_dir.path().join("pages"),
+        incompressible_dir.path().join("blocks"),
         incompressible_dir.path().join("indexes"),
     );
     incompressible.load_shard(1);
@@ -8709,7 +8709,7 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
     let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     let loaded = engine.load_shard_with(crate::control::LoadShardRequest {
@@ -9116,7 +9116,7 @@ fn a_node_is_a_hash_field_and_strings_cannot_fold() {
     let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     let loaded = engine.load_shard_with(crate::control::LoadShardRequest {

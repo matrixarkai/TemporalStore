@@ -617,7 +617,7 @@ fn the_check_does_not_allocate_per_block_it_walks() {
 #[test]
 fn a_restore_says_which_arm_it_took() {
     let dir = tempfile::tempdir().expect("tempdir");
-    let blocks_dir = dir.path().join("pages");
+    let blocks_dir = dir.path().join("blocks");
     let indexes_dir = dir.path().join("indexes");
     let records = 200usize;
 

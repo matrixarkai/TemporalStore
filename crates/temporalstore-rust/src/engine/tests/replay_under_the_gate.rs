@@ -83,7 +83,7 @@ fn engine_with_cache(dir: &std::path::Path, cache: &str) -> TemporalEngine {
     TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.join(cache),
-        dir.join("pages"),
+        dir.join("blocks"),
         dir.join("indexes"),
     )
 }
@@ -716,7 +716,7 @@ fn every_declared_component_builds_an_index_item() {
     let engine = std::sync::Arc::new(crate::TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     ));
     engine.load_shard(1);

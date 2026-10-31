@@ -31,7 +31,7 @@ fn build_engine(root: &PathBuf) -> (TemporalEngine, PathBuf) {
         std::fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
     let engine =
-        TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("pages"), &index_dir);
+        TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("blocks"), &index_dir);
     (engine, index_dir)
 }
 

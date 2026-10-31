@@ -662,7 +662,7 @@ fn committed_data_raft_applier_forces_durable_storage_when_async_storage_enabled
     let engine = TemporalEngine::with_local_dirs(
         1024 * 1024,
         dir.path().join("cache"),
-        dir.path().join("pages"),
+        dir.path().join("blocks"),
         dir.path().join("indexes"),
     );
     engine.load_shard(7);

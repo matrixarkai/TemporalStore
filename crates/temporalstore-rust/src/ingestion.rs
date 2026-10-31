@@ -1203,7 +1203,7 @@ mod tests {
     fn ingestion_persists_kafka_ledger_dead_letters_lag_and_flink_checkpoints() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let block_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         let engine =
             TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
@@ -1321,7 +1321,7 @@ mod tests {
     fn streaming_ingestion_commits_sequence_and_rejects_replay() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let block_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         let engine =
             TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
@@ -1615,7 +1615,7 @@ mod tests {
     fn dead_letter_export_and_raft_failover_idempotence_reports_are_ready() {
         let dir = tempfile::tempdir().unwrap();
         let cache_dir = dir.path().join("cache");
-        let block_dir = dir.path().join("pages");
+        let block_dir = dir.path().join("blocks");
         let index_dir = dir.path().join("indexes");
         let primary =
             TemporalEngine::with_local_dirs(1024 * 1024, &cache_dir, &block_dir, &index_dir);
