@@ -835,6 +835,7 @@ fn control_state_change_matches_distinct_field_semantics() {
                     start_ms: 0,
                     end_ms: 40,
                     aggregator: "change".to_string(),
+                    precision_ms: None,
                 },
             })
             .response,
@@ -895,6 +896,7 @@ fn control_state_query_supports_first_last_and_detail_list() {
                         start_ms: 0,
                         end_ms: 40,
                         aggregator: aggregator.to_string(),
+                        precision_ms: None,
                     },
                 })
                 .response,
@@ -1101,6 +1103,7 @@ fn control_state_values_survive_unload_reload() {
                     start_ms: 0,
                     end_ms: 40,
                     aggregator: aggregator.to_string(),
+                    precision_ms: None,
                 },
             })
             .response

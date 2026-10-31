@@ -3044,6 +3044,7 @@ mod tests {
             start_ms: 0,
             end_ms: 100,
             aggregator: "sum".to_string(),
+            precision_ms: None,
         };
         assert!(
             is_raft_read_command(&read_only),
