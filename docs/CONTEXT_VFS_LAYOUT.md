@@ -71,7 +71,7 @@ Key derivation lives in `crates/temporalstore-rust/src/engine/engine_context.rs`
 
 - **`ctx:dirty` is no longer a persisted family.** The key is still computed to index an
   in-memory coalescing `DirtyIndex` (`ShardState::context_dirty_index`), but it was removed
-  from the storage-page / compaction / page-layout / records paths. It is ephemeral, not a
+  from the storage-block / compaction / block-layout / records paths. It is ephemeral, not a
   VFS "file" on disk. See [`CONTEXT_DIRTY_INMEMORY.md`](CONTEXT_DIRTY_INMEMORY.md).
 - **`ctx:compress`** is now populated automatically by the configurable temporal-compression
   trigger (per-node, keep-recent window, coalesced watermark), not only by manual writes.

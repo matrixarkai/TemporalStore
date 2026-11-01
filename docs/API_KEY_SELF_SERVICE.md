@@ -100,7 +100,7 @@ or customer-admin manage keys and watch usage from a browser. It is committed at
 [`tools/portal/api_key_portal.html`](../tools/portal/api_key_portal.html) and served by the gateway:
 
 ```
-GET /v1/admin/portal        ->  200 text/html  (the static page; NO auth to fetch)
+GET /v1/admin/portal        ->  200 text/html  (the static HTML document; NO auth to fetch)
 ```
 
 Fetching the static block needs no auth, but the block is **inert without a valid admin key**: every

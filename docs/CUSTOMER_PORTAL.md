@@ -672,7 +672,7 @@ Every block carries a live strip in the nav: what is waiting to be encoded, the 
 running, requests and failures, and how many configuration warnings are live. Each segment links to
 the block that owns it, so it is a way in as well as a readout.
 
-It exists because status used to be per-page. The stream already carried all of this, and two of the
+It exists because status used to be per-block. The stream already carried all of this, and two of the
 seven blocks subscribed — so *"is my upload done"* depended on being on the right block, and the block
 you upload from was not one of them.
 

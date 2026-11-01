@@ -29,7 +29,7 @@ latency or features that RGW cannot expose.
 `StoreLayer` calls `DetectObjectStoreBackend(uri)` and dispatches to a `Store` implementation:
 
 ```text
-stream/page/index/wal
+stream/block/index/wal
   -> StoreLayer
      -> file://       LocalFileStore
      -> blob://       Object-store-compatible Store

@@ -79,7 +79,7 @@ struct ObjectEntry {
 it. What costs is **where it is held**: a second B-tree keyed by the same object key the slot map is
 already keyed by, holding 40 bytes of payload at 78.4 B/key -- so roughly half that row is node.
 
-Page-to-object identity is neither dropped nor re-represented. It stays keyed by the object key and
+Block-to-object identity is neither dropped nor re-represented. It stays keyed by the object key and
 moves into the entry the slot map already holds. That matters because the identity is load-bearing:
 `impl Serialize for CoreIndex` builds `BlockKeysByPosition::from_lookup` in every build and composes
 each block's written key from it, so an index written without it names no object.
@@ -156,7 +156,7 @@ residual of **0.0**, so nothing in the row is unaccounted:
 | `block_index Many: Vec<(u64, BlockIndex)>` | **33.8** | blocks in a list (exactly 32.0 a block) |
 | `object_index Many: Box<ObjectSlots>` | **19.4** | multi-object buckets |
 | `BTreeMap node arrays (BucketNode held INLINE)` | 3.3 | buckets |
-| `block_index One: Box<BlockIndex>` | -1.3 | single-page buckets (empties as buckets fill) |
+| `block_index One: Box<BlockIndex>` | -1.3 | single-block buckets (empties as buckets fill) |
 | residual | **0.0** | |
 
 **The container cannot be reclaimed, and this is the number that says so.** The node-array term is
@@ -188,7 +188,7 @@ width**, worth roughly **8 B/key**. That arm names a reserved id value as the le
 being full-range FNV hashes as what forbids it. A separate validity bitmap is a different mechanism
 -- 8 bytes and a bit -- and nothing refuses it.
 
-**The per-page handle is derivable.** The list pair is `(u64 handle, BlockIndex)` at exactly 32.0
+**The per-block handle is derivable.** The list pair is `(u64 handle, BlockIndex)` at exactly 32.0
 bytes a block. The handle is `block_index_handle(object_key, &block)`, which the code already
 recomputes when it needs to know which object owns a block. So the stored `u64` is a **cache, not an
 identity**: droppable for a rescan of the bucket's objects, worth another **8 B/key**. The trade is
@@ -209,7 +209,7 @@ omitted.
 |---|---|---|
 | fold `BlockRefs` into the slot entry | **-51.0** | measured |
 | the object slot width, 16 -> 8 | **~-8** | measured basis |
-| the per-page handle, derivable | **~-8** | measured basis, rescan unpriced |
+| the per-block handle, derivable | **~-8** | measured basis, rescan unpriced |
 | key characters in an arena | ~-29 | ceiling (payload plus a narrower table key) |
 | boxing the wide arm | **0** | **measured -- dead** |
 | `bucket_map` container | **0** | **measured -- saturates, dead** |

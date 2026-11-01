@@ -31,7 +31,7 @@ Symptoms:
 Immediate actions:
 - Keep writes on the current leader only.
 - Do not transfer leadership to the lagging node.
-- Check the node's WAL directory, page-store directory, and process logs for
+- Check the node's WAL directory, block-store directory, and process logs for
   fsync, checksum, snapshot, or block read errors.
 - If the follower is only behind, let catch-up run. If lag keeps growing, remove
   the follower from voters before restarting it.
@@ -72,7 +72,7 @@ Symptoms:
 
 Immediate actions:
 - Check disk latency and free space on the follower.
-- Check whether page-store reads or cache refill failures are increasing.
+- Check whether block-store reads or cache refill failures are increasing.
 - Prefer snapshot bootstrap for a very stale follower.
 - Avoid leader transfer until apply lag is below the alert threshold.
 

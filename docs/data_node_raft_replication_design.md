@@ -55,7 +55,7 @@ sequenceDiagram
   L->>L: FSM applies committed mutation
   R1->>R1: FSM applies committed mutation
   R2->>R2: FSM applies committed mutation
-  L->>D: Commit local object/WAL/page/index state
+  L->>D: Commit local object/WAL/block/index state
   L-->>C: Ack after quorum commit
 ```
 
@@ -81,7 +81,7 @@ The object-manager WAL replay path already exists and handles:
 
 - sequence checks
 - slot dirty marking
-- page-log reconstruction
+- block-log reconstruction
 - object delete
 - TTL/meta logs
 - KV/model apply

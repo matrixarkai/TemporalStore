@@ -151,7 +151,7 @@ actually set aside, and a container change moves the rounding between them.
 **Why `1023` and not `255`, which is better on every byte column.** The byte saving
 *saturates* — `1023` is within 5% of the floor `255` reaches — while the dump and
 release unit grows *linearly in the corpus and without bound*, because the fill is
-`records / bucket-count`. At 40,000 records `255` costs a 168-page dump-and-release
+`records / bucket-count`. At 40,000 records `255` costs a 168-block dump-and-release
 unit against `1023`'s 50; at 400,000 it would be 1,680 against 500. So the right
 default is the widest range that still reaches the amortisation floor.
 

@@ -54,7 +54,7 @@ the retained length. One append is hard-capped at 100,000 points. Whole-key TTL
 128 in-memory buckets and 8 on-store buckets a round, so expiry never becomes an unbounded scan.
 
 **What the tail costs.** The term that grows with the shard is the resident index. Measured on the
-shipped routing range `0..1023`, one shard, single-page records:
+shipped routing range `0..1023`, one shard, single-block records:
 
 | keys in the shard | resident index | per key |
 |---:|---:|---:|
@@ -75,7 +75,7 @@ This is the case where per-key overhead decides whether the design is affordable
 given rather than an adjective.
 
 **Resident index per key: 39.4 B at 20,000 keys in one shard** (shipped routing range `0..1023`,
-single-page string records). It *falls* with key count — 86.3 B/key at 2,000, 50.6 at 8,000 —
+single-block string records). It *falls* with key count — 86.3 B/key at 2,000, 50.6 at 8,000 —
 because the per-bucket rows are shared by every key that lands in the bucket. Quoting a per-key
 figure without its key count therefore means nothing here.
 

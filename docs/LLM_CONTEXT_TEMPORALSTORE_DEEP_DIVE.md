@@ -36,7 +36,7 @@ MatrixArk context runtime
   | extraction, canonicalization, embedding, filters, token budget, replay
   v
 TemporalStore context extension
-  | compact serving records over HashModel and FeatureModel page primitives
+  | compact serving records over HashModel and FeatureModel block primitives
   v
 TemporalStore storage / raft / cache path
 ```
@@ -187,16 +187,16 @@ Use for replay, governance, and debugging why a context pack was returned.
 TemporalStore context models reuse existing block primitives.
 
 ```text
-ContextNodeModel         Hash page object, field = meta
-ContextEventModel        Feature page object, key = event_time_ms + hash suffix
-ContextIndexModel        Feature page object, key = event_time_ms + hash suffix
-ContextAuditModel        Feature page object, key = request_time_ms + hash suffix
-ContextDirtyModel        Feature page object, key = event_time_ms + hash suffix
-ContextChildModel        Feature page object, key = updated_at_ms + child hash suffix
-ContextEmbeddingModel    Hash page object, field = embedding
-ContextEntityModel       Hash page object, field = entity
-ContextSummaryModel      Feature page object, key = valid_from_ms + summary hash suffix
-ContextCompressionModel  Feature page object, key = compressed_time_ms + compression hash suffix
+ContextNodeModel         Hash block object, field = meta
+ContextEventModel        Feature block object, key = event_time_ms + hash suffix
+ContextIndexModel        Feature block object, key = event_time_ms + hash suffix
+ContextAuditModel        Feature block object, key = request_time_ms + hash suffix
+ContextDirtyModel        Feature block object, key = event_time_ms + hash suffix
+ContextChildModel        Feature block object, key = updated_at_ms + child hash suffix
+ContextEmbeddingModel    Hash block object, field = embedding
+ContextEntityModel       Hash block object, field = entity
+ContextSummaryModel      Feature block object, key = valid_from_ms + summary hash suffix
+ContextCompressionModel  Feature block object, key = compressed_time_ms + compression hash suffix
 ```
 
 Object keys:

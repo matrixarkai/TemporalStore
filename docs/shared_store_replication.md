@@ -129,7 +129,7 @@ This directly supports the desired path:
 
 ```text
 shared store index -> local engine index
-shared store pages -> local page store
+shared store blocks -> local block store
 shared store wal -> command replay -> catch up after checkpoint
 ```
 
