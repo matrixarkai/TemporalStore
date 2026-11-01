@@ -11894,8 +11894,14 @@ fn removing_the_refcount_header_without_an_arena_costs_more_than_it_saves() {
 /// WHAT THE ANSWER MEANS FOR THE FIVE STRUCTURES BELOW, decided before the numbers are in so
 /// the reading is not fitted:
 ///
-///   * one holder in all five -- a NECESSARY condition for a header-free handle, and not a
-///     sufficient one: the other sixty-two have to be counted before the header can go;
+///   * one holder in all five -- which is what a SINGLE-ROLE key looks like, and says nothing
+///     about the header. Settled against it:
+///     `which_string_keyed_holders_duplicate_a_key_another_map_holds` is neither ignored nor
+///     feature-gated, walks EIGHT holders, and asserts `duplicate_holders.is_empty()` -- one
+///     allocation across all eight. A key used as a string AND a series AND a selection AND a
+///     seen-set AND a rate bucket has eight holders of one buffer, so the refcount header is
+///     paid for EIGHT TIMES OVER and a header-free handle would mint eight copies. THE HEADER
+///     LEVER IS REFUSED, and this fixture cannot see why because it gives every key one role;
 ///   * container kinds still at TWO -- a blanket change makes THOSE kinds worse, because two
 ///     owned allocations cost more than one shared one (and on the chunk counter much more,
 ///     since glibc serves nothing under 32 bytes). The lever would then need the string map to
@@ -11992,9 +11998,11 @@ fn how_many_holders_a_key_allocation_has_by_kind() {
     println!();
     println!("  WHAT THIS DECIDES, AND WHAT IT DOES NOT: the header is paid for wherever a key");
     println!("  allocation has TWO OR MORE holders. These are FIVE of the sixty-seven");
-    println!("  ModelKey-keyed maps, so one holder here is necessary and NOT sufficient --");
-    println!("  which_string_keyed_holders_duplicate_a_key_another_map_holds reports eight");
-    println!("  holders over five allocations on a path this fixture does not drive.");
+    println!("  ModelKey-keyed maps, and every key here has ONE ROLE. A multi-role key has");
+    println!("  EIGHT holders of ONE allocation --");
+    println!("  which_string_keyed_holders_duplicate_a_key_another_map_holds reports EIGHT");
+    println!("  holders over ONE allocation, asserted and not ignored,");
+    println!("  so the header is paid for eight times over and REMOVING IT IS REFUSED.");
     println!("  TWO OR MORE holders. `ModelKey` is one alias shared by every kind above, so a");
     println!("  header-free handle is available only if EVERY row here reads one holder.");
     println!();
