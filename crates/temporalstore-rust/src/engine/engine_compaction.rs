@@ -1237,12 +1237,75 @@ pub(super) fn compact_feature_block_addresses(
 /// No threshold here, and no shard-wide question about staleness or density: the three predicates
 /// of that shape were each refused by the suite. This is the drain SET, and what makes a slab a
 /// member of it is that some object still has a page there.
+/// WHICH drainable slabs this round should actually point its relocation budget at, in order.
+///
+/// THE BUDGET IS ALREADY BOUNDED -- `COMPACTION_ROUND_BLOCK_REFS` caps how many block refs one
+/// round relocates. What was unbounded is the TARGETING: every candidate carrying a live ref went
+/// into the drain set, so the round's refs were spent in whatever order the live-block walk
+/// happened to reach them, spread thinly across every holed slab.
+///
+/// That matters because of what a relocation is worth. A slab's space comes back only when the
+/// slab is emptied COMPLETELY and its file is unlinked; `compact_block_addresses` copies a page's
+/// bytes verbatim, so a ref moved off a slab that still holds other refs has bought nothing except
+/// to put those bytes somewhere else. Spreading a fixed budget across many slabs can therefore
+/// finish none of them and reclaim nothing, round after round, while the same budget spent on the
+/// cheapest slabs empties several.
+///
+/// SO THE ORDER IS VALUE PER UNIT OF WORK: `stale_physical_bytes` is what emptying a slab actually
+/// returns (its live bytes are rewritten elsewhere, so they are not a saving), and
+/// `live_block_refs` is what emptying it costs. Highest dead-bytes-per-ref first.
+///
+/// AND THE CUT IS A SPENDING BOUND, the same shape as every other per-round bound here: include
+/// while the budget is unspent, so the FIRST candidate is always admitted whatever it costs. That
+/// is what stops a slab holding more refs than one whole round starving -- it is admitted, makes
+/// partial progress, and is admitted again next round, because progress accumulates in the index
+/// rather than being discarded. A refusal ("skip anything that would overshoot") would drop such a
+/// slab for ever, which is the closed-gate shape this tree has produced more than once.
+///
+/// Ties break on fewer refs first, then slab id, so the order is total and a fixture cannot depend
+/// on map iteration order.
+pub(super) fn compaction_selected_drain_candidates(
+    reclaim_candidates: &[StorageReclaimCandidate],
+) -> Vec<&StorageReclaimCandidate> {
+    let mut drainable = reclaim_candidates
+        .iter()
+        .filter(|candidate| candidate.live_block_refs > 0)
+        .collect::<Vec<_>>();
+    // Dead bytes returned per ref relocated. Compared as a cross-product so the ratio is exact
+    // and never divides by a ref count of zero -- the filter above already excludes those, and a
+    // cross-product does not care.
+    drainable.sort_by(|left, right| {
+        let left_value = (left.stale_physical_bytes as u128)
+            .saturating_mul(right.live_block_refs as u128);
+        let right_value = (right.stale_physical_bytes as u128)
+            .saturating_mul(left.live_block_refs as u128);
+        right_value
+            .cmp(&left_value)
+            .then(left.live_block_refs.cmp(&right.live_block_refs))
+            .then(left.block_slab_id.cmp(&right.block_slab_id))
+    });
+    let mut selected = Vec::new();
+    let mut selected_refs = 0_u64;
+    for candidate in drainable {
+        if selected_refs >= COMPACTION_ROUND_BLOCK_REFS as u64 {
+            break;
+        }
+        selected_refs = selected_refs.saturating_add(candidate.live_block_refs);
+        selected.push(candidate);
+    }
+    selected
+}
+
+/// The slabs a round will relocate off, as a set for membership tests.
+///
+/// Reads [`compaction_selected_drain_candidates`], so this and
+/// [`compaction_relocatable_block_refs`] cannot disagree about which slabs the round is about --
+/// they used to carry two independent copies of the same filter.
 pub fn compaction_drain_block_slab_ids(
     reclaim_candidates: &[StorageReclaimCandidate],
 ) -> BTreeSet<u64> {
-    reclaim_candidates
-        .iter()
-        .filter(|candidate| candidate.live_block_refs > 0)
+    compaction_selected_drain_candidates(reclaim_candidates)
+        .into_iter()
         .map(|candidate| candidate.block_slab_id)
         .collect()
 }
@@ -1331,9 +1394,12 @@ pub(super) fn compaction_relocation_hint_per_object(
 /// The round runs eight of those already; a ninth to ask whether it should run is not a trade
 /// worth making on a loop that ticks every thirty seconds per shard.
 pub fn compaction_relocatable_block_refs(reclaim_candidates: &[StorageReclaimCandidate]) -> u64 {
-    reclaim_candidates
-        .iter()
-        .filter(|candidate| candidate.live_block_refs > 0)
+    // OVER THE SELECTED SET, not over every drainable candidate. This count is read as "what a
+    // round will move"; summing slabs the round is not pointed at overstates it, and it used to
+    // carry its own copy of the `live_block_refs > 0` filter, which is exactly how two answers to
+    // one question drift apart.
+    compaction_selected_drain_candidates(reclaim_candidates)
+        .into_iter()
         .map(|candidate| candidate.live_block_refs)
         .fold(0_u64, |total, refs| total.saturating_add(refs))
 }
@@ -1352,6 +1418,99 @@ mod compaction_selection_tests {
             live_block_refs,
             ..StorageReclaimCandidate::default()
         }
+    }
+
+    /// THE ROUND'S RELOCATION BUDGET GOES TO THE SLABS IT CAN FINISH EMPTYING.
+    ///
+    /// A slab returns its space only when it is emptied COMPLETELY and its file is unlinked, and
+    /// `compact_block_addresses` copies bytes verbatim -- so a ref moved off a slab that still
+    /// holds others has bought nothing. Spending a fixed budget thinly across every holed slab can
+    /// finish none of them; spending it on the best-value slabs finishes some.
+    ///
+    /// ORDERED BY DEAD BYTES RETURNED PER REF RELOCATED. `stale_physical_bytes` is the saving (the
+    /// live bytes are rewritten elsewhere, so they are not one) and `live_block_refs` is the cost.
+    ///
+    /// THE BUDGET MUST ACTUALLY BIND HERE, and that is asserted rather than assumed. Every other
+    /// drain test in this tree runs ~1,200 refs against the shipped 2,048, so the bound is
+    /// invisible to all of them and a selection that ignored it would pass every one -- which is
+    /// the state this test exists to end.
+    #[test]
+    fn the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first() {
+        fn valued(
+            block_slab_id: u64,
+            live_block_refs: u64,
+            stale_physical_bytes: u64,
+        ) -> StorageReclaimCandidate {
+            StorageReclaimCandidate {
+                block_slab_id,
+                live_block_refs,
+                stale_physical_bytes,
+                ..StorageReclaimCandidate::default()
+            }
+        }
+
+        let budget = COMPACTION_ROUND_BLOCK_REFS as u64;
+        let refs_each = budget * 3 / 4;
+
+        // Three slabs, each holding three quarters of the whole budget, so at most TWO can be
+        // taken. Dead bytes per ref: slab 2 returns ten, slab 3 five, slab 1 one.
+        let candidates = vec![
+            valued(1, refs_each, refs_each),
+            valued(2, refs_each, refs_each.saturating_mul(10)),
+            valued(3, refs_each, refs_each.saturating_mul(5)),
+        ];
+
+        // DENOMINATOR: without this the assertions below are satisfied by a selection that never
+        // consults the budget at all.
+        let drainable_refs = candidates
+            .iter()
+            .map(|candidate| candidate.live_block_refs)
+            .fold(0_u64, |total, refs| total.saturating_add(refs));
+        assert!(
+            drainable_refs > budget,
+            "the fixture offers {drainable_refs} refs against a budget of {budget}, so the budget \
+             does not bind and this test says nothing about ordering or cutting"
+        );
+
+        let selected = compaction_selected_drain_candidates(&candidates)
+            .into_iter()
+            .map(|candidate| candidate.block_slab_id)
+            .collect::<Vec<_>>();
+        assert_eq!(
+            selected,
+            vec![2, 3],
+            "the round must take the best-value slabs first and stop once the budget is spent: \
+             slab 2 returns ten dead bytes per ref and slab 3 five, so slab 1 at one per ref waits \
+             for a later round"
+        );
+
+        // The published count answers "what will THIS round move", so it reads the selected set.
+        // Two independent copies of one filter is how two answers to one question drift apart.
+        let relocatable = compaction_relocatable_block_refs(&candidates);
+        assert_eq!(
+            relocatable,
+            refs_each.saturating_mul(2),
+            "the relocatable count must be summed over the SELECTED slabs, not every drainable one"
+        );
+        assert!(
+            relocatable < drainable_refs,
+            "a bounded round reports less work than the whole drainable set, or the bound is not \
+             reaching the published count"
+        );
+
+        // AND NOTHING STARVES. Slab 1 is last by value and alone exceeds nothing, but the point is
+        // the general one: a spending bound always admits its first candidate, so even a slab
+        // costing more than a whole round is selected rather than refused for ever.
+        let only_expensive = vec![valued(9, budget.saturating_mul(4), 1)];
+        assert_eq!(
+            compaction_selected_drain_candidates(&only_expensive)
+                .into_iter()
+                .map(|candidate| candidate.block_slab_id)
+                .collect::<Vec<_>>(),
+            vec![9],
+            "a slab holding more refs than one whole round must still be admitted, or it is \
+             refused for ever and its space never comes back"
+        );
     }
 
     /// A block left where it is because nobody asked for its slab is NOT work left behind.
