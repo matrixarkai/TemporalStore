@@ -255,7 +255,7 @@ pub(super) struct ObjectRecord {
     /// Value or handle. UNREADABLE except through [`ObjectRecord::deadline`].
     /// Value or handle. UNREADABLE except through [`ObjectRecord::page_address`].
     address: u64,
-    page_size: u32,
+    block_size: u32,
     flags: RecordFlags,
     model_id: u8,
     /// The object's UNCOMPRESSED size, as a one-byte class. 0 means "not known".
@@ -292,7 +292,7 @@ impl Default for ObjectRecord {
     fn default() -> Self {
         Self {
             address: 0,
-            page_size: 0,
+            block_size: 0,
             flags: RecordFlags::empty(),
             model_id: 0,
             logical_size_class: 0,
@@ -330,12 +330,12 @@ impl ObjectRecord {
 
     // --- The plain fields. ---
 
-    pub(super) const fn page_size(&self) -> u32 {
-        self.page_size
+    pub(super) const fn block_size(&self) -> u32 {
+        self.block_size
     }
 
     pub(super) fn set_block_size(&mut self, value: u32) {
-        self.page_size = value;
+        self.block_size = value;
     }
 
     /// The object's uncompressed size as this record knows it, or `None` when it carries no class.
@@ -425,7 +425,7 @@ impl ObjectRecord {
         ElementEntry::try_from_wire_parts(
             u64::from(extract_block_slab_id(word)),
             u64::from(extract_block_offset(word)),
-            u64::from(self.page_size),
+            u64::from(self.block_size),
             (!self.flags.get(RecordFlags::BLOCK_IN_LOG)).then_some(0u64),
             self.flags.get(RecordFlags::BLOCK_GENERATION),
         )
@@ -464,7 +464,7 @@ impl ObjectRecord {
         // value that does not fit here cannot exist -- and if one ever does, the honest answer is
         // to say so rather than to record a shorter page than the one that was written. A
         // saturated length reads as broken; a truncated one reads as a valid shorter block.
-        self.page_size = u32::try_from(address.length()).unwrap_or_else(|_| {
+        self.block_size = u32::try_from(address.length()).unwrap_or_else(|_| {
             panic!(
                 "an address length of {} does not fit the record's page size, which cannot happen \
                  while `ElementEntry` holds its length in a u32",
@@ -536,12 +536,12 @@ impl ObjectRecord {
             }
         }
         let length = address.length();
-        let page_size = u32::try_from(length)
+        let block_size = u32::try_from(length)
             .map_err(|_| ObjectRecordRefusal::BlockSizeDoesNotFit { length })?;
 
         let mut record = Self {
             address: 0,
-            page_size,
+            block_size,
             flags: RecordFlags::empty(),
             model_id,
             // NOT KNOWN HERE. This layer is handed a stored address, whose `length()` is the
@@ -572,7 +572,7 @@ impl ObjectRecord {
         handle: BlockLayoutHandle,
     ) -> Result<(Self, BlockLayout), ObjectRecordRefusal> {
         let length = address.length();
-        let page_size = u32::try_from(length)
+        let block_size = u32::try_from(length)
             .map_err(|_| ObjectRecordRefusal::BlockSizeDoesNotFit { length })?;
         let block_id = match address.block_id() {
             None => None,
@@ -584,7 +584,7 @@ impl ObjectRecord {
         let layout = BlockLayout {
             blocks: vec![StoredBlock {
                 address: address.address_word(),
-                length: page_size,
+                length: block_size,
                 block_id: block_id.unwrap_or_default(),
                 has_block_id: block_id.is_some(),
                 has_generation: address.generation().is_some(),
@@ -592,7 +592,7 @@ impl ObjectRecord {
         };
         let mut record = Self {
             address: 0,
-            page_size,
+            block_size,
             flags: RecordFlags::empty(),
             model_id,
             // NOT KNOWN HERE. This layer is handed a stored address, whose `length()` is the
@@ -621,7 +621,7 @@ impl ObjectRecord {
             // `from_object_rows` for the measurement that settled this.
             BlockAddress::One(word) => (
                 word,
-                u64::from(self.page_size),
+                u64::from(self.block_size),
                 (!self.flags.get(RecordFlags::BLOCK_IN_LOG)).then_some(0u64),
                 self.flags.get(RecordFlags::BLOCK_GENERATION),
             ),
@@ -909,7 +909,7 @@ pub(super) struct ObjectRecordWire {
     #[serde(rename = "a")]
     address: u64,
     #[serde(rename = "n", default)]
-    page_size: u32,
+    block_size: u32,
     #[serde(rename = "f", default)]
     flags: u16,
     #[serde(rename = "m", default)]
@@ -929,7 +929,7 @@ impl From<ObjectRecord> for ObjectRecordWire {
     fn from(record: ObjectRecord) -> Self {
         Self {
             address: record.address,
-            page_size: record.page_size,
+            block_size: record.block_size,
             logical_size_class: record.logical_size_class,
             flags: record.flags.bits(),
             model_id: record.model_id,
@@ -957,7 +957,7 @@ impl TryFrom<ObjectRecordWire> for ObjectRecord {
         // instead of three.
         Ok(Self {
             address: wire.address,
-            page_size: wire.page_size,
+            block_size: wire.block_size,
             flags,
             model_id: wire.model_id,
             // ABSENT IN EVERY IMAGE WRITTEN BEFORE THIS FIELD, and `serde(default)` reads that as

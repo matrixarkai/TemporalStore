@@ -37,7 +37,7 @@ fn unique_root(name: &str) -> PathBuf {
 }
 
 fn new_engine(root: &PathBuf) -> TemporalEngine {
-    for sub in ["cache", "pages", "indexes"] {
+    for sub in ["cache", "blocks", "indexes"] {
         std::fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
     let engine = TemporalEngine::with_local_dirs(

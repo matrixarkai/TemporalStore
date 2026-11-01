@@ -37,7 +37,7 @@ fn per_write_served_index_cost_report() {
     root.push(format!("ts-delta-cost-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
     let index_dir = root.join("indexes");
-    for sub in ["cache", "pages", "indexes"] {
+    for sub in ["cache", "blocks", "indexes"] {
         std::fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
     let engine =

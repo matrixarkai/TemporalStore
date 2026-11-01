@@ -3038,7 +3038,7 @@ fn compute_slab_usage(
 
 impl Default for BlockStore {
     fn default() -> Self {
-        let scratch = crate::scratch::owned_scratch_dir("pages");
+        let scratch = crate::scratch::owned_scratch_dir("blocks");
         let store = Self::new(scratch.path());
         store
             .inner

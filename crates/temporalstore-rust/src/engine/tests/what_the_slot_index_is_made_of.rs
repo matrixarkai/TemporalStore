@@ -363,57 +363,57 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("node/deleted_object_index", Scale::PerBucket, Nature::Identity, ""),
     ("node/tombstone_elements", Scale::PerBucket, Nature::Payload, ""),
     ("node/page_index/field_name", Scale::PerBucket, Nature::Envelope, ""),
-    ("page_index/open_brace", Scale::PerBucket, Nature::Envelope, ""),
+    ("block_index/open_brace", Scale::PerBucket, Nature::Envelope, ""),
     // ---- per-page: the composite map key, split into the eight slots it composes ----
-    ("page/map_key_quotes", Scale::PerBlock, Nature::Envelope, ""),
+    ("block/map_key_quotes", Scale::PerBlock, Nature::Envelope, ""),
     // AND THESE TWO STOPPED BEING REDUNDANCY, WHICH IS THE WHOLE OF WHAT THIS MODULE'S HEADLINE
     // PROPOSAL BOUGHT. They were classed `Redundancy` with the entry's own fields named as their
     // reconstructor, because the entry wrote both again. It does not: the decoder parses them out
     // of this key now (`index_log::block_ref_key_parts`), so the key is the ONLY copy and the only
     // copy of a fact a reader needs is `Identity`. A term is only `Redundancy` where a
     // reconstructor is NAMED, and there is nothing left to name.
-    ("page/map_key/kind", Scale::PerBlock, Nature::Identity, ""),
-    ("page/map_key/object_key", Scale::PerBlock, Nature::Identity, ""),
+    ("block/map_key/kind", Scale::PerBlock, Nature::Identity, ""),
+    ("block/map_key/object_key", Scale::PerBlock, Nature::Identity, ""),
     (
-        "page/map_key/component_slot",
+        "block/map_key/component_slot",
         Scale::PerBlock,
         Nature::Envelope,
         "",
     ),
     (
-        "page/map_key/block_slab_id",
+        "block/map_key/block_slab_id",
         Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.a` word, high half",
     ),
     (
-        "page/map_key/offset",
+        "block/map_key/offset",
         Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.a` word, low half",
     ),
     (
-        "page/map_key/length",
+        "block/map_key/length",
         Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.l` slot",
     ),
     (
-        "page/map_key/block_id",
+        "block/map_key/block_id",
         Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.pi` slot",
     ),
     (
-        "page/map_key/generation",
+        "block/map_key/generation",
         Scale::PerBlock,
         Nature::Redundancy,
         "the entry's own `address.g` slot",
     ),
-    ("page/map_key/separators", Scale::PerBlock, Nature::Envelope, ""),
-    ("page/map_key/empty_slot_separator", Scale::PerBlock, Nature::Envelope, ""),
-    ("page/map_key_colon", Scale::PerBlock, Nature::Envelope, ""),
-    ("page/map_entry_tail", Scale::PerBlock, Nature::Envelope, ""),
+    ("block/map_key/separators", Scale::PerBlock, Nature::Envelope, ""),
+    ("block/map_key/empty_slot_separator", Scale::PerBlock, Nature::Envelope, ""),
+    ("block/map_key_colon", Scale::PerBlock, Nature::Envelope, ""),
+    ("block/map_entry_tail", Scale::PerBlock, Nature::Envelope, ""),
     // ---- per-page: the entry the key is filed against ----
     ("entry/open_brace", Scale::PerBlock, Nature::Envelope, ""),
     ("entry/field_tails", Scale::PerBlock, Nature::Envelope, ""),
@@ -436,7 +436,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
 ];
 
 /// The one term that is structurally empty and is asserted EXACTLY zero rather than non-zero.
-const STRUCTURALLY_EMPTY: &str = "page/map_key/component_slot";
+const STRUCTURALLY_EMPTY: &str = "block/map_key/component_slot";
 
 /// The declared scale and nature of a label, or a panic naming the label.
 fn declared(label: &str) -> (Scale, Nature, &'static str) {
@@ -526,17 +526,17 @@ impl Tally {
 /// Named as a list rather than matched by a prefix so that a term added under `page/` later has to
 /// be put in or left out ON PURPOSE. [`Tally::sum_of`] refuses a member that was not charged.
 const BLOCK_KEY_TERMS: &[&str] = &[
-    "page/map_key_quotes",
-    "page/map_key/kind",
-    "page/map_key/object_key",
-    "page/map_key/component_slot",
-    "page/map_key/block_slab_id",
-    "page/map_key/offset",
-    "page/map_key/length",
-    "page/map_key/block_id",
-    "page/map_key/generation",
-    "page/map_key/separators",
-    "page/map_key/empty_slot_separator",
+    "block/map_key_quotes",
+    "block/map_key/kind",
+    "block/map_key/object_key",
+    "block/map_key/component_slot",
+    "block/map_key/block_slab_id",
+    "block/map_key/offset",
+    "block/map_key/length",
+    "block/map_key/block_id",
+    "block/map_key/generation",
+    "block/map_key/separators",
+    "block/map_key/empty_slot_separator",
 ];
 
 /// THE ENTRY FIELDS WHOSE VALUES THE COMPOSITE KEY RESTATES, envelope included -- because removing
@@ -561,11 +561,11 @@ const ENTRY_RESTATED_TERMS: &[&str] = &[
 
 /// The five address values as the composite key renders them: decimals and nothing else.
 const KEY_ADDRESS_TERMS: &[&str] = &[
-    "page/map_key/block_slab_id",
-    "page/map_key/offset",
-    "page/map_key/length",
-    "page/map_key/block_id",
-    "page/map_key/generation",
+    "block/map_key/block_slab_id",
+    "block/map_key/offset",
+    "block/map_key/length",
+    "block/map_key/block_id",
+    "block/map_key/generation",
 ];
 
 /// The same five values as the named `address` object beside the key writes them.
@@ -1026,7 +1026,7 @@ fn walk(reading: &Reading) -> Walked {
              no entry to be charged to, so the partition identity would be off by one per such \
              bucket"
         );
-        tally.add("page_index/open_brace", 1, 0);
+        tally.add("block_index/open_brace", 1, 0);
 
         for (block_key, entry_value) in blocks.iter() {
             blocks_seen += 1;
@@ -1040,23 +1040,23 @@ fn walk(reading: &Reading) -> Walked {
                  wider than its characters, so it carries escaping and this term is not quotes",
                 klen(block_key) - block_key.len()
             );
-            tally.add("page/map_key_quotes", klen(block_key) - block_key.len(), 0);
-            tally.add("page/map_key_colon", 1, 0);
-            tally.add("page/map_entry_tail", 1, 0);
+            tally.add("block/map_key_quotes", klen(block_key) - block_key.len(), 0);
+            tally.add("block/map_key_colon", 1, 0);
+            tally.add("block/map_entry_tail", 1, 0);
 
             let slots = split_written_key(block_key);
-            tally.add("page/map_key/kind", slots.kind.len(), 0);
-            tally.add("page/map_key/object_key", slots.object_key.len(), 0);
-            tally.add("page/map_key/component_slot", slots.component.len(), 0);
-            tally.add("page/map_key/block_slab_id", slots.block_slab_id.len(), 0);
-            tally.add("page/map_key/offset", slots.offset.len(), 0);
-            tally.add("page/map_key/length", slots.length.len(), 0);
-            tally.add("page/map_key/block_id", slots.block_id.len(), 0);
-            tally.add("page/map_key/generation", slots.generation.len(), 0);
+            tally.add("block/map_key/kind", slots.kind.len(), 0);
+            tally.add("block/map_key/object_key", slots.object_key.len(), 0);
+            tally.add("block/map_key/component_slot", slots.component.len(), 0);
+            tally.add("block/map_key/block_slab_id", slots.block_slab_id.len(), 0);
+            tally.add("block/map_key/offset", slots.offset.len(), 0);
+            tally.add("block/map_key/length", slots.length.len(), 0);
+            tally.add("block/map_key/block_id", slots.block_id.len(), 0);
+            tally.add("block/map_key/generation", slots.generation.len(), 0);
             // SEVEN SEPARATORS, AND ONE OF THEM DELIMITS A SLOT THAT IS ALWAYS EMPTY. Charged
             // apart from the other six because what it is worth to remove is a different number.
-            tally.add("page/map_key/separators", 6, 0);
-            tally.add("page/map_key/empty_slot_separator", 1, 0);
+            tally.add("block/map_key/separators", 6, 0);
+            tally.add("block/map_key/empty_slot_separator", 1, 0);
 
             let entry = entry_value.as_object().expect("a block entry writes an object");
             tally.add("entry/open_brace", 1, 0);
@@ -1570,9 +1570,9 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         .iter()
         .filter(|entry| {
             let label: &str = entry.0;
-            label.starts_with("page/")
+            label.starts_with("block/")
                 || label.starts_with("entry/")
-                || label == "page_index/open_brace"
+                || label == "block_index/open_brace"
         })
         .map(|entry| entry.1.bytes)
         .sum();
@@ -1740,17 +1740,17 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     println!(
         "  THE PAGE ENTRY'S MAP KEY is {:.3} B/object of it, and every character of it was rebuilt \
          from the entry it is filed against, on all {} pages.",
-        (tally.bytes_of("page/map_key_quotes")
-            + tally.bytes_of("page/map_key/kind")
-            + tally.bytes_of("page/map_key/object_key")
-            + tally.bytes_of("page/map_key/component_slot")
-            + tally.bytes_of("page/map_key/block_slab_id")
-            + tally.bytes_of("page/map_key/offset")
-            + tally.bytes_of("page/map_key/length")
-            + tally.bytes_of("page/map_key/block_id")
-            + tally.bytes_of("page/map_key/generation")
-            + tally.bytes_of("page/map_key/separators")
-            + tally.bytes_of("page/map_key/empty_slot_separator")) as f64
+        (tally.bytes_of("block/map_key_quotes")
+            + tally.bytes_of("block/map_key/kind")
+            + tally.bytes_of("block/map_key/object_key")
+            + tally.bytes_of("block/map_key/component_slot")
+            + tally.bytes_of("block/map_key/block_slab_id")
+            + tally.bytes_of("block/map_key/offset")
+            + tally.bytes_of("block/map_key/length")
+            + tally.bytes_of("block/map_key/block_id")
+            + tally.bytes_of("block/map_key/generation")
+            + tally.bytes_of("block/map_key/separators")
+            + tally.bytes_of("block/map_key/empty_slot_separator")) as f64
             / reading.objects as f64,
         reading.blocks
     );
