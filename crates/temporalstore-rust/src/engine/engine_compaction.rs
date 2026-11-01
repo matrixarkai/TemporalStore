@@ -1420,6 +1420,84 @@ mod compaction_selection_tests {
         }
     }
 
+    /// A candidate with a dead-bytes-per-ref ratio, which is what the selection sorts on.
+    fn ratio_candidate(
+        block_slab_id: u64,
+        live_block_refs: u64,
+        stale_physical_bytes: u64,
+    ) -> StorageReclaimCandidate {
+        StorageReclaimCandidate {
+            block_slab_id,
+            live_block_refs,
+            stale_physical_bytes,
+            ..StorageReclaimCandidate::default()
+        }
+    }
+
+    /// A COLD, PARTLY DEAD SLAB IS STARVED WHILE HIGHER-RATIO WORK KEEPS ARRIVING.
+    ///
+    /// # THIS PINS A KNOWN HOLE, NOT A BEHAVIOUR ANYONE WANTS
+    ///
+    /// The selection spends a round's refs on the best dead-bytes-per-ref first, which is the
+    /// right objective and is what makes a bounded round return space at all. Nothing ages a
+    /// candidate in, so a slab whose ratio is merely MODEST is skipped for as long as better
+    /// work keeps arriving -- and on a store with steady overwrite traffic, better work keeps
+    /// arriving indefinitely. Such a slab holds its dead bytes for ever.
+    ///
+    /// IT IS NOT A REGRESSION, which is why it is pinned rather than fixed. Before the
+    /// selection was ordered, a round spread its budget across every holed slab and finished
+    /// NONE of them, so nothing was reclaimed at all; this slab is not something that used to
+    /// be collected and now is not. And a WARM slab climbs out on its own: its live refs only
+    /// FALL as its pages are overwritten onto newer slabs, so its ratio rises until it is
+    /// selected. The uncovered case is specifically the slab that is both cold and partly dead.
+    ///
+    /// WHY AN ARM AND NOT A COMMENT. A comment cannot fail. If ageing is ever added -- forcing
+    /// the longest-waiting candidate in every N rounds, which is the fix if this is ever
+    /// measured -- this assertion goes red and says the hole is closed, instead of leaving a
+    /// note describing a limitation the code no longer has.
+    ///
+    /// NOT a reason to add ageing now: nothing measured says a cold partly-dead slab occurs in
+    /// a real store, and a policy knob added for an unobserved case is a guess with a
+    /// maintenance cost.
+    #[test]
+    fn a_cold_partly_dead_slab_is_starved_while_higher_ratio_work_keeps_arriving() {
+        const COLD: u64 = 99;
+        // Half dead, but finishing it costs many refs, so its dead-bytes-per-ref is modest.
+        let cold = ratio_candidate(COLD, 512, 512 * 64);
+        // Strictly better work, and exactly enough of it to spend the whole round budget.
+        let better: Vec<StorageReclaimCandidate> = (0..8)
+            .map(|index| ratio_candidate(index + 1, 256, 256 * 4_096))
+            .collect();
+        assert_eq!(
+            COMPACTION_ROUND_BLOCK_REFS as u64,
+            better.iter().map(|c| c.live_block_refs).sum::<u64>(),
+            "the competing work must total exactly the round budget, or this arm is about a \
+             budget that was never filled rather than about starvation"
+        );
+
+        let mut candidates = vec![cold.clone()];
+        candidates.extend(better);
+        let selected = compaction_drain_block_slab_ids(&candidates);
+
+        // THE CONTROL COMES FIRST, because without it the assertion below could pass for a
+        // reason that has nothing to do with starvation -- a filter excluding this slab
+        // outright would look identical. With no competition it IS selected.
+        let alone = compaction_drain_block_slab_ids(std::slice::from_ref(&cold));
+        assert!(
+            alone.contains(&COLD),
+            "the cold slab is not selected even with no competition ({alone:?}), so it is \
+             excluded by a filter and this arm measures nothing about starvation"
+        );
+
+        assert!(
+            !selected.contains(&COLD),
+            "the cold slab WAS selected ({selected:?}) although higher-ratio work already \
+             spends the whole {COMPACTION_ROUND_BLOCK_REFS}-ref budget. If that is because \
+             ageing now forces a long-waiting candidate in, the hole this arm pins is CLOSED: \
+             say so and delete it, rather than loosening the assertion."
+        );
+    }
+
     /// THE ROUND'S RELOCATION BUDGET GOES TO THE SLABS IT CAN FINISH EMPTYING.
     ///
     /// A slab returns its space only when it is emptied COMPLETELY and its file is unlinked, and
