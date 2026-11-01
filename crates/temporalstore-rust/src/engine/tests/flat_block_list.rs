@@ -1326,6 +1326,170 @@ fn what_the_slots_owned_element_headroom_costs() {
          that no longer exists"
     );
 }
+/// WHAT THE DUMP RECLAIMS FROM SETTLED CONTAINERS, ON THE PUBLISHED CORPUS SIZES.
+///
+/// # THE QUANTITY THIS IS ABOUT, BECAUSE IT IS NOT THE PUBLISHED ONE
+///
+/// `the_amplification_set_at_two_arms_four_times_apart` weighs the index through
+/// `deep_heap_columns`, which CLONES, and `Vec::clone` takes exactly `len` capacity. The
+/// production resident model `resident_heap_bytes` charges `capacity`. So on every row holding
+/// a geometrically grown buffer the published figure and the figure an eviction gate reads are
+/// DIFFERENT QUANTITIES, and the published one is the smaller of the two. This arm measures the
+/// difference and what the dump gives back of it.
+///
+/// So the saving reported here does NOT move the published asymptote and is not claimed to. It
+/// comes off the TRUE resident footprint, which is the larger number, and off the input to the
+/// eviction trigger.
+///
+/// # BOTH CONTAINERS GROW GEOMETRICALLY AND SHRINK ONLY IN LENGTH
+///
+/// The block list steps capacity up by `BLOCK_LIST_GROWTH_STEP` with `reserve_exact`; the slot
+/// array `push`es, which doubles, while `drop_trailing_placeholders` `pop`s. A `pop` lowers the
+/// length and leaves the capacity. `what_a_slot_array_costs_under_churn` bounds the LENGTH
+/// (`peak slots / peak objects == 1.000`) and says nothing about the buffer holding it.
+///
+/// # THE FIXTURE IS THE PUBLISHED ONE, DELIBERATELY
+///
+/// 1,792 and 7,168 keys -- 7/8 of two powers of two, exactly 4.0x apart -- with the same
+/// 256-byte value, so the block population per key matches and the figure can be read beside
+/// the published rows. A per-unit figure taken from a neighbouring arm's fixture is not
+/// comparable: the 0..1023 arm of
+/// `what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges` seeds 8,000 records and
+/// reports 11.2 B/block of list slack, which is NOT this corpus' figure.
+///
+/// # WHAT IS ASSERTED, IN THE ORDER THAT MAKES IT A MEASUREMENT
+///
+///  1. the slack EXISTS before the dump, or everything below is a band around nothing;
+///  2. the POPULATION is unchanged, or this measures data loss rather than capacity;
+///  3. every settled container fits its length afterwards;
+///  4. the counters and an independent walk agree -- what fails if the compaction is ever
+///     moved away from the point the memory is actually freed.
+///
+/// rust-internal: measures container footprint, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_dump_reclaims_from_settled_containers -- --exact --nocapture
+#[test]
+fn what_the_dump_reclaims_from_settled_containers() {
+    const SHIPPED_END: u32 = 1_023;
+    /// 7/8 of 2,048.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+    /// The width the published arm writes, so the block population per key matches.
+    const VALUE: usize = 256;
+
+    let block_entry = std::mem::size_of::<(u64, BlockIndex)>();
+    let slot_entry = std::mem::size_of::<u64>();
+
+    /// Spare capacity across both containers, straight off the live structures. A clone cannot
+    /// be used here: `Vec::clone` takes exactly `len`, which is the whole point.
+    fn walk(engine: &TemporalEngine) -> (usize, usize, usize, usize) {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let (mut bl, mut bc, mut ol, mut oc) = (0usize, 0usize, 0usize, 0usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            let (l, c) = bucket.block_index.list_len_and_capacity();
+            bl += l;
+            bc += c;
+            let (l, c) = bucket.object_index.slots_len_and_capacity();
+            ol += l;
+            oc += c;
+        }
+        (bl, bc, ol, oc)
+    }
+
+    let weigh = |keys: usize| -> (usize, usize) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, SHIPPED_END);
+        run_batch(
+            &engine,
+            (0..keys)
+                .map(|i| Command::StringSet {
+                    key: format!("amp-{i:06}"),
+                    value: vec![b'v'; VALUE],
+                })
+                .collect(),
+        );
+
+        let (bl0, bc0, ol0, oc0) = walk(&engine);
+        let spare_before = (bc0 - bl0) * block_entry + (oc0 - ol0) * slot_entry;
+        // 1. THE SLACK MUST EXIST.
+        assert!(
+            spare_before > 0,
+            "{keys} keys left no spare capacity in either container, so this measures nothing"
+        );
+
+        let b0 = crate::engine::storage_lifecycle_methods::SETTLED_BLOCK_SLOTS_RECLAIMED
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let o0 = crate::engine::storage_lifecycle_methods::SETTLED_OBJECT_SLOTS_RECLAIMED
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let candidates: Vec<u32> = {
+            let shards = engine.shards.read().expect("engine lock poisoned");
+            let shard = shards.get(&1).expect("shard is loaded");
+            shard.bucket_index.bucket_map.keys().copied().collect()
+        };
+        assert!(!candidates.is_empty(), "{keys} keys produced no bucket to dump");
+        let report = engine.apply_storage_lifecycle(
+            crate::engine::reports::StorageLifecycleRequest {
+                shard_id: 1,
+                selected_dump_buckets: candidates.clone(),
+                max_dump_buckets_per_round: candidates.len(),
+                ..Default::default()
+            },
+        );
+        std::hint::black_box(&report);
+        let reclaimed_blocks = (crate::engine::storage_lifecycle_methods::SETTLED_BLOCK_SLOTS_RECLAIMED
+            .load(std::sync::atomic::Ordering::Relaxed)
+            - b0) as usize;
+        let reclaimed_slots = (crate::engine::storage_lifecycle_methods::SETTLED_OBJECT_SLOTS_RECLAIMED
+            .load(std::sync::atomic::Ordering::Relaxed)
+            - o0) as usize;
+        let reclaimed = reclaimed_blocks * block_entry + reclaimed_slots * slot_entry;
+
+        let (bl1, bc1, ol1, oc1) = walk(&engine);
+        println!();
+        println!("  {keys} keys, {VALUE}-byte values, shipped 0..{SHIPPED_END}");
+        println!("    block lists   len {bl0} cap {bc0} -> len {bl1} cap {bc1}");
+        println!("    slot arrays   len {ol0} cap {oc0} -> len {ol1} cap {oc1}");
+        println!(
+            "    spare before {spare_before} B; reclaimed {reclaimed} B \
+             ({reclaimed_blocks} block slots, {reclaimed_slots} object slots)"
+        );
+        println!("    = {:.2} B/key off the TRUE resident index", reclaimed as f64 / keys as f64);
+
+        // 2. THE POPULATION IS UNTOUCHED.
+        assert_eq!(bl0, bl1, "the dump changed the block population at {keys} keys");
+        assert_eq!(ol0, ol1, "the dump changed the object-slot population at {keys} keys");
+        // 3. EVERY SETTLED CONTAINER FITS.
+        assert_eq!(bl1, bc1, "a settled block list still carries spare slots at {keys} keys");
+        assert_eq!(ol1, oc1, "a settled slot array still carries spare slots at {keys} keys");
+        // 4. THE COUNTERS AND THE WALK AGREE.
+        assert_eq!(
+            spare_before, reclaimed,
+            "the walk saw {spare_before} B of spare capacity and the counters reported \
+             {reclaimed} B at {keys} keys"
+        );
+        (keys, reclaimed)
+    };
+
+    let (k1, r1) = weigh(ONE_X);
+    let (k4, r4) = weigh(FOUR_X);
+    let marginal = (r4 as f64 - r1 as f64) / (k4 - k1) as f64;
+    println!();
+    println!("  MARGINAL, the figure to quote: {marginal:.2} B/key reclaimed from the true");
+    println!("  resident index, over two corpora 4.0x apart -- base-independent, and invisible");
+    println!("  to the published clone-based arm by construction.");
+
+    // THE SAVING MUST SURVIVE THE SCALE-UP. A reclaim that is real at 1,792 keys and zero at
+    // 7,168 would be a fixture effect, which is exactly the error that produced the 11.2
+    // B/block figure this arm's doc warns about.
+    assert!(
+        marginal > 0.0,
+        "the marginal reclaim is {marginal:.2} B/key: {r1} B at {k1} keys and {r4} B at {k4}, \
+         so the saving does not scale and is a property of one corpus size"
+    );
+}
 /// WHAT A RETAIN LEAVES IN THE LIST'S CAPACITY, against the cap the growth policy claims.
 ///
 /// `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement` asserts a live list

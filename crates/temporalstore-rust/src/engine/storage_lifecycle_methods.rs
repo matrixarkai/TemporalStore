@@ -13,6 +13,17 @@ use super::*;
 pub(crate) static DIRTY_DRAIN_VISITS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// Block-list slots a dump has given back by compacting settled buckets, across every call.
+///
+/// `resident_heap_bytes` charges a block list at its CAPACITY, so these slots were resident,
+/// counted index bytes holding nothing. Multiply by `size_of::<(u64, BlockIndex)>()` for bytes.
+pub(crate) static SETTLED_BLOCK_SLOTS_RECLAIMED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Object-slot-array slots a dump has given back, across every call. Eight bytes each.
+pub(crate) static SETTLED_OBJECT_SLOTS_RECLAIMED: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 /// Bucket-recency entries COPIED on the way into an eviction round, across every call.
 ///
 /// The round used to clone the whole `bucket_recency` map before looking at which selection path
@@ -883,6 +894,11 @@ impl TemporalEngine {
         // `current` was captured before any mutation, so hoisting the walk out is the same answer
         // in one pass.
         let mut cleared_buckets: Vec<u32> = Vec::new();
+        // Counted so the compaction below is OBSERVABLE rather than inferred, in the same shape
+        // as `DIRTY_DRAIN_VISITS` and for the same reason: deriving the reclaim as
+        // |buckets| x |spare slots| is arithmetic about the code, not a measurement of it.
+        let mut settled_block_slots = 0u64;
+        let mut settled_object_slots = 0u64;
         for bucket_id in manifest.bucket_ids.iter().copied() {
             let Some(&captured_generation) = captured.get(&bucket_id) else {
                 continue;
@@ -895,6 +911,22 @@ impl TemporalEngine {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
                 bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
+                // THE BUCKET HAS JUST GONE QUIESCENT, SO ITS BUFFERS CAN SETTLE TOO.
+                //
+                // Both of this node's containers grow geometrically and shrink only in LENGTH:
+                // the block list steps capacity up by `BLOCK_LIST_GROWTH_STEP` and the slot
+                // array `push`es, while `drop_trailing_placeholders` `pop`s. `resident_heap_bytes`
+                // charges CAPACITY, so the difference was resident, counted index holding
+                // nothing. While a bucket is being written that slack is what stops it
+                // reallocating on every insert; once a dump has captured it, it is footprint.
+                //
+                // This is the one moment the engine knows a bucket is settled, which is why the
+                // compaction is here and not on the write path. A bucket written again pays ONE
+                // reallocation; a bucket that stays quiescent -- the majority in any store big
+                // enough for the resident figure to matter, and exactly what an eviction gate
+                // reads -- keeps the saving until it is next touched.
+                settled_block_slots += bucket.block_index.compact_settled_capacity() as u64;
+                settled_object_slots += bucket.object_index.compact_settled_capacity() as u64;
                 // THE DUMPED-LOG SEQUENCE IS NOT RECORDED HERE ANY MORE, and the comment that was
                 // here said why it did not need to be: "informational; not part of the
                 // fingerprint". A per-bucket `last_dump_sequence` was written from
@@ -928,6 +960,10 @@ impl TemporalEngine {
             let dropped = shard.dirty_objects.drain_buckets(&cleared_buckets);
             DIRTY_DRAIN_VISITS.fetch_add(dropped as u64, std::sync::atomic::Ordering::Relaxed);
         }
+        SETTLED_BLOCK_SLOTS_RECLAIMED
+            .fetch_add(settled_block_slots, std::sync::atomic::Ordering::Relaxed);
+        SETTLED_OBJECT_SLOTS_RECLAIMED
+            .fetch_add(settled_object_slots, std::sync::atomic::Ordering::Relaxed);
     }
 
     pub fn apply_storage_lifecycle(
