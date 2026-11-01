@@ -233,6 +233,118 @@ async fn one_append(
     (user_bytes, entry_bytes, blob_bytes, objects.len())
 }
 
+/// `count` appends of `payload` bytes each, published as ONE batch, into a store of its
+/// own -- and what the store then holds in total.
+///
+/// This exists to turn an argument into a measurement. `publish_wal_entries_batch`
+/// concatenates every entry's frame into one append and every sidecar into one more, so a
+/// batch amortizes the two durable barriers and the per-OBJECT overhead beneath them. What it
+/// cannot amortize is the per-ENTRY frame and the per-entry sidecar message, because each
+/// entry still gets one of each. Sweeping the batch size says how much of the envelope is
+/// which, instead of asserting it in a comment.
+async fn batched_appends(
+    shape: Shape,
+    cluster: &str,
+    payload: usize,
+    count: usize,
+    options: &StoreOptions,
+) -> (usize, u64, u64, usize) {
+    assert!(count >= 1, "a batch of {count} entries measures nothing");
+    let store = Arc::new(
+        MatrixObjectObjectStore::new(BUCKET, options.clone()).expect("a store of its own"),
+    );
+    let replicator = SharedStoreReplicator::new(cluster, store.clone())
+        .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+
+    let mut seed = 0x1234_5678u32;
+    let value: Vec<u8> = (0..payload)
+        .map(|_| {
+            seed ^= seed << 13;
+            seed ^= seed >> 17;
+            seed ^= seed << 5;
+            (seed & 0xff) as u8
+        })
+        .collect();
+
+    // One entry's worth of content, repeated under successive indices. The content is held
+    // constant on purpose: this sweep is about FRAMING, so varying the payload between
+    // entries would move the thing being measured.
+    let template = entry_for(shape, value);
+    let entries: Vec<SharedStoreWalEntry> = (1..=count as u64)
+        .map(|index| {
+            let mut entry = template.clone();
+            entry.wal_index = index;
+            entry
+        })
+        .collect();
+    let reports = replicator
+        .publish_wal_entries_batch(&entries)
+        .await
+        .unwrap_or_else(|err| panic!("batch of {count} x {payload} bytes: {err:?}"));
+    assert_eq!(
+        reports.len(),
+        count,
+        "the batch reported on {} entries having been given {count}",
+        reports.len()
+    );
+
+    // ---- AND THE LAST ONE MUST READ BACK. Its offset is derived from every frame length
+    // ---- ahead of it, so an entry recovered at the END of the batch is what says the single
+    // ---- append was carved up correctly -- a per-entry check would pass on the first.
+    let reader = SharedStoreReplicator::new(cluster, store.clone())
+        .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
+    let last = reader
+        .read_wal_entry_by_offset_metadata(SHARD, count as u64)
+        .await
+        .expect("indexed read of the last entry")
+        .expect("the last entry of the batch must exist");
+    assert_eq!(
+        last.entry.wal_index, count as u64,
+        "index {} came back where {count} was asked for",
+        last.entry.wal_index
+    );
+    assert_eq!(
+        last.entry.outcomes, template.outcomes,
+        "the last entry of a {count}-entry batch did not read back intact"
+    );
+
+    let blob_key = format!("{cluster}/shards/{SHARD}/shared/wal/wal.protobuf.blob");
+    let objects = store
+        .list(&format!("{cluster}/shards/{SHARD}/shared/wal/"))
+        .await
+        .expect("the wal listing");
+    let inner = store.inner();
+    let guard = inner.lock().expect("store lock poisoned");
+    // ---- THE TWO LEGS SEPARATELY. A figure that moves with the batch size is attributable
+    // ---- only if it is known WHICH leg moved: the log frames, or the offset sidecar beside
+    // ---- them. Summed into one number it would be a fact without a cause.
+    let entry_bytes: u64 = guard
+        .get_object(BUCKET, &blob_key)
+        .expect("the append blob")
+        .metadata
+        .extents
+        .iter()
+        .map(|extent| extent.length())
+        .sum();
+    let mut blob_bytes = 0u64;
+    for key in &objects {
+        blob_bytes += guard
+            .get_object(BUCKET, key)
+            .expect("every listed object must be counted")
+            .metadata
+            .extents
+            .iter()
+            .map(|e| e.length())
+            .sum::<u64>();
+    }
+    (
+        (KEY.len() + payload) * count,
+        entry_bytes,
+        blob_bytes,
+        objects.len(),
+    )
+}
+
 /// Least squares over the sweep, and the largest residual it leaves.
 fn fit(points: &[(f64, f64)]) -> (f64, f64, f64) {
     let n = points.len() as f64;
@@ -483,6 +595,124 @@ over a {THEIR_PAYLOAD_BYTES:.0} B payload"
          rates are one payload, so the whole of this is our {blob_env:.1} B envelope against their \
          {their_env:.1} B -- re-price the log frame and the sidecar field by field before raising \
          this bound"
+    );
+
+    // ---- AND HOW MUCH OF THAT ENVELOPE A BATCH CAN RECOVER, MEASURED. The paragraph above
+    // ---- says a batch amortizes the barrier and not the envelope. These are the numbers that
+    // ---- say it, at a fixed payload, so the only thing varying is how many entries share one
+    // ---- append.
+    const BATCH_PAYLOAD: usize = 256;
+    let batches = [1usize, 2, 4, 16, 64];
+    println!();
+    println!("  WHAT A BATCH AMORTIZES, AND WHAT IT DOES NOT, at a {BATCH_PAYLOAD} B payload");
+    println!();
+    println!(
+        "    batch   blob B   blob B/entry   frame B/entry   sidecar B/entry   envelope B/entry   objects"
+    );
+    let mut envelopes: Vec<(usize, f64)> = Vec::new();
+    let mut sidecars: Vec<(usize, f64)> = Vec::new();
+    for count in batches {
+        let (user, entry, blob, objects) =
+            batched_appends(shape, CLUSTER, BATCH_PAYLOAD, count, options).await;
+        assert_eq!(
+            user,
+            (KEY.len() + BATCH_PAYLOAD) * count,
+            "the user bytes for a {count}-entry batch should be the payload {count} times"
+        );
+        assert!(
+            objects >= 2,
+            "a batch of {count} left {objects} objects; the log and its sidecar are two, and a \
+             listing that came back short would make every figure here a ratio over the wrong \
+             denominator"
+        );
+        assert!(
+            blob >= entry,
+            "the listing totals {blob} B against {entry} B in the log alone, so the sidecar is \
+             being counted as negative bytes"
+        );
+        let per_entry = blob as f64 / count as f64;
+        let frame_per_entry = entry as f64 / count as f64;
+        let sidecar_per_entry = (blob - entry) as f64 / count as f64;
+        let envelope = per_entry - (KEY.len() + BATCH_PAYLOAD) as f64;
+        println!(
+            "    {count:>5}   {blob:>6}   {per_entry:>12.1}   {frame_per_entry:>13.1}   \
+{sidecar_per_entry:>15.1}   {envelope:>16.1}   {objects:>7}",
+        );
+        envelopes.push((count, envelope));
+        sidecars.push((count, sidecar_per_entry));
+    }
+    let (_, envelope_at_one) = envelopes[0];
+    let (largest_batch, envelope_at_largest) = envelopes[envelopes.len() - 1];
+    let (_, sidecar_at_one) = sidecars[0];
+    let (_, sidecar_at_largest) = sidecars[sidecars.len() - 1];
+    let recovered = (envelope_at_one - envelope_at_largest) / envelope_at_one;
+    println!();
+    println!(
+        "    A BATCH RECOVERS NONE OF THE ENVELOPE. It costs {:.1}% MORE per entry at \
+{largest_batch} than at 1",
+        -recovered * 100.0
+    );
+    println!(
+        "    ({envelope_at_one:.1} -> {envelope_at_largest:.1} B/entry), and ALL of the rise is \
+the sidecar leg:"
+    );
+    println!(
+        "    {sidecar_at_one:.1} -> {sidecar_at_largest:.1} B/entry, +{:.1}. The log frame per \
+entry does not move AT ALL,",
+        sidecar_at_largest - sidecar_at_one
+    );
+    println!("    which is asserted below rather than read off this table.");
+    println!();
+    println!("    The sidecar is the only leg holding offsets, and it holds three of them -- the");
+    println!("    frame's start and end, and the blob's first physical offset. They are varints, a");
+    println!("    zero one is omitted by protobuf entirely, and they all grow with the log, so a");
+    println!("    later entry's sidecar is wider than an earlier one's. That is where the rise is");
+    println!("    and it is the only term in either leg that moves with the batch size; the exact");
+    println!("    split between those three fields is not measured here.");
+    println!();
+    println!("    There are two objects at every batch size, so there was never a per-BATCH");
+    println!("    overhead here to divide: what a batch saves is the two durable barriers, which");
+    println!("    is TIME, not bytes. Every entry pays its own frame and its own sidecar message");
+    println!("    in full however many of them share one append -- which is the whole of the");
+    println!("    distance to a design whose record header is written once per flush.");
+
+    // ---- THE LOG FRAME PER ENTRY IS THE PART THAT MUST NOT MOVE, because it is the leg the
+    // ---- batch path only concatenates. A frame that grew with the batch size would mean an
+    // ---- entry inside a batch is being framed differently from one on its own.
+    let frame_at_one = envelope_at_one - sidecar_at_one;
+    let frame_at_largest = envelope_at_largest - sidecar_at_largest;
+    assert!(
+        (frame_at_largest - frame_at_one).abs() < 1.0,
+        "the log frame costs {frame_at_largest:.1} B/entry of envelope in a batch of \
+         {largest_batch} against {frame_at_one:.1} on its own. The batch path is supposed to \
+         CONCATENATE frames, so an entry's frame cannot depend on how many travelled with it"
+    );
+
+    // ---- AND THE ENVELOPE MUST NOT BALLOON. A regression that wrote a sidecar per entry AND
+    // ---- per batch, or re-published an entry inside its own batch, would show here. The bound
+    // ---- is loose enough for the offset varints to reach their widest and no looser.
+    assert!(
+        envelope_at_largest < envelope_at_one + 8.0,
+        "a batch of {largest_batch} costs {envelope_at_largest:.1} B/entry of envelope against \
+         {envelope_at_one:.1} on its own. Offset varints widening with the log accounts for a \
+         few bytes; this is more than that, so something in the batch path is writing per entry \
+         what it should write once"
+    );
+
+    // ---- AND IT MUST NOT FALL, which sounds backwards and is the point. As the log is shaped
+    // ---- today every entry carries its own frame and its own sidecar message, so batching
+    // ---- cannot divide either. A figure that DROPPED here would mean that stopped being true.
+    // ----
+    // ---- IF THIS FAILS BECAUSE THE FIGURE DROPPED, that is the format change landing -- N
+    // ---- entries travelling in one frame under one sidecar. That is the outcome this report
+    // ---- argues for, so the right response is to rewrite the paragraph above and move this
+    // ---- bound, not to restore the cost.
+    assert!(
+        recovered < 0.10,
+        "a batch of {largest_batch} recovered {:.1}% of the envelope ({envelope_at_one:.1} -> \
+         {envelope_at_largest:.1} B/entry). The report says a batch amortizes the barrier and \
+         not one byte of the envelope, and that is no longer what the log does",
+        recovered * 100.0
     );
 
     // ---- THE FIT HAS TO BE A FIT. A line quoted over points that do not lie on one is a
