@@ -91,6 +91,9 @@ mod record_cost;
 mod wal_proto;
 pub mod record_framing;
 pub mod index_log_record;
+pub mod index_log_wire;
+pub mod stream_format;
+pub mod block_image;
 pub mod wal_record;
 /// NO FOREIGN TYPE NAMES IN RUST SOURCE -- a repo-wide scan, tests only. The vendor-vocabulary
 /// scrub covers product and company names; this covers another implementation's IDENTIFIERS,
