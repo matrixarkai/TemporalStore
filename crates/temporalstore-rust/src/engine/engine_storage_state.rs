@@ -8187,11 +8187,43 @@ pub(super) fn resident_component_address<'a>(
 /// NO COMPONENT IS RENDERED HERE, deliberately: the question is about ORDINALS, and rendering every
 /// sibling's name back to a string to ask it would allocate once per element of the object on every
 /// container write. The addresses carry the ordinals and the map's keys are not read at all.
+/// HOW MANY TIMES THE SIBLING SCAN RAN, AND HOW MANY SIBLINGS IT LOOKED AT.
+///
+/// Counted rather than timed. This scan runs on the write path beside a per-op fsync priced at
+/// ~3.3 ms, so a wall clock cannot say which of the two a slow container build is paying for --
+/// which is exactly why the O(N) claim about it was "proven by inspection" and the quadratic curve
+/// it implies was not proven at all. Elements examined is the quantity the claim is about.
+#[cfg(test)]
+pub(super) static SIBLING_SCAN_CALLS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+#[cfg(test)]
+pub(super) static SIBLING_SCAN_ELEMENTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub(super) fn resident_highest_block_id(
     shard: &ShardState,
     model_id: &str,
     object_key: &str,
 ) -> Option<u64> {
+    #[cfg(test)]
+    SIBLING_SCAN_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+
+    // TWO BODIES, SO A RELEASE BUILD IS BYTE-IDENTICAL TO WHAT IT WAS. The counted one exists only
+    // under `cfg(test)`; the shipped one is the expression this function has always had. An
+    // instrument that costs the write path two atomic increments per container insert would be
+    // paying for its own measurement forever, on a path this arm exists to show is already too
+    // expensive.
+    #[cfg(test)]
+    fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
+        let mut examined = 0u64;
+        let highest = addresses
+            .inspect(|_| examined += 1)
+            .filter_map(ElementEntry::block_id)
+            .max();
+        SIBLING_SCAN_ELEMENTS.fetch_add(examined, std::sync::atomic::Ordering::Relaxed);
+        highest
+    }
+    #[cfg(not(test))]
     fn highest<'a>(addresses: impl Iterator<Item = &'a ElementEntry>) -> Option<u64> {
         addresses.filter_map(ElementEntry::block_id).max()
     }
