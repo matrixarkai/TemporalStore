@@ -5223,6 +5223,38 @@ fn upsert_bucket_index_block_inner(
         all
     };
     if let Some(block_refs) = superseded {
+        // WHICH BUCKETS THIS OBJECT STILL HAS A BLOCK IN, asked ONCE, from its own slot.
+        //
+        // What the loop below needs, per block it removes, is whether the object is still
+        // represented in that bucket -- the condition for dropping it from `object_index`. That
+        // was answered by building `BlockKeysByPosition::from_lookup` over the WHOLE SHARD'S
+        // lookup (two HashMaps, keyed `(u32,u64)` and `u64`), then `block_identities_in` over the
+        // bucket (a third), then scanning the bucket's entire `block_index` -- per removed block.
+        //
+        // Callgrind on 200 hash inserts: `from_lookup` 52.97% inclusive, `block_identities_in`
+        // 34.54%, and ~58% of all instructions in SipHash. The cost was O(ALL BLOCKS IN THE SHARD)
+        // per write, which is why one insert grew from 5.87 ms at 100 fields to 182.65 ms at 800.
+        //
+        // The object's own slot already answers it. Every `remove_object_block_lookup_ref` above
+        // has run, so the slot is final here, and the lookup never holds a deleted block -- so a
+        // ref naming a bucket means a LIVE block in that bucket, which is exactly the question.
+        //
+        // The buckets are collected rather than assumed to be one: a block routes by object key,
+        // but the shard's routing RANGE can change, so blocks filed under an older range can sit
+        // in a bucket this key would not derive today. That is why the loop reads
+        // `block_ref.routing_bucket` per ref, and why this answers per bucket too.
+        let buckets_still_holding: Vec<u32> = if lookup_enabled {
+            shard
+                .bucket_index
+                .block_refs_for(entry.kind.as_str(), &entry.object_key, entry.component.as_deref())
+                .map(|refs| refs.iter().map(|block_ref| block_ref.routing_bucket).collect())
+                .unwrap_or_default()
+        } else {
+            // Without the lookup there is no slot to ask, so keep the old question rather than
+            // answering a different one: a bucket is reported as still holding the object, and
+            // `object_index` keeps the entry. Reconcile is what corrects that case already.
+            block_refs.iter().map(|block_ref| block_ref.routing_bucket).collect()
+        };
         for block_ref in block_refs {
             let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
                 continue;
@@ -5241,19 +5273,9 @@ fn upsert_bucket_index_block_inner(
                 )
                 .map(|block| block.object_id(shard_id, &entry.object_key));
             if let Some(removed_object_id) = removed_object_id {
-                // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THE BUCKET, so
-                // the survivors are named from beside themselves rather than from this entry.
-                let names = crate::engine::state::block_identities_in(
-                    bucket,
-                    &crate::engine::state::BlockKeysByPosition::from_lookup(
-                        &shard.bucket_index.object_block_lookup,
-                    ),
-                );
-                if !bucket.block_index.iter().any(|(handle, block)| {
-                    names
-                        .get(handle)
-                        .is_some_and(|beside| block.object_id(shard_id, beside) == removed_object_id)
-                }) {
+                // AND WHETHER ANY SURVIVOR STILL CARRIES IT IS A QUESTION ABOUT THIS OBJECT,
+                // answered from its slot above rather than by naming every block in the bucket.
+                if !buckets_still_holding.contains(&block_ref.routing_bucket) {
                     bucket.object_index.remove(&removed_object_id);
                 }
                 classify_bucket_layout_in_place(bucket);
