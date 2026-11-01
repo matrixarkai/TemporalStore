@@ -50,6 +50,28 @@ fn remove_timestamped_series(
 /// `None` means the kind is not a timestamped series kind. An empty `Vec` means it is, and the
 /// object has no points left -- which the shared operation has already taken the key out of the
 /// map for.
+/// The instants of one timestamped series at or below a boundary, by kind.
+///
+/// Mirrors `apply_timestamped_point`'s dispatch deliberately: the two must cover the same kinds,
+/// and sitting next to it is what makes a missing arm visible.
+fn timestamped_instants_through(
+    shard: &super::state::ShardState,
+    kind: &str,
+    object_key: &str,
+    through: u64,
+) -> Option<Vec<u64>> {
+    use super::timestamped_series::instants_through as instants;
+    Some(match kind {
+        "feature" => instants(shard.features(), object_key, through),
+        "context_index" => instants(shard.context_indexes(), object_key, through),
+        "context_audit" => instants(shard.context_audits(), object_key, through),
+        "context_child" => instants(shard.context_children(), object_key, through),
+        "context_summary" => instants(shard.context_summaries(), object_key, through),
+        "context_compression" => instants(shard.context_compressions(), object_key, through),
+        _ => return None,
+    })
+}
+
 fn apply_timestamped_point(
     shard: &mut super::state::ShardState,
     kind: &str,
@@ -2291,6 +2313,48 @@ impl TemporalEngine {
                 let Some(component) = item.component.clone() else {
                     return false;
                 };
+                // A TRIM STATES ITS BOUNDARY, not every point it dropped: one record stands for as
+                // many as the append was wide. Resolved back to the set here, so everything below
+                // keeps working on one instant at a time and an emptied series still takes its key
+                // with it.
+                if item.deleted {
+                    if let Some(through) = super::packed_blocks::timestamped_boundary_through(
+                        Some(component.as_str()),
+                    ) {
+                        let Some(instants) = timestamped_instants_through(
+                            shard,
+                            &item.kind,
+                            &item.object_key,
+                            through,
+                        ) else {
+                            return false;
+                        };
+                        // Nothing at or below the boundary is not a failure to apply -- a replay
+                        // that has already dropped them, or a dump taken after the trim, both
+                        // arrive here with nothing left to do.
+                        let mut live_addresses = None;
+                        for stored_key in instants {
+                            live_addresses = apply_timestamped_point(
+                                shard,
+                                &item.kind,
+                                &item.object_key,
+                                stored_key,
+                                None,
+                            );
+                        }
+                        if let Some(live_addresses) = live_addresses {
+                            super::sync_bucket_index_object_blocks(
+                                shard,
+                                shard_id,
+                                &item.kind,
+                                &item.object_key,
+                                live_addresses,
+                                true,
+                            );
+                        }
+                        return true;
+                    }
+                }
                 let Ok(stored_key) = component.parse::<u64>() else {
                     return false;
                 };

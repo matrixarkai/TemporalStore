@@ -153,6 +153,47 @@ fn stage_timestamped_removal(
     });
 }
 
+/// The component spelling for a removal that states a BOUNDARY: every instant up to and
+/// including this one is gone.
+///
+/// Shared by the writer and the apply path on purpose. The spelling IS the contract between them,
+/// and two copies of a literal is how a reader comes to disagree with its writer.
+pub(super) const TRIM_BOUNDARY_MARK: &str = "<=";
+
+pub(super) fn timestamped_boundary_component(through: u64) -> String {
+    format!("{TRIM_BOUNDARY_MARK}{through}")
+}
+
+/// The boundary a component states, or `None` when it states a single instant instead.
+pub(super) fn timestamped_boundary_through(component: Option<&str>) -> Option<u64> {
+    component?.strip_prefix(TRIM_BOUNDARY_MARK)?.parse::<u64>().ok()
+}
+
+/// Record that every timestamped point up to an instant is gone, in ONE item.
+///
+/// The per-point form below says the same thing once per point, which is what a series at its
+/// bound pays on every command: as many removal records as the append was wide.
+fn stage_timestamped_boundary_removal(
+    shard_id: ShardId,
+    kind: &str,
+    key: &str,
+    routing_bucket: u32,
+    through: u64,
+) {
+    super::block_in_wal::stage_outcome(crate::wal::WalOutcomeItem {
+        kind: kind.to_string(),
+        object_key: key.to_string(),
+        component: Some(timestamped_boundary_component(through)),
+        object_id: stable_block_object_id(shard_id, kind, key),
+        routing_bucket,
+        address: None,
+        value: None,
+        ttl: None,
+        deleted: true,
+        meta: false,
+    });
+}
+
 /// Drop the named points from a series, recording each one.
 ///
 /// Returns whether the series changed, so a caller can mark the shard dirty without repeating
@@ -188,8 +229,9 @@ pub(super) fn trim_timestamped_series(
     routing_bucket: u32,
     series: &mut impl super::timestamped_series::TimestampedSeriesWrite,
     max_size: usize,
+    boundary_record: bool,
 ) -> bool {
-    let mut trimmed = false;
+    let mut newest_dropped = None;
     while series.len() > max_size {
         // THE OLDEST POINT IS THE FIRST, because `points` promises ascending order. A
         // representation that could not promise it is not a timestamped series.
@@ -197,10 +239,22 @@ pub(super) fn trim_timestamped_series(
             break;
         };
         series.clear(oldest);
-        stage_timestamped_removal(shard_id, kind, key, routing_bucket, oldest);
-        trimmed = true;
+        if !boundary_record {
+            stage_timestamped_removal(shard_id, kind, key, routing_bucket, oldest);
+        }
+        // The LAST one dropped is the boundary, and the loop takes them oldest first, so this
+        // ends up holding the newest instant that went.
+        newest_dropped = Some(oldest);
     }
-    trimmed
+    let Some(through) = newest_dropped else {
+        return false;
+    };
+    if boundary_record {
+        // ONE record for the whole prefix. Stated after the loop rather than inside it, because
+        // the boundary is not known until the trim has finished deciding what survives.
+        stage_timestamped_boundary_removal(shard_id, kind, key, routing_bucket, through);
+    }
+    true
 }
 
 pub(super) fn append_timestamped_kv_blocks(
