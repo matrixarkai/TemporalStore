@@ -20,7 +20,7 @@ fn engine() -> TemporalEngine {
     let mut root = std::env::temp_dir();
     root.push(format!("ts-inmemory-dirty-example-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&root);
-    for sub in ["cache", "pages", "indexes"] {
+    for sub in ["cache", "blocks", "indexes"] {
         std::fs::create_dir_all(root.join(sub)).expect("create dir");
     }
     let engine = TemporalEngine::with_local_dirs(

@@ -42,7 +42,7 @@ fn root(tag: &str) -> PathBuf {
 }
 
 fn build(root: &Path) -> TemporalEngine {
-    for sub in ["cache", "pages", "indexes"] {
+    for sub in ["cache", "blocks", "indexes"] {
         fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
     TemporalEngine::with_local_dirs(4096, root.join("cache"), root.join("blocks"), root.join("indexes"))

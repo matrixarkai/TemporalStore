@@ -27,7 +27,7 @@ fn root(tag: &str) -> PathBuf {
 fn build_engine(root: &PathBuf) -> (TemporalEngine, PathBuf) {
     let _ = std::fs::remove_dir_all(root);
     let index_dir = root.join("indexes");
-    for sub in ["cache", "pages", "indexes"] {
+    for sub in ["cache", "blocks", "indexes"] {
         std::fs::create_dir_all(root.join(sub)).expect("create engine dir");
     }
     let engine =
