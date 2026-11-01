@@ -7805,6 +7805,53 @@ impl CoreIndex {
         BlockKeysByPosition::from_parts(&self.objects, &self.object_block_lookup)
     }
 
+    /// EVERY OBJECT THAT HOLDS BLOCK REFS, WHICHEVER HOME HOLDS THEM.
+    ///
+    /// # WHY THIS EXISTS, AND WHAT IT COST TO LEARN
+    ///
+    /// Refs live in TWO places since the fold: an object's own slot row for the kinds that have
+    /// one, and `object_block_lookup` for the rest. Reading one home answers for SOME of the
+    /// shard's objects and silently omits the others -- not an error, not an empty result, just a
+    /// shorter list. Any reader that means "every object with refs" and spells it
+    /// `object_block_lookup.iter()` is wrong by exactly the set of kinds that moved.
+    ///
+    /// THAT IS NOT HYPOTHETICAL. It took
+    /// `the_entry_cannot_name_its_object_by_slot::the_block_entry_is_the_only_durable_home_of_an_object_keys_characters`
+    /// red on `main` for several merges: it derives a bucket's objects from the lookup alone, its
+    /// fixture writes `StringSet`, and `strings` is one of the kinds whose refs moved to the slot.
+    /// The failure surfaced on that test's own APPARATUS assertion -- the bucket does not hold the
+    /// key it planted -- which is the only reason it was visible at all, because CI's suites are
+    /// `--exact` named filters and nothing runs it.
+    ///
+    /// So the walk gets a name. `from_parts` already knew how to do it and kept the knowledge
+    /// inside itself, which is why the next reader had to rediscover it and did not.
+    ///
+    /// AT MOST ONE HOME PER OBJECT, so this never yields an object twice: the filing route picks
+    /// by whether the slot row exists, and the adoption moves a set when a row arrives. The slot
+    /// home comes first for determinism rather than to resolve a disagreement.
+    ///
+    /// The kind is a `&'static str` on the slot side and an `Arc<str>` on the lookup side, so both
+    /// are handed out as `&str` -- a caller that needs the shared pointer identity of the kind
+    /// name must go to the home it cares about, which is what `string_keyed_holders` does.
+    pub(super) fn every_object_with_refs(
+        &self,
+    ) -> impl Iterator<Item = (&str, &str, &BlockRefs)> + '_ {
+        self.objects
+            .iter()
+            .flat_map(|(kind, table)| {
+                table.iter().filter_map(move |(object_key, slot)| {
+                    slot.refs().map(|refs| (kind.as_str(), object_key.as_ref(), refs))
+                })
+            })
+            .chain(
+                self.object_block_lookup
+                    .iter()
+                    .map(|(model_id, object_key, refs)| {
+                        (model_id.as_ref(), object_key.as_ref(), refs)
+                    }),
+            )
+    }
+
     /// Every block ref this object holds, for one component.
     ///
     /// A named component resolves nothing and never did -- see [`names_the_only_slot`].

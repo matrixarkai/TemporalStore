@@ -1007,7 +1007,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
             .bucket_map
             .get(&routing_bucket)
             .expect("APPARATUS: the bucket holding the key under test is not resident");
-        // EVERY OBJECT THIS BUCKET HOLDS, TAKEN FROM THE INDEX'S OWN LOOKUP.
+        // EVERY OBJECT THIS BUCKET HOLDS, TAKEN FROM BOTH HOMES OF THE INDEX'S REFS.
         //
         // Naming only the key under test was wrong and the encoder said so on the first run: the
         // forty filler keys route over the same slot space and at least one of them lands here,
@@ -1019,14 +1019,21 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
         // THE KEY UNDER TEST IS STILL ASSERTED TO BE AMONG THEM, because the arm below reads the
         // serialized node for that key's characters and a bucket that did not hold it would make
         // every row of that search vacuous.
+        //
+        // AND IT ASKS `every_object_with_refs`, NOT THE LOOKUP. This read the lookup alone, which
+        // is why this arm was red on `main` for several merges: refs have two homes since the
+        // fold -- an object's own slot row for the kinds that have one, `object_block_lookup` for
+        // the rest -- and this fixture writes `StringSet`, whose refs moved to the slot. The
+        // lookup answered with the container objects only, the key under test was not among them,
+        // and the APPARATUS assertion below is what caught it. A reader that means EVERY object
+        // must say so.
         let objects: Vec<&str> = shard
             .bucket_index
-            .object_block_lookup
-            .iter()
+            .every_object_with_refs()
             .filter(|(_, _, refs)| {
                 refs.iter().any(|block_ref| block_ref.routing_bucket == routing_bucket)
             })
-            .map(|(_, object, _)| object.as_ref())
+            .map(|(_, object, _)| object)
             .collect();
         assert!(
             objects.iter().any(|object| *object == PRESENT_KEY),
