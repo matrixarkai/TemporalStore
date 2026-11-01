@@ -22,7 +22,7 @@ The Rust implementation models the TemporalStore fault-tolerance path locally:
 - metaserver Raft metadata remains readable/writable after leader failover with quorum
 - metaserver Raft rejects reads and writes after quorum loss
 - proxy/client E2E tests refresh routes after backend failure
-- local restart tests prove page-address indexes reload data from local block files
+- local restart tests prove block-address indexes reload data from local block files
 - shared-store tests restore index/block data and replay later WAL records
 
 ## Critical Behavior

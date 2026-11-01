@@ -60,7 +60,7 @@ flowchart LR
     Server --> DataNode
     DataNode --> Engine["TemporalEngine"]
     Engine --> Cache["Memory/disk cache"]
-    Engine --> BlockStore["Block store / packed pages"]
+    Engine --> BlockStore["Block store / packed blocks"]
     Engine --> IndexLog["Index log"]
     Engine --> Wal["WAL"]
     Engine --> SharedStore["Local shared-store replay"]

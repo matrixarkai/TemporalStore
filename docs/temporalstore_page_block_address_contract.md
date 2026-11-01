@@ -76,6 +76,37 @@ The remaining spellings have specific compatibility or integration roles:
 - MatrixObject's `page_size` setting, which describes its actual page tier.
 - Compatibility test names and accepted stored field strings.
 
+### In markdown
+
+The repository's markdown carries `block`. Eight occurrences remain OUTSIDE this
+file, and each either has a named reader or would state something false if it
+moved:
+
+- `--mode corrupt-page`, in the scale-validation notes. The value is matched in
+  `storage_crash_harness.rs`, so renaming it would document a command that does
+  not exist.
+- `unreadable-page`, in the fault runbook. A readiness blocker string, also
+  carried by `docs/ops/temporalstore-alerts.yml`.
+- `Page-backed State`, in the feature table. A feature name, spelled as an
+  identifier in the compatibility corpora.
+- `page-cache`, in the ingestion performance notes. The term covers both the
+  operating system's page cache and this engine's own cache, and that line does
+  not say which it means.
+- `{"page": 1, "chunk": 3}` and `#page=1`, in the secondary-index mechanism. A
+  document locator field and a URL fragment, both naming a PDF's pages.
+- `headings/pages/paragraphs`, in the context deep dive. A document's pages in
+  the extraction pipeline, which is not this tier.
+- the metric-name regular expression in the Prometheus sanity queries, where
+  `page` selects metrics by name.
+
+This file is not in that count, and deliberately: it names the retired spellings
+in order to record them, so it carries more of them than anything else in the
+repository and a count that included it could not be stated here at all.
+
+A web page is neither this tier nor a block. Where markdown described one, the
+sentence was reworded to say what the thing is -- a document, a guide, a URL --
+rather than renamed into something untrue.
+
 These are not permission to introduce page-named TemporalStore implementation
 types. Preserve their behavior when updating callers or dependency versions.
 

@@ -88,7 +88,7 @@
       ]
     },
     {
-      "title": "Storage Object Page Slot Lifecycle",
+      "title": "Storage Object Block Slot Lifecycle",
       "type": "timeseries",
       "targets": [
         {
@@ -112,7 +112,7 @@
       ]
     },
     {
-      "title": "Page Store And Cache Pressure",
+      "title": "Block Store And Cache Pressure",
       "type": "timeseries",
       "targets": [
         {

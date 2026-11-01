@@ -88,8 +88,8 @@ Local context UI smoke test:
 python3 -m http.server 8080 -d tools/temporalstore-monitoring-ui
 ```
 
-Then open `http://127.0.0.1:8080/`. The same page also works as a static
-`file://` page; in that mode it renders the built-in offline context sample.
+Then open `http://127.0.0.1:8080/`. The same UI also opens from a static
+`file://` URL; in that mode it renders the built-in offline context sample.
 
 The AI agent context envelope is available at
 `http://127.0.0.1:8080/agent-context-envelope.html`.

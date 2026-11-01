@@ -58,7 +58,7 @@ After restart:
 - lifecycle snapshot restores the same shard ids and load generations.
 - read/write admission policy matches metaserver topology.
 - hot cache may be cold, but memory miss -> block/disk read -> refill succeeds.
-- Prometheus reports cache, page-store, WAL, ingestion, and lifecycle counters.
+- Prometheus reports cache, block-store, WAL, ingestion, and lifecycle counters.
 
 ## Proxy And Client Checks
 
