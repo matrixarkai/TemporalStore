@@ -8052,8 +8052,9 @@ const RETIRED_NAMES: &[&str] = &[
         );
         assert_eq!(
             shipped.max_destroy_slabs, 0,
-            "the slab-count budget is off on the only constructor the scheduled cycle uses; \
-             turning it on is a policy change that must be made deliberately"
+            "the slab-count budget is off on this constructor, which the scheduled cycle no \
+             longer builds its policy from -- it fills the whole policy from its request. \
+             Turning a budget on HERE is still a policy change for every other caller"
         );
         assert_eq!(
             shipped.max_destroy_physical_bytes, 0,
@@ -8086,6 +8087,54 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(unbounded.skipped_by_budget_count, 0);
     }
 
+    /// A BYTE BUDGET SMALLER THAN ONE SLAB ADMITS ONE SLAB AND THEN YIELDS.
+    ///
+    /// This is the behaviour that separates a spending bound from a refusal, driven through the
+    /// real planner rather than re-derived from the arithmetic. Under the overshoot form the
+    /// budget once had -- `selected + candidate.bytes > ceiling` from a `selected` of 0 -- a
+    /// ceiling below one candidate rejected the FIRST candidate and every candidate behind it, so
+    /// the stage selected nothing and went on selecting nothing every round. MEASURED: on that
+    /// form this test fails with 0 slabs selected against the 1 asserted here.
+    ///
+    /// BOTH HALVES ARE ASSERTED, and neither alone would do: "exactly one slab selected" also
+    /// holds if nothing was ever offered, and "one candidate turned away by the budget" also holds
+    /// if none was admitted. The candidate count is the denominator for both.
+    #[test]
+    fn a_sub_slab_byte_budget_admits_one_slab_then_yields() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = BlockStore::new(dir.path());
+        store.install_slab(0, b"first-collectable-slab").unwrap();
+        store.install_slab(1, b"second-collectable-slab").unwrap();
+        store.install_slab(2, b"current").unwrap();
+
+        // ONE BYTE: smaller than either candidate, the shape that used to close the gate
+        // permanently. The count bound is off, so the byte bound is the only thing acting.
+        let policy = BlockStoreGcPolicy {
+            max_destroy_slabs: 0,
+            max_destroy_physical_bytes: 1,
+            max_utility_score: None,
+            min_age_ms: None,
+            min_slab_garbage_basis_points: None,
+        };
+        let plan = store.gc_policy_plan(2, Vec::<u64>::new(), &policy).unwrap();
+
+        assert_eq!(
+            plan.candidate_count, 2,
+            "DENOMINATOR: this says nothing unless both slabs were offered: {plan:?}"
+        );
+        assert_eq!(
+            plan.selected_block_slab_ids.len(),
+            1,
+            "a one-byte budget must still admit the first candidate; a bound that selects nothing \
+             has switched the stage off rather than bounded it: {plan:?}"
+        );
+        assert_eq!(
+            plan.skipped_by_budget_count, 1,
+            "and the candidate behind it must be turned away BY THE BUDGET, or the budget did not \
+             bind at all: {plan:?}"
+        );
+    }
+
     #[test]
     fn policy_gc_plans_and_applies_byte_bounded_destroy() {
         let dir = tempfile::tempdir().unwrap();
@@ -8113,15 +8162,20 @@ const RETIRED_NAMES: &[&str] = &[
         assert_eq!(plan.candidate_used_bytes, 0);
         assert_eq!(plan.candidate_stale_bytes, plan.candidate_physical_bytes);
         assert_eq!(plan.candidate_utility_basis_points, 0);
-        assert_eq!(plan.selected_block_slab_ids, vec![0]);
-        assert_eq!(plan.selected_physical_bytes, b"small".len() as u64);
+        // A SPENDING bound: nothing has been spent when the first candidate is considered, so
+        // the highest-garbage candidate is admitted even though it alone exceeds the ceiling,
+        // and the round yields behind it. Under the overshoot form this budget once had, that
+        // first candidate was REFUSED and the small one behind it taken -- so once every
+        // candidate was oversized, a round selected nothing at all.
+        assert_eq!(plan.selected_block_slab_ids, vec![1]);
+        assert_eq!(
+            plan.selected_physical_bytes,
+            b"largest-stale-segment".len() as u64
+        );
         assert_eq!(plan.skipped_by_policy_count, 0);
         assert_eq!(plan.skipped_by_policy_physical_bytes, 0);
         assert_eq!(plan.skipped_by_budget_count, 1);
-        assert_eq!(
-            plan.skipped_by_budget_physical_bytes,
-            b"largest-stale-segment".len() as u64
-        );
+        assert_eq!(plan.skipped_by_budget_physical_bytes, b"small".len() as u64);
         assert_eq!(
             plan.candidates
                 .iter()
@@ -8133,11 +8187,11 @@ const RETIRED_NAMES: &[&str] = &[
         let report = store
             .gc_slabs_before_with_live_refs_policy(3, [2_u64], policy, true)
             .unwrap();
-        assert_eq!(report.removed_block_slab_ids, vec![0]);
-        assert_eq!(report.delayed_destroy_block_slab_ids, vec![0]);
-        assert_eq!(report.retained_block_slab_ids, vec![1, 2, 3]);
-        assert_eq!(store.slab_ids().unwrap(), vec![1, 2, 3]);
-        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![0]);
+        assert_eq!(report.removed_block_slab_ids, vec![1]);
+        assert_eq!(report.delayed_destroy_block_slab_ids, vec![1]);
+        assert_eq!(report.retained_block_slab_ids, vec![0, 2, 3]);
+        assert_eq!(store.slab_ids().unwrap(), vec![0, 2, 3]);
+        assert_eq!(store.delayed_destroy_slab_ids().unwrap(), vec![1]);
     }
 
     /// Install, quarantine and purge, timed apart.

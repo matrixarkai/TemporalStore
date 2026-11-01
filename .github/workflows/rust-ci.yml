@@ -190,8 +190,9 @@ jobs:
             engine::tests::durable_outranks_derived::the_shared_install_pairs_carried_blocks_by_object_and_component \
             engine::tests::what_each_maintenance_bound_costs_per_round::a_cycle_request_that_names_no_bound_still_arrives_bounded \
             engine::tests::part4::every_maintenance_round_is_bounded_by_default \
-            engine::tests::what_each_maintenance_bound_costs_per_round::a_byte_ceiling_below_one_slab_would_stop_the_collector_dead \
-            engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_byte_ceiling_is_zero_or_at_least_one_slab \
+            engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_byte_ceiling_is_a_spending_bound_in_slab_units \
+            block_store::tests::a_sub_slab_byte_budget_admits_one_slab_then_yields \
+            block_store::tests::policy_gc_plans_and_applies_byte_bounded_destroy \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval \
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \

@@ -263,9 +263,18 @@ impl BlockStore {
                     skipped_by_budget_physical_bytes.saturating_add(candidate.bytes);
                 continue;
             }
+            // A SPENDING bound, not a refusal. The question is whether the budget has already
+            // been spent -- never whether THIS candidate would overshoot it. A refusal compares a
+            // whole budget against one unit of work, and the unit here is a slab targeting
+            // `DEFAULT_BLOCK_SLAB_TARGET_BYTES` (one gibibyte), so every budget below one slab
+            // refused the first candidate and every candidate behind it, round after round. A
+            // budget whose unit exceeds the budget is a closed gate, not a small bound, and that
+            // is why this ceiling had to ship at 0. Spending-first means the first candidate
+            // always goes through and the round yields once the budget is gone, so ANY value is a
+            // real bound and no value can switch the stage off. The slab-COUNT bound above
+            // already had this shape, because a length against a length has no unit to mismatch.
             if policy.max_destroy_physical_bytes > 0
-                && selected_physical_bytes.saturating_add(candidate.bytes)
-                    > policy.max_destroy_physical_bytes
+                && selected_physical_bytes >= policy.max_destroy_physical_bytes
             {
                 skipped_by_budget_count += 1;
                 skipped_by_budget_physical_bytes =

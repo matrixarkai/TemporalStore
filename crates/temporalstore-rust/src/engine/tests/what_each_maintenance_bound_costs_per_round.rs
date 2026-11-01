@@ -906,72 +906,61 @@ fn what_the_unexercised_bounds_would_need() {
     );
 }
 
-/// WHY THE BLOCK-RECLAIM BYTE CEILING SHIPS AT 0, measured on the budget arithmetic itself.
+/// THE BYTE CEILING IS A SPENDING BOUND, so every value of it is a real bound.
 ///
-/// `block_store_gc` applies the byte budget per candidate as
-/// `selected_physical_bytes + candidate.bytes > max_destroy_physical_bytes`, and
-/// `selected_physical_bytes` starts the round at 0. So the comparison for the FIRST candidate is
-/// `candidate.bytes > ceiling` -- and if one slab is bigger than the whole ceiling, that is true
-/// for the first candidate, for every candidate behind it, and for every round after. The stage
-/// does not do less work; it does none, and keeps doing none.
+/// The budget asks whether it has ALREADY been spent -- `selected_physical_bytes >= ceiling` --
+/// not whether the next candidate would overshoot it. So the first candidate of a round is
+/// admitted whatever it weighs, and the round yields once the budget is gone. This stage can be
+/// bounded; it cannot be switched off by a bound.
 ///
-/// `DEFAULT_BLOCK_SLAB_TARGET_BYTES` is `1 << 30`. A ceiling of 1 MiB is 1/1024 of one slab.
+/// THAT IS WHY THIS GUARD NO LONGER DEFENDS A FLOOR. The rule it used to enforce was "0 or at
+/// least one slab target, never between", because the overshoot form the budget then had compared
+/// a whole budget against one unit of work: the unit is a slab targeting a gibibyte, so a ceiling
+/// below one slab rejected the first candidate and every candidate behind it, round after round.
+/// A budget whose unit exceeds the budget is a closed gate, not a small bound. Between is now
+/// safe, so a floor is the wrong thing to assert and asserting it would forbid the operational
+/// values.
 ///
-/// THE COUNT CEILING HAS NO SUCH EDGE, which is the half of this worth remembering: it compares a
-/// LENGTH against a LENGTH (`selected.len() >= max_destroy_slabs`), so a ceiling of n admits
-/// exactly n candidates whatever they weigh. A budget over a quantity whose UNIT is larger than
-/// the budget is not a small budget, it is a closed gate -- and only the byte budget here is over
-/// such a quantity.
+/// WHAT IS STILL WORTH ASSERTING is that the stage is bounded AT ALL, and that the ceiling is
+/// denominated in this store's own unit so it keeps meaning the same number of unlinks if the slab
+/// target moves. `block_store::tests::a_sub_slab_byte_budget_admits_one_slab_then_yields` drives
+/// the planner itself, and is the test that fails on the form this guard replaced.
 #[test]
-fn a_byte_ceiling_below_one_slab_would_stop_the_collector_dead() {
+fn the_shipped_byte_ceiling_is_a_spending_bound_in_slab_units() {
+    let ceiling = crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND;
     let slab_target = crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
-    let would_be_ceiling: u64 = 1024 * 1024;
 
-    // A single slab at the shipped target against the ceiling that was nearly shipped.
     assert!(
-        slab_target > would_be_ceiling,
-        "DENOMINATOR: this test only says something while one slab is larger than the ceiling it \
-         warns about: slab target {slab_target}, ceiling {would_be_ceiling}"
+        ceiling > 0,
+        "the block-reclaim byte ceiling is 0, which is no bound at all: a round may destroy every \
+         eligible slab, and both `skipped_by_budget_*` figures the stage reports can never be \
+         anything but 0 while that is so"
+    );
+    assert_eq!(
+        ceiling, slab_target,
+        "the byte ceiling is {ceiling}, which is not the one slab target of {slab_target} it is \
+         meant to be. It is denominated in slabs on purpose, so that it keeps meaning one unlink \
+         per round if the slab target moves. Move the two together, deliberately"
     );
 
-    // The arithmetic the budget performs, for the first candidate of a round.
-    let selected_so_far: u64 = 0;
-    let first_candidate_bytes = slab_target;
-    let first_candidate_rejected =
-        selected_so_far.saturating_add(first_candidate_bytes) > would_be_ceiling;
+    // The production predicate itself, for the first candidate of a round and the one behind it.
+    // `selected >= ceiling` SKIPS, so "admitted" is its negation.
+    let first_admitted = 0_u64 < ceiling;
+    let second_refused = slab_target >= ceiling;
     assert!(
-        first_candidate_rejected,
-        "a {would_be_ceiling}-byte ceiling must reject a {first_candidate_bytes}-byte first \
-         candidate, or the hazard this documents does not exist"
+        first_admitted,
+        "a spending bound must admit the first candidate of a round whatever it weighs, or it is \
+         the closed gate this ceiling used to be"
     );
-
-    // And the count ceiling, the same round, does not have the edge.
-    let count_ceiling = 500_usize;
-    let selected_count = 0_usize;
     assert!(
-        selected_count < count_ceiling,
-        "a count ceiling of {count_ceiling} must admit the first candidate whatever it weighs"
+        second_refused,
+        "and once one slab target has been spent the round must yield, or the ceiling bounds \
+         nothing"
     );
 
     eprintln!(
-        "  slab target {slab_target} B; a {would_be_ceiling} B ceiling rejects the first candidate \
-         and every one behind it, so the stage never destroys a slab again"
-    );
-}
-
-/// THE GUARD. The block-reclaim byte ceiling may be 0 (no bound) or at least one slab target --
-/// never between. Anything between is the closed gate measured above, and it goes red here rather
-/// than in production, whatever the slab target later becomes.
-#[test]
-fn the_shipped_byte_ceiling_is_zero_or_at_least_one_slab() {
-    let ceiling = crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND;
-    let slab_target = crate::storage_config::DEFAULT_BLOCK_SLAB_TARGET_BYTES;
-    assert!(
-        ceiling == 0 || ceiling >= slab_target,
-        "the block-reclaim byte ceiling is {ceiling}, between 0 and one slab target of \
-         {slab_target}. The budget compares `selected + candidate.bytes > ceiling` from a \
-         `selected` of 0, so a ceiling under one slab rejects every candidate for ever: the stage \
-         stops rather than slows. Use 0 for no bound, or a whole number of slab targets"
+        "  byte ceiling {ceiling} B = one slab target, so a round admits its first candidate and \
+         yields behind it: one slab destroyed per round at the shipped slab target"
     );
 }
 
