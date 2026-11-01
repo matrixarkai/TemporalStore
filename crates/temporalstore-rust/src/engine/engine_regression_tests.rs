@@ -701,3 +701,5 @@ mod what_each_maintenance_bound_costs_per_round;
 mod what_one_hash_field_write_costs_durably;
 #[path = "tests/a_reconstruct_prunes_the_refs_it_invalidates.rs"]
 mod a_reconstruct_prunes_the_refs_it_invalidates;
+#[path = "tests/a_windowed_aggregate_must_be_current_and_bounded.rs"]
+mod a_windowed_aggregate_must_be_current_and_bounded;
