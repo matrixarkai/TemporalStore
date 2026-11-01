@@ -245,6 +245,14 @@ jobs:
       # variant carries data, and that union has two, so no niche takes it to sixteen. The arm
       # asserts the measured table; a rustc that ever changes this goes red and reopens the
       # lever with a measurement rather than having it rediscovered from scratch.
+      # THE THREE `part4` NAMES ARE PINNED HERE BECAUSE NOTHING ELSE RAN THEM, AND THEY SAT RED ON
+      # main FOR SEVERAL MERGES BEHIND AN ENTIRELY GREEN CHECK. They live in
+      # `tests/persistence_recovery_and_accounting.rs`, which is registered as
+      # `#[path = "..."] mod part4` -- so a filter spelled after the FILENAME matches nothing and
+      # reports `test result: ok` over `running 0 tests`, which is measured: that spelling returns
+      # `running 0 tests; test result: ok. 0 passed` on this tree. The module path is the only
+      # spelling that works, and the count assertion below is what makes a future rename fail
+      # loudly. All three broke on one cause -- refs gained a second home and these read one.
       - name: cargo test (published ratio guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -260,6 +268,9 @@ jobs:
             engine::tests::flat_block_list::what_a_retain_leaves_in_the_block_lists_capacity \
             engine::tests::flat_block_list::what_the_slots_owned_element_headroom_costs \
             engine::tests::where_an_objects_refs_could_live::whether_a_niche_can_take_the_refs_union_to_sixteen \
+            engine::tests::part4::maintained_component_block_ref_total_matches_the_walk \
+            engine::tests::part4::object_block_lookup_refs_per_object_census \
+            engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \

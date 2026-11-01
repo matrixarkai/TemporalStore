@@ -10072,6 +10072,20 @@ impl ShardState {
         removed
     }
 
+    /// THE ADDRESS ONLY, WHICH SINCE THE FOLD MEANS THE ROW'S BLOCK REFS ARE DISCARDED.
+    ///
+    /// `remove_string_row` hands back the whole slot and an object's refs live inside it, so taking
+    /// the address and dropping the slot drops the only record of where that object's blocks are.
+    /// For a DELETE that is right -- the blocks are tombstoned on their own path and the refs
+    /// should go. For a MOVE it is not: installing the address under another key leaves a row
+    /// naming no blocks, nothing in either home names them, and `serialize_block_index` then
+    /// refuses the whole index as unwritable. That is how
+    /// `bucket_dump_manifest_rejects_object_lifecycle_mismatch` went red, and it is why that test
+    /// now moves the slot instead.
+    ///
+    /// So a caller that wants to RENAME a row must move the slot -- `remove_string_row` followed by
+    /// an insert of what it returned -- rather than come through here. This door has no production
+    /// callers; the deletes all call `remove_string_row` directly.
     pub(super) fn take_string_address(&mut self, key: &str) -> Option<ElementEntry> {
         self.remove_string_row(key).map(|slot| slot.address())
     }
