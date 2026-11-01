@@ -555,7 +555,7 @@ fn a_warm_serving_read_is_answered_from_memory_and_never_reaches_the_ssd_tier() 
         cache_reads, KEYS as u64,
         "{KEYS} warm requests made {cache_reads} cache reads. One cached answer is one cache \
          read; more than that means the command-answer cache is being consulted and then not \
-         used, and the page underneath is being read anyway"
+         used, and the block underneath is being read anyway"
     );
 }
 

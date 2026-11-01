@@ -339,7 +339,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
     assert!(
         checked >= 100,
         "the walk compared {checked} page entries; the fixture writes {} records of two kinds on \
-         {} shards, so below 100 it is not reading the page index and `differed` is empty for the \
+         {} shards, so below 100 it is not reading the block index and `differed` is empty for the \
          wrong reason",
         RECORDS,
         SHARD_IDS.len()
@@ -406,7 +406,7 @@ fn a_shard_state_that_never_entered_the_engine_carries_no_shard_id() {
         fresh.shard_id(),
         stamped_zero.shard_id(),
         "an unstamped state and one stamped with shard 0 answer the same thing, so 0 is being used \
-         as a sentinel and shard 0's pages would derive their ids from an unstamped state"
+         as a sentinel and shard 0's blocks would derive their ids from an unstamped state"
     );
 }
 

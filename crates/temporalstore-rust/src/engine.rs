@@ -4632,7 +4632,7 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
         eprintln!(
             "fold: {skipped} carried container element(s) named a page the fold did not leave \
              behind and were not restored; {applied} blob(s) applied whole of {} carried, over \
-             {} live page(s)",
+             {} live block(s)",
             carried.len(),
             live.len()
         );
@@ -6052,8 +6052,8 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
                     .values()
                     .any(|bucket| bucket.block_index.values().any(|block| !block.deleted)),
             "a live page is resident while the object lookup names nothing, so this delete would \
-             have rebuilt a lookup over pages nothing filed: every production site that installs \
-             a page files it in the same call"
+             have rebuilt a lookup over blocks nothing filed: every production site that installs \
+             a block files it in the same call"
         );
         for kind in storage_model_kinds() {
             shard.bucket_index.remove_object_from_block_lookup(kind, key);
@@ -7028,7 +7028,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
                 .values()
                 .any(|bucket| bucket.block_index.values().any(|block| !block.deleted)),
         "a live page is resident while the object lookup names nothing, so this mark can find no \
-         pages: every production site that installs a page files it in the same call, and this \
+         blocks: every production site that installs a block files it in the same call, and this \
          state is reachable only by writing into `bucket_map` directly"
     );
     // THE TWO FIELDS ARE BORROWED SEPARATELY, WHICH IS WHAT THE OLD COMMENT ASKED FOR.

@@ -693,7 +693,7 @@ impl std::fmt::Display for BlockAddressOutOfRange {
                 f,
                 "block id {block_id} does not fit the block id field: a block id must be at most \
                  {MAX_ADDRESSABLE_BLOCK_ID}, which is the ceiling `encode_block_record` has always \
-                 enforced on the record header. Truncating it would name a different page of the \
+                 enforced on the record header. Truncating it would name a different block of the \
                  same object, so this is refused rather than narrowed (slab {}, offset {})",
                 self.block_slab_id, self.offset
             );
@@ -7351,7 +7351,7 @@ const RETIRED_NAMES: &[&str] = &[
             .max_destroy_slabs,
             0,
             "the collector's per-round budget is off, and stays off until used bytes mean live \
-             page bytes within the slab"
+             block bytes within the slab"
         );
     }
 
@@ -9554,7 +9554,7 @@ mod shorter_struct_against_an_existing_row {
             five.g,
             Some(GENERATION),
             "`g` must survive by NAME -- if it did not, every address from an existing index \
-             would load with no generation and every page handle would move"
+             would load with no generation and every block handle would move"
         );
         assert_eq!(five.a, seven().a, "and the fields that remain keep their values");
         assert_eq!(five.oi, seven().oi, "including the object id");

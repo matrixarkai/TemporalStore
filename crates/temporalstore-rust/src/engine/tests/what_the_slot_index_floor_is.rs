@@ -278,7 +278,7 @@ fn with_seeded_shard<R>(
     assert_eq!(
         blocks, keys,
         "[CLAUSE one-page-an-object] the fixture holds {blocks} page(s) for {keys} object(s), so a \
-         per-object figure taken off it is not a per-page figure and the two classes cannot be \
+         per-object figure taken off it is not a per-block figure and the two classes cannot be \
          separated"
     );
     f(shard, Regime { objects: keys, blocks, buckets })
@@ -621,7 +621,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     let total_named: usize = unnameable.values().map(|(_, named)| *named).sum();
     println!(
         "  across {} released bucket(s): {total_written} object id(s) WRITTEN, {total_named} \
-         page(s) beside them to name one",
+         block(s) beside them to name one",
         unnameable.len()
     );
     assert!(
@@ -632,7 +632,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     assert_eq!(
         total_named, 0,
         "[CLAUSE no-page-names-it] the released buckets still hold {total_named} page(s), so the \
-         release did not empty the page list and the derivation below is not over nothing"
+         release did not empty the block list and the derivation below is not over nothing"
     );
     println!(
         "\n  SO `node/object_index` IS NOT REBUILDABLE FROM THE PAGES OF ITS BUCKET. A decoder that\n  \

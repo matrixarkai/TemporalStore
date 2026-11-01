@@ -386,8 +386,8 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
         (results[1].1, results[1].2, results[1].3),
         (2, 0, 0),
         "THE DELIVERABLE FAILED: a component-free id served {} of 2 pages correctly ({} wrong \
-         bytes, {} missing). The record carries `component` on each page and `read_block` takes \
-         one, so both pages must be reachable",
+         bytes, {} missing). The record carries `component` on each block and `read_block` takes \
+         one, so both blocks must be reachable",
         results[1].1,
         results[1].2,
         results[1].3
@@ -404,7 +404,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
     );
     println!(
         "  VERDICT: 2/2 under a component-free id (was 1/2 with the first page's bytes served for \
-         the second), while two genuinely identical pages still collapse to 1/2."
+         the second), while two genuinely identical blocks still collapse to 1/2."
     );
 }
 
@@ -507,8 +507,8 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     assert_eq!(
         hash_with_element, 0,
         "with the element beside the id, {hash_with_element} of {hash_blocks} hash pages are still \
-         unreachable. Every page of this fixture is a distinct field of a hash, so every group \
-         must hold exactly one page"
+         unreachable. Every block of this fixture is a distinct field of a hash, so every group \
+         must hold exactly one block"
     );
 
     // THE CONTROL, exercised first and then asserted flat under both groupings.
@@ -610,7 +610,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
     assert!(
         resident > 0,
         "NOT EXERCISED: {resident} WAL-resident hash pages, so \"none carry an ordinal\" would be \
-         true of an empty set. {durable} pages took the durable arm instead"
+         true of an empty set. {durable} blocks took the durable arm instead"
     );
     assert_eq!(
         with_ordinal, 0,
@@ -621,7 +621,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
     );
     println!(
         "  VERDICT: {with_ordinal}/{resident}. The writer HAS an ordinal at stage time; the reader \
-         has none at read time, on exactly the path a carried page is served from."
+         has none at read time, on exactly the path a carried block is served from."
     );
 }
 
@@ -752,7 +752,7 @@ fn what_an_element_named_block_adds_to_the_record() {
     assert_eq!(
         named_wire[0], named_wire[1],
         "the element field costs {} wire bytes per page at one corpus size and {} at the other. \
-         It is a per-page field",
+         It is a per-block field",
         named_wire[0], named_wire[1]
     );
     assert!(
@@ -780,8 +780,8 @@ fn what_an_element_named_block_adds_to_the_record() {
     assert!(
         large < small,
         "the disk cost was {small:.2} B/page at 25 pages and {large:.2} at 200. The element name \
-         repeats across a record's pages and a compressor removes repetition, so the larger \
-         record must pay LESS per page -- if it does not, the payload is no longer compressing \
+         repeats across a record's blocks and a compressor removes repetition, so the larger \
+         record must pay LESS per block -- if it does not, the payload is no longer compressing \
          and this figure is measuring something else"
     );
     assert!(
@@ -792,8 +792,8 @@ fn what_an_element_named_block_adds_to_the_record() {
     );
     println!(
         "  VERDICT: a two-character element name costs {} bytes on the WIRE per carried page, \
-         identical at both corpus sizes, and {small:.2} -> {large:.2} B/page ON DISK as the record \
-         grows from 25 pages to 200. The control is unchanged on both.",
+         identical at both corpus sizes, and {small:.2} -> {large:.2} B/block ON DISK as the record \
+         grows from 25 blocks to 200. The control is unchanged on both.",
         named_wire[0]
     );
 }
@@ -924,7 +924,7 @@ fn how_many_blocks_one_record_carries() {
     assert!(
         multi > 0,
         "every one of {} records carries exactly one page, so no record in this fixture has two \
-         pages to tell apart and the finding this module is about cannot arise in it",
+         blocks to tell apart and the finding this module is about cannot arise in it",
         sizes.len()
     );
     assert!(
@@ -1006,7 +1006,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
         decoded.staged_blocks.len(),
         blocks.len(),
         "the record carried {} pages in and {} out. This change may only ADD to what a record \
-         says; a page that does not come back is the refusal condition",
+         says; a block that does not come back is the refusal condition",
         blocks.len(),
         decoded.staged_blocks.len()
     );
@@ -1026,7 +1026,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
         assert_eq!(
             before.component, after.component,
             "page {i}'s element came back as {:?} rather than {:?}. `Some(\"\")` and `None` are \
-             different pages, and an encoder that merges them re-creates the ambiguity this \
+             different blocks, and an encoder that merges them re-creates the ambiguity this \
              change removes",
             after.component.as_deref(),
             before.component.as_deref()
@@ -1148,7 +1148,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
         assert!(
             blocks > 0,
             "DENOMINATOR: key {key} holds no live page entries after the reload, so a full set of \
-             recovered names below would be saying nothing about pages"
+             recovered names below would be saying nothing about blocks"
         );
         assert_eq!(
             recovered, written,
@@ -1166,7 +1166,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
     );
     println!(
         "  VERDICT: {total_recovered}/{} field names recovered across an unload/load cycle, from \
-         the durable resident map rather than from a page entry. The field name SURVIVES.",
+         the durable resident map rather than from a block entry. The field name SURVIVES.",
         CONTAINER_KEYS * MEMBERS_PER_KEY
     );
 }

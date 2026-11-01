@@ -473,7 +473,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         assert!(
                             entry_hist.max() < elements,
                             "the series filed {} entries for {elements} points, so it is NOT \
-                             page-scaled on this revision and the contrast this module reports \
+                             block-scaled on this revision and the contrast this module reports \
                              does not exist",
                             entry_hist.max()
                         );
@@ -631,7 +631,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
         block_index_handle(&first_key, &first),
         block_index_handle(&second_key, &second),
         "two entries over one page hashed to two handles, so something per-element is back in \
-         `block_index_handle` and the entry count is no longer the page count"
+         `block_index_handle` and the entry count is no longer the block count"
     );
 
     let mut live = BlockSlabLiveIndex::default();
@@ -652,7 +652,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
         block_index_handle(&first_key, &first),
         block_index_handle(&elsewhere_key, &elsewhere),
         "two distinct pages hashed alike, so the handle no longer names the address and a lookup \
-         would serve one page's bytes for the other"
+         would serve one block's bytes for the other"
     );
     let mut live_two = BlockSlabLiveIndex::default();
     let mut index_two = BlockIndexMap::default();
@@ -802,7 +802,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
         assert_eq!(
             entries, 1,
             "{kind} key {key} must hold exactly one live page entry -- it holds {entries}, so the \
-             one-entry-a-page shape this module contrasts against is not what is on this revision"
+             one-entry-a-block shape this module contrasts against is not what is on this revision"
         );
     }
     let anonymous = shard
@@ -830,7 +830,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
     assert!(
         shard.features().contains_key("fold-f"),
         "the series must hold a durable model-map entry, because that is what makes its nameless \
-         page entry recoverable"
+         block entry recoverable"
     );
     assert!(
         shard.hashes.get("fold-h").is_some(),
@@ -922,7 +922,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
             lengths.iter().all(|length| *length == lengths[0]),
             "the field pages are not all one width, so a single 'today' column cannot stand for \
              them: {lengths:?} -- the fixture's field names are padded to one width for exactly \
-             this reason, because a page states its own element and so its length includes that \
+             this reason, because a block states its own element and so its length includes that \
              element's name"
         );
         lengths[0]

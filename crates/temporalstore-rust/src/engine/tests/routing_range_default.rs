@@ -246,7 +246,7 @@ impl BlocksPerBucket {
         let buckets = self.buckets();
         println!(
             "  {label}: {buckets} occupied buckets over {} pages | mean {:.4} min {} p50 {} \
-             p90 {} p99 {} MAX {} | buckets holding >1 page: {} of {buckets}",
+             p90 {} p99 {} MAX {} | buckets holding >1 block: {} of {buckets}",
             self.blocks(),
             self.mean(),
             self.min(),
@@ -371,7 +371,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
                 records,
                 hist.blocks(),
                 "on 0..{end_routing_bucket} at {records} records the index holds {} pages for \
-                 {records} one-page records; the denominator is not what it is read as",
+                 {records} one-block records; the denominator is not what it is read as",
                 hist.blocks()
             );
             let label = if end_routing_bucket == WIDE_END {
@@ -439,7 +439,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
                 // candidate is a poor one at this size.
                 println!(
                     "  NOTE 0..{candidate} at {records} records: {} of {} buckets hold more than \
-                     one page -- at {:.3} records a bucket this candidate is the shipped default \
+                     one block -- at {:.3} records a bucket this candidate is the shipped default \
                      in all but name",
                     hist.buckets_holding_more_than_one(),
                     hist.buckets(),
@@ -450,8 +450,8 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
             assert!(
                 hist.buckets_holding_more_than_one() > 0,
                 "0..{candidate} at {records} records produced no bucket holding more than one \
-                 page, so this arm did not fill and every figure taken from it describes the \
-                 single-page shape instead"
+                 block, so this arm did not fill and every figure taken from it describes the \
+                 single-block shape instead"
             );
         }
     }
@@ -544,9 +544,9 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
             assert!(
                 large < 11.0,
                 "0..{candidate} is saturated at neither corpus size (occupancy {small_occupied} \
-                 -> {large_occupied} of {range_buckets}) yet reached a fill of {large:.3} pages a \
+                 -> {large_occupied} of {range_buckets}) yet reached a fill of {large:.3} blocks a \
                  bucket. A candidate with more buckets than the corpus has records is supposed to \
-                 stay near one page a bucket; if it does not, the classification this arm rests \
+                 stay near one block a bucket; if it does not, the classification this arm rests \
                  on is wrong"
             );
             println!(
@@ -652,12 +652,12 @@ fn the_read_path_entries_examined_a_lookup_grow_with_the_fill_a_candidate_produc
         assert_eq!(
             1, wide_max,
             "the shipped default at {records} records holds {wide_max} pages in its widest \
-             bucket, so it is not the single-page shape this section's zero is attributed to"
+             bucket, so it is not the single-block shape this section's zero is attributed to"
         );
         assert_eq!(
             0.0, wide_per_lookup,
             "the shipped default at {records} records examined {wide_per_lookup} entries a \
-             lookup. The `One` arm holds its page inline and never reaches `find_block`, so a \
+             lookup. The `One` arm holds its block inline and never reaches `find_block`, so a \
              non-zero here means the counter is reading a path other than the one named"
         );
     }
@@ -902,7 +902,7 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
             assert_eq!(
                 arm.blocks, arm.records,
                 "on 0..{end_routing_bucket} at {records} records the index holds {} pages for \
-                 {records} records; a per-record figure over a different page count is two \
+                 {records} records; a per-record figure over a different block count is two \
                  questions",
                 arm.blocks
             );
@@ -940,14 +940,14 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
         assert_eq!(
             0, wide.arms.2,
             "on the shipped default at {records} records {} buckets are already on the `Many` \
-             arm; at one page a bucket none should be",
+             arm; at one block a bucket none should be",
             wide.arms.2
         );
         let narrowest = observed.get(&(records, CANDIDATES[0])).expect("narrowest arm");
         assert!(
             narrowest.arms.2 > 0,
             "0..{} at {records} records put no bucket on the `Many` arm, so no candidate filled \
-             and the table above compares single-page stores",
+             and the table above compares single-block stores",
             CANDIDATES[0]
         );
     }
@@ -1100,7 +1100,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
             assert_eq!(
                 0, released.refused_buckets,
                 "on 0..{end_routing_bucket} the release of bucket {widest_bucket} (holding \
-                 {held} pages) was refused {} time(s): {:?}. A refused release frees zero pages \
+                 {held} blocks) was refused {} time(s): {:?}. A refused release frees zero blocks \
                  at every range, which would read as the release unit not moving with the fill",
                 released.refused_buckets, released.refusals
             );
@@ -1115,7 +1115,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
         println!(
             "  {label:<24} fill p50 {fill_p50:>4} MAX {fill_max:>4} | {dirty_buckets_len} dirty \
              buckets over {dirty_keys} dirty keys | a one-bucket dump drains {drained} keys | a \
-             one-bucket release frees {blocks_released} pages",
+             one-bucket release frees {blocks_released} blocks",
         );
         observed.insert(
             end_routing_bucket,
@@ -1166,8 +1166,8 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
         *observed.get(&CANDIDATES[0]).expect("narrowest ran");
     println!(
         "  the write-path and release price of the fill at {LARGE} records: a one-bucket dump \
-         drains {wide_drained} key and a release frees {wide_released} page on the shipped \
-         default, against {narrow_drained} keys and {narrow_released} pages at 0..{} -- both \
+         drains {wide_drained} key and a release frees {wide_released} block on the shipped \
+         default, against {narrow_drained} keys and {narrow_released} blocks at 0..{} -- both \
          units coarsen by exactly the fill",
         CANDIDATES[0]
     );
@@ -1252,8 +1252,8 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
             (1, wide_blocks, wide_max),
             (buckets, blocks, max),
             "on 0..{end_routing_bucket} a store of one object key occupied {buckets} buckets \
-             holding {blocks} pages with a widest of {max}, against the shipped default's 1 \
-             bucket, {wide_blocks} pages, widest {wide_max}. Routing takes the object key and \
+             holding {blocks} blocks with a widest of {max}, against the shipped default's 1 \
+             bucket, {wide_blocks} blocks, widest {wide_max}. Routing takes the object key and \
              never the component, so the range cannot split one key -- if it did here, the \
              mechanism every figure in this module is attributed to is not the mechanism"
         );
@@ -1376,7 +1376,7 @@ fn a_store_built_on_the_old_default_is_refused_under_the_new_default() {
     assert!(
         !status.ok,
         "a store built on 0..{OLD_DEFAULT_END_ROUTING_BUCKET} loaded successfully on \
-         0..{}. Its pages are filed under nine-figure buckets the shard does not hold; the load \
+         0..{}. Its blocks are filed under nine-figure buckets the shard does not hold; the load \
          has to refuse, because nothing re-files them and every record still reads",
         crate::DEFAULT_END_ROUTING_BUCKET
     );
@@ -1482,7 +1482,7 @@ fn a_store_built_on_the_new_default_round_trips_whole() {
     assert!(
         outside.is_empty(),
         "{} buckets are occupied above the shard's end on a store built and read on the same \
-         range: {outside:?}. Those pages are outside every per-bucket sweep the shard runs",
+         range: {outside:?}. Those blocks are outside every per-bucket sweep the shard runs",
         outside.len()
     );
     assert!(
@@ -2063,7 +2063,7 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
             per_record >= 2.0,
             "0..{end_routing_bucket} at {records} records: {per_record:.2} addresses a record. \
              There are two per stored record -- one in the model map a read resolves through, one \
-             in the page-index entry -- so anything under two means a map was not walked"
+             in the block-index entry -- so anything under two means a map was not walked"
         );
     }
 
@@ -2102,7 +2102,7 @@ fn what_the_narrower_address_is_worth_a_record_at_both_ranges_and_in_both_column
         assert_eq!(
             narrow.2, wide.2,
             "{records} records: the two ranges hold {} and {} resident addresses. The RANGE cannot \
-             change how many addresses a store holds -- it decides only which bucket each page is \
+             change how many addresses a store holds -- it decides only which bucket each block is \
              filed in -- so a difference means the two arms did not store the same thing and the \
              per-record figures above are not comparable",
             narrow.2, wide.2
@@ -2227,15 +2227,15 @@ fn a_command_that_names_no_block_derives_no_bucket_and_a_read_derives_two() {
     // that matters is the one printed rather than one a reader has to compute.
     println!(
         "  the keyless arm is {:.2}% of the read arm ({keyless_derivations} against \
-         {read_derivations}) -- the mechanism predicts nothing for a command that names no page",
+         {read_derivations}) -- the mechanism predicts nothing for a command that names no block",
         100.0 * keyless_derivations as f64 / read_derivations as f64
     );
     assert_eq!(
         0, keyless_derivations,
         "{keyless_derivations} bucket derivations over {RECORDS} commands that name no page, on a \
-         store holding none. The mechanism this change introduces is one derivation per page named, \
+         store holding none. The mechanism this change introduces is one derivation per block named, \
          so this arm has to pay none -- a non-zero count means something derives a bucket on a path \
-         with no page to derive one for, and the first version of this arm caught exactly that in \
+         with no block to derive one for, and the first version of this arm caught exactly that in \
          the fixture rather than in the engine"
     );
     assert_eq!(

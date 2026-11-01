@@ -429,7 +429,7 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
             "0..{end_routing_bucket}: {} buckets hold pages but sit above the shard's end; the \
              first few are {:?}. `append_value` is handed \
              `block_routing_bucket(key, start, end)` and every filing site derives the same \
-             expression, so a page there is invisible to every reader that scopes by bucket.",
+             expression, so a block there is invisible to every reader that scopes by bucket.",
             outside.len(),
             &outside[..outside.len().min(5)]
         );
@@ -556,7 +556,7 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
         assert!(
             outside.is_empty(),
             "0..{end_routing_bucket}: {} buckets hold pages but sit above the shard's end; the \
-             first few are {:?}. A page there is invisible to every reader that scopes by bucket.",
+             first few are {:?}. A block there is invisible to every reader that scopes by bucket.",
             outside.len(),
             &outside[..outside.len().min(5)]
         );
@@ -667,7 +667,7 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
         moved.len(),
         RECORDS,
         "{} of {RECORDS} pages changed bucket between the two ranges. Every page is placed by the \
-         argument now, so all of them must move; a smaller number means some page was placed by \
+         argument now, so all of them must move; a smaller number means some block was placed by \
          something other than the argument.",
         moved.len()
     );
@@ -862,7 +862,7 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
         installed, RECORDS,
         "{installed} of {RECORDS} pages survived installing a whole-shard manifest onto a \
          narrower shard. `rebuild_bucket_block_ownership` FILTERS on the range it is given, so an \
-         install that passes the INSTALLING shard's range drops every page whose source bucket \
+         install that passes the INSTALLING shard's range drops every block whose source bucket \
          falls outside it. A whole-shard image is installed whole or it is truncated."
     );
 
@@ -952,7 +952,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             readable,
             keys.len(),
             "{readable} of {} records survived a restart on a store filed under the whole range. \
-             A page filed under a bucket nothing summarises is supposed to be INVISIBLE TO A \
+             A block filed under a bucket nothing summarises is supposed to be INVISIBLE TO A \
              SCOPED READER and still reachable by the full walk; if it is not readable at all, \
              this change is repairing active loss rather than latent misfiling.",
             keys.len()
@@ -967,7 +967,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
             entries.len(),
             keys.len(),
             "the store went in holding {} pages and came back holding {}. Anything other than \
-             equality is a page orphaned or a page duplicated by the load.",
+             equality is a block orphaned or a block duplicated by the load.",
             keys.len(),
             entries.len()
         );
@@ -993,7 +993,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         };
         println!(
             "  after the restart: {readable} of {} records readable, {} pages, {} buckets above \
-             the shard's end still holding pages",
+             the shard's end still holding blocks",
             keys.len(),
             entries.len(),
             outside.len()
@@ -1001,7 +1001,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         assert!(
             outside.is_empty(),
             "{} buckets above the shard's end came back holding pages; the first few are {:?}. A \
-             page there is invisible to every reader that scopes by bucket, so if this ever holds, \
+             block there is invisible to every reader that scopes by bucket, so if this ever holds, \
              a store written before this change needs a rebuild before it is loaded with it and \
              this test is the one that has to say so.",
             outside.len(),

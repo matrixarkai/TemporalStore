@@ -409,7 +409,7 @@ impl ObjectRecord {
             Ok(address) => address,
             Err(refusal) => panic!(
                 "a single-address map held a record with no single address: {refusal}. Match on \
-                 `page_address()` instead if this caller can hold a multi-page layout."
+                 `page_address()` instead if this caller can hold a multi-block layout."
             ),
         }
     }
@@ -1010,13 +1010,13 @@ impl std::fmt::Display for ObjectRecordRefusal {
                 f,
                 "NonZeroBlockOrdinalDoesNotFitInline: page ordinal {block_id} has no room in the \
                  inline arm's twenty-four bytes, which carry the ordinal's presence and an implied \
-                 value of zero; a nonzero ordinal is a multi-page object and belongs in the layout \
+                 value of zero; a nonzero ordinal is a multi-block object and belongs in the layout \
                  arm"
             ),
             Self::BlockIdentityOutOfRange { block_id } => write!(
                 f,
                 "BlockIdentityOutOfRange: page identity {block_id} is wider than the stored form \
-                 accepts; truncating it would name a different page of the same object"
+                 accepts; truncating it would name a different block of the same object"
             ),
             Self::BlockSizeDoesNotFit { length } => write!(
                 f,

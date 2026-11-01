@@ -246,7 +246,7 @@ fn the_published_contract_names_one_type_for_both_address_spellings() {
         found, PAGE_SPELLED_CONTRACT_KEYS,
         "the published contract carries the page-spelled keys {found:?} and this file declares \
          {PAGE_SPELLED_CONTRACT_KEYS:?}. A key that LEFT was retired, which is a change to the \
-         published report and not a rename; a key that ARRIVED is a published page spelling \
+         published report and not a rename; a key that ARRIVED is a published block spelling \
          nothing has held"
     );
 }
@@ -715,7 +715,7 @@ fn the_stored_object_layout_emits_the_block_spelling_and_reads_both_back() {
     assert_eq!(
         emitted, BLOCK_SPELLED_RECORD_KEYS,
         "the stored object layout emits {emitted:?} and this file declares \
-         {BLOCK_SPELLED_RECORD_KEYS:?}. This build writes the canonical spelling; the page \
+         {BLOCK_SPELLED_RECORD_KEYS:?}. This build writes the canonical spelling; the block \
          spelling survives only as the alias the DECODE clause below drives, so a key that left \
          this set is a writer move and a key that arrived is a second spelling going to disk"
     );
@@ -740,7 +740,7 @@ fn the_stored_object_layout_emits_the_block_spelling_and_reads_both_back() {
     assert!(
         declared.contains("    blocks: Vec<StoredBlock>,"),
         "the stored layout's field is no longer the canonical `blocks`. This crate spells the \
-         tier `block` and only the WIRE carries `pages`, so a page-spelled field here means \
+         tier `block` and only the WIRE carries `blocks`, so a block-spelled field here means \
          the retained name has been promoted back into the identifier surface"
     );
 

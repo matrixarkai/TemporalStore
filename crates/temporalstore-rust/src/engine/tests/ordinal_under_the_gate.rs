@@ -203,7 +203,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
             *ordinals,
             "gate {label}: one member rewritten {REWRITES} times holds ordinals {ordinals:?}. An \
              overwrite must reuse the member's position; a climbing ordinal is a fresh block id, a \
-             fresh address, and therefore a fresh page"
+             fresh address, and therefore a fresh block"
         );
     }
 
@@ -232,7 +232,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     assert_eq!(
         1, rows[1].1,
         "gate on: {} entries where one live page should leave one. More than one means the \
-         supersede did not retire the page this rewrite vacated -- a live entry over a page no \
+         supersede did not retire the block this rewrite vacated -- a live entry over a block no \
          element is on, which under this gate is a claim of membership",
         rows[1].1
     );
@@ -331,7 +331,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         assert_eq!(
             handle, assigned,
             "the handle the bucket filed the plant under is not the one composed from the \
-             identity beside it, so the lookup row below would name a position the page is not at"
+             identity beside it, so the lookup row below would name a position the block is not at"
         );
         shard
             .bucket_index
@@ -380,7 +380,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         1,
         after.len(),
         "after the derivation {} entr(ies) remain where one live page should leave one. A stale \
-         entry naming a page no element carries is supposed to be dropped by the derivation, \
+         entry naming a block no element carries is supposed to be dropped by the derivation, \
          because the projection reads the resident map and the resident map holds only the \
          current address",
         after.len()
@@ -388,7 +388,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     assert!(
         after[0].contains("component=None"),
         "the surviving entry is {:?}, which still names an element. Under the gate the derivation \
-         files one entry per page and a page needs no element name",
+         files one entry per block and a block needs no element name",
         after[0]
     );
 }
@@ -539,7 +539,7 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
             "round {round}: after planting component=None on the field's own live entry and \
              overwriting the field, the live ordinal(s) are {ordinals:?}. An overwrite must reuse \
              the field's position; a climbing ordinal is a fresh block id, a fresh address, and \
-             therefore a fresh page"
+             therefore a fresh block"
         );
     }
 }
@@ -637,7 +637,7 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     assert_eq!(
         2, live_blocks,
         "{live_blocks} live page(s) for a two-field object -- the floor below assumes exactly one \
-         planted (component=None) page and one intact (component=Some(\"{SIBLING}\")) sibling"
+         planted (component=None) block and one intact (component=Some(\"{SIBLING}\")) sibling"
     );
 
     let get = engine.execute(ExecuteRequest {

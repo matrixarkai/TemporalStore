@@ -3378,7 +3378,7 @@ pub(super) fn stored_model_kind(kind: &str) -> StoredModelKind {
     StoredModelKind::from_stored_name(kind).unwrap_or_else(|| {
         panic!(
             "no stored model kind for model id {kind:?}. This spelling is written by this engine \
-             and the registry does not declare it, so the page would be filed under a kind it \
+             and the registry does not declare it, so the block would be filed under a kind it \
              does not have. Declare it in `model_kind_registry`: under `live` if an arm of \
              `visit_model_live_blocks` emits it, under `retired` -- with the reason an older \
              index can carry it -- if not."
@@ -3446,10 +3446,10 @@ impl<'de> serde::Deserialize<'de> for StoredModelKind {
             // is corrected here rather than left for the path that trips it.
             None => Err(serde::de::Error::custom(format!(
                 "no stored model kind for model id {spelling:?}. A page entry's model spelling \
-                 comes either from a live-page walk arm or from a stored index this engine \
+                 comes either from a live-block walk arm or from a stored index this engine \
                  opened, so a name that cannot be placed is the engine and the store disagreeing \
                  about which kinds exist -- and mapping it onto a kind it does not have would \
-                 file the page under the wrong object. Declare it in `model_kind_registry`: \
+                 file the block under the wrong object. Declare it in `model_kind_registry`: \
                  under `live` if an arm of `visit_model_live_blocks` emits it, under `retired` -- \
                  with the reason an older index can carry it -- if not."
             ))),
@@ -3482,7 +3482,7 @@ pub(super) fn model_report_code(model_id: &str) -> u8 {
     }
     panic!(
         "no packed report code for model id {model_id:?}. Every model id reaching here comes \
-         either from a live-page walk arm or from a stored index this engine opened, so a name \
+         either from a live-block walk arm or from a stored index this engine opened, so a name \
          that cannot be placed is the engine and the store disagreeing about which kinds exist. \
          Declare it in `model_kind_registry`: under `live` if an arm of `visit_model_live_blocks` \
          emits it, under `retired` -- with the reason an older index can carry it -- if not."
@@ -7523,7 +7523,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // the other input to this merge.
         eprintln!(
             "reconcile: {resurrections_refused} persisted container element(s) named a page the \
-             finished index does not hold and were not restored, over {} live page(s)",
+             finished index does not hold and were not restored, over {} live block(s)",
             live_blocks_by_address.len()
         );
     }
@@ -8888,7 +8888,7 @@ mod release_walk_scale {
         assert!(
             live_blocks > released_blocks,
             "the store must hold more than the victims, or the claim below is untestable; \
-             {live_blocks} live pages against {released_blocks} released",
+             {live_blocks} live blocks against {released_blocks} released",
         );
         assert_eq!(
             materialized, 4,
@@ -9157,7 +9157,7 @@ mod live_block_scan_coverage {
             counted,
             (indexed_blocks + live_blocks) as u64,
             "with one bucket released the wrapper materialized {indexed_blocks} indexed pages \
-             and then the whole {live_blocks}-page shard again, and the counter saw {counted}",
+             and then the whole {live_blocks}-block shard again, and the counter saw {counted}",
         );
     }
 
@@ -9214,7 +9214,7 @@ mod live_block_scan_coverage {
         assert!(
             large_unseen > small_unseen * 4,
             "what a return-value charge misses must grow with the store, not sit at a fixed \
-             offset: {small_unseen} unseen at {small_returned} pages and {large_unseen} at \
+             offset: {small_unseen} unseen at {small_returned} blocks and {large_unseen} at \
              {large_returned}",
         );
     }

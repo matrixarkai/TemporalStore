@@ -474,7 +474,7 @@ fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
         assert_eq!(
             measured.histogram, other.histogram,
             "{label}: the pages-per-OBJECT histogram differs between the whole keyspace and \
-             0..=1023. An object's pages route to its own key's bucket, so this distribution \
+             0..=1023. An object's blocks route to its own key's bucket, so this distribution \
              cannot depend on how many buckets exist -- if it does, one of the two arms is not \
              measuring what it says"
         );
@@ -757,7 +757,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
         assert_eq!(
             cost.entries, cost.blocks,
             "{label}: a routed key is one page per object, so the table is supposed to hold one \
-             entry per page -- {} entries over {} pages",
+             entry per block -- {} entries over {} blocks",
             cost.entries, cost.blocks
         );
         assert!(
@@ -772,7 +772,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
         assert!(
             cost.entries * 50 < cost.blocks,
             "{label}: a container object holds a hundred pages, so the table is supposed to hold \
-             far fewer entries than pages -- {} entries over {} pages",
+             far fewer entries than blocks -- {} entries over {} blocks",
             cost.entries,
             cost.blocks
         );
@@ -792,8 +792,8 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     };
     println!(
         "\n  BREAK-EVEN: a table entry holds {:.2} B resident (and about {:.2} B to build, \n\
-           cumulatively), so a handle pays above {:.2} pages per object and loses below it. \n\
-           Measured p50 pages/object: routed 1, containers {}, mixed {}.",
+           cumulatively), so a handle pays above {:.2} blocks per object and loses below it. \n\
+           Measured p50 blocks/object: routed 1, containers {}, mixed {}.",
         routed[0].1.resident_per_block(),
         routed[0].1.chunk_per_block(),
         break_even,
@@ -811,7 +811,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     assert!(
         break_even > 1.0,
         "the break-even came out at {break_even:.2} pages per object, at or below one. That would \
-         mean a table entry is cheaper than the pointer it replaces even for a single-page object, \
+         mean a table entry is cheaper than the pointer it replaces even for a single-block object, \
          and this whole verdict would be the other way round"
     );
 }
@@ -913,7 +913,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
             cost.entries_per_block() < 0.5,
             "{label}: {} distinct components over {} pages. This arm exists to hold a REPEATED \
              schema -- the same hundred field names across forty objects -- so distinct names are \
-             supposed to be far fewer than pages",
+             supposed to be far fewer than blocks",
             cost.entries,
             cost.blocks
         );
@@ -931,7 +931,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
             cost.entries_per_block() > 0.9,
             "{label}: {} distinct components over {} pages. This arm exists to hold names that do \
              NOT repeat -- one container whose two thousand members are all distinct -- so the \
-             table is supposed to hold about one entry per page",
+             table is supposed to hold about one entry per block",
             cost.entries,
             cost.blocks
         );
@@ -945,8 +945,8 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
 
     println!(
         "\n  VERDICT, BY POPULATION. Where a component name is a repeated SCHEMA name the table \n\
-           holds {:.2} B a page and a handle nets {:+.2}. Where it is CONTENT-DERIVED -- a zset \n\
-           member, a timestamped entry -- it holds {:.2} B a page and a handle nets {:+.2}. A \n\
+           holds {:.2} B a block and a handle nets {:+.2}. Where it is CONTENT-DERIVED -- a zset \n\
+           member, a timestamped entry -- it holds {:.2} B a block and a handle nets {:+.2}. A \n\
            single blended figure would hide that, and the second population is the one a \n\
            container store is mostly made of.",
         schema[0].1.resident_per_block(),
@@ -1162,7 +1162,7 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
         8 + size_of::<BlockIndex>(),
         arm,
         "the page index is {arm} B, which is a handle plus a whole entry again -- the inline arm has \
-         come back and every bucket in the map is paying the entry's width whether it holds one page \
+         come back and every bucket in the map is paying the entry's width whether it holds one block \
          or fifty"
     );
     assert_eq!(
@@ -2183,14 +2183,14 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     assert!(
         empty_length > 0,
         "an empty value produced a page of length {empty_length}. This test exists because a \
-         zero-length LIVE page would block the `length == 0` tombstone encoding, and the empty \
+         zero-length LIVE block would block the `length == 0` tombstone encoding, and the empty \
          write is the route most likely to produce one -- if it ever does, the tombstone is \
          unavailable and `deleted` must keep its bit"
     );
     assert_eq!(
         0, zero_length_live,
         "{zero_length_live} live pages carry length 0. On this route none should: the block record \
-         carries a header. A live zero-length page here means the tombstone encoding is blocked"
+         carries a header. A live zero-length block here means the tombstone encoding is blocked"
     );
     println!(
         "  FINDING: the shortest live page this route produces is {empty_length} B, so an empty \

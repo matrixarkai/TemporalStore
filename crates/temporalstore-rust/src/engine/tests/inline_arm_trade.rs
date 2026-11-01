@@ -733,7 +733,7 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
             wide.buckets(),
             wide.single_block_buckets(),
             "{records} on the whole keyspace: {} of {} buckets hold one page -- the wide range is \
-             single-page BY CONSTRUCTION and a fixture showing otherwise is not that range",
+             single-block BY CONSTRUCTION and a fixture showing otherwise is not that range",
             wide.single_block_buckets(),
             wide.buckets()
         );
@@ -748,7 +748,7 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
         assert!(
             narrow.single_block_buckets() * 2 < narrow.buckets(),
             "{records} on 0..{NARROW_END}: {} of {} buckets are single-page. If the shipped \
-             default were still mostly single-page, #1964's premise would still hold and this \
+             default were still mostly single-block, #1964's premise would still hold and this \
              module's conclusion would not follow",
             narrow.single_block_buckets(),
             narrow.buckets()
@@ -854,7 +854,7 @@ fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
             println!(
                 "  {label}: SAVE {save_chunk:+.2} B/bucket chunk ({save_request:+.2} B request) \
                  over {} buckets | PAY {} B chunk ({} B request, {} alloc) on each of {single} \
-                 single-page bucket(s), {:.5} of the population",
+                 single-block bucket(s), {:.5} of the population",
                 census.buckets(),
                 pay.chunk_bytes,
                 pay.request_bytes,
@@ -1100,7 +1100,7 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
         );
         println!(
             "  0..{end_routing_bucket}: {examined} entries examined over {hits} reads = {:.4} \
-             entries a lookup | single-page buckets {} of {} ({:.5})",
+             entries a lookup | single-block buckets {} of {} ({:.5})",
             examined as f64 / hits as f64,
             census.single_block_buckets(),
             census.buckets(),
@@ -1116,13 +1116,13 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
                 0, examined,
                 "on the whole keyspace every bucket holds one page, so no lookup should reach \
                  `find_block` at all -- it examined {examined} entries over {hits} reads, which \
-                 means the single-page arm is no longer answering without a search"
+                 means the single-block arm is no longer answering without a search"
             );
         } else {
             assert!(
                 examined > 0,
                 "on 0..{end_routing_bucket} the lookup counter read zero over {hits} reads. Most \
-                 buckets there hold several pages, so a zero is the instrument failing rather than \
+                 buckets there hold several blocks, so a zero is the instrument failing rather than \
                  the lookup being free"
             );
         }
@@ -1349,7 +1349,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
         released, kept_object_indexes,
         "{released} buckets were released but only {kept_object_indexes} kept an object index. The \
          object index is what makes a released bucket distinguishable from one that legitimately \
-         holds nothing -- the page index's arm is not"
+         holds nothing -- the block index's arm is not"
     );
 
     let mut reloaded = 0usize;
@@ -1781,7 +1781,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
 
         println!(
             "--- {label} @ {records} records: {buckets} buckets (Empty {empty_arms} / One \
-             {one_arms} / Many {many_arms}), p50 {} pages ---",
+             {one_arms} / Many {many_arms}), p50 {} blocks ---",
             census.percentile(0.50)
         );
         for (arm, was, is, denominator) in [
@@ -1869,13 +1869,13 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
                 per_slot * slots,
                 before.request_bytes - now.request_bytes,
                 "{label} @ {records}: the request column saved {} B over {slots} entry slots \
-                 ({blocks} pages), not {per_slot} a slot. Either the mirror is not the former shape \
+                 ({blocks} blocks), not {per_slot} a slot. Either the mirror is not the former shape \
                  or the two populations were not built to the same growth ladder",
                 before.request_bytes - now.request_bytes
             );
             println!(
                 "    the request column saves {per_slot} B on every one of {slots} entry slots \
-                 holding {blocks} pages = {} B, all of it real; what the chunk column keeps of it is \
+                 holding {blocks} blocks = {} B, all of it real; what the chunk column keeps of it is \
                  the line above",
                 per_slot * slots
             );

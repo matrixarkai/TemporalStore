@@ -795,7 +795,7 @@ fn no_entrys_slot_survives_an_engine_reload_so_a_stored_ordinal_cannot_name_an_o
         assert_eq!(
             0, live_here,
             "APPARATUS: the victim still has {live_here} live entries, so its object is still in \
-             the live set and nothing below is about an object with no live page"
+             the live set and nothing below is about an object with no live block"
         );
         assert_eq!(
             Some(victim_id),
@@ -1064,7 +1064,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     assert!(
         !carrying.is_empty(),
         "THE POSITIVE CONTROL FAILED: a key that WAS written is in none of the {} members of the \
-         node that holds it, so this scan cannot tell 'only the page rows carry it' from 'the \
+         node that holds it, so this scan cannot tell 'only the block rows carry it' from 'the \
          scan finds nothing'",
         members.len()
     );
@@ -1072,7 +1072,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
         vec!["block_index".to_string()],
         carrying,
         "the key's characters are carried by {carrying:?} rather than by `block_index` alone, so \
-         the page entry is NOT the only member of a stored node that holds them and this ground \
+         the block entry is NOT the only member of a stored node that holds them and this ground \
          does not hold"
     );
 
@@ -1179,7 +1179,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
                 .windows(needle.len())
                 .any(|window| window == needle),
         "THE MATCHER'S POSITIVE CONTROL FAILED: the same byte search does not find the key in the \
-         page rows that Arm 1 just showed carry it, so its absence from the log says nothing"
+         block rows that Arm 1 just showed carry it, so its absence from the log says nothing"
     );
     println!("  the same byte search finds the key in the block rows, so the absence above is real");
 

@@ -360,7 +360,7 @@ fn none_of_these_maps_has_a_stored_model_kind() {
             "`{absent}` now has a `StoredModelKind`. That is the outer key a consolidated map \
              would address it by, so if this is deliberate the floor of nine-of-thirteen has \
              moved and the slot's value type has to be able to hold whatever this map holds -- \
-             which for these is a domain value, not a page address."
+             which for these is a domain value, not a block address."
         );
     }
 }

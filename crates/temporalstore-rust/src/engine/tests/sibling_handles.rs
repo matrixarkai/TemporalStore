@@ -117,7 +117,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
         "{} distinct handles for {ENTRIES} entries of one object at one address. If these are \
          separable then the handle has gained a discriminator the entry's field set does not \
          show, and THIS MODULE IS THE WRONG WAY ROUND: the collision is what makes one entry a \
-         page a correctness requirement, so whoever adds a discriminator has to come past this \
+         block a correctness requirement, so whoever adds a discriminator has to come past this \
          line and restate the requirement rather than inherit it.",
         handles.len(),
     );
@@ -146,7 +146,7 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
         assert!(
             index_entry_names_a_block(kind.as_str()),
             "{} does not converge on the page, so it files one entry per ELEMENT -- and with no \
-             element name on the entry its elements on a shared page collide onto one handle, \
+             element name on the entry its elements on a shared block collide onto one handle, \
              which is the loss the test above measures",
             kind.as_str()
         );

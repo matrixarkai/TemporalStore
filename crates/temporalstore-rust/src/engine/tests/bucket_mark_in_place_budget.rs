@@ -385,7 +385,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         println!("=== {}", arm.label);
         println!(
             "    records acked {acked}   keys deleted {deleted}   buckets {n_buckets}   \
-             pages {blocks_before} -> {blocks_after}   tombstoned ids {tombs_total}"
+             blocks {blocks_before} -> {blocks_after}   tombstoned ids {tombs_total}"
         );
         println!(
             "    retained entries would be {retained_total} over {n_buckets} buckets; \

@@ -129,7 +129,7 @@ fn storage_crash_harness_reports_corrupt_block_after_process_abort() {
     assert!(
         summary.recovery.wal_records >= 2,
         "the WAL must still hold both records for the replay to serve `before` past its corrupt \
-         page -- the report says {} record(s), so this is no longer a test about corruption, it \
+         block -- the report says {} record(s), so this is no longer a test about corruption, it \
          is a test about a truncated WAL",
         summary.recovery.wal_records
     );
@@ -138,7 +138,7 @@ fn storage_crash_harness_reports_corrupt_block_after_process_abort() {
         Some("before-value"),
         "`before` must come back from the WAL replay even though the page holding it is corrupt. \
          Getting nothing here would NOT prove the corruption was detected -- it is equally what a \
-         shard that never loaded answers. Detection is proved by the unreadable-page-ref \
+         shard that never loaded answers. Detection is proved by the unreadable-block-ref \
          assertions below, and those are this test's subject."
     );
     assert_eq!(summary.after_value.as_deref(), Some("after-value"));

@@ -362,19 +362,19 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
         assert_eq!(
             0, spread.multi_block_buckets_with_one_component,
             "container arm {index}: {} multi-page buckets hold ONE distinct component; every page \
-             of a container is a distinct field, member or element, so a bucket whose pages shared \
-             a component would mean the component had stopped telling pages apart",
+             of a container is a distinct field, member or element, so a bucket whose blocks shared \
+             a component would mean the component had stopped telling blocks apart",
             spread.multi_block_buckets_with_one_component
         );
         assert!(
             spread.multi_block_buckets > 0,
             "container arm {index}: no bucket holds more than one page, so this arm cannot say \
-             anything about whether a name is shared ACROSS pages -- it would be vacuous"
+             anything about whether a name is shared ACROSS blocks -- it would be vacuous"
         );
         assert!(
             NameSpread::widest(&spread.component) >= 100,
             "container arm {index}: the widest bucket holds {} distinct components; the fixture is \
-             supposed to reach the container case where the per-page entry dominates at 52x",
+             supposed to reach the container case where the per-block entry dominates at 52x",
             NameSpread::widest(&spread.component)
         );
     }
@@ -617,7 +617,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
         assert!(
             census.blocks / census.objects >= 100,
             "container arm {index}: {} pages over {} objects; this arm exists to hold objects of \
-             a hundred pages and it does not reach them",
+             a hundred blocks and it does not reach them",
             census.blocks,
             census.objects
         );
@@ -629,7 +629,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
             1,
             KeyAllocationCensus::widest(&census.object_key),
             "arm {index}: an object's pages hold up to {} distinct allocations of one object key; \
-             {} surplus copies across {} pages, {} B",
+             {} surplus copies across {} blocks, {} B",
             KeyAllocationCensus::widest(&census.object_key),
             census.surplus_object_key_allocations,
             census.blocks,
@@ -656,7 +656,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
             1,
             KeyAllocationCensus::widest(&census.model_id),
             "container arm {index}: the interned kind is held as {} allocations across one \
-             object's pages; if this ever exceeds one the census is measuring something else",
+             object's blocks; if this ever exceeds one the census is measuring something else",
             KeyAllocationCensus::widest(&census.model_id)
         );
     }
@@ -1508,7 +1508,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
         "the index this binary writes back differs from the index it was given in some way other \
          than dropping last_dump_sequence, retiring the address's routing bucket, emptying its \
          identity slot, dropping the log-resident flag the entry shed, dropping the element name \
-         from both the entry and its page handle, and dropping the object key and the kind the \
+         from both the entry and its block handle, and dropping the object key and the kind the \
          composite key already spells"
     );
     assert!(
@@ -1542,7 +1542,7 @@ fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
 
     let error = outcome.err().expect(
         "an index carrying a generation this binary cannot reproduce must NOT load: deriving a \
-         different one silently re-keys every page in the bucket",
+         different one silently re-keys every block in the bucket",
     );
     let text = error.to_string();
     println!("REFUSED WITH: {text}");
@@ -1641,7 +1641,7 @@ fn what_a_container_store_charges_the_allocator_a_block() {
         );
         println!(
             "\n=== {label} (store path {path_length} chars) ===\n  pages={} objects={}\n  \
-             alloc calls={} ({:.4} a page)\n  alloc bytes={} ({:.2} B a page)\n  widest object-key \
+             alloc calls={} ({:.4} a block)\n  alloc bytes={} ({:.2} B a block)\n  widest object-key \
              allocation count={}",
             census.blocks,
             census.objects,
@@ -2266,9 +2266,9 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         .unwrap_or_else(|| {
             panic!(
                 "THE OMITTED-HANDLE PAGE IS MISSING AFTER THE FOLD. If this ever fires, the \
-                 rebuilt composite handle HAS become the name the page is filed under, and this \
+                 rebuilt composite handle HAS become the name the block is filed under, and this \
                  change needs a migration for records already on disk -- a stamp cannot cover it, \
-                 because the stamp is what routes load down this path. {} page(s) came back.",
+                 because the stamp is what routes load down this path. {} block(s) came back.",
                 blocks.len()
             )
         });
@@ -2312,7 +2312,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
     assert!(
         named.object_index.contains(&derived_id),
         "the bucket's object index does not name the page by its DERIVED id, so a per-object read \
-         would not reach the page even though the page is filed"
+         would not reach the block even though the block is filed"
     );
     assert_ne!(
         derived_id, OBJECT_ID,
@@ -2322,7 +2322,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
     assert!(
         !named.object_index.contains(&OBJECT_ID),
         "the arbitrary id the record carried survived into the bucket's object index; the fold is \
-         supposed to re-derive that set from each page's own terms, so a stored id cannot be \
+         supposed to re-derive that set from each block's own terms, so a stored id cannot be \
          authoritative any more"
     );
 }

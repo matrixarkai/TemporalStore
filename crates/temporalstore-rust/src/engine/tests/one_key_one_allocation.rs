@@ -644,7 +644,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
             .iter()
             .all(|(name, _)| NOT_REACHABLE.contains(name)),
         "{} keys are a SECOND copy of characters the page index already holds -- the map's key and \
-         the page index's handle report different addresses for the same text: {:?}. A map keyed \
+         the block index's handle report different addresses for the same text: {:?}. A map keyed \
          by a `ModelKey` must take its handle from \
          `object_block_lookup::any_shared_object_key`, which is what \
          `ShardState::adopt_object_key_allocations` does; nothing else fails when it does not, \

@@ -203,8 +203,8 @@ pub(super) fn decide_routing_range(
             code: ROUTING_RANGE_MISMATCH,
             message: format!(
                 "shard {shard_id} was built on routing buckets {}..{} and is being loaded on \
-                 {requested_start_routing_bucket}..{requested_end_routing_bucket}. A page's \
-                 bucket is the key's hash modulo the RANGE WIDTH, so the store's pages are filed \
+                 {requested_start_routing_bucket}..{requested_end_routing_bucket}. A block's \
+                 bucket is the key's hash modulo the RANGE WIDTH, so the store's blocks are filed \
                  under buckets this range does not contain: every record would still read while \
                  sitting outside the dump's bucket selection, eviction's victim sampling, the \
                  reclaim floor and the release pass. Load this store on {}..{} -- set \

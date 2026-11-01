@@ -340,7 +340,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     );
     println!(
         "  TOTAL pages={blocks_total} object-index rows={ids_total} ({:.4} rows per page, was \
-         1.0000 when the id named the page)",
+         1.0000 when the id named the block)",
         ids_total as f64 / blocks_total as f64
     );
     assert_eq!(
@@ -440,7 +440,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
         fields.next(),
         "the field after the model spelling is not the object key's characters. \
          `block_ref_key_from_parts` renders `kind:object_key:component:...` and this string is the \
-         page index's own stored map key, shared with the replay log -- so the entry cannot hand it \
+         block index's own stored map key, shared with the replay log -- so the entry cannot hand it \
          over without holding those characters: {written:?}"
     );
 

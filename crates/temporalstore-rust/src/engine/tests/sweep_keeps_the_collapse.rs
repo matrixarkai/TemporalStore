@@ -154,7 +154,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     assert!(
         blocks < MEMBERS,
         "the {MEMBERS} members resolve to {blocks} page(s) after the sweep, so nothing folded and \
-         `entries == pages` below would hold with or without the collapse"
+         `entries == blocks` below would hold with or without the collapse"
     );
 
     // THE CLAIM: THE ENTRIES STAY COLLAPSED **THROUGH** THE SWEEP, including its two internal

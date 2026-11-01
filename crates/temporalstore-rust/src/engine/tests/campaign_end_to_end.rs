@@ -580,7 +580,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
     let stride = size_of::<(u64, BlockIndex)>();
     println!(
         "THIS END: BucketNode {node_width} B per bucket, (u64, BlockIndex) stride {stride} B per \
-         page, store path {STORE_PATH_CHARS} characters"
+         block, store path {STORE_PATH_CHARS} characters"
     );
 
     let mut arm = 10usize;
@@ -688,8 +688,8 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
         assert_eq!(
             wide.blocks, narrow.blocks,
             "the two ranges filed {} and {} pages for the same {records} records; the range is \
-             supposed to move where a page is filed and never how many there are, and a row \
-             comparison over two different page counts is not one",
+             supposed to move where a block is filed and never how many there are, and a row \
+             comparison over two different block counts is not one",
             wide.blocks, narrow.blocks
         );
     }
@@ -950,7 +950,7 @@ fn rss_cell(arm: usize, records: usize, end_routing_bucket: u32) {
     println!(
         "RSS CELL {records} records on {} | baseline VmRSS {baseline_rss} kB VmHWM \
          {baseline_hwm} kB | after VmRSS {after_rss} kB VmHWM {after_hwm} kB | delta RSS {} kB \
-         = {:.2} B/record | peak {} kB = {:.2} B/record | buckets {} pages {}",
+         = {:.2} B/record | peak {} kB = {:.2} B/record | buckets {} blocks {}",
         range_label(end_routing_bucket),
         after_rss as i64 - baseline_rss as i64,
         1024.0 * (after_rss as f64 - baseline_rss as f64) / records as f64,

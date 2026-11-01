@@ -138,7 +138,7 @@ fn shard_with_unfiled(count: u64, unfiled_group: Option<u64>) -> (ShardState, BT
             shard.string_address(&key_of(index)).as_ref(),
             Some(&address),
             "the string map did not hand back the address this fixture filed for `{}`: the row \
-             narrowed it, so the walk and the index are being compared on different pages",
+             narrowed it, so the walk and the index are being compared on different blocks",
             key_of(index),
         );
         if Some(index % u64::from(SPREAD)) == unfiled_group {
@@ -231,7 +231,7 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
          \n    model-map rows                                      {held}\n\
            .. handing back the address the fixture filed        {round_tripped}\n\
            .. named by the bucket index at THAT address         {named_by_index}\n\
-         \n    ONE ROW, ONE INDEX ENTRY, ONE `ElementEntry`: page ordinal filed -> read back\n\
+         \n    ONE ROW, ONE INDEX ENTRY, ONE `ElementEntry`: block ordinal filed -> read back\n\
            {:?} -> {:?}   the fixture's own value\n\
            {:?} -> {:?}   nonzero: the row has room for the PRESENCE, not the VALUE\n\
            index names the address that was FILED         {index_names_what_was_filed}\n\
@@ -246,13 +246,13 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
     assert_eq!(
         round_tripped, BLOCKS,
         "{} of {BLOCKS} model-map rows hand back an address other than the one the fixture filed, \
-         so the walk and the index in every arm below are being compared on different pages",
+         so the walk and the index in every arm below are being compared on different blocks",
         BLOCKS - round_tripped,
     );
     assert_eq!(
         named_by_index, BLOCKS,
         "the bucket index names {named_by_index} of {BLOCKS} pages at the address the model map \
-         hands out, so the promotion check is offered missing pages that are not missing",
+         hands out, so the promotion check is offered missing blocks that are not missing",
     );
 
     // THE TRIPWIRE, and the condition for deleting all of this. While the row narrows, the fixture
@@ -522,7 +522,7 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
         control_promoted,
         "CONTROL: with {released_buckets:?}'s pages unfiled and NOT recorded as released, they are \
          missing and the check must notice -- if this fails the fixture is not presenting a missing \
-         page at all and the exemption below proves nothing"
+         block at all and the exemption below proves nothing"
     );
     assert_eq!(
         (control_rebuilds, control_blocks),
@@ -584,7 +584,7 @@ fn the_check_does_not_allocate_per_block_it_walks() {
     let (large_allocs, large_blocks) = cost(5_000);
     println!(
         "  promotion check: {small_allocs} allocation(s) over {small_blocks} pages walked, and \
-         {large_allocs} over {large_blocks}. The materialising form cost 4.0 per page: {} and {}.",
+         {large_allocs} over {large_blocks}. The materialising form cost 4.0 per block: {} and {}.",
         small_blocks * 4,
         large_blocks * 4
     );
@@ -594,12 +594,12 @@ fn the_check_does_not_allocate_per_block_it_walks() {
     assert!(
         small_allocs * 2 < small_blocks,
         "the check allocated {small_allocs} time(s) to walk {small_blocks} pages; the form this \
-         replaced cost 4.0 per page and the walk itself needs none"
+         replaced cost 4.0 per block and the walk itself needs none"
     );
     assert!(
         large_allocs * 2 < large_blocks,
         "the check allocated {large_allocs} time(s) to walk {large_blocks} pages; the form this \
-         replaced cost 4.0 per page and the walk itself needs none"
+         replaced cost 4.0 per block and the walk itself needs none"
     );
 }
 
@@ -660,7 +660,7 @@ fn a_restore_says_which_arm_it_took() {
     let (checks, rebuilds, walked) = promote_model_map_check_counts();
     println!(
         "  restore of {records} records: {checks} promotion check(s), {rebuilds} of them \
-         rebuilt, {walked} model-map page(s) walked"
+         rebuilt, {walked} model-map block(s) walked"
     );
 
     // THE DENOMINATOR, and the reason this is not a tautology: the counters describe the restore

@@ -769,7 +769,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
                 "the reconstruct the replay tail runs places every page by \
                  `block_routing_bucket(key, 0, u32::MAX)`, and a derivation over the shard's range \
                  would place it by `block_routing_bucket(key, 0, {NARROW_END_BUCKET})`. Those are \
-                 different functions of the same key (asserted separately), so all {} pages have to \
+                 different functions of the same key (asserted separately), so all {} blocks have to \
                  land differently and {misplaced} did. mx#1938 measured zero of these because its \
                  shard made the two functions identical.",
                 entries.len()
@@ -778,7 +778,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
             assert_eq!(
                 misplaced, 0,
                 "with the shard's own range passed to the SAME reconstruct, the filing and the \
-                 derivation choose the same bucket for every page. This is the reconciliation, and \
+                 derivation choose the same bucket for every block. This is the reconciliation, and \
                  it is one argument."
             );
         }
@@ -888,9 +888,9 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
                 unreachable, dirty_blocks,
                 "after the reconstruct every page is FILED by `block_routing_bucket(key, 0, \
                  u32::MAX)` while the dirty set still keys on the shard's own range, so every \
-                 page of a dirty object sits in a bucket a walk scoped to the dirty set never \
+                 block of a dirty object sits in a bucket a walk scoped to the dirty set never \
                  opens. The dump that names the dirty bucket then carries no slab for any of \
-                 them. That is the losing direction, and it is all {dirty_blocks} pages."
+                 them. That is the losing direction, and it is all {dirty_blocks} blocks."
             );
             assert_eq!(
                 miscredited, 0,
@@ -904,7 +904,7 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
                 (0, 0),
                 "on the live write path every address carries `block_routing_bucket(key, start, \
                  end)`, which is what the dirty set keys on, so both halves hold for all \
-                 {dirty_blocks} pages"
+                 {dirty_blocks} blocks"
             );
         }
     }
@@ -980,7 +980,7 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
             disagreeing.is_empty(),
             "{label}: {} of {} buckets the dirty set names are summarised differently by the \
              scoped walk than by the full one (bucket, full, scoped): {:?}. Every one of these \
-             is a dump that carries fewer pages than the bucket holds -- silent, and discovered \
+             is a dump that carries fewer blocks than the bucket holds -- silent, and discovered \
              only when something looks for a record that is not there.",
             disagreeing.len(),
             witness.len(),
@@ -1019,7 +1019,7 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
 
         println!(
             "  {label:<34} witness {:>5}, full {:>5} buckets, scoped {:>5}, skipped {:>5} \
-             buckets / {skipped_blocks:>6} pages",
+             buckets / {skipped_blocks:>6} blocks",
             witness.len(),
             full.len(),
             scoped.len(),
@@ -1103,7 +1103,7 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
     assert!(
         buckets_before > 0 && blocks_before > 0,
         "the fixture stored nothing before the restart ({buckets_before} buckets, \
-         {blocks_before} pages)"
+         {blocks_before} blocks)"
     );
 
     // The restart: a new engine over the same directories, loaded on the same range.
@@ -1217,7 +1217,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         assert_eq!(
             residual, 0,
             "{records} records: the scoped walk charged {residual} entries to the engine's own \
-             live-page counter. It reads `bucket_map` directly and should charge nothing."
+             live-block counter. It reads `bucket_map` directly and should charge nothing."
         );
         // A 0 residual is the one reading indistinguishable from a disconnected instrument, so
         // plant a real whole-store walk inside the same span and recover it exactly.
@@ -1640,7 +1640,7 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
          -- delete it from WHOLE_RANGE_SITES; that is the change this file exists to make safe, \
          and `the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_the_filing` \
          is the measurement that says it works.\n\
-         If you ADDED one, it is a new path on which a page can be filed under a bucket the dirty \
+         If you ADDED one, it is a new path on which a block can be filed under a bucket the dirty \
          set does not name, and a walk scoped to the dirty set would silently miss it."
     );
 }

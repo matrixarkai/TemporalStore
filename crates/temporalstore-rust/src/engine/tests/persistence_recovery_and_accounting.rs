@@ -4362,8 +4362,8 @@ fn batch_bucket_maintenance_does_not_grow_with_the_store() {
     let (large, large_buckets) = visits_per_batch(800);
     println!(
         "
-  200 objects -> {small:>9.1} page-index visits per {BATCH}-command batch ({small_buckets} buckets)
-           800 objects -> {large:>9.1} page-index visits per {BATCH}-command batch ({large_buckets} buckets)
+  200 objects -> {small:>9.1} block-index visits per {BATCH}-command batch ({small_buckets} buckets)
+           800 objects -> {large:>9.1} block-index visits per {BATCH}-command batch ({large_buckets} buckets)
            growth: {:.2}x cost for 4x the corpus
 ",
         if small > 0.0 { large / small } else { 0.0 }
@@ -4638,10 +4638,10 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     println!(
         "
   dirty_objects: {}
-  pages with dirty=true: {}
-           in the set but no page flagged dirty: {}
-           a page flagged dirty but not in the set: {}
-           in the set with NO live page at all: {}
+  blocks with dirty=true: {}
+           in the set but no block flagged dirty: {}
+           a block flagged dirty but not in the set: {}
+           in the set with NO live block at all: {}
 ",
         shard.dirty_objects.len(),
         blocks_marked_dirty.len(),
@@ -4874,7 +4874,7 @@ fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
         shared,
         blocks - first_of_kind.len(),
         "every page after the first of its kind should read the same static spelling; \
-         {} kinds over {} pages, {shared} shared",
+         {} kinds over {} blocks, {shared} shared",
         first_of_kind.len(),
         blocks
     );
@@ -4945,16 +4945,16 @@ fn what_each_address_field_actually_ranges_over() {
     let bits = |v: u64| if v == 0 { 0 } else { 64 - v.leading_zeros() };
     println!(
         "
-  address field ranges over {blocks} pages (max observed, and bits to hold it):
+  address field ranges over {blocks} blocks (max observed, and bits to hold it):
     block_slab_id  {slab:>22}  {:>2} bits   bounded by slab count
     offset        {offset:>22}  {:>2} bits   bounded by slab size
-    length        {length:>22}  {:>2} bits   bounded by page size
+    length        {length:>22}  {:>2} bits   bounded by block size
     page_id       {block_id:>22}  {:>2} bits
     object_id     {object_id:>22}  {:>2} bits   a hash -- bounded by nothing
     generation    {generation:>22}  {:>2} bits
     slab_id       {derived_slab:>22}  {:>2} bits
 
-    the routing bucket is no longer a field of the address at all: a page's
+    the routing bucket is no longer a field of the address at all: a block's
     bucket is `block_routing_bucket(object_key, ..)` over the range the store
     is stamped with, so the container answers for it
 
@@ -7002,13 +7002,13 @@ fn a_bucket_holding_one_block_holds_no_node() {
             3, live,
             "two of three fields were removed and {live} live entries remain. Three is the \
              expected number and the retention described above -- the survivor plus one entry per \
-             removal. If this is 1 the retirement of a vacated page's entry has landed, and this \
+             removal. If this is 1 the retirement of a vacated block's entry has landed, and this \
              assertion is the one to come and restate"
         );
         assert_eq!(
             2, tombstoned,
             "two fields were removed and {tombstoned} tombstone entries remain; one per removal is \
-             what keeps the removals readable from the pages, and zero would mean a page-derived \
+             what keeps the removals readable from the blocks, and zero would mean a block-derived \
              membership resurrects both fields"
         );
         assert_eq!(
@@ -7097,9 +7097,9 @@ fn a_bucket_holding_one_block_holds_no_node() {
         assert_eq!(
             5, live,
             "writing the two fields back left {live} live entries. Five is the expected number: \
-             three resident fields plus the two entries the removals left over the vacated pages, \
+             three resident fields plus the two entries the removals left over the vacated blocks, \
              which a re-add at a NEW address does not supersede. If this is 3 the retirement of a \
-             vacated page's entry has landed, and this assertion is the one to come and restate"
+             vacated block's entry has landed, and this assertion is the one to come and restate"
         );
     }
     // Now the whole object, through the path that keeps no tombstone, and the map must DRAIN.
@@ -7650,8 +7650,8 @@ fn block_index_identity_string_cardinality() {
     };
     println!(
         "
-  page index identity strings:
-    over {blocks} PAGES
+  block index identity strings:
+    over {blocks} BLOCKS
       model_id    {:>5} distinct, {:>6} holders ({:>7.1} each), {:>4} allocations behind {:>6} B of referenced text
     over {objects} OBJECTS, in the lookup, which is where the key text now lives
       object_key  {:>5} distinct, {:>6} slots   ({:>7.1} slots each, {:>6} B held)
@@ -7778,7 +7778,7 @@ fn object_block_lookup_refs_per_object_census() {
     let pct = |n: usize, d: usize| 100.0 * n as f64 / d as f64;
     println!(
         "
-  object page lookup occupancy ({objects} objects, {refs_total} refs):
+  object block lookup occupancy ({objects} objects, {refs_total} refs):
     objects whose slot holds one ref    {single_ref_object:>6}  ({:>5.1}%)
     objects whose slot holds more       {multi_ref_object:>6}  ({:>5.1}%)
 
@@ -8155,7 +8155,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
         "maintained component page-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
     );
     println!("
-  component page refs: maintained {maintained} == walked {walked}
+  component block refs: maintained {maintained} == walked {walked}
 ");
 }
 
@@ -8432,8 +8432,8 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
     println!(
         "
   64 routing slots:
-    200 objects -> {small:>8.1} page-index visits per write
-    800 objects -> {large:>8.1} page-index visits per write
+    200 objects -> {small:>8.1} block-index visits per write
+    800 objects -> {large:>8.1} block-index visits per write
 "
     );
 
@@ -8577,9 +8577,9 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
 
     println!(
         "\n  full-scan   200 pages -> {small_full:>6} live-page entries scanned\n  \
-         full-scan  1600 pages -> {large_full:>6} live-page entries scanned\n  \
-         sampled     200 pages -> {small_sampled:>6} live-page entries scanned ({small_victims} victims)\n  \
-         sampled    1600 pages -> {large_sampled:>6} live-page entries scanned ({large_victims} victims)\n"
+         full-scan  1600 blocks -> {large_full:>6} live-block entries scanned\n  \
+         sampled     200 blocks -> {small_sampled:>6} live-block entries scanned ({small_victims} victims)\n  \
+         sampled    1600 blocks -> {large_sampled:>6} live-block entries scanned ({large_victims} victims)\n"
     );
 
     // The default path pays for the whole store: 8x the blocks costs materially more.
@@ -12562,7 +12562,7 @@ fn an_async_write_is_never_lost_across_a_restart() {
             },
             "attempt {attempt}: an acknowledged async write was lost across a restart. \
              the writer left {} records up to sequence {}; the successor saw {} records up to \
-             sequence {}, replayed from watermark {watermark}, installed {} outcomes, holds              {} page registrations and {} unresolvable addresses",
+             sequence {}, replayed from watermark {watermark}, installed {} outcomes, holds              {} block registrations and {} unresolvable addresses",
             before.writes,
             before.last_sequence,
             seen.writes,
@@ -13172,7 +13172,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     let per = |n: usize| n as f64 / RECORDS as f64;
     println!(
         "
-  page-lookup keys at {RECORDS} records, nested against the two flat maps it replaced:
+  block-lookup keys at {RECORDS} records, nested against the two flat maps it replaced:
              two flat maps                {:>8} B  ({:>6.1} B/record, {flat_map_entries} b-tree entries)
              nested                       {:>8} B  ({:>6.1} B/record, {nested_map_entries} b-tree entries)
              saved                        {:>8} B  ({:>6.1} B/record, {:>5.1}%)
@@ -13778,7 +13778,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
         assert!(
             missing.is_empty(),
             "bucket {bucket_id} is MISSING live object ids a rebuild would produce: {missing:?} -- \
-             a live page exists whose id the index does not hold"
+             a live block exists whose id the index does not hold"
         );
         let bucket = shard
             .bucket_index
@@ -13876,9 +13876,9 @@ fn whether_a_context_block_reaches_the_bucket_index() {
 
     println!(
         "
-  page kinds held by the bucket index: {kinds:?}
+  block kinds held by the bucket index: {kinds:?}
   context-ish keys in the model map:   {context_keys_in_model}
-  context-ish pages in the bucket index: {context_blocks_in_index}
+  context-ish blocks in the bucket index: {context_blocks_in_index}
 "
     );
 
@@ -13970,16 +13970,16 @@ fn what_one_block_costs_to_index() {
     let total = inline as f64 + per_entry_heap;
     println!(
         "
-  one page's index entry
+  one block's index entry
     inline struct                {inline:>5} B
       of which ElementEntry      {address_inline:>5} B
       String is                  {string_inline:>5} B inline, Option<String> {option_string_inline} B
-    heap owned, measured         {per_entry_heap:>7.1} B over {entries} pages
-    total per page               {total:>7.1} B
+    heap owned, measured         {per_entry_heap:>7.1} B over {entries} blocks
+    total per block               {total:>7.1} B
 
       of which the map key      {map_key_b:>6.1} B   <- kind, key and five numbers as text
       of which the object key   {object_key_b:>6.1} B   (shared with the lookup)
-      shared across pages       {shared_b:>6.1} B   (kind and component, one allocation each)
+      shared across blocks       {shared_b:>6.1} B   (kind and component, one allocation each)
 
     the design being followed     17 B, packed, static_assert(sizeof == 17)
     ratio                        {:>7.1}x
@@ -14093,7 +14093,7 @@ fn which_parts_of_a_block_address_are_populated() {
     let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
     println!(
         "
-  {blocks} pages, which of the address's optional fields are set
+  {blocks} blocks, which of the address's optional fields are set
 
     page_id          {block_id:>6}  {:>5.1}%    2 B each
     object_id        {object_id:>6}  {:>5.1}%    8 B
@@ -14186,14 +14186,14 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     let pct = |n: usize| 100.0 * n as f64 / blocks as f64;
     println!(
         "
-  {blocks} pages
+  {blocks} blocks
 
     the key's derived bucket == the bucket it is filed in  {routing_matches_bucket:>6}  {:>5.1}%   (0 B, derived)
     address.object_id        -- RETIRED WITH THE FIELD, not measured as 0 of {blocks}
-    the digest is no longer held here at all -- it lives in the page envelope,
+    the digest is no longer held here at all -- it lives in the block envelope,
     which is where a read already verifies against it
 
-    recoverable if the object id holds: {} B per page, of 235.6 B measured
+    recoverable if the object id holds: {} B per block, of 235.6 B measured
     (the routing bucket is already recovered -- it is not a field any more)
 ",
         pct(routing_matches_bucket),
@@ -14205,7 +14205,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     assert!(
         routing_matches_bucket == 0 || routing_matches_bucket == blocks,
         "address.routing_slot agrees with its bucket on {routing_matches_bucket} of {blocks} pages \
-         -- a partial match means some page is filed somewhere its own address does not name"
+         -- a partial match means some block is filed somewhere its own address does not name"
     );
     // THE SECOND ASSERTION IS GONE RATHER THAN LEFT TO PASS. It read
     // `object_id_matches_entry == 0 || == blocks` over a counter whose increment had already been
@@ -14336,8 +14336,8 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
 
     println!(
         "
-  pages held after the ingests   {}
-  pages a rebuild produces       {}
+  blocks held after the ingests   {}
+  blocks a rebuild produces       {}
   a rebuild has, the ingest did not: {} {:?}
   the ingest has, a rebuild does not: {} {:?}
 ",
@@ -15091,7 +15091,7 @@ fn is_a_push_expensive_because_of_the_list_or_the_cache() {
 
     println!(
         "
-  cached pages   A: one list of n   B: n/10 lists of 10   ratio
+  cached blocks   A: one list of n   B: n/10 lists of 10   ratio
 "
     );
 
@@ -15106,7 +15106,7 @@ fn is_a_push_expensive_because_of_the_list_or_the_cache() {
 
     println!(
         "
-  Measured: B is FLAT at 122 while total cached pages grow sixteenfold, and A rises with the list.
+  Measured: B is FLAT at 122 while total cached blocks grow sixteenfold, and A rises with the list.
   So the ALLOCATIONS follow the collection's own length, not the size of the cache.
 
   Both come from one call, `invalidate_record`, and it has two costs that must not be conflated:
@@ -15775,7 +15775,7 @@ fn why_a_membership_test_costs_more_than_a_write() {
 
     println!(
         "
-  a SeenCheck column tracking the store's page count names the site doing O(store) work per call.
+  a SeenCheck column tracking the store's block count names the site doing O(store) work per call.
   StringSet's counters near zero => the control works, and the difference is real.
 "
     );
@@ -15832,7 +15832,7 @@ fn which_commands_rebuild_the_whole_index_per_call() {
 
     println!(
         "
-  command                    store=256 allocs / pages   store=1024 allocs / pages
+  command                    store=256 allocs / blocks   store=1024 allocs / blocks
 "
     );
 
@@ -15885,13 +15885,13 @@ fn which_commands_rebuild_the_whole_index_per_call() {
 
     println!(
         "
-  Every row should read 0 pages. Three reasons, and the labels say which applies:
-    files pages -- the command files its page through upsert_bucket_index_page
+  Every row should read 0 blocks. Three reasons, and the labels say which applies:
+    files blocks -- the command files its block through upsert_bucket_index_page
     maintains   -- it files through sync_bucket_index_object_pages, which maintains the same thing
-    no page     -- it writes no page at all, so there is nothing for a rebuild to recompute
+    no block     -- it writes no block at all, so there is nothing for a rebuild to recompute
 
-  ANY row whose pages stop being zero has started rebuilding the whole index on every call again --
-  which cost 12,646 allocations and 2,048 page visits at a 1,024-key store before these were fixed.
+  ANY row whose blocks stop being zero has started rebuilding the whole index on every call again --
+  which cost 12,646 allocations and 2,048 block visits at a 1,024-key store before these were fixed.
 "
     );
 }
@@ -19031,7 +19031,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert!(
         released_buckets > 0 && released_blocks > 0,
         "nothing was released, so the counter-neutral claim is untested: \
-         {released_buckets} buckets / {released_blocks} pages"
+         {released_buckets} buckets / {released_blocks} blocks"
     );
     let after_release = engine.block_slab_live_drift_check(1);
     assert!(after_release.slabs_compared > 0, "{after_release:?}");
@@ -19246,7 +19246,7 @@ fn releasing_a_bucket_reduces_resident_index_memory_and_reloading_restores_it() 
     assert!(
         index_after < index_before,
         "release freed no INDEX memory: {index_before} -> {index_after} over \
-         {released_buckets} buckets / {released_blocks} pages"
+         {released_buckets} buckets / {released_blocks} blocks"
     );
     assert!(
         engine.cache().stats().memory_bytes <= cache_before,
@@ -21034,7 +21034,7 @@ shard, so this test cannot distinguish a moving window from a fixed one",
     assert!(
         first.unreadable_block_refs.is_empty(),
         "the first window already read the corrupt page in slab {target}, so a later round \
-finding it would prove nothing about coverage. Plant it somewhere the first {budget} live pages \
+finding it would prove nothing about coverage. Plant it somewhere the first {budget} live blocks \
 do not reach.",
     );
 
@@ -21067,7 +21067,7 @@ MOVING the window, not from widening it -- the per-round cost is what the bound 
     // HALF TWO: the sweep reaches the planted block.
     let found_at = found_at.unwrap_or_else(|| panic!(
         "after {cap} bounded rounds over a shard of {} live pages ({rounds_to_cover} rounds' \
-worth of windows at {budget} a round), the probe never read the corrupt page in slab {target} \
+worth of windows at {budget} a round), the probe never read the corrupt block in slab {target} \
 -- an exhaustive call finds it immediately. That is the probe re-reading its first window every \
 round instead of advancing through the shard.",
         first.total_block_refs,
@@ -21284,8 +21284,8 @@ the index holds.",
     assert!(
         absent_from_map.is_empty(),
         "{} of {} summaries name a bucket `bucket_map` does not hold; the first few are {:?}. \
-The live-page loop must place a page where `rebuild_bucket_first_index` places it, or a dump \
-naming the real bucket carries none of its pages.",
+The live-block loop must place a block where `rebuild_bucket_first_index` places it, or a dump \
+naming the real bucket carries none of its blocks.",
         absent_from_map.len(),
         summaries.len(),
         &absent_from_map[..absent_from_map.len().min(5)],

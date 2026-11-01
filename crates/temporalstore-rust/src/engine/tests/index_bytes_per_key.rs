@@ -826,7 +826,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         println!("=== {label}: {live_keys} live keys, {live_addresses} live addresses ===");
         println!(
             "  strings {string_keys}, feature series {series_map_keys} x {series_points} points, \
-             bucket-index pages {bucket_blocks}, distinct shared strings {arc_count}"
+             bucket-index blocks {bucket_blocks}, distinct shared strings {arc_count}"
         );
         println!(
             "  dirty index: {} keys, {} buckets, {dirty_arc_count} distinct Arc<str>, \
@@ -1339,7 +1339,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
 
             println!(
                 "=== {label} on 0..{SHIPPED_END}: {live_keys} live keys, {live_addresses} live \\
-                 addresses, {bucket_count} buckets, {bucket_blocks} pages ==="
+                 addresses, {bucket_count} buckets, {bucket_blocks} blocks ==="
             );
             println!(
                 "  distinct shared strings: bucket index {arc_count}, dirty index {dirty_arc_count}"
@@ -1446,7 +1446,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
 
         println!(
             "  RELEASE on {label}: {released_buckets} of {buckets} buckets released, \\
-             {released_blocks} pages, {refused} refused"
+             {released_blocks} blocks, {refused} refused"
         );
         println!(
             "    bucket_map heap  {bucket_map_before} -> {bucket_map_after} B  \
@@ -1462,7 +1462,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
         );
         println!(
             "    modelled resident {resident_before} -> {resident_after} B (this one is \
-             pages * size_of::<BlockIndex>(), a MODEL, printed beside the measured figure on purpose)"
+             blocks * size_of::<BlockIndex>(), a MODEL, printed beside the measured figure on purpose)"
         );
         println!(
             "    reads after release: {readable_after} of {} still answer",
@@ -1473,7 +1473,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
             probe_keys.len(),
             readable_after,
             "a release made {} of {} keys unreadable -- releasing is only free if the next read \\
-             loads the pages back from the model maps",
+             loads the blocks back from the model maps",
             probe_keys.len() - readable_after,
             probe_keys.len()
         );
@@ -1630,7 +1630,7 @@ fn what_a_dump_then_release_recovers_on_the_shipped_routing_range() {
         probe_keys.len(),
         read1,
         "a dump-then-release made {} of {} keys unreadable. Releasing is only free if the node stays \
-         routable and the next read loads its pages back from the model maps -- this is the failure \
+         routable and the next read loads its blocks back from the model maps -- this is the failure \
          that would make any recovery figure above worthless",
         probe_keys.len() - read1,
         probe_keys.len()
@@ -2067,7 +2067,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         let spare_slots = d.list_capacity.saturating_sub(d.blocks_in_list_arm);
         println!(
             "  spare page-list capacity: {} slots for {} pages = {spare_slots} spare, {} B \
-             the clone cannot see ({:.1} B/page, {:.2}x on the list term)",
+             the clone cannot see ({:.1} B/block, {:.2}x on the list term)",
             d.list_capacity,
             d.blocks_in_list_arm,
             spare_slots * pair,
@@ -2121,7 +2121,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         legacy_ratio > 0.5,
         "{legacy_label} produced {legacy_ratio:.4} buckets per page. The legacy range is supposed \
          to give every key a bucket of its own, which is what makes a per-bucket cost read as a \
-         per-page one -- without that this fixture is not the regime the 185 B/page figure came from"
+         per-block one -- without that this fixture is not the regime the 185 B/block figure came from"
     );
     assert!(
         shipped_ratio * 10.0 < legacy_ratio,
@@ -2569,7 +2569,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
         };
         println!(
             "=== {arm}-record base on 0..{SHIPPED_END}: {base_keys} live keys, {buckets} BUCKETS, \
-             {blocks} pages (scale {scale}x; every population scales together so the two arms hold \
+             {blocks} blocks (scale {scale}x; every population scales together so the two arms hold \
              the same mix) ==="
         );
 
@@ -2645,7 +2645,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
             let live_keys = strings_n + features_n + hashes_n;
             println!(
                 "  --- STEADY STATE, each structure over ITS OWN denominator ({buckets_now} \
-                 buckets, {blocks_now} pages, {strings_n} strings, {features_n} series, {hashes_n} \
+                 buckets, {blocks_now} blocks, {strings_n} strings, {features_n} series, {hashes_n} \
                  containers, {dirty_n} dirty) ---"
             );
             for (name, bytes) in &rows {
@@ -3004,7 +3004,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     println!(
         "=== footprint bracket on 0..{SHIPPED_END}: {total_index_heap_bytes} B over {live_keys} \
          live keys and {live_addresses} live addresses, {bucket_count} buckets, {bucket_blocks} \
-         pages ==="
+         blocks ==="
     );
     println!("  {bytes_per_live_key:.1} B/key   (bracket {FLOOR_B_PER_KEY}..={CEILING_B_PER_KEY})");
     println!(
@@ -4083,7 +4083,7 @@ fn what_one_key_with_one_block_costs() {
     assert_eq!(
         keys0, pages0,
         "denominator: {pages0} pages over {keys0} keys is not one page per key, so this is not the \
-         single-page regime it claims to measure"
+         single-block regime it claims to measure"
     );
     assert_eq!(probe_keys.len(), read0, "the fixture cannot read its own keys before the bound");
     assert_eq!(
@@ -8025,7 +8025,7 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
         assert_eq!(
             *scans, 0,
             "a warm stats read ran {scans} full-file WAL scan(s) at corpus {rung}. That scan is \
-             99.3% of what this read used to allocate -- 771,062 of 776,311 bytes over a 320-page \
+             99.3% of what this read used to allocate -- 771,062 of 776,311 bytes over a 320-block \
              store -- and `shard_stats` is what a node answers a stats request with, so it is paid \
              again on every read. Use `stats_without_rescan`, which takes the sequence from the \
              cache the append path maintains and scans only on a miss."
@@ -10711,7 +10711,7 @@ fn what_a_release_does_to_the_published_amplification_ratio() {
     assert_eq!(
         STRINGS, answered,
         "{answered} of {STRINGS} keys answered after the release. Releasing is only free if the \
-         node stays routable and the next read loads its pages back, so a shortfall is data loss \
+         node stays routable and the next read loads its blocks back, so a shortfall is data loss \
          wearing a reclaim figure -- and it would invalidate the swept column, which assumes the \
          sweep touched every key."
     );

@@ -162,8 +162,8 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
         assert_eq!(
             0, declined,
             "the gated listing DECLINED the fold {declined} time(s) and fell back to the durable \
-             map. A decline means a page could not be read, decoded, or walked -- the members \
-             below would be right for a reason that has nothing to do with the pages"
+             map. A decline means a block could not be read, decoded, or walked -- the members \
+             below would be right for a reason that has nothing to do with the blocks"
         );
 
         assert_eq!(
@@ -174,8 +174,8 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
             !seen.contains(&victim),
             "THE GATED LISTING RESURRECTED THE REMOVED MEMBER. This is the failure that a \
              hand-rolled walk of the payload produced before `derive_membership` owned the \
-             ordering: the folded page still states the member as live, and only a fold by \
-             `append_position` lets the later tombstone page win"
+             ordering: the folded block still states the member as live, and only a fold by \
+             `append_position` lets the later tombstone block win"
         );
         assert_eq!(
             MEMBERS - 1,
@@ -304,13 +304,13 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     assert!(
         only_framed.live.contains_key(&component),
         "the framed-only fold does not name the member, so the codec and the fold disagree about \
-         the spelling and nothing here is about unframed pages"
+         the spelling and nothing here is about unframed blocks"
     );
     assert_eq!(0, only_framed.unframed, "the framed page was counted unframed");
     assert!(
         only_framed.is_complete(),
         "a fold of framed pages alone reports itself incomplete, so `is_complete` is false for a \
-         reason that has nothing to do with the bare page added below"
+         reason that has nothing to do with the bare block added below"
     );
 
     // ---- THE CASE UNDER TEST ----
@@ -322,9 +322,9 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     assert!(
         !with_bare.is_complete(),
         "A FOLD THAT MET AN UNFRAMED PAGE REPORTS ITSELF COMPLETE. The gated listing keys its \
-         decline on exactly this, so if `is_complete()` stops noticing an unframed page the \
+         decline on exactly this, so if `is_complete()` stops noticing an unframed block the \
          listing would serve a membership short by however many it met -- silently, because an \
-         unframed page contributes no element and therefore no error either"
+         unframed block contributes no element and therefore no error either"
     );
     // AND THE SHORTNESS IS REAL, not merely flagged: the bare block added no member.
     assert_eq!(

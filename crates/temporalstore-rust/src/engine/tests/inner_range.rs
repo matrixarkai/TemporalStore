@@ -359,13 +359,13 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
                 before, total,
                 "0..{end_routing_bucket}: on the WIDE shard the whole-range hash and the shard's \
                  own placement are the same expression, so the old answer has to agree with the \
-                 filing on all {total} pages"
+                 filing on all {total} blocks"
             );
         } else {
             assert_eq!(
                 before, 0,
                 "0..{end_routing_bucket}: the whole-range hash agreed with the filing on {before} \
-                 of {total} pages. It must agree with NONE -- it names a bucket above \
+                 of {total} blocks. It must agree with NONE -- it names a bucket above \
                  {end_routing_bucket} for every key, and the shard holds none of them -- or this \
                  control is not reproducing what mx#1949 fixed."
             );
@@ -533,7 +533,7 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
     assert!(
         dropped > 0,
         "the round chose {chosen} victim buckets and dropped {dropped} objects. Zero is what the \
-         whole-range guess produces: the filter names a bucket above {NARROW_END} for every page, \
+         whole-range guess produces: the filter names a bucket above {NARROW_END} for every block, \
          no victim bucket can equal it, and the round frees nothing while reporting that it ran."
     );
     assert!(

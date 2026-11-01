@@ -148,7 +148,7 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
     assert!(
         any_block_dirty(&shard, routing_bucket),
         "marking the object must reach the page it already has; otherwise the bucket predicate, \
-         which now reads only `page.dirty`, answers false for a dirty object"
+         which now reads only `block.dirty`, answers false for a dirty object"
     );
 
     // AND THE PREDICATE THE PUSH EXISTS TO SERVE actually answers true through it. The sweep
@@ -436,10 +436,10 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     assert!(
         fold_growth * 2.0 < block_growth,
         "fold visits grew x{fold_growth:.1} while the bucket grew x{block_growth:.1} \
-         ({small_folds} visits at {small_blocks} pages on corpus {small_rung}, {large_folds} at \
+         ({small_folds} visits at {small_blocks} blocks on corpus {small_rung}, {large_folds} at \
          {large_blocks} on corpus {large_rung}). The two folds in \
          `refresh_one_bucket_runtime_flags` are cheap only because `all` and `any` stop at the \
-         first page that decides them; a predicate written with `count()`, `collect` or \
+         first block that decides them; a predicate written with `count()`, `collect` or \
          `filter().count()` computes the same answer and walks the whole bucket, which is \
          O(store/buckets) on every write and invisible to every functional test."
     );

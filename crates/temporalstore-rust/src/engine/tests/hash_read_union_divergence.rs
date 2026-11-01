@@ -205,7 +205,7 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
         fields.len(),
         live_before,
         "the object holds {live_before} live index entries for {} fields written; every element \
-         gets its own page on the write path, so this arm is not in the state it says",
+         gets its own block on the write path, so this arm is not in the state it says",
         fields.len()
     );
 
@@ -422,6 +422,6 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
     assert!(
         !served_after.iter().any(|(name, _)| name.is_empty()),
         "a field named `\"\"` is being served: {served_after:?}. That is a nameless page entry \
-         defaulted through `unwrap_or_default()`, whose value is the raw page frame"
+         defaulted through `unwrap_or_default()`, whose value is the raw block frame"
     );
 }

@@ -90,7 +90,7 @@ fn a_slot_names_the_same_object_after_a_round_trip_of_the_stored_index() {
             Some(*slot),
             loaded.slot_of(id),
             "object {id} was in slot {slot} and came back in {:?}; a slot that moves across a round \
-             trip cannot be stored on a page entry, which is the only reason this change exists",
+             trip cannot be stored on a block entry, which is the only reason this change exists",
             loaded.slot_of(id)
         );
         assert_eq!(

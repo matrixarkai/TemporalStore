@@ -122,8 +122,8 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
     assert!(
         total_blocks > total_objects,
         "this fixture cannot tell a page count from an object count ({total_blocks} pages vs \
-         {total_objects} objects) -- every object holds one page, so the two arms would agree \
-         for the wrong reason. The fixture needs a multi-page object, not a different assertion."
+         {total_objects} objects) -- every object holds one block, so the two arms would agree \
+         for the wrong reason. The fixture needs a multi-block object, not a different assertion."
     );
     drop(regime);
 
@@ -166,7 +166,7 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
             assert_eq!(
                 sampled_count, full_count,
                 "bucket {bucket_id}: the two eviction arms disagree on `dirty_object_count` -- \
-                 the sampled arm counts PAGES whose dirty bit is set and the full-scan arm counts \
+                 the sampled arm counts BLOCKS whose dirty bit is set and the full-scan arm counts \
                  OBJECTS from the dirty index. One field, two meanings, and it is multiplied by \
                  1024 into a sort key"
             );

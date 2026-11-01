@@ -891,7 +891,7 @@ fn how_often_a_real_store_needs_the_layout_arm() {
     assert!(total > 0, "non-vacuity: no addresses were examined");
     println!(
         "of {total} live string addresses written through the ordinary path: {inline} take the \
-         INLINE arm ({:.1}%) -- {inline_ordinal_absent} with no page ordinal and \
+         INLINE arm ({:.1}%) -- {inline_ordinal_absent} with no block ordinal and \
          {inline_ordinal_zero} at ordinal zero -- and {needs_layout} need the LAYOUT arm ({:.1}%)",
         100.0 * inline as f64 / total as f64,
         100.0 * needs_layout as f64 / total as f64
@@ -1671,7 +1671,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
     );
     println!(
         "    denominators: {objects} control-state objects, {buckets} buckets, {blocks} pages \
-         ({:.2} pages per bucket)",
+         ({:.2} blocks per bucket)",
         blocks as f64 / buckets as f64
     );
 

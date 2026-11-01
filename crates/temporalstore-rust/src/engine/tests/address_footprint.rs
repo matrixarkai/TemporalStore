@@ -1234,7 +1234,7 @@ fn a_model_map_address_and_the_bucket_index_address_for_one_block_are_not_the_sa
         assert_eq!(
             0, d.bucket_location_collisions,
             "{label}: the bucket index named one physical location with two different addresses \
-             {} times; 'the bucket-index address for a page' would not be well defined and the \
+             {} times; 'the bucket-index address for a block' would not be well defined and the \
              pairing below would be meaningless",
             d.bucket_location_collisions
         );
@@ -1593,7 +1593,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     println!("  BTreeMap<u64, ElementEntry>:          {long_btree_per:.1} bytes/entry");
     println!(
         "  BTreeMap<u64, u32> + per-series pages: {long_table_per:.1} bytes/entry \
-         ({distinct_blocks} distinct pages over {long_entries} entries)"
+         ({distinct_blocks} distinct blocks over {long_entries} entries)"
     );
     println!(
         "  the per-series block table saves {:.1} bytes/entry ({:.1}%) on a coalescing series",
@@ -1760,12 +1760,12 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
         inline >= pair,
         "the control must HOLD a handle and a page inline: an inline One is {inline} B against a \
          {pair}-byte pair. If this ever reads as narrow, the predicate above cannot tell an inline \
-         page from a pointer to one and the guard is vacuous"
+         block from a pointer to one and the guard is vacuous"
     );
     assert!(
         !(inline == list && inline < pair),
         "the control must FAIL the predicate the real shape passes ({inline} B inline, {list} B \
-         list header, {pair} B pair, {block} B page)"
+         list header, {pair} B pair, {block} B block)"
     );
 
     // (2) INVERTED. This block used to prove that the six timestamped series maps share one
@@ -2825,7 +2825,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     assert_eq!(
         11, state.routing_bucket,
         "the report records the bucket it saw FIRST -- the lowest bucket id, `bucket_map` being \
-         ordered -- so the object it describes is reported in a bucket holding half its pages"
+         ordered -- so the object it describes is reported in a bucket holding half its blocks"
     );
     assert_eq!(
         2, state.block_ref_count,
@@ -2837,7 +2837,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     assert_eq!(
         1, report.reused_object_ids,
         "`reused_object_ids` counts ids with more than one block ref. It reads 1 here -- and it \
-         would read 1 for one object with two pages in ONE bucket too, which is why it is not a \
+         would read 1 for one object with two blocks in ONE bucket too, which is why it is not a \
          detector for the same id in two buckets."
     );
 }
@@ -3061,7 +3061,7 @@ fn what_deriving_the_block_identity_costs_at_the_read_path() {
     assert!(
         identity_passes <= read as u64,
         "{identity_passes} identity derivations over {read} reads is more than one a read: some \
-         caller is building an identity per candidate rather than per page"
+         caller is building an identity per candidate rather than per block"
     );
     // And the bytes it walks are the terms it says it walks: a key of this fixture is 12 bytes and
     // the kind is "string", so a pass is 18 bytes. Asserted as a floor rather than an equality,

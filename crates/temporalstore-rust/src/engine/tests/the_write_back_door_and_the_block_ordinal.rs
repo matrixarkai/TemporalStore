@@ -101,7 +101,7 @@ fn the_unchanged_door_still_drops_the_value_and_now_says_so() {
         Some(0),
         "the inline arm now round-trips a nonzero page ordinal. If that is deliberate -- the owned \
          array has landed and the write-back door routes to it -- then this test and the counter \
-         beside it are what should be deleted, in that change. If it is not deliberate, a page \
+         beside it are what should be deleted, in that change. If it is not deliberate, a block \
          ordinal is being written somewhere it cannot be read back from"
     );
     assert_eq!(
@@ -178,7 +178,7 @@ fn no_production_write_hands_the_door_an_ordinal_it_cannot_hold() {
         dropped_nonzero_block_ordinals(),
         0,
         "a production write handed the write-back door a page ordinal the inline arm cannot hold, \
-         so a page ordinal was silently dropped on a real path. That is the condition this counter \
+         so a block ordinal was silently dropped on a real path. That is the condition this counter \
          was added to detect, and it has fired"
     );
 }

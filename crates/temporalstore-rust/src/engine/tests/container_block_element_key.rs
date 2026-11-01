@@ -1281,7 +1281,7 @@ fn a_framed_block_reads_back_after_a_reload() {
         assert!(
             listed.contains(member),
             "the reloaded set lost a member of {} bytes -- and a set listing reads ONE PAGE PER \
-             MEMBER, so this is the arm that reads a framed page off storage",
+             MEMBER, so this is the arm that reads a framed block off storage",
             member.len()
         );
     }

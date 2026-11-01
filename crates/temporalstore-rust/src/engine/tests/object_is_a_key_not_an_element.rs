@@ -317,8 +317,8 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     assert_eq!(
         hash_rows, CONTAINER_KEYS,
         "the container arm holds {hash_rows} object-index rows for {CONTAINER_KEYS} keys and \
-         {hash_blocks} pages. One key is one object now, so the row count is the KEY count -- if it \
-         is the PAGE count, the component is still reaching the id"
+         {hash_blocks} blocks. One key is one object now, so the row count is the KEY count -- if it \
+         is the BLOCK count, the component is still reaching the id"
     );
     assert!(
         hash_blocks > hash_rows,
@@ -334,7 +334,7 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     );
     println!(
         "  VERDICT: container rows/page {:.4} (was 1.0000, one row per page); CONTROL string \
-         rows/page {:.4}, unmoved, {string_blocks} pages exercised.",
+         rows/block {:.4}, unmoved, {string_blocks} blocks exercised.",
         hash_rows as f64 / hash_blocks as f64,
         string_rows as f64 / string_blocks as f64
     );
@@ -484,7 +484,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     assert_eq!(
         FIELDS, after_one,
         "{after_one} live pages after one of {FIELDS} fields was deleted. {FIELDS} is the expected \
-         number and the cost described above: if this is {} the retirement of a vacated page's \
+         number and the cost described above: if this is {} the retirement of a vacated block's \
          entry has been implemented, and this assertion is the one to come and restate",
         FIELDS - 1
     );
@@ -537,14 +537,14 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     assert_eq!(
         0, after_all,
         "{after_all} live pages survived deleting every field. The retained live entry a single \
-         removal leaves is deliberate while the page still holds siblings; at the LAST element \
+         removal leaves is deliberate while the block still holds siblings; at the LAST element \
          there are none, and `recorded_map::remove_element` drops the live entries for exactly \
          that reason -- so a non-zero here is that drop not firing"
     );
     assert!(
         tombstoned_after_all,
         "the object was NOT tombstoned after its LAST element went. The guard withholds the \
-         tombstone until no page carries the id; it does not remove it altogether, and \
+         tombstone until no block carries the id; it does not remove it altogether, and \
          withholding it forever would lose the deletion"
     );
     println!(
@@ -716,7 +716,7 @@ fn every_element_of_one_object_reads_back_its_own_bytes_after_a_reload() {
         (0, 0),
         "{wrong} elements served another element's bytes and {missing} read as absent, over \
          {checked}. Every element of one key now shares an object id, so a selector keyed on the \
-         id alone would serve the first page of each key {} times over",
+         id alone would serve the first block of each key {} times over",
         MEMBERS_PER_KEY - 1
     );
 }

@@ -454,7 +454,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 };
                 println!(
                     "\n== {shape:?}, {records} pages on {range} ==\n  buckets {} (Empty {} / One \
-                     {} / Many {}), pages {}, list len {} vs capacity {} (p50 {}, p90 {}, MAX {}, \
+                     {} / Many {}), blocks {}, list len {} vs capacity {} (p50 {}, p90 {}, MAX {}, \
                      {} lists)",
                     seen.buckets,
                     seen.arm_empty,
@@ -534,7 +534,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 );
                 println!(
                     "    CHUNK over {} allocations: request {replayed_request} B, allocator set \
-                     aside {replayed_chunk} B ({:.4}x, +{} B, +{:.2} B a page)",
+                     aside {replayed_chunk} B ({:.4}x, +{} B, +{:.2} B a block)",
                     seen.alloc_sizes.len(),
                     replayed_chunk as f64 / replayed_request as f64,
                     replayed_chunk - replayed_request,
@@ -689,7 +689,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
     assert!(
         pair_stride > entry_width,
         "the pair stride ({pair_stride} B) is not wider than the entry ({entry_width} B), so the \
-         distinction between a boxed single page and a list element is vacuous and this guard is \
+         distinction between a boxed single block and a list element is vacuous and this guard is \
          no longer testing one"
     );
     assert!(
@@ -732,7 +732,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
         old_arithmetic < reported,
         "charging every page one ENTRY width answers {old_arithmetic} B against the published \
          {reported} B. On a store holding lists those cannot be equal, so the report has gone back \
-         to reading a page count"
+         to reading a block count"
     );
 }
 
@@ -822,7 +822,7 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_bloc
     let block_term = seen.blocks * entry_width;
     println!(
         "  CONTROL: {reported} B published, {old_arithmetic} B under the arithmetic this \
-         replaced, +0.00% over {} buckets and {} pages (node term {} B, page term {block_term} B)",
+         replaced, +0.00% over {} buckets and {} blocks (node term {} B, block term {block_term} B)",
         seen.buckets,
         seen.blocks,
         seen.buckets * node_width
@@ -836,7 +836,7 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_bloc
     assert_eq!(
         old_arithmetic, reported,
         "the published figure moved from {old_arithmetic} B to {reported} B on the range where \
-         every page index is one boxed entry -- the one population where the old arithmetic was \
+         every block index is one boxed entry -- the one population where the old arithmetic was \
          already exactly right"
     );
 }

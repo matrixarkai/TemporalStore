@@ -149,7 +149,7 @@ fn where_each_kinds_refs_end_up() {
         0,
         in_lookup.get("string").copied().unwrap_or(0),
         "a string's refs are still in the lookup after a single write. That is exactly the case \
-         `adopt_refs_into_slot` exists for -- the page is filed before the row is installed -- so \
+         `adopt_refs_into_slot` exists for -- the block is filed before the row is installed -- so \
          the fold would measure no saving on the corpus the published asymptote uses"
     );
     assert!(

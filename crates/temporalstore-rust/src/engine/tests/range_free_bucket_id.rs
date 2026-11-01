@@ -424,7 +424,7 @@ fn a_fixed_bucket_count_cannot_reproduce_the_fills_the_range_produces() {
             1,
             wide.max(),
             "on the whole keyspace every key lands alone by construction, so the widest bucket \
-             must hold one page and not {}",
+             must hold one block and not {}",
             wide.max()
         );
 

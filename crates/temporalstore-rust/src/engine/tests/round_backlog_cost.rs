@@ -214,7 +214,7 @@ fn seed(engine: &TemporalEngine, from: usize, count: usize) -> Vec<String> {
             assert!(
                 after > before,
                 "the fixture asked for a slab roll and got none ({before} -> {after}), so the \
-                 store is one slab and compaction and page reclaim have no choice to make"
+                 store is one slab and compaction and block reclaim have no choice to make"
             );
         }
     }
@@ -983,7 +983,7 @@ fn the_residual_outside_the_round_stage_rows_recovers_a_planted_whole_store_walk
     assert!(
         planted as usize > RECORDS / 2,
         "the plant walked {planted} entries on an {RECORDS}-record store. It is supposed to be \
-         the whole live page set; something this small means the engine walked something else and \
+         the whole live block set; something this small means the engine walked something else and \
          the recovery below is about the wrong quantity"
     );
     assert_eq!(

@@ -246,7 +246,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
         derived.is_complete(),
         "this derivation reports itself INCOMPLETE ({} read failures, {} undecodable, {} unframed, \
          {} unrenderable). That is a different defect from the one under test: the point here is \
-         that an unreachable page leaves completeness UNDISTURBED",
+         that an unreachable block leaves completeness UNDISTURBED",
         derived.read_failures,
         derived.undecodable,
         derived.unframed,
@@ -257,11 +257,11 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     assert!(
         !derived.live.contains_key(&victim_component),
         "A MEMBERSHIP FOLDED FROM THE PAGES THE INDEX NAMES STILL HOLDS THE REMOVED MEMBER.\n\
-         The removal appended a tombstone page that names the element, but \
+         The removal appended a tombstone block that names the element, but \
          `mark_bucket_index_block_deleted_recording` selects the entry to tombstone BY COMPONENT \
-         and a page-named entry has none -- so nothing was filed and the tombstone page is \
+         and a block-named entry has none -- so nothing was filed and the tombstone block is \
          UNREACHABLE from the index ({live_after} live / {tombstoned_after} tombstoned entries, \
-         {} address(es) named). The fold calls itself COMPLETE because an unreachable page is \
+         {} address(es) named). The fold calls itself COMPLETE because an unreachable block is \
          never read and therefore never counted as a failure.",
         addresses.len()
     );

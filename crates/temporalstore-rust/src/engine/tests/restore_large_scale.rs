@@ -730,7 +730,7 @@ fn describe(report: &mut Report, label: &str, restart: &Restart) {
     let corpus = &restart.corpus;
     report.say(format!(
         "\n{label}  --  {}\n  corpus: {} records of {} B, {} dumped, {} unreflected; store {} B \
-         in total -- log {} B in {} piece(s), {} manifest file(s) {} B, index-log {} B, pages {} \
+         in total -- log {} B in {} piece(s), {} manifest file(s) {} B, index-log {} B, blocks {} \
          B; {} slab(s) on disk, {} holding live bytes; store path {} chars; built in {} ms",
         corpus.suffix.label(),
         corpus.records,
@@ -814,7 +814,7 @@ fn describe(report: &mut Report, label: &str, restart: &Restart) {
     }
     report.say(format!(
         "  READS    kernel rchar {} B; attributed: log {} B in {} window walk(s), manifest {} B \
-         in {} file read(s), index-log {} B in {} read(s), pages {} B in {} read(s); RESIDUAL {} B",
+         in {} file read(s), index-log {} B in {} read(s), blocks {} B in {} read(s); RESIDUAL {} B",
         restart.kernel.map(|io| io.rchar as i64).unwrap_or(-1),
         restart.wal_bytes_read,
         restart.wal_window_walks,
@@ -842,7 +842,7 @@ fn describe(report: &mut Report, label: &str, restart: &Restart) {
     ));
     report.say(format!(
         "  PROMOTE  the promotion check ran {} time(s), rebuilt {} time(s), and walked {} \
-         live model-map pages -- {:.4} per stored record",
+         live model-map blocks -- {:.4} per stored record",
         restart.promote_checks,
         restart.promote_rebuilds,
         restart.promote_blocks,

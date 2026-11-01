@@ -910,7 +910,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     assert!(
         !members.iter().any(|member| member.is_empty()),
         "the set came back holding the EMPTY member. That is what an unreadable name used to become \
-         -- a real value taking a genuine element's address. A set is served from its pages now, so \
+         -- a real value taking a genuine element's address. A set is served from its blocks now, so \
          this would be `derive_membership` defaulting an element key it could not render instead of \
          counting it unrenderable: the same defect at a new door."
     );
@@ -1656,7 +1656,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
         folded_set.is_some(),
         "the fold did not restore the set element. There is no component in this input, so if this \
          is red the carry is not being applied and a folded element is once again known only by the \
-         name its page was filed under."
+         name its block was filed under."
     );
     let (folded_score, _) = folded_zset.expect(
         "the fold did not restore the zset element from its carried identity, so `shard.zsets` is \
@@ -1810,14 +1810,14 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         !restored.contains(&gone),
         "an element naming a page the fold did not leave behind was restored anyway. That is how a \
          removed element comes back: `fill_absent_elements` keeps every durable element the derived \
-         view could not produce, and the derived view cannot produce this one because its page is \
+         view could not produce, and the derived view cannot produce this one because its block is \
          gone. It would then be served after being deleted. (That merge now asks this same \
-         live-page question of its persisted input, so it would strip this element afterwards -- \
+         live-block question of its persisted input, so it would strip this element afterwards -- \
          but the fold must not hand it a known-dead one to strip.)"
     );
     println!(
         "[resurrect] so the carry is applied against the FINISHED page index, and a removal needs \
-         no tombstone to be honoured -- taking the page away is the whole answer"
+         no tombstone to be honoured -- taking the block away is the whole answer"
     );
 }
 
@@ -2217,8 +2217,8 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
     assert_eq!(
         0, replay_reads,
         "A COLD REPLAY NOW PERFORMS {replay_reads} BLOCK READS WHERE THE BASE PERFORMED 0. That is \
-         the cost this change was not allowed to pay: resolving the element from the page is only \
-         free while the page travels inside its record, and if this is non-zero the carried-page \
+         the cost this change was not allowed to pay: resolving the element from the block is only \
+         free while the block travels inside its record, and if this is non-zero the carried-block \
          arm has stopped firing and every replayed record is paying an I/O"
     );
 
@@ -2254,7 +2254,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
     assert!(
         fallback_reads >= outcomes.len() as u64,
         "the fallback performed {fallback_reads} reads for {} outcomes; fewer than one each means \
-         it is not reading the page it claims to be reading",
+         it is not reading the block it claims to be reading",
         outcomes.len()
     );
     println!(
@@ -2391,7 +2391,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     assert_eq!(
         0, carrying_a_command,
         "{carrying_a_command} of {} records carry their operation, so a field that comes back \
-         below may have been re-derived by re-running the command rather than read off the page",
+         below may have been re-derived by re-running the command rather than read off the block",
         records.len()
     );
 
@@ -2477,7 +2477,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     assert_eq!(
         expected, stripped_fields,
         "a replay with no element name anywhere restored {stripped_fields:?} and the write \
-         touched {expected:?}. Anything short means the page is not being read for every element"
+         touched {expected:?}. Anything short means the block is not being read for every element"
     );
 
     // AND THE BLOCK IS THE SOURCE: break every carried frame and the fields must STOP coming back.
@@ -2488,7 +2488,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     assert!(
         !broken_ok,
         "a replay with no element name AND no readable frame still loaded, holding \
-         {broken_fields:?}. Then the field names are coming from somewhere other than the page, \
+         {broken_fields:?}. Then the field names are coming from somewhere other than the block, \
          and the arm above is passing for the wrong reason"
     );
     assert!(
@@ -2498,7 +2498,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 
     println!(
         "[outcome-name] VERDICT: the page is the authority. Untouched {} of {}; with the element \
-         name CLEARED everywhere {} of {}; with the page's frame destroyed the load is REFUSED",
+         name CLEARED everywhere {} of {}; with the block's frame destroyed the load is REFUSED",
         control_fields.len(),
         expected.len(),
         stripped_fields.len(),
@@ -2786,7 +2786,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     assert_eq!(
         0, disagreed,
         "{disagreed} outcomes were refused for disagreeing with their page, on a fixture where no \
-         page was readable at all -- so the disagreement check is firing on something it cannot \
+         block was readable at all -- so the disagreement check is firing on something it cannot \
          have compared"
     );
 }
@@ -3037,7 +3037,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
     );
     println!(
         "[tsf] points per page: min={:?} max={:?}; {} of {POINTS} timestamps recovered FROM THE \
-         PAGES",
+         BLOCKS",
         points_per_block.iter().min(),
         points_per_block.iter().max(),
         recovered.len()
@@ -3063,7 +3063,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         .count();
     println!(
         "[tsf] of {} feature outcomes, {ambiguous} belong to an object whose record carries \
-         SEVERAL pages -- so {ambiguous} block reads per replay of this write, against a measured \
+         SEVERAL blocks -- so {ambiguous} block reads per replay of this write, against a measured \
          baseline of 0",
         outcomes.len()
     );
@@ -3155,7 +3155,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
             let event_blocks: usize = record.staged_blocks.len();
             println!(
                 "[tsf] a context_event record: {e_with} B -> {e_without} B, saving {} B; its \
-                 component is {} chars ({component}); it carries {event_blocks} page(s)",
+                 component is {} chars ({component}); it carries {event_blocks} block(s)",
                 e_with - e_without,
                 component.len()
             );

@@ -417,8 +417,8 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
     assert_eq!(
         seen.hash_blocks_reloaded, hash_entries,
         "a GATED reader filed {hash_entries} live hash entries over {} distinct page(s). One entry \
-         per page is what the collapse means, and more entries than pages is a stale entry over a \
-         dead page",
+         per block is what the collapse means, and more entries than blocks is a stale entry over a \
+         dead block",
         seen.hash_blocks_reloaded
     );
     // THE GATED PROJECTION WROTE THIS STORE. Asserted on the WRITER's census, before any reader
@@ -617,7 +617,7 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
     assert!(
         seen.hash_entries_reloaded <= ELEMENTS,
         "the hash came back with {} live entries for {ELEMENTS} elements -- more entries than \
-         elements means a stale entry over a dead page survived the boundary",
+         elements means a stale entry over a dead block survived the boundary",
         seen.hash_entries_reloaded
     );
 }

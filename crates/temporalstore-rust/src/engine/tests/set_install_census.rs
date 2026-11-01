@@ -206,7 +206,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
         engine.contains("TouchedContainerElement::Set { key, member } => shard"),
         "nothing APPLIES a carried set element back to the shard. A producer whose carry no reader \
          applies writes a record that no reload reads, which would make the completeness this \
-         module just measured an accident of the page index rather than a property of the carry."
+         module just measured an accident of the block index rather than a property of the carry."
     );
 
     // ---- THE OTHER WRITER, NAMED RATHER THAN LEFT OUT. ----------------------------------------

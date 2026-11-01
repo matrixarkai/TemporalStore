@@ -2854,7 +2854,7 @@ fn what_a_round_still_reads() {
         eprintln!(
             "  {records:>6} records ({live} live pages):  boundary={boundary_ms:>8.2} ms \
              / {boundary_reads} reads   whole round={round_ms:>8.2} ms / {round_reads} reads \
-             ({:.1}x the live pages)",
+             ({:.1}x the live blocks)",
             round_reads as f64 / live.max(1) as f64
         );
 
@@ -5874,7 +5874,7 @@ fn what_one_control_state_increment_costs_as_the_counter_grows() {
 
     println!(
         "
-  counter   DEFAULT allocs   bytes   pages     COALESCED allocs   bytes   pages
+  counter   DEFAULT allocs   bytes   blocks     COALESCED allocs   bytes   blocks
 "
     );
 

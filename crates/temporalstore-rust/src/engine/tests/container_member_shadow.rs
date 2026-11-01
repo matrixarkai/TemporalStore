@@ -703,7 +703,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     );
     println!(
         "{covered} members over {CONTAINER_KEYS} keys: every member round-trips through the page \
-         key that is now its only copy outside the model map, and every page stores the member \
+         key that is now its only copy outside the model map, and every block stores the member \
          again -- the entry holds no third copy and the score lives in the model map alone"
     );
 }
@@ -914,7 +914,7 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
     assert_eq!(
         zset_examined, 0,
         "a zset read examined {zset_examined} page-index entries, so the zset read path DOES \
-         resolve members through the page index and packing would cost it something"
+         resolve members through the block index and packing would cost it something"
     );
     assert!(
         whole_examined > 0,

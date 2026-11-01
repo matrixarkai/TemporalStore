@@ -207,10 +207,10 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     assert_eq!(
         via_objects, via_blocks,
         "the two methods disagree.\n  via the object set: {via_objects:?}\n  via the page bit:   \
-         {via_blocks:?}\n\nThe page bit is only sufficient while \
+         {via_blocks:?}\n\nThe block bit is only sufficient while \
          `push_object_dirty_onto_its_existing_blocks` runs at EVERY site that marks an object dirty. \
          A disagreement means a marking site stopped pushing, and the object-keyed set is covering \
-         for it -- fix the push rather than keeping the set, because a bucket missing from the page \
+         for it -- fix the push rather than keeping the set, because a bucket missing from the block \
          view is a bucket that stops being dumped"
     );
 }

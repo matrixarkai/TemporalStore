@@ -3893,7 +3893,7 @@ fn what_reading_one_summary_actually_costs() {
     }
     println!(
         "
-  points/extent > 1 means siblings ARE decoded for every read, and a page-granular cache pays.
+  points/extent > 1 means siblings ARE decoded for every read, and a block-granular cache pays.
   points/extent == 1 means each record has its own extent and the cost is inside one record.
 "
     );
@@ -4026,8 +4026,8 @@ fn how_many_blocks_do_a_retrieves_candidates_span() {
     }
     println!(
         "
-  nodes/extent near 1.0  => every candidate costs its own page read; clustering is the lever.
-  nodes/extent high      => candidates already share pages and a layout change wins nothing.
+  nodes/extent near 1.0  => every candidate costs its own block read; clustering is the lever.
+  nodes/extent high      => candidates already share blocks and a layout change wins nothing.
 "
     );
 }
@@ -8008,7 +8008,7 @@ fn the_object_lifecycle_snapshot_walks_the_shard_once() {
     assert_eq!(
         walked, live_blocks,
         "storage_object_lifecycle_snapshot materialized {walked} live-page entries for a shard \
-holding {live_blocks} live pages -- that is {:.1} walks, and it should be exactly one. Its three \
+holding {live_blocks} live blocks -- that is {:.1} walks, and it should be exactly one. Its three \
 consumers (ownership validation, the lifecycle report, the per-slab ref counts) share one walk; \
 if a fourth consumer was added, give it the slice rather than its own scan.",
         walked as f64 / live_blocks as f64,
@@ -8082,7 +8082,7 @@ fn what_apply_storage_lifecycle_walks() {
     assert!(baseline > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
     eprintln!(
         "  [apply-lc] everything on                        {baseline:>8} entries = {:>5.1}x the shard \
-({live_blocks} live pages)",
+({live_blocks} live blocks)",
         baseline as f64 / live_blocks as f64,
     );
 
@@ -8193,10 +8193,10 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
     assert!(
         multiple <= 7.0,
         "a compaction round walked {multiple:.1}x the shard ({walked} entries for {live_blocks} \
-live pages) from {} site(s). Its ownership validation, utility report, object lifecycle report \
+live blocks) from {} site(s). Its ownership validation, utility report, object lifecycle report \
 and object-manager report all share ONE `collect_live_page_entries`: 11.0x when each walked for \
 itself, 9.0x with three sharing, 6.0x with all four, the last two of the six being the bucket \
-ownership and first-index rebuilds. If a new preamble report needs the live-page set, pass it \
+ownership and first-index rebuilds. If a new preamble report needs the live-block set, pass it \
 the existing slice rather than calling `collect_live_page_entries` again -- the split printed \
 above names whichever site moved this.",
         sites.len(),
@@ -8488,12 +8488,12 @@ fn the_cache_warmup_reads_blocks_after_the_shard_guard_drops() {
 
     eprintln!(
         "[cache warmup] under the guard: {} of {} page read(s) under the guard, \
-{control_warmed} page refs warmed",
+{control_warmed} block refs warmed",
         control.block_reads_under_guard, control.block_reads_total,
     );
     eprintln!(
         "[cache warmup] shipped:         {} of {} page read(s) under the guard, \
-{shipped_warmed} page refs warmed",
+{shipped_warmed} block refs warmed",
         shipped.block_reads_under_guard, shipped.block_reads_total,
     );
 
@@ -9036,7 +9036,7 @@ fn one_call_walks_the_live_blocks_a_known_number_of_times() {
             .collect::<String>();
         panic!(
             "one `apply_storage_lifecycle` walked the live pages {multiple}x, expected \
-{EXPECTED_MULTIPLE}x ({walked} entries for {live_blocks} live pages). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
+{EXPECTED_MULTIPLE}x ({walked} entries for {live_blocks} live blocks). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
 removed -- lower EXPECTED_MULTIPLE and name it in the commit. Three of the seven are irreducible \
 and the doc above says why; do not file the constant down without reading it."
         );
@@ -10560,7 +10560,7 @@ fn an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report() {
         assert_eq!(
             measurement.idle_multiple, EXPECTED_IDLE_MULTIPLE,
             "{} records, IDLE round: walked the live pages {}x, expected {EXPECTED_IDLE_MULTIPLE}x \
-({} live pages). Per site:{}\n  An idle round must not walk the shard to fill a report field. \
+({} live blocks). Per site:{}\n  An idle round must not walk the shard to fill a report field. \
 Higher means a walk came back; lower means one more was removed -- lower the constant and name it.",
             measurement.records,
             measurement.idle_multiple,
@@ -10572,7 +10572,7 @@ Higher means a walk came back; lower means one more was removed -- lower the con
         assert_eq!(
             measurement.dirty_multiple, EXPECTED_DIRTY_MULTIPLE,
             "{} records, ONE DIRTY BUCKET: walked the live pages {}x, expected \
-{EXPECTED_DIRTY_MULTIPLE}x ({} live pages). Per site:{}\n  A round with work must still take its \
+{EXPECTED_DIRTY_MULTIPLE}x ({} live blocks). Per site:{}\n  A round with work must still take its \
 walks. If this fell to the idle number, the conditional is firing when it must not, and a plan \
 that did not look is being reported as a plan that found nothing.",
             measurement.records,

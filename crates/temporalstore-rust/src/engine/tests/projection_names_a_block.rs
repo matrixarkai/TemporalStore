@@ -218,7 +218,7 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
             (first_blocks, first_entries),
             (second_blocks, second_entries),
             "occupancy {occupancy}: re-deriving twice moved the projection -- {first_blocks} \
-             page(s)/{first_entries} entr(ies) then {second_blocks}/{second_entries}. A sweep \
+             block(s)/{first_entries} entr(ies) then {second_blocks}/{second_entries}. A sweep \
              re-derives twice, so a projection that is not idempotent undoes itself mid-sweep"
         );
 
@@ -230,7 +230,7 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         assert_eq!(
             second_blocks, second_entries,
             "occupancy {occupancy}: the projection emitted {second_entries} entries for \
-             {second_blocks} page(s). The page IS the identity, so the count must be the page count"
+             {second_blocks} block(s). The block IS the identity, so the count must be the block count"
         );
 
         // AND THE "NONE NAMED" HALF IS STRUCTURAL NOW. This block also asserted `0 == on_named`
@@ -285,8 +285,8 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         assert_eq!(
             occupancy, on_listed,
             "occupancy {occupancy}: the second object's listing returned {on_listed} of \
-             {occupancy} members. The listing folds the object's pages by `append_position` to \
-             answer this, so a fold that drops a page shortens it"
+             {occupancy} members. The listing folds the object's blocks by `append_position` to \
+             answer this, so a fold that drops a block shortens it"
         );
     }
 }
