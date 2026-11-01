@@ -6135,6 +6135,7 @@ fn the_block_index_entry_count_falls_when_entries_go() {
 fn what_the_lifecycle_plan_costs_alone() {
     fn bare_request(shard_id: ShardId) -> crate::engine::reports::StorageLifecycleRequest {
         crate::engine::reports::StorageLifecycleRequest {
+            item_amplification_full_dump_ppm: 0,
             shard_id,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
@@ -6289,6 +6290,7 @@ fn where_the_index_reclaim_time_goes() {
         roll_forward: bool,
     ) -> crate::engine::reports::StorageLifecycleRequest {
         crate::engine::reports::StorageLifecycleRequest {
+            item_amplification_full_dump_ppm: 0,
             shard_id: 1,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,

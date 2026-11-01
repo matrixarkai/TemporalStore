@@ -176,6 +176,7 @@ async fn run_case(root: &Path, case: &StorageMigrationCase) -> StorageProduction
     assert!(!installable_manifest.index_bytes.is_empty());
 
     let lifecycle = engine.apply_storage_lifecycle(StorageLifecycleRequest {
+        item_amplification_full_dump_ppm: 0,
         shard_id: case.shard_id,
         selected_dump_buckets: dirty_buckets,
         max_dump_buckets_per_round: 64,

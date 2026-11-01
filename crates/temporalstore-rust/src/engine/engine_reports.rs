@@ -1089,6 +1089,13 @@ pub struct BucketDumpRaftSnapshotRetentionBlock {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecyclePlan {
     pub shard_id: ShardId,
+    /// Whether item amplification forced this round's dump to cover every bucket.
+    ///
+    /// Reported because the alternative is a round that dumps the whole shard for a reason
+    /// nothing in its own report mentions. `selected_dump_buckets` would be full and
+    /// `dirty_buckets` nearly empty, and no field would say why.
+    #[serde(default)]
+    pub full_dump_forced_by_item_amplification: bool,
     #[serde(alias = "dirty_slots")]
     pub dirty_buckets: Vec<u32>,
     pub selected_dump_buckets: Vec<u32>,
@@ -3253,6 +3260,24 @@ pub struct StorageRecoveryBoundaryReport {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageLifecycleRequest {
     pub shard_id: ShardId,
+    /// PARTS PER MILLION of item amplification that forces a FULL dump. **0 disables it.**
+    ///
+    /// The design being followed caps amplification by construction rather than publishing a
+    /// ratio: its full-dump decision ORs in `total_item >= live_items * 2`, and a full dump
+    /// re-serializes from the live set, so the figure resets to 1.0 and can never exceed the
+    /// cap for long. 2_000_000 ppm is that 2.0x.
+    ///
+    /// A PARAMETER AND NOT AN ENVIRONMENT READ, deliberately. A threshold passed in makes the
+    /// plan a pure function of its inputs, so the predicate is testable without touching
+    /// process-wide state -- this crate already has tests that pass alone and fail at four
+    /// threads because of exactly that. It also means a reader of the plan can see what
+    /// decided the dump instead of having to know which variable was set.
+    ///
+    /// OFF BY DEFAULT, because forcing a full dump is an IO change and nothing here has
+    /// measured what one costs on a large shard. `enable_evict` ships off for the same
+    /// reason.
+    #[serde(default)]
+    pub item_amplification_full_dump_ppm: u64,
     #[serde(default)]
     pub selected_dump_buckets: Vec<u32>,
     #[serde(default)]

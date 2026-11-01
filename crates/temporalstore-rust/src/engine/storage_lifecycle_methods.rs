@@ -230,7 +230,9 @@ impl TemporalEngine {
         // dirty-BUCKET question can be asked of the bucket. The short-circuit above is unchanged
         // and still gates on the SET, because it is the thing that decides whether the summaries
         // were materialised at all -- with no summaries the filter selects nothing either way.
-        let (shard_has_dirty_objects, dirty_bucket_nodes) = self
+        // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
+        // second read lock to answer one ratio would be two acquisitions for one decision.
+        let (shard_has_dirty_objects, dirty_bucket_nodes, durable_items, live_items) = self
             .shards
             .read()
             .expect("engine lock poisoned")
@@ -239,9 +241,25 @@ impl TemporalEngine {
                 (
                     !shard.dirty_objects.is_empty(),
                     crate::engine::storage_reporting::dirty_bucket_nodes(shard),
+                    shard.durable_items(),
+                    shard.live_item_count(),
                 )
             })
             .unwrap_or_default();
+        // THE CAP, WHICH IS OFF UNLESS A CALLER ASKS FOR IT.
+        //
+        // Guarded on the threshold itself and on a non-zero denominator: a shard with no live
+        // objects has no meaningful ratio, and `0 >= 0 * 2` would otherwise force a full dump
+        // of an empty shard on every round.
+        let item_amplification_ppm = if live_items == 0 {
+            0
+        } else {
+            durable_items.saturating_mul(1_000_000) / live_items
+        };
+        let full_dump_forced_by_item_amplification = request.item_amplification_full_dump_ppm
+            > 0
+            && live_items > 0
+            && item_amplification_ppm >= request.item_amplification_full_dump_ppm;
         let mut bucket_summaries: Option<Vec<BucketStorageSummary>> = shard_has_dirty_objects
             .then(|| self.bucket_storage_summaries(request.shard_id));
         // Select the least-recently-dumped (most overdue) dirty buckets first, matching the
@@ -360,12 +378,27 @@ impl TemporalEngine {
         let dump_delayed = !explicit_buckets && records_say_wait && bytes_say_wait;
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
+        } else if full_dump_forced_by_item_amplification {
+            // EVERY BUCKET, NOT THE DIRTY ONES, and that is the whole point of a FULL dump:
+            // the superseded records this is trying to retire are spread across buckets that
+            // are not dirty now, so a dirty-only dump leaves the ratio where it was. The walk
+            // is taken here rather than assumed -- the short-circuit above skips it when
+            // nothing is dirty, which is exactly the state this branch can be reached in.
+            bucket_summaries
+                .get_or_insert_with(|| self.bucket_storage_summaries(request.shard_id))
+                .iter()
+                .map(|summary| summary.routing_bucket)
+                .collect()
         } else if dump_delayed {
             Vec::new()
         } else {
             dirty_buckets.clone()
         };
-        if request.max_dump_buckets_per_round > 0
+        // AND THE PER-ROUND CAP DOES NOT APPLY TO IT. Truncating a full dump would leave the
+        // ratio above the threshold, so the next round would force another one, and the cap
+        // would be a permanent full-dump loop that never actually resets the figure.
+        if !full_dump_forced_by_item_amplification
+            && request.max_dump_buckets_per_round > 0
             && selected_dump_buckets.len() > request.max_dump_buckets_per_round
         {
             selected_dump_buckets.truncate(request.max_dump_buckets_per_round);
@@ -539,6 +572,7 @@ impl TemporalEngine {
             reasons.push("cache_invalidation".to_string());
         }
         StorageLifecyclePlan {
+            full_dump_forced_by_item_amplification,
             shard_id: request.shard_id,
             dirty_buckets,
             selected_dump_buckets,

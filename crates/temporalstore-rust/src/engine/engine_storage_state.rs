@@ -9236,6 +9236,16 @@ impl ShardState {
         self.durable_items = self.live_objects_with_logical_size;
     }
 
+    /// Item records the durable form holds, superseded ones included.
+    pub(super) fn durable_items(&self) -> u64 {
+        self.durable_items
+    }
+
+    /// Distinct live objects -- the DENOMINATOR, which is not a record count.
+    pub(super) fn live_item_count(&self) -> u64 {
+        self.live_objects_with_logical_size
+    }
+
     /// Drop one string row, keeping the live user-byte totals in step. THE ONE REMOVAL DOOR.
     ///
     /// # WHY THIS EXISTS RATHER THAN FIVE CALLS TO `strings_mut().remove`

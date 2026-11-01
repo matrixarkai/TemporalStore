@@ -236,6 +236,7 @@ impl TemporalEngine {
         let recovery = self.storage_recovery_report_without_boundary(shard_id);
         let slab_integrity = storage_slab_integrity_report(shard_id, &recovery, &boundary);
         let plan = self.storage_lifecycle_plan(StorageLifecycleRequest {
+            item_amplification_full_dump_ppm: 0,
             shard_id,
             selected_dump_buckets: Vec::new(),
             max_dump_buckets_per_round: 0,
