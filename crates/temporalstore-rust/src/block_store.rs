@@ -1348,7 +1348,7 @@ pub struct BlockStoreSlabDescriptor {
     /// two cannot diverge, `reconcile_slab_manifest_with_disk` normalises this one from the map
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
-    #[serde(rename = "band_id", alias = "stored_slab_id", alias = "extent_id", alias = "zone_id")]
+    #[serde(alias = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
     #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
@@ -1455,7 +1455,7 @@ pub struct BlockStoreSlabSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabUsage {
-    #[serde(rename = "band_id", alias = "stored_slab_id", alias = "extent_id", alias = "zone_id")]
+    #[serde(alias = "band_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
     #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
@@ -1677,7 +1677,7 @@ struct BlockStoreSlabManifest {
     /// binary reads, and the descriptor's `band_id` carries no `#[serde(default)]`, so a manifest
     /// written under new keys is unreadable to it rather than merely unfamiliar.
     /// `a_folded_manifest_still_writes_the_keys_on_disk` pins both keys.
-    #[serde(rename = "bands", alias = "slabs", alias = "extents", alias = "zones")]
+    #[serde(alias = "bands", alias = "extents", alias = "zones")]
     slabs: Vec<BlockStoreSlabDescriptor>,
 }
 
@@ -5625,8 +5625,8 @@ const RETIRED_NAMES: &[&str] = &[
         // DENOMINATOR FIRST: read the array under the key it must be written at, and prove it is
         // not empty. Without this every per-entry assertion below is vacuously true.
         let entries = manifest
-            .get("bands")
-            .unwrap_or_else(|| panic!("the slab list must be written under \"bands\": {manifest}"))
+            .get("slabs")
+            .unwrap_or_else(|| panic!("the slab list must be written under \"slabs\": {manifest}"))
             .as_array()
             .expect("an array");
         assert!(
@@ -5635,22 +5635,23 @@ const RETIRED_NAMES: &[&str] = &[
             entries.len()
         );
         assert!(
-            manifest.get("slabs").is_none(),
-            "the Rust field name must NOT reach the file: {manifest}"
+            manifest.get("bands").is_none(),
+            "the retired key must not reach the file as well -- serde writes one name per field, \
+             so two would mean a second field claimed this one's key: {manifest}"
         );
 
         for entry in entries {
             assert!(
-                entry.get("band_id").is_some(),
-                "every descriptor keeps its on-disk id key: {entry}"
+                entry.get("stored_slab_id").is_some(),
+                "every descriptor writes its id under the canonical key: {entry}"
+            );
+            assert!(
+                entry.get("band_id").is_none(),
+                "and not under the retired one too: {entry}"
             );
             assert!(
                 entry.get("block_segment_id").is_some(),
                 "and the slab-id key this build writes: {entry}"
-            );
-            assert!(
-                entry.get("stored_slab_id").is_none(),
-                "the Rust field name must NOT reach the file: {entry}"
             );
         }
 
