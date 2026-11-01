@@ -1176,8 +1176,50 @@ fn the_eviction_loop_settles_below_its_threshold_instead_of_refiring() {
         start_pressure > 2,
         "no pressure to converge from: {start_pressure}"
     );
-    // Just under the shard's own pressure: the first gate must open.
-    let threshold = start_pressure - 1;
+
+    // THE THRESHOLD COMES FROM THE GATE, NOT FROM THE SNAPSHOT, and the difference is
+    // load-bearing. The gate is the FIRST thing `apply_storage_eviction` does --
+    // `pressure_before < memory_pressure_threshold` returns before anything is dumped, so
+    // `eviction_dump_before_evict` is "before the eviction ACTION", not before the gate. But a
+    // storage-manager round runs its DUMP stage before its eviction stage, and a dump now gives
+    // settled buckets' unused buffer capacity back (`BlockIndexMap::compact_settled_capacity`).
+    // So the pressure the gate reads in round one is BELOW this snapshot, and a threshold of
+    // `start_pressure - 1` can sit above it: the gate never opens, the loop "settles" at round
+    // one having evicted nothing, and the `rounds_that_evicted > 0` clause below fails for a
+    // reason that has nothing to do with convergence.
+    //
+    // The fixture's assumption was always that the snapshot equals what the gate sees. That was
+    // fragile before and is false now, so the threshold is derived from the gate's OWN reported
+    // figure instead -- one probe round with the gate deliberately shut. Reading the gate on its
+    // declining path at `u64::MAX` is this file's own idiom; see
+    // `the_evict_gate_reads_only_this_shards_own_bytes`, which does it so that nothing is
+    // released while the figure is taken.
+    let gate_probe = StorageManagerOptions {
+        enable_evict: true,
+        eviction_dump_before_evict: true,
+        eviction_memory_pressure_threshold: u64::MAX,
+        index_resident_limit_bytes: 0,
+        ..StorageManagerOptions::default()
+    };
+    let probe_round = runtime.run_storage_manager_once(1, gate_probe);
+    let probe_eviction = probe_round
+        .eviction
+        .as_ref()
+        .expect("the evict stage must report when it is enabled");
+    assert_eq!(
+        probe_eviction.skipped_reason, "memory_pressure_below_threshold",
+        "the probe round was supposed to DECLINE at u64::MAX so its figure is a pure read, and \
+         instead reported {:?}",
+        probe_eviction.skipped_reason
+    );
+    let gate_pressure = probe_eviction.pressure_before;
+    assert!(
+        gate_pressure > 2,
+        "the gate reads {gate_pressure} B, which leaves no room for a threshold below it"
+    );
+    let _ = engine.cache().invalidate_shard(1);
+    // Just under the pressure the GATE sees: the first gate must open.
+    let threshold = gate_pressure - 1;
 
     let options = StorageManagerOptions {
         enable_evict: true,
@@ -2055,6 +2097,11 @@ fn the_shipped_default_opens_the_bound_and_never_the_wide_gate() {
         defaults.index_resident_limit_bytes
     );
 
+    // The round below DUMPS as well as deciding about eviction, and a dump gives settled
+    // buckets' unused buffer capacity back. Sampled here so the resident delta asserted at the
+    // end of this arm can be compared against what the dump REPORTED reclaiming, rather than
+    // against zero.
+    let reclaim_before = TemporalEngine::settled_capacity_bytes_reclaimed();
     let shipped_round = runtime.run_storage_manager_once(1, StorageManagerOptions::default());
 
     // CONCLUSION 1: the stage RAN. The enablement is the point of the change, and a bound that
@@ -2117,10 +2164,27 @@ fn the_shipped_default_opens_the_bound_and_never_the_wide_gate() {
         "the shipped round chose {} victims",
         shipped.selected_victims.len()
     );
+    // AN EXACT DELTA, NOT "UNCHANGED", AND THE CLAIM IS STRONGER FOR IT.
+    //
+    // This stood as `== resident_before`. The three clauses above are what "bounded" actually
+    // means on a shard under its bound -- no bucket released, no record dropped, no victim
+    // chosen -- and all three still hold. The resident figure was a FOURTH observable standing
+    // in for "nothing happened", and it is no longer equivalent to the other three: the same
+    // round also dumps, and a dump reclaims settled buckets' unused buffer capacity, which
+    // lowers `bucket_index_resident_bytes` without releasing or dropping anything.
+    //
+    // So the resident index may move by PRECISELY what the dump reported reclaiming and by
+    // nothing else. That pins the delta instead of forbidding it, which is a tighter statement
+    // than the one it replaces -- `== resident_before` would also have been satisfied by a round
+    // that reclaimed nothing because the compaction had silently stopped working.
+    let reclaimed = TemporalEngine::settled_capacity_bytes_reclaimed() - reclaim_before;
+    let resident_after = engine.bucket_index_resident_bytes(1);
     assert_eq!(
-        engine.bucket_index_resident_bytes(1),
-        resident_before,
-        "the resident index moved under a round that reported releasing nothing"
+        resident_after,
+        resident_before - reclaimed,
+        "the resident index went {resident_before} -> {resident_after} under a round that \
+         released nothing and reported reclaiming {reclaimed} B of settled capacity; the \
+         difference is unaccounted"
     );
 
     // --- CONTROL: the same defaults with ONLY the bound zeroed, on its OWN fresh store. ---

@@ -2445,6 +2445,30 @@ impl TemporalEngine {
             .unwrap_or_default()
     }
 
+    /// Bytes of SETTLED container capacity given back at dump time, across every call in this
+    /// process.
+    ///
+    /// `resident_heap_bytes` charges a bucket's block list and its slot array at their
+    /// CAPACITY, so the slots a dump reclaims were resident, counted index holding nothing --
+    /// see `BlockIndexMap::compact_settled_capacity`. This reads the two slot counters and
+    /// converts them HERE, where the entry widths are in scope, because
+    /// `engine::storage_lifecycle_methods` and `engine::state` are private modules: a caller in
+    /// `data_node` can reach neither the statics nor `BlockIndex`, and should not have to name
+    /// either to read a byte figure.
+    ///
+    /// AN ASSOCIATED FUNCTION AND NOT A METHOD, because the counters are PROCESS-GLOBAL in the
+    /// same shape as `DIRTY_DRAIN_VISITS`. Taking `&self` would imply a per-engine or per-shard
+    /// figure and invite a caller to difference it across shards, which it cannot support.
+    pub fn settled_capacity_bytes_reclaimed() -> u64 {
+        use std::sync::atomic::Ordering;
+        crate::engine::storage_lifecycle_methods::SETTLED_BLOCK_SLOTS_RECLAIMED
+            .load(Ordering::Relaxed)
+            * std::mem::size_of::<(u64, crate::engine::state::BlockIndex)>() as u64
+            + crate::engine::storage_lifecycle_methods::SETTLED_OBJECT_SLOTS_RECLAIMED
+                .load(Ordering::Relaxed)
+                * std::mem::size_of::<u64>() as u64
+    }
+
     /// Release the named buckets' resident block lists, keeping each node routable and reloadable.
     ///
     /// Returns `(buckets released, blocks released, candidates refused)`. Every precondition is
