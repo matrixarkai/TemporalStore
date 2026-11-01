@@ -12028,22 +12028,44 @@ fn the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency() {
     );
 }
 
-/// THE WIDTHS THE `strings` ROW TURNS ON, SO THE `46.9 -> 37.7` ARITHMETIC CANNOT GO STALE.
+/// THE SAVING THE `strings` ROW TURNS ON, WHICH IS A DIFFERENCE AND NOT TWO WIDTHS.
 ///
 /// A one-word handle in place of the `Arc<str>` fat pointer takes the `strings` bucket from
-/// `(16 + 24) + 1 = 41` bytes to `(8 + 24) + 1 = 33`. At 2,048 buckets holding 1,792 keys -- the
-/// phase the published figure is measured at -- that is `46.9 -> 37.7 B/key`. The arithmetic is
-/// only as good as the two tuple widths, so they are pinned rather than quoted.
+/// `(16 + SLOT) + 1` bytes to `(8 + SLOT) + 1`, where `SLOT` is `size_of::<ObjectSlot>()`. The
+/// saving is EIGHT BYTES PER BUCKET at every slot width, and that difference is the whole of what
+/// this row turns on -- so the difference is what is pinned.
+///
+/// WRITTEN AS TWO LITERALS, THESE PINS WENT STALE AND TOOK THE WHOLE TEST TARGET WITH THEM. They
+/// asserted 40 and 32, which were `16 + 24` and `8 + 24` while the slot was the record plus one
+/// optional pointer. Folding the block refs in added a third field, so the slot became
+/// `24 + size_of::<Option<BlockRefs>>()` and both literals were wrong: two const-evaluation
+/// panics in the LIB TEST target, which does not compile. Nothing in this crate's suite could
+/// run, so every figure these tests check was ungated rather than merely unchecked -- a const
+/// assert that fails to BUILD is louder than a test that fails, and also wider.
+///
+/// A pin written as an arithmetic in the terms its claim depends on fails when the CLAIM breaks.
+/// A pin written as a literal also fails when a NEIGHBOUR moves, and cannot tell the two apart.
 ///
 /// THIS IS THE OTHER HALF OF THE KEY-CHARACTER QUESTION, AND IT IS NOT THE 32.0 ROW. The 32.0 row
 /// is the allocation; this is the slot. Both are gated on the same raw-entry table, because the
 /// one-word handle cannot `Borrow<str>` either.
 const _: () = assert!(
-    std::mem::size_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 40
+    std::mem::size_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>()
+        - std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>()
+        == 8
 );
-/// The one-word-handle arm. Eight bytes narrower, which is the whole of the `strings` saving.
-const _: () =
-    assert!(std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>() == 32);
+/// AND NEITHER ARM PAYS PADDING FOR THE PAIRING, which is what lets the difference above be read
+/// as the handle's own width. Each tuple is exactly its handle plus the slot.
+const _: () = assert!(
+    std::mem::size_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>()
+        == std::mem::size_of::<std::sync::Arc<str>>()
+            + std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
+);
+/// The one-word-handle arm, eight bytes narrower, which is the whole of the `strings` saving.
+const _: () = assert!(
+    std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>()
+        == 8 + std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
+);
 /// Pinned on its own, because a width pin admits every alignment that divides it.
 const _: () = assert!(
     std::mem::align_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 8
