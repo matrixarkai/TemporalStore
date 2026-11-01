@@ -1247,6 +1247,96 @@ pub fn compaction_drain_block_slab_ids(
         .collect()
 }
 
+/// The slabs a BUDGETED round should drain, cheapest first, so the budget empties as many as
+/// it can.
+///
+/// # WHY A SUBSET, WHEN THE FUNCTION ABOVE NAMES THEM ALL
+///
+/// [`compaction_drain_block_slab_ids`] answers the REPORTING question -- which slabs carry
+/// dead space that objects still hold pages on -- and the relocation hint is built from it.
+/// This answers a different one: given a round that may relocate at most `ref_budget` page
+/// refs, which of those slabs should it spend them on. Both are kept because they are not the
+/// same question, and collapsing them would change a published figure's meaning.
+///
+/// The answers differ because **a relocation recovers space only for a slab it vacates
+/// COMPLETELY.** `compact_block_addresses` copies a page's bytes verbatim, so refs moved off a
+/// slab that does not end up empty buy nothing at all -- they relocate the dead space instead
+/// of removing it. Handing a round every holed slab therefore spreads a fixed budget across all
+/// of them and can empty NONE, which is the fewest slabs that budget could possibly free. That
+/// is the shape this replaces at the periodic call site.
+///
+/// # WHY ASCENDING `live_block_refs` IS THE KEY
+///
+/// The budget is denominated in REFS and a slab is freed only once all of its live refs have
+/// moved, so taking whole slabs smallest-first maximises the COUNT of slabs a fixed ref budget
+/// can empty -- the collector then destroys each one, which is the only step that returns
+/// bytes (`gc_utility_candidates` offers it only slabs that are already entirely dead).
+/// `block_slab_id` breaks ties, so the selection is deterministic and two rounds given the
+/// same plan choose the same slabs.
+///
+/// # WHAT THIS DOES NOT GUARANTEE, AND WHY IT IS STILL THE TRADE
+///
+/// Cheapest-first maximises slabs freed per round. It does NOT guarantee that a large, cold,
+/// half-dead slab is ever selected: if cheaper candidates keep arriving it can sit indefinitely.
+///
+/// It is not a regression -- the unordered set frees NOTHING, because a budget spread over every
+/// candidate finishes none of them, so no slab stops being reclaimed by this. And a warm slab's
+/// `live_block_refs` only FALLS, as its pages are overwritten or deleted onto newer slabs, so it
+/// grows cheaper and is selected eventually. The uncovered case is a slab that is permanently
+/// COLD and partly dead: its refs never fall and cheaper work never runs out.
+///
+/// If that is ever measured, the fix is AGEING -- force the longest-waiting candidate in every N
+/// rounds -- and not abandoning the ordering. It is not built here because nothing measured says
+/// it happens, and a policy knob added on speculation is one more thing nobody re-checks.
+///
+/// `reclaim_score` and `live_ref_density_basis_points` are deliberately NOT used. Density is a
+/// ratio and answers how wasteful a slab is, not how much of the budget it takes to finish;
+/// this selection is a bounded knapsack in refs, and refs are what the bound is counted in.
+///
+/// # THE FIRST CANDIDATE IS TAKEN EVEN IF IT ALONE EXCEEDS THE BUDGET
+///
+/// Otherwise a shard whose every holed slab is larger than one round would select nothing and
+/// never make progress. A round that stops mid-slab stays open and the next resumes onto it,
+/// so taking it costs ROUND COUNT and not progress -- the same trade the ref bound itself
+/// already makes.
+pub fn compaction_round_drain_block_slab_ids(
+    reclaim_candidates: &[StorageReclaimCandidate],
+) -> BTreeSet<u64> {
+    compaction_round_drain_block_slab_ids_with_budget(
+        reclaim_candidates,
+        COMPACTION_ROUND_BLOCK_REFS as u64,
+    )
+}
+
+/// The same selection against an explicit budget, so an arm can drive it without reaching for
+/// the shipped constant. The public form above passes [`COMPACTION_ROUND_BLOCK_REFS`], which
+/// is the budget `compact_shard_blocks_draining` actually spends -- keeping the two in lockstep
+/// by construction rather than by a number repeated in two places.
+pub(super) fn compaction_round_drain_block_slab_ids_with_budget(
+    reclaim_candidates: &[StorageReclaimCandidate],
+    ref_budget: u64,
+) -> BTreeSet<u64> {
+    let mut drainable: Vec<&StorageReclaimCandidate> = reclaim_candidates
+        .iter()
+        .filter(|candidate| candidate.live_block_refs > 0)
+        .collect();
+    drainable.sort_unstable_by_key(|candidate| {
+        (candidate.live_block_refs, candidate.block_slab_id)
+    });
+    let mut selected: BTreeSet<u64> = BTreeSet::new();
+    let mut spent = 0_u64;
+    for candidate in drainable {
+        let would_spend = spent.saturating_add(candidate.live_block_refs);
+        if !selected.is_empty() && would_spend > ref_budget {
+            // Ascending order means nothing after this fits either.
+            break;
+        }
+        selected.insert(candidate.block_slab_id);
+        spent = would_spend;
+    }
+    selected
+}
+
 /// What a relocation round should move FOR THIS OBJECT, as indexes into `object_blocks`.
 ///
 /// The decision belongs at this granularity and not to the shard. An object's pages are worth
@@ -1352,6 +1442,93 @@ mod compaction_selection_tests {
             live_block_refs,
             ..StorageReclaimCandidate::default()
         }
+    }
+
+    /// A BUDGETED ROUND DRAINS THE SLABS IT CAN EMPTY, NOT ALL OF THEM.
+    ///
+    /// The defect this pins: the periodic round used to be handed every holed slab and a fixed
+    /// ref budget, and a relocation recovers space only for a slab it empties COMPLETELY. So a
+    /// budget spread over every candidate can finish none of them, which is the fewest slabs it
+    /// could possibly free. Measured here as the arithmetic it is, rather than through a round.
+    #[test]
+    fn a_budgeted_round_drains_the_slabs_it_can_empty_rather_than_all_of_them() {
+        const BUDGET: u64 = 2_048;
+        // Eight holed slabs, refs doubling: the shape where spreading is worst.
+        let candidates: Vec<StorageReclaimCandidate> = [100_u64, 200, 400, 800, 1600, 3200, 6400, 12800]
+            .iter()
+            .enumerate()
+            .map(|(index, refs)| candidate(index as u64 + 1, *refs))
+            .collect();
+
+        let reported = compaction_drain_block_slab_ids(&candidates);
+        let budgeted = compaction_round_drain_block_slab_ids_with_budget(&candidates, BUDGET);
+
+        let refs_over = |set: &BTreeSet<u64>| -> u64 {
+            candidates
+                .iter()
+                .filter(|c| set.contains(&c.block_slab_id))
+                .map(|c| c.live_block_refs)
+                .sum()
+        };
+        let reported_refs = refs_over(&reported);
+        let budgeted_refs = refs_over(&budgeted);
+
+        println!();
+        println!("  A {BUDGET}-REF ROUND OVER EIGHT HOLED SLABS");
+        println!("    reported set (what the round was handed): {} slabs, {reported_refs} refs", reported.len());
+        println!("    budgeted set (what it can finish):        {} slabs, {budgeted_refs} refs", budgeted.len());
+        println!();
+
+        // THE PREMISE: the reported set cannot be emptied by one round, or there is nothing to
+        // choose and this arm is about a case that does not arise.
+        assert!(
+            reported_refs > BUDGET,
+            "the whole reported set needs {reported_refs} refs, within the {BUDGET} budget, so a \
+             round could finish all of it and there is no selection problem to pin here"
+        );
+        // THE CLAIM: the budgeted set fits, so every slab in it CAN be emptied this round.
+        assert!(
+            budgeted_refs <= BUDGET,
+            "the budgeted set needs {budgeted_refs} refs against a {BUDGET} budget, so at least \
+             one slab in it cannot be finished and the selection is not spending the budget on \
+             slabs it can free"
+        );
+        assert!(
+            !budgeted.is_empty(),
+            "the budgeted set is empty, so the round would relocate nothing and never make \
+             progress"
+        );
+        // AND IT IS A SUBSET, not a different answer: every slab chosen is one the plan named.
+        assert!(
+            budgeted.is_subset(&reported),
+            "the budgeted set names a slab the reclaim plan did not: {budgeted:?} against \
+             {reported:?}"
+        );
+        // DETERMINISM: same plan, same choice. A round that picked differently each time would
+        // half-drain a different slab every thirty seconds and finish none of them.
+        assert_eq!(
+            budgeted,
+            compaction_round_drain_block_slab_ids_with_budget(&candidates, BUDGET),
+            "the selection is not deterministic over one plan"
+        );
+    }
+
+    /// PROGRESS BEATS THE BOUND when even the smallest holed slab is bigger than one round.
+    ///
+    /// Taking nothing would be the strictly-correct reading of the budget and would also mean a
+    /// shard in this state never compacts again. The round stays open and the next resumes onto
+    /// the same slab, so this costs round count rather than progress.
+    #[test]
+    fn the_smallest_holed_slab_is_taken_even_when_it_alone_exceeds_the_budget() {
+        let candidates = vec![candidate(7, 5_000), candidate(9, 9_000)];
+        let budgeted = compaction_round_drain_block_slab_ids_with_budget(&candidates, 2_048);
+        assert_eq!(
+            BTreeSet::from([7]),
+            budgeted,
+            "with every slab over budget the selection came out {budgeted:?}. It must still take \
+             the SMALLEST one -- taking nothing is a shard that never compacts again, and taking \
+             the larger one spends more refs for the same single slab"
+        );
     }
 
     /// A block left where it is because nobody asked for its slab is NOT work left behind.

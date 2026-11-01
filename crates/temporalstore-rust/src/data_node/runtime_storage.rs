@@ -1199,8 +1199,17 @@ impl DataNodeRuntime {
         // Taking both off ONE plan snapshot also removes a smaller divergence: the gate and the
         // selection used to be computed from different views of the shard, so a round could be
         // started for a slab it then had no particular interest in draining.
+        // BUDGETED, not every holed slab. The plan names every slab carrying dead space that
+        // objects still hold pages on; a round can relocate at most COMPACTION_ROUND_BLOCK_REFS
+        // refs, and a relocation recovers space only for a slab it empties COMPLETELY. Handing
+        // the round all of them spread that budget across all of them and could finish none --
+        // the fewest slabs it could possibly free. This takes whole slabs cheapest-first so the
+        // same budget empties as many as it can; see
+        // `compaction_round_drain_block_slab_ids` for why refs and not density are the key.
         let compaction_drain_block_slab_ids =
-            crate::engine::compaction_drain_block_slab_ids(&lifecycle_plan.reclaim_candidates);
+            crate::engine::compaction_round_drain_block_slab_ids(
+                &lifecycle_plan.reclaim_candidates,
+            );
         // AND WHO IS ASKING? A node that does not lead this shard rewrites its full live set
         // onto a fresh slab, copying every byte verbatim, for a layout its clients cannot see.
         //
