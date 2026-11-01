@@ -12066,6 +12066,74 @@ const _: () = assert!(
     std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>()
         == 8 + std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
 );
+
+/// THE PUBLISHED `strings` FIGURE FOLLOWS FROM THE SLOT'S WIDTH, SO IT IS DERIVED AND CHECKED
+/// HERE RATHER THAN RE-MEASURED BY HAND.
+///
+/// The README publishes the string table's per-key cost at two key counts either side of a table
+/// doubling. That figure is not independent of this crate's layout: the table holds one
+/// `(Arc<str>, ObjectSlot)` per bucket plus hashbrown's control byte, so widening the slot moves
+/// the published number by a predictable amount. This computes it from `size_of` and asserts the
+/// README says the same thing.
+///
+/// WHY THIS TEST EXISTS AT ALL. The figure went stale and nothing caught it. The tests that
+/// MEASURE it print a report and assert nothing, so they are reporters rather than guards; both
+/// are `#[cfg(feature = "alloc-probe")]` and `#[ignore]`, so no default gate builds them and no
+/// CI step runs them; and for a while the lib test target did not compile, so even by name they
+/// could not run. Three independent reasons a number can rot, and the fix for the one that is
+/// DERIVABLE is to derive it in a test that runs by default.
+///
+/// WHAT THIS DOES NOT COVER, said plainly: the resident-index totals in the same README paragraph
+/// depend on every map in `ShardState`, not on one type's width, so they cannot be derived. They
+/// are reported by `where_the_resident_index_bytes_go_on_both_routing_ranges` and
+/// `the_per_key_index_figure_is_a_sawtooth`, which must be run BY NAME with
+/// `--features alloc-probe -- --ignored` after any layout change. This test failing is a signal
+/// to do exactly that.
+#[test]
+fn the_published_string_table_figure_follows_from_the_slot_width() {
+    // One bucket: the handle, the slot, and hashbrown's control byte.
+    let bucket = std::mem::size_of::<std::sync::Arc<str>>()
+        + std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
+        + 1;
+
+    // The two phases the README quotes. hashbrown holds 7/8 load, so a capacity of 1,792 is 2,048
+    // buckets and 3,584 is 4,096, and the table carries a 16-byte header either way. Both totals
+    // are asserted against what the probe actually weighed, so the MODEL is checked before the
+    // figures derived from it are believed -- a derivation that silently stopped matching the
+    // allocator would otherwise publish a tidy wrong number.
+    let at_1792_bytes = 2048 * bucket + 16;
+    let at_1800_bytes = 4096 * bucket + 16;
+    assert_eq!(
+        at_1792_bytes, 133_136,
+        "the modelled string-table size no longer matches what the allocator probe weighed at          1,792 keys; re-run where_the_resident_index_bytes_go_on_both_routing_ranges with          --features alloc-probe -- --ignored and reconcile the model before trusting any figure          derived from it"
+    );
+    assert_eq!(at_1800_bytes, 266_256, "likewise at 1,800 keys");
+
+    let at_1792 = at_1792_bytes as f64 / 1_792.0;
+    let at_1800 = at_1800_bytes as f64 / 1_800.0;
+
+    // And the README must say so. Reading the file is the point: a figure that lives only in prose
+    // has no other way to fail.
+    let readme = std::fs::read_to_string(
+        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md"),
+    )
+    .expect("the README must be readable");
+    for value in [at_1792, at_1800] {
+        let text = format!("{value:.1}");
+        assert!(
+            readme.contains(&text),
+            "the README does not publish {text} B/key, which is what the current slot width              gives (bucket {bucket} B). The published string-table figures are stale: re-measure              with --features alloc-probe -- --ignored and update the README paragraph."
+        );
+    }
+
+    // A ONE-SIDED CHECK WOULD PASS ON A README THAT SAYS NOTHING, so the sawtooth ratio the same
+    // sentence claims is checked too: the table doubles while the key count barely moves.
+    let ratio = at_1800 / at_1792;
+    assert!(
+        (ratio - 1.99).abs() < 0.01,
+        "the doubling no longer gives the 1.99x the README claims, it gives {ratio:.2}x"
+    );
+}
 /// Pinned on its own, because a width pin admits every alignment that divides it.
 const _: () = assert!(
     std::mem::align_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 8
