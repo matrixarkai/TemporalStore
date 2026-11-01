@@ -1202,6 +1202,130 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     }
 }
 
+/// WHAT THE SLOT'S OWNED-ELEMENT HEADROOM COSTS, AND THAT NOTHING IN PRODUCTION USES IT YET.
+///
+/// `ObjectSlot` is 48 bytes: 16 of `ObjectRecord`, 8 of `Option<Box<Vec<(u64, ElementEntry)>>>`
+/// -- the owned element array -- and 24 of `Option<BlockRefs>`. The middle term is the subject
+/// here. It is paid by EVERY slot in EVERY kind's map, and `strings` is the largest row of the
+/// published resident index, so eight bytes a slot is not a rounding error there.
+///
+/// # THIS IS HEADROOM, NOT WASTE, AND THE DISTINCTION IS THE WHOLE POINT
+///
+/// The array is deliberate and has a stored form under `e` of `ObjectSlotWire`. Its write door
+/// `set_owned_elements` demands an `OwnedElementTenancy` witness, and the witness exists because
+/// roughly eight context maps are candidates for migrating into the consolidated map, where the
+/// difference between "re-derived at load" and "this IS the stored copy" decides whether an
+/// empty image is a rebuild or the rows gone. So the eight bytes buy a migration's correctness
+/// argument, and this arm does NOT propose deleting them.
+///
+/// What it does is put a number on them, because nothing did, and the next reader pricing the
+/// `strings` row would otherwise re-derive it -- as this session did, twice.
+///
+/// # WHAT IS MEASURED VERSUS WHAT IS REASONED
+///
+/// MEASURED here: that a real workload leaves the array empty in every slot of every kind.
+/// REASONED, and stated as arithmetic with its premise named rather than asserted: eight bytes
+/// a bucket is 8 x (buckets / keys) per key, and the published arm sizes its corpora at 7/8 of a
+/// power of two so its table sits at hashbrown's maximum load -- 2,048 buckets for 1,792 keys.
+/// At that factor the field is 8 x 2048 / 1792 = 9.14 B/key of the `strings` row.
+///
+/// NOT measured here, and it is the stronger evidence, so it belongs in the change's own body:
+/// renaming `set_owned_elements` leaves `cargo check --lib` at 0 errors and breaks exactly one
+/// caller under `--all-targets`, a test -- with a planted error in the same file proving `--lib`
+/// reaches it. A test cannot run that control, so it is recorded rather than re-performed.
+///
+/// # WHY THIS IS A TRIPWIRE
+///
+/// The day a tenant registers and fills the array, the assertion below fails. That is the
+/// correct outcome, and the message says so: the headroom has become load-bearing and the
+/// 9.14 B/key stops being a price paid for nothing. A comment would have gone stale silently.
+///
+/// rust-internal: measures this crate's own resident structures, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_slots_owned_element_headroom_costs -- --exact --nocapture
+#[test]
+fn what_the_slots_owned_element_headroom_costs() {
+    use crate::engine::object_record::ObjectSlot;
+    const SHIPPED_END: u32 = 1_023;
+    const KEYS: usize = 1_792;
+    const VALUE: usize = 256;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = engine_on(dir.path());
+    load_on(&engine, SHIPPED_END);
+    run_batch(
+        &engine,
+        (0..KEYS)
+            .map(|i| Command::StringSet {
+                key: format!("amp-{i:06}"),
+                value: vec![b'v'; VALUE],
+            })
+            .collect(),
+    );
+
+    let (slots, with_array, kinds) = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let mut slots = 0usize;
+        let mut with_array = 0usize;
+        let mut kinds = 0usize;
+        for map in shard.bucket_index.objects.values() {
+            kinds += 1;
+            for slot in map.values() {
+                slots += 1;
+                if slot.owned_element_count() > 0 {
+                    with_array += 1;
+                }
+            }
+        }
+        (slots, with_array, kinds)
+    };
+
+    let array_width = std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>();
+    let slot = std::mem::size_of::<ObjectSlot>();
+    let bucket = std::mem::size_of::<(std::sync::Arc<str>, ObjectSlot)>() + 1;
+    println!();
+    println!("  {slots} slots across {kinds} registered kind(s); {with_array} hold an owned array");
+    println!("  the array term is {array_width} B of a {slot} B slot, in a {bucket} B bucket");
+    println!(
+        "  without it the bucket would be {} B, so the row scales by {:.4}",
+        bucket - array_width,
+        (bucket - array_width) as f64 / bucket as f64
+    );
+    println!(
+        "  at the published arm's 2048/1792 table factor that is {:.2} B/key of `strings`",
+        array_width as f64 * 2048.0 / 1792.0
+    );
+
+    // NON-VACUITY FIRST. A zero-slot walk satisfies the claim below trivially, which is the
+    // failure mode an undefended verdict has: it would report "nothing uses the array" on the
+    // strength of having looked at no slots.
+    assert!(
+        slots >= KEYS,
+        "the walk saw {slots} slots for {KEYS} keys written, so it is not looking at the \
+         population this claim is about"
+    );
+
+    // THE CLAIM, AND THE TRIPWIRE.
+    assert_eq!(
+        0, with_array,
+        "{with_array} of {slots} slots now hold an owned element array. The headroom has become \
+         load-bearing, so it is no longer {array_width} B a slot paid for nothing -- re-derive \
+         what it costs and what it buys before quoting the old figure"
+    );
+
+    // THE WIDTHS, AS A DIFFERENCE AND NOT AS LITERALS. An absolute `size_of` pin here fires on
+    // any change to any term, including ones this claim survives, and a const assert that fails
+    // takes the whole lib-test target offline at compile time.
+    assert_eq!(
+        slot,
+        std::mem::size_of::<crate::engine::object_record::ObjectRecord>()
+            + array_width
+            + std::mem::size_of::<Option<crate::engine::state::BlockRefs>>(),
+        "the slot is no longer its three named terms, so the arithmetic above describes a shape \
+         that no longer exists"
+    );
+}
 /// WHAT A RETAIN LEAVES IN THE LIST'S CAPACITY, against the cap the growth policy claims.
 ///
 /// `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement` asserts a live list
