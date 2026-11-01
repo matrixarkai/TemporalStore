@@ -695,3 +695,5 @@ mod the_key_a_block_is_filed_under_inverts_exactly;
 mod what_the_slot_index_floor_is;
 #[path = "tests/what_each_maintenance_bound_costs_per_round.rs"]
 mod what_each_maintenance_bound_costs_per_round;
+#[path = "tests/what_one_hash_field_write_costs_durably.rs"]
+mod what_one_hash_field_write_costs_durably;
