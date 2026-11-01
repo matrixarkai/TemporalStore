@@ -1868,6 +1868,33 @@ impl LocalWriteAheadLogStore {
         Ok(records)
     }
 
+    /// The durable barrier, taking its batch window from configuration.
+    ///
+    /// # WHY THIS WRAPPER EXISTS, AND WHAT IT FIXED
+    ///
+    /// [`group_commit_delay`] documents itself as a deliberate widening of the
+    /// group-commit batch window, and is the documented meaning of `TS_WAL_COMMIT_DELAY_US` /
+    /// `[wal] commit_delay_us`. UNTIL THIS WRAPPER EXISTED IT WIDENED NOTHING ON THIS PATH.
+    /// Renaming the function and building `--all-targets` produced ZERO diagnostics: nothing a
+    /// default build compiles called it. Its only caller in the tree is
+    /// `wire_matrixobject_durability`, which is `#[cfg(feature = "matrixobject")]` -- a
+    /// non-default feature -- and even there it configures the SHARED STORE's group commit, not
+    /// this one. The knob was read by nothing on the path its own documentation names.
+    ///
+    /// The zero-diagnostic rename is not by itself evidence: it is byte-identical to a gate
+    /// that never compiled the call site. So the inverse control was run -- a planted type
+    /// error in that same bin file turns `--all-targets` red (`bin "server"`), proving the
+    /// gate does reach it and that the cfg attribute is what hides the call.
+    ///
+    /// The default is still zero, so nothing changes for anyone who has not set it.
+    fn group_commit_sync(
+        &self,
+        shard_id: ShardId,
+        required_sequence: u64,
+    ) -> Result<(), WriteAheadLogError> {
+        self.group_commit_sync_windowed(shard_id, required_sequence, group_commit_delay())
+    }
+
     /// Coalesced WAL durability barrier (group commit). Ensures every byte appended for
     /// `shard_id` up to at least `required_sequence` is `fdatasync`'d to disk before
     /// returning. Concurrent callers serialize on `sync_coord`; the first to run fsyncs
@@ -1878,15 +1905,42 @@ impl LocalWriteAheadLogStore {
     /// `inner` lock and releases it before calling here, so the snapshotted high-water
     /// sequence names only bytes already in the page cache; the fsync makes exactly those
     /// durable, and the watermark is never advanced past them.
-    fn group_commit_sync(
+    /// `window` is how long to let appends accumulate before the fsync. Taken as a PARAMETER
+    /// rather than read from configuration in here, so the arms that measure it drive it
+    /// directly: this file's `set_*_for_test` idiom is a `thread_local!`, and a barrier runs on
+    /// whichever thread calls it, so a thread-local override is invisible to exactly the
+    /// concurrent writers this window exists to coalesce.
+    fn group_commit_sync_windowed(
         &self,
         shard_id: ShardId,
         required_sequence: u64,
+        window: std::time::Duration,
     ) -> Result<(), WriteAheadLogError> {
         let mut coord = self.sync_coord.lock().expect("wal sync coordinator poisoned");
         let entry = coord.entry(shard_id).or_default();
         if entry.durable_seq >= required_sequence {
             return Ok(());
+        }
+        // THE BATCH WINDOW, AND WHY IT SITS EXACTLY HERE.
+        //
+        // AFTER the early return, so a writer already covered by someone else's barrier never
+        // sleeps -- it takes its free ride at full speed, which is the point of coalescing.
+        //
+        // BEFORE the snapshot below, which is what makes the window worth anything: appenders
+        // take `inner`, not `coord`, so they keep appending throughout this sleep, and the
+        // snapshot taken afterwards names those bytes too. One fsync then covers a group that
+        // arrived over `window` rather than only the group that happened to arrive during the
+        // previous fsync's flight. Snapshotting BEFORE the sleep would leave every append that
+        // landed during it to the next barrier -- the current behaviour, plus latency, minus
+        // the gain.
+        //
+        // Holding `coord` across the sleep is deliberate: other barrier callers block on it and
+        // then find themselves already durable. They wait, but they were waiting on an in-flight
+        // fsync anyway -- the window makes that wait longer and the fsync rarer, which is the
+        // whole trade. It is NOT free: ack waits on this barrier, so the window lands on write
+        // latency. A zero default keeps that cost opt-in.
+        if !window.is_zero() {
+            std::thread::sleep(window);
         }
         let (path, snapshot, record_end) = {
             let mut inner = self.inner.lock().expect("write-ahead log lock poisoned");
@@ -13076,6 +13130,248 @@ mod tests {
             expected += 1;
         }
         set_wal_segment_bytes_for_test(None);
+    }
+
+    /// THE WINDOW IS HONOURED, deterministically, before anything is claimed for it.
+    ///
+    /// The payoff arm below is a concurrency comparison and so is a measurement, not a proof.
+    /// This is the proof: one uncovered barrier with a 40 ms window cannot return sooner than
+    /// 40 ms. If the sleep is ever moved above the early return, or dropped, this fails while
+    /// the comparison arm would merely get quieter.
+    #[test]
+    fn the_commit_window_is_honoured_by_an_uncovered_barrier() {
+        use std::time::{Duration, Instant};
+        const WINDOW: Duration = Duration::from_millis(40);
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalWriteAheadLogStore::new(dir.path());
+        let rec = store
+            .append_for_group_commit(
+                1,
+                Command::StringSet { key: "w".to_string(), value: vec![118u8; 16] },
+                Vec::new(),
+                Vec::new(),
+            )
+            .unwrap();
+        let start = Instant::now();
+        store.group_commit_sync_windowed(1, rec.sequence, WINDOW).unwrap();
+        let uncovered = start.elapsed();
+        assert!(
+            uncovered >= WINDOW,
+            "an uncovered barrier returned in {uncovered:?}, under the {WINDOW:?} window it was given. \
+             The window is what makes the group bigger than one fsync's flight; a barrier that \
+             does not wait for it is the timer-less behaviour wearing the knob's name."
+        );
+
+        // AND A COVERED BARRIER MUST NOT PAY IT. Same sequence again: already durable, so it
+        // takes the free ride. If the sleep were above the early return this would also take
+        // the window, which would put the cost on every writer and the benefit on none.
+        let start = Instant::now();
+        store.group_commit_sync_windowed(1, rec.sequence, WINDOW).unwrap();
+        let covered = start.elapsed();
+        assert!(
+            covered < WINDOW,
+            "a barrier whose sequence was ALREADY durable still waited {covered:?} for the \
+             {WINDOW:?} window. The sleep belongs after the early return: a free rider pays \
+             nothing, or the window costs every writer and buys nobody anything."
+        );
+    }
+
+    /// WHAT THE COMMIT WINDOW BUYS IN FSYNCS PER WRITE, AND WHAT IT COSTS IN LATENCY.
+    ///
+    /// # THE QUANTITY THAT MATTERS IS BARRIERS, NOT BYTES
+    ///
+    /// A durable append costs about ONE BLOCK whatever the record holds, so the WAL's cost per
+    /// write is set by how many fsyncs it takes, not by how long the records are. That is why
+    /// this counts `engine_wal_group_commit` barriers from `durability_metrics` rather than
+    /// weighing the file: a byte count measured as file length is not a cost until you know the
+    /// flush granularity.
+    ///
+    /// # WHY IT HAS TO BE CONCURRENT
+    ///
+    /// A window cannot help a SERIAL writer: nothing else is appending during the sleep, so the
+    /// group is still one record and the only effect is the added latency. The window converts a
+    /// group whose size is set by one fsync's flight into one whose size is set by arrival rate
+    /// times the window, so it is worth exactly what concurrency gives it. Measured at both ends
+    /// and printed, with latency beside it, because a fsync saving bought with unbounded write
+    /// latency is not a saving anyone asked for.
+    ///
+    /// # WHAT FIVE RUNS SHOWED, AND WHICH CLAIM SURVIVES THEM
+    ///
+    /// fsyncs per write, 8 threads x 24 writes, same tree, five consecutive runs:
+    ///
+    /// | window | A | B | C | D | E |
+    /// |---|---|---|---|---|---|
+    /// | 0 | 0.229 | 0.208 | 0.219 | 0.219 | 0.286 |
+    /// | 200us | 0.203 | 0.182 | 0.172 | 0.182 | 0.302 |
+    /// | 1ms | 0.182 | 0.167 | 0.156 | 0.151 | 0.255 |
+    /// | 5ms | 0.182 | 0.130 | 0.130 | 0.135 | 0.255 |
+    ///
+    /// WHAT SURVIVES: the widest window took fewer barriers than the timer-less arm in ALL
+    /// FIVE, by 11% to 41%. That endpoint comparison is the only thing asserted below.
+    ///
+    /// WHAT DOES NOT SURVIVE: the sweep is NOT monotone. Run E put 200us WORSE than zero
+    /// (0.302 against 0.286), and 5ms never beat 1ms in any run. So this does not say a wider
+    /// window is always better -- only that >= 1ms reliably beats no window, and that there is
+    /// nothing past 1ms to buy. An earlier version of this note claimed MONOTONICITY off the
+    /// first four runs; the fifth refuted it. The assertion was narrowed to the endpoints
+    /// rather than the table being re-run until it agreed, which is the temptation here.
+    ///
+    /// THE WALL COLUMN DID NOT SURVIVE: across five runs the timer-less arm alone ranged 64 to 348 ms
+    /// for identical work, and one run reported the WIDEST window as 48% FASTER. So no latency
+    /// figure is claimed from it -- the cost is stated structurally instead (at most one window
+    /// per uncovered barrier, pinned deterministically next door). A loaded machine is the
+    /// normal condition here, so this is a property of the instrument, not of one bad run.
+    ///
+    /// AND THE BYTES DO NOT MOVE AT ALL: B/write is 1365.3 in every arm. The window changes
+    /// how many flushes carry the same bytes, so anyone reading file length to price this
+    /// would measure exactly zero -- the flush-granularity trap.
+    ///
+    /// Process-global counters, so this is `#[ignore]`d and run by name: a barrier from any
+    /// other test running beside it would land in the same tally.
+    ///
+    ///   cargo test -p temporalstore-rust --lib what_the_commit_window_buys_in_fsyncs_per_write -- --exact --ignored --nocapture --test-threads=1
+    #[test]
+    #[ignore = "drives concurrent durable barriers and sleeps; run by name"]
+    fn what_the_commit_window_buys_in_fsyncs_per_write() {
+        use std::time::{Duration, Instant};
+        const THREADS: usize = 8;
+        const PER_THREAD: usize = 24;
+        const WRITES: usize = THREADS * PER_THREAD;
+
+        struct Arm {
+            window: Duration,
+            barriers: u64,
+            elapsed: Duration,
+            bytes: u64,
+        }
+
+        let run = |window: Duration| -> Arm {
+            let dir = tempfile::tempdir().unwrap();
+            let store = LocalWriteAheadLogStore::new(dir.path());
+            crate::durability_metrics::reset();
+            let start = Instant::now();
+            std::thread::scope(|scope| {
+                for thread in 0..THREADS {
+                    let store = &store;
+                    scope.spawn(move || {
+                        for index in 0..PER_THREAD {
+                            let rec = store
+                                .append_for_group_commit(
+                                    1,
+                                    Command::StringSet {
+                                        key: format!("t{thread:02}-k{index:04}"),
+                                        value: vec![118u8; 64],
+                                    },
+                                    Vec::new(),
+                                    Vec::new(),
+                                )
+                                .expect("append");
+                            store
+                                .group_commit_sync_windowed(1, rec.sequence, window)
+                                .expect("barrier");
+                        }
+                    });
+                }
+            });
+            let elapsed = start.elapsed();
+            let barriers = crate::durability_metrics::snapshot()
+                .get("engine_wal_group_commit")
+                .copied()
+                .unwrap_or(0);
+            // DURABILITY IS NOT TRADED FOR THE WINDOW: every record must still be there and in
+            // sequence. The window moves WHEN the fsync happens, never whether an acked write
+            // was covered by one.
+            let scanned = store.scan(1, 0, u64::MAX, u64::MAX).unwrap();
+            assert_eq!(
+                WRITES,
+                scanned.len(),
+                "{} of {WRITES} records survived a {window:?} window, so the window cost records \
+                 rather than fsyncs",
+                scanned.len()
+            );
+            let bytes = wal_segment_paths(dir.path(), 1)
+                .iter()
+                .filter_map(|path| std::fs::metadata(path).ok())
+                .map(|meta| meta.len())
+                .sum();
+            Arm { window, barriers, elapsed, bytes }
+        };
+
+        let arms: Vec<Arm> = [
+            Duration::ZERO,
+            Duration::from_micros(200),
+            Duration::from_millis(1),
+            Duration::from_millis(5),
+        ]
+        .into_iter()
+        .map(run)
+        .collect();
+
+        println!();
+        println!("  WHAT A COMMIT WINDOW BUYS, {THREADS} THREADS x {PER_THREAD} WRITES = {WRITES} DURABLE WRITES");
+        println!();
+        println!(
+            "    {:>10} {:>10} {:>14} {:>12} {:>12}",
+            "window", "barriers", "fsyncs/write", "wall ms", "B/write"
+        );
+        for arm in &arms {
+            println!(
+                "    {:>10} {:>10} {:>14.3} {:>12.1} {:>12.1}",
+                format!("{:?}", arm.window),
+                arm.barriers,
+                arm.barriers as f64 / WRITES as f64,
+                arm.elapsed.as_secs_f64() * 1000.0,
+                arm.bytes as f64 / WRITES as f64,
+            );
+        }
+        println!();
+        let zero = &arms[0];
+        let widest = arms.last().expect("the sweep is not empty");
+        println!(
+            "    THE WIDEST WINDOW TAKES {:.3} -> {:.3} FSYNCS PER WRITE ({:+.1}%)",
+            zero.barriers as f64 / WRITES as f64,
+            widest.barriers as f64 / WRITES as f64,
+            100.0 * (widest.barriers as f64 - zero.barriers as f64) / zero.barriers.max(1) as f64,
+        );
+        println!(
+            "    the wall column above is INDICATIVE ONLY and is not a latency measurement:"
+        );
+        println!(
+            "    across five runs the timer-less arm alone ranged 64-348 ms for the same 192"
+        );
+        println!(
+            "    writes, so it is dominated by what else the machine is doing. The window's"
+        );
+        println!(
+            "    latency cost is STRUCTURAL, not measured here: at most one window per"
+        );
+        println!(
+            "    uncovered barrier, which `the_commit_window_is_honoured_by_an_uncovered_barrier`"
+        );
+        println!("    pins deterministically. B/write is identical in every arm.");
+        println!();
+
+        // --- THE FLOOR THAT MAKES THE COMPARISON MEAN ANYTHING: the timer-less arm must
+        // --- actually be paying for barriers, or there is no room for a window to help and
+        // --- every figure above is noise.
+        assert!(
+            zero.barriers > 0,
+            "the timer-less arm took no barriers at all over {WRITES} durable writes, so the \
+             counter is not reading this path and nothing below is a comparison"
+        );
+        // --- AND THE WINDOW MUST REDUCE THEM. This is the claim: a time-driven group is bigger
+        // --- than one sized by a single fsync's flight. If it ever stops holding, the window is
+        // --- cost with no benefit and the default must stay zero for a reason this states.
+        assert!(
+            widest.barriers < zero.barriers,
+            "a {:?} window took {} barriers against {} for the timer-less arm over {WRITES} \
+             writes. The window was expected to COALESCE -- appenders hold `inner` and not \
+             `coord`, so they keep arriving during the sleep and one fsync should cover more of \
+             them. If it does not, this knob is latency with no saving.",
+            widest.window,
+            widest.barriers,
+            zero.barriers
+        );
     }
 
     /// What does writing one record per command cost against batching them? Prints.
