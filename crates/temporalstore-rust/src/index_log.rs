@@ -409,6 +409,19 @@ pub struct IndexAnchorRecord {
 /// as an unknown codec rather than misreading it, which is what the codec byte is for.
 pub(crate) const INDEX_LOG_CODEC_MSGPACK_ZSTD: u8 = 2;
 
+/// Payload codec: the protobuf schema of the design being followed, in its superset form
+/// ([`crate::index_log_wire`]), for the DELTA shape only.
+///
+/// READER FIRST, AS EVERY CODEC HERE HAS BEEN. This build decodes it; nothing in this build writes
+/// it. A store can therefore be rolled forward to a build that reads it before any build emits it,
+/// and a build older than this one refuses the id as an unknown codec rather than misreading it,
+/// which is what the container byte is for.
+///
+/// Decoded by converting to the record and then taking the same msgpack path every other codec
+/// ends in, so a reader of any type that reads a delta record reads this one, and there is exactly
+/// one place the record's meaning is decided.
+pub(crate) const INDEX_LOG_CODEC_PROTOBUF: u8 = 3;
+
 /// The single place an index-log record becomes payload bytes.
 ///
 /// Both append paths go through here so the whole-index record and the delta record cannot
@@ -427,6 +440,49 @@ fn index_log_compression_enabled() -> bool {
             .as_str(),
         "1" | "true" | "yes" | "on"
     )
+}
+
+/// Whether new DELTA records are written in the protobuf codec. OFF by default.
+///
+/// Reading codec 3 is unconditional ([`decode_index_payload`]); only writing it is gated, exactly as
+/// compression is, so a store can be rolled forward and back without a migration. Only the delta
+/// append reads this: the whole-index and anchor records stay as they are, and a log may hold a
+/// mixture.
+fn index_log_protobuf_enabled() -> bool {
+    #[cfg(test)]
+    if PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.get()) {
+        return true;
+    }
+    matches!(
+        std::env::var("TS_INDEX_LOG_PROTOBUF_ENABLED")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+/// A test's way to turn the protobuf writer on for ITS OWN THREAD, without touching the process
+/// environment that every other test in the binary shares. `append_delta` runs on the caller's
+/// thread, so a thread-local reaches exactly the appends the test makes.
+#[cfg(test)]
+thread_local! {
+    pub(crate) static PROTOBUF_WRITER_ON_THIS_THREAD: std::cell::Cell<bool> =
+        const { std::cell::Cell::new(false) };
+}
+
+/// One delta record as protobuf payload bytes: the container byte for codec 3, then the message.
+fn encode_delta_protobuf_into(
+    record: &IndexDeltaRecord,
+    out: &mut Vec<u8>,
+) -> Result<(), IndexLogError> {
+    out.clear();
+    out.push(index_container_byte(INDEX_LOG_CODEC_PROTOBUF, INDEX_LOG_SHAPE_DELTA));
+    out.extend_from_slice(
+        &crate::index_log_wire::encode_delta_record(record).map_err(IndexLogError::Encoding)?,
+    );
+    Ok(())
 }
 
 /// Payloads below this many bytes are stored uncompressed.
@@ -550,8 +606,22 @@ pub(crate) fn decode_index_payload<T: serde::de::DeserializeOwned>(payload: &[u8
             "index-log record has no container byte".to_string(),
         ));
     };
-    let (codec, _shape) = index_container_parts(*container);
+    let (codec, shape) = index_container_parts(*container);
     match codec {
+        INDEX_LOG_CODEC_PROTOBUF => {
+            if shape != INDEX_LOG_SHAPE_DELTA {
+                return Err(IndexLogError::Encoding(format!(
+                    "the protobuf codec carries delta records only, not shape {shape}"
+                )));
+            }
+            let record = crate::index_log_wire::decode_delta_record(body)
+                .map_err(IndexLogError::Encoding)?;
+            let mut packed = Vec::new();
+            serde::Serialize::serialize(&record, &mut rmp_serde::Serializer::new(&mut packed))
+                .map_err(|error| IndexLogError::Encoding(error.to_string()))?;
+            rmp_serde::from_slice(&packed)
+                .map_err(|error| IndexLogError::Encoding(error.to_string()))
+        }
         INDEX_LOG_CODEC_MSGPACK => rmp_serde::from_slice(body)
             .map_err(|error| IndexLogError::Encoding(error.to_string())),
         INDEX_LOG_CODEC_MSGPACK_ZSTD => {
@@ -3126,7 +3196,11 @@ impl LocalIndexLogStore {
         // allocate from nothing: not a correctness bug, but exactly the cost this removes,
         // reappearing after the first transient write error and never going away.
         let written = (|payload: &mut Vec<u8>, bytes: &mut Vec<u8>| -> Result<std::fs::File, IndexLogError> {
-            encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, payload)?;
+            if index_log_protobuf_enabled() {
+                encode_delta_protobuf_into(&record, payload)?;
+            } else {
+                encode_index_payload_into(&record, INDEX_LOG_SHAPE_DELTA, payload)?;
+            }
             crate::log_framing::encode_record_into(payload, bytes);
             let mut file = OpenOptions::new().create(true).append(true).open(&active)?;
             file.write_all(bytes)?;
@@ -9366,6 +9440,150 @@ flag exists to say",
         assert_eq!(records[1].sequence, 10);
         assert_eq!(records[1].items[0].block_ref_key, "second");
         assert_eq!(records[1].applied_wal_sequence, Some(2));
+    }
+
+    /// A delta record in the protobuf codec, framed like any other, is read by the live read path
+    /// and by the tail scan, between two records in the codec this build writes.
+    ///
+    /// Nothing in this build writes that codec, so the record is made by hand: container byte for
+    /// codec 3 and the delta shape, then the protobuf bytes, framed with the same frame.
+    #[test]
+    fn a_protobuf_coded_delta_record_is_read_by_the_live_read_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = LocalIndexLogStore::new(dir.path());
+        store
+            .append_delta(3, vec![block_item(1, "first", false)], Vec::new(), Some(1), None, true, true)
+            .unwrap();
+        drop(store);
+
+        let record = IndexDeltaRecord {
+            shard_id: 3,
+            sequence: 2,
+            items: vec![block_item(2, "second", false)],
+            meta: None,
+            applied_wal_sequence: Some(2),
+            upsert: true,
+            key_states: vec![serde_json::json!({"k": 1})],
+            shared_object_key: None,
+        };
+        let mut payload =
+            vec![index_container_byte(INDEX_LOG_CODEC_PROTOBUF, INDEX_LOG_SHAPE_DELTA)];
+        payload.extend_from_slice(&crate::index_log_wire::encode_delta_record(&record).unwrap());
+        let path = index_log_path(dir.path(), 3);
+        let mut file = OpenOptions::new().create(true).append(true).open(&path).unwrap();
+        file.write_all(&crate::log_framing::encode_frame(&payload)).unwrap();
+        file.sync_all().unwrap();
+        drop(file);
+
+        // The whole read path, from a fresh store.
+        let reopened = LocalIndexLogStore::new(dir.path());
+        let records = reopened.read_delta_records(3, 0).unwrap();
+        assert_eq!(records.len(), 2, "both records must be read: {records:?}");
+        assert_eq!(records[1].sequence, 2);
+        assert_eq!(records[1].items[0].object_key.as_ref(), "second");
+        assert_eq!(records[1].applied_wal_sequence, Some(2));
+        assert_eq!(records[1].key_states, record.key_states);
+
+        // And a write AFTER it continues the sequence: the tail scan read the protobuf record's
+        // sequence through the same decode, which is what `append_delta` depends on.
+        let next = reopened
+            .append_delta(3, vec![block_item(3, "third", false)], Vec::new(), Some(3), None, true, true)
+            .unwrap();
+        assert_eq!(next, 3);
+    }
+
+    /// THE WRITER, WHEN ASKED: the same appends in the two codecs read back as the same records.
+    ///
+    /// Two stores get identical `append_delta` calls, one with the protobuf writer on for this
+    /// thread. The control is the file itself: every delta in the first store carries codec 3 and
+    /// none in the second does, so a pass cannot be two stores that both took the same path.
+    #[test]
+    fn the_protobuf_writer_reads_back_as_the_same_records_as_the_default_writer() {
+        let calls = |dir: &std::path::Path| {
+            let store = LocalIndexLogStore::new(dir);
+            for (position, key) in ["alpha", "beta", "gamma", "delta"].into_iter().enumerate() {
+                store
+                    .append_delta(
+                        9,
+                        vec![block_item(position as u32 + 1, key, position % 2 == 1)],
+                        vec![serde_json::json!({"n": position})],
+                        Some(position as u64 + 10),
+                        None,
+                        position % 2 == 0,
+                        true,
+                    )
+                    .unwrap();
+            }
+            // A multi-item record that shares one object key, so the hoist is exercised.
+            store
+                .append_delta(
+                    9,
+                    vec![block_item(7, "shared", false), block_item(8, "shared", false)],
+                    Vec::new(),
+                    Some(99),
+                    None,
+                    true,
+                    true,
+                )
+                .unwrap();
+            store.read_delta_records(9, 0).unwrap()
+        };
+        let default_dir = tempfile::tempdir().unwrap();
+        let default_records = calls(default_dir.path());
+
+        let proto_dir = tempfile::tempdir().unwrap();
+        PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.set(true));
+        let proto_records = calls(proto_dir.path());
+        PROTOBUF_WRITER_ON_THIS_THREAD.with(|flag| flag.set(false));
+
+        assert_eq!(default_records.len(), 5);
+        assert_eq!(proto_records, default_records);
+
+        let codecs = |dir: &std::path::Path| {
+            let bytes = std::fs::read(index_log_path(dir, 9)).unwrap();
+            let mut reader = std::io::BufReader::new(bytes.as_slice());
+            let mut seen = Vec::new();
+            while let Some((_, payload)) = crate::log_framing::read_frame(&mut reader).unwrap() {
+                seen.push(index_container_parts(payload[0]).0);
+            }
+            seen
+        };
+        assert_eq!(codecs(proto_dir.path()), vec![INDEX_LOG_CODEC_PROTOBUF; 5]);
+        assert!(codecs(default_dir.path()).iter().all(|codec| *codec != INDEX_LOG_CODEC_PROTOBUF));
+        // A fresh store on the protobuf log appends the next sequence: the tail scan reads it.
+        let reopened = LocalIndexLogStore::new(proto_dir.path());
+        let next = reopened
+            .append_delta(9, vec![block_item(1, "after", false)], Vec::new(), Some(100), None, true, true)
+            .unwrap();
+        assert_eq!(next, 6);
+    }
+
+    /// The protobuf codec is for deltas: any other shape is refused rather than guessed at.
+    #[test]
+    fn the_protobuf_codec_refuses_a_shape_it_does_not_carry() {
+        let record = IndexDeltaRecord {
+            shard_id: 1,
+            sequence: 1,
+            items: Vec::new(),
+            meta: None,
+            applied_wal_sequence: None,
+            upsert: false,
+            key_states: Vec::new(),
+            shared_object_key: None,
+        };
+        let body = crate::index_log_wire::encode_delta_record(&record).unwrap();
+        for shape in [INDEX_LOG_SHAPE_WHOLE, INDEX_LOG_SHAPE_ANCHOR] {
+            let mut payload = vec![index_container_byte(INDEX_LOG_CODEC_PROTOBUF, shape)];
+            payload.extend_from_slice(&body);
+            assert!(decode_index_payload::<IndexDeltaRecord>(&payload).is_err());
+        }
+        // The control: the same bytes under the delta shape decode.
+        let mut delta = vec![index_container_byte(INDEX_LOG_CODEC_PROTOBUF, INDEX_LOG_SHAPE_DELTA)];
+        delta.extend_from_slice(&body);
+        assert_eq!(decode_index_payload::<IndexDeltaRecord>(&delta).unwrap().sequence, 1);
+        // And garbage under the codec is an error, not a panic.
+        let garbage = vec![index_container_byte(INDEX_LOG_CODEC_PROTOBUF, INDEX_LOG_SHAPE_DELTA), 0xFF, 0xFF, 0xFF];
+        assert!(decode_index_payload::<IndexDeltaRecord>(&garbage).is_err());
     }
 
     /// The tail scan trims the file back to its last whole record. Given a record it cannot
