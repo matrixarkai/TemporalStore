@@ -3,7 +3,7 @@
 
 //! A sorted set's scores and order must survive a restart -- re-scores included.
 //!
-//! Each member's page is named in the bucket index by a component encoding (score, member), and
+//! Each member's block is named in the bucket index by a component encoding (score, member), and
 //! a re-score marks the OLD component deleted before publishing the new one. Recovery rebuilds
 //! the map purely from live components, so a restart must see the moved score exactly once,
 //! never the stale one -- that is the failure this pins: if the delete-then-insert ever loses

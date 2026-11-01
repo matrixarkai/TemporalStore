@@ -7,7 +7,7 @@
 //!
 //! `promote_model_maps_to_bucket_index_authority` runs on the request path and asks, per live
 //! model-map block, whether the bucket index names it. `contains_object_block_address` requires
-//! `page.component.as_deref() == component`, so a projection that files entries with no component
+//! `block.component.as_deref() == component`, so a projection that files entries with no component
 //! while the check asks about a NAMED one would answer "missing" for every element -- and a single
 //! missing block rebuilds the whole shard index. **Per execute.**
 //!
@@ -19,7 +19,7 @@
 //!
 //! The check does not have its own walk: it consumes `visit_model_live_blocks`, the same
 //! projection the gate already switches. So under the gate both sides of the comparison may
-//! already be speaking about pages rather than elements -- the walk emitting `None` and the index
+//! already be speaking about blocks rather than elements -- the walk emitting `None` and the index
 //! holding `None` -- in which case this step needs no code change at all. Printed rather than
 //! predicted.
 //!

@@ -3,7 +3,7 @@
 
 //! What ONE maintenance round costs, STAGE BY STAGE, on a large store.
 //!
-//! The round is what runs continuously: prepare, reclaim the log, expire, evict, reclaim pages,
+//! The round is what runs continuously: prepare, reclaim the log, expire, evict, reclaim blocks,
 //! collect the index log, compact, reap metrics. Its stages have each been measured before, at
 //! small sizes. The question here is the one only a large store answers -- as the store grows,
 //! does one round cost what the STORE is, or what the round has to DO? -- and it is asked of each
@@ -30,7 +30,7 @@
 //!   ROUND                     377,824     1,897,824    5.023x   18.891      GROWING
 //! ```
 //!
-//! Four of the ten stages walk the whole live page set, each a fixed number of times per round --
+//! Four of the ten stages walk the whole live block set, each a fixed number of times per round --
 //! 2, 5, 6 and 6, summing to 19 -- and the per-record figure moves 18.891 -> 18.978 across a store
 //! five times larger, which is 0.5%. Six stages are flat at zero. Two of those six are flat
 //! because they are BOUNDED per cycle, one is flat because it does no walking, and TWO ARE NOT
@@ -67,7 +67,7 @@
 //! SUM THE INTEGRAL. A per-round cost that is a CONSTANT MULTIPLE of the store is not a flat cost.
 //! The round fires on a timer while the store grows under it, so the multiple applies to a subject
 //! the round itself watches grow. Building a store to N records with one round per `k` records
-//! written costs `19 * k * (N/k)(N/k + 1)/2` live-page entries, which is about `19 N^2 / 2k`. At
+//! written costs `19 * k * (N/k)(N/k + 1)/2` live-block entries, which is about `19 N^2 / 2k`. At
 //! N = 1,000,000 and a round every 10,000 records that is 9.5e11 entries to build the store once
 //! -- quadratic in N, while every individual round reports a perfectly steady 18.9x.
 //!
@@ -79,8 +79,8 @@
 //! stage CHANGES. None of them bounds what it READS, and the four stages in the table above --
 //! `plan`, `reclaim_wal`, `merged_dump_load_policy`, `compact` -- have no per-cycle bound of
 //! either kind: each does all the work it finds. One bound does live inside
-//! `merged_dump_load_policy`, `RECOVERY_READABLE_PROBE_PER_ROUND` at 512 pages, and it is why that
-//! stage reads only 512 pages while still walking the index six times.
+//! `merged_dump_load_policy`, `RECOVERY_READABLE_PROBE_PER_ROUND` at 512 blocks, and it is why that
+//! stage reads only 512 blocks while still walking the index six times.
 //!
 //! NOTHING SHEDS OR THROTTLES. No stage returns "I stopped short, come back sooner"; the three
 //! bounded ones carry a cursor to the next round and say nothing else, and the four unbounded ones
@@ -137,7 +137,7 @@ fn round_engine(dir: &std::path::Path) -> TemporalEngine {
     engine
 }
 
-/// Roll the active data slab, so the store is more than one slab and page reclaim and compaction
+/// Roll the active data slab, so the store is more than one slab and block reclaim and compaction
 /// have a choice to make.
 ///
 /// The block store's own roll rather than a prepare-only round: a round surveys the whole shard on
@@ -762,7 +762,7 @@ fn every_stage_this_round_measures_had_work_to_do() {
 ///
 /// WHY THIS IS NOT A WALK COUNTER. A round can encode the ENTIRE served index -- its own tail does
 /// exactly that once the undumped log has crossed a threshold, after the last stage row is built.
-/// That cost is the whole store, and it materialises no live-page entry and visits no bucket
+/// That cost is the whole store, and it materialises no live-block entry and visits no bucket
 /// index, so BOTH walk counters read zero across it: a walk-based residual reports a whole-store
 /// cost as nothing at all. `index_encode_counts` is charged inside `serialize_index`, lives in
 /// another module as a thread-local tally, and no stage row feeds it.

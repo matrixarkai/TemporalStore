@@ -8,7 +8,7 @@
 //! verdicts:
 //!
 //!   * STEP 1b -- the key moved to the bucket's object list -- entry 48, stride 56, REFUTED. On
-//!     bytes it is two populations with opposite signs: -15.76 to -15.84 B a page on containers but
+//!     bytes it is two populations with opposite signs: -15.76 to -15.84 B a block on containers but
 //!     +8.11 to +9.10 on routed keys at the shipped `0..=1023` range, because the object list grows
 //!     by a key for every object and a routed bucket holds forty of them. On identity it is refuted
 //!     outright: with the key off the entry, an entry's only handle on its object is
@@ -17,8 +17,8 @@
 //!     falls with it".
 //!
 //! SO WHY THIS MODULE EXISTS. Step 1b was measured while `bucket.object_index` held ONE ROW PER
-//! PAGE -- #2007 measured 0.9983. #2019 collapsed that to one row per `(kind, key)`, measured 0.0400
-//! per page on the container arm. The row count is the term step 1b's byte arithmetic divides by, so
+//! BLOCK -- #2007 measured 0.9983. #2019 collapsed that to one row per `(kind, key)`, measured 0.0400
+//! per block on the container arm. The row count is the term step 1b's byte arithmetic divides by, so
 //! the single number the refutation rested on changed by a factor of twenty-five two hours before
 //! this module was written. That is a real reason to reopen it, and reopening it is what this module
 //! does. THE VERDICT DOES NOT MOVE, and the reasons it does not are worth pinning because the next
@@ -27,7 +27,7 @@
 //! WHAT IS RE-MEASURED, AND WHAT IS NEW.
 //!
 //!   1. THE ARITHMETIC IS STILL SOUND, AND THE `u8` STILL BUYS NOTHING. Replacing `object_key`
-//!      alone takes the entry 64 -> 48 and the stride 72 -> 56: sixteen bytes a page, reconstructed
+//!      alone takes the entry 64 -> 48 and the stride 72 -> 56: sixteen bytes a block, reconstructed
 //!      with `offset_of!` on mirror structures rather than asserted. A `u8` ordinal lands on the
 //!      SAME 48, so its ceiling of 255 objects a bucket -- reachable, since a bucket is a hash
 //!      bucket that fills with the corpus -- buys precisely zero additional bytes. Nothing should be
@@ -35,13 +35,13 @@
 //!      ordinal with step 1a's thin `component` as well; this row substitutes `object_key` only.)
 //!
 //!   2. #2019'S COLLAPSE DOES NOT REOPEN STEP 1b, and the reason is the arm it did not touch. The
-//!      trade is `saving * pages - name_row * rows`, and it is positive only where a key holds more
-//!      than one page. Measured per arm and never averaged: the container arm is where #2019's
-//!      collapse lands and it pays, and THE ROUTED ARM STILL HOLDS ONE ROW PER PAGE -- its component
+//!      trade is `saving * blocks - name_row * rows`, and it is positive only where a key holds more
+//!      than one block. Measured per arm and never averaged: the container arm is where #2019's
+//!      collapse lands and it pays, and THE ROUTED ARM STILL HOLDS ONE ROW PER BLOCK -- its component
 //!      was already absent, so #2019 was the identity on it -- which makes its trade a CEILING of
 //!      zero before the list's own allocation is charged at all. The standing +8.11 to +9.10 is that
 //!      ceiling with the allocation charged. #2019 published the distribution that decides which arm
-//!      a real store is and it is repeated here rather than buried: ACROSS A REAL CORPUS, pages per
+//!      a real store is and it is repeated here rather than buried: ACROSS A REAL CORPUS, blocks per
 //!      `(kind, key)` is p50 1, p90 1, p99 1. This module's fixture is deliberately NOT that
 //!      distribution -- 8 containers beside 200 routed keys puts a container at p99 -- because a
 //!      sample matching the corpus would hold no visible container effect to measure the ceiling on.
@@ -89,7 +89,7 @@
 //! characters, to key `dirty_objects` and `expires_at_ms`, to probe the character-keyed
 //! `ObjectBlockLookup`, to render `block_index_written_key`, or to report the key. Four have no
 //! `BucketNode` in scope at all -- `block_index_handle` and `block_index_written_key` take a bare
-//! `&BlockIndex`, and `block_index_handle` is the hottest reader in the tree, one call per page
+//! `&BlockIndex`, and `block_index_handle` is the hottest reader in the tree, one call per block
 //! insert -- so for those an ordinal has no bucket to resolve against. Six more sit inside `retain`
 //! or `blocks_mut_unaccounted` closures where the node is MUTABLY borrowed. Those counts are stated
 //! as a dated measurement, not as a list this module maintains.
@@ -102,7 +102,7 @@
 //! halves. It was `nothing_persists_a_slot_so_the_written_bytes_do_not_move`, and it is the
 //! tripwire that went red when the slot became durable.
 //!
-//! THE STAMP IS WHAT THE NEXT STEP WOULD NEED, not this one. A page entry naming its object by slot
+//! THE STAMP IS WHAT THE NEXT STEP WOULD NEED, not this one. A block entry naming its object by slot
 //! makes the slot DURABLE, and that is the change that takes the next value above
 //! `SHARD_INDEX_FORMAT_VERSION` -- never a reserved one, because `persistence.rs` compares with `<`
 //! and so ACCEPTS a lower stamp and misreads it rather than refusing it. #2019's own bump records the
@@ -129,13 +129,13 @@ const OPERATOR_END: u32 = 1023;
 /// The population #2019 measured on, so the rows here are comparable to its line for line.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// The CONTROL population: a string page's component is already `None`, one page per key, so #2019
+/// The CONTROL population: a string block's component is already `None`, one block per key, so #2019
 /// was the identity on it and its trade has a ceiling of zero. Both facts are asserted, not assumed.
 const ROUTED_KEYS: usize = 200;
 
-/// What the entry gives up per page if `object_key` becomes a `u16` ordinal -- NOTHING, NOW.
+/// What the entry gives up per block if `object_key` becomes a `u16` ordinal -- NOTHING, NOW.
 ///
-/// It was sixteen, and the sixteen were real: an `Arc<str>` on every page against a two-byte
+/// It was sixteen, and the sixteen were real: an `Arc<str>` on every block against a two-byte
 /// ordinal. THOSE SIXTEEN BYTES HAVE BEEN TAKEN, by a different route. The identity left the entry
 /// altogether and lives once per object in `CoreIndex::object_block_lookup`; the entry is
 /// twenty-four bytes and the stride thirty-two, which is exactly where the ordinal would have
@@ -222,7 +222,7 @@ fn seed_routed_strings(engine: &TemporalEngine) {
     );
 }
 
-/// `(live pages, distinct object-index rows)` for one kind, read off the buckets themselves. The
+/// `(live blocks, distinct object-index rows)` for one kind, read off the buckets themselves. The
 /// same shape #2019's `blocks_and_index_rows` uses, so the two modules' rows are comparable.
 fn blocks_and_index_rows(
     engine: &TemporalEngine,
@@ -264,7 +264,7 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
     sorted[rank.min(sorted.len()) - 1]
 }
 
-/// The pages one `(kind, key)` holds, counted off the bucket index.
+/// The blocks one `(kind, key)` holds, counted off the bucket index.
 fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -337,13 +337,13 @@ fn reconstruct(fields: &[(&'static str, usize, usize)], word: usize) -> usize {
 }
 
 // =================================================================================================
-// 1. THE ARITHMETIC, WHICH IS SOUND. SIXTEEN BYTES A PAGE, AND A `u8` BUYS NOTHING OVER A `u16`.
+// 1. THE ARITHMETIC, WHICH IS SOUND. SIXTEEN BYTES A BLOCK, AND A `u8` BUYS NOTHING OVER A `u16`.
 // =================================================================================================
 
 /// THE ENTRY AND THE STRIDE, BEFORE AND AFTER, RECONSTRUCTED RATHER THAN ASSERTED AS LITERALS.
 ///
-/// The stride is the number that matters and it is not the struct width: the page list is
-/// `Vec<(u64, BlockIndex)>`, so a page costs its handle plus its entry. 64 + 8 = 72 today.
+/// The stride is the number that matters and it is not the struct width: the block list is
+/// `Vec<(u64, BlockIndex)>`, so a block costs its handle plus its entry. 64 + 8 = 72 today.
 ///
 /// THE `u8` IS MEASURED AND DISMISSED IN THE SAME BREATH. Both ordinals leave a six- and a
 /// five-byte tail, both round to eight, and both land the struct on 48 -- so the `u8`'s ceiling of
@@ -416,7 +416,7 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
         "the mirror structure's reconstruction does not add up, so its width is not evidence"
     );
 
-    // The stride: a handle plus an entry, which is what the page list actually holds an element of.
+    // The stride: a handle plus an entry, which is what the block list actually holds an element of.
     let stride_now = size_of::<(u64, BlockIndex)>();
     let stride_u16 = size_of::<(u64, OrdinalEntryU16)>();
     let stride_u8 = size_of::<(u64, OrdinalEntryU8)>();
@@ -510,7 +510,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
             rows_seen += 1;
         }
         for (handle, block) in &bucket.block_index {
-            // Only the kind this fixture seeded, so an incidental page of another kind cannot
+            // Only the kind this fixture seeded, so an incidental block of another kind cannot
             // decide the assertion below.
             if block.deleted || block.model_id.as_str() != "hash" {
                 continue;
@@ -762,14 +762,14 @@ fn a_slot_into_the_object_list_survives_the_three_mutations_that_invalidated_an_
 /// THE ROW COUNT #2019 COLLAPSED IS THE TERM STEP 1b DIVIDES BY, AND THE ROUTED ARM DID NOT MOVE.
 ///
 /// A name the entry stops holding has to be held somewhere, once per row, so the trade is
-/// `saving * pages - name_row * rows`. DIVIDED PER ARM AND NEVER AVERAGED: that division is what
+/// `saving * blocks - name_row * rows`. DIVIDED PER ARM AND NEVER AVERAGED: that division is what
 /// #2007's routed arms failed, and an average across the two arms would report a win.
 ///
 /// THIS IS A CEILING ON THE PRIZE, NOT THE PRIZE. Only the name pointer is charged here -- one
 /// `Arc<str>` a row. The list's own allocation is NOT charged: a `Box<Vec<u64>>` widened to carry
 /// names pays a vector header once a bucket, allocator rounding, and growth slack, none of which
 /// appears below. So the real figure is WORSE than this on every arm, and the standing measurement
-/// says how much worse: `block_entry_name_pointer` scores step 1b at -15.76 to -15.84 B a page on
+/// says how much worse: `block_entry_name_pointer` scores step 1b at -15.76 to -15.84 B a block on
 /// containers and +8.11 to +9.10 on routed keys at the shipped range, where the sign has flipped
 /// because the list grows by a key for every object and a routed bucket holds forty.
 ///
@@ -777,8 +777,8 @@ fn a_slot_into_the_object_list_survives_the_three_mutations_that_invalidated_an_
 /// accounting of the list can make that arm pay, and the arm is where a real store's keys are.
 ///
 /// THE CONTROL IS THE ROUTED ARM, whose component was already absent -- so #2019 was the IDENTITY
-/// on it and its rows-per-page cannot have moved off 1.0000. Its page count and its row count are
-/// both asserted BEFORE its result: a control that exercised no pages reports no movement for the
+/// on it and its rows-per-block cannot have moved off 1.0000. Its block count and its row count are
+/// both asserted BEFORE its result: a control that exercised no blocks reports no movement for the
 /// wrong reason, and a control over zero rows reports success whatever the trade.
 ///
 /// rust-internal: reads the engine's own bucket index, no external surface
@@ -849,8 +849,8 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
          whose keys held one page each would measure nothing"
     );
 
-    // THE CONTROL. #2019 was the IDENTITY on this arm -- a string page's component was already
-    // absent -- so its rows-per-page cannot have moved off 1.0000, and that is the whole reason the
+    // THE CONTROL. #2019 was the IDENTITY on this arm -- a string block's component was already
+    // absent -- so its rows-per-block cannot have moved off 1.0000, and that is the whole reason the
     // collapse does not reopen the route.
     assert_eq!(
         string_rows, string_blocks,
@@ -870,7 +870,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // CEILING AGAINST IS ZERO.
     //
     // They read `hash_net > 0.0` and `hash_net < saving as f64`, where
-    // `hash_net = (saving * pages - row_cost * rows) / pages`. The stride saving an ordinal would
+    // `hash_net = (saving * blocks - row_cost * rows) / blocks`. The stride saving an ordinal would
     // buy is now nothing -- `CLAIMED_SAVING_PER_BLOCK` carries why -- so `hash_net` is the row cost
     // with a minus sign, and a ceiling expressed as a fraction of a zero saving is not a ceiling.
     //
@@ -881,7 +881,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     //
     // AND THIS TEST'S OWN SUBJECT IS UNTOUCHED, which is why it survives rather than being
     // retired whole. Its name is the claim: the row collapse does not reopen the route BECAUSE
-    // THE ROUTED ARM DID NOT MOVE, and the control above -- one row per page on the string arm,
+    // THE ROUTED ARM DID NOT MOVE, and the control above -- one row per block on the string arm,
     // with a ceiling at or below zero -- is what holds that. Both of those still assert and both
     // still pass.
     assert!(
@@ -1265,7 +1265,7 @@ fn the_object_index_is_a_tag_and_one_pointer() {
         size_of::<ObjectIndex>()
     );
 
-    // The thing a page entry would store, priced here so the two numbers sit together. Both widths
+    // The thing a block entry would store, priced here so the two numbers sit together. Both widths
     // land the entry on the same place -- see
     // `a_u16_ordinal_would_take_the_entry_from_sixty_four_to_forty_eight_and_a_u8_adds_nothing` --
     // so a ceiling on slots per bucket buys nothing and must be chosen for the array's own reasons.
@@ -1606,7 +1606,7 @@ fn what_a_slot_array_costs_under_churn() {
 ///
 /// WHAT IS STORED IS THE SLOTS AND NOT A SET OF IDS, which is what the stamp pays for. A load
 /// restores positions rather than re-filing through `insert`, so a slot is a DURABLE fact and the
-/// page entry that names its object by one has something it can rely on. This is the step the old
+/// block entry that names its object by one has something it can rely on. This is the step the old
 /// wording named as the limit of #2057, and taking it moved `SHARD_INDEX_FORMAT_VERSION`.
 ///
 /// AN OLDER INDEX STILL LOADS WHERE IT WOULD HAVE. An ascending run of bare ids restores to

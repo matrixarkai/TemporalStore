@@ -21,17 +21,17 @@
 //! surface do not hold the same set and a table built from either alone is wrong:
 //!
 //!   * HASH -- `Command::HashLen` and `Command::HashGetAll`. THE PAIR WITH TWO PATHS. The count is
-//!     `bucket_index_component_block_addresses(shard, "hash", &key).len()`, which counts PAGE-INDEX
-//!     ENTRIES and reads no page. The listing walks the same entries and then reads a page per
+//!     `bucket_index_component_block_addresses(shard, "hash", &key).len()`, which counts BLOCK-INDEX
+//!     ENTRIES and reads no block. The listing walks the same entries and then reads a block per
 //!     entry through `read_block_bytes`, collecting through a `filter_map` -- so an entry whose
-//!     page does not read is counted by the length and ABSENT from the listing. The two agree today
-//!     because entries and elements are one-to-one and every page reads, which is a property of the
+//!     block does not read is counted by the length and ABSENT from the listing. The two agree today
+//!     because entries and elements are one-to-one and every block reads, which is a property of the
 //!     storage and not a contract either side states.
 //!   * LIST -- `Command::ListLen` and `Command::ListRange` over `0..=-1`. Both take the length from
-//!     `shard.lists`, so the number itself has one source; the listing then reads a page per
+//!     `shard.lists`, so the number itself has one source; the listing then reads a block per
 //!     element through the same dropping `filter_map`. One shared source, one unshared read.
 //!   * ZSET -- `Command::ZSetCard` and `Command::ZSetRange` over `0..=-1`. BOTH read `shard.zsets`
-//!     and the listing reads no page at all: member and score come out of the map. Same structure
+//!     and the listing reads no block at all: member and score come out of the map. Same structure
 //!     for both answers, which is the shape that cannot diverge. Its listing is INTERLEAVED
 //!     member/score, so the element count is half the returned length -- asserted even below,
 //!     because an odd length would make the halving quietly wrong.
@@ -48,7 +48,7 @@
 //!
 //! Because that breaks the same contract in the other direction, and this tree has the incident.
 //! #1989 is the recorded case: a member was served but undeletable because the listing answered
-//! from the page index while `shard.sets` had a single reader.
+//! from the block index while `shard.sets` had a single reader.
 //!
 //! ONE HALF OF THE ARGUMENT THIS PARAGRAPH USED TO MAKE HAS EXPIRED. It said `hashes` is
 //! `skip_serializing` and is rebuilt FROM the bucket index on load. `hashes` carries
@@ -56,24 +56,24 @@
 //! anything. The conclusion below does not rest on it.
 //!
 //! THE HALF THAT HOLDS IS THE DELTA-FOLD ROUTE, and it is worth stating exactly, because it is
-//! the mechanism and not the slogan. `fold_index_log_deltas` applies a record's page items
+//! the mechanism and not the slogan. `fold_index_log_deltas` applies a record's block items
 //! through `fold_delta_block_items` for EVERY record, but it adds container elements only from
 //! the `key_states` blobs that carry one of `CARRIED_CONTAINER_FIELDS` -- and the fold's own
 //! comment says a fold of records that predate the carry holds nothing. So a pre-carry delta
-//! record leaves the page index an entry and the container nothing.
+//! record leaves the block index an entry and the container nothing.
 //!
-//! AND WHAT RESCUES THAT IS ITSELF A READ OF THE PAGE INDEX, which is the part that decides
+//! AND WHAT RESCUES THAT IS ITSELF A READ OF THE BLOCK INDEX, which is the part that decides
 //! whether a reader may move. `fill_absent_elements` completes the durable map from the derived
 //! view, and `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` in
 //! `durable_outranks_derived` pins exactly that: an element the durable map lacks still comes
 //! back from its name. So moving a count onto the container would not stop the bucket index
 //! being the thing that makes the container complete -- it would move that dependency from read
-//! time to load time. The page index is the right source for a hash today, and the fix for two
+//! time to load time. The block index is the right source for a hash today, and the fix for two
 //! paths that agree by coincidence is to ASSERT the agreement, not to move one of them.
 //!
 //! # THE FIXTURE IS BUILT SO THE TWO COULD DIVERGE IF THE FILING CHANGED
 //!
-//! A run of appends would not exercise anything: every element would add one entry and one page
+//! A run of appends would not exercise anything: every element would add one entry and one block
 //! and any filing scheme at all would keep the two equal. So each kind is driven through the three
 //! operations that file differently from each other:
 //!
@@ -211,9 +211,9 @@ fn assert_count_matches_listing(kind: &str, counted: i64, listed: usize, floor: 
 
 /// A HASH'S LENGTH ANSWER AND ITS LISTING RETURN THE SAME NUMBER.
 ///
-/// The pair with two genuinely different paths: `HashLen` counts page-index entries and reads no
-/// page; `HashGetAll` walks the same entries and reads a page for each, dropping any that does not
-/// read. So this row is the one that would move first if the filing or the page layout changed
+/// The pair with two genuinely different paths: `HashLen` counts block-index entries and reads no
+/// block; `HashGetAll` walks the same entries and reads a block for each, dropping any that does not
+/// read. So this row is the one that would move first if the filing or the block layout changed
 /// under either side.
 ///
 /// rust-internal: drives HashSet, HashDelete, HashLen and HashGetAll, no external surface
@@ -291,7 +291,7 @@ fn a_hash_length_answer_equals_its_listing() {
 /// A LIST'S LENGTH ANSWER EQUALS THE NUMBER OF ELEMENTS ITS RANGE RETURNS.
 ///
 /// `ListLen` and `ListRange` take the length from the same map, so the NUMBER has one source; the
-/// listing then reads a page per element and drops what does not read, which the count never does.
+/// listing then reads a block per element and drops what does not read, which the count never does.
 /// A list has no in-place rewrite -- `ListPush` appends -- so the third operation here is a
 /// re-push after the pop, and the expected population says so.
 ///
@@ -355,7 +355,7 @@ fn a_list_length_answer_equals_its_range_listing() {
 
 /// A ZSET'S CARDINALITY EQUALS THE NUMBER OF MEMBERS ITS RANGE RETURNS.
 ///
-/// Both answers come out of `shard.zsets` and the listing reads no page, so this pair has the
+/// Both answers come out of `shard.zsets` and the listing reads no block, so this pair has the
 /// shape the others only happen to have. It is still asserted: the value of the assertion is that
 /// a later change moving either side off that map fails here instead of shipping.
 ///
@@ -504,11 +504,11 @@ fn a_set_count_is_its_listing_counted_and_has_no_second_path() {
 
 /// THE EQUALITY SURVIVES AN UNLOAD AND A LOAD, WHICH IS WHERE THE TWO PATHS COULD PART.
 ///
-/// The section above reads a warm shard, where the listing's page reads are served from resident
+/// The section above reads a warm shard, where the listing's block reads are served from resident
 /// state. A reload is the one routine event that makes the listing go through `decode_block_record`
-/// while the count still comes off the index -- and `decode_block_record` REFUSES a page whose
+/// while the count still comes off the index -- and `decode_block_record` REFUSES a block whose
 /// address block id and header block id disagree, answering nothing for it. A refusal there is
-/// invisible to a count that never reads a page: the length would keep answering the entry count
+/// invisible to a count that never reads a block: the length would keep answering the entry count
 /// while the listing came back short. That is the concrete way this contract breaks in this engine,
 /// so it is driven rather than described.
 ///
@@ -670,7 +670,7 @@ fn every_length_answer_still_equals_its_listing_after_a_reload() {
 ///
 /// `assert_count_matches_listing` is the whole module, so a version of it that could not fail would
 /// make every row above decoration. One element is dropped from the listing side -- exactly what a
-/// single refused page would do to `HashGetAll`, which is the failure this module exists to catch --
+/// single refused block would do to `HashGetAll`, which is the failure this module exists to catch --
 /// and the assertion must fire. It is the same function the real rows call, not a copy.
 ///
 /// rust-internal: drives the module's own assertion, no engine and no external surface
@@ -702,9 +702,9 @@ fn the_equality_check_refuses_a_row_whose_floor_is_zero() {
 /// # THE HOLE THIS CLOSES, STATED NARROWLY
 ///
 /// The header argues that a hash count must not move onto the model map, and the surviving half of
-/// that argument is the delta-fold route: `fold_index_log_deltas` applies a record's page items for
+/// that argument is the delta-fold route: `fold_index_log_deltas` applies a record's block items for
 /// EVERY record but adds container elements only from the `key_states` blobs carrying one of
-/// `CARRIED_CONTAINER_FIELDS`, so a record written before the carry existed leaves the page index an
+/// `CARRIED_CONTAINER_FIELDS`, so a record written before the carry existed leaves the block index an
 /// entry and the container nothing.
 ///
 /// That route IS already driven --
@@ -776,7 +776,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     );
 
     // ---------------------------------------------------------------------------------------------
-    // THE ROUTE: the container loses an element the page index still holds.
+    // THE ROUTE: the container loses an element the block index still holds.
     //
     // Done to the container directly, which is the shape the fold leaves behind and the same shape
     // `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` builds. Folding a
@@ -844,7 +844,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     // index" -- was true when this test was written, and it is the half of it the reader move
     // retired. Under `container_index_files_one_entry_a_page`, `HashLen` answers from
     // `shard.hashes.get(&key).map(|fields| fields.len())`, so on this route it tracks the
-    // container; `HashGetAll` serves the union of the container and the page index and is
+    // container; `HashGetAll` serves the union of the container and the block index and is
     // untouched, so it tracks the index. The header above predicted this outright -- "a `HashLen`
     // reading the container at that moment would under-report" -- so the prediction is restated
     // here as the measurement it became, rather than relaxed into a looser number.
@@ -872,8 +872,8 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     //
     // This change DOES touch it. `HashGetAll` was the fourth consumer that had to move before the
     // element name could come off the entry: its index half read a nameless entry's component
-    // through `unwrap_or_default()` and served every page as a field called `""` whose value was
-    // the raw page FRAME. It skips a nameless entry now, and every hash entry is nameless, so the
+    // through `unwrap_or_default()` and served every block as a field called `""` whose value was
+    // the raw block FRAME. It skips a nameless entry now, and every hash entry is nameless, so the
     // index contributes NO names and the listing follows the CONTAINER.
     //
     // THE PIN IS NOT WEAKENED BY BOTH COMMANDS READING ONE SOURCE, and that is worth stating
@@ -910,7 +910,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     // than until the next load." The container IS still short, and that is not a defect that has
     // appeared -- it is the whole point of the step this branch landed.
     //
-    // WHAT CHANGED. The completion rebuilt the durable hash map by walking the page index and
+    // WHAT CHANGED. The completion rebuilt the durable hash map by walking the block index and
     // reading each entry's field name. An entry has no field name, so
     // `rebuild_unserialized_model_maps_from_bucket_index` passes an EMPTY derived view and keeps
     // only its live-address filter; and `shard.hashes` carries `#[serde(default)]`, so the map is
@@ -922,7 +922,7 @@ fn the_two_sources_of_a_hash_length_part_on_the_pre_carry_route_and_a_reload_res
     // `durable_outranks_derived` exists to invert: a derived view that can silently replace the
     // durable record is the defect, and a reload that healed this fixture would equally have
     // healed away a real durable element the index had stopped naming. What stands in place of the
-    // healing is `fold_hash_map_completeness`, which compares the durable map against the PAGES'
+    // healing is `fold_hash_map_completeness`, which compares the durable map against the BLOCKS'
     // own payloads -- two artefacts maintained by different paths -- rather than against a view
     // derived from one of them.
     //

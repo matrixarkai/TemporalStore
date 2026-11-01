@@ -5,7 +5,7 @@
 //!
 //! # WHY THIS EXISTS BEFORE THE CHANGE IT GUARDS
 //!
-//! `Serialize for CoreIndex` is DERIVED today. A proposal to let the page index be serialized with
+//! `Serialize for CoreIndex` is DERIVED today. A proposal to let the block index be serialized with
 //! a sibling field in scope -- so that a term which has left the entry can still be written --
 //! needs that impl to be HAND-WRITTEN, because serde hands a `Serialize` impl no context and a
 //! bucket's serializer therefore cannot see anything but the bucket.
@@ -114,11 +114,11 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     // been told about.
     // ===========================================================================================
     let CoreIndex {
-        // ON THE WIRE. The pages themselves.
+        // ON THE WIRE. The blocks themselves.
         bucket_map,
         // ON THE WIRE, AND THE SECOND ONE RATHER THAN THE ONLY OTHER. It was a TOP-LEVEL key of
         // the serialized `ShardState` until each object's refs moved into its `ObjectSlot`: the
-        // encoder composes every live page's written key from those refs, and a sibling field of
+        // encoder composes every live block's written key from those refs, and a sibling field of
         // `bucket_index` is not reachable from it. `SHARD_INDEX_FORMAT_VERSION` 30 is what that
         // move cost.
         objects,
@@ -155,7 +155,7 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     assert!(!released_buckets.is_empty(), "skipped field must be populated");
 
     // ===========================================================================================
-    // THE WIRE, OBSERVED. Two keys: the pages, and the objects whose slots name them.
+    // THE WIRE, OBSERVED. Two keys: the blocks, and the objects whose slots name them.
     // ===========================================================================================
     let encoded = serde_json::to_value(&index).expect("a core index serializes");
     let object = encoded.as_object().expect("a core index encodes as a map");
@@ -216,12 +216,12 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
     // THE LOOKUP IS STILL NOT WRITTEN, AND IT IS NO LONGER TRUE THAT A DECODE LEAVES IT EMPTY.
     //
     // It is `skip_serializing`, so nothing about it reaches the bytes -- that half is unchanged.
-    // What changed is the other side: the decoder now FILES each decoded page into it, because the
-    // walk that used to do that afterwards reads each page's identity off the entry and the entry
-    // is about to have none. This fixture's two buckets hold no pages, so there is nothing to file
+    // What changed is the other side: the decoder now FILES each decoded block into it, because the
+    // walk that used to do that afterwards reads each block's identity off the entry and the entry
+    // is about to have none. This fixture's two buckets hold no blocks, so there is nothing to file
     // and it comes back empty -- which makes this assertion a statement about the FIXTURE now and
     // not about the field. `a_decode_files_every_block_into_the_object_lookup` is where the filling
-    // is asserted, on an index that has pages.
+    // is asserted, on an index that has blocks.
     assert!(
         after.object_block_lookup.is_empty(),
         "nothing was written and this fixture has no block to file, so nothing can come back"
@@ -239,7 +239,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
     // can never be incremented into a right answer, and a lookup that is established beside a
     // count that is not is the exact pair that made the stats path walk the shard.
     //
-    // ZERO HERE AND NOT UNKNOWN, because this fixture files no page. The value is asserted as
+    // ZERO HERE AND NOT UNKNOWN, because this fixture files no block. The value is asserted as
     // `Some` and as the number of refs actually filed, so a decoder that forgot to establish it
     // fails and so does one that invents a count.
     assert_eq!(
@@ -262,7 +262,7 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 // WHETHER THE ENTRY CAN LOSE ITS IDENTITY WITHOUT THE BYTES MOVING -- SETTLED HERE RATHER THAN
 // REASONED ABOUT, BECAUSE THE TIDY VERSION OF THE STORY IS WRONG IN TWO PLACES.
 //
-// THE STORY UNDER TEST. The stored page index is STRING-KEYED and the key contains the object key,
+// THE STORY UNDER TEST. The stored block index is STRING-KEYED and the key contains the object key,
 // so the hope is that the encoder can keep writing the same bytes while sourcing the identity from
 // the sibling object lookup, and the decoder can recover the identity from the map key. If that
 // held, the entry could shed its field with nothing on disk moving and no format stamp owed.
@@ -307,14 +307,14 @@ fn an_encode_then_decode_keeps_every_wire_field_and_drops_every_omitted_one() {
 // the RIGHT and the kind from the LEFT, so an object key keeps every colon it arrived with --
 // `{collection_key}:{entity_hash}` included -- and
 // `the_key_a_block_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus`
-// asserts the component slot EMPTY and the parse exact on all 8,000 pages of two key shapes, rather
+// asserts the component slot EMPTY and the parse exact on all 8,000 blocks of two key shapes, rather
 // than relying on it.
 //
 // THE COLLISION BELOW IS STILL REAL AND IS STILL THE LIMIT, which is why that test keeps its name
 // and its claim. A non-empty component containing a colon makes the component/object-key boundary
 // unrecoverable, and a positional parse resolves it one way: the key the test builds reads back as
 // the object `a:b` with no component, which is one of its two identities and not the other. No
-// writer in this tree composes a page key with a component -- `block_index_written_key` passes a
+// writer in this tree composes a block key with a component -- `block_index_written_key` passes a
 // literal `None` -- so no index this binary writes can contain the ambiguous shape; an index that
 // DOES carry one predates the stamp and is refused by `persistence`'s `<` comparison on every one
 // of `decode_index_bytes`'s six production callers before anything acts on it. That is the
@@ -440,12 +440,12 @@ fn the_stored_block_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
 }
 
 
-/// A DECODE FILES EVERY LIVE PAGE INTO THE OBJECT LOOKUP, INSTEAD OF LEAVING IT TO A LATER WALK.
+/// A DECODE FILES EVERY LIVE BLOCK INTO THE OBJECT LOOKUP, INSTEAD OF LEAVING IT TO A LATER WALK.
 ///
 /// # WHY THE DECODER HAS TO BE THE ONE THAT DOES IT
 ///
 /// `object_block_lookup` is keyed by (kind, object key) and valued by the
-/// `(routing_bucket, handle)` of each of that object's pages. It is not written, and it was
+/// `(routing_bucket, handle)` of each of that object's blocks. It is not written, and it was
 /// rebuilt after every load by `rebuild_object_block_lookup`, which walks the decoded entries and
 /// reads the identity off each one. That walk is exactly what stops working when the entry carries
 /// no identity -- so the filing moves to the one pass that has both the identity and the handle in
@@ -453,8 +453,8 @@ fn the_stored_block_key_is_not_self_delimiting_so_no_parser_can_invert_it() {
 ///
 /// # THE THREE CLAIMS, AND THE CONTROL THAT MAKES THEM MEAN ANYTHING
 ///
-/// The decoded lookup must name each LIVE page by the handle the decoded map filed it under; the
-/// derived ref total must be established at that count; and the DELETED page must be absent --
+/// The decoded lookup must name each LIVE block by the handle the decoded map filed it under; the
+/// derived ref total must be established at that count; and the DELETED block must be absent --
 /// `insert_object_block_lookup` returns early on one, and without that third claim the first two
 /// would be equally true of a decoder that filed everything it saw.
 ///
@@ -474,7 +474,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // THE `object` PARAMETER IS GONE, NOT RENAMED `_object`. The entry has no field for it, and a
     // caller that still tries to name an object through this builder should stop compiling rather
     // than be ignored -- the treatment `entry_count_versus_block_count::block_at` took for its own
-    // dead `component` argument. The object each page belongs to is named where it is filed.
+    // dead `component` argument. The object each block belongs to is named where it is filed.
     fn block(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
         BlockIndex {
             model_id: stored_model_kind(KIND),
@@ -515,10 +515,10 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     //
     // This fixture used to leave the lookup empty and assert that it was, under "the subject is
     // the decode, so the lookup going in is empty". That premise was about the WRONG index. The
-    // decode builds a fresh `CoreIndex` in its own visitor and fills the lookup from the page keys
+    // decode builds a fresh `CoreIndex` in its own visitor and fills the lookup from the block keys
     // it reads, so what the ENCODING index held was never a term in the claim -- while an encode
     // taken with no lookup is now refused outright, because the stored key is composed from the
-    // identity held beside each page and there was none.
+    // identity held beside each block and there was none.
     //
     // So the fixture files what a placement files, and the claim is restated where it belongs:
     // the lookup is `skip_serializing`, so it must not be IN the bytes, and the decoded index must
@@ -528,14 +528,14 @@ fn a_decode_files_every_block_into_the_object_lookup() {
         index.insert_object_block_lookup(*routing_bucket, handle, object_key, entry);
     }
 
-    // AND THE DELETED PAGE IS NAMED BY A TOMBSTONE ROW, WHICH IS ITS OWN SOURCE AND NOT THE
+    // AND THE DELETED BLOCK IS NAMED BY A TOMBSTONE ROW, WHICH IS ITS OWN SOURCE AND NOT THE
     // LOOKUP.
     //
-    // `insert_object_block_lookup` returns early on a deleted page, so a tombstone is never in the
+    // `insert_object_block_lookup` returns early on a deleted block, so a tombstone is never in the
     // lookup at all -- the structure beside it that states which object it belonged to is this
-    // bucket's own row, keyed by the page triple. The single producer of a tombstone entry
+    // bucket's own row, keyed by the block triple. The single producer of a tombstone entry
     // (`register_block_tombstone_entry`) files one in the same call as the entry and
-    // `debug_assert!`s that an element was named, so a deleted page with no row is a state
+    // `debug_assert!`s that an element was named, so a deleted block with no row is a state
     // production does not reach. This fixture now files what that producer files.
     for (routing_bucket, object_key, entry) in &placed {
         if entry.deleted {
@@ -560,7 +560,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     );
     let decoded: CoreIndex = serde_json::from_str(&encoded).expect("a core index deserializes");
 
-    // CLAIM ONE: every live page is named, by the handle the decoded map holds it under.
+    // CLAIM ONE: every live block is named, by the handle the decoded map holds it under.
     let filed: std::collections::BTreeSet<(u32, u64)> = decoded
         .block_refs_for(KIND, LIVE_OBJECT, None)
         .expect("the live object must be in the decoded lookup")
@@ -595,7 +595,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
         "the decode must establish the ref total at what it filed"
     );
 
-    // CLAIM THREE, THE CONTROL: the deleted page is NOT filed, so the two claims above are about
+    // CLAIM THREE, THE CONTROL: the deleted block is NOT filed, so the two claims above are about
     // what the filing rule admits rather than about everything the decoder saw.
     assert!(
         decoded.block_refs_for(KIND, DEAD_OBJECT, None).is_none(),
@@ -603,23 +603,23 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     );
 }
 
-/// A DELETED PAGE'S IDENTITY IS IN THE BUCKET'S TOMBSTONE ROW, AND THAT ROW COMPOSES THE SAME
+/// A DELETED BLOCK'S IDENTITY IS IN THE BUCKET'S TOMBSTONE ROW, AND THAT ROW COMPOSES THE SAME
 /// STORED KEY THE ENTRY DOES.
 ///
 /// # WHY THIS IS THE MISSING HALF OF THE PRE-VERIFICATION
 ///
-/// The encode-side check that the identity held BESIDE a page agrees with the identity held ON it
+/// The encode-side check that the identity held BESIDE a block agrees with the identity held ON it
 /// drew on one source, the object lookup, and a tombstone is never in that lookup --
-/// `insert_object_block_lookup` returns early on a deleted page. So the check skipped every
-/// deleted page, and it was measured skipping them: over the hundred dump tests it compared
-/// 1,998,922 pages and NONE of them was deleted, while the encoder was reached by deleted pages
+/// `insert_object_block_lookup` returns early on a deleted block. So the check skipped every
+/// deleted block, and it was measured skipping them: over the hundred dump tests it compared
+/// 1,998,922 blocks and NONE of them was deleted, while the encoder was reached by deleted blocks
 /// under `tombstone` and `container_tombstone`. A swap from check to source cannot be called
 /// pre-verified on a class the check never looked at.
 ///
 /// # SO THE SECOND SOURCE IS ASSERTED HERE, DIRECTLY
 ///
-/// This builds one bucket holding a LIVE page and a DELETED one of the same object, files both
-/// through the index's own `insert_object_block_lookup` -- so the exclusion of the deleted page is
+/// This builds one bucket holding a LIVE block and a DELETED one of the same object, files both
+/// through the index's own `insert_object_block_lookup` -- so the exclusion of the deleted block is
 /// the production rule and not a fixture's choice -- and asserts three things: the lookup names
 /// one of the two, the bucket's tombstone row names the other, and the row composes exactly the
 /// stored key the encode wrote for it.
@@ -667,13 +667,13 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
             ..
         } = &mut index;
         let node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
-        // ONE KEY FOR BOTH PAGES, WHICH IS WHAT THE FIXTURE MEANT. The two differ in their
+        // ONE KEY FOR BOTH BLOCKS, WHICH IS WHAT THE FIXTURE MEANT. The two differ in their
         // address and their `deleted` bit; they are the same object by construction, so passing
-        // the literal twice says that, where reading one copy off each page did not.
+        // the literal twice says that, where reading one copy off each block did not.
         let object_key: std::sync::Arc<str> = std::sync::Arc::from(OBJECT);
         let live_handle = node.insert_block(&object_key, live.clone(), block_slab_live);
         let dead_handle = node.insert_block(&object_key, dead.clone(), block_slab_live);
-        // The SAME handle the two pages were filed with, which is what the production path
+        // The SAME handle the two blocks were filed with, which is what the production path
         // now does: the row clones a handle rather than minting from the characters.
         node.record_tombstone_element(
             &object_key,
@@ -692,7 +692,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     index.insert_object_block_lookup(7, live_handle, &object, &live);
     index.insert_object_block_lookup(7, dead_handle, &object, &dead);
 
-    // THE CONTROL: the lookup holds the live page and REFUSES the deleted one.
+    // THE CONTROL: the lookup holds the live block and REFUSES the deleted one.
     let refs = index
         .block_refs_for(KIND, OBJECT, None)
         .expect("the live block files a ref");
@@ -706,7 +706,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
         "the one ref must be the LIVE block's"
     );
 
-    // AND THE ROW HOLDS THE DELETED PAGE'S IDENTITY.
+    // AND THE ROW HOLDS THE DELETED BLOCK'S IDENTITY.
     let row_key = {
         let node = index.bucket_map.get(&7).expect("the bucket is still there");
         let row = node

@@ -34,7 +34,7 @@ pub struct HashReadDivergenceSample {
 /// WHAT THE SERVED HASH WHOLE-OBJECT READ SAW OF ITS TWO SOURCES, PROCESS-WIDE.
 ///
 /// `Command::HashGetAll` resolves field names from the durable container `shard.hashes`, still
-/// consults the page index, and serves the UNION of the two. This is what it observed while doing
+/// consults the block index, and serves the UNION of the two. This is what it observed while doing
 /// so.
 ///
 /// READ `reads_served` FIRST. It is the denominator, and without it
@@ -55,7 +55,7 @@ pub struct HashReadDivergenceReport {
     /// THE DENOMINATOR. Whole-object hash reads that got as far as consulting both sources --
     /// reads turned away by the expiry door are not counted, because they consulted neither.
     pub reads_served: u64,
-    /// THE COUNT. Fields the PAGE INDEX named that the durable container did NOT hold, summed
+    /// THE COUNT. Fields the BLOCK INDEX named that the durable container did NOT hold, summed
     /// per (read, field). Only this direction: it is the one that loses a read once the index
     /// stops being consulted. The opposite direction is served from the container by the union
     /// and is not a loss.
@@ -67,9 +67,9 @@ pub struct HashReadDivergenceReport {
     pub last_divergence: Option<HashReadDivergenceSample>,
 }
 
-/// WHAT THE BUCKET MAINTENANCE SCAN SAW OF THE PAGES AND THE OBJECT LIST.
+/// WHAT THE BUCKET MAINTENANCE SCAN SAW OF THE BLOCKS AND THE OBJECT LIST.
 ///
-/// The scan used to ASSIGN the list from the pages, so a list that disagreed was overwritten and
+/// The scan used to ASSIGN the list from the blocks, so a list that disagreed was overwritten and
 /// the disagreement was unobservable. It reconciles now, and these are the figures that makes the
 /// claim "the list already matches a from-scratch recompute" something a reader can check rather
 /// than something a replaced value implied.
@@ -81,16 +81,16 @@ pub struct HashReadDivergenceReport {
 /// figures do; a shard label would describe something this report did not measure.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ObjectIndexDivergenceReport {
-    /// THE DENOMINATOR: buckets whose pages were scanned and compared against their object list.
+    /// THE DENOMINATOR: buckets whose blocks were scanned and compared against their object list.
     pub rebuilds: u64,
-    /// Buckets whose list held nothing and was derived from the pages -- a load or recovery path,
+    /// Buckets whose list held nothing and was derived from the blocks -- a load or recovery path,
     /// not a disagreement. Counted apart so neither can be read as the other.
     pub reconstructs: u64,
-    /// A live page named an object its bucket's list did not hold. The list gains it; nothing
+    /// A live block named an object its bucket's list did not hold. The list gains it; nothing
     /// already filed moves.
     #[serde(rename = "blocks_named_an_object_the_list_lacked", alias = "pages_named_an_object_the_list_lacked")]
     pub blocks_named_an_object_the_list_lacked: u64,
-    /// The list held an object no live page names. The list drops it, leaving a placeholder.
+    /// The list held an object no live block names. The list drops it, leaving a placeholder.
     #[serde(rename = "list_held_an_object_no_block_names", alias = "list_held_an_object_no_page_names")]
     pub list_held_an_object_no_block_names: u64,
     /// How many of those reached the log, which is rate-limited, so a quiet log cannot be mistaken
@@ -157,7 +157,7 @@ pub struct ShardCompactionReport {
     /// of magnitude here.
     #[serde(default)]
     pub relocated_bytes: u64,
-    /// Pages this round left where they were because it spent a budget -- bytes OR page refs,
+    /// Blocks this round left where they were because it spent a budget -- bytes OR block refs,
     /// whichever ran out first. In practice it is the ref budget: the byte one is 256 MiB and a
     /// store that large is rare, while the ref budget is sized to bound the shard write lock.
     ///
@@ -168,15 +168,15 @@ pub struct ShardCompactionReport {
     pub blocks_left_by_budget: usize,
     #[serde(default)]
     pub bytes_left_by_budget: u64,
-    /// Pages this round left where they were because emptying their slab was not asked for.
+    /// Blocks this round left where they were because emptying their slab was not asked for.
     ///
-    /// Zero for a DIRECT compaction, which relocates every live page by instruction. Non-zero for
+    /// Zero for a DIRECT compaction, which relocates every live block by instruction. Non-zero for
     /// the PERIODIC one, which is told which slabs it is draining and leaves the rest alone --
-    /// relocating a page off a slab that carries no dead space recovers nothing, because the page
+    /// relocating a block off a slab that carries no dead space recovers nothing, because the block
     /// is copied verbatim and the slab it left becomes the one carrying the dead space.
     ///
     /// Unlike `pages_left_by_budget` this does NOT mean the round is unfinished: a later round
-    /// will not want these pages either.
+    /// will not want these blocks either.
     #[serde(default)]
     pub blocks_left_off_drain_set: usize,
     #[serde(default)]
@@ -362,7 +362,7 @@ pub struct StorageRecoveryReport {
     pub block_slab_live_reports: Vec<StorageRecoverySlabLiveReport>,
     pub total_block_refs: usize,
     pub readable_block_refs: usize,
-    /// How many live pages this call actually READ, as opposed to tallied.
+    /// How many live blocks this call actually READ, as opposed to tallied.
     ///
     /// `readable_page_refs` counts the ones that read back, and `all_live_pages_readable`
     /// compares the two -- so without this number a reader cannot tell a call that read
@@ -370,7 +370,7 @@ pub struct StorageRecoveryReport {
     /// the two cases. Equal to `total_page_refs` for an unbounded call.
     #[serde(default)]
     pub probed_block_refs: usize,
-    /// The index into this shard's live-page vector where this call STARTED reading.
+    /// The index into this shard's live-block vector where this call STARTED reading.
     ///
     /// A bounded probe reads a window rather than the whole shard, and successive rounds move
     /// the window along and wrap. Reporting where the window sat is what lets a reader tell
@@ -543,7 +543,7 @@ pub struct StorageRecoverySlabLiveReport {
 /// counting bug, and turning a counting bug into an outage is a worse trade than serving a figure
 /// that was just corrected.
 ///
-/// `slabs_compared` is the DENOMINATOR. A reconcile over a shard with no live pages agrees
+/// `slabs_compared` is the DENOMINATOR. A reconcile over a shard with no live blocks agrees
 /// trivially, and a zero drift is only evidence when something was compared.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockSlabLiveDriftReport {
@@ -552,7 +552,7 @@ pub struct BlockSlabLiveDriftReport {
     pub was_ready: bool,
     /// Slabs named by either side. The denominator for every count below.
     pub slabs_compared: u64,
-    /// Slabs where the two sides disagreed about page refs, bytes, or both.
+    /// Slabs where the two sides disagreed about block refs, bytes, or both.
     pub drifted_slabs: u64,
     /// Maintained minus recomputed, summed over every slab. Signed on purpose: an over-count and
     /// an under-count are different bugs, and a sum of absolute values hides which one happened.
@@ -1116,14 +1116,14 @@ pub struct StorageLifecyclePlan {
     /// Every bucket's storage summary, or `None` when this round did not look.
     ///
     /// AN EMPTY VECTOR AND "I DID NOT LOOK" ARE DIFFERENT ANSWERS, and before this field became
-    /// an `Option` they were the same value. Populating it means walking every live page in the
+    /// an `Option` they were the same value. Populating it means walking every live block in the
     /// shard, which the plan did unconditionally because this is an OUTPUT field -- so an idle
     /// shard paid a whole-shard walk every maintenance round to fill a vector that every consumer
     /// reduces to a count or a sum.
     ///
     /// The walk is now conditional (see `storage_lifecycle_plan`), and `None` is what a round
     /// that skipped it reports. It is NOT "the shard has no buckets": a settled shard holding
-    /// millions of live pages reports `None` here on every round. Consumers must not paper over
+    /// millions of live blocks reports `None` here on every round. Consumers must not paper over
     /// it with `unwrap_or_default()` -- a zero derived that way is indistinguishable from a
     /// measured zero, and publishing one as a metric is how an idle shard comes to look empty.
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -1155,8 +1155,8 @@ pub struct StorageReclaimCandidate {
 
 /// What a compaction round would relocate, and why, composed from per-object answers.
 ///
-/// `relocatable_block_refs` is the whole decision: zero means no object holds a page on a slab
-/// anyone wants emptied, so a round would roll a fresh slab, copy every live page onto it
+/// `relocatable_block_refs` is the whole decision: zero means no object holds a block on a slab
+/// anyone wants emptied, so a round would roll a fresh slab, copy every live block onto it
 /// verbatim, and leave the slab it emptied behind as the reason the next round runs.
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct ShardCompactionRelocationHint {
@@ -1166,7 +1166,7 @@ pub struct ShardCompactionRelocationHint {
     pub examined_object_count: u64,
     pub relocatable_object_count: u64,
     pub relocatable_block_refs: u64,
-    /// Slabs carrying dead space that objects still hold pages on: compaction's job.
+    /// Slabs carrying dead space that objects still hold blocks on: compaction's job.
     pub drain_block_slab_ids: Vec<u64>,
     /// Slabs holding nothing but dead space: the collector's job, and nothing compaction can act
     /// on. A round triggered by these is the self-retrigger.
@@ -1668,7 +1668,7 @@ impl StorageLifecycleReport {
             "slot_owner_mismatch_count",
             object_lifecycle.owner_mismatch_block_refs,
         );
-        // OMITTED, not zeroed, when the round did not walk the live pages. In a metrics map an
+        // OMITTED, not zeroed, when the round did not walk the live blocks. In a metrics map an
         // absent key is "not measured" and a present 0 is "measured none" -- publishing the
         // second for the first is how a settled shard comes to look like an empty one on a graph.
         // `selected_dump_buckets` alone cannot stand in: it is empty on exactly these rounds.
@@ -3070,7 +3070,7 @@ pub struct StorageIndexGcReport {
 /// materializes the base index at `wal_anchor` and folds the catalog anchor, everything the
 /// base reflects is redundant: index-log records whose own WAL anchor is at or below
 /// `wal_anchor`, and WAL records at or below it (clamped by the block-retention floor, which
-/// pins any record still holding the only copy of a served page).
+/// pins any record still holding the only copy of a served block).
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CatalogDumpReclaimReport {
     pub shard_id: ShardId,
@@ -3139,7 +3139,7 @@ pub struct StorageEvictionReport {
     pub cache_entries_removed: usize,
     pub cache_disk_bytes_removed: u64,
     pub dropped_object_count: usize,
-    /// Victims whose resident page list was RELEASED: the node stays routable, its per-page
+    /// Victims whose resident block list was RELEASED: the node stays routable, its per-block
     /// entries are gone, and the next read through it loads them back.
     ///
     /// Distinct from `cache_entries_removed`, which is what `evict_cache` has always freed. Until
@@ -3151,7 +3151,7 @@ pub struct StorageEvictionReport {
     #[serde(default)]
     pub bucket_index_blocks_released: usize,
     /// Victims a release was attempted on and refused -- dirty, deleted, already released, or
-    /// holding a page the model maps could not rebuild. A release that did nothing and a release
+    /// holding a block the model maps could not rebuild. A release that did nothing and a release
     /// that was declined are different answers and a round that reports only the first cannot be
     /// acted on.
     #[serde(default)]
@@ -3387,7 +3387,7 @@ pub struct StorageManagerCycleRequest {
     pub eviction_batch_limit: usize,
     #[serde(default)]
     pub eviction_dump_before_evict: bool,
-    /// Dump and release a shard's resident page lists once THAT SHARD'S OWN index passes this
+    /// Dump and release a shard's resident block lists once THAT SHARD'S OWN index passes this
     /// many bytes. **Zero means no bound**, as it does on every other bound here.
     ///
     /// GATED ON ITSELF, NOT ON `enable_evict`, and that is still the point of it even now that
@@ -3670,12 +3670,12 @@ impl Default for StorageManagerCycleRequest {
             dry_run: false,
             // SIXTY-FOUR MEBIBYTES OF RESIDENT INDEX PER SHARD, and here is the arithmetic rather
             // than a round number chosen for looking like one. The quantity this bounds is
-            // `bucket_index_resident_bytes`, which is pages x `size_of::<BlockIndex>()`; measured,
-            // a 40,040-key shard with 40,080 pages holds 1,430,016 B of it, so 64 MiB is about
-            // 1.8 million pages -- roughly a 1.8-million-key shard before the bound first fires.
+            // `bucket_index_resident_bytes`, which is blocks x `size_of::<BlockIndex>()`; measured,
+            // a 40,040-key shard with 40,080 blocks holds 1,430,016 B of it, so 64 MiB is about
+            // 1.8 million blocks -- roughly a 1.8-million-key shard before the bound first fires.
             //
             // So it is a CAP, not a scheduler: a shard under that size never notices it, and one
-            // over it dumps and releases its page lists instead of growing without limit. That is
+            // over it dumps and releases its block lists instead of growing without limit. That is
             // the behaviour the comparison design gets from a space-amplification bound, and the
             // measured effect when it does fire is the whole index going 301.2 -> 105.5 B/key with
             // every read still answering.
@@ -3743,8 +3743,8 @@ fn default_storage_manager_eviction_threshold() -> u64 {
 /// lives in, and the two answers want opposite work. An aggregate also hides the element: one
 /// stage that is correctly bounded can hold the total down while three beside it are not.
 ///
-/// `live_block_entries` counts whole-shard live-page entries MATERIALIZED -- an owned entry per
-/// live page, the expensive walk. `bucket_block_index_visits` counts the cheaper-looking
+/// `live_block_entries` counts whole-shard live-block entries MATERIALIZED -- an owned entry per
+/// live block, the expensive walk. `bucket_block_index_visits` counts the cheaper-looking
 /// `block_index` passes, which run inside loops over buckets and so cost a product rather than a
 /// sum. They are different walks and are reported apart, because a stage can be flat in one and
 /// growing in the other.
@@ -3815,10 +3815,10 @@ pub struct StorageManagerStageReport {
     pub wal_records_removed: usize,
     #[serde(default)]
     pub index_log_records_removed: usize,
-    /// How many pages this stage moved out of the log and into the block store.
+    /// How many blocks this stage moved out of the log and into the block store.
     ///
     /// Separate from `wal_records_removed`: this counts what had to become durable ELSEWHERE
-    /// before any record could be removed at all, because a page still living only inside a
+    /// before any record could be removed at all, because a block still living only inside a
     /// record pins the retention floor to that record's sequence.
     #[serde(default)]
     pub wal_resident_blocks_materialised: usize,
@@ -3906,7 +3906,7 @@ pub struct StorageManagerPressureSignals {
     pub block_slab_stale_density_basis_points: u64,
     pub memory_cache_bytes: u64,
     pub disk_cache_bytes: u64,
-    /// Resident bucket-index bytes: nodes PLUS per-page entries -- the figure a release actually
+    /// Resident bucket-index bytes: nodes PLUS per-block entries -- the figure a release actually
     /// moves, not the node-only `bucket_index_resident_bytes_floor`, which cannot.
     ///
     /// Every memory term beside it is a CACHE term, and the bucket index is in none of them. It is
@@ -3917,7 +3917,7 @@ pub struct StorageManagerPressureSignals {
     #[serde(default)]
     pub bucket_index_resident_bytes: u64,
     pub memory_cache_pressure_score: u64,
-    /// Whether the round that produced this snapshot walked the shard's live pages.
+    /// Whether the round that produced this snapshot walked the shard's live blocks.
     ///
     /// The walk is conditional: a round with no dirty slot skips it (see
     /// `StorageLifecyclePlan::bucket_summaries`). Every figure in this snapshot that is derived
@@ -3928,7 +3928,7 @@ pub struct StorageManagerPressureSignals {
     /// mean the same thing: the data_node runtime fills it from the walk's slot count, while the
     /// engine's own cycle fills it from `shard.expires_at_ms.len()` and never touched the walk.
     /// On the first path a 0 with this flag false means "not counted"; on the second the flag says
-    /// nothing about that field and only qualifies the slot and page figures.
+    /// nothing about that field and only qualifies the slot and block figures.
     #[serde(default)]
     pub live_block_summaries_measured: bool,
     pub expired_bucket_object_scan_debt: usize,

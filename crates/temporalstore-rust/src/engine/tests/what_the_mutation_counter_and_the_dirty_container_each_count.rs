@@ -31,7 +31,7 @@
 //! # WHY THIS IS NOT THE COUNT BEING DERIVED
 //!
 //! `whether_a_bucket_can_count_its_own_dirty_objects` measures the per-bucket dirty-object count to
-//! be NOT derivable -- a page walk finds 3 of 11 marks at 17x the work. Nothing here derives it.
+//! be NOT derivable -- a block walk finds 3 of 11 marks at 17x the work. Nothing here derives it.
 //! These are two independently maintained counters being compared so that the difference between
 //! what they count is a figure, which is what a later change replacing one with the other would
 //! need before it could be priced.

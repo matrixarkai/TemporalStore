@@ -16,8 +16,8 @@
 //! `deleted` FIRST:
 //!
 //! ```text
-//!     if page.deleted || object_deleted { ...deleted_block_ref_count... }
-//!     else if bucket.in_memory() && !page.log_backed { ...hot... }
+//!     if block.deleted || object_deleted { ...deleted_block_ref_count... }
+//!     else if bucket.in_memory() && !block.log_backed { ...hot... }
 //!     else { ...cold... }
 //! ```
 //!
@@ -30,7 +30,7 @@
 //! # WHAT IT DID COST: THE REPORT
 //!
 //! `storage_reporting` asks "does any page in this bucket live in the log", and it asked the
-//! stored flag. A bucket whose only log-resident page was a tombstone answered NO while a page was
+//! stored flag. A bucket whose only log-resident block was a tombstone answered NO while a block was
 //! in the log. The second test below drives exactly that bucket.
 //!
 //! # WHY THE FIELD IS GONE NOW, AND WHY IT WAS NOT A FOOTPRINT DECISION EITHER WAY
@@ -77,7 +77,7 @@ const OPERATOR_END: u32 = crate::DEFAULT_END_ROUTING_BUCKET;
 fn the_log_resident_fact_is_derived_from_the_address_alone() {
     use crate::block_store::ElementEntry;
 
-    // A log-resident address: no block id. This is the shape a staged page has before a dump.
+    // A log-resident address: no block id. This is the shape a staged block has before a dump.
     let in_log = ElementEntry::from_parts(42, 1_048_576, 4096, None, None);
     assert!(
         in_log.block_id().is_none(),
@@ -132,7 +132,7 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 /// that quietly means something else.
 ///
 /// ONE KEY REMOVED, NOTHING ADDED. The two fields this type gained are `skip`ped on the named side
-/// -- a resident entry is always a page, and the bucket already names itself -- so the stored form
+/// -- a resident entry is always a block, and the bucket already names itself -- so the stored form
 /// shrinks by one key and grows by none. That is asserted below rather than described, because the
 /// obvious fear about merging two types is that the stored form grows.
 ///
@@ -156,7 +156,7 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // INJECTED here, by this fixture, because `object_key` was a serialized member a derive could
     // only read off the entry. It is not a serialized member any more: the entry is filed under a
     // key that spells it and the decoder reads it back out of that key. So the wrapper takes the
-    // page alone, and the two names this fixture used to hand it are asserted ABSENT below.
+    // block alone, and the two names this fixture used to hand it are asserted ABSENT below.
     let named = crate::engine::state::BlockEntryAt { block: &block };
     let encoded = serde_json::to_string(&named).expect("a block entry serializes");
     println!("[log-resident] stored entry: {encoded}");

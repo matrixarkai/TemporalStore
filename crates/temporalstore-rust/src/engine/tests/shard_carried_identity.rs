@@ -3,7 +3,7 @@
 
 //! THE SHARD A SERVED STATE IS SERVED UNDER, AND WHY IT HAD TO BE THE ROUTING KEY ITSELF.
 //!
-//! A page's object id is `stable_block_object_id(shard, kind, key)`. `BlockIndex` carries the kind
+//! A block's object id is `stable_block_object_id(shard, kind, key)`. `BlockIndex` carries the kind
 //! and the key beside the address, so of the three terms only the FIRST was out of reach of a
 //! `&ShardState` -- and four functions that take a shard and never `&self` were stopped by exactly
 //! that:
@@ -33,7 +33,7 @@
 //! `install_shard_state` inserts the state into `self.shards` under a key and stamps it from the
 //! same argument, so comparing the stamp to the key is nearly -- but not quite -- circular: it
 //! still catches an installer that stamps something it derived rather than what it inserted under.
-//! The second authority is not circular at all. Every object id ALREADY STORED on a live page entry
+//! The second authority is not circular at all. Every object id ALREADY STORED on a live block entry
 //! was computed by the write path from the shard id the engine was routing that write to, long
 //! before this field existed. Re-deriving those ids from the shard's OWN stamp and comparing them
 //! is a check the stamp cannot pass by being self-consistent:
@@ -59,7 +59,7 @@ const SHARD_IDS: [crate::types::ShardId; 5] = [0, 1, 7, 41, 1000];
 /// The end bucket a production shard is loaded with: `TS_SHARD_END_ROUTING_SLOT=1023`.
 const NARROW_END: u32 = 1023;
 
-/// Records per shard. Enough page entries for the derivation floor below to mean something.
+/// Records per shard. Enough block entries for the derivation floor below to mean something.
 const RECORDS: usize = 24;
 
 fn engine_on(dir: &std::path::Path) -> TemporalEngine {
@@ -89,7 +89,7 @@ fn load(engine: &TemporalEngine, shard_id: crate::types::ShardId) {
     );
 }
 
-/// Writes that produce page entries of two kinds under distinct object keys on one shard.
+/// Writes that produce block entries of two kinds under distinct object keys on one shard.
 fn seed(engine: &TemporalEngine, shard_id: crate::types::ShardId) {
     for index in 0..RECORDS {
         let key = format!("ident-{shard_id}-{index:04}");
@@ -266,14 +266,14 @@ fn every_served_shard_carries_the_id_its_owner_routes_it_under() {
 // 2. THE STAMP DERIVES IDS THE WRITE PATH ALREADY STORED
 // =================================================================================================
 
-/// THE ID A SERVED SHARD CARRIES DERIVES THE OBJECT ID ALREADY STORED ON ITS OWN PAGES.
+/// THE ID A SERVED SHARD CARRIES DERIVES THE OBJECT ID ALREADY STORED ON ITS OWN BLOCKS.
 ///
 /// The check in part 1 compares the stamp to the key it was inserted under, which an installer that
 /// stamps the wrong thing could still satisfy if it derived both from one argument. This one cannot
-/// be satisfied that way. Every `object_id` on a live page entry was computed by the WRITE PATH from
+/// be satisfied that way. Every `object_id` on a live block entry was computed by the WRITE PATH from
 /// the shard the engine was routing that write to, before this field existed and without consulting
 /// it. Re-deriving them from the shard's own stamp is therefore an equality between the new field
-/// and the engine's pre-existing routing behaviour, page by page, on five shards at once.
+/// and the engine's pre-existing routing behaviour, block by block, on five shards at once.
 ///
 /// It is also the payoff stated as a fact: this is `stable_block_object_id(shard, kind, key)`
 /// computed from a `&ShardState` and NOTHING ELSE, which is precisely what the four functions named

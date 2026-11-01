@@ -8,23 +8,23 @@
 //! Read the rest of this header as the 226.35 B/object state it was written against. It is
 //! **176.35 B/object** now, measured on the same corpus and the same range, and the step is
 //! EXACTLY the 50.0 B/object this module predicted for two of its own terms -- `entry/object_key`
-//! at 30.0 and `entry/model_id` at 20.0. A page entry no longer restates the `object_key` and
+//! at 30.0 and `entry/model_id` at 20.0. A block entry no longer restates the `object_key` and
 //! `model_id` that the composite key it is filed under already spells; the decoder parses the key
 //! (`index_log::block_ref_key_parts`), which is the load-path change named below as the whole cost
 //! of taking that direction, and `SHARD_INDEX_FORMAT_VERSION` moved 26 -> 27.
 //!
-//! THE PER-PAGE CLASS CARRIES THE WHOLE OF THE STEP: 177.015 -> 127.015 B/object, with per-bucket
+//! THE PER-BLOCK CLASS CARRIES THE WHOLE OF THE STEP: 177.015 -> 127.015 B/object, with per-bucket
 //! at 49.331 and per-shard at 0.004 unmoved. Four things in this module changed with it, each
 //! named where it is:
 //!
 //!   * `entry/object_key` and `entry/model_id` are GONE from `TERMS`, and an entry that writes
 //!     either lands in the `no-unclassified` panic.
-//!   * `page/map_key/kind` and `page/map_key/object_key` are `Identity` rather than `Redundancy`:
+//!   * `block/map_key/kind` and `block/map_key/object_key` are `Identity` rather than `Redundancy`:
 //!     the key is the only copy, and there is no reconstructor left to name.
 //!   * `key-restates-the-entry` is retired and `address-restates-the-key` stands in its place --
 //!     the surviving duplication runs the other way.
 //!   * `the_page_keys_characters_are_not_read_back_by_the_decoder` is
-//!     `the_block_keys_characters_are_read_back_by_the_decoder_now`: a handle-keyed page index is
+//!     `the_block_keys_characters_are_read_back_by_the_decoder_now`: a handle-keyed block index is
 //!     REFUSED where it used to decode byte-identically.
 //!
 //! AND THE THIRD FIELD DID NOT GO. `address` is still written twice and will stay: its five VALUES
@@ -65,7 +65,7 @@
 //! 51 terms are DECLARED; the 51st is `node/tombstone_elements`, the one key the encoder writes
 //! only for a bucket that has had a removal, and its absence from this fixture is asserted rather
 //! than tolerated. Nine of the 51 are redundancy, each with a named reconstructor and each
-//! reconstruction asserted on every page or bucket of the corpus:
+//! reconstruction asserted on every block or bucket of the corpus:
 //!
 //! ```text
 //!     payload      407,144 B     50.893 B/object    22.48%
@@ -84,7 +84,7 @@
 //! THE WHOLE OF IT IS THREE SCALES AND NOT TWO:
 //!
 //! ```text
-//!     per-page      1,416,120 B    177.015 B/object    78.20%    linear in the store
+//!     per-block      1,416,120 B    177.015 B/object    78.20%    linear in the store
 //!     per-bucket      394,644 B     49.331 B/object    21.79%    212.38 -> 49.33 as buckets saturate
 //!     per-shard            29 B      0.004 B/object     0.00%    two field names and three braces
 //! ```
@@ -96,11 +96,11 @@
 //!
 //! AND THE CLASS OF EVERY TERM IS MEASURED, NEVER READ OFF ITS NAME. `slot_index/bucket_map` is
 //! bucket-keyed and holds one entry per BUCKET; the `block_index` inside each of those holds one
-//! entry per PAGE, 7.81 of them per bucket on this range -- so a name-based reading of the
+//! entry per BLOCK, 7.81 of them per bucket on this range -- so a name-based reading of the
 //! structure under `bucket_map` is wrong by that factor. Every term declares a scale and the sweep
 //! asserts it against the measured instance count at three store sizes: all 50 held, exactly.
 //!
-//! EVERY PER-PAGE FACT IS WRITTEN TWICE, AND THE TWO COPIES ARE NOT THE SAME PRICE. A page's
+//! EVERY PER-BLOCK FACT IS WRITTEN TWICE, AND THE TWO COPIES ARE NOT THE SAME PRICE. A block's
 //! object, kind and address are written once inside its composite map key --
 //! `{kind}:{object_key}:{component}:{slab}:{offset}:{length}:{block_id}:{generation}` -- and once
 //! as the `object_key`, `model_id` and `address` fields of the entry filed under it:
@@ -120,27 +120,27 @@
 //! THE RECONSTRUCTION IS ASSERTED, NOT ARGUED. The key is rebuilt from the entry's OWN WRITTEN
 //! BYTES -- the address decoded back through its production `Deserialize`, the string re-formatted
 //! by this module rather than by `block_index_written_key`, which would have compared one renderer
-//! with itself -- and matched character for character on all 8,000 pages. `node/routing_slot` is
+//! with itself -- and matched character for character on all 8,000 blocks. `node/routing_slot` is
 //! rebuilt from the map key its bucket is filed under, on all 1,024.
 //!
-//! AND THE KEY'S CHARACTERS ARE NOT READ BACK. The decoder takes the page index as a
+//! AND THE KEY'S CHARACTERS ARE NOT READ BACK. The decoder takes the block index as a
 //! `BTreeMap<String, StoredBlockEntry>` and consumes it with `into_values()`, so what the map key
 //! spells reaches nothing. Measured rather than read off the source: every page key in a 2,000-key
 //! index is replaced by the decimal of its handle, fed to the production decoder, and re-encoded --
 //! and the `slot_index` that comes back is byte-identical to the undoctored one's, with the
 //! instrument proved able to fire by a one-character change to one entry's `object_key`.
 //!
-//! AND THE LARGEST PER-BUCKET TERM RESTATES THE PAGES BESIDE IT. `node/object_index` is 22.603
+//! AND THE LARGEST PER-BUCKET TERM RESTATES THE BLOCKS BESIDE IT. `node/object_index` is 22.603
 //! B/object, second only to the entry's `object_key`, and it holds the ids of the objects a bucket
 //! carries. Those ids are a pure function of the shard, the kind and the object key -- all three of
-//! which the page entries in the SAME BUCKET write -- so on all 1,024 buckets the written
-//! `object_index` is EXACTLY the set derivable from its own pages. Derived here rather than through
+//! which the block entries in the SAME BUCKET write -- so on all 1,024 buckets the written
+//! `object_index` is EXACTLY the set derivable from its own blocks. Derived here rather than through
 //! `engine::hashing::stable_block_object_id`, which bumps two process-wide atomics per call in a
 //! test build that other arms read and reset: a probe calling it 8,000 times would move a counter
 //! it is not measuring.
 //!
-//! AND TWO SLOTS ARE WRITTEN FOR NOTHING ON EVERY PAGE. The composite's component slot is empty on
-//! all 8,000 pages -- `block_index_written_key` passes a literal `None` -- so one of its seven
+//! AND TWO SLOTS ARE WRITTEN FOR NOTHING ON EVERY BLOCK. The composite's component slot is empty on
+//! all 8,000 blocks -- `block_index_written_key` passes a literal `None` -- so one of its seven
 //! separators delimits a hole. And a stored address writes `oi` as null on all 8,000, because
 //! `impl From<ElementEntry> for BlockAddressWire` fills it from a literal `None` too -- the type it
 //! converts from has no such field to read: 9.000 B/object of JSON for a slot the only conversion
@@ -154,8 +154,8 @@
 //!
 //! ```text
 //!     removal                          stream B/obj     container B/obj (padded -> scattered)
-//!     page key -> the handle                 19.6           -5.14 to -6.77      COSTS
-//!     page key -> drop the empty slot         1.0           +0.12 to -0.71      noise
+//!     block key -> the handle                 19.6           -5.14 to -6.77      COSTS
+//!     block key -> drop the empty slot         1.0           +0.12 to -0.71      noise
 //!     address -> drop the nil `oi`           10.0           +0.06 to +0.29      ~free
 //!     entry -> drop `object_key`             30.0           +2.34 to +2.96
 //!     entry -> drop `model_id`               20.0           +0.26 to +0.37
@@ -165,7 +165,7 @@
 //!
 //! THE COMPOSITE KEY IS ALREADY FREE WHERE IT IS PAID. It is the most duplicated structure in the
 //! index and also the most COMPRESSIBLE one -- sorted, sharing long prefixes, mostly repeating
-//! decimal runs -- so replacing it with the hash the live map already keys the page by removes 19.6
+//! decimal runs -- so replacing it with the hash the live map already keys the block by removes 19.6
 //! B/object of stream and lands a container 5.1 to 6.8 B/object LARGER, on all four points. A
 //! removal whose stream saving is real and whose artefact saving is negative is a measured
 //! negative, and it is the one a reader of the 41 B/object figure would have reached for first.
@@ -184,7 +184,7 @@
 //! decomposition can be wrong in every term and still sum to the whole when its last term is
 //! "everything else", because the remainder absorbs the error -- so there is no such term, and two
 //! independent sum identities are asserted: the whole of `slot_index` against the sum of all terms,
-//! and the page-level subtree against the sum of the page-level terms alone. The second is what
+//! and the block-level subtree against the sum of the block-level terms alone. The second is what
 //! would catch a term charged at the wrong level, which is the error the 7.81x name would invite.
 //!
 //! Every term is asserted NON-ZERO except the one that is structurally empty, which is asserted
@@ -276,7 +276,7 @@ fn key_text(ordinal: usize, width: usize, shape: KeyShape) -> String {
 /// the amortisation the shipped range exists for happens, so it is named.
 #[derive(Clone, Copy, PartialEq, Eq, Debug, PartialOrd, Ord)]
 enum Scale {
-    /// One instance per stored page. The page count is asserted against the object count.
+    /// One instance per stored block. The block count is asserted against the object count.
     PerBlock,
     /// One instance per resident bucket.
     PerBucket,
@@ -305,7 +305,7 @@ enum Nature {
     /// Structure: punctuation, and the JSON field names a named encoding spends on every entry.
     Envelope,
     /// Reconstructible, character for character, from another term of the same index. Every term
-    /// in this class has its reconstruction asserted on every page or bucket of the corpus.
+    /// in this class has its reconstruction asserted on every block or bucket of the corpus.
     Redundancy,
 }
 
@@ -333,7 +333,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("slot_index/open_brace", Scale::PerShard, Nature::Envelope, ""),
     ("bucket_map/field_name", Scale::PerShard, Nature::Envelope, ""),
     // `objects` IS THE SECOND KEY OF THE CORE INDEX, and it is charged as ONE subtree rather than
-    // decomposed. This walk is a decomposition of the PAGE index -- what a bucket, a node and an
+    // decomposed. This walk is a decomposition of the BLOCK index -- what a bucket, a node and an
     // entry each spend -- and the object rows are a different structure with its own arms
     // (`ObjectSlotWire`'s record and element array). Charging the subtree whole keeps the part-sum
     // clause honest without this test growing a second decomposition it would then have to keep
@@ -373,7 +373,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("node/tombstone_elements", Scale::PerBucket, Nature::Payload, ""),
     ("node/page_index/field_name", Scale::PerBucket, Nature::Envelope, ""),
     ("block_index/open_brace", Scale::PerBucket, Nature::Envelope, ""),
-    // ---- per-page: the composite map key, split into the eight slots it composes ----
+    // ---- per-block: the composite map key, split into the eight slots it composes ----
     ("block/map_key_quotes", Scale::PerBlock, Nature::Envelope, ""),
     // AND THESE TWO STOPPED BEING REDUNDANCY, WHICH IS THE WHOLE OF WHAT THIS MODULE'S HEADLINE
     // PROPOSAL BOUGHT. They were classed `Redundancy` with the entry's own fields named as their
@@ -423,7 +423,7 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("block/map_key/empty_slot_separator", Scale::PerBlock, Nature::Envelope, ""),
     ("block/map_key_colon", Scale::PerBlock, Nature::Envelope, ""),
     ("block/map_entry_tail", Scale::PerBlock, Nature::Envelope, ""),
-    // ---- per-page: the entry the key is filed against ----
+    // ---- per-block: the entry the key is filed against ----
     ("entry/open_brace", Scale::PerBlock, Nature::Envelope, ""),
     ("entry/field_tails", Scale::PerBlock, Nature::Envelope, ""),
     // `entry/object_key` AND `entry/model_id` ARE GONE FROM THIS TABLE BECAUSE THEY ARE GONE FROM
@@ -530,9 +530,9 @@ impl Tally {
     }
 }
 
-/// EVERY TERM THE PAGE ENTRY'S COMPOSITE MAP KEY IS MADE OF, and nothing else.
+/// EVERY TERM THE BLOCK ENTRY'S COMPOSITE MAP KEY IS MADE OF, and nothing else.
 ///
-/// Named as a list rather than matched by a prefix so that a term added under `page/` later has to
+/// Named as a list rather than matched by a prefix so that a term added under `block/` later has to
 /// be put in or left out ON PURPOSE. [`Tally::sum_of`] refuses a member that was not charged.
 const BLOCK_KEY_TERMS: &[&str] = &[
     "block/map_key_quotes",
@@ -602,11 +602,11 @@ fn fnv1a_update(hash: &mut u64, bytes: &[u8]) {
 /// THE STABLE OBJECT ID FOR A SHARD, A KIND AND A KEY -- WRITTEN OUT HERE, AND NOT FOR STYLE.
 ///
 /// `engine::hashing::stable_block_object_id` bumps two PROCESS-WIDE atomics on every call in a test
-/// build, and other arms in this suite reset and read them. A probe that called it once per page
+/// build, and other arms in this suite reset and read them. A probe that called it once per block
 /// over an 8,000-object corpus would move a counter it is not measuring, in a binary that runs its
 /// tests in one process -- a measurement perturbing the suite it is meant to be measured in.
 ///
-/// AND IT IS ALSO THE HONEST FORM OF THE CLAIM. What is being shown is that the WRITTEN page
+/// AND IT IS ALSO THE HONEST FORM OF THE CLAIM. What is being shown is that the WRITTEN block
 /// entries carry enough to rebuild the written `object_index`; an independent implementation over
 /// their bytes is what shows that, where calling the engine's own would be the engine agreeing with
 /// itself. The cost is that this is a GOLDEN: a change to the derivation breaks it, which is the
@@ -647,8 +647,8 @@ struct Reading {
     json_len: usize,
     msgpack_len: usize,
     container_len: usize,
-    /// Every page's written map key paired with the handle the live map files it under, joined on
-    /// the renderer the encoder itself uses. Used to price a handle-keyed page index; NOT used for
+    /// Every block's written map key paired with the handle the live map files it under, joined on
+    /// the renderer the encoder itself uses. Used to price a handle-keyed block index; NOT used for
     /// the reconstruction claim, which goes the other way, from the entry's written bytes.
     handles_by_written_key: BTreeMap<String, u64>,
 }
@@ -707,7 +707,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
         .map(|node| node.block_index.len())
         .sum();
 
-    // THE JOIN FROM A WRITTEN KEY TO THE HANDLE THE LIVE MAP FILES THE PAGE UNDER.
+    // THE JOIN FROM A WRITTEN KEY TO THE HANDLE THE LIVE MAP FILES THE BLOCK UNDER.
     //
     // Built through the encoder's own renderer, which is legitimate HERE and nowhere else in this
     // module: this is bookkeeping for a counterfactual, not the redundancy claim. The claim is
@@ -793,7 +793,7 @@ impl Reading {
 // THE WALK
 // =================================================================================================
 
-/// The eight slots a page's written key composes, in the order the composite writes them.
+/// The eight slots a block's written key composes, in the order the composite writes them.
 struct KeySlots {
     kind: String,
     object_key: String,
@@ -805,7 +805,7 @@ struct KeySlots {
     generation: String,
 }
 
-/// Split a written page key into its eight slots, and REFUSE a key the split does not recompose.
+/// Split a written block key into its eight slots, and REFUSE a key the split does not recompose.
 ///
 /// The five numbers are taken from the right, because an object key may contain a colon while a
 /// rendered `u64` may not. The recomposition is asserted rather than assumed: a split that does
@@ -896,22 +896,22 @@ fn address_field_label(name: &str) -> &'static str {
 
 /// THE WHOLE OF `slot_index`, CHARGED TERM BY TERM, WITH THREE SUM IDENTITIES ASSERTED.
 ///
-/// Returns the tally, the page-level subtotal measured independently, and the reconstruction count.
+/// Returns the tally, the block-level subtotal measured independently, and the reconstruction count.
 struct Walked {
     tally: Tally,
     /// The bytes of every `block_index` VALUE, summed over buckets and measured directly off the
     /// JSON rather than from the tally. The second, independent identity: a term charged at the
-    /// bucket level that belongs at the page level balances the whole and breaks this.
+    /// bucket level that belongs at the block level balances the whole and breaks this.
     block_subtree_bytes: usize,
-    /// Pages whose written key was rebuilt from the entry's own written bytes, character for
+    /// Blocks whose written key was rebuilt from the entry's own written bytes, character for
     /// character.
     keys_reconstructed: usize,
     /// Buckets whose `routing_slot` field was rebuilt from the map key it is filed under.
     slots_reconstructed: usize,
     /// Buckets whose written `object_index` is exactly the set of ids derivable from the kinds and
-    /// object keys of the page entries written in that same bucket.
+    /// object keys of the block entries written in that same bucket.
     buckets_whose_object_index_is_derivable: usize,
-    /// Pages whose stored address writes its `oi` slot as JSON null.
+    /// Blocks whose stored address writes its `oi` slot as JSON null.
     ///
     /// `impl From<ElementEntry> for BlockAddressWire` fills `object_id` with a LITERAL `None` --
     /// the type it converts from has no such field to read -- so this is a property of the writer
@@ -1017,7 +1017,7 @@ fn walk(reading: &Reading) -> Walked {
             }
         }
 
-        // THE IDS THE NODE WRITES, held while the pages beside them are walked.
+        // THE IDS THE NODE WRITES, held while the blocks beside them are walked.
         let written_object_ids: std::collections::BTreeSet<u64> = node
             .get("object_index")
             .expect("a bucket node writes `object_index`")
@@ -1120,7 +1120,7 @@ fn walk(reading: &Reading) -> Walked {
             // ---- THE RECONSTRUCTION, AND HALF OF IT IS CLOSED BECAUSE THE PROPOSAL LANDED ----
             //
             // THIS CLAUSE WAS `key-restates-the-entry` AND IT HAS INVERTED. It rebuilt the whole
-            // page key from the entry's own written `object_key`, `model_id` and `address`, and
+            // block key from the entry's own written `object_key`, `model_id` and `address`, and
             // asserted the result was the key the entry is filed under -- which was the evidence
             // that the key held nothing the entry did not, so calling it redundancy was fair. The
             // entry writes neither name now, so that comparison has ONE SOURCE on two of its
@@ -1161,12 +1161,12 @@ fn walk(reading: &Reading) -> Walked {
             );
             keys_reconstructed += 1;
 
-            // AND THE OBJECT ID THE NODE FILES THIS PAGE'S OBJECT UNDER, FROM THE KEY'S OWN TWO
+            // AND THE OBJECT ID THE NODE FILES THIS BLOCK'S OBJECT UNDER, FROM THE KEY'S OWN TWO
             // NAME SLOTS -- which is where those two terms live now, and the reason this arm still
             // has content: the ids in `node/object_index` are derived from a kind and an object key
             // that the entry no longer carries, so the derivation reads the key.
             //
-            // A LIVE page only: a removal's id goes to `deleted_object_index`, and this fixture
+            // A LIVE block only: a removal's id goes to `deleted_object_index`, and this fixture
             // performs none -- which `optional-stays-absent` pins.
             if !entry
                 .get("deleted")
@@ -1317,7 +1317,7 @@ enum Candidate {
     /// Nothing is changed. The CONTROL: it must reproduce the undoctored stream byte for byte, or
     /// every price below is a price of the doctoring machinery rather than of a removal.
     Control,
-    /// The page index is keyed by the handle the LIVE map already keys it by, rendered as a
+    /// The block index is keyed by the handle the LIVE map already keys it by, rendered as a
     /// decimal, in place of the composite.
     BlockKeyBecomesTheHandle,
     /// The composite loses the slot that is always empty, and the separator that delimits it.
@@ -1327,7 +1327,7 @@ enum Candidate {
     /// Priced and BLOCKED, and the reason is not a scope decision. The five VALUES are in the key;
     /// the two PRESENCE bits beside them are not. `block_index_written_key` renders
     /// `block_id().unwrap_or_default()`, and `ElementEntry::block_id()` is `None` EXACTLY while a
-    /// block is log-resident -- so a staged page and the first page of an object in a slab render
+    /// block is log-resident -- so a staged block and the first block of an object in a slab render
     /// ONE key and differ in `log_backed()`, which has production readers.
     /// `the_key_a_block_is_filed_under_inverts_exactly::the_presence_bits_of_an_address_are_not_in_the_key_it_renders`
     /// builds both and asserts the keys identical. Trimming the address slot-wise instead is
@@ -1575,10 +1575,10 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         tally.total()
     );
 
-    // ---- IDENTITY TWO: THE PAGE SUBTREE, MEASURED SEPARATELY ----
+    // ---- IDENTITY TWO: THE BLOCK SUBTREE, MEASURED SEPARATELY ----
     //
     // THIS IS THE ONE THAT CATCHES A TERM CHARGED AT THE WRONG LEVEL. `bucket_map` is bucket-keyed
-    // and the `block_index` inside it is page-keyed at 7.81 entries a bucket, so a term moved
+    // and the `block_index` inside it is block-keyed at 7.81 entries a bucket, so a term moved
     // between those two levels is wrong by that factor and the whole still balances.
     let block_level: usize = tally
         .rows
@@ -1656,7 +1656,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     );
     // THE SECOND-LARGEST TERM, AND IT IS NOT CLASSED BY ITS NAME EITHER. `node/object_index` holds
     // the ids of the objects a bucket carries, and those ids are a pure function of the shard, the
-    // kind and the object key -- all three of which the page entries in the SAME BUCKET write. So
+    // kind and the object key -- all three of which the block entries in the SAME BUCKET write. So
     // the question is answerable by derivation, and it is answered on every bucket rather than
     // argued from the shape.
     assert_eq!(
@@ -1670,11 +1670,11 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
 
     report(&reading, &walked);
 
-    // ---- THE TWO COPIES OF EACH PER-PAGE FACT, AND EXACTLY ONE OF THEM IS NEEDED ----
+    // ---- THE TWO COPIES OF EACH PER-BLOCK FACT, AND EXACTLY ONE OF THEM IS NEEDED ----
     //
     // The key side and the entry side state the same three facts -- the object, the kind and the
     // address -- and the reconstruction above was asserted in the direction that matters: the key
-    // is rebuildable from the entry. So a page can be written with the key or with the fields, and
+    // is rebuildable from the entry. So a block can be written with the key or with the fields, and
     // the two sides are NOT the same price, which is the whole point of pricing them apart.
     let key_side = tally.sum_of(BLOCK_KEY_TERMS);
     let entry_side = tally.sum_of(ENTRY_RESTATED_TERMS);
@@ -1720,7 +1720,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
          against {key_address} B of decimals in the key, so the direction this arm reports is wrong"
     );
 
-    // ---- A SLOT THE WRITER FILLS WITH A LITERAL `None`, ON EVERY PAGE ----
+    // ---- A SLOT THE WRITER FILLS WITH A LITERAL `None`, ON EVERY BLOCK ----
     assert_eq!(
         walked.nil_object_id_slots, reading.blocks,
         "[CLAUSE the-nil-slot-is-always-nil] {} of {} stored address(es) write `oi` as null; \
@@ -1788,8 +1788,8 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
 ///
 /// THIS IS WHERE THE CLASSIFICATION IS EARNED. A name-based reading of `slot_index/bucket_map` says
 /// bucket-keyed and is wrong by the bucket occupancy for everything inside its `block_index`. So no
-/// term is classed by its name: a term declared per-page whose instance count is not EXACTLY the
-/// page count fails here, and so does a per-bucket term that is not exactly the bucket count and a
+/// term is classed by its name: a term declared per-block whose instance count is not EXACTLY the
+/// block count fails here, and so does a per-bucket term that is not exactly the bucket count and a
 /// per-shard term that is not exactly one. An earlier probe on this structure reported 3 -> 1 -> 0
 /// copies per object as the store grew, from a ceiling that did not move with the corpus; an
 /// identity asserted at three sizes is what refuses that shape of result.
@@ -1987,21 +1987,21 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     // closing on its own measurement rather than a figure being re-goldened, which is why the
     // arithmetic is written here beside the new value.
     //
-    // THE PER-PAGE CLASS CARRIES THE WHOLE OF IT: 177.015 -> 127.015 B/object, while per-bucket
+    // THE PER-BLOCK CLASS CARRIES THE WHOLE OF IT: 177.015 -> 127.015 B/object, while per-bucket
     // stays at 49.331 and per-shard at 0.004. A step that had moved the per-bucket class would be
-    // a step in something other than the page entry.
+    // a step in something other than the block entry.
     // 176.35 -> 242.51 WHEN THE CONSOLIDATED OBJECT MAP MOVED UNDER `slot_index`.
     //
     // THIS IS NOT THE STORED INDEX GETTING BIGGER, and that distinction is the whole of why the
     // number is re-goldened rather than treated as a regression. `objects` was a TOP-LEVEL key of
     // the serialized `ShardState`; it is a field of `CoreIndex` now, written inside `slot_index`,
-    // because the encoder composes every live page's written key from the refs in each object's
+    // because the encoder composes every live block's written key from the refs in each object's
     // slot and cannot reach a sibling field. The same bytes are in the image, one level down -- so
     // the WHOLE image is unchanged and this figure, which is `slot_index`'s own division, rises by
     // exactly what the object rows cost. `SHARD_INDEX_FORMAT_VERSION` 30 is what the move paid.
     //
     // The step is charged to one term, `objects/subtree`, and deliberately not decomposed: this
-    // walk is a decomposition of the PAGE index, and the object rows are a different structure
+    // walk is a decomposition of the BLOCK index, and the object rows are a different structure
     // with their own arms. `one_record_per_object` is where their bytes are accounted.
     let published = 242.51f64;
     assert!(
@@ -2012,7 +2012,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
         large.objects
     );
 
-    // THE PER-PAGE CLASS IS THE LINE. Its two half-slopes must agree: a per-page term whose cost
+    // THE PER-BLOCK CLASS IS THE LINE. Its two half-slopes must agree: a per-block term whose cost
     // moved with the store would mean the per-object figure has no single value at all.
     let block_lower = half_at_scale((small, small_walk), (middle, middle_walk), Scale::PerBlock);
     let block_upper = half_at_scale((middle, middle_walk), (large, large_walk), Scale::PerBlock);
@@ -2213,7 +2213,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
             // negative rather than a caution. The composite key is the most duplicated structure
             // in the index and it is also the most COMPRESSIBLE one: sorted, sharing long
             // prefixes, and mostly decimal runs that repeat. The handle the live map already keys
-            // the page by is a hash, so a stream that looks 19 B/object shorter lands LARGER.
+            // the block by is a hash, so a stream that looks 19 B/object shorter lands LARGER.
             if candidate == Candidate::BlockKeyBecomesTheHandle {
                 assert!(
                     container_saved <= 0,
@@ -2298,13 +2298,13 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
 
 // =================================================================================================
 
-/// THE PAGE KEY'S CHARACTERS ARE READ BACK NOW, AND THIS TEST'S SUBJECT INVERTED RATHER THAN MOVED.
+/// THE BLOCK KEY'S CHARACTERS ARE READ BACK NOW, AND THIS TEST'S SUBJECT INVERTED RATHER THAN MOVED.
 ///
 /// # WHAT IT USED TO SAY, AND WHY THE NAME CHANGED WITH THE FACT
 ///
 /// It was `the_page_keys_characters_are_not_read_back_by_the_decoder`, and it measured exactly
-/// that: an index whose every page key was replaced by the decimal of the handle the live map files
-/// that page under decoded to the same `slot_index`, BYTE FOR BYTE, as the undoctored one. The
+/// that: an index whose every block key was replaced by the decimal of the handle the live map files
+/// that block under decoded to the same `slot_index`, BYTE FOR BYTE, as the undoctored one. The
 /// composite key was a name the writer composed and the reader discarded -- `block_index` decoded as
 /// a `BTreeMap<String, StoredBlockEntry>` consumed by `into_values()`.
 ///
@@ -2316,12 +2316,12 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
 ///
 /// # WHAT IT SAYS NOW, AND IT IS A STRONGER STATEMENT THAN THE EQUALITY IT REPLACES
 ///
-/// Re-keying every page by its handle does not produce an equal index. It does not produce an index
+/// Re-keying every block by its handle does not produce an equal index. It does not produce an index
 /// at all: the decode REFUSES, because a decimal handle is not an eight-slot composite and the one
-/// place a page's object can be read from is the name it is filed under. A silent misread is the
+/// place a block's object can be read from is the name it is filed under. A silent misread is the
 /// failure this change could have had, and a refusal naming the key is what it has instead.
 ///
-/// AND THE CHARACTERS ARE PROVED TO REACH THE DECODED INDEX. One character of ONE page key's
+/// AND THE CHARACTERS ARE PROVED TO REACH THE DECODED INDEX. One character of ONE block key's
 /// object-key slot is changed -- the key left a well-formed composite -- and the decoded
 /// `slot_index` must MOVE. Under the old behaviour that doctoring changed nothing at all, which is
 /// the whole difference this change makes, measured in one assertion.
@@ -2369,7 +2369,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
         reading.objects
     );
 
-    // ---- THE INVERSION: A HANDLE-KEYED PAGE INDEX IS REFUSED, NOT SILENTLY EQUAL ----
+    // ---- THE INVERSION: A HANDLE-KEYED BLOCK INDEX IS REFUSED, NOT SILENTLY EQUAL ----
     let rekeyed = try_the_decoder(&doctor(&reading, Candidate::BlockKeyBecomesTheHandle));
     let refusal = match rekeyed {
         Ok(bytes) => panic!(
@@ -2390,7 +2390,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
 
     // ---- AND THE CHARACTERS REACH THE DECODED INDEX, WHICH IS WHAT THE OLD CLAIM DENIED ----
     //
-    // ONE CHARACTER OF ONE PAGE KEY'S OBJECT-KEY SLOT, and the key stays a well-formed composite --
+    // ONE CHARACTER OF ONE BLOCK KEY'S OBJECT-KEY SLOT, and the key stays a well-formed composite --
     // so what is measured is the decoder READING the slot, not the decoder refusing a malformed
     // name. Under the old behaviour this doctoring moved nothing at all.
     let mut tampered = reading.value.clone();
@@ -2563,13 +2563,13 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
         per_object(whole) - per_object(shipped.slot_index_entry_bytes())
     );
 
-    // THE PER-PAGE CLASS DOES NOT KNOW WHICH RANGE IT IS ON. That is the statement that makes the
+    // THE PER-BLOCK CLASS DOES NOT KNOW WHICH RANGE IT IS ON. That is the statement that makes the
     // whole difference between the two published columns attributable to ONE class rather than
     // spread over the index -- and it is asserted rather than inferred from the two totals.
     //
     // THE EXACT CLAUSE AND THE TOLERANT ONE, AND THE EXACT ONE IS NOT DERIVED FROM IT. The two
-    // columns write the same objects in the same order, and a per-page term depends only on the
-    // page's own key and address -- so the two totals are not merely close, they are the SAME
+    // columns write the same objects in the same order, and a per-block term depends only on the
+    // block's own key and address -- so the two totals are not merely close, they are the SAME
     // BYTES, and a tolerance wide enough to survive rounding is wider than drifts worth catching.
     let block_unbounded_bytes = walked.tally.at_scale(Scale::PerBlock);
     let block_shipped_bytes = shipped_walk.tally.at_scale(Scale::PerBlock);

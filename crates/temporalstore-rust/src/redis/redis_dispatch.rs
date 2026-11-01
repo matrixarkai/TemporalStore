@@ -116,7 +116,7 @@ pub fn execute_redis_command_with_state(
         // GETSET IS `SET key value GET`, AND CARRIES SET SEMANTICS WITH IT. The caller hands
         // over the whole new value, so the deadline that belonged to the value being replaced
         // goes with it. `StringSet` never touches the expiry index -- it drops an already-
-        // lapsed record and then writes the page -- so it left the OLD countdown running under
+        // lapsed record and then writes the block -- so it left the OLD countdown running under
         // the NEW value, and the key vanished at a time the caller had overwritten away. The
         // conditional write is the one that clears the deadline, and it carries the old value
         // back in the same command, so the separate `StringGet` that used to read it (and

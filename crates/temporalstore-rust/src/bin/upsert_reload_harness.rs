@@ -6,7 +6,7 @@
 //! it gates nothing). Builds a store the way a batch-committing ingest does --
 //! thousands of hash batches (HashMultiSet + StringSet only, so every batch emits ONE
 //! upsert delta record), a durably-logged shard config (config-log present), threshold
-//! dumps part-way through (anchored base + durable pages), and an abrupt abort in place
+//! dumps part-way through (anchored base + durable blocks), and an abrupt abort in place
 //! of a clean shutdown -- then reloads and asserts the SERVED view equals the view every
 //! acked write implies. Each phase runs in its own process so the caller controls the
 //! recovery-mode environment per phase.
@@ -141,7 +141,7 @@ fn write_batches(engine: &TemporalEngine, from: u64, to: u64, dump_at: &[u64]) {
             assert!(r.status.ok, "batch {b} command {i}: {}", r.status.message);
         }
         if dump_at.contains(&b) {
-            // Background threshold dump: fsync pages + persist the anchored base index,
+            // Background threshold dump: fsync blocks + persist the anchored base index,
             // the checkpoint base-only fold recovery starts from.
             engine.flush_shard_index(1);
         }

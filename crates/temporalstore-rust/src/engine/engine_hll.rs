@@ -165,7 +165,7 @@ impl Hll {
 /// is dropped, bounding memory while keeping small buckets exact. Read via `count_changes`.
 pub(crate) fn record_change(shard: &mut ShardState, key: &str, bucket_ms: u64, value: Vec<u8>) {
     let enabled = shard.control_distinct_sketch;
-    // MINTS HERE AND IS ADOPTED AFTER, which is the order every other holder uses. The page
+    // MINTS HERE AND IS ADOPTED AFTER, which is the order every other holder uses. The block
     // this write belongs to is not filed yet at this point, so there is no handle to borrow --
     // `adopt_object_key_allocations` runs once the bucket index holds one and re-keys this map
     // onto it. Asking for the handle here is what went 0 for 40,040 the first time a sharing

@@ -8,12 +8,12 @@ use super::*;
 impl BlockStore {
     /// Take the per-slab live tally the INDEX maintains.
     ///
-    /// Publishing rather than deriving, because the store has no way to derive it: a page dies
+    /// Publishing rather than deriving, because the store has no way to derive it: a block dies
     /// when an index entry stops naming it, and that event never reaches here. The index keeps a
     /// running tally on its own mutation path and hands a snapshot over; this only reads it.
     ///
     /// Idempotent, and the last publish wins. Cheap: one map, once per maintenance round, sized
-    /// by SLABS rather than by pages.
+    /// by SLABS rather than by blocks.
     pub fn publish_live_block_bytes(&self, live: BTreeMap<u64, BlockStoreSlabLive>) {
         self.inner
             .lock()
@@ -34,7 +34,7 @@ impl BlockStore {
     ///
     /// This is the answer to "does `utility_basis_points` stop being uniformly zero", and it has
     /// to be asked of every slab to be worth asking. The GC candidate list cannot answer it: a
-    /// candidate is a slab that no live page points at, so its live fraction is zero by
+    /// candidate is a slab that no live block points at, so its live fraction is zero by
     /// construction and will stay zero however the figure is computed. The slabs with an
     /// interesting fraction are exactly the ones the collector is not allowed to touch.
     ///
@@ -56,8 +56,8 @@ impl BlockStore {
                 .filter(|bytes| *bytes > 0)
                 .unwrap_or(physical_bytes);
             let live = published.get(&block_slab_id).copied().unwrap_or_default();
-            // Capped at the denominator. A live page can be counted at its logical length while
-            // the slab total was written before that page was rewritten in place, and a fraction
+            // Capped at the denominator. A live block can be counted at its logical length while
+            // the slab total was written before that block was rewritten in place, and a fraction
             // above 1 is never a useful reading.
             let live_bytes = live.live_bytes.min(logical_bytes);
             let live_basis_points = if logical_bytes == 0 {
@@ -362,7 +362,7 @@ impl BlockStore {
                 let stored_slab_id = slab
                     .map(|slab| slab.stored_slab_id)
                     .unwrap_or(block_slab_id);
-                // USED BYTES MEANS LIVE PAGE BYTES IN THIS SLAB, once an index has published a
+                // USED BYTES MEANS LIVE BLOCK BYTES IN THIS SLAB, once an index has published a
                 // tally. Before that it means what it always meant, which is a different
                 // quantity and a much worse one: the file sizes of the slabs grouped under the
                 // same stored id that are NOT collectable. Since the candidate filter is the
@@ -370,14 +370,14 @@ impl BlockStore {
                 // candidate could never contribute to its own used bytes -- so every candidate
                 // reported zero, and reported it by accident rather than by measurement.
                 //
-                // The denominator changes with it. A live page is counted at its LOGICAL length,
+                // The denominator changes with it. A live block is counted at its LOGICAL length,
                 // so the total it is a fraction of has to be logical too: the slab descriptor
-                // carries exactly that, `logical_bytes`, summed over every page ever appended
+                // carries exactly that, `logical_bytes`, summed over every block ever appended
                 // here. That field only ever grows -- which is a BUG when it is read as a live
                 // figure, and is precisely right for a denominator.
                 //
                 // The numbers for a CANDIDATE do not move, and that is the point: a candidate is
-                // a slab no live page points at, so its maintained live bytes are zero. It now
+                // a slab no live block points at, so its maintained live bytes are zero. It now
                 // reads zero because it was counted, not because two filters happened to
                 // contradict each other. `slab_live_fractions` is where the slabs with a fraction
                 // between the two extremes are visible.
@@ -510,7 +510,7 @@ impl BlockStore {
             // consulted it in any form.
             //
             // The constructor doc on `with_slab_garbage_floor` states the invariant from the other
-            // side: a collector candidate is a slab no live page points at, "so its maintained live
+            // side: a collector candidate is a slab no live block points at, "so its maintained live
             // bytes are genuinely zero". That was asserted in prose and nowhere in code. It is a
             // claim about two INDEPENDENT derivations agreeing -- `live_block_slab_ids` is walked
             // fresh from the index at every call, while the tally is maintained incrementally on the
@@ -607,7 +607,7 @@ impl BlockStore {
         // inside the branch that also pushes onto `removed` -- so an empty `removed` means the
         // manifest would be rewritten with byte-identical content. That rewrite is not free: it
         // serialises every slab, fsyncs the temp file, renames it, and fsyncs the parent
-        // directory. TWO fsyncs, on a stage the periodic loop runs whenever page pressure holds.
+        // directory. TWO fsyncs, on a stage the periodic loop runs whenever block pressure holds.
         //
         // Measured on a fixture where the store settles at three slabs and a round reclaims
         // nothing: 4.0 ms per round before, and the round does no other durable work.

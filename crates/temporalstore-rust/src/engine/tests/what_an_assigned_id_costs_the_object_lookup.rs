@@ -39,11 +39,11 @@
 //! the same thing; including it in one arm and not another is the mistake these ratios exist to
 //! avoid.
 //!
-//! THE DENOMINATOR IS ONE OBJECT, NOT ONE PAGE AND NOT ONE ADDRESS. Three non-comparable per-key
+//! THE DENOMINATOR IS ONE OBJECT, NOT ONE BLOCK AND NOT ONE ADDRESS. Three non-comparable per-key
 //! figures already exist in this tree -- the whole-`ShardState` figure, the total-index-heap figure
 //! and the `bucket_map`-only figure -- and the lookup holds one entry PER OBJECT whatever an
-//! object's page count is. Each number below is per object, and the arms that would differ per
-//! page are named where they arise.
+//! object's block count is. Each number below is per object, and the arms that would differ per
+//! block are named where they arise.
 //!
 //! # ROUTE C'S TWO EIGHT-BYTE TERMS CANCEL, AND THAT IS THE WHOLE RESULT
 //!
@@ -55,7 +55,7 @@
 //! SO ROUTE C'S NET SAVING IS EXACTLY THE CHARACTERS' HEAP PAYLOAD AND NOTHING ELSE. That is a
 //! sharper claim than "thirty-two against forty", and it is sharper in a useful direction: it says
 //! the saving does not depend on the lookup's node layout, on the key's width, or on how many
-//! pages an object has. It is the bytes the characters themselves occupy, freed because after the
+//! blocks an object has. It is the bytes the characters themselves occupy, freed because after the
 //! census nothing needs a second copy of them -- the per-kind map's own key is the one copy, and
 //! `id -> characters` reads it there.
 //!
@@ -70,9 +70,9 @@
 //! # ROUTE B REGRESSES, AND BY HOW MUCH IS ARITHMETIC RATHER THAN OPINION
 //!
 //! Route B is the tempting one, because it adds no durable state at all: the id's durable home is
-//! the stored page entry -- which is in the BASE index, so it survives a dump and is not what
+//! the stored block entry -- which is in the BASE index, so it survives a dump and is not what
 //! `an_assigned_durable_id_defeats_ground_one_only`'s Claim 3 warns about -- and `characters -> id`
-//! is a RESIDENT map rebuilt on load by joining the per-kind maps against the page entries on the
+//! is a RESIDENT map rebuilt on load by joining the per-kind maps against the block entries on the
 //! address triple those two already share.
 //!
 //! IT REGRESSES BECAUSE THE CHARACTERS' ALLOCATION IS NOT FREED, IT MOVES. The new map is keyed BY
@@ -107,9 +107,9 @@
 //! Two functions take the key's characters by `&str` and no id of any provenance can be fed to
 //! either. Both are pinned below as signatures, which is the checkable form of the claim:
 //!
-//!   * `state::block_index_handle(&str, &BlockIndex) -> u64` -- the handle a page is filed under.
+//!   * `state::block_index_handle(&str, &BlockIndex) -> u64` -- the handle a block is filed under.
 //!     Under an id-addressed lookup this hashes the id instead, and that is tractable rather than
-//!     fatal for a reason the decode makes measurable: the stored index carries each page's handle
+//!     fatal for a reason the decode makes measurable: the stored index carries each block's handle
 //!     EXPLICITLY (`CoreIndex`'s visitor reads `(handle, key)` pairs and asks
 //!     `block_index.get(handle)`), so handles are read back rather than recomputed and moving the
 //!     term moves no stored value. Its own doc says handles "are re-assigned on every load, so
@@ -152,7 +152,7 @@
 //!   * FORTY-THREE HOLD THE CHARACTERS AND WANT AN ID (`E0308`, a `&str` where a `u64` is
 //!     expected). These are the sites that need the `characters -> id` direction, and they are the
 //!     reason this module exists.
-//!   * TWENTY-TWO WANT THE CHARACTERS off the identity beside a page (`E0609` seventeen, `E0614`
+//!   * TWENTY-TWO WANT THE CHARACTERS off the identity beside a block (`E0609` seventeen, `E0614`
 //!     five). These are the sites the census in
 //!     [`super::where_the_characters_are_durable_per_kind`] answers, for thirteen kinds.
 //!

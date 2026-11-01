@@ -8,15 +8,15 @@
 //! `container_block_ordinal` assigns a container element its POSITION, and an overwrite of the same
 //! element must reuse that position rather than take a new one --
 //! `container_block_ordinal::an_overwrite_keeps_the_members_ordinal_rather_than_climbing` pins that
-//! for the ungated path. The mechanism is an identity branch: the walk looks for a page already
-//! filed under this element's component and, finding one, returns the ordinal that page holds.
+//! for the ungated path. The mechanism is an identity branch: the walk looks for a block already
+//! filed under this element's component and, finding one, returns the ordinal that block holds.
 //!
 //! # WHY THE GATE BREAKS IT, AND WHY NO EXISTING TEST SEES THAT
 //!
-//! Under one entry per page the entry carries NO component, so
-//! `page.component.as_deref() == Some(component)` never matches and the walk falls through to
+//! Under one entry per block the entry carries NO component, so
+//! `block.component.as_deref() == Some(component)` never matches and the walk falls through to
 //! `highest + 1`. Every rewrite of one member then takes a fresh ordinal, which is a fresh
-//! `block_id`, which is a fresh ADDRESS -- so a member rewritten five times leaves five pages
+//! `block_id`, which is a fresh ADDRESS -- so a member rewritten five times leaves five blocks
 //! instead of overwriting one.
 //!
 //! The existing guard cannot see this: it reads no environment variable, so it runs with the gate
@@ -25,8 +25,8 @@
 //!
 //! # WHERE THE ORDINAL COMES FROM INSTEAD
 //!
-//! Not from a page read -- `container_block_ordinal` is handed the index and nothing that could
-//! fetch a page, and adding a fetch to a write path inside a footprint change is the scope drift
+//! Not from a block read -- `container_block_ordinal` is handed the index and nothing that could
+//! fetch a block, and adding a fetch to a write path inside a footprint change is the scope drift
 //! this series has already declined once.
 //!
 //! It comes from the RESIDENT MAP, which is keyed by the element and whose value carries the
@@ -62,7 +62,7 @@ fn load_on(engine: &TemporalEngine) {
     assert!(response.status.ok, "load failed: {:?}", response.status);
 }
 
-/// Distinct page addresses, and the block ids on them, for one set object.
+/// Distinct block addresses, and the block ids on them, for one set object.
 fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec<u64>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -98,7 +98,7 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
     // `identity_of` RATHER THAN THE LIVE INVERSION, because this listing is the one that
-    // includes tombstones -- its rows print `deleted=` -- and a deleted page is named by the
+    // includes tombstones -- its rows print `deleted=` -- and a deleted block is named by the
     // bucket's removal row instead of by the object lookup.
     let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
     let mut rows = Vec::new();
@@ -193,10 +193,10 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     //
     // An overwrite is the same element in the same position. Under the gate the entry carries no
     // component, so `container_block_ordinal`'s identity branch cannot find the member's own
-    // previous page and falls through to `highest + 1` -- measured before the fix as ordinals
+    // previous block and falls through to `highest + 1` -- measured before the fix as ordinals
     // [0, 1]. The position now comes from `shard.sets[key][member].block_id()`: the map that is
     // keyed by the member, holding the address it currently occupies, which IS its position.
-    // Authoritative rather than derived, and no page read.
+    // Authoritative rather than derived, and no block read.
     for (label, _blocks, ordinals, _resident) in &rows {
         assert_eq!(
             vec![0u64],
@@ -209,18 +209,18 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
 
     // THE ENTRY COUNTS, AND THE GATED ONE HAS CHANGED -- IT IS NOW ONE ON BOTH ARMS.
     //
-    // This engine APPENDS a page per write; it does not modify one in place. The ungated path
+    // This engine APPENDS a block per write; it does not modify one in place. The ungated path
     // always held ONE entry because its replacement is scoped BY THE ELEMENT -- the write unnames
-    // the element's own previous page.
+    // the element's own previous block.
     //
-    // THIS SAID A PAGE-NAMED ENTRY CANNOT CARRY THAT SCOPE, and that was true of a supersede keyed
+    // THIS SAID A BLOCK-NAMED ENTRY CANNOT CARRY THAT SCOPE, and that was true of a supersede keyed
     // on the address the write LANDS at: a rewrite lands at a new address, matches no existing
-    // entry, and leaves the previous one behind as a stale live entry over a dead page. It was
+    // entry, and leaves the previous one behind as a stale live entry over a dead block. It was
     // asserted here as `> 1` and described as a transient the next derivation heals.
     //
-    // THE WRITE PATH CARRIES THE SCOPE NOW. The filer is told which page the write REPLACES -- the
+    // THE WRITE PATH CARRIES THE SCOPE NOW. The filer is told which block the write REPLACES -- the
     // element's previous address, read from the resident map, which is keyed by the element and so
-    // still holds it at filing time -- and retires that page's entry when no sibling is left on
+    // still holds it at filing time -- and retires that block's entry when no sibling is left on
     // it. So the gated arm leaves ONE entry, the same as the ungated one, and the transient does
     // not exist to be healed. Asserted as an exact count in both rows, because `> 1` was satisfied
     // by exactly the stranding the change removes and would now be satisfied by nothing at all.
@@ -241,8 +241,8 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
 /// AND A DERIVATION DROPS AN ENTRY NO ELEMENT CARRIES, WHICH THE SERIES STILL RESTS ON.
 ///
 /// The projection reads the resident map, which holds only the CURRENT address of each element, so
-/// an entry naming a page no element is on is not emitted again. That property is what makes one
-/// entry per live page reachable by a derivation at all.
+/// an entry naming a block no element is on is not emitted again. That property is what makes one
+/// entry per live block reachable by a derivation at all.
 ///
 /// # THE STALE ENTRY IS PLANTED NOW, BECAUSE THE WRITE PATH NO LONGER PRODUCES ONE
 ///
@@ -252,9 +252,9 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
 /// there being more than one entry first.
 ///
 /// THAT FLOOR IS NOW UNREACHABLE, and that is the point rather than a problem: the filer is told
-/// which page a rewrite REPLACES and retires it, so five rewrites leave ONE entry and there is no
+/// which block a rewrite REPLACES and retires it, so five rewrites leave ONE entry and there is no
 /// transient left to heal. Restated rather than deleted, because the derivation's property is not
-/// about how the stale entry got there -- a compaction that relocates pages, a fold of a delta
+/// about how the stale entry got there -- a compaction that relocates blocks, a fold of a delta
 /// written by an older binary, and a bug in some future filer all produce the same state. So the
 /// entry is planted directly, at an address no element holds, and the derivation is asked the same
 /// question about it.
@@ -290,7 +290,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         written.len()
     );
 
-    // PLANT: one more live entry for the same object, over a page the resident map does not name.
+    // PLANT: one more live entry for the same object, over a block the resident map does not name.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 loaded");
@@ -309,11 +309,11 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         };
         // AND THE PLANT FILES THE OBJECT LOOKUP TOO, WHICH IT HAD TO START DOING.
         //
-        // `BucketNode::insert_block` files the BUCKET's page index and nothing else -- it is handed
+        // `BucketNode::insert_block` files the BUCKET's block index and nothing else -- it is handed
         // a `BlockSlabLiveIndex` and never sees the `CoreIndex` -- so a plant that stopped there
-        // left a page the shard's object lookup does not name. While the entry carried its own
-        // copy of the identity that cost nothing: every walk read the key off the page. The walks
-        // read it from BESIDE the page now, so an unfiled page is one they cannot attribute, and
+        // left a block the shard's object lookup does not name. While the entry carried its own
+        // copy of the identity that cost nothing: every walk read the key off the block. The walks
+        // read it from BESIDE the block now, so an unfiled block is one they cannot attribute, and
         // `entry_rows` counted ONE where this test asserts two.
         //
         // IT IS THE PLANT THAT WAS WRONG, NOT THE WALK. The write path files both halves -- the
@@ -466,17 +466,17 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
 ///
 /// # WHAT ACTUALLY CLIMBS, CORRECTED AGAINST A FIRST WRONG READING
 ///
-/// A first reading of this expected stale pages to PILE UP under the gate, the way `SetAdd`'s own
+/// A first reading of this expected stale blocks to PILE UP under the gate, the way `SetAdd`'s own
 /// gated arm documents them doing. Driven, that is not what happens here: hash retires a field's
-/// previous page by the ADDRESS the resident map held for it before the overwrite, which has
-/// nothing to do with `component`, so there is still only ONE live page after every round, planted
+/// previous block by the ADDRESS the resident map held for it before the overwrite, which has
+/// nothing to do with `component`, so there is still only ONE live block after every round, planted
 /// or not -- measured while writing this test as `ordinals=[0]`, never `[0, 1]`. What climbs is
-/// that ONE page's own position: with the component stripped, `container_block_ordinal`'s identity
-/// branch cannot match the single live page it is itself looking at, so `highest` is read off it
+/// that ONE block's own position: with the component stripped, `container_block_ordinal`'s identity
+/// branch cannot match the single live block it is itself looking at, so `highest` is read off it
 /// anyway and the next write is handed `highest + 1` instead of reusing it -- `[0]`, then `[1]`,
 /// then `[2]`, climbing round over round rather than piling up. With the gated branch, every round
 /// reads `[0]`: the position comes from `shard.hashes[key][field].block_id()` instead, which is
-/// authoritative and needs no page read.
+/// authoritative and needs no block read.
 #[test]
 fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -553,18 +553,18 @@ fn an_overwrite_of_a_component_less_hash_entry_reuses_its_ordinal() {
 /// A FIRST DRAFT of this test wrote ONE field, stripped its only entry's component, and read it
 /// straight back -- and `HashGet` answered correctly even against the UNFIXED code. That was not
 /// the fix working: a SECOND draft then rewrote that one field across several rounds, expecting
-/// stale pages to accumulate the way the ordinal test's own history does. They do not -- driven
-/// and checked directly: hash retires the field's PREVIOUS page by the address the resident map
+/// stale blocks to accumulate the way the ordinal test's own history does. They do not -- driven
+/// and checked directly: hash retires the field's PREVIOUS block by the address the resident map
 /// held before the overwrite, which has nothing to do with `component`, so there is never more
-/// than one live page per field regardless of what this test plants onto it. (That is also the
-/// corrected reading behind the ordinal test above: its climbing block id is ONE live page's
+/// than one live block per field regardless of what this test plants onto it. (That is also the
+/// corrected reading behind the ordinal test above: its climbing block id is ONE live block's
 /// position advancing round over round, not an accumulating pile the way `SetAdd`'s gated arm
 /// leaves one.)
 ///
 /// So a single field, rewritten or not, can never be the thing that makes `component` matter here
-/// -- there is only ever one candidate page, and nothing needs to be disambiguated FROM. What the
-/// brief's mechanism (`bucket_index_block_address` matching `page.component.as_deref() ==
-/// component` on every branch) can only get wrong is choosing AMONG SEVERAL live pages of one
+/// -- there is only ever one candidate block, and nothing needs to be disambiguated FROM. What the
+/// brief's mechanism (`bucket_index_block_address` matching `block.component.as_deref() ==
+/// component` on every branch) can only get wrong is choosing AMONG SEVERAL live blocks of one
 /// object -- which needs several FIELDS, not several rewrites of one. So this plants on one field
 /// of a two-field object and leaves the other untouched, as the thing the stripped field's lookup
 /// could be confused with (or lost beside).
@@ -591,17 +591,17 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     }
 
     // Strip ONLY `FIELD`'s entry. `SIBLING` is left exactly as written, component intact, so the
-    // object is unambiguously a two-page object and the lookup below has something real to
+    // object is unambiguously a two-block object and the lookup below has something real to
     // disambiguate FROM rather than answering by elimination over an object with nothing else on
     // it.
     // NO PLANT IS NEEDED ANY MORE, AND THAT IS WHAT IS ASSERTED INSTEAD.
     //
     // This stripped the component off `FIELD`'s entry to manufacture the nameless entry the test is
-    // about. Hash is in the page-named set, so the entry is nameless BY CONSTRUCTION and the strip
+    // about. Hash is in the block-named set, so the entry is nameless BY CONSTRUCTION and the strip
     // removes nothing -- measured as "stripped 0 entries, not one". A plant that plants nothing is
     // the shape that makes a guard read as a tree fact while asserting only its own fixture, so it
     // is replaced by the direct statement: this object's entries carry no field name at all, and
-    // `SIBLING` is still a separate page, so the lookup below has something real to disambiguate
+    // `SIBLING` is still a separate block, so the lookup below has something real to disambiguate
     // from rather than answering by elimination.
     assert_eq!(
         0,

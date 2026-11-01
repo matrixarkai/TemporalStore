@@ -9,7 +9,7 @@ use super::*;
 /// constant so a hold that scales with the value's WIDTH cannot be mistaken for a fixed one.
 const FIELDS: usize = 64;
 
-/// A shard holding one wide hash whose pages are all OUT of cache.
+/// A shard holding one wide hash whose blocks are all OUT of cache.
 fn cold_wide_hash(dir: &std::path::Path) -> TemporalEngine {
     let engine = TemporalEngine::with_local_dirs(
         16 * 1024 * 1024,
@@ -29,13 +29,13 @@ fn cold_wide_hash(dir: &std::path::Path) -> TemporalEngine {
         });
         assert!(response.status.ok, "write {index}: {:?}", response.status);
     }
-    // Without this every page is already resident and the read below never reaches the block
+    // Without this every block is already resident and the read below never reaches the block
     // store -- the count would be zero and the claim would hold for the wrong reason.
     let _ = engine.cache.invalidate_shard(1);
     engine
 }
 
-/// One `HashGetAll` down the durable serving route, with the page reads counted.
+/// One `HashGetAll` down the durable serving route, with the block reads counted.
 ///
 /// Returns the tally and the FIELD COUNT the response actually carried. Those are two different
 /// claims -- "N reads happened under the guard" and "the value had N fields" -- and a single
@@ -58,7 +58,7 @@ fn measured_hash_get_all(
     (crate::engine::maintenance_block_read_counts(), fields)
 }
 
-/// The serving read fast path reads its pages AFTER the shard-table read guard drops.
+/// The serving read fast path reads its blocks AFTER the shard-table read guard drops.
 ///
 /// A read guard is the easy one to leave in place, because admitting other readers does not look
 /// like exclusion. It is: it excludes every WRITER on the shard for as long as it is held, and
@@ -70,8 +70,8 @@ fn measured_hash_get_all(
 ///   * UNDER THE GUARD -- where the reads used to be. The positive control: the counter has to
 ///     produce a non-zero number inside the region, or the zero below is a broken counter rather
 ///     than a shortened hold.
-///   * SHIPPED -- the addresses are chosen under the guard, the pages are read after it drops.
-/// Both arms must read the same pages, which is what stops this from being satisfied by a read
+///   * SHIPPED -- the addresses are chosen under the guard, the blocks are read after it drops.
+/// Both arms must read the same blocks, which is what stops this from being satisfied by a read
 /// that found everything cached or served nothing.
 #[test]
 fn the_serving_fast_path_reads_blocks_after_the_shard_guard_drops() {
@@ -148,7 +148,7 @@ needs the shard itself, say why here rather than widening the region back",
 /// Releasing the guard before the reads does not let a concurrent writer corrupt a served value.
 ///
 /// This is the other half of the change: the reads moved OUT of the excluded region, so a writer
-/// can now land between the address lookup and the page read. What must still hold is that every
+/// can now land between the address lookup and the block read. What must still hold is that every
 /// field is present and every value is a WHOLE value some writer actually wrote -- never absent,
 /// never another record's bytes, never a mix.
 #[test]

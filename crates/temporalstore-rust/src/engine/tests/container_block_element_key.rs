@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT IT COSTS FOR A PAGE TO STATE WHICH ELEMENT IT HOLDS, MEASURED PER KIND.
+//! WHAT IT COSTS FOR A BLOCK TO STATE WHICH ELEMENT IT HOLDS, MEASURED PER KIND.
 //!
 //! # THE CLAIM THIS MODULE WAS OPENED ON
 //!
-//! A container page used to carry a value and nothing else. `container_blocks` puts a frame round it
+//! A container block used to carry a value and nothing else. `container_blocks` puts a frame round it
 //! that names the element, which costs bytes on every container write and changes no answer. This
 //! module is where the cost is measured and where "changes no answer" is asserted rather than
 //! assumed.
@@ -20,7 +20,7 @@
 //!     list   key = the sequence word   value = the element        unrelated
 //! ```
 //!
-//! So a set page can name its element for the price of the framing alone, a zset page for the
+//! So a set block can name its element for the price of the framing alone, a zset block for the
 //! framing plus its eight-byte score, and only `hash` and `list` pay for a second copy of anything.
 //! `the_framing_cost_of_naming_an_element_differs_by_kind` prints the ladder that shows it, per kind
 //! and per width, with the denominator on every row.
@@ -37,13 +37,13 @@
 //! ## The selection could be vacuous, answering correctly for the wrong reason
 //!
 //! A selector that ignored the component and returned the first item would pass every happy-path
-//! test in this file, because at one item per page the first item IS the one asked for. So the
+//! test in this file, because at one item per block the first item IS the one asked for. So the
 //! controls are a frame holding TWO elements -- asked for each in turn, and asked for a third that
 //! is not there -- and a frame whose key spelling is deliberately wrong for the component being
 //! looked up. #2016's first mutation run had the defect SURVIVE on a one-key fixture; this module
 //! does not own a one-key fixture.
 //!
-//! ## An old page could stop reading
+//! ## An old block could stop reading
 //!
 //! No version stamp moves in this stage, and the only thing standing behind that is the magic
 //! discriminating. `a_block_written_without_a_frame_still_reads_through_the_funnel` installs bare
@@ -170,7 +170,7 @@ fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> St
 
 /// A COMPONENT SURVIVES BEING TURNED INTO A PAGE KEY AND BACK, FOR EVERY SPELLING.
 ///
-/// This is the property the rest of the program rests on. If the page key and the index component
+/// This is the property the rest of the program rests on. If the block key and the index component
 /// are two spellings of one value then either can be derived from the other, and a later stage may
 /// stop storing whichever it prefers. If they were merely written consistently at the same instant
 /// by one call site -- which is how a set's component and its payload agree TODAY, with nothing
@@ -180,7 +180,7 @@ fn component_for(spelling: ElementKeySpelling, width: usize, index: usize) -> St
 /// THE DENOMINATOR IS PRINTED AND FLOORED. A loop over an empty ladder asserts nothing and reports
 /// success, which is how two threads were nearly defeated in one day.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
     let widths = [0usize, 1, 8, 16, 64, 255, 256];
@@ -235,7 +235,7 @@ fn a_component_survives_the_round_trip_to_a_block_key_for_every_spelling() {
 /// because the component is the member alone: an empty component is `hex::encode(&[])`, which
 /// `hex::decode` reads back as the empty member it is, with no score term to be short by.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn an_empty_zset_component_names_an_empty_member() {
     let component = String::new();
@@ -267,10 +267,10 @@ fn an_empty_zset_component_names_an_empty_member() {
 ///
 /// `component_from_element_key` STAYS TOTAL, asserted here rather than assumed: every key at
 /// least eight bytes long still spells a component, which is the property
-/// `select_container_element` leans on to answer `Absent` rather than `Corrupt` for a page that
+/// `select_container_element` leans on to answer `Absent` rather than `Corrupt` for a block that
 /// is merely unaddressed by a given component.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_its_member_half() {
     // THE OTHER THREE SPELLINGS: key -> component -> key reproduces the key exactly, unchanged by
@@ -351,7 +351,7 @@ fn a_scorethenmember_key_round_trip_is_lossy_in_its_score_half_and_bijective_in_
 /// everything, so the refusals have to be asserted too. Each row below is a component that is
 /// well formed for SOME spelling and not for the one being asked.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_component_the_spelling_cannot_produce_is_refused() {
     // Not hex at all.
@@ -404,10 +404,10 @@ fn a_component_the_spelling_cannot_produce_is_refused() {
 
 /// A FRAME DECODES TO THE ITEMS IT WAS BUILT FROM, INCLUDING A VALUE THAT IS THE KEY'S TAIL.
 ///
-/// Two items and not one, deliberately: at one item per page a decoder that returned only the first
+/// Two items and not one, deliberately: at one item per block a decoder that returned only the first
 /// would pass, and that is the shape #2016's first mutation run survived on.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_frame_decodes_to_the_items_it_was_built_from() {
     let mut cases = 0usize;
@@ -471,7 +471,7 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
 /// whole reason the frame is affordable for `set`, so it is the one property of the format that has
 /// to be a measurement.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_value_that_is_the_keys_tail_is_stored_once() {
     let key = bytes_of(32, 3);
@@ -529,9 +529,9 @@ fn a_value_that_is_the_keys_tail_is_stored_once() {
 /// THE PER-ITEM MARGINAL FIGURE IS AN ARITHMETIC PROJECTION AND IS LABELLED ONE. Nothing in the
 /// product writes a frame of more than one item yet; the two-item frame here is built directly, and
 /// the difference between it and the one-item frame is what a second element would cost a batched
-/// page. That is a fact about the FORMAT, which is what this stage ships.
+/// block. That is a fact about the FORMAT, which is what this stage ships.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn the_framing_cost_of_naming_an_element_differs_by_kind() {
     let widths = [8usize, 16, 32, 64, 256];
@@ -548,9 +548,9 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
             let component = component_for(spelling, width, 1);
             let key = element_key_from_component(spelling, &component).expect("fixture component");
             let value: Vec<u8> = match kind {
-                // A set's page holds the member; a zset's holds the member too.
+                // A set's block holds the member; a zset's holds the member too.
                 "set" | "zset" => bytes_of(width, 1),
-                // A hash's page holds the field value and a list's holds the element; neither is
+                // A hash's block holds the field value and a list's holds the element; neither is
                 // related to the key, so both are their own bytes.
                 _ => bytes_of(width, 1),
             };
@@ -581,7 +581,7 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
             )
             .len();
             let marginal = two - framed;
-            // What a 128-item page would average per element, projected from the marginal item.
+            // What a 128-item block would average per element, projected from the marginal item.
             let at_128 = (framed + 127 * marginal) as f64 / 128.0;
             let cost = framed as f64 - bare as f64;
             let share = cost / bare as f64 * 100.0;
@@ -616,7 +616,7 @@ fn the_framing_cost_of_naming_an_element_differs_by_kind() {
 /// A test that cannot say what a width should be from the values that went in cannot notice when it
 /// is wrong -- the reason `block_record_varint_len` exists beside the record header.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_one_item_frame_is_exactly_its_parts() {
     let key = b"field-0001";
@@ -655,9 +655,9 @@ fn a_one_item_frame_is_exactly_its_parts() {
 /// The control that catches a selector which ignores the component. Asked for the first item it must
 /// answer the first value, asked for the second the second, and asked for an element that is not
 /// there it must answer `Absent` -- which is a different answer from `Corrupt`, because the caller
-/// treats one as a miss and the other as a page it must not trust.
+/// treats one as a miss and the other as a block it must not trust.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
     let mut covered = 0usize;
@@ -710,14 +710,14 @@ fn a_two_element_frame_answers_for_each_element_and_absent_for_a_third() {
 /// the component is well formed, and they belong to different spellings. An implementation that
 /// compared strings loosely, or that fell back to the first item when it could not build a key,
 /// would serve one element's bytes for another's name -- which is the precise failure #2013 measured
-/// on the carried-page path ("the page that loses is handed the FIRST page's BYTES rather than
+/// on the carried-block path ("the block that loses is handed the FIRST block's BYTES rather than
 /// answering missing").
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_frame_asked_for_a_component_its_spelling_cannot_name_answers_absent() {
     let member = bytes_of(16, 1);
-    // A set page: its keys are raw members and its components are hex.
+    // A set block: its keys are raw members and its components are hex.
     let block = encode_container_block(ElementKeySpelling::Hex, &[(&member, member.as_slice())]);
     // A hash-shaped component, which is not hex.
     assert_eq!(
@@ -746,7 +746,7 @@ fn a_frame_asked_for_a_component_its_spelling_cannot_name_answers_absent() {
 ///
 /// THE MUTATIONS ARE COUNTED AND FLOORED. A loop that built no mutants would assert nothing.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
     let key = b"field-0001".to_vec();
@@ -822,11 +822,11 @@ fn a_frame_that_cannot_be_walked_is_not_mistaken_for_a_value() {
 
 /// BYTES WITH NO MAGIC ARE NOT A FRAME, AND ARE NOT CORRUPT EITHER.
 ///
-/// The compatibility hinge in isolation: a page written before this stage has no magic, and the
+/// The compatibility hinge in isolation: a block written before this stage has no magic, and the
 /// answer has to be `NotFramed` so the read funnel hands the payload back. `Corrupt` here would
-/// break every stored page.
+/// break every stored block.
 ///
-/// rust-internal: exercises the page framing directly
+/// rust-internal: exercises the block framing directly
 #[test]
 fn bytes_with_no_magic_are_not_a_frame() {
     let mut checked = 0usize;
@@ -857,11 +857,11 @@ fn bytes_with_no_magic_are_not_a_frame() {
 // 4. AND THE PRODUCT STILL ANSWERS EXACTLY WHAT IT DID
 // =================================================================================================
 
-/// EVERY CONTAINER KIND WRITES A FRAMED PAGE AND READS BACK THE VALUE IT WROTE.
+/// EVERY CONTAINER KIND WRITES A FRAMED BLOCK AND READS BACK THE VALUE IT WROTE.
 ///
 /// End to end through the engine's own command surface, which is the only arm that proves the write
 /// sites and the read funnel agree. The two counters are floored at zero: no write fell back to a
-/// bare page, and no read met a frame it could not walk.
+/// bare block, and no read met a frame it could not walk.
 ///
 /// THE STORE PATH LENGTH is printed and is one directory for the whole test, so no arm is measured
 /// against a longer path than another.
@@ -869,7 +869,7 @@ fn bytes_with_no_magic_are_not_a_frame() {
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
-    // IT FETCHES THE PAGE BY COMPONENT, which is the ungated identity. Under one entry a page a
+    // IT FETCHES THE BLOCK BY COMPONENT, which is the ungated identity. Under one entry a block a
     // live set entry carries no element name, so the fetch answers `None` and this panics BEFORE
     // comparing any value -- the instrument fails, not the readback. That the values are whole
     // under the gate is held by `gated_corpus_across_a_store_boundary` for all four kinds across a
@@ -916,7 +916,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
             other => panic!("expected Bytes, got {other:?}"),
         }
     }
-    // The whole-object door, which walks the page index and reads a page per element: the arm #2014
+    // The whole-object door, which walks the block index and reads a block per element: the arm #2014
     // guards, and the one that would return framing bytes if selection were skipped.
     let entries = match read(
         &engine,
@@ -1000,9 +1000,9 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
         other => panic!("expected Members, got {other:?}"),
     };
     // A ZSET LISTING ANSWERS INTERLEAVED MEMBER AND SCORE, so four members are eight entries. And
-    // it reads NO PAGE AT ALL -- it is served out of `shard.zsets`, which #2017 measured and used
+    // it reads NO BLOCK AT ALL -- it is served out of `shard.zsets`, which #2017 measured and used
     // as its control. So this arm proves the zset WRITE path did not break the resident map; the
-    // zset PAGE is exercised by the reload test below, which is the only door that reads it.
+    // zset BLOCK is exercised by the reload test below, which is the only door that reads it.
     assert_eq!(
         members.len() * 2,
         zset_members.len(),
@@ -1056,12 +1056,12 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
         "a read met a container block it could not walk"
     );
 
-    // AND THE STORED PAGES REALLY ARE FRAMED, which nothing above this line establishes.
+    // AND THE STORED BLOCKS REALLY ARE FRAMED, which nothing above this line establishes.
     //
     // Every value comparison in this test would pass just as well if the write path had stopped
-    // framing altogether, because an unframed page reads back exactly -- that is the compatibility
+    // framing altogether, because an unframed block reads back exactly -- that is the compatibility
     // design, and it is what makes the rest of this test vacuous in this one direction. So the raw
-    // page is fetched for one element of each kind and asserted to decode as a frame naming that
+    // block is fetched for one element of each kind and asserted to decode as a frame naming that
     // element. Four kinds and not one: a per-kind spelling chosen wrongly at a single write site is
     // exactly the defect the shared helper exists to prevent, and it would show only here.
     let stored: [(&str, &str, String); 4] = [
@@ -1128,15 +1128,15 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
     );
 }
 
-/// A FRAMED PAGE SURVIVES A RELOAD, WHICH IS THE ONLY DOOR THAT READS SOME OF THEM AT ALL.
+/// A FRAMED BLOCK SURVIVES A RELOAD, WHICH IS THE ONLY DOOR THAT READS SOME OF THEM AT ALL.
 ///
-/// The end-to-end test above cannot exercise a zset page, because a zset listing is served out of
-/// `shard.zsets` and reads nothing -- #2017's own control. A reload is what reads the pages: it
-/// rebuilds the resident maps out of the page index and then every subsequent read resolves an
+/// The end-to-end test above cannot exercise a zset block, because a zset listing is served out of
+/// `shard.zsets` and reads nothing -- #2017's own control. A reload is what reads the blocks: it
+/// rebuilds the resident maps out of the block index and then every subsequent read resolves an
 /// address and goes to storage.
 ///
 /// SO THIS IS ALSO THE ARM THAT MATTERS MOST TO WHAT COMES NEXT. The stage after this one makes the
-/// load path rebuild those maps out of the PAGES rather than out of the index, and the page read
+/// load path rebuild those maps out of the BLOCKS rather than out of the index, and the block read
 /// here is the read it will build on. If the frame did not survive a reload there would be nothing
 /// to build on.
 ///
@@ -1214,7 +1214,7 @@ fn a_framed_block_reads_back_after_a_reload() {
     }
 
     // A SECOND ENGINE ON THE SAME FILES, with its own cache directory so nothing is answered out
-    // of a warm page the first engine left behind. Without that the reload would be measured
+    // of a warm block the first engine left behind. Without that the reload would be measured
     // against the cache rather than against storage.
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
@@ -1336,15 +1336,15 @@ fn a_framed_block_reads_back_after_a_reload() {
     );
 }
 
-/// A PAGE WRITTEN WITHOUT A FRAME STILL READS THROUGH THE FUNNEL.
+/// A BLOCK WRITTEN WITHOUT A FRAME STILL READS THROUGH THE FUNNEL.
 ///
 /// The compatibility claim, exercised on the product path rather than argued from the magic. No
-/// version stamp moves in this stage, and this is the whole reason that is safe: a stored page from
+/// version stamp moves in this stage, and this is the whole reason that is safe: a stored block from
 /// before this change has no magic, so the funnel hands its payload back untouched.
 ///
 /// HOW THE OLD SHAPE IS PRODUCED WITHOUT A TIME MACHINE: the value is appended through the block
-/// store directly, with no frame round it, and the page index is told about it the same way a write
-/// would. That is byte-for-byte what a page written before this stage looks like.
+/// store directly, with no frame round it, and the block index is told about it the same way a write
+/// would. That is byte-for-byte what a block written before this stage looks like.
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]

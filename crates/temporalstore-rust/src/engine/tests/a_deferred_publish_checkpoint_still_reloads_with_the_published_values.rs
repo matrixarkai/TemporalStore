@@ -3,7 +3,7 @@
 
 //! A SKIPPED SERVED-INDEX CHECKPOINT MUST NOT LOSE A PUBLISHED VALUE.
 //!
-//! WHAT THIS IS FOR. `publish_shard_index_snapshot_for_keys` republished the pages of the keys it
+//! WHAT THIS IS FOR. `publish_shard_index_snapshot_for_keys` republished the blocks of the keys it
 //! was NAMED and then re-encoded and rewrote the whole served index, at a cost set by the size of
 //! the STORE rather than the size of the publish --
 //! `what_one_visibility_publish_writes_grows_with_the_store_not_the_publish` prices that at 376,012

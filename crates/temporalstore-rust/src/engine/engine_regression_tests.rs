@@ -13,7 +13,7 @@ use crate::types::{
 };
 use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 
-/// Holds the one-entry-a-page gate OFF for as long as it lives, putting back whatever was there --
+/// Holds the one-entry-a-block gate OFF for as long as it lives, putting back whatever was there --
 /// on a normal drop AND during unwinding.
 ///
 /// # WHY A SHARED GUARD APPEARED WHEN THE GATE'S DEFAULT MOVED
@@ -35,14 +35,14 @@ use crate::{ElementEntry, BlockStoreOptions, BlockStore};
 
 
 
-/// THE OBJECT OF EVERY PAGE IN ONE INDEX, KEYED BY THE POSITION THE PAGE IS FILED AT.
+/// THE OBJECT OF EVERY BLOCK IN ONE INDEX, KEYED BY THE POSITION THE BLOCK IS FILED AT.
 ///
 /// # WHY THIS AND NOT ONLY [`blocks_with_identity`]
 ///
 /// Half the walks that have to be converted cannot give up their own nesting. They need the
-/// BUCKET as well as the page -- to read a tombstone row out of it, to count its object index, to
-/// `retain` over it -- and a flat list of pages does not carry the bucket. This composes with
-/// whatever walk is already there: take it once, then ask it per page.
+/// BUCKET as well as the block -- to read a tombstone row out of it, to count its object index, to
+/// `retain` over it -- and a flat list of blocks does not carry the bucket. This composes with
+/// whatever walk is already there: take it once, then ask it per block.
 ///
 /// IT OWNS ITS KEYS AND BORROWS NOTHING, which is what lets a `retain` use it. `retain` holds the
 /// bucket map mutably and the keys are drawn from a SIBLING field of the same index, so a map that
@@ -65,9 +65,9 @@ impl BlockObjects {
         }
     }
 
-    /// The object the page at this position belongs to.
+    /// The object the block at this position belongs to.
     ///
-    /// A PANIC AND NOT AN `Option`, for [`blocks_with_identity`]'s reason: a page that nothing
+    /// A PANIC AND NOT AN `Option`, for [`blocks_with_identity`]'s reason: a block that nothing
     /// beside it names is a state the producer refuses, and a caller handed `None` would reach
     /// for a skip. Every caller here is walking the same index this was taken from, so the only
     /// way to miss is to ask at a position that does not exist.
@@ -80,46 +80,46 @@ impl BlockObjects {
     }
 }
 
-/// EVERY PAGE OF ONE CORE INDEX, WITH THE OBJECT THAT THE STRUCTURES BESIDE IT NAME.
+/// EVERY BLOCK OF ONE CORE INDEX, WITH THE OBJECT THAT THE STRUCTURES BESIDE IT NAME.
 ///
 /// # WHY THIS IS SHARED AND NOT A WALK PER TEST
 ///
 /// `BlockIndex` carries no object key. Every test that walked a real store's buckets and asked a
-/// page which object it belonged to now has to ask the bucket instead, and there are some forty
+/// block which object it belonged to now has to ask the bucket instead, and there are some forty
 /// such walks across this module tree. Written out one by one they are forty chances to pick the
 /// WRONG DOOR, and the wrong door fails silently rather than loudly:
 ///
 ///   * [`BlockKeysByPosition::live_identity`] answers from the object lookup alone, and
-///     `insert_object_block_lookup` returns early on a deleted page -- so it names NO tombstone.
-///     A walk that reports on deleted pages and asks that door drops every one of them and comes
+///     `insert_object_block_lookup` returns early on a deleted block -- so it names NO tombstone.
+///     A walk that reports on deleted blocks and asks that door drops every one of them and comes
 ///     back with a smaller, entirely plausible number.
-///   * [`BlockKeysByPosition::identity_of`] knows about both sources: the lookup for a live page,
+///   * [`BlockKeysByPosition::identity_of`] knows about both sources: the lookup for a live block,
 ///     and the bucket's own tombstone row for a deleted one. That is what this asks, so a caller
 ///     cannot get the tombstone case wrong by omitting to think about it.
 ///
-/// # A LIVE PAGE NAMED BY NOTHING IS A PANIC; AN UNNAMED TOMBSTONE IS A SKIP
+/// # A LIVE BLOCK NAMED BY NOTHING IS A PANIC; AN UNNAMED TOMBSTONE IS A SKIP
 ///
 /// THIS WAS A FLAT PANIC OVER BOTH STATES AND THAT WAS WRONG, AND THE SUITE IS WHAT SAID SO. The
-/// paragraph here read "A PAGE NAMED BY NOTHING IS A PANIC, NOT A SKIP ... Both are states a test
+/// paragraph here read "A BLOCK NAMED BY NOTHING IS A PANIC, NOT A SKIP ... Both are states a test
 /// walking a store should fail on, loudly", naming the window between a decode and its rebuild and
 /// a removal that named no element.
 ///
-/// THE SECOND IS NOT A DEFECT, AND `identity_of`'s OWN DOC SAYS SO: a deleted page whose removal
+/// THE SECOND IS NOT A DEFECT, AND `identity_of`'s OWN DOC SAYS SO: a deleted block whose removal
 /// named no element "is the one page in this store whose object nothing beside it states".
 /// Production's `block_identities_in` skips it through a `filter_map`, with the note that in every
 /// caller it means "this page is not the one I am matching".
 ///
 /// `hash_read_union_divergence::an_index_entry_marked_deleted_loses_no_field_and_is_not_counted`
-/// plants exactly that page -- it marks an entry deleted in place, with no tombstone row -- and
+/// plants exactly that block -- it marks an entry deleted in place, with no tombstone row -- and
 /// the flat panic fired while this walk was still BUILDING its list, before any caller's
-/// `!page.deleted` filter could short-circuit. A test whose whole subject is that page could not
+/// `!block.deleted` filter could short-circuit. A test whose whole subject is that block could not
 /// run.
 ///
 /// SO THE TWO STATES ARE SPLIT, and the assertion says which is which:
 ///
-///   * a LIVE page the lookup does not name PANICS with the handle. That is the decode-before-
+///   * a LIVE block the lookup does not name PANICS with the handle. That is the decode-before-
 ///     rebuild window, which the decoder closed by filing as it decodes, so it is a defect.
-///   * a DELETED page no tombstone row names is SKIPPED. Its object is genuinely unstated and
+///   * a DELETED block no tombstone row names is SKIPPED. Its object is genuinely unstated and
 ///     there is nothing for a walk to attribute it to.
 ///
 /// A skip is still the dangerous direction, which is why only the second case gets one: a skip on
@@ -128,8 +128,8 @@ impl BlockObjects {
 ///
 /// # WHAT THIS IS NOT FOR
 ///
-/// A test whose SUBJECT is a page filed under a bucket its key does not route to. This asks by
-/// POSITION, and the lookup names such a page at the position it was filed under, not the one it
+/// A test whose SUBJECT is a block filed under a bucket its key does not route to. This asks by
+/// POSITION, and the lookup names such a block at the position it was filed under, not the one it
 /// now sits in -- so this would panic on the very state that test is driving.
 /// [`BlockKeysByPosition::identity_anywhere`] is the door for that, and
 /// `bucket_fill`'s mis-filing walk uses it directly and says so.

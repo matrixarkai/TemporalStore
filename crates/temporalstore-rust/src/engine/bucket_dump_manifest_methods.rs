@@ -32,16 +32,16 @@ impl TemporalEngine {
         shard_id: ShardId,
         selected_buckets: impl IntoIterator<Item = u32>,
     ) -> Result<BucketDumpManifest, Status> {
-        // Make the pages + WAL the manifest is about to reference durable before we
+        // Make the blocks + WAL the manifest is about to reference durable before we
         // capture their slab ids / wal_sequence. In live mode each append already
         // fsyncs, but under MATRIXARK_BULK_INGEST appends defer fsync, so a dump firing
         // mid-bulk would otherwise name slabs whose bytes are not yet on disk
         // (the dump path always commits blocks durably before updating the index).
         // The durability barrier MUST succeed before we capture slab ids / wal_sequence and
         // advance the dumped-log frontier -- the commit step refuses to touch
-        // the index if the page/wal commit failed. Swallowing these errors let a dump whose
-        // pages never reached disk (e.g. a sync_data EIO/ENOSPC under bulk mode) still clear
-        // the bucket dirty and let WAL reclaim truncate the records backing those pages ->
+        // the index if the block/wal commit failed. Swallowing these errors let a dump whose
+        // blocks never reached disk (e.g. a sync_data EIO/ENOSPC under bulk mode) still clear
+        // the bucket dirty and let WAL reclaim truncate the records backing those blocks ->
         // silent data loss on crash. Propagate: an Err here skips clear_dumped_bucket_dirty_state
         // (apply_storage_lifecycle consumes the manifest via .ok()), so the bucket stays dirty
         // and the reclaim frontier does not advance.
@@ -107,9 +107,9 @@ impl TemporalEngine {
         // newest manifest and nothing else, and a manifest carrying only its own buckets installs
         // a shard missing every bucket it did not name. `block_slab_ids` is the whole of what the
         // collector holds back -- `run_gc_inner` extends its live set with it,
-        // `storage_block_gc_dependency_plan` blocks on it, and the page-GC retain floor steps over
+        // `storage_block_gc_dependency_plan` blocks on it, and the block-GC retain floor steps over
         // it -- so deriving it from the DUMPED buckets alone left the slabs behind the unnamed
-        // buckets' pages pinned by nothing. Compaction relocates those pages, the slab goes stale,
+        // buckets' blocks pinned by nothing. Compaction relocates those blocks, the slab goes stale,
         // the sweep destroys it, and this manifest still points at it; neither
         // `validate_bucket_dump_manifest` nor the install preflight notices, because both filter
         // what they probe down to `bucket_ids`. Measured on that shape: install returns Ok, the
@@ -121,7 +121,7 @@ impl TemporalEngine {
         // Derived from the EMBEDDED index rather than from the bucket summaries, because the
         // embedded index is what install decodes and what `validate_bucket_dump_manifest` checks
         // this against -- under bulk ingest the exported index and the volatile summaries are not
-        // the same state. ONE live-page walk, handed on to the object-lifecycle report that was
+        // the same state. ONE live-block walk, handed on to the object-lifecycle report that was
         // already taking one of its own, so the walk count per dump is unchanged.
         let dump_live_block_entries = collect_live_block_entries(&dump_index_state);
         let block_slab_ids = dump_live_block_entries
@@ -696,7 +696,7 @@ impl TemporalEngine {
         // `hashes` IS carried by a freshly deserialized index now, so this call no longer supplies
         // a map that was absent -- it MERGES the bucket-index derivation into the decoded one. That
         // is still needed, and for the original reason read the other way round: an index can hold a
-        // hash field whose page entry names no field, and the derivation can hold a field written
+        // hash field whose block entry names no field, and the derivation can hold a field written
         // after the decoded map was. Taking either side wholesale loses the other's elements. The
         // other serialized maps are still left exactly as decoded, or the cross-check would repair
         // the very tampering it exists to catch. The function NAME is historical: `hashes` is no
@@ -737,7 +737,7 @@ impl TemporalEngine {
         // reason a manifest install is not a reconciliation.
         //
         // `manifest.bucket_ids` are the SOURCE shard's buckets, written under the SOURCE's routing
-        // range; the embedded index is that shard's own `bucket_map`, so the bucket a page sits in is
+        // range; the embedded index is that shard's own `bucket_map`, so the bucket a block sits in is
         // the map key the walk just returned. Deriving the bucket from the key over THIS shard's
         // range names a bucket the manifest never mentions whenever the two ranges differ -- which
         // matched nothing, refused every cross-range install with `slot_dump_live_ref_mismatch`, and
@@ -842,11 +842,11 @@ impl TemporalEngine {
         }
         // AGAINST THE WHOLE INDEX, not the dumped buckets' share of it. The manifest must name
         // every slab the index it installs can reach, or the collector -- which holds back exactly
-        // what this field lists -- destroys a slab that index still points at, and the pages of a
+        // what this field lists -- destroys a slab that index still points at, and the blocks of a
         // bucket the dump did not name are gone. Scoping this comparison to `bucket_ids` is what
-        // let the narrow field through; the page-by-page readability probe below deliberately
+        // let the narrow field through; the block-by-block readability probe below deliberately
         // stays scoped, because a slab that is gone or corrupt is already caught by the two checks
-        // over this set and reading every live page of the shard is the whole-store pass the
+        // over this set and reading every live block of the shard is the whole-store pass the
         // preflight was bounded to avoid.
         let manifest_block_slab_ids = manifest
             .block_slab_ids
@@ -888,9 +888,9 @@ impl TemporalEngine {
         Ok(())
     }
 
-    /// The install preflight, checking EVERY page the manifest names.
+    /// The install preflight, checking EVERY block the manifest names.
     ///
-    /// This is what an actual install must use: a dump whose pages cannot be read must not be
+    /// This is what an actual install must use: a dump whose blocks cannot be read must not be
     /// installed, and a sample cannot establish that.
     pub fn bucket_dump_install_preflight_report(
         &self,
@@ -899,12 +899,12 @@ impl TemporalEngine {
         self.bucket_dump_install_preflight_report_sampled(manifest, 0)
     }
 
-    /// The same preflight, reading at most `readable_probe_limit` of the manifest's pages.
+    /// The same preflight, reading at most `readable_probe_limit` of the manifest's blocks.
     ///
     /// 0 means no bound. The maintenance cycle computes a preflight every round for an install it
     /// is not performing (`install_dump_manifest: false`) -- the result feeds a reported readiness
-    /// flag and nothing destructive -- and the unbounded version read every live page to do it:
-    /// measured 8,000 reads for 8,000 live pages, the last whole-store pass left in a round.
+    /// flag and nothing destructive -- and the unbounded version read every live block to do it:
+    /// measured 8,000 reads for 8,000 live blocks, the last whole-store pass left in a round.
     pub fn bucket_dump_install_preflight_report_sampled(
         &self,
         manifest: &BucketDumpManifest,
@@ -1158,10 +1158,10 @@ impl TemporalEngine {
             })
         };
         // bucket_dump_entries_by_key keys pages by "kind:object_key:component:page_id",
-        // so a value update (which allocates a new page_id) shows up as a removed page
-        // plus a new page for the same object. Classify at the object level (strip the
-        // trailing :page_id): a page whose object still exists on the other side is a
-        // page conflict; only an object present on exactly one side is an object
+        // so a value update (which allocates a new page_id) shows up as a removed block
+        // plus a new block for the same object. Classify at the object level (strip the
+        // trailing :page_id): a block whose object still exists on the other side is a
+        // block conflict; only an object present on exactly one side is an object
         // conflict.
         let object_level = |key: &str| -> String {
             key.rsplit_once(':')
@@ -1473,16 +1473,16 @@ impl TemporalEngine {
         // Rebuild the unserialized model maps from the durable bucket index BEFORE rebuilding
         // ownership. `rebuild_bucket_block_ownership` clears the bucket map and repopulates it
         // from the model maps, so running it against a state whose `hashes` map never survived
-        // serialization would drop every hash page from the restored index -- and that index is
+        // serialization would drop every hash block from the restored index -- and that index is
         // what gets persisted durably below.
         rebuild_unserialized_model_maps_from_bucket_index(&mut restored);
         // THE WHOLE RANGE HERE IS LOAD-BEARING, and it is the one place in this change where
         // that is true. `restored` is a DECODED MANIFEST INDEX -- a whole-shard image, written by
-        // whatever routing range the SOURCE shard ran on, whose pages already carry explicit
+        // whatever routing range the SOURCE shard ran on, whose blocks already carry explicit
         // routing buckets from that range. `rebuild_bucket_block_ownership` does not merely place
-        // unrouted pages by the range it is given, it also FILTERS on it
+        // unrouted blocks by the range it is given, it also FILTERS on it
         // (`routing_bucket < start || routing_bucket > end` -> `continue`), so handing it the
-        // INSTALLING shard's range silently deletes every page whose source bucket falls outside
+        // INSTALLING shard's range silently deletes every block whose source bucket falls outside
         // it.
         //
         // Not hypothetical: a cross-range restore is what
@@ -1491,7 +1491,7 @@ impl TemporalEngine {
         // target's range here made it read `merged-a` back as None. A whole-shard image must be
         // installed whole; narrowing it is data loss, not reconciliation.
         //
-        // The unrouted pages this leaves filed outside the target's range are the known residual,
+        // The unrouted blocks this leaves filed outside the target's range are the known residual,
         // and they are recoverable: the addresses stay unrouted, so a later rebuild over the live
         // model maps re-derives their placement from the shard's own range.
         rebuild_bucket_block_ownership(manifest.shard_id, &mut restored, 0, u32::MAX);
@@ -1557,7 +1557,7 @@ impl TemporalEngine {
             }
             // Stamped with the TARGET's own range, not the image's. The whole-range rebuild above
             // is what keeps this image whole and must stay; what the stamp decides is where the
-            // NEXT write files a page, and the comment above already records that the unrouted
+            // NEXT write files a block, and the comment above already records that the unrouted
             // residual is meant to come back into range under the shard's own range. Nothing that
             // is already filed moves: this places, it does not filter.
             self.install_shard_state(manifest.shard_id, restored);

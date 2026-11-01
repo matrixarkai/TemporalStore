@@ -56,7 +56,7 @@ fn member_bytes(index: usize) -> Vec<u8> {
     bytes
 }
 
-/// Distinct live pages, live entries, and tombstoned entries this set object resolves to.
+/// Distinct live blocks, live entries, and tombstoned entries this set object resolves to.
 fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -222,10 +222,10 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
              re-derives twice, so a projection that is not idempotent undoes itself mid-sweep"
         );
 
-        // ---- ONE ENTRY PER PAGE, as a direct count rather than as width arithmetic. ----
+        // ---- ONE ENTRY PER BLOCK, as a direct count rather than as width arithmetic. ----
         //
-        // At forty elements on one page this is forty entries against one, per OBJECT. Compared
-        // against the measured page count and not against a literal, so a fixture that folds
+        // At forty elements on one block this is forty entries against one, per OBJECT. Compared
+        // against the measured block count and not against a literal, so a fixture that folds
         // differently cannot make it vacuous.
         assert_eq!(
             second_blocks, second_entries,
@@ -255,8 +255,8 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // two keys are what make the two numbers independent readings rather than one cached
         // answer read twice. They used to be labelled ungated and gated; there is no gate, so what
         // they now assert is that two objects of identical shape both list whole. That is still a
-        // claim this can fail -- the listing folds pages by `append_position` and a fold that lost
-        // a page would shorten it -- but it is one claim measured twice, not two.
+        // claim this can fail -- the listing folds blocks by `append_position` and a fold that lost
+        // a block would shorten it -- but it is one claim measured twice, not two.
         assert_eq!(
             occupancy,
             off_listed,
@@ -267,17 +267,17 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // ---- anticipated by name.
         //
         // What stood here pinned ZERO, and it was right for every step before this one: the
-        // projection had collapsed the entries to one a page, and nothing had yet taught any
+        // projection had collapsed the entries to one a block, and nothing had yet taught any
         // reader to take an element's identity out of a PAYLOAD. A gated listing therefore
-        // answered empty -- its `None` arm can only be answered by a page that names no element,
-        // and every gated page is framed.
+        // answered empty -- its `None` arm can only be answered by a block that names no element,
+        // and every gated block is framed.
         //
-        // Step eight brought the listing along. It folds the object's pages with
+        // Step eight brought the listing along. It folds the object's blocks with
         // `container_membership::derive_membership`, which orders them by `append_position` and
-        // treats a value and a tombstone as the same kind of statement, so the later page wins.
+        // treats a value and a tombstone as the same kind of statement, so the later block wins.
         // That is the direction that resurrected a removed member when it was tried with a
         // hand-rolled loop, and the two things that make it safe are driven elsewhere: the
-        // tombstone page is reachable from the index, and the fold owns the precedence.
+        // tombstone block is reachable from the index, and the fold owns the precedence.
         //
         // RESTATED, NOT DELETED. Removing it would leave the gated listing with no pin at all,
         // and the property worth holding from here on is the stronger one -- that the gated

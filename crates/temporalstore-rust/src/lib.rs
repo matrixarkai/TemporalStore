@@ -186,7 +186,7 @@ pub const DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 
 /// THE LAST ROUTING BUCKET A SHARD OWNS BY DEFAULT -- 1,024 buckets, CHOSEN BY MEASUREMENT.
 ///
-/// A page's routing bucket is `start + FNV-1a-64(object_key) % (end - start + 1)`, so this value
+/// A block's routing bucket is `start + FNV-1a-64(object_key) % (end - start + 1)`, so this value
 /// sets the MODULUS. The previous default was `u32::MAX`: 4.29 billion buckets among a few thousand
 /// keys, where every key lands alone in its own bucket by construction. That was never a
 /// configuration anyone ran -- `docs/runtime_tuning.md` told an operator to set 1,024 buckets before
@@ -199,11 +199,11 @@ pub const DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 ///
 /// ```text
 ///   end      40,000 records          4,000 records        dump/release unit   read path
-///   255      114.1 B/rec  -59.2%     132.6 B/rec -52.8%   168 pages           6.42 entries
-///   1023     120.2 B/rec  -57.0%     191.9 B/rec -31.6%    50 pages           4.54 entries
-///   4095     144.1 B/rec  -48.4%     256.2 B/rec  -8.7%    21 pages           2.91 entries
-///   65535    252.7 B/rec   -9.5%     257.9 B/rec  -8.1%     6 pages           0.83 entries
-///   u32::MAX 279.3 B/rec    ---      280.7 B/rec   ---      1 page            0.00 entries
+///   255      114.1 B/rec  -59.2%     132.6 B/rec -52.8%   168 blocks           6.42 entries
+///   1023     120.2 B/rec  -57.0%     191.9 B/rec -31.6%    50 blocks           4.54 entries
+///   4095     144.1 B/rec  -48.4%     256.2 B/rec  -8.7%    21 blocks           2.91 entries
+///   65535    252.7 B/rec   -9.5%     257.9 B/rec  -8.1%     6 blocks           0.83 entries
+///   u32::MAX 279.3 B/rec    ---      280.7 B/rec   ---      1 block            0.00 entries
 /// ```
 ///
 /// The byte saving SATURATES -- 1,023 is within 5% of the floor 255 reaches -- while the dump and
@@ -213,7 +213,7 @@ pub const DEFAULT_START_ROUTING_BUCKET: u32 = 0;
 ///
 /// ONLY NEW STORES GET IT. See `engine/routing_range_stamp.rs`: a store records the range it was
 /// built under, an existing store is honoured on THAT range, and a store whose stamp disagrees with
-/// the configured range is REFUSED rather than loaded with every page filed out of range.
+/// the configured range is REFUSED rather than loaded with every block filed out of range.
 ///
 /// A STORE CARRYING NO STAMP AT ALL IS ALSO REFUSED, with `routing_range_unstamped`. It used to be
 /// adopted onto the whole keyspace on the reasoning that this was the only range it could have been

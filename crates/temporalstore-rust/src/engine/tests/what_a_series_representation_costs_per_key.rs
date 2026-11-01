@@ -5,7 +5,7 @@
 //!
 //! # THE DECISION THIS IS FOR
 //!
-//! Eight resident maps hold `object key -> (timestamp -> page address)` as
+//! Eight resident maps hold `object key -> (timestamp -> block address)` as
 //! `HashMap<String, BTreeMap<u64, ElementEntry>>`, and the campaign to move them off the per-key
 //! B-tree has to choose what to move them TO. Two decisions hide inside that one: the CONTAINER
 //! (tree against flat array) and, if an array, its GROWTH POLICY (amortised doubling against exact
@@ -62,7 +62,7 @@ fn address(i: u64) -> ElementEntry {
     ElementEntry::from_parts(1, i * 64, 64, Some(i & u64::from(u16::MAX)), Some(i))
 }
 
-/// The pair a timestamped series stores: one instant and one page address.
+/// The pair a timestamped series stores: one instant and one block address.
 type Point = (u64, ElementEntry);
 
 /// The occupancies, and why each is here. 9/10/11 bracket the B-tree leaf split and are where a

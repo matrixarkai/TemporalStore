@@ -78,7 +78,7 @@
 //! `admission_control` and any spelling of dump-lag appear nowhere in the dump path at all. The
 //! one mechanism that reacts to the dump falling behind is `TS_WAL_RESIDENT_BLOCKS` (default
 //! 4,096), and it reacts by making the WRITER do more work -- a sweep that materializes the
-//! oldest log-resident pages, taken on the write path after the ack. It bounds a set; it does not
+//! oldest log-resident blocks, taken on the write path after the ack. It bounds a set; it does not
 //! slow, refuse or report anything.
 //!
 //! THE WRITE-AHEAD LOG HALF USED TO RELEASE NOTHING, AND SAID SO IN THE SAME WORDS AS SUCCESS.
@@ -184,7 +184,7 @@ const SHIPPED_GAP_BYTES: u64 = 1024 * 1024;
 /// arm has to show, so it refuses a regime change while tolerating the creep.
 ///
 /// Re-measured across a base change that was expected to move these counts and did not: turning
-/// one index entry a page on by default (#2117) left every arm's cost, base index and released
+/// one index entry a block on by default (#2117) left every arm's cost, base index and released
 /// figure identical to the byte, the model error at 0.3224% and the decline at 0.9663x, with the
 /// fitted intercept 35,292 B against 35,291 B -- one byte, the small-arm drift arriving in the
 /// fit.

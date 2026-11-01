@@ -208,7 +208,7 @@ fn encode_wal_payload(record: &WriteAheadLogRecord) -> Result<Vec<u8>, WriteAhea
     })
 }
 impl WalOutcomeItem {
-    /// The address a recorded page installs at.
+    /// The address a recorded block installs at.
     ///
     /// IT USED TO PUT THE ROUTING BUCKET BACK, and there is nothing left to put back: a
     /// `BlockAddress` does not hold one. The item still carries `routing_bucket` as its own field
@@ -217,7 +217,7 @@ impl WalOutcomeItem {
     ///
     /// KEPT AS A NAMED ACCESSOR rather than folded into `self.address.clone()` at fifteen sites,
     /// because what it names is still a distinction worth reading: `address` is an `Option` that is
-    /// `None` for an item that recorded no page, and "the address this item installs at, if it
+    /// `None` for an item that recorded no block, and "the address this item installs at, if it
     /// installs one" is the question every caller is asking.
     pub fn resolved_address(&self) -> Option<crate::block_store::ElementEntry> {
         self.address.clone()
@@ -254,10 +254,10 @@ pub struct WriteAheadLogRecord {
         skip_serializing_if = "Option::is_none"
     )]
     pub metadata: Option<WriteAheadLogRecordMetadata>,
-    /// Pages this write produced, carried in the record that records the write.
+    /// Blocks this write produced, carried in the record that records the write.
     ///
-    /// A page is often derived state rather than the command's own bytes, so it cannot be
-    /// rebuilt from the command alone. Carrying it here is what lets a read serve the page back
+    /// A block is often derived state rather than the command's own bytes, so it cannot be
+    /// rebuilt from the command alone. Carrying it here is what lets a read serve the block back
     /// out of the log. Empty and skipped for every write that stages nothing, so records
     /// written without this are byte-identical to before.
     ///
@@ -290,7 +290,7 @@ pub struct WriteAheadLogRecord {
     /// `tests/what_an_ack_promises.rs` across all eight write shapes: every upsert cell records
     /// 20 results and 0 operations.
     ///
-    /// The exception is a write with no page to carry. A removal's record keeps its operation
+    /// The exception is a write with no block to carry. A removal's record keeps its operation
     /// instead (12 of 12 records on both separate removal cells), because `record_command` asks
     /// whether the blocks behind these results can be found again and a removal has staged none.
     /// So a reader cannot assume either field is the populated one: which it is depends on the
@@ -308,22 +308,22 @@ pub struct WriteAheadLogRecord {
 }
 /// TS_WAL_DATA_ONLY: stop writing the operation into a record that already states its results.
 ///
-/// Default ON. Carrying both is bigger, and for a record whose page survives the crash it buys
+/// Default ON. Carrying both is bigger, and for a record whose block survives the crash it buys
 /// nothing -- the results are what replay installs, and the operation is consulted only when there
 /// are none. Set to a falsey value to keep writing both, which is what a consumer reading records
 /// directly would want.
 ///
 /// # THE "0 OF 300" THIS PARAGRAPH USED TO REPORT IS STALE. RE-MEASURED, IT IS 300 OF 300
 ///
-/// What it said was that an outcome can be installed only if the page it names is DURABLE; that
-/// under single-barrier the data-page fdatasync is deferred past the ack; and that this flag has
+/// What it said was that an outcome can be installed only if the block it names is DURABLE; that
+/// under single-barrier the data-block fdatasync is deferred past the ack; and that this flag has
 /// therefore removed the only thing that could re-derive the value. It cited
 /// `tests/wal_single_barrier_recovery.rs` recovering 0 of 300 acked keys, over a probe reading
 /// "300 records, all decoding, 0 carrying a command, 0 whose outcome items carry a value".
 ///
-/// The first half is sound and still is: `sync` is a fact about the LOG's barrier, and a page
+/// The first half is sound and still is: `sync` is a fact about the LOG's barrier, and a block
 /// fsync deferred past it is not made durable by it. What the reading MISSED is a third column.
-/// A record can carry the page itself, and at these defaults it does. Run on this commit, with no
+/// A record can carry the block itself, and at these defaults it does. Run on this commit, with no
 /// mode variable set:
 ///
 /// ```text
@@ -331,15 +331,15 @@ pub struct WriteAheadLogRecord {
 /// ```
 ///
 /// including `wal_is_self_sufficient_when_all_non_wal_state_is_wiped`, which deletes every
-/// non-WAL byte -- pages, served index and delta log -- and reads all 300 keys back. The probe
+/// non-WAL byte -- blocks, served index and delta log -- and reads all 300 keys back. The probe
 /// the old paragraph quoted prints the missing column itself, one line below the three it was
-/// read from: `carrying STAGED PAGES`.
+/// read from: `carrying STAGED BLOCKS`.
 ///
 /// `tests/what_an_ack_promises.rs` takes the count per write shape, per RESULT rather than per
-/// record, and matches each address-only result against the pages its own record carries:
+/// record, and matches each address-only result against the blocks its own record carries:
 ///
 /// ```text
-/// shape                       records operation results  bytes removal deadline addr-only pages no-way-back
+/// shape                       records operation results  bytes removal deadline addr-only blocks no-way-back
 /// sync  / separate / upsert        20         0      20      4       0        0        16    20           0
 /// sync  / batched  / upsert         1         0      20      4       0        0        16    20           0
 /// async / separate / upsert        20         0      20      4       0        0        16    20           0
@@ -350,20 +350,20 @@ pub struct WriteAheadLogRecord {
 /// async / batched  / removal        1         0      12      0       8        4         0     0           0
 /// ```
 ///
-/// Zero in the last column in all eight. An upsert's record carries its page; a removal's record
+/// Zero in the last column in all eight. An upsert's record carries its block; a removal's record
 /// keeps its operation or states the removal. So this flag does not cost an ack its durability at
 /// the shipped defaults, and the decision the old paragraph said was outstanding is not
 /// outstanding on these numbers.
 ///
 /// WHAT IS STILL WORTH WATCHING is the shape of the claim rather than the claim. Three of the
-/// eight cells are recoverable only because a page travels in the record, so the batch path asks
+/// eight cells are recoverable only because a block travels in the record, so the batch path asks
 /// `every_result_can_be_found_again` -- per RESULT. It used to decide from
 /// `sync || !staged_blocks.is_empty()`, and BOTH halves of that were wrong. The `sync` term is
 /// exactly the inference the first half of the old paragraph correctly rejects. The other half
-/// asked a per-result question at BATCH granularity, so one carried page anywhere in a batch
+/// asked a per-result question at BATCH granularity, so one carried block anywhere in a batch
 /// answered for every result in it: measured on a plant that stops one command kind staging, that
 /// left 12 of 20 acked results with no way back, and removing the `sync` term alone moved the 12
-/// by nothing. `no_cell_leaves_an_acked_result_with_no_way_back` is what fails if a batch's pages
+/// by nothing. `no_cell_leaves_an_acked_result_with_no_way_back` is what fails if a batch's blocks
 /// stop being carried, and `a_batch_is_not_recoverable_because_a_sibling_carried_a_block` is what
 /// fails if the question is asked at batch granularity again.
 ///
@@ -438,18 +438,18 @@ pub(crate) fn record_command(
 /// A batch is ONE record holding many results, so "can the blocks behind these results be found
 /// again" has as many answers as there are results. The rule the batch path used to form was
 /// `sync || !staged_blocks.is_empty()`, and the SCOPE was the defect rather than the term: the
-/// second half asks a per-result question at BATCH granularity, so one carried page anywhere in a
-/// batch answered it for every result in that batch -- including results whose own page was never
+/// second half asks a per-result question at BATCH granularity, so one carried block anywhere in a
+/// batch answered it for every result in that batch -- including results whose own block was never
 /// staged.
 ///
-/// Measured, on a batch of five command kinds where one kind stops staging its pages: that kind's
-/// four pages kept the staged set non-empty, the operation was dropped anyway, and 12 of 20 acked
+/// Measured, on a batch of five command kinds where one kind stops staging its blocks: that kind's
+/// four blocks kept the staged set non-empty, the operation was dropped anyway, and 12 of 20 acked
 /// results were left naming a block-store address and nothing else. Dropping the `sync` term
 /// moved that 12 by NOTHING, which is what separates the two halves: `sync` is a fact about the
 /// LOG's barrier, inert here because the staged test was already answering true.
 ///
 /// So a result is covered when it STATES ITSELF -- bytes, a removal, a new deadline -- or when
-/// this batch carries a page for it. The page match UNDER-matches by design, the same way
+/// this batch carries a block for it. The block match UNDER-matches by design, the same way
 /// `tests/what_an_ack_promises.rs` matches: a whole-object page spells its component `None` and is
 /// accepted for any element of its object, so coverage can only ever be counted LOW and a `true`
 /// here is the direction a durability claim needs.
@@ -500,10 +500,10 @@ mod every_result_can_be_found_again_tests {
         }
     }
 
-    /// A PAGE COVERS THE RESULT IT BELONGS TO AND NO OTHERS.
+    /// A BLOCK COVERS THE RESULT IT BELONGS TO AND NO OTHERS.
     ///
     /// This is the regression the per-result scope exists for. A batch-granular implementation --
-    /// `!pages.is_empty()`, which is what this path carried before -- returns `true` for the mixed
+    /// `!blocks.is_empty()`, which is what this path carried before -- returns `true` for the mixed
     /// case below, and that is how a measured batch left 12 of 20 acked results with no way back
     /// while its rule said the batch was recoverable.
     #[test]
@@ -512,7 +512,7 @@ mod every_result_can_be_found_again_tests {
         let uncovered = names_only_an_address(2, "b");
         let blocks = vec![block_for(1, "a")];
         // THE REGIME FIRST, so the `false` below is about the uncovered result and not about a
-        // page set this helper failed to build: the covered result is covered on its own.
+        // block set this helper failed to build: the covered result is covered on its own.
         assert!(
             every_result_can_be_found_again(std::slice::from_ref(&covered), &blocks),
             "a result whose own block IS staged must be covered, or the mixed case says nothing"
@@ -524,7 +524,7 @@ mod every_result_can_be_found_again_tests {
         );
     }
 
-    /// A result that states itself needs no page, which is what keeps a batched removal on the
+    /// A result that states itself needs no block, which is what keeps a batched removal on the
     /// one-record writer rather than writing one command record per removal.
     #[test]
     fn a_result_that_states_itself_needs_no_block() {
@@ -574,11 +574,11 @@ mod every_result_can_be_found_again_tests {
 /// pins a replay clock so TTLs resolve against the leader's timestamp instead of the restart
 /// clock. Both are scar tissue from logging operations rather than results.
 ///
-/// An outcome states the result instead: this object's page now lives at this address, or this
-/// object is gone. Replay can install that without running anything -- PROVIDED the page it
+/// An outcome states the result instead: this object's block now lives at this address, or this
+/// object is gone. Replay can install that without running anything -- PROVIDED the block it
 /// names is durable. Under single-barrier, the default, that fdatasync is deferred; see the
 /// durability note on `TS_WAL_DATA_ONLY` above, because with both defaults on a crash between
-/// the ack and the page write leaves nothing any replay can rebuild the value from.
+/// the ack and the block write leaves nothing any replay can rebuild the value from.
 ///
 /// DEFAULT ON. The comment here used to say "default OFF while both are carried", and described a
 /// state that no longer exists: records no longer carry both. A mixed workload was walked across
@@ -586,7 +586,7 @@ mod every_result_can_be_found_again_tests {
 /// come out of the records that record results.
 ///
 /// IT IS NOT "ZERO RECORDS CARRY AN OPERATION", WHICH IS WHAT THAT WALK WAS WRITTEN UP AS. The
-/// walk covered upserts, and a write with no page to carry keeps its operation on purpose --
+/// walk covered upserts, and a write with no block to carry keeps its operation on purpose --
 /// `record_command` asks whether the blocks behind the results can be found again, and a removal
 /// has staged none. Re-walked over all eight cells by `tests/what_an_ack_promises.rs`, the two
 /// SEPARATE removal cells keep an operation on every record:
@@ -601,7 +601,7 @@ mod every_result_can_be_found_again_tests {
 /// Both BATCHED removal cells answer the same way because the batch path asks
 /// `every_result_can_be_found_again`: a removal states itself, so there is nothing to find. The
 /// asynchronous one used to write twelve command records instead -- its rule asked whether the
-/// BATCH had staged a page, and a removal stages none.
+/// BATCH had staged a block, and a removal stages none.
 ///
 /// So "zero" was a count over the upsert half of the matrix read as a count over the whole of
 /// it -- which is the same error as the three-column reading recorded on `TS_WAL_DATA_ONLY`
@@ -633,11 +633,11 @@ fn outcome_not_deleted(deleted: &bool) -> bool {
 /// outcome said it twice.
 ///
 /// Their `object_id`s look equally redundant and are NOT. For a timestamped kind the item's is
-/// derived from (kind, key, COMPONENT) and the page's from (kind, key, None) -- per point against
+/// derived from (kind, key, COMPONENT) and the block's from (kind, key, None) -- per point against
 /// per series -- so restoring one from the other writes the wrong id into the index entry. The
 /// bucket-index half of the equivalence gate is what caught that; the field stays.
 ///
-/// The page checksum stays too: the read path verifies it whenever it is present, and a rebuilt
+/// The block checksum stays too: the read path verifies it whenever it is present, and a rebuilt
 /// index entry without one would quietly stop being integrity-checked.
 mod outcome_address_serde {
     use crate::block_store::ElementEntry;
@@ -666,7 +666,7 @@ mod outcome_address_serde {
 /// One index mutation a write produced, stated as a result.
 ///
 /// Field for field this is the identity half of the log item being followed: the object it
-/// names, the kind/model it belongs to, its routing bucket, its object id, and where its page
+/// names, the kind/model it belongs to, its routing bucket, its object id, and where its block
 /// ended up. `deleted` covers the other outcome. Nothing here says which command ran, because
 /// replay does not need to know -- that is the entire point.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -675,14 +675,14 @@ pub struct WalOutcomeItem {
     pub kind: String,
     #[serde(rename = "o", alias = "object_key")]
     pub object_key: String,
-    /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO PAGE TO ASK.
+    /// WHICH ELEMENT OF THAT OBJECT, FOR EVERY KEYED KIND THAT HAS NO BLOCK TO ASK.
     ///
     /// # IT WAS PUT UP FOR REMOVAL AND THE ANSWER IS NO, ON THREE INDEPENDENT GROUNDS
     ///
-    /// The case for removing it was good and half of it was acted on. A container page states its
+    /// The case for removing it was good and half of it was acted on. A container block states its
     /// own elements, so for `hash`, `set`, `zset` and `list` this field was a second copy of
-    /// something durable -- and `apply_outcome_item` now reads those four off the page instead,
-    /// live and removed, at a measured cost of ZERO block reads. What is left is what the page
+    /// something durable -- and `apply_outcome_item` now reads those four off the block instead,
+    /// live and removed, at a measured cost of ZERO block reads. What is left is what the block
     /// cannot answer.
     ///
     /// THE COMPILER WAS ASKED RATHER THAN A GREP, which is this tree's own rule and the only thing
@@ -695,7 +695,7 @@ pub struct WalOutcomeItem {
     ///      `context_compression`, and the entity/event/node/embedding arms below them. For these
     ///      the component is a stored key parsed as a `u64`, and
     ///      `container_blocks::ElementKeySpelling::for_kind` answers `None` for every one of them --
-    ///      their pages carry NO element-key frame at all. The payload cannot supply what it does
+    ///      their blocks carry NO element-key frame at all. The payload cannot supply what it does
     ///      not spell, so for these kinds this field is the only copy and removing it is data loss.
     ///   2. ITS ABSENCE IS A MEANING, which no removal can preserve. The timestamped arm opens
     ///      "No component on a removal means the whole series went, not one point of it", and
@@ -709,9 +709,9 @@ pub struct WalOutcomeItem {
     ///
     /// # WHAT WOULD ACTUALLY BUY IT, SO THE NEXT LANE DOES NOT RE-DERIVE THIS
     ///
-    /// Giving the timestamped kinds an element-key page frame of their own -- a fifth, sixth and
+    /// Giving the timestamped kinds an element-key block frame of their own -- a fifth, sixth and
     /// seventh `ElementKeySpelling`, and a `container_blocks` writer on their append paths. That is
-    /// a PAGE-FORMAT change for six or more kinds, not a field deletion, and it has to carry the
+    /// a BLOCK-FORMAT change for six or more kinds, not a field deletion, and it has to carry the
     /// absence-is-a-meaning case in (2) across with it. Until then this field is load-bearing for
     /// everything except the four kinds that no longer read it.
     ///
@@ -719,28 +719,28 @@ pub struct WalOutcomeItem {
     /// kinds that no longer read it, it is dead weight on the wire --
     /// `durable_outranks_derived::what_resolving_the_element_from_the_block_costs_a_replay` prices it
     /// at 24 B of a 114 B hash record and 85 B of a 182 B set record carrying a 20-byte member,
-    /// counting both this field and the carried page's own copy. That is what a later narrowing
+    /// counting both this field and the carried block's own copy. That is what a later narrowing
     /// would collect, and narrowing is what is available: the field cannot go, and for four kinds
     /// it no longer has to be written.
     ///
     /// # AND THE ROUTE THAT WOULD HAVE BOUGHT THE REMOVAL IS PRICED AND REFUSED
     ///
     /// Blocker (1) above names the thing that would unblock it: give the timestamped kinds an
-    /// element-key page frame, so the page answers for them as it does for the four container
+    /// element-key block frame, so the block answers for them as it does for the four container
     /// kinds. That was costed before it was built, by
     /// `durable_outranks_derived::what_the_element_name_on_a_timestamped_record_is_worth`, and the
     /// measurement refuses it. THREE NUMBERS, each with the denominator it is over:
     ///
-    ///   * THE PAGE ALREADY NAMES ITS POINTS, so most of the frame does not need building.
+    ///   * THE BLOCK ALREADY NAMES ITS POINTS, so most of the frame does not need building.
     ///     `packed_blocks::encode_feature_block` writes an eight-byte `timestamp_ms` in front of
-    ///     every point, and its own doc says why -- "it is what picks one point out of a page
-    ///     holding several". Driven through the real decoder on a 64-point append: ONE page, 64 of
-    ///     64 timestamps recovered, 0 outcomes whose object carried several pages. For every kind
+    ///     every point, and its own doc says why -- "it is what picks one point out of a block
+    ///     holding several". Driven through the real decoder on a 64-point append: ONE block, 64 of
+    ///     64 timestamps recovered, 0 outcomes whose object carried several blocks. For every kind
     ///     whose component IS the stored key, there is nothing to add.
     ///   * ONLY ONE KIND CARRIES A SECOND TERM. `packed_blocks::timestamped_component` packs an
     ///     identity beside the stored key for `context_event` alone -- `{stored:016x}{id:016x}` --
-    ///     and the page holds the timeline key but not the event id. So the frame work reduces to
-    ///     ONE kind, at about 8 B per page to put the id in the frame.
+    ///     and the block holds the timeline key but not the event id. So the frame work reduces to
+    ///     ONE kind, at about 8 B per block to put the id in the frame.
     ///   * AND THE SAVING IS AN ORDER OF MAGNITUDE SMALLER THAN THE COMPONENT LOOKS, which is what
     ///     settles it. `wal_proto::numeric_component` stores this field as NUMBERS for all eight
     ///     timestamped kinds -- a `timestamp_ms`, plus an `entry_id` for `context_event` -- so the
@@ -749,7 +749,7 @@ pub struct WalOutcomeItem {
     ///     which is 105 B over the 64 outcomes IN THAT RECORD = **1.64 B per outcome**; a
     ///     context_event record is 169 B and 146 B = 23 B.
     ///
-    /// SO THE TRADE IS ~8 B PER PAGE AGAINST 1.64 B PER OUTCOME, and for the common case that is a
+    /// SO THE TRADE IS ~8 B PER BLOCK AGAINST 1.64 B PER OUTCOME, and for the common case that is a
     /// NET LOSS -- the store would get bigger to remove a field. Refused on the measurement.
     ///
     /// THE GENERAL LESSON, WHICH IS WORTH MORE THAN THIS DECISION: A HEX-SPELLED COMPONENT IS NOT
@@ -768,7 +768,7 @@ pub struct WalOutcomeItem {
     pub object_id: u64,
     #[serde(rename = "b", alias = "routing_bucket")]
     pub routing_bucket: u32,
-    /// Where the page went. `None` for state that no page backs -- the seen-sets and token
+    /// Where the block went. `None` for state that no block backs -- the seen-sets and token
     /// buckets persist with the index snapshot and have no address to name.
     #[serde(
         rename = "a",
@@ -778,10 +778,10 @@ pub struct WalOutcomeItem {
         skip_serializing_if = "Option::is_none"
     )]
     pub address: Option<crate::block_store::ElementEntry>,
-    /// The bytes themselves, for an outcome with no page behind it.
+    /// The bytes themselves, for an outcome with no block behind it.
     ///
     /// A coverage probe over twelve accepted writes found four that recorded nothing --
-    /// BucketTake and SeenCheck because their state has no page, CommonDelete and CommonExpire
+    /// BucketTake and SeenCheck because their state has no block, CommonDelete and CommonExpire
     /// because they remove or re-stamp rather than upsert. An item carrying only an address
     /// cannot state those outcomes, which is why the design being followed gives its log item a
     /// `value` beside its `page`, and a `meta_log` flag to tell them apart.
@@ -809,7 +809,7 @@ pub struct WalOutcomeItem {
         skip_serializing_if = "outcome_not_deleted"
     )]
     pub deleted: bool,
-    /// This item states metadata rather than a page image -- their `meta_log`.
+    /// This item states metadata rather than a block image -- their `meta_log`.
     #[serde(
         rename = "m",
         alias = "meta",
@@ -846,34 +846,34 @@ mod outcome_value_serde {
     }
 }
 
-/// A page put aside during a write, to be carried in that write's log record.
+/// A block put aside during a write, to be carried in that write's log record.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct StagedBlock {
-    /// The object the page belongs to, which is what a read has when it comes looking.
+    /// The object the block belongs to, which is what a read has when it comes looking.
     pub object_id: u64,
-    /// WHICH ELEMENT OF THAT OBJECT THIS PAGE IS.
+    /// WHICH ELEMENT OF THAT OBJECT THIS BLOCK IS.
     ///
-    /// The object id alone cannot answer that. One record carries many pages -- a batch writing
-    /// twenty-five fields of one hash writes one record with twenty-five pages -- and the reader
+    /// The object id alone cannot answer that. One record carries many blocks -- a batch writing
+    /// twenty-five fields of one hash writes one record with twenty-five blocks -- and the reader
     /// picks one out of it with a `find` over the id. So the id is not merely the registry's key,
-    /// it is the record's only discriminator BETWEEN ITS OWN PAGES, and it has had to stay
-    /// per-element for that reason alone. Measured on the product's own read: two pages of one key
-    /// sharing an id serve 1 of 2 correctly, and the page that loses is handed the FIRST page's
+    /// it is the record's only discriminator BETWEEN ITS OWN BLOCKS, and it has had to stay
+    /// per-element for that reason alone. Measured on the product's own read: two blocks of one key
+    /// sharing an id serve 1 of 2 correctly, and the block that loses is handed the FIRST block's
     /// BYTES rather than answering missing.
     ///
-    /// The component and not the page's ordinal, on four grounds that are measured elsewhere and
+    /// The component and not the block's ordinal, on four grounds that are measured elsewhere and
     /// cited rather than re-derived here. `container_block_ordinal` derives the ordinal FROM this
     /// component, so it is a lossy projection of the thing it would replace; #2008 measured that a
     /// delete frees an ordinal for the next insert to reuse ("correct for a position and would be
     /// silent corruption for an identity"); the ordinal is left at 0 past an object's 65,535th
     /// element; and #1996 found the component is the ONLY copy of a member for an element the delta
     /// fold delivers without a durable-map entry. The one fact this file adds: the hot write's
-    /// address is built with `block_id: None`, so on the very path this page exists to serve there
+    /// address is built with `block_id: None`, so on the very path this block exists to serve there
     /// is no ordinal on the address to read back.
     ///
-    /// `None` means the page IS its whole object -- a string, a control state -- which is what
+    /// `None` means the block IS its whole object -- a string, a control state -- which is what
     /// `None` has always meant for `BlockIndex::component`. Skipped when absent, so a record for a
-    /// whole-object page is byte-identical to one written before this field existed.
+    /// whole-object block is byte-identical to one written before this field existed.
     #[serde(
         rename = "k",
         alias = "component",
@@ -881,10 +881,10 @@ pub struct StagedBlock {
         skip_serializing_if = "Option::is_none"
     )]
     pub component: Option<std::sync::Arc<str>>,
-    /// The page contents.
+    /// The block contents.
     ///
     /// Carried beside the document when that is smaller, and encoded into it otherwise -- the same
-    /// choice every other payload gets. A page is the whole point of this record, so it is the
+    /// choice every other payload gets. A block is the whole point of this record, so it is the
     /// field where the difference between carrying bytes and encoding them shows up most.
     #[serde(with = "crate::bytes_serde")]
     pub bytes: Vec<u8>,
@@ -1469,10 +1469,10 @@ impl LocalWriteAheadLogStore {
         self.append_with_sync_inner(shard_id, command, sync, Vec::new(), Vec::new())
     }
 
-    /// Append, carrying pages this write produced, and report the log id it landed at.
+    /// Append, carrying blocks this write produced, and report the log id it landed at.
     ///
-    /// The pages travel in the same record as the command, so one durability barrier covers
-    /// both and a read that finds the record finds the page with it.
+    /// The blocks travel in the same record as the command, so one durability barrier covers
+    /// both and a read that finds the record finds the block with it.
     pub fn append_with_sync_staged(
         &self,
         shard_id: ShardId,
@@ -1598,7 +1598,7 @@ impl LocalWriteAheadLogStore {
     /// Append without the durable barrier, carrying what the write recorded.
     ///
     /// Outcomes were kept off this path on the assumption that anything a record must CARRY forces
-    /// the staged branch. That is true of staged pages, whose addresses are back-patched once the
+    /// the staged branch. That is true of staged blocks, whose addresses are back-patched once the
     /// log id exists. It is not true of outcomes: their addresses are already resolved by the time
     /// they are staged, so they travel in the record like any other field -- and keeping them out
     /// cost every write its place in the group-commit queue for no durability reason.
@@ -2991,7 +2991,7 @@ impl LocalWriteAheadLogStore {
     ///
     /// `stats` answers `last_sequence` with `last_wal_sequence_at`, a full-file scan. Measured by
     /// `what_one_stats_read_allocates`, that scan is **771,062 of the 776,311 bytes one
-    /// `shard_stats` read allocates over a 320-page store -- 99.3%** -- and it grows with the log,
+    /// `shard_stats` read allocates over a 320-block store -- 99.3%** -- and it grows with the log,
     /// while every other part of that read is flat or zero. `shard_stats` is what a node answers a
     /// stats request with, so the scan was paid again on every read for as long as the node was up.
     ///
@@ -3968,7 +3968,7 @@ fn resolve_last_sequence_for_append(
 ///
 /// That gap is not free. Pieces arrive faster than 64 per reclaim round on a busy log, so the
 /// backlog grows and the log never drains, and a log that does not drain is paid for at every
-/// restart: on a store whose page scan has been removed, draining the WAL took a restart from
+/// restart: on a store whose block scan has been removed, draining the WAL took a restart from
 /// 5,456 ms to 1,908 ms.
 ///
 /// 1024 is ~0.5 s of held lock at the measured rate and drains a backlog like that in one pass. It
@@ -10914,8 +10914,8 @@ mod tests {
     #[test]
     fn a_staged_block_costs_about_a_third_over_its_contents() {
         // A byte vector serializes as an array of numbers -- about 5 bytes of log per byte of
-        // page -- which is what kept this from being on by default. Encoded, the record should
-        // be close to the page it carries.
+        // block -- which is what kept this from being on by default. Encoded, the record should
+        // be close to the block it carries.
         let block = vec![b'x'; 4096];
         let record = WriteAheadLogRecord {
             shard_id: 1,
@@ -13057,7 +13057,7 @@ mod tests {
     /// that follows opens the piece being WRITTEN, which after a roll is the new one. So the bytes
     /// in the piece just sealed have no barrier that ever covers them unless the roll provides one.
     ///
-    /// This counts the barrier. A test cannot show the loss itself without a real crash: the page
+    /// This counts the barrier. A test cannot show the loss itself without a real crash: the block
     /// cache serves the bytes back to this process whether or not they reached the device.
     #[test]
     fn sealing_a_piece_makes_its_contents_durable() {

@@ -268,7 +268,7 @@ pub struct ContextNode {
     //
     // It is here because scoring needs both vectors for every candidate, and without it the
     // second one costs a second per-candidate engine call: format an object key, walk the
-    // node's summary series, read a page and decode a whole ContextSummary -- text included --
+    // node's summary series, read a block and decode a whole ContextSummary -- text included --
     // to keep one field. The node fetch that scoring already makes for `vector` can hand back
     // both instead.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -358,7 +358,7 @@ pub struct ContextEvent {
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
-    // summaries -- so a separate record per vector costs a key, a BlockAddress and a page to
+    // summaries -- so a separate record per vector costs a key, a BlockAddress and a block to
     // store something with exactly one owner. Retrieval fetches the vector to score a candidate
     // and then the text to pack it; inline, that is ONE read, and the text is ~50 bytes against
     // ~1536 for the vector, about 3% of a fetch already paid for.
@@ -498,7 +498,7 @@ pub struct ContextEntity {
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
-    // summaries -- so a separate record per vector costs a key, a BlockAddress and a page to
+    // summaries -- so a separate record per vector costs a key, a BlockAddress and a block to
     // store something with exactly one owner. Retrieval fetches the vector to score a candidate
     // and then the text to pack it; inline, that is ONE read, and the text is ~50 bytes against
     // ~1536 for the vector, about 3% of a fetch already paid for.
@@ -538,7 +538,7 @@ pub struct ContextSummary {
     //
     // Every embedding is 1:1 with its owner -- measured on one ingest: event_text 6 to 6 events,
     // entity_state + profile_entity_state 6 to 6 entities, session_l0 + batch_l0 2 to 2
-    // summaries -- so a separate record per vector costs a key, a BlockAddress and a page to
+    // summaries -- so a separate record per vector costs a key, a BlockAddress and a block to
     // store something with exactly one owner. Retrieval fetches the vector to score a candidate
     // and then the text to pack it; inline, that is ONE read, and the text is ~50 bytes against
     // ~1536 for the vector, about 3% of a fetch already paid for.
@@ -741,7 +741,7 @@ impl ContextWire for ContextNode {
         // source provenance moved to resource/provenance sidecars. It is the last
         // deprecated field still being written to the canonical wire payload,
         // so encoding it round-trips a value the trimmed schema must drop. Stop
-        // emitting field 10; decode still accepts it for legacy on-disk pages.
+        // emitting field 10; decode still accepts it for legacy on-disk blocks.
         encode_vector_field(&mut out, &self.vector);
         if self.embedding_model_hash != 0 {
             encode_varint_field(&mut out, CONTEXT_EMBEDDING_MODEL_FIELD, self.embedding_model_hash);
@@ -2006,7 +2006,7 @@ pub enum Command {
 ///
 /// These three types have HAND-WRITTEN protobuf codecs; a serde field alone is invisible to
 /// them and is silently dropped on persist -- the struct is populated in memory and the value
-/// is gone by the time it reaches a page, with no error anywhere. 20 is clear of every field
+/// is gone by the time it reaches a block, with no error anywhere. 20 is clear of every field
 /// number the three messages already use.
 /// A node's vector, without decoding the node.
 ///
@@ -2109,7 +2109,7 @@ const NODE_SUMMARY_VECTOR_FIELDS: VectorFieldSet = VectorFieldSet {
     scaled: CONTEXT_SUMMARY_VECTOR_SCALED_FIELD,
 };
 
-/// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a page written on one
+/// f32 vector -> packed little-endian bytes. Explicit LE, not native, so a block written on one
 /// architecture decodes on another.
 fn pack_f32_vector(vector: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(vector.len() * 4);
@@ -2132,12 +2132,12 @@ fn vector_int8_enabled() -> bool {
     )
 }
 
-/// A vector as it will read back once it has been through a page.
+/// A vector as it will read back once it has been through a block.
 ///
 /// Both stored forms round -- the int8 one to a per-vector scale, the uniformly-scaled one to four
 /// decimal places -- so a vector just computed is never equal to the same vector read back. Any
 /// "has this changed?" test written against the raw value answers YES every time, and any "are
-/// these two the same vector?" test answers NO, which here would mean a second node page written
+/// these two the same vector?" test answers NO, which here would mean a second node block written
 /// on every ingest and the equal-copy marker never firing.
 ///
 /// Idempotent: rounding an already-rounded value changes nothing, so this can be applied to a
@@ -2364,7 +2364,7 @@ fn decode_fixed32(bytes: &[u8], cursor: &mut usize) -> Option<u32> {
     Some(u32::from_le_bytes(slice.try_into().ok()?))
 }
 
-/// The field's bytes, borrowed from the page rather than copied out of it.
+/// The field's bytes, borrowed from the block rather than copied out of it.
 ///
 /// A caller that reads the bytes and builds something else from them -- every `unpack_*` vector
 /// call -- has no use for an owned copy, and copying costs an allocation that is dropped at the end

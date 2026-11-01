@@ -122,7 +122,7 @@ impl MatrixObjectObjectStore {
     /// in-memory default), so it is safe to call unconditionally. It exists
     /// because matrixobjectstore-rs only auto-flushes `flush_on_commit` for
     /// `append_object`/`create_bucket` — a plain `put_object` (which the
-    /// shared-store WAL, index and page-slab writes all use) mutates in memory
+    /// shared-store WAL, index and block-slab writes all use) mutates in memory
     /// but never rewrites the snapshot. Without this explicit flush a datanode
     /// would appear durable yet lose every put on restart.
     fn flush_snapshot(inner: &MatrixObjectStore) -> Result<(), ObjectStoreError> {

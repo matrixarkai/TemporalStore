@@ -34,7 +34,7 @@ use super::*;
 /// the consolidated map holds no row for, and said to delete itself the day that stopped being
 /// true. The fold shipped instead, with those kinds served by the lookup -- so the useful question
 /// is no longer "is anything unhoused" but "did the housed kinds actually make it into their
-/// slots". A single-page object whose refs stayed in the lookup is the fold's silent failure mode,
+/// slots". A single-block object whose refs stayed in the lookup is the fold's silent failure mode,
 /// because both homes read correctly and only the footprint differs.
 ///
 /// # THE TWO CONTROLS ARE THE POINT
@@ -143,7 +143,7 @@ fn where_each_kinds_refs_end_up() {
          the four kinds whose rows live in `RecordedMap` have nowhere to fold into and MUST still \
          be served from the lookup. An empty lookup here means those kinds were not exercised."
     );
-    // AND THE SINGLE-PAGE STRING CASE SPECIFICALLY, because it is the one the published figure is
+    // AND THE SINGLE-BLOCK STRING CASE SPECIFICALLY, because it is the one the published figure is
     // measured on and the one the adoption exists for. Each `s{i}` above is written ONCE.
     assert_eq!(
         0,
@@ -163,15 +163,15 @@ fn where_each_kinds_refs_end_up() {
 ///
 /// # WHY THIS IS THE OTHER PRECONDITION ON THE FOLD
 ///
-/// `impl Serialize for CoreIndex` composes every live page's written key from
-/// [`BlockKeysByPosition::from_lookup`] over `self.object_block_lookup`, because the page entry
+/// `impl Serialize for CoreIndex` composes every live block's written key from
+/// [`BlockKeysByPosition::from_lookup`] over `self.object_block_lookup`, because the block entry
 /// carries no identity of its own. Fold the refs into the consolidated object map and that field
 /// is gone -- and the consolidated map is `ShardState::objects`, a SIBLING of `bucket_index` on a
 /// struct that derives `Serialize`. `BucketNodeAt`'s note says why no derive and no
 /// `serialize_with` can hand it down: both see one field at a time.
 ///
 /// SO THE CONSEQUENCE IS NOT A BAD INDEX, IT IS NO INDEX. `serialize_block_index` returns `Err`
-/// for a page with nothing beside it, naming which of the two states it is in. This drives that
+/// for a block with nothing beside it, naming which of the two states it is in. This drives that
 /// refusal, which nothing in the suite did -- the state was reached only incidentally, by a
 /// fixture that forgot to file, and the message is quoted in `block_entry_names` as a thing that
 /// once happened rather than as a thing that is checked.
@@ -208,7 +208,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
         index
     };
 
-    // --- THE STATE A FOLD OUT OF `CoreIndex` LEAVES THE ENCODER IN: the page is placed and this
+    // --- THE STATE A FOLD OUT OF `CoreIndex` LEAVES THE ENCODER IN: the block is placed and this
     // --- index holds nothing that names its object.
     let unfiled = placed();
     let refused = serde_json::to_string(&unfiled);
@@ -231,7 +231,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
          {message}"
     );
 
-    // --- THE CONTROL. The same placed page, with the filing a production placement does, encodes.
+    // --- THE CONTROL. The same placed block, with the filing a production placement does, encodes.
     // --- Without this the assertion above would hold for an index that cannot encode at all.
     let mut filed = placed();
     let handle = block_index_handle(&object_key, &entry);
@@ -246,13 +246,13 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
     );
 }
 
-/// DOES A SLOT ROW EXIST AT THE MOMENT ITS PAGE IS FILED? IT DOES NOT, FOR A FIRST WRITE.
+/// DOES A SLOT ROW EXIST AT THE MOMENT ITS BLOCK IS FILED? IT DOES NOT, FOR A FIRST WRITE.
 ///
 /// This chose the fold's routing rule, and it is KEPT rather than deleted with the question
 /// because the answer is the whole reason `CoreIndex::adopt_refs_into_slot` exists. A first
-/// `StringSet` files its page and only then installs the address -- the address IS where the page
+/// `StringSet` files its block and only then installs the address -- the address IS where the block
 /// landed -- so a rule that required the row would fire on every first write, and a rule that
-/// merely preferred the row would leave every single-page object in the lookup and measure no
+/// merely preferred the row would leave every single-block object in the lookup and measure no
 /// saving at all.
 ///
 /// So this is the evidence for a door that would otherwise look redundant, and it reddens if

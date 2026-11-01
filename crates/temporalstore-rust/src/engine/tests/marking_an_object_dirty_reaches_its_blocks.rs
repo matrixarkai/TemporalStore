@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! MARKING AN OBJECT DIRTY REACHES THE PAGES IT ALREADY HAS, AT MARK TIME.
+//! MARKING AN OBJECT DIRTY REACHES THE BLOCKS IT ALREADY HAS, AT MARK TIME.
 //!
 //! # THE INVARIANT, AND IT IS THE WHOLE OF THE CHANGE
 //!
-//! A bucket is dirty when any page in it is dirty. It used to also be dirty when any page's
-//! OBJECT was dirty, which asked a page which object it belonged to -- on the write path, in a
-//! scope holding nothing but the bucket. The dirtiness is pushed onto the pages at mark time now,
-//! so the predicate is `any(page.dirty)` and the question is never asked.
+//! A bucket is dirty when any block in it is dirty. It used to also be dirty when any block's
+//! OBJECT was dirty, which asked a block which object it belonged to -- on the write path, in a
+//! scope holding nothing but the bucket. The dirtiness is pushed onto the blocks at mark time now,
+//! so the predicate is `any(block.dirty)` and the question is never asked.
 //!
 //! That is only equivalent if EVERY SITE THAT MARKS AN OBJECT DIRTY ALSO PUSHES. There are exactly
 //! two, and the fail-first for this module is omitting the push at one of them: the bucket then
@@ -18,14 +18,14 @@
 //!
 //! `bucket_runtime_flags_match_full_sweep` compares the targeted refresh against the sweep and
 //! does include dirtiness -- as a BOOLEAN, `bucket.dirty()`. It can see THAT a bucket is dirty and
-//! not WHY, so it passes whether the dirtiness arrived through the object set or through the pages.
+//! not WHY, so it passes whether the dirtiness arrived through the object set or through the blocks.
 //! It is insensitive to this change rather than wrong about it, and it was cited in prose as
 //! holding the equivalence, which is the worse failure: it stops the next reader looking. This
 //! module asserts the mechanism it cannot see.
 //!
 //! # AND THE PREMISE THAT FAILED TWICE, KEPT BECAUSE IT IS WHY THE CODE IS SHAPED THIS WAY
 //!
-//! The push can only find pages through the object lookup, which is derived and empty until
+//! The push can only find blocks through the object lookup, which is derived and empty until
 //! something builds it. The first version asserted that a mark could not reach a shard holding
 //! buckets with an unbuilt lookup, reasoning that a load rebuilds before returning the shard. TWO
 //! TESTS FIRED THAT ASSERTION IMMEDIATELY, and it was replaced by a rebuild.
@@ -33,13 +33,13 @@
 //! BOTH THE ASSERTION AND THE TWO TESTS WERE ABOUT THE WRONG CONDITION. "Buckets present" is not
 //! "pages present", and "pages present" is not "a LIVE page present" -- a tombstone is a page a
 //! mark must not dirty. Measured over a 107-name set of mark-reaching tests, 97 verdicts: six
-//! reaches had no pages at all, two had only tombstones, and the only two reaches with a live page
+//! reaches had no blocks at all, two had only tombstones, and the only two reaches with a live block
 //! were the fixtures in this module, each writing into `bucket_map` directly with no filing
 //! anywhere in the process.
 //!
-//! AND A CENSUS MAKES THAT STRUCTURAL. All nine production sites that install a page into a
+//! AND A CENSUS MAKES THAT STRUCTURAL. All nine production sites that install a block into a
 //! bucket's map file it in the same enclosing function; the only non-filing doors have no callers
-//! at all or none outside tests. So a live page cannot be resident unfiled in production, the
+//! at all or none outside tests. So a live block cannot be resident unfiled in production, the
 //! rebuild served no reachable state, and `push_object_dirty_onto_its_existing_blocks` now ASSERTS
 //! that invariant where it used to repair it -- which makes every one of the 926 tests that enter
 //! it the check, instead of one fixture here.
@@ -69,7 +69,7 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
             )
             .expect("`string` is a stored model spelling"),
             address: Default::default(),
-            // CLEAN, which is the only interesting starting state: a page that is already dirty
+            // CLEAN, which is the only interesting starting state: a block that is already dirty
             // would satisfy every assertion below whatever the mark did.
             dirty: false,
             deleted: false,
@@ -80,7 +80,7 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
     (shard, routing_bucket)
 }
 
-/// A shard holding one clean page THAT NOTHING HAS FILED -- a state production cannot reach.
+/// A shard holding one clean block THAT NOTHING HAS FILED -- a state production cannot reach.
 ///
 /// Kept, and kept unfiled, because it is the subject of
 /// [`the_push_builds_the_object_lookup_when_it_finds_it_unbuilt`]'s successor: the push now
@@ -89,7 +89,7 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
 /// that proves the assertion can fire.
 ///
 /// Every other arm in this module wants [`a_shard_holding_one_filed_clean_block`], because their
-/// subjects are positive -- that a mark reaches its pages, and that a mark on a different object
+/// subjects are positive -- that a mark reaches its blocks, and that a mark on a different object
 /// does not -- and neither is testable in a state the engine refuses.
 fn a_shard_holding_one_filed_clean_block(object_key: &str) -> (ShardState, u32) {
     let (mut shard, routing_bucket) = a_shard_holding_one_clean_block(object_key);
@@ -132,7 +132,7 @@ fn any_block_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
 
 #[test]
 fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
-    // THE FILED FIXTURE, because this arm's subject is POSITIVE -- that a mark reaches the pages
+    // THE FILED FIXTURE, because this arm's subject is POSITIVE -- that a mark reaches the blocks
     // an object already has -- and that is not testable in a state the engine refuses.
     let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_block("pushed-object");
 
@@ -152,7 +152,7 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
     );
 
     // AND THE PREDICATE THE PUSH EXISTS TO SERVE actually answers true through it. The sweep
-    // recomputes the bucket flag from the pages alone.
+    // recomputes the bucket flag from the blocks alone.
     refresh_bucket_runtime_flags(&mut shard);
     assert!(
         shard
@@ -167,10 +167,10 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
 
 #[test]
 fn an_unmarked_object_leaves_its_blocks_clean() {
-    // THE CONTROL FOR THE MODULE. If marking is what makes a page dirty, NOT marking must leave it
+    // THE CONTROL FOR THE MODULE. If marking is what makes a block dirty, NOT marking must leave it
     // clean -- otherwise the assertion above would hold on a shard where everything is dirty.
     // THE FILED FIXTURE TOO. This is the CONTROL for the arm above -- if marking is what makes a
-    // page dirty, not marking must leave it clean -- so it has to run in the same reachable state,
+    // block dirty, not marking must leave it clean -- so it has to run in the same reachable state,
     // or it controls for nothing the arm above does.
     let (mut shard, routing_bucket) = a_shard_holding_one_filed_clean_block("untouched-object");
 
@@ -192,12 +192,12 @@ fn an_unmarked_object_leaves_its_blocks_clean() {
     );
 }
 
-/// A MARK ON A SHARD HOLDING A LIVE PAGE NOTHING HAS FILED IS REFUSED, NOT REPAIRED.
+/// A MARK ON A SHARD HOLDING A LIVE BLOCK NOTHING HAS FILED IS REFUSED, NOT REPAIRED.
 ///
 /// THIS ARM'S CLAIM IS INVERTED FROM WHAT IT WAS, and the inversion is the finding. It asserted
 /// that the push ESTABLISHES the lookup when it finds it unbuilt -- a rebuild of the whole shard,
-/// reading each page's object key off the entry. The census says no production route reaches the
-/// state it was repairing: all nine sites that install a page file it in the same call, and the
+/// reading each block's object key off the entry. The census says no production route reaches the
+/// state it was repairing: all nine sites that install a block file it in the same call, and the
 /// only doors that do not file have no callers at all or none outside tests.
 ///
 /// So the push asserts the invariant instead, and this arm is what proves the assertion can FIRE.
@@ -233,18 +233,18 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
     );
 }
 
-/// WHAT REFRESHING A BUCKET'S RUNTIME FLAGS COSTS ON ONE WRITE, IN PAGES VISITED.
+/// WHAT REFRESHING A BUCKET'S RUNTIME FLAGS COSTS ON ONE WRITE, IN BLOCKS VISITED.
 ///
 /// # THE QUESTION
 ///
-/// The predicate this module is about -- `any(page.dirty)` -- is recomputed, not maintained.
+/// The predicate this module is about -- `any(block.dirty)` -- is recomputed, not maintained.
 /// `refresh_pending_bucket_runtime_flags` runs on every write, and for each bucket the write
-/// touched `refresh_one_bucket_runtime_flags` folds over every page that bucket holds TWICE: once
-/// for `all(page.deleted)` and once for `any(page.dirty)`. Neither fold looks at the write; both
+/// touched `refresh_one_bucket_runtime_flags` folds over every block that bucket holds TWICE: once
+/// for `all(block.deleted)` and once for `any(block.dirty)`. Neither fold looks at the write; both
 /// recompute a summary of the whole bucket.
 ///
-/// So the cost of one write includes the pages its bucket already held. How much that is depends
-/// entirely on how many pages share a bucket, which the routing range decides -- and the range this
+/// So the cost of one write includes the blocks its bucket already held. How much that is depends
+/// entirely on how many blocks share a bucket, which the routing range decides -- and the range this
 /// measures at is the NARROW one, because that is the setting the module header names as the one to
 /// run in production (`TS_SHARD_END_ROUTING_SLOT=1023`, which cuts resident memory 45%). A wide
 /// range gives every key its own bucket and hides the fold behind a bucket of one.
@@ -252,7 +252,7 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
 /// # WHY THE COUNTER AND NOT A TIMER
 ///
 /// `bucket_visit_sites::REFRESH_FLAGS` is charged `bucket.block_index.len()` at each visit, so it
-/// reports PAGES VISITED rather than calls made -- which is the quantity in question. A timer on
+/// reports BLOCKS VISITED rather than calls made -- which is the quantity in question. A timer on
 /// this box would also be measuring whatever else is building at the time; the counter is exact and
 /// attributable, and the same instrument already attributes the layout and clear-dirty walks.
 ///
@@ -260,11 +260,11 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
 ///
 /// This probe first read `bucket_visit_sites::REFRESH_FLAGS` and got this:
 ///
-///     corpus   pages in bucket   REFRESH (pages visited)
+///     corpus   blocks in bucket   REFRESH (blocks visited)
 ///         40                41                         0
 ///        320               321                         0
 ///
-/// Zero against a bucket of 321 pages, which reads as "the folds are not on the write path" and is
+/// Zero against a bucket of 321 blocks, which reads as "the folds are not on the write path" and is
 /// what was nearly concluded. It is not what the counter says. `REFRESH_FLAGS` is charged inside
 /// `refresh_one_bucket_runtime_flags` but inside the `BucketTtlRollup::Recompute` arm AND inside
 /// the `else` of `if expires_at_ms.is_empty()` -- so it counts the TTL rollup, only when a TTL
@@ -272,7 +272,7 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
 /// report zero.
 ///
 /// THE POSITIVE CONTROL IS WHAT TURNED THAT INTO A FINDING. Calling the full sweep deliberately,
-/// over a bucket of 40 pages, ALSO charged 0 -- and a sweep that walks 40 pages and reports 0 is an
+/// over a bucket of 40 blocks, ALSO charged 0 -- and a sweep that walks 40 blocks and reports 0 is an
 /// instrument fault, not a cheap sweep. `FLAG_FOLDS` was added for the folds themselves, charged by
 /// `inspect` so it reports iterations taken rather than bucket length, because both folds
 /// short-circuit.
@@ -284,25 +284,25 @@ fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
 ///
 /// # WHAT IT FOUND, ON THE COUNTER THAT SEES THE FOLDS: THEY ARE FLAT AT TWO
 ///
-///     corpus   pages in bucket   FOLD visits
+///     corpus   blocks in bucket   FOLD visits
 ///         40                41             2
 ///        320               321             2
 ///
-/// Two visits against a bucket of 321 pages, and the same two against 41. BOTH FOLDS SHORT-CIRCUIT
-/// AND BOTH DECIDE ON THE FIRST PAGE: `all(page.deleted)` stops at the first page that is not
-/// deleted, `any(page.dirty)` stops at the first that is dirty, and a bucket that was just written
-/// into has a dirty page at the front. The comment beside the folds says this already -- "during
+/// Two visits against a bucket of 321 blocks, and the same two against 41. BOTH FOLDS SHORT-CIRCUIT
+/// AND BOTH DECIDE ON THE FIRST BLOCK: `all(block.deleted)` stops at the first block that is not
+/// deleted, `any(block.dirty)` stops at the first that is dirty, and a bucket that was just written
+/// into has a dirty block at the front. The comment beside the folds says this already -- "during
 /// ingest the dirty check in particular answers on block one" -- and this is that comment measured.
 ///
-/// SO THERE IS NOTHING TO MAINTAIN INCREMENTALLY. A dirty-page count on the bucket would make
-/// `any(page.dirty)` O(1) exactly, and would save two iterations per refresh. The whole-bucket
+/// SO THERE IS NOTHING TO MAINTAIN INCREMENTALLY. A dirty-block count on the bucket would make
+/// `any(block.dirty)` O(1) exactly, and would save two iterations per refresh. The whole-bucket
 /// recomputation this probe was built to price does not happen.
 ///
 /// WHAT IS WORTH GUARDING IS THE FLATNESS, and that is what the assertion below does. The
 /// short-circuit is the whole reason these folds are cheap, and it is a property of how they are
 /// WRITTEN, not of what they compute: `values().filter(|p| p.dirty).count() > 0` computes the same
-/// predicate and walks every page. At the narrow routing range production runs, that is about 4,600
-/// pages a write at 4.7M records -- and no functional test would fail.
+/// predicate and walks every block. At the narrow routing range production runs, that is about 4,600
+/// blocks a write at 4.7M records -- and no functional test would fail.
 ///
 /// rust-internal: counts this crates own bucket walks, no product behaviour
 ///
@@ -390,7 +390,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
         measured.push((rung, blocks_in_bucket as u64, folds));
     }
 
-    // --- DENOMINATOR: the fold's input is the pages in the bucket, so the fixture has to have put
+    // --- DENOMINATOR: the fold's input is the blocks in the bucket, so the fixture has to have put
     // --- them there. A corpus that did not accumulate makes every number above a measurement of an
     // --- empty bucket, which would read as "the fold is free".
     for (rung, blocks, _) in &measured {
@@ -414,13 +414,13 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     );
 
     // --- AND THE VERDICT: ZERO, ASSERTED. The folds are summaries of a whole bucket recomputed
-    // --- from scratch, so reaching them from a write makes that write cost the pages its bucket
+    // --- from scratch, so reaching them from a write makes that write cost the blocks its bucket
     // --- already holds. Measured at 0 visits against a bucket of 321, from two directions. If this
     // --- fires, a write has started refreshing bucket flags: either maintain the summaries
-    // --- incrementally (a dirty-page count is exactly `any(page.dirty)` and is O(1)) or take the
+    // --- incrementally (a dirty-block count is exactly `any(block.dirty)` and is O(1)) or take the
     // --- refresh back off the write path. Do not raise the bound.
-    // --- THE VERDICT IS FLATNESS, not a level. The folds visit two pages whether the bucket holds
-    // --- 41 or 321, because both short-circuit on the first page that decides them. A bound on the
+    // --- THE VERDICT IS FLATNESS, not a level. The folds visit two blocks whether the bucket holds
+    // --- 41 or 321, because both short-circuit on the first block that decides them. A bound on the
     // --- level would be a bound on an accident of fixture order; the invariant that matters is that
     // --- the count does not follow the corpus, because that is what breaks if the short-circuit is
     // --- written out of either fold.
@@ -491,7 +491,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     println!(
         "  positive control: calling the sweep over {CONTROL_BLOCKS} blocks charges {control_folds} fold visits"
     );
-    // MOVES, NOT REACHES THE LENGTH. A sweep over 40 pages charges 2, because the folds
+    // MOVES, NOT REACHES THE LENGTH. A sweep over 40 blocks charges 2, because the folds
     // short-circuit -- that is the finding, not a fault. The control's job is only to prove the
     // counter is wired to the walk, so that the flat numbers above are a measurement of a cheap
     // fold rather than a reading of a dead counter. An earlier version of this control demanded

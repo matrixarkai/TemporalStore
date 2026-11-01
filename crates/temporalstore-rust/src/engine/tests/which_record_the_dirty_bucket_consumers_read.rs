@@ -9,7 +9,7 @@
 //! Three consumers asked `BucketStorageSummary::dirty_object_count > 0`, which is a dirty-BUCKET
 //! question answered from a count of dirty OBJECTS. The bucket records that fact itself, on its
 //! own node, and `whether_a_bucket_can_count_its_own_dirty_objects` measures the two records
-//! agreeing on every bucket in both directions -- including the ones carrying dirt no page walk
+//! agreeing on every bucket in both directions -- including the ones carrying dirt no block walk
 //! can see -- and measures the node's flag to be an INDEPENDENT record rather than a cache of the
 //! set, by neutralising each of its three maintainers in turn.
 //!
@@ -82,7 +82,7 @@ fn both_records(engine: &crate::TemporalEngine) -> BTreeMap<u32, (bool, u64)> {
 
 #[test]
 fn which_record_the_dirty_bucket_consumers_read() {
-    // ---- A NARROW ROUTING RANGE, so keys SHARE buckets and the removals' non-page-backed records
+    // ---- A NARROW ROUTING RANGE, so keys SHARE buckets and the removals' non-block-backed records
     // ---- route to buckets of their own. On the default whole-keyspace range every key gets a
     // ---- bucket to itself and the populations stop overlapping.
     let dir = tempfile::tempdir().expect("tempdir");

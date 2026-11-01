@@ -8,8 +8,8 @@
 //! The straightforward way to pick eviction victims is to enumerate every bucket, sort by
 //! recency and take the coldest `batch_limit`. That is what [`super::TemporalEngine`] does when
 //! this sampler is off, and its cost grows with the size of the store rather than with the
-//! number of victims wanted: building the candidate list walks every live page in the shard
-//! (cloning two strings per page), and the sort is `O(buckets log buckets)`. Eviction runs on a
+//! number of victims wanted: building the candidate list walks every live block in the shard
+//! (cloning two strings per block), and the sort is `O(buckets log buckets)`. Eviction runs on a
 //! background loop, so a large shard pays that repeatedly to choose a handful of victims.
 //!
 //! This module bounds the work instead. Each pass scans at most

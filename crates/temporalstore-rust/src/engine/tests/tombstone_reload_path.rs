@@ -24,7 +24,7 @@
 //! # THE THREE THINGS ASSERTED
 //!
 //!   1. a reload of a store this binary wrote ACCEPTS the index -- so the tombstone entries and the
-//!      pages that record removals survive a round trip through the persisted index itself, not just
+//!      blocks that record removals survive a round trip through the persisted index itself, not just
 //!      through a replay;
 //!   2. a reload of a store stamped with the PREVIOUS version REFUSES it and replays;
 //!   3. the membership is identical either way, and is the membership after the removal rather than
@@ -126,7 +126,7 @@ fn seed_and_unload(dir: &std::path::Path) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
             },
         );
     }
-    // A FOLD FIRST, so the survivors share a page and the removed member's page is one a fold had
+    // A FOLD FIRST, so the survivors share a block and the removed member's block is one a fold had
     // already rewritten -- the state #2028's refutation was about.
     engine
         .compact_shard_blocks(1)
@@ -151,10 +151,10 @@ fn seed_and_unload(dir: &std::path::Path) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
     );
     let (live, tombstoned) = entry_counts(&engine);
     // THE DENOMINATOR, STATED FOR WHICHEVER PROJECTION IS FILING, and as the invariant rather than
-    // as a number. The fixture FOLDS before removing, so the survivors share one page:
+    // as a number. The fixture FOLDS before removing, so the survivors share one block:
     //
     //   * per-element, one entry names each surviving member -- MEMBERS - 1 of them;
-    //   * one entry a page, ONE entry names the folded page they all share.
+    //   * one entry a block, ONE entry names the folded block they all share.
     //
     // Either way exactly one tombstone names the member removed, and the membership assertion
     // directly above this one is what says the survivors are all there -- so this is a count of
@@ -229,8 +229,8 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
     );
     // THE SAME DENOMINATOR AS THE FIXTURE'S, ON THE OTHER SIDE OF THE ROUND TRIP. What this
     // assertion is FOR is the tombstone surviving -- one of them, either way -- and that half does
-    // not move. The live half does: per-element one entry names each survivor, one entry a page
-    // names the folded page they share.
+    // not move. The live half does: per-element one entry names each survivor, one entry a block
+    // names the folded block they share.
     //
     // And the assertions above this one are what make that a count rather than a defect. The
     // accept-or-replay check passes, so the binary reads the index it wrote rather than replaying;
@@ -350,12 +350,12 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
     // THIS WAS A REFUTATION BEFORE IT WAS A FIX, and the distinction it turns on is why the outcome
     // carries an address at all. The membership a replay serves was always correct: the WAL outcome
     // states the removal and the replay applies it to the resident map and the index. What did NOT
-    // survive was the ENTRY that keeps the tombstone PAGE reachable -- a replay runs precisely when the
+    // survive was the ENTRY that keeps the tombstone BLOCK reachable -- a replay runs precisely when the
     // index was not usable, so there is no index to preserve it from, and the model maps cannot
     // re-derive it because a removed element is not in them.
     //
-    // So the tombstone page's address travels in the removal's outcome and the replay's install hands
-    // it back. Drop it and the replay re-drops the entry, the page is named by nothing, and a
+    // So the tombstone block's address travels in the removal's outcome and the replay's install hands
+    // it back. Drop it and the replay re-drops the entry, the block is named by nothing, and a
     // derivation after the recovery puts the element back: the original defect, on the one path where
     // it is hardest to see.
     assert_eq!(

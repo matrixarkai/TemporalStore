@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT THE PAGE INDEX ENTRY WEIGHS AT EACH STEP -- AND STEP ONE HAS LANDED.
+//! WHAT THE BLOCK INDEX ENTRY WEIGHS AT EACH STEP -- AND STEP ONE HAS LANDED.
 //!
 //! The target shape was twenty-four bytes carrying NO IDENTITY OF ITS OWN: a flag group, a model
 //! spelling, and an address, with the identity supplied by the position the entry is held at. THE
 //! ENTRY IS THAT SHAPE. `engine_storage_state.rs` pins it at twenty-four with nineteen bytes of field and five of
-//! slack, and the identity is resolved through `BlockKeysByPosition` from the position the page is
+//! slack, and the identity is resolved through `BlockKeysByPosition` from the position the block is
 //! filed at.
 //!
 //! # SO STEP ZERO AND STEP ONE ARE ONE SHAPE, AND THE MIRROR FOLDED INTO THE LIVE TYPE
@@ -333,7 +333,7 @@ const _: () =
 /// WHAT THE HOLDER PAYS, which is the number a footprint claim has to be made in.
 ///
 /// The entry is not held alone. The list arm of `BlockIndexMap` holds `(u64, BlockIndex)` per
-/// page, so the handle travels with every entry and the element is what a page actually costs
+/// block, so the handle travels with every entry and the element is what a block actually costs
 /// resident. Stated here beside the entry widths so that a width step is never reported as a
 /// footprint step without the element it lands in.
 const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
@@ -348,7 +348,7 @@ const _: () = assert!(size_of::<Arc<str>>() == 16);
 ///
 /// A shared pointer to the object key is sixteen bytes wherever it is held. Taken off the entry it
 /// has to be held SOMEWHERE the position of the entry can be resolved from, and if that somewhere
-/// is one slot per page then the sixteen bytes have moved rather than gone. This is the arithmetic
+/// is one slot per block then the sixteen bytes have moved rather than gone. This is the arithmetic
 /// a re-keying has to clear, and it is pinned here so the two numbers are read side by side.
 const _: () = assert!(size_of::<Arc<str>>() == 16);
 

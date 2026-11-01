@@ -4,7 +4,7 @@
 //! CRC32C (Castagnoli) for on-disk record integrity.
 //!
 //! The append-only logs originally carried a truncated SHA-256 per record, and the block
-//! store a full 32-byte SHA-256 per page record. Both sit on the synchronous write path, so
+//! store a full 32-byte SHA-256 per block record. Both sit on the synchronous write path, so
 //! their cost is paid per write, before the durability barrier -- and a cryptographic digest
 //! is the wrong tool for the job. Nothing here is defending against a forged record; the
 //! threat is accidental corruption of a committed record (a flipped bit that still parses),

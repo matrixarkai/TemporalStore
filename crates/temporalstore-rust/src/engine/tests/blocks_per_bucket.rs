@@ -42,7 +42,7 @@
 //! SO THE INLINE ENTRY IS GONE AND THE SHAPE THIS MODULE DECLINED IS THE ONE THAT SHIPPED: the
 //! single-block arm survives, holding a POINTER. The third option this module never priced is what
 //! settles it against simply removing the arm -- dropping it recovers the IDENTICAL width, measured,
-//! but makes a single-page bucket hold a one-entry list whose first block is a whole growth step,
+//! but makes a single-block bucket hold a one-entry list whose first block is a whole growth step,
 //! which on the whole-keyspace range costs 482.0 B a bucket against boxing's 178.3. Boxing is the
 //! only one of the shapes that wins at BOTH ranges. `inline_arm_trade.rs` re-derives both halves of
 //! that arithmetic at both ranges, in both allocator columns, four shapes wide.
@@ -1859,15 +1859,15 @@ fn component_block(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
 fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &BlockIndex) {
     // THE OBJECT-KEY COMPARISON IS RETIRED RATHER THAN REWRITTEN, and where its claim went is
     // the whole of the reason. The entry has no object key to compare: the identity lives beside
-    // the page, in the bucket's own lookup, and the two page indexes this is handed -- one of
+    // the block, in the bucket's own lookup, and the two block indexes this is handed -- one of
     // them read back out of the stored form -- carry no second copy of it to disagree about.
     //
     // THE CLAIM IT MADE IS STILL HELD, ONE LEVEL OUT. The object key reaches the stored form as
-    // part of each page's WRITTEN KEY, which is this index's own map key; a round trip that lost
+    // part of each block's WRITTEN KEY, which is this index's own map key; a round trip that lost
     // or altered it writes different bytes, and
     // `the_serialized_shape_does_not_move_across_the_transition` asserts the node's bytes are
     // identical twice over. The same test also asserts directly that the written key CARRIES the
-    // object key and that two pages differing only in it render different keys. So the term is
+    // object key and that two blocks differing only in it render different keys. So the term is
     // covered where it is now observable, rather than compared where it no longer exists.
     assert_eq!(
         left.model_id, right.model_id,
@@ -2131,7 +2131,7 @@ fn a_bucket_that_grows_past_one_block_and_shrinks_back_holds_the_same_block_set(
     // "alpha")` and `component_block(20, "beta")` are now the SAME entry -- same object key, same
     // model, same address -- so they hash alike and the second takes the first's slot. That is the
     // loss the old assertion warned about, and it is why the collapse is a correctness requirement:
-    // the projection emits one entry per distinct PAGE, so two entries of one object at one address
+    // the projection emits one entry per distinct BLOCK, so two entries of one object at one address
     // are never filed.
     //
     // ASSERTED AS THE COLLISION RATHER THAN DELETED, for the reason the original gave for existing
@@ -2224,7 +2224,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     );
 
     // BOTH NODES HOLD `block_for(1)` AND NOTHING ELSE -- the round-tripped one grew to four and
-    // drained back to this one page, which is the whole subject of the comparison.
+    // drained back to this one block, which is the whole subject of the comparison.
     let untouched_bytes =
         serde_json::to_string(&crate::engine::state::NodeNamedBy(&untouched, &["key-1"])).expect("a node serializes");
     let round_tripped_bytes =
@@ -2268,10 +2268,10 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     // block's identity AND its address, so dropping the component from it leaves every key DISTINCT
     // -- the addresses differ. Uniqueness cannot catch it, key counts cannot catch it, and the
     // ordering guard cannot catch it; the only thing that changes is the text of a stored key,
-    // which is the bytes on disk." It then built two pages differing ONLY in their component and
+    // which is the bytes on disk." It then built two blocks differing ONLY in their component and
     // asserted their written keys differed.
     //
-    // NEITHER PAGE CAN BE BUILT NOW: an entry has no component to set or clear, so "two pages of
+    // NEITHER BLOCK CAN BE BUILT NOW: an entry has no component to set or clear, so "two blocks of
     // one object at the same address, one with a component and one without" is not a pair this type
     // can express. `block_index_written_key` passes the constant `None` into
     // `block_ref_key_from_parts`, which is what it was already receiving for every entry of every
@@ -2282,11 +2282,11 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     // The reason the original escaped every other guard was that uniqueness and counts cannot see a
     // key's TEXT change while the addresses differ. That is still true of the object key: drop it
     // from the rendering and every key stays distinct. So the written key is asserted to carry the
-    // object key, and two pages that differ only in their object key are asserted to render
+    // object key, and two blocks that differ only in their object key are asserted to render
     // different keys -- the same shape of claim, over the identity term the entry still has.
-    // THE PERTURBATION MOVED TO THE KEY BESIDE THE PAGE, which is where the identity is. It
+    // THE PERTURBATION MOVED TO THE KEY BESIDE THE BLOCK, which is where the identity is. It
     // used to overwrite the entry's own copy and then read that copy back out to render with;
-    // the two pages are byte-identical by construction, so handing the SAME page under two
+    // the two blocks are byte-identical by construction, so handing the SAME block under two
     // different keys says what it meant -- that the key is what moved.
     let (here_object, here) = component_block(5, "body");
     let elsewhere_object: std::sync::Arc<str> = std::sync::Arc::from("a-different-object");
@@ -2315,7 +2315,7 @@ fn the_inline_and_mapped_arms_write_the_same_bytes_for_the_same_block_set() {
     let (body_key, body) = component_block(5, "body");
     many.block_index.insert(&body_key, body, &mut live);
     assert_eq!(5, many.block_index.len(), "five pages, five entries");
-    // FIVE PAGES OVER FIVE OBJECTS: four `block_for` keys and the container.
+    // FIVE BLOCKS OVER FIVE OBJECTS: four `block_for` keys and the container.
     const MANY_OBJECTS: &[&str] = &["key-1", "key-2", "key-3", "key-4", "container"];
     let written = serde_json::to_string(&crate::engine::state::NodeNamedBy(&many, MANY_OBJECTS)).expect("a node serializes");
     let read_back: BucketNode = serde_json::from_str(&written).expect("a node deserializes");

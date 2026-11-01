@@ -21,17 +21,17 @@
 //! and was being conflated with the index entry.
 //!
 //! AND A GENUINELY CONTAINER-ONLY ELEMENT SURVIVES ANYWAY, which is the finding the collapse work
-//! depends on. `LiveBlockKey` is `(slab_id, offset, length)`: a PAGE identity carrying no element,
-//! component or object key. So `fill_absent_elements` asks only whether the page is still there,
+//! depends on. `LiveBlockKey` is `(slab_id, offset, length)`: a BLOCK identity carrying no element,
+//! component or object key. So `fill_absent_elements` asks only whether the block is still there,
 //! never whether the index names this element -- and an element the index has never heard of is
-//! kept as long as its page is live.
+//! kept as long as its block is live.
 //!
 //! WHY EACH CONTROL IS HERE, because a survival test without them asserts nothing:
 //!
 //!   * AN INDEX-REGISTERED FIELD, in every arm. Without it a reload that lost EVERYTHING would look
 //!     identical to the defect being probed.
-//!   * A DEAD-PAGE ADDRESS, in the arms that claim survival. An inert filter and a permissive one
-//!     are indistinguishable from a single passing case; the dead-page element must be REFUSED, and
+//!   * A DEAD-BLOCK ADDRESS, in the arms that claim survival. An inert filter and a permissive one
+//!     are indistinguishable from a single passing case; the dead-block element must be REFUSED, and
 //!     that is what proves the filter discriminates rather than waving everything through.
 //!
 //! ONE ASSERTION HERE WAS INVERTED RATHER THAN RE-GOLDENED, and the distinction is the point.
@@ -371,7 +371,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     let shard = shards.get_mut(&1).expect("shard is loaded");
 
     // Borrow a real, live address from the control's own block so the subject cannot be refused
-    // merely for pointing at a page that does not exist. The ONLY thing that differs between the
+    // merely for pointing at a block that does not exist. The ONLY thing that differs between the
     // control and the subject is whether the INDEX names it.
     let live_address = shard
         .hashes
@@ -434,7 +434,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
 
     // THE COMPLEMENTARY CONTROL, and without it the result above is unreadable: if the filter
     // never fires at all, "survives" says nothing about why. A second orphan gets an address for a
-    // page NOTHING holds, so the only live-set lookup that can decide it must fail.
+    // block NOTHING holds, so the only live-set lookup that can decide it must fail.
     shard.hashes.replay_install_element(
         "orphan-dead-page",
         std::sync::Arc::from("meta"),
@@ -462,9 +462,9 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived,          so the first result above cannot be read as `the block was live`"
     );
     // MEASURED, and it REFUTED the prediction this test was written to confirm: a container-only
-    // element whose PAGE is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a page
+    // element whose BLOCK is live SURVIVES. `LiveBlockKey` is `(slab_id, offset, length)` -- a block
     // identity carrying no element, component or object key -- so the filter asks only whether the
-    // page is still there, never whether the index names this element.
+    // block is still there, never whether the index names this element.
     assert!(
         orphan_after,
         "a container-only element on a LIVE block was dropped, contradicting the measured behaviour          this assertion records"
@@ -478,9 +478,9 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
 /// measured per kind is `fill_absent_elements` itself -- the function both reconcile sites call
 /// through `RecordedMap::reconcile_from_durable`, and the only place the live-address refusal
 /// lives. Each kind is driven with its OWN element and value type, because the whole question is
-/// whether the filter looks at anything but the page, and a single type could not show that.
+/// whether the filter looks at anything but the block, and a single type could not show that.
 ///
-/// Two elements per kind, and the pair is the test: one on a page the live set holds, one on a page
+/// Two elements per kind, and the pair is the test: one on a block the live set holds, one on a block
 /// it does not. The first must be KEPT and the second REFUSED. Either outcome alone would be
 /// unreadable -- all-kept means the filter is inert, all-refused means it ignores liveness.
 #[test]

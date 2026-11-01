@@ -1,19 +1,19 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! TWO ENTRIES AT ONE ADDRESS DO SHARE A HANDLE, AND THAT IS WHY ONE ENTRY A PAGE IS REQUIRED.
+//! TWO ENTRIES AT ONE ADDRESS DO SHARE A HANDLE, AND THAT IS WHY ONE ENTRY A BLOCK IS REQUIRED.
 //!
 //! # THE MODULE'S PREMISE WAS DISCHARGED, SO ITS CLAIM IS INVERTED RATHER THAN DELETED
 //!
-//! This module used to assert the opposite: "TWO ELEMENTS OF ONE COMPACTED PAGE MUST NOT SHARE A
+//! This module used to assert the opposite: "TWO ELEMENTS OF ONE COMPACTED BLOCK MUST NOT SHARE A
 //! HANDLE". `block_index_handle` hashed model id, object key, **component** and five address
-//! terms, and siblings on a batched page agree on everything except the component -- so the
-//! component was the only discriminator, and dropping it collapsed forty hash fields on one page
+//! terms, and siblings on a batched block agree on everything except the component -- so the
+//! component was the only discriminator, and dropping it collapsed forty hash fields on one block
 //! onto one entry with thirty-nine lost. Its own header quoted `index_log.rs` on the condition:
 //! the component *"cannot go until the entry stops being per-element."*
 //!
 //! THE ENTRY HAS STOPPED BEING PER-ELEMENT. `index_entry_names_a_block` answers true for all four
-//! container kinds, so the projection emits ONE entry per distinct physical page, and
+//! container kinds, so the projection emits ONE entry per distinct physical block, and
 //! `BlockIndex` no longer has a `component` field at all. The state this module pinned against --
 //! two entries of one object at one address -- is not something the index can hold any more.
 //!
@@ -25,10 +25,10 @@
 //!
 //!   1. THE COLLISION IS REAL. Two entries of one object at one address hash to ONE handle, so a
 //!      second insert takes the first one's slot. That is asserted directly, because it is the
-//!      reason one entry a page is a correctness requirement and not a matter of footprint --
+//!      reason one entry a block is a correctness requirement and not a matter of footprint --
 //!      and because an assertion that it does NOT collide is what this module would have to
 //!      become if the handle ever gained a discriminator again.
-//!   2. NOTHING FILES THE COLLIDING STATE. Every container kind converges on the page, asked of
+//!   2. NOTHING FILES THE COLLIDING STATE. Every container kind converges on the block, asked of
 //!      `index_entry_names_a_block` itself rather than of a comment, so no path files two entries
 //!      of one object at one address for the collision to be reached through.
 //!
@@ -49,7 +49,7 @@ use crate::block_store::ElementEntry;
 use crate::engine::state::{block_index_handle, BlockIndex};
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
-/// One batched page: every element of the object shares this address.
+/// One batched block: every element of the object shares this address.
 fn batched_block_address() -> ElementEntry {
     ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None)
 }
@@ -80,7 +80,7 @@ fn two_entries_of_one_object_at_one_address_share_a_handle() {
         .collect();
 
     // THE SHAPE IS THE SUBJECT, so it is asserted rather than assumed: every entry must share one
-    // address and one object key, or the collision below is not about a batched page.
+    // address and one object key, or the collision below is not about a batched block.
     let addresses: std::collections::BTreeSet<String> = at_one_block
         .iter()
         .map(|(_, block)| format!("{:?}", block.address))
@@ -153,8 +153,8 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
     }
 
     // AND THE CONTROL, so this is not satisfied by a predicate that answers true for everything.
-    // `string` converges on the OBJECT KEY instead: it holds one page per object, so there is no
-    // shared page for two of its entries to sit on.
+    // `string` converges on the OBJECT KEY instead: it holds one block per object, so there is no
+    // shared block for two of its entries to sit on.
     assert!(
         !index_entry_names_a_block(crate::engine::ModelKind::String.as_str()),
         "`string` answered page-named. It holds one page per object and converges on the object \

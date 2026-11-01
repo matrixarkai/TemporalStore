@@ -6,11 +6,11 @@
 //! mx#1938 priced the obvious fix for the empty round -- scope `bucket_storage_summaries` to the
 //! dirty bucket set -- and declined it for a named reason:
 //!
-//! > The walk credits each page to `entry.address.routing_bucket()` with a hash fallback over the
-//! > SHARD'S routing range, while `upsert_bucket_index_block_inner` files that same page under a
-//! > fallback over `0..u32::MAX`, so a page whose address carries no explicit routing bucket can
+//! > The walk credits each block to `entry.address.routing_bucket()` with a hash fallback over the
+//! > SHARD'S routing range, while `upsert_bucket_index_block_inner` files that same block under a
+//! > fallback over `0..u32::MAX`, so a block whose address carries no explicit routing bucket can
 //! > be filed under one bucket and summarised under another. Measured on this fixture the branch
-//! > does not fire -- zero unrouted pages and zero misfiled pages at both sizes -- but "does not
+//! > does not fire -- zero unrouted blocks and zero misfiled blocks at both sizes -- but "does not
 //! > fire on this fixture" is not the same statement as "cannot fire".
 //!
 //! This file answers that, and the answer has three parts.
@@ -21,7 +21,7 @@
 //! `start_routing_bucket = 0`, `end_routing_bucket = u32::MAX`. On THAT shard the two fallbacks
 //! are not two placements that happened to agree: they are the same function applied to the same
 //! three arguments. `block_routing_bucket(key, 0, u32::MAX)` is `block_routing_bucket(key, start,
-//! end)` with `start = 0` and `end = u32::MAX` substituted. No page could have been misfiled, and
+//! end)` with `start = 0` and `end = u32::MAX` substituted. No block could have been misfiled, and
 //! no fixture of that shape can ever report anything but zero.
 //!
 //! `a_wide_range_fixture_cannot_tell_the_two_placements_apart` asserts exactly that: on the wide
@@ -30,7 +30,7 @@
 //! with the production narrow range -- `TS_SHARD_END_ROUTING_SLOT=1023`, the setting that cuts
 //! resident memory 45% -- reports the two placements disagreeing on 2,000 of 2,000 keys.
 //!
-//! # 2. THE PAGE CAN BE CONSTRUCTED, AND HERE IT IS
+//! # 2. THE BLOCK CAN BE CONSTRUCTED, AND HERE IT IS
 //!
 //! NO ADDRESS CARRIES A ROUTING BUCKET ANY MORE, so the disagreeing state this module was built to
 //! bound cannot arise: the bucket is derived from the object key over the range the store is stamped
@@ -43,7 +43,7 @@
 //! and a record with the key absent altogether all decode to the SAME address. That is the property
 //! that makes the slot's presence a content change and not a schema change.
 //!
-//! Put pages in that state into a narrow shard and run the reconstruct the WAL-replay tail runs --
+//! Put blocks in that state into a narrow shard and run the reconstruct the WAL-replay tail runs --
 //! `rebuild_bucket_first_index(shard_id, shard, 0, u32::MAX)`, which is `lifecycle.rs`'s own call with
 //! `lifecycle.rs`'s own arguments -- and every one of them is filed under a bucket a derivation over
 //! the SHARD'S range would not choose. Not a hypothetical: a count, at a stated denominator, 600 of
@@ -51,31 +51,31 @@
 //!
 //! AND THAT NO LONGER COSTS ANYTHING, which is the half this file now has to say. The consequence it
 //! was built to price was "a page filed under one bucket and summarised under another", and the
-//! summary walk does not derive a placement any more -- `bucket_storage_summaries` credits each page
+//! summary walk does not derive a placement any more -- `bucket_storage_summaries` credits each block
 //! to the bucket the walk FILED it in, keeping the derivation only for a model-map entry that has no
 //! filing to read. So the filed and the summarised bucket sets are equal at EVERY range, and a dump
 //! naming the buckets the summaries name carries every one of their slabs.
 //!
 //! The same correction is what stopped a cross-range manifest install refusing itself with
 //! `slot_dump_slot_summary_mismatch`: one half of a summary derived the bucket while the other half
-//! read `bucket_map`, so the two halves answered different questions about the same page. Two
+//! read `bucket_map`, so the two halves answered different questions about the same block. Two
 //! derivations of one quantity have to ask the same question -- and the cheapest way to make them is
 //! for one of them to stop deriving.
 //!
 //! # 3. WHAT THAT DOES TO A SCOPED WALK, MEASURED IN BOTH DIRECTIONS
 //!
-//! A scoped walk cannot start from the live page set -- materialising that IS the cost being
+//! A scoped walk cannot start from the live block set -- materialising that IS the cost being
 //! removed. It has to enter at `bucket_map[dirty bucket]`, which makes the precondition a
-//! statement about where a page is FILED, not about where it is summarised:
+//! statement about where a block is FILED, not about where it is summarised:
 //!
-//! > EVERY LIVE PAGE OF A DIRTY OBJECT MUST BE FILED IN A BUCKET THE DIRTY SET NAMES.
+//! > EVERY LIVE BLOCK OF A DIRTY OBJECT MUST BE FILED IN A BUCKET THE DIRTY SET NAMES.
 //!
 //! The dirty set is keyed by `block_routing_bucket(key, start, end)` at both of the two sites that
 //! mark an object dirty. The filing is decided by `address.routing_bucket()` with a `0..u32::MAX`
 //! fallback -- at `upsert_bucket_index_block_inner`, and, WHEN THIS FILE WAS WRITTEN, at NINE of
 //! the twenty production call sites that rebuild the bucket index. So the precondition failed for
-//! every page that reached one of those without a routing bucket of its own, and it failed
-//! SILENTLY: the page is still readable, still summarised, still counted. Only a walk that entered
+//! every block that reached one of those without a routing bucket of its own, and it failed
+//! SILENTLY: the block is still readable, still summarised, still counted. Only a walk that entered
 //! through the dirty set would miss it.
 //!
 //! SIX OF THOSE NINE NOW PASS THE SHARD'S OWN RANGE. THREE ARE CORRECT AS WRITTEN, for two
@@ -83,7 +83,7 @@
 //!
 //!   * TWO run `rebuild_bucket_block_ownership` over a DECODED MANIFEST INDEX -- a whole-shard
 //!     image written by whatever range the SOURCE shard ran on. That rebuild FILTERS on the range
-//!     it is given, so narrowing it there DELETES every page whose source bucket falls outside the
+//!     it is given, so narrowing it there DELETES every block whose source bucket falls outside the
 //!     installing shard's range. Driven, not argued: a cross-range restore read a record back as
 //!     None.
 //!   * ONE is a `#[cfg(test)]` helper on a shard it publishes as `0..u32::MAX`, for which the whole
@@ -97,7 +97,7 @@
 //!
 //! THERE IS A THIRD PLACEMENT RULE, and it is the one thing here that is already safe. A RELEASED
 //! bucket holds no entry in `bucket_map` at all; `collect_live_block_entries` supplements it from
-//! the model maps, keeping only pages whose address carries an explicit routing bucket equal to
+//! the model maps, keeping only blocks whose address carries an explicit routing bucket equal to
 //! the bucket's own, with no hash fallback at all. A scoped walk opening `bucket_map[b]` for a
 //! released `b` would find nothing. What stops that mattering is a precondition on the other
 //! side: `release_bucket_blocks` refuses a bucket that is dirty, so a released bucket is never in
@@ -110,12 +110,12 @@
 //! `IndexLogItem::restore_address_repeats` stamp that value back onto the address on every replay.
 //! The fallback fires once; the bucket it chose is then explicit for ever.
 //!
-//! Both halves are counted separately -- a page a scoped walk cannot REACH, and a page it would
+//! Both halves are counted separately -- a block a scoped walk cannot REACH, and a block it would
 //! reach but CREDIT elsewhere -- because they are different defects. And both directions of the
 //! set comparison are asserted separately, because only one of them loses data:
 //!
 //! ```text
-//!   a dirty bucket the scoped walk MISSES   -- the page is never dumped. Silent.
+//!   a dirty bucket the scoped walk MISSES   -- the block is never dumped. Silent.
 //!   a clean bucket the scoped walk SKIPS    -- the saving. Waste avoided.
 //! ```
 //!
@@ -128,7 +128,7 @@
 //! # WHAT IT SAVES, AND WHAT IT DOES NOT
 //!
 //! mx#1938 wrote that scoping `bucket_storage_summaries` "would take 2,889,724 entries off the
-//! empty round at 100,000 records". That is the WHOLE round's live-page cost, and this walk is one
+//! empty round at 100,000 records". That is the WHOLE round's live-block cost, and this walk is one
 //! of nine sites in five modules that make it up -- the same nine, by file and line, that the
 //! measurement below charges. Measured directly rather than inherited:
 //!
@@ -159,7 +159,7 @@
 //!
 //! WHY it is empty is worth stating exactly, because mx#1938 attributes it to "the
 //! clear-dirty-on-load contract" and that contract is about something else. `load_shard_with`
-//! does clear every BUCKET and PAGE dirty flag. It does not clear `shard.dirty_objects`, and
+//! does clear every BUCKET and BLOCK dirty flag. It does not clear `shard.dirty_objects`, and
 //! nothing does: `dirty_objects.clear()` has ZERO production call sites in this crate -- two
 //! tests, and nothing else. The index is empty after a load because it is `#[serde(skip)]` on
 //! `ShardState`, so a shard decoded from a served index arrives with `DirtyObjectIndex::default()`
@@ -335,10 +335,10 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
         .expect("the engine's decoder still accepts an address carrying the retired `rs`")
 }
 
-/// WHERE A RANGE WOULD PLACE A PAGE, which is not the same thing as where the summary walk credits
+/// WHERE A RANGE WOULD PLACE A BLOCK, which is not the same thing as where the summary walk credits
 /// it. Read the name as "the placement a derivation over this range produces".
 ///
-/// IT USED TO MIRROR `bucket_storage_summaries`' live-page loop, and it deliberately no longer does.
+/// IT USED TO MIRROR `bucket_storage_summaries`' live-block loop, and it deliberately no longer does.
 /// That loop read `address.routing_bucket()` with this derivation as the fallback; an address carries
 /// no routing bucket now, and the loop reads the entry's FILING with the derivation as the fallback --
 /// so mirroring it here would make every comparison below an identity. What this file compares is two
@@ -353,7 +353,7 @@ fn dirty_set_would_file(object_key: &str, start: u32, end: u32) -> u32 {
     block_routing_bucket(object_key, start, end)
 }
 
-/// The buckets `bucket_map` actually holds pages in -- where the index FILED them.
+/// The buckets `bucket_map` actually holds blocks in -- where the index FILED them.
 fn filed_buckets(shard: &crate::engine::state::ShardState) -> BTreeSet<u32> {
     shard
         .bucket_index
@@ -364,7 +364,7 @@ fn filed_buckets(shard: &crate::engine::state::ShardState) -> BTreeSet<u32> {
         .collect()
 }
 
-/// The buckets the summary walk credits at least one live page to.
+/// The buckets the summary walk credits at least one live block to.
 fn summarised_buckets(shard: &crate::engine::state::ShardState, start: u32, end: u32) -> BTreeSet<u32> {
     bucket_storage_summaries(shard, start, end)
         .into_iter()
@@ -377,12 +377,12 @@ fn summarised_buckets(shard: &crate::engine::state::ShardState, start: u32, end:
 // The scoped walk, as a MEASUREMENT. No engine code moves.
 // ---------------------------------------------------------------------------------------------
 
-/// What `bucket_storage_summaries`' live-page half would produce if it visited only the pages of
-/// the dirty buckets, and how many pages it visited to produce it.
+/// What `bucket_storage_summaries`' live-block half would produce if it visited only the blocks of
+/// the dirty buckets, and how many blocks it visited to produce it.
 ///
 /// Scoped the only way a scoped walk can be: straight into `bucket_map` at the dirty bucket ids,
-/// never materialising the rest of the store. The page is still CREDITED the way the full walk
-/// credits it, so the two can differ only in which pages were looked at.
+/// never materialising the rest of the store. The block is still CREDITED the way the full walk
+/// credits it, so the two can differ only in which blocks were looked at.
 fn scoped_live_block_summaries(
     shard: &crate::engine::state::ShardState,
     start: u32,
@@ -423,8 +423,8 @@ fn full_live_block_summaries(
 
 /// A RELEASED bucket is a THIRD placement rule, and the one thing that keeps it out of the way.
 ///
-/// A released bucket holds no page entries in `bucket_map` at all -- `collect_live_block_entries`
-/// supplements it from the model maps, keeping only pages whose address carries an explicit
+/// A released bucket holds no block entries in `bucket_map` at all -- `collect_live_block_entries`
+/// supplements it from the model maps, keeping only blocks whose address carries an explicit
 /// routing bucket equal to the bucket's own, with NO hash fallback. A walk scoped to
 /// `bucket_map[dirty bucket]` would therefore find NOTHING for a released bucket.
 ///
@@ -633,7 +633,7 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
     );
 }
 
-/// THE TWO RANGES STILL PLACE A PAGE DIFFERENTLY, AND THE SUMMARY WALK NO LONGER CARES.
+/// THE TWO RANGES STILL PLACE A BLOCK DIFFERENTLY, AND THE SUMMARY WALK NO LONGER CARES.
 ///
 /// The reconstruct is the production one, with the production arguments: `lifecycle.rs`'s WAL replay
 /// tail and `persistence.rs`'s bulk-ingest flush both call
@@ -642,11 +642,11 @@ fn dropping_the_routing_bucket_from_the_wire_decodes_to_the_same_address() {
 /// the state the engine's own decoder produces.
 ///
 /// SECOND ARM, SAME FIXTURE: the same reconstruct with the shard's OWN range, which is the
-/// reconciliation. It agrees. So the difference is not a property of the pages -- it is a property of
+/// reconciliation. It agrees. So the difference is not a property of the blocks -- it is a property of
 /// the argument those call sites pass, and that is what the `misplaced` count below measures.
 ///
-/// WHAT THIS TEST USED TO ASSERT AND NO LONGER CAN. It required at least one bucket holding pages
-/// nothing summarises, and that is no longer constructible: `bucket_storage_summaries` credits a page
+/// WHAT THIS TEST USED TO ASSERT AND NO LONGER CAN. It required at least one bucket holding blocks
+/// nothing summarises, and that is no longer constructible: `bucket_storage_summaries` credits a block
 /// to the bucket it is FILED in rather than re-deriving one. The bucket-set equality is therefore
 /// asserted in BOTH arms now -- it is a property of the walk, not of the argument -- and the arms are
 /// still told apart by `misplaced`, which is 600 in one and 0 in the other. A test whose two arms
@@ -707,9 +707,9 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
              arms are not comparing the same store",
             entries.len()
         );
-        // DENOMINATOR: every page reports which bucket the reconstruct FILED it in. That is where
-        // the two ranges part company -- the reconstruct places a page by the bucket its ARGUMENTS
-        // name -- and a page whose filing the walk cannot report would be credited by a hash over
+        // DENOMINATOR: every block reports which bucket the reconstruct FILED it in. That is where
+        // the two ranges part company -- the reconstruct places a block by the bucket its ARGUMENTS
+        // name -- and a block whose filing the walk cannot report would be credited by a hash over
         // the whole keyspace instead, which is a different measurement.
         let filed_count = entries
             .iter()
@@ -728,7 +728,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         let only_filed: Vec<u32> = filed.difference(&summarised).copied().collect();
         let only_summarised: Vec<u32> = summarised.difference(&filed).copied().collect();
 
-        // How many PAGES are credited to a bucket other than the one they are filed in.
+        // How many BLOCKS are credited to a bucket other than the one they are filed in.
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut misplaced = 0usize;
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
@@ -750,7 +750,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         );
 
         // THE BUCKET SETS ARE EQUAL IN BOTH ARMS, and that is the change rather than the fixture.
-        // The summary walk credits a page to the bucket it is FILED in, so it cannot name a bucket
+        // The summary walk credits a block to the bucket it is FILED in, so it cannot name a bucket
         // the filing does not, whatever range the reconstruct was handed. This assertion is outside
         // the arms on purpose: a property of the walk does not belong inside a branch on the
         // argument, and putting it there is how the previous version came to require the opposite in
@@ -791,10 +791,10 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
 
 /// THE PRECONDITION A SCOPED WALK NEEDS, ASSERTED ON THE LIVE WRITE PATH AND BROKEN ON THE OTHER.
 ///
-/// > Every live page of a dirty object must be summarised under a bucket the dirty set names.
+/// > Every live block of a dirty object must be summarised under a bucket the dirty set names.
 ///
 /// Arm one is the live write path on a narrow shard: it holds, with a denominator. Arm two is the
-/// same shard after the reconstruct above: it fails for every page. Both are counted rather than
+/// same shard after the reconstruct above: it fails for every block. Both are counted rather than
 /// asserted as booleans, because "it holds" and "there was nothing to hold it for" read alike.
 ///
 /// rust-internal: reads the engine's own dirty index, no product behaviour
@@ -854,8 +854,8 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
              over an empty set"
         );
 
-        // HALF ONE -- CAN THE SCOPED WALK REACH THE PAGE AT ALL? It enters at
-        // `bucket_map[dirty bucket]`, so a page of a dirty object FILED anywhere else is a page
+        // HALF ONE -- CAN THE SCOPED WALK REACH THE BLOCK AT ALL? It enters at
+        // `bucket_map[dirty bucket]`, so a block of a dirty object FILED anywhere else is a block
         // the scoped walk never looks at. This is the half that loses data.
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut unreachable = 0usize;
@@ -869,8 +869,8 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
                 if !witness.contains(routing_bucket) {
                     unreachable += 1;
                 }
-                // HALF TWO -- WOULD IT CREDIT THE PAGE TO THE RIGHT BUCKET? Asserted separately,
-                // because a page that is reachable and credited elsewhere is a different defect
+                // HALF TWO -- WOULD IT CREDIT THE BLOCK TO THE RIGHT BUCKET? Asserted separately,
+                // because a block that is reachable and credited elsewhere is a different defect
                 // from one that cannot be reached.
                 let credited = block_routing_bucket(object_key, start, end);
                 if !witness.contains(&credited) {
@@ -915,7 +915,7 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
 /// Five points in a write/dump sequence. The two differences are asserted SEPARATELY and with
 /// different messages, because only one of them loses data:
 ///
-/// * a DIRTY bucket the full walk has and the scoped walk does not -- the page is never dumped;
+/// * a DIRTY bucket the full walk has and the scoped walk does not -- the block is never dumped;
 /// * a CLEAN bucket the full walk has and the scoped walk does not -- the saving.
 ///
 /// rust-internal: prices the engine's own summary walk, no product behaviour
@@ -967,7 +967,7 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
         let (scoped, _visits) = scoped_live_block_summaries(shard, start, end);
 
         // DIRECTION ONE, THE ONE THAT LOSES DATA: a bucket the dirty set names where the two
-        // walks do not agree page for page.
+        // walks do not agree block for block.
         let mut disagreeing: Vec<(u32, u64, u64)> = Vec::new();
         for routing_bucket in &witness {
             let full_count = full.get(routing_bucket).copied().unwrap_or(0);
@@ -1157,7 +1157,7 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
 /// round this file is named for.
 ///
 /// THE RESIDUAL. The scoped walk is audited with an instrument it does not feed: the process-wide
-/// live-page scan counter, charged inside `collect_live_block_entries` in another module. Around
+/// live-block scan counter, charged inside `collect_live_block_entries` in another module. Around
 /// a span holding only the scoped walk it reads 0 -- and a 0 cannot be told from an instrument
 /// that is not connected, so the same span is then given a real whole-store walk to see, and has
 /// to recover it exactly.
@@ -1226,7 +1226,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         // is a measurement in itself. A settled shard has RELEASED buckets, and a released bucket
         // holds no entry in `bucket_map`, so `collect_live_block_entries` walks the index AND then
         // re-walks the model maps to supplement them -- charging about twice the store to return
-        // one entry per page. Comparing the charge against the returned length is comparing two
+        // one entry per block. Comparing the charge against the returned length is comparing two
         // different quantities, and the first form of this assertion did exactly that (39,860
         // charged against 20,000 returned). `one_walk` was charged by the SAME call under the
         // SAME shard state a moment ago, so it is the plant this span can recover exactly.
@@ -1412,7 +1412,7 @@ pub(super) fn call_arguments(lines: &[&str], line_index: usize, needle: &str) ->
 
 /// THE THREE CALL SITES STILL PASSING `0..u32::MAX`, AND WHY EACH IS RIGHT TO.
 ///
-/// Where a page is FILED is decided by whoever rebuilds the bucket index, and each of the three
+/// Where a block is FILED is decided by whoever rebuilds the bucket index, and each of the three
 /// functions that do takes the routing range as an argument. Enumerated with the compiler --
 /// the three doors into `BlockAddress`'s private routing-bucket field were renamed and rustc was
 /// asked to name every caller, ITERATED to a zero pass because one rename-and-compile pass is not
@@ -1439,8 +1439,8 @@ pub(super) fn call_arguments(lines: &[&str], line_index: usize, needle: &str) ->
 /// `install_bucket_dump_manifest` and the durable-manifest recovery base in `lifecycle.rs` both
 /// call `rebuild_bucket_block_ownership` on the output of `decode_index_bytes` -- a WHOLE-SHARD
 /// image carrying explicit routing buckets from whatever range the source shard ran on. That
-/// rebuild does not merely PLACE unrouted pages by the range it is handed, it also FILTERS on it,
-/// so the installing shard's range silently deletes every page whose source bucket falls outside
+/// rebuild does not merely PLACE unrouted blocks by the range it is handed, it also FILTERS on it,
+/// so the installing shard's range silently deletes every block whose source bucket falls outside
 /// it. Measured rather than reasoned: with the target's range passed,
 /// `storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc` -- source on
 /// `load_shard` (0..u32::MAX), restore target on `0..16_383` -- read `merged-a` back as None. A

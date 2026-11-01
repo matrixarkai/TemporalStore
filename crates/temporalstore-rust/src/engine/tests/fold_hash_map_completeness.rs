@@ -2,7 +2,7 @@
 // Copyright 2026 MatrixArkAI
 
 // =================================================================================================
-// DOES THE FOLD ROUTE LEAVE THE DURABLE HASH MAP NAMING EVERY FIELD THE PAGE INDEX NAMES?
+// DOES THE FOLD ROUTE LEAVE THE DURABLE HASH MAP NAMING EVERY FIELD THE BLOCK INDEX NAMES?
 // =================================================================================================
 
 #![allow(clippy::all)]
@@ -62,21 +62,21 @@ fn served_hash_fields(engine: &TemporalEngine, key: &str) -> usize {
 /// The two sources, read the way each is read in production.
 ///
 /// THE SECOND SOURCE IS RE-ATTRIBUTED, AND THAT IS THIS MODULE'S WHOLE EDIT. It was
-/// `bucket_index_component_block_addresses`, which recovered each field's name from the page
+/// `bucket_index_component_block_addresses`, which recovered each field's name from the block
 /// entry's element-name field. `BlockIndex` has no such field now, so that walk answers for NO
-/// fields and both arms failed on their own vacuity floors -- "the page index names 0 field(s) ...
+/// fields and both arms failed on their own vacuity floors -- "the block index names 0 field(s) ...
 /// so the comparison below would be vacuous". The floors were right to fire: with one side empty
 /// the set equality would have passed on nothing.
 ///
 /// THE NAMES DID NOT LEAVE STORAGE, THEY MOVED. A container page SPELLS its elements in its
-/// payload -- that is what makes several of them foldable into one page at all -- so the pages
+/// payload -- that is what makes several of them foldable into one block at all -- so the blocks
 /// themselves are the second source, derived with the engine's own
 /// `container_membership::derive_membership`, which is what `folded_block_membership` reads.
 ///
 /// AND THE PAIR IS STRONGER THAN THE ONE IT REPLACES, which is worth saying because a
-/// re-attribution usually is not. The entry's element name and the page's payload were written by
+/// re-attribution usually is not. The entry's element name and the block's payload were written by
 /// the SAME append, so their agreement said little about either. The durable map is maintained by
-/// the command path and the pages by the append path, so these two can genuinely disagree -- which
+/// the command path and the blocks by the append path, so these two can genuinely disagree -- which
 /// is the property that makes this module's claim, that the map is complete, worth asserting at
 /// all. The module header's "prove the map is complete FIRST, because the removal is what makes
 /// the map load-bearing" is now the past tense: the removal has landed and the map is load-bearing.
@@ -95,8 +95,8 @@ fn both_sources(
             .get(key)
             .map(|fields| fields.keys().map(|name| name.to_string()).collect())
             .unwrap_or_default();
-        // TOMBSTONE ENTRIES INCLUDED, no `page.deleted` skip. A tombstone is how a page STATES a
-        // removal, so a walk that filtered them would read the page set as it stood before the
+        // TOMBSTONE ENTRIES INCLUDED, no `block.deleted` skip. A tombstone is how a block STATES a
+        // removal, so a walk that filtered them would read the block set as it stood before the
         // removal and would derive the removed field as live.
         let named = super::BlockObjects::of(&shard.bucket_index);
         let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
@@ -137,7 +137,7 @@ fn both_sources(
 ///
 /// RESTATED, BECAUSE THE READER IT NAMED HAS MOVED. This read "`HashGetAll` resolves through
 /// `bucket_index_component_block_addresses`, which is keyed BY THE COMPONENT -- it reads each
-/// field's name off the page entry. The fold installs page entries. So a folded hash field is
+/// field's name off the block entry. The fold installs block entries. So a folded hash field is
 /// readable today whether the durable map received it or not, and a test asserting 'readable
 /// through the served path' would go green while proving nothing about the map."
 ///
@@ -245,10 +245,10 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     //
     // RESTATED: this read "`block_index_handle` hashes the component along with `model_id`,
     // `object_key` and five address fields, and `index_log.rs` calls it 'the only discriminator'
-    // between two elements of ONE folded page ... so dropping it would collapse them onto one
+    // between two elements of ONE folded block ... so dropping it would collapse them onto one
     // slot." It was dropped. The handle is the model spelling, the object key and the address, and
     // the collapse that paragraph warned about is the shape the engine now files on purpose -- one
-    // entry a page.
+    // entry a block.
     //
     // SO THE QUESTION HERE IS NO LONGER "WOULD REMOVING IT COLLAPSE THESE". It is what the write
     // and fold paths leave behind for a hash of six fields, read off the index rather than argued
@@ -307,11 +307,11 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     // counter-example.
     if addresses.len() == FIELDS {
         // AND WHERE THE SHARED-ADDRESS CASE DOES COME FROM, so the bound is a location and not
-        // merely a caveat. Every element gets its own page on the write path; several pages are
+        // merely a caveat. Every element gets its own block on the write path; several blocks are
         // folded into one only by `container_blocks`, and that module states it is done "at
         // COMPACTION and nowhere else". So the component becomes the only discriminator exactly
-        // for a COMPACTED batched page -- which is the case the campaign already recorded
-        // collapsing, forty hash fields on one page arriving as one entry with thirty-nine lost.
+        // for a COMPACTED batched block -- which is the case the campaign already recorded
+        // collapsing, forty hash fields on one block arriving as one entry with thirty-nine lost.
         println!(
             "[fold-hash] MEASURED: each field sits at its OWN address, so these six entries are \
              six pages and the index files one entry for each. That is what the write and fold \
@@ -338,11 +338,11 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
 ///
 /// `fold_carried_container_elements` merges a carried element only when the finished fold still
 /// holds a block at the address the element was carried with, and it COUNTS the ones it declines.
-/// That gate is correct -- it is what stops a fold resurrecting an element whose page the same fold
+/// That gate is correct -- it is what stops a fold resurrecting an element whose block the same fold
 /// removed -- but it means "the map agrees with the page index" and "the map is missing a field the
-/// merge declined to restore" can produce the same empty difference if the page is gone too.
+/// merge declined to restore" can produce the same empty difference if the block is gone too.
 ///
-/// So the counter has to be shown to move. This drives a field whose page the fold does NOT leave
+/// So the counter has to be shown to move. This drives a field whose block the fold does NOT leave
 /// behind, by deleting it after it was written, and asserts the pair that must then hold: the field
 /// is in neither source. A merge that restored it anyway would put it in the durable map alone,
 /// which is the `extra` assertion above firing -- so this test is the positive control for that
@@ -423,7 +423,7 @@ fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
 /// THE CENSUS THAT BOUNDS WHAT THE TWO TESTS ABOVE CANNOT SEE.
 ///
 /// A fixture proves the paths it drives. The class here is enumerable -- the commands that install
-/// or remove a hash page -- so it can be bounded by reading the engine's own match rather than by
+/// or remove a hash block -- so it can be bounded by reading the engine's own match rather than by
 /// hoping a fixture happened to cover it.
 ///
 /// Four commands write a hash. Three report a `TouchedContainerElement::Hash`, which is what puts
@@ -442,7 +442,7 @@ fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
 /// `a_field_whose_block_the_fold_removed_is_in_neither_source` drives exactly that.
 ///
 /// So every INSTALL path reports, and the one non-reporter is a removal whose safety is the merge's
-/// `live` gate. That is the bound: there is no hash write that puts a page in the index without
+/// `live` gate. That is the bound: there is no hash write that puts a block in the index without
 /// putting its field in the carried channel.
 ///
 /// This test asserts the census rather than printing it, so a fifth hash-writing command added

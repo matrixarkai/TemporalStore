@@ -40,7 +40,7 @@
 //!
 //! GROUND TWO -- THE ROW IS WHERE REPLAY GETS THE OBJECT KEY'S CHARACTERS. [`IndexItem`] here
 //! carries no characters at all: all seven of its fields encode as protobuf wire type 0, so there
-//! is no length-delimited slot a key, an element name or a page handle could ride in.
+//! is no length-delimited slot a key, an element name or a block handle could ride in.
 //! `fold_delta_block_items` reads the live row's `object_key` to rebuild `BlockIndex::object_key`,
 //! and `engine::tests::the_entry_cannot_name_its_object_by_slot` establishes that the entry is the
 //! ONLY durable home of those characters -- that module's closing sentence names it as the ground
@@ -109,10 +109,10 @@
 //!
 //! # THE CASE AGAINST THE ROW ON THE WIRE, IN TWO SENTENCES
 //!
-//! MEASURED IN TREE, beside the live encoder: a delta record carrying eight page items is **550
+//! MEASURED IN TREE, beside the live encoder: a delta record carrying eight block items is **550
 //! bytes positional against 595 as protobuf** -- 8.2% larger, because a tag costs a byte per
 //! present field while a position costs nothing. And the live row has banked EIGHT harvests this
-//! port expresses none of -- the page handle stripped when derivable (43 B of a 176-B record, its
+//! port expresses none of -- the block handle stripped when derivable (43 B of a 176-B record, its
 //! largest single field) and written as a NUMBER when not (20 B of 161, 12.4%, down to about
 //! nine); the object id stripped (nine bytes); the size slot an unconditional strip sentinel (4
 //! B/row); the model spelling written as a position rather than its name (7 B of 176); the item
@@ -143,7 +143,7 @@
 //! build cannot read them."
 //!
 //! > THAT IS A READER-FIRST MIGRATION LEVER REQUIRING NO STAMP. Teach the reader a new codec id,
-//! > release, then let the writer emit it -- the sequencing the numeric page handle already used,
+//! > release, then let the writer emit it -- the sequencing the numeric block handle already used,
 //! > whose own doc explains that the reverse order "would have been refused outright by msgpack
 //! > rather than degrading". For the record, read from the base: values 2, 3, 5, 6, 7, 8, 9, 11, 12
 //! > and 13 appear across all history, and 4 and 10 appear nowhere.

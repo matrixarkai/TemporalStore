@@ -94,18 +94,18 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
         }
         let identities = shard.bucket_index.block_identities();
         for (handle, block) in bucket.block_index.iter() {
-            // THE OBJECT COMES FROM BESIDE THE PAGE, AND A LIVE PAGE NOTHING BESIDE IT NAMES IS
+            // THE OBJECT COMES FROM BESIDE THE BLOCK, AND A LIVE BLOCK NOTHING BESIDE IT NAMES IS
             // NO LONGER SKIPPED.
             //
             // # THE SKIP WAS SILENTLY UNDERCOUNTING THIS REPORT
             //
-            // This read `page.object_key` before the identity was hoisted off the entry. Hoisted,
+            // This read `block.object_key` before the identity was hoisted off the entry. Hoisted,
             // it became `identity_of` with a `continue` on `None` -- and `None` covers TWO states,
             // only one of which is the tombstone the old comment named. The other is a bucket whose
-            // pages are not in the object lookup at all, and for such a bucket EVERY live page was
+            // blocks are not in the object lookup at all, and for such a bucket EVERY live block was
             // skipped, so `live_block_ref_count` and every `block_ref_count` came back zero while
             // the object rows themselves were still built from `object_index`. A report saying
-            // "one object, zero block refs" for an object with two pages is not a smaller answer,
+            // "one object, zero block refs" for an object with two blocks is not a smaller answer,
             // it is a wrong one.
             //
             // MEASURED BY `two_buckets_holding_one_object_id_are_reported_as_one_object`, which
@@ -116,20 +116,20 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
             //
             // # SO THE TWO STATES ARE SEPARATED
             //
-            // A DELETED page nothing names is still skipped, for the reason the old comment gave:
+            // A DELETED block nothing names is still skipped, for the reason the old comment gave:
             // it is the one tombstone whose removal named no element, and a report keyed by object
-            // id has no row to put it in. A LIVE page falls back to the entry's own copy, which is
+            // id has no row to put it in. A LIVE block falls back to the entry's own copy, which is
             // the source this walk used before the hoist and is still there.
             //
             // AND THE FALLBACK IS REFUSED OUTSIDE THE ONE WINDOW THAT EXPLAINS IT, which is what
-            // stops it quietly becoming the normal path again: a live page has nothing beside it
-            // only while the lookup names no position at all. The check beside the page index
+            // stops it quietly becoming the normal path again: a live block has nothing beside it
+            // only while the lookup names no position at all. The check beside the block index
             // carries the same rule, for the same reason.
             //
             // THE FALLBACK IS GONE, AND THE ANSWER IS THE ONE ITS OWN NOTE GAVE: the lookup
             // must be established before this report walks, not a second source kept for good.
             //
-            // SO A LIVE PAGE NOTHING NAMES IS SKIPPED AND REFUSED, NOT GUESSED AT. A report is not
+            // SO A LIVE BLOCK NOTHING NAMES IS SKIPPED AND REFUSED, NOT GUESSED AT. A report is not
             // the durability path -- a row it cannot key is a row it omits, where the ENCODER in
             // the same state refuses outright -- and the `debug_assert!` keeps the skip inside the
             // one window that explains it: the lookup names no position at all.
@@ -183,8 +183,8 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 });
             object.block_ref_count = object.block_ref_count.saturating_add(1);
             object.dirty |= block.dirty || bucket.dirty();
-            // ONE PAGE'S DELETION IS NOT THE OBJECT'S, and separating the two is the whole of this
-            // change here. `page.deleted` still makes this a deleted BLOCK REF -- it is one -- but it
+            // ONE BLOCK'S DELETION IS NOT THE OBJECT'S, and separating the two is the whole of this
+            // change here. `block.deleted` still makes this a deleted BLOCK REF -- it is one -- but it
             // no longer makes the OBJECT deleted, because a container removal now leaves a tombstone
             // entry and one removed member out of twelve would otherwise report the whole set as a
             // deleted object through the public runtime report.
@@ -221,12 +221,12 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
     let objects = objects
         .into_values()
         .map(|mut object| {
-            // AN OBJECT EVERY ONE OF WHOSE PAGES IS DELETED IS A DELETED OBJECT, and this is where
-            // that is decided now rather than per page. `object.deleted |= page.deleted` used to say
-            // it, and said it from ONE page -- correct while the only writer of that flag deleted a
-            // whole object's pages together (`packed_blocks`), wrong the moment a single removed
+            // AN OBJECT EVERY ONE OF WHOSE BLOCKS IS DELETED IS A DELETED OBJECT, and this is where
+            // that is decided now rather than per block. `object.deleted |= block.deleted` used to say
+            // it, and said it from ONE block -- correct while the only writer of that flag deleted a
+            // whole object's blocks together (`packed_blocks`), wrong the moment a single removed
             // member carries it. This is the same claim quantified over the object instead of
-            // existentially over its pages, so the whole-object case still reports deleted and one
+            // existentially over its blocks, so the whole-object case still reports deleted and one
             // removed member no longer does.
             if object.block_ref_count > 0
                 && object.deleted_block_ref_count >= object.block_ref_count

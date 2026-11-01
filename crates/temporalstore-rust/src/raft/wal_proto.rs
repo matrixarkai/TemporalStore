@@ -208,7 +208,7 @@ pub(crate) fn put_varint_field(tag: u32, value: u64, out: &mut Vec<u8>) {
     prost::encoding::encode_varint(value, out);
 }
 
-/// Write a staged page as field `tag`, its bytes borrowed straight into `out`.
+/// Write a staged block as field `tag`, its bytes borrowed straight into `out`.
 pub(crate) fn put_staged_block(
     tag: u32,
     block: &crate::wal::StagedBlock,
@@ -231,7 +231,7 @@ pub(crate) fn put_staged_block(
         // NOT `put_len_delimited`, which skips an empty payload. This field is `optional` in the
         // schema, so prost writes it for `Some("")` and omits it only for `None` -- and the
         // difference is load-bearing rather than cosmetic: a component that decoded back as `None`
-        // would make an element page indistinguishable from the whole-object page of the same key,
+        // would make an element block indistinguishable from the whole-object block of the same key,
         // which is the exact confusion this field exists to remove.
         prost::encoding::encode_key(4, prost::encoding::WireType::LengthDelimited, out);
         prost::encoding::encode_varint(component.len() as u64, out);

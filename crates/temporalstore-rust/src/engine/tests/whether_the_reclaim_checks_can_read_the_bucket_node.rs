@@ -40,9 +40,9 @@
 //! after a dump of ONE bucket, with other buckets left dirty, as well as after a full one.
 //!
 //! The sibling path is `clear_published_object_dirty_state`, which drops a key from the set
-//! unconditionally and reassigns the bucket flag only for buckets holding a PAGE of the published
-//! object. A bucket whose only dirt is a non-page-backed `control_state:cpc:*` record holds no
-//! page, so it is never recomputed -- and a dirty key leaving the set while the flag stays is
+//! unconditionally and reassigns the bucket flag only for buckets holding a BLOCK of the published
+//! object. A bucket whose only dirt is a non-block-backed `control_state:cpc:*` record holds no
+//! block, so it is never recomputed -- and a dirty key leaving the set while the flag stays is
 //! exactly the over-reporting state. That is why the figure below is taken after each phase rather
 //! than once at the end.
 //!
@@ -127,7 +127,7 @@ fn print_phase(label: &str, state: &BTreeMap<u32, (bool, u64, u64)>) {
 
 #[test]
 fn whether_the_reclaim_checks_can_read_the_bucket_node() {
-    // ---- A NARROW ROUTING RANGE, so the removals' non-page-backed records route to buckets of
+    // ---- A NARROW ROUTING RANGE, so the removals' non-block-backed records route to buckets of
     // ---- their own -- the population `clear_published_object_dirty_state` cannot recompute, and
     // ---- so the one that could leave a flag standing over an empty set.
     let dir = tempfile::tempdir().expect("tempdir");
@@ -179,8 +179,8 @@ fn whether_the_reclaim_checks_can_read_the_bucket_node() {
     });
     phases.push(("after a FULL dump".to_string(), phase_state(&engine)));
 
-    // ---- RE-DIRTY A FEW AND REMOVE TWO. The removals are what put a non-page-backed record in
-    // ---- the set, routed to a bucket holding no page.
+    // ---- RE-DIRTY A FEW AND REMOVE TWO. The removals are what put a non-block-backed record in
+    // ---- the set, routed to a bucket holding no block.
     for index in [1usize, 5, 9] {
         let out = engine.execute(ExecuteRequest {
             shard_id: 1,

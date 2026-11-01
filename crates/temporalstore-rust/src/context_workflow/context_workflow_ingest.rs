@@ -25,7 +25,7 @@ pub fn ingest_extract_context_with_l1_gate(
     gate_l1: bool,
 ) -> ContextIngestExtractReport {
     // Hold the per-record index reconstruct for this whole ingest and do it once below. Each
-    // Context* write would otherwise rebuild the first-index over every live page in the shard --
+    // Context* write would otherwise rebuild the first-index over every live block in the shard --
     // eight walks of the store for one add.
     let reconstruct_window = crate::engine::IngestReconstructWindow::open();
     let policy = ContextWorkflowPolicy::default();

@@ -563,7 +563,7 @@ mod tests {
 
     #[test]
     fn the_blob_ceiling_moves_the_slab_target_with_it() {
-        // The other direction, and the reason neither page entry could be written without naming
+        // The other direction, and the reason neither block entry could be written without naming
         // the other: TS_STREAM_MAX_BLOB_SIZE calls itself a ceiling on a payload, and is also a
         // floor on the reclaim unit.
         let config = StorageTuningConfig::from_getter(|name| {

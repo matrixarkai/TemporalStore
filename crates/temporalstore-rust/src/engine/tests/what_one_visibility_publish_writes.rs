@@ -6,7 +6,7 @@
 //! WHY THIS EXISTS. `publish_shard_index_snapshot_for_keys` ends by encoding the WHOLE served
 //! index out of the shard and writing it through `persist_index_bytes`, however few keys the call
 //! named -- its own comment calls that "the O(n^2) rewrite". The call takes a key list and
-//! republishes only those keys' pages, so the PAGE half of the work is already O(published). This
+//! republishes only those keys' blocks, so the BLOCK half of the work is already O(published). This
 //! measures the other half: the encode, swept over the size of the store with the published set
 //! held at one key.
 //!

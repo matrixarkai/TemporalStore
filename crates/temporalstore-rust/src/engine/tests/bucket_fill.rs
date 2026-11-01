@@ -264,8 +264,8 @@ fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
 fn bucket_key_sets(engine: &TemporalEngine) -> BTreeMap<u32, BTreeSet<String>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    // A BUCKET THAT HOLDS NO PAGE CONTRIBUTES NO ROW, which is what the `is_empty` skip said.
-    // It falls out of the walk rather than being tested for: a bucket with no pages yields
+    // A BUCKET THAT HOLDS NO BLOCK CONTRIBUTES NO ROW, which is what the `is_empty` skip said.
+    // It falls out of the walk rather than being tested for: a bucket with no blocks yields
     // nothing to group under it.
     let mut contents: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
     for (routing_bucket, _handle, object_key, _block) in
@@ -479,8 +479,8 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
 /// things:
 ///
 ///   * `block_routing_bucket(object_key, start, end)` takes the OBJECT KEY and nothing else;
-///   * `state::block_index_handle(page)` -- the block's handle, and the key of `BlockIndexMap` --
-///     hashes `page.component` as a term of its own, which is what keeps a container's fields
+///   * `state::block_index_handle(block)` -- the block's handle, and the key of `BlockIndexMap` --
+///     hashes `block.component` as a term of its own, which is what keeps a container's fields
 ///     from overwriting each other in one entry.
 ///
 /// `stable_block_object_id(shard, kind, key)` is a THIRD thing and takes neither: since the
@@ -713,7 +713,7 @@ fn the_narrow_range_holds_the_same_blocks_the_wide_one_does_bucket_for_bucket() 
         key_sets.insert(end_routing_bucket, contents);
     }
 
-    // 3. THE SAME BLOCKS, REGROUPED. The handle is `state::block_index_handle(page)`, which
+    // 3. THE SAME BLOCKS, REGROUPED. The handle is `state::block_index_handle(block)`, which
     // hashes the block's own fields and carries no bucket, so an identical handle set is what
     // says the narrow store holds the same blocks and not merely the same number of them.
     let wide = handle_sets.get(&WIDE_END).expect("wide handles");
@@ -1643,9 +1643,9 @@ fn deriving_an_objects_blocks_from_the_flat_list_walks_the_whole_bucket() {
 // slot, so there is no component order for a derived answer to come back in the wrong one of.
 //
 // AND IT COULD ONLY EVER HAVE FAILED. Both sides of its comparison were vectors of EMPTY STRINGS.
-// `walked` pushed `String::new()` per page by construction, and `held` pushed
+// `walked` pushed `String::new()` per block by construction, and `held` pushed
 // `component.component.as_deref().unwrap_or("")` -- and every entry's component was already `None`
-// once the element name came off the page entry, so every `held` element was `""` too. So
+// once the element name came off the block entry, so every `held` element was `""` too. So
 // `walked == held` for every object, `differed` stayed 0, and the closing
 // `assert_eq!(differed, compared)` was unsatisfiable for any non-empty fixture. It never reported
 // that because the arm carries `#[ignore]` and is run only by name: an assertion inside a test
@@ -1699,8 +1699,8 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         let shard = shards.get(&1).expect("shard is loaded");
         // THE COMPARISON IS DERIVED-AGAINST-FILED AND THAT IS WHY THE POSITION DOOR IS RIGHT
         // HERE. What is recomputed is where a key WOULD route on this range; the lookup records
-        // the bucket each page was FILED under, which is the bucket it sits in. So the inversion
-        // answers for every page, and a disagreement between the two is the finding rather than
+        // the bucket each block was FILED under, which is the bucket it sits in. So the inversion
+        // answers for every block, and a disagreement between the two is the finding rather than
         // a missing name.
         let mut verdict = Verdict { blocks: 0, filed_elsewhere: Vec::new() };
         for (routing_bucket, _handle, object_key, block) in

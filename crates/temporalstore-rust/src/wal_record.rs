@@ -5,7 +5,7 @@
 //!
 //! This is a direct port: same record shape, same field numbers, same framing, and the same
 //! addressing scheme. Only the names differ, following this crate's vocabulary — a routing
-//! bucket rather than a slot, a block rather than a page, a shard rather than a partition.
+//! bucket rather than a slot, a block rather than a block, a shard rather than a partition.
 //!
 //! # Why this replaces a command log
 //!

@@ -133,7 +133,7 @@ impl StorageBackend {
     /// copy is on another machine (or a shared mount), and a local disk tier closes a real
     /// millisecond-scale distance. With raft the durable copy is this node's own disk, so the
     /// tier is a third copy of bytes the OS page cache already serves from the same device --
-    /// measured at 106 MB of cache against 21.6 MB of pages, 70% of everything on disk, to
+    /// measured at 106 MB of cache against 21.6 MB of blocks, 70% of everything on disk, to
     /// shorten a distance that is already zero.
     ///
     /// So: shared storage caches to disk; one-box and raft run memory + their own disk.

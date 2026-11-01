@@ -151,31 +151,31 @@ fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
     }
 }
 
-// THE LOOKUP IS THE ONLY DOOR ONTO ONE OBJECT'S PAGES, and these readers go through it.
+// THE LOOKUP IS THE ONLY DOOR ONTO ONE OBJECT'S BLOCKS, and these readers go through it.
 //
-// Each of them answered a question about ONE named object by walking every page of every bucket
+// Each of them answered a question about ONE named object by walking every block of every bucket
 // and comparing the entry's own copy of the identity. That comparison is the thing that stops
 // being expressible when the entry carries no identity, and it was never the cheap way to ask: the
 // object lookup maps (kind, object key) straight to the `(routing_bucket, handle)` of each of that
-// object's pages, which is the same answer without the walk.
+// object's blocks, which is the same answer without the walk.
 //
 // WHAT THE WALK WAS GUARDING, AND WHY IT IS NOT NEEDED. Each site reached the walk only when the
-// lookup held NOTHING -- `object_block_lookup.is_empty()` -- which is an index with pages and no
+// lookup held NOTHING -- `object_block_lookup.is_empty()` -- which is an index with blocks and no
 // lookup. That state was reachable between a decode and the rebuild that filled the lookup, and
 // the decode fills it now, so the arm is unreachable in production rather than merely rare. The
-// write path files every page it adds; `rebuild_bucket_block_ownership` files what it rebuilds.
+// write path files every block it adds; `rebuild_bucket_block_ownership` files what it rebuilds.
 //
-// AND THE RE-COMPARISON AFTER THE WALK IS A CHECK, NOT A SOURCE. A page reached through its own
+// AND THE RE-COMPARISON AFTER THE WALK IS A CHECK, NOT A SOURCE. A block reached through its own
 // object's ref list has already been matched on identity by the list that produced it; comparing
-// the entry's copy again asks whether the lookup is right, not which object the page belongs to.
+// the entry's copy again asks whether the lookup is right, not which object the block belongs to.
 // The kind is still compared, because `block_refs_for` takes the kind as a key and a ref that
-// survives a handle collision could name a page of another kind.
+// survives a handle collision could name a block of another kind.
 
-/// Where a read resolves an object's page from.
+/// Where a read resolves an object's block from.
 ///
 /// THIS IS THE READ PATH, not a reporting path: `read_bucket_index_value` is what
 /// `Command::StringGet` calls once the response cache misses. It answers from the bucket index,
-/// which is why releasing a bucket's page entries is a question about reads at all -- the fast
+/// which is why releasing a bucket's block entries is a question about reads at all -- the fast
 /// path in `execute_read_only_fast_path` goes straight to `shard.strings` and never noticed, so a
 /// released bucket served every warm read and returned None for every cold one.
 ///
@@ -201,11 +201,11 @@ pub(super) fn bucket_index_block_address(
             if !block.deleted
                 && block.model_id.as_str() == model_id
                 // THE IDENTITY IS NOT RE-COMPARED -- see the note above this function on why a
-                // page reached through its own object's ref list has already been matched on it.
+                // block reached through its own object's ref list has already been matched on it.
                 //
                 // THE ENTRY HAS NO NAME TO MATCH either, so the surviving question is whether the
                 // caller asked for a named element. This read
-                // `page.component.as_deref() == component` against entries whose component was
+                // `block.component.as_deref() == component` against entries whose component was
                 // already `None` for every kind, so the answer does not move: a point lookup BY
                 // component found nothing here before this change and finds nothing now -- hash's
                 // four such readers were moved onto `shard.hashes` for exactly that reason -- and
@@ -223,25 +223,25 @@ pub(super) fn bucket_index_block_address(
 
     // AND NO SECOND ARM. A whole-shard walk comparing every entry's identity stood here for the
     // case where the lookup held nothing; the decode fills the lookup now, so an object with no
-    // entry in it has no resident page and the released-bucket door is the whole of the answer --
+    // entry in it has no resident block and the released-bucket door is the whole of the answer --
     // which is what the arm above already falls through to when the lookup DOES name the object
-    // and no page answers.
+    // and no block answers.
     super::storage_bucket_internals::released_bucket_block_address(
         shard, model_id, object_key, component,
     )
 }
 
-/// Every page this object resolves to, LIVE ENTRIES AND TOMBSTONED ALIKE.
+/// Every block this object resolves to, LIVE ENTRIES AND TOMBSTONED ALIKE.
 ///
 /// # WHY THE EXISTING WALK CANNOT BE USED
 ///
-/// [`bucket_index_component_block_addresses`] filters `!page.deleted`, which is right for every
+/// [`bucket_index_component_block_addresses`] filters `!block.deleted`, which is right for every
 /// reader that answers FROM an entry: a tombstone entry names no live element and
 /// `no_index_reader_answers_from_a_tombstone_entry` drives all of them.
 ///
 /// A FOLD IS NOT SUCH A READER. `container_membership::derive_membership` needs the tombstone
-/// pages precisely BECAUSE they state removals -- it folds by `append_position` and lets the later
-/// page win, so withholding the tombstones would hand it only the pages that say "present" and it
+/// blocks precisely BECAUSE they state removals -- it folds by `append_position` and lets the later
+/// block win, so withholding the tombstones would hand it only the blocks that say "present" and it
 /// would conclude exactly the resurrection the fold exists to prevent.
 ///
 /// So this is deliberately the one enumerator that does not filter the flag, and it is named for
@@ -253,11 +253,11 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
 ) -> Vec<ElementEntry> {
     // TWO SOURCES, BECAUSE A TOMBSTONE IS NOT IN THE OBJECT LOOKUP.
     //
-    // `insert_object_block_lookup` returns early on a deleted page, so the lookup names exactly
-    // this object's LIVE pages. The tombstoned ones are named by the rows a removal files beside
+    // `insert_object_block_lookup` returns early on a deleted block, so the lookup names exactly
+    // this object's LIVE blocks. The tombstoned ones are named by the rows a removal files beside
     // the entries in the bucket it removed them from -- keyed by (object, kind, element) and
-    // valued by the page triple -- which is the one structure that still states which object a
-    // deleted page belonged to.
+    // valued by the block triple -- which is the one structure that still states which object a
+    // deleted block belonged to.
     //
     // THE ORDER THIS RETURNS IS NOT THE ORDER THE WALK RETURNED, and that is safe for a stated
     // reason rather than by luck: the one caller is `container_membership::derive_membership`,
@@ -284,8 +284,8 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
             if row.model_id.as_str() != model_id || &*row.object_key != object_key {
                 continue;
             }
-            // THE ROW NAMES A PAGE BY ITS TRIPLE, so the entry is found by address and not by
-            // identity. Bounded by the removals this bucket has seen, against the whole-shard page
+            // THE ROW NAMES A BLOCK BY ITS TRIPLE, so the entry is found by address and not by
+            // identity. Bounded by the removals this bucket has seen, against the whole-shard block
             // walk it replaces.
             if let Some(block) = bucket.block_index.values().find(|block| {
                 block.deleted
@@ -312,7 +312,7 @@ pub(super) fn bucket_index_component_block_addresses(
                 if !block.deleted && block.model_id.as_str() == model_id {
                     // `None` IN THE FIRST SLOT, AND THAT SLOT IS NOW DEAD ON BOTH ARMS -- said
                     // here rather than left to be rediscovered. `released_component_block_addresses`
-                    // already hardcodes `(None, address)`, and this arm's `page.component` was
+                    // already hardcodes `(None, address)`, and this arm's `block.component` was
                     // already `None` for every kind before the field was removed, so the pair's
                     // first element can no longer distinguish anything.
                     //
@@ -348,7 +348,7 @@ pub(super) fn bucket_index_component_block_addresses(
 /// The whole-object form of the released-bucket lookup.
 ///
 /// A released kind is component-less by construction (see `released_model_kind_is_addressable`),
-/// so "every component of this object" is at most one page and the point lookup answers it. A
+/// so "every component of this object" is at most one block and the point lookup answers it. A
 /// kind with real components could not be served this way, which is why none is releasable.
 fn released_component_block_addresses(
     shard: &ShardState,
@@ -377,7 +377,7 @@ pub(super) fn read_bucket_index_value(
             shard_id,
             &address,
             // THE SAME THREE TERMS `bucket_index_block_address` was just asked, two lines up.
-            // Anything else here would resolve a record and then look inside it for a page that is
+            // Anything else here would resolve a record and then look inside it for a block that is
             // not the one that lookup named.
             BlockIdentity::of(shard_id, model_id, object_key, component),
             Some(crate::engine::hashing::block_routing_bucket(

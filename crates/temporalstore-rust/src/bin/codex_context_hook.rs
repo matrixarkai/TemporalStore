@@ -434,12 +434,12 @@ fn env_bool(name: &str) -> bool {
 
 /// How many characters of retrieved context one hook invocation may hand back.
 ///
-/// The operator page states the rule this control follows: "The value is floored at 1000 -- a
+/// The operator block states the rule this control follows: "The value is floored at 1000 -- a
 /// smaller number is raised to it -- and a value that is not an integer falls back to 40000
 /// without complaining." `matrixark_codex_hook` and `matrixark_agent_hook` both apply that floor.
 /// This reader did not, and it also read `0` as "not set" rather than as a number below the floor:
 ///
-/// | written | the page, and both python readers | this reader, before |
+/// | written | the block, and both python readers | this reader, before |
 /// |---|---|---|
 /// | `500` | 1000 | 500 |
 /// | `100` | 1000 | 100 |
@@ -451,7 +451,7 @@ fn env_bool(name: &str) -> bool {
 /// is present and this binary when it is not. So `=0` meant 1000 characters on one box and 40000
 /// on another, for a reason that is not configuration.
 ///
-/// Signed on purpose. The page says a value BELOW the floor is raised to it, and `-1` is below the
+/// Signed on purpose. The block says a value BELOW the floor is raised to it, and `-1` is below the
 /// floor; parsed as a `usize` it is not a number at all and takes the unset path instead.
 fn additional_context_char_limit() -> usize {
     let written: i64 = temporalstore_rust::env_flag::env_number(

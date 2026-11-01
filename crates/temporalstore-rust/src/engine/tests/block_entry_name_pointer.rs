@@ -8,7 +8,7 @@
 //! It asked how wide the pointer to a name on `BlockIndex` has to be, and priced narrowing it.
 //! THE NAME DID NOT GET NARROWER -- IT LEFT. The entry carries no identity of its own; the object
 //! key lives once per object in `CoreIndex::object_block_lookup` and every reader resolves it from
-//! the POSITION the page is filed at, through `BlockKeysByPosition`. There is no name slot on the
+//! the POSITION the block is filed at, through `BlockKeysByPosition`. There is no name slot on the
 //! entry to make one word wide.
 //!
 //! SO ITS FOUR PRICING ARMS ARE RETIRED RATHER THAN RE-NUMBERED, and that distinction is the whole
@@ -39,7 +39,7 @@
 //!     which is what the lookup now holds one of per object. The sixteen bytes did not leave the
 //!     process when they left the entry, and this is where that allocation is priced.
 //!   * `an_entry_names_its_object_from_its_own_terms` -- the id is derived from the identity beside
-//!     the page and the shard, with no stored copy anywhere.
+//!     the block and the shard, with no stored copy anywhere.
 //!   * `a_packed_entry_reads_its_address_by_value_because_a_borrow_of_it_is_undefined` -- a
 //!     soundness fact about `repr(packed)` that holds whatever the entry's field set is, and the
 //!     reason `entry_width_at_each_step`'s packing row is a measurement and not a recommendation.
@@ -49,10 +49,10 @@
 //! Its verdict table listed "step 1b  the key moved to the bucket's object list -- REFUTED", and a
 //! reader could mistake that for a refutation of what shipped. IT IS NOT, on both of 1b's grounds:
 //!
-//!   * ON BYTES, 1b was `+8.11 to +9.10 a page on routed keys` because the OBJECT LIST grows by a
+//!   * ON BYTES, 1b was `+8.11 to +9.10 a block on routed keys` because the OBJECT LIST grows by a
 //!     key for every object it names. The key went to `object_block_lookup`, which already held one
 //!     entry per (kind, object) before this change and still holds exactly one: the per-object key
-//!     is not a new cost, it is the cost that was already there, and what left is the per-PAGE copy.
+//!     is not a new cost, it is the cost that was already there, and what left is the per-BLOCK copy.
 //!   * ON IDENTITY, 1b was refuted because an entry's only remaining handle on its object would be
 //!     `BlockAddress::object_id` -- an `Option` answered as zero when absent. No reader resolves an
 //!     identity that way now: they resolve it by POSITION through the lookup's inversion, which is
@@ -72,7 +72,7 @@
 //!   * #1976 / #1985 asked whether `component` could be an ordinal and found it cannot: the
 //!     ordinal does not exist for `zset`, `set`, `list` or `hash`.
 //!   * #1986 also priced an interning HANDLE and declined it on arithmetic: a table entry at
-//!     54.02 B resident, break-even 3.38 pages an object against a mixed store's 1.98.
+//!     54.02 B resident, break-even 3.38 blocks an object against a mixed store's 1.98.
 //!
 //! All three are about WHAT THE FIELD MEANS. This module is about HOW WIDE THE POINTER TO IT IS.
 //! `Arc<str>` is a FAT pointer -- a data pointer and a length, side by side -- so each of the two
@@ -86,7 +86,7 @@
 //!
 //! AND IT IS THE STRIDE THAT IS REPORTED, NOT THE STRUCT. `engine_storage_state.rs` asserts that `BlockIndexMap`
 //! IS its list -- `size_of::<BlockIndexMap>() == size_of::<Vec<(u64, BlockIndex)>>()` -- so what a
-//! page costs in memory is `size_of::<(u64, BlockIndex)>()`, and that re-aligns to eight whatever
+//! block costs in memory is `size_of::<(u64, BlockIndex)>()`, and that re-aligns to eight whatever
 //! the entry's own alignment is. Measuring the struct instead of the stride is exactly how a step
 //! worth nothing reads as a win:
 //!
@@ -104,23 +104,23 @@
 //! would spend an unaligned read on every address load, and undefined behaviour on every existing
 //! `&entry.address`, to save nothing at all in the list.
 //!
-//! STEP 1a REACHES 48 AND WINS ON EVERY ARM MEASURED: -16.00 B a page on six of the eight and
+//! STEP 1a REACHES 48 AND WINS ON EVERY ARM MEASURED: -16.00 B a block on six of the eight and
 //! -16.61 and -21.59 on the two where the list arm dominates. It wins because the name allocation
 //! does not grow -- `Arc<str>` already spends two header words on a strong count and a weak count,
 //! and a thin string spends two on a strong count and the LENGTH, and this tree uses `Weak` nowhere.
 //! That is the whole mechanism, and the measurement carries the row that proves it: a thin string
-//! KEEPING a weak count is only -6.33 to +0.00 a page, so the free ride is the weak count and
+//! KEEPING a weak count is only -6.33 to +0.00 a block, so the free ride is the weak count and
 //! nothing else.
 //!
 //! IT IS DECLINED ON SOUNDNESS, NOT ON BYTES. `Arc<str>` cannot be made thin, and the only thin
 //! shape that needs no unsafe is `Arc<String>` -- one word in the entry, two allocations per name --
-//! which is +17.00 to +32.00 B a page on ALL EIGHT arms. A hand-rolled one would be the first
+//! which is +17.00 to +32.00 B a block on ALL EIGHT arms. A hand-rolled one would be the first
 //! self-managed heap allocation in this crate, whose entire production unsafe surface is four
 //! single-expression FFI calls, with no Miri available for the pinned toolchain, no sanitizer job
 //! among the five workflows, and a Rust workflow whose test step is `continue-on-error`.
 //!
 //! STEP 1b REACHES THE SAME 48 AND LOSES ANYWAY, on two separate grounds. On BYTES it is two
-//! populations with opposite signs: -15.76 to -15.84 a page on containers, but **+8.11 to +9.10 on
+//! populations with opposite signs: -15.76 to -15.84 a block on containers, but **+8.11 to +9.10 on
 //! routed keys at the shipped 0..=1023 range** and 0.00 at the wide range, because the object list
 //! grows by a key for every object and a routed bucket holds forty of them. That is #1994's shape
 //! exactly. And on IDENTITY it is refuted outright: with the key off the entry, an entry's only
@@ -132,25 +132,25 @@
 //! change at all. `block_index_handle` is a `DefaultHasher` over the entry's own `model_id`,
 //! `object_key`, `component` and five address fields, so it is a CACHED DERIVATION OF THE ENTRY
 //! BESIDE THE ENTRY -- the shape `generation` (#1966) and the component name (#1978) both had when
-//! they came out. Nothing persists it: the page index's stored form is a map keyed by
+//! they came out. Nothing persists it: the block index's stored form is a map keyed by
 //! `block_index_written_key`'s string, and `CoreIndex::object_block_lookup`, which holds the handle
 //! in `BlockLookupRef`, is `#[serde(default, skip_serializing)]` and rebuilt on load. So there is no
 //! stored shape to move.
 //!
 //! IT IS DECLINED ON TWO NUMBERS, both measured rather than argued.
 //!
-//!   * IT IS THE LIST ARM ONLY, and that is two populations, not one. The single-page arm holds its
+//!   * IT IS THE LIST ARM ONLY, and that is two populations, not one. The single-block arm holds its
 //!     handle INSIDE a 24-byte enum whose width is set by the list arm either way, so taking it out
-//!     of `One` reclaims nothing. MEASURED: 8.00 B a page on the six arms whose pages sit in lists,
-//!     and **0.00 B a page on the two routed arms at 0..=u32::MAX, where all 40,000 buckets hold one
-//!     page**. Charging it over every page would credit it with eight bytes where it is worth none --
+//!     of `One` reclaims nothing. MEASURED: 8.00 B a block on the six arms whose blocks sit in lists,
+//!     and **0.00 B a block on the two routed arms at 0..=u32::MAX, where all 40,000 buckets hold one
+//!     block**. Charging it over every block would credit it with eight bytes where it is worth none --
 //!     the same error #1994 caught from the other side, where a change was -324.44 B a bucket at one
 //!     range and +0.70 at the other.
 //!   * WHAT IT COSTS IS A HASH PER PROBE, counted and not timed. The list is sorted by the handle and
 //!     `find_block` bisects it, so a recomputed key hashes `model_id`, the key, the component and five
-//!     address fields at every probe of every warm page lookup, against zero today. MEASURED probe
+//!     address fields at every probe of every warm block lookup, against zero today. MEASURED probe
 //!     depth: 6 to 7 at the median bucket and up to 9 at the widest, which is **48 to 72 field hashes
-//!     a warm page lookup**, and one of the eight is a 24-character string. The ORDER is safe -- the
+//!     a warm block lookup**, and one of the eight is a 24-character string. The ORDER is safe -- the
 //!     same function of the same fields gives the same order, so #1964's five readers taking the
 //!     ascending walk as given keep it and no explicit sort appears -- and nothing persists the
 //!     handle, so there is no stored shape to move. It is the probe count that declines it.

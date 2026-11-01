@@ -1015,9 +1015,9 @@ fn drive_reassignments(
         // the constant exists. A reassignment asks the TARGET to load the shard, and this asked
         // for the whole keyspace while the target's own startup path asked for whatever
         // TS_SHARD_END_ROUTING_BUCKET said -- so a shard created on 0..1023 and then reassigned
-        // was loaded on a range it was not built on. Routing decides which bucket a key's page is
-        // filed under, so every page written after the move landed in a bucket group the existing
-        // pages were not in, and nothing said so. It is now a refusal (`routing_range_mismatch`)
+        // was loaded on a range it was not built on. Routing decides which bucket a key's block is
+        // filed under, so every block written after the move landed in a bucket group the existing
+        // blocks were not in, and nothing said so. It is now a refusal (`routing_range_mismatch`)
         // rather than silence, and passing the named default is what keeps it from firing on an
         // ordinary move.
         let load_request = LoadShardRequest {
@@ -1965,7 +1965,7 @@ fn metaserver_prometheus_metrics(meta: &MetaBackend, scheduler: &MetaTaskSchedul
     }
 
     // Shards are counted from the stats rather than listed: there can be
-    // hundreds of thousands of them, and a scrape should not page through the
+    // hundreds of thousands of them, and a scrape should not block through the
     // whole placement table to count two numbers.
     push_meta_metric(
         &mut out,

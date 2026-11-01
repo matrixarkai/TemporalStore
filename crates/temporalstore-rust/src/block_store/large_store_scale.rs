@@ -137,7 +137,7 @@
 //!
 //! So the block store's own index IS bounded, by store bytes over slab target, and it is bounded
 //! well below anything that matters. WHAT THIS MEASUREMENT CANNOT SEE is the other index: the
-//! engine holds a `BlockAddress` per live page, which IS per record, and it is a different
+//! engine holds a `BlockAddress` per live block, which IS per record, and it is a different
 //! structure in a different module. `engine/tests/index_bytes_per_key.rs` measures that one at
 //! 8,000 and 80,000 records and is where that half of the split lives. Nothing here contradicts
 //! it and nothing here covers it.

@@ -8,15 +8,15 @@
 //! WHY THIS MODULE EXISTS, AND WHAT IT REPLACES.
 //!
 //! #2078 set out to prove that the durable container `shard.hashes` holds every field the fold
-//! installs, by comparing it against the page index after a reload. IT DOES NOT PROVE THAT. The
-//! LOAD PATH BUILDS A HASH FIELD MAP BY WALKING THE PAGE INDEX AND MERGES IT INTO THE CONTAINER,
+//! installs, by comparing it against the block index after a reload. IT DOES NOT PROVE THAT. The
+//! LOAD PATH BUILDS A HASH FIELD MAP BY WALKING THE BLOCK INDEX AND MERGES IT INTO THE CONTAINER,
 //! from BOTH of the two functions in `storage_bucket_internals` that do it:
 //! `rebuild_unserialized_model_maps_from_bucket_index` and
 //! `reconcile_secondary_views_from_bucket_index`, each through
 //! `RecordedHashContainer::reconcile_from_durable`. So after a
 //! reload the container names everything the index names BY CONSTRUCTION, and the fixture compares
 //! the index against a structure derived from it. Disabling the container carry outright leaves
-//! that test passing. Measured while establishing this: `2 checks, 0 REBUILDS, 6 pages walked`, so
+//! that test passing. Measured while establishing this: `2 checks, 0 REBUILDS, 6 blocks walked`, so
 //! the reverse mechanism -- the index being rebuilt from the map -- did not fire either and a
 //! decoded index does not rescue the comparison.
 //!
@@ -37,7 +37,7 @@
 //! prose. Read a guard's matcher and its arguments, not the shape of its name.
 //!
 //! WHAT IS HERE INSTEAD. `Command::HashGetAll` resolves field names from the container, still
-//! consults the page index, and serves the UNION; and it counts, at read time, each field the
+//! consults the block index, and serves the UNION; and it counts, at read time, each field the
 //! INDEX named that the CONTAINER lacked. That is a run-time measurement against real traffic,
 //! which is strictly stronger than a fixture in one specific way: it samples whatever route each
 //! request took, including routes no fixture drives, and there is no load path between the two
@@ -148,7 +148,7 @@ fn seed(engine: &TemporalEngine, fields: &[&str]) {
     }
 }
 
-/// A FIELD THE PAGE INDEX NO LONGER NAMES IS STILL SERVED, AND NOTHING IS COUNTED.
+/// A FIELD THE BLOCK INDEX NO LONGER NAMES IS STILL SERVED, AND NOTHING IS COUNTED.
 ///
 /// RESTATED DOWN TO ITS ONE REMAINING DIRECTION, AND THE OTHER TWO WERE NOT DROPPED -- THEY ARE
 /// HELD ELSEWHERE. This was `the_hash_read_serves_both_sources_and_counts_what_only_the_index_names`
@@ -159,7 +159,7 @@ fn seed(engine: &TemporalEngine, fields: &[&str]) {
 /// control's "the counter did not move" could only ever pass, and the plant's "the counter moved"
 /// could only ever fail -- which is how it failed, at "the divergence counter did not move (0 ->
 /// 0); a counter that is never seen to move is not evidence". Its own in-function comment had
-/// already diagnosed that and held the arm on "the ungated route". The one-entry-a-page flag is
+/// already diagnosed that and held the arm on "the ungated route". The one-entry-a-block flag is
 /// retired, so there is no ungated route left to hold it on.
 ///
 /// THOSE TWO ARE HELD, WITH THE REASONS THAT MAKE THEM MEAN SOMETHING, BY
@@ -181,7 +181,7 @@ fn seed(engine: &TemporalEngine, fields: &[&str]) {
 /// `shard.hashes` -- it was one of the four consumers that had to move before the element name
 /// could come off the entry -- so the index contributes no NAMES, only the divergence observation
 /// that can no longer observe anything. What protects the single remaining source is
-/// `fold_hash_map_completeness`, which compares the durable map against the pages' own payloads.
+/// `fold_hash_map_completeness`, which compares the durable map against the blocks' own payloads.
 ///
 /// rust-internal: drives the engine's own served path and its own report surface
 #[test]
@@ -214,8 +214,8 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
     //
     // IT CANNOT SELECT BY FIELD NAME, AND IT NO LONGER NEEDS TO. It read
     // `entry.component.as_deref() == Some(INDEX_PLANTED_FIELD)` and then, after the field left the
-    // entry, selected "the object's one live entry" on the belief that one entry a page meant one
-    // entry an OBJECT. It does not: each element is written to its own page, so this object holds
+    // entry, selected "the object's one live entry" on the belief that one entry a block meant one
+    // entry an OBJECT. It does not: each element is written to its own block, so this object holds
     // three. Marking all of them is the stronger plant anyway -- it leaves the container answering
     // with no help from the index at all -- and the count below pins it to exactly the three above
     // rather than to whatever the walk happened to find.
@@ -301,7 +301,7 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
     );
 }
 
-/// The live hash page entries this object holds.
+/// The live hash block entries this object holds.
 fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -320,7 +320,7 @@ fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     live
 }
 
-/// Holds the one-entry-a-page gate OFF and puts back whatever was there -- on a normal drop AND
+/// Holds the one-entry-a-block gate OFF and puts back whatever was there -- on a normal drop AND
 /// while unwinding, so a failing arm cannot leak it into every later test in the process.
 ///
 /// `remove_var` IS THE CORRECT RESTORE when the variable was absent: the gate reads through
@@ -331,9 +331,9 @@ fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
 
 /// UNDER THE GATE THERE IS NOTHING FOR THIS COUNTER TO COUNT, AND THAT IS ASSERTED.
 ///
-/// The arm above holds the gate OFF because that is the only route on which a hash page entry still
+/// The arm above holds the gate OFF because that is the only route on which a hash block entry still
 /// names a field. This states the other half: with the gate at its shipped default every hash entry
-/// is page-named, so the same plant -- a field taken off the container and left on the index --
+/// is block-named, so the same plant -- a field taken off the container and left on the index --
 /// produces NO named-only field, the read serves the container's remaining fields and nothing else,
 /// and the counter cannot move.
 ///

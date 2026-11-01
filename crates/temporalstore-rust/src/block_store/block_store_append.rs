@@ -85,21 +85,21 @@ impl BlockStore {
         // what a slab file on disk already is: a slab grown past 4 GiB under an older, uncapped
         // target is recovered into `write_offset` verbatim (`read.rs` sets it from the file's
         // length), and the very next append would record an offset that does not fit. Refusing
-        // the write turns that into a failed append; truncating it would turn it into a page
-        // that reads back as a different page.
+        // the write turns that into a failed append; truncating it would turn it into a block
+        // that reads back as a different block.
         let address = ElementEntry::try_from_parts(inner.block_slab_id, inner.write_offset, record.bytes.len() as u64, Some(block_id), object_id)?;
         file.write_all(&record.bytes)?;
         file.flush()?;
         // Two INDEPENDENT relaxations:
-        //  * `defer_data_sync` skips this record's data-page fdatasync. UNSAFE on the live
-        //    path: the served index references pages by (slab,offset,page_id) and recovery
+        //  * `defer_data_sync` skips this record's data-block fdatasync. UNSAFE on the live
+        //    path: the served index references blocks by (slab,offset,page_id) and recovery
         //    may skip WAL replay when the index anchor is current, leaving dangling refs to
-        //    an un-synced page (verified data loss under SIGKILL). Only bulk backfill --
+        //    an un-synced block (verified data loss under SIGKILL). Only bulk backfill --
         //    which pins the replay anchor and re-drives the whole chunk -- may defer it.
         //  * `defer_manifest` defers the per-record extent-manifest persist (write-tmp +
         //    fsync + rename EVERY record -- barriers 5/6) to sync_durable()/slab-seal. SAFE
-        //    even with pages kept durable: the manifest is slab/GC metadata reconstructed
-        //    by reconcile-on-open from the durable page records, never a read dependency.
+        //    even with blocks kept durable: the manifest is slab/GC metadata reconstructed
+        //    by reconcile-on-open from the durable block records, never a read dependency.
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();
         if !defer_data_sync {
@@ -195,10 +195,10 @@ impl BlockStore {
             addresses.push(address);
         }
         // The batch already amortizes the data barrier across all its records (one
-        // sync_data for the whole batch). Under the single-barrier default both the data-page
+        // sync_data for the whole batch). Under the single-barrier default both the data-block
         // fdatasync and the extent-manifest persist are deferred (the manifest is reconciled on
-        // open); base-only recovery re-derives every post-dump page by WAL replay, so a
-        // never-fsync'd page is rebuilt, never left dangling. Under the TS_WAL_LEGACY_RECOVERY
+        // open); base-only recovery re-derives every post-dump block by WAL replay, so a
+        // never-fsync'd block is rebuilt, never left dangling. Under the TS_WAL_LEGACY_RECOVERY
         // escape hatch both barriers stay synchronous on the live path (delta-fold recovery).
         let defer_data_sync = bulk_relaxed_durability() || block_wal_single_barrier();
         let defer_manifest = bulk_relaxed_durability() || block_wal_only_sync();

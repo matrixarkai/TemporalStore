@@ -1584,7 +1584,7 @@ fn block_compaction_rewrites_live_addresses_and_allows_old_slab_gc() {
         // is asserted against the ids the write path stored.
         // WHERE THE BLOCK IS FILED, not what the address claims -- the address carries no bucket.
         // The bucket map's key is the container's answer, and it has to be the key's own bucket.
-        // WHICH BUCKET HOLDS A PAGE OF THIS OBJECT, asked of the structures beside the pages.
+        // WHICH BUCKET HOLDS A BLOCK OF THIS OBJECT, asked of the structures beside the blocks.
         let placed = super::blocks_with_identity(&shard.bucket_index);
         let buckets_holding = |object: &str| -> Vec<u32> {
             let mut found: Vec<u32> = placed
@@ -2164,7 +2164,7 @@ fn storage_manager_loop_runs_prepare_reclaim_evict_expire_compact_and_index_gc()
 
 /// RETIRED: THE MISMATCH THIS PLANTED CANNOT BE PLANTED ANY MORE.
 ///
-/// It set a wrong object id on a page's address and asserted that
+/// It set a wrong object id on a block's address and asserted that
 /// `storage_recovery_report` reported one `owner_mismatch_block_ref` and refused compaction. Both
 /// halves rested on an address carrying an id that could disagree with the entry's. An address
 /// carries none now, so there is no value to make wrong -- and the detection went with it, because
@@ -2185,8 +2185,8 @@ fn recovery_reports_owner_mismatch_and_compaction_refuses_it() {
 
 /// RETIRED: A REUSED ID CANNOT BE PLANTED BY ASSIGNMENT ANY MORE.
 ///
-/// It copied one page's object id onto another page's address and asserted the recovery report
-/// named the reuse. The id is derived from (shard, kind, key) now, so the only way two pages share
+/// It copied one block's object id onto another block's address and asserted the recovery report
+/// named the reuse. The id is derived from (shard, kind, key) now, so the only way two blocks share
 /// one is a genuine hash collision, which this fixture cannot manufacture.
 ///
 /// The check itself is NOT gone: `object_lifecycle_report_from_entries` still reports
@@ -4334,7 +4334,7 @@ fn deep_compare_the_index_a_reconstruct_produces() {
         let shard = shards.get(&1).expect("loaded shard");
         // THE IDENTITY, TAKEN ONCE AND KEYED BY POSITION. The walk itself has to stay per
         // bucket because it also emits a row per object-index and per deleted-object-index
-        // member, which belong to the bucket and not to any page.
+        // member, which belong to the bucket and not to any block.
         let named: std::collections::HashMap<(u32, u64), std::sync::Arc<str>> =
             super::blocks_with_identity(&shard.bucket_index)
                 .into_iter()
@@ -4768,7 +4768,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 // `part1::the_maintained_block_lookup_matches_a_rebuilt_one` did the same over a whole ingest.
 // Twenty-one defects were caught by that shape across this change.
 //
-// THE REBUILD WALKED THE PAGES AND READ EACH ONE'S KEY, so with the identity off the entry there
+// THE REBUILD WALKED THE BLOCKS AND READ EACH ONE'S KEY, so with the identity off the entry there
 // is nothing to rebuild FROM, and the oracle has one side. `rebuild_object_block_lookup` is
 // deleted in `engine_storage_state.rs` with the reasoning; these three go with it rather than being rewritten to
 // compare the maintained lookup with itself.
@@ -4776,7 +4776,7 @@ fn what_post_write_maintenance_costs_per_key_kind() {
 // WHAT THE ORACLE BOUGHT, so it outlives the assertions: it is the whole of the evidence that
 // filing-as-you-go leaves the lookup exactly where a whole-shard rebuild would have, which is
 // what licensed removing two rebuild calls from the load path and one from the delete path. The
-// obligation is at the producers now -- every site that places a page files it, every site that
+// obligation is at the producers now -- every site that places a block files it, every site that
 // drops one un-files it, and `fold_delta_block_items` carries the note that those are ONE
 // obligation.
 //

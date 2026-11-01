@@ -15,7 +15,7 @@
 //!
 //! Datanodes are independent engines, so the write/read/validate work is run in parallel across
 //! datanodes (one scoped thread per datanode) to reach large scale. This exercises the real
-//! datanode storage engine (MultiLayerCache tiering + block store + packed pages) and the
+//! datanode storage engine (MultiLayerCache tiering + block store + packed blocks) and the
 //! namespace/table -> shard -> datanode partition routing in-process; the metaserver/proxy TCP
 //! process wiring is covered by the distributed_raft_harness / proxy tests.
 

@@ -196,7 +196,7 @@ pub(super) fn reconcile_slab_manifest_with_disk(
 
     // Read and hash the slabs in parallel, then apply the slab updates in the original order.
     //
-    // Inspecting a slab re-verifies the sha256 of every page record in it, and this runs at EVERY
+    // Inspecting a slab re-verifies the sha256 of every block record in it, and this runs at EVERY
     // engine open. Measured on a live store: ~950 MB of slabs took about 70 s of a cold start
     // (13.5 MB/s, against hundreds of MB/s for sha256) with the process pinned at 99% of one core.
     // Only the reads and hashing are shared out; the update loop below is unchanged and still walks

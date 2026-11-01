@@ -17,7 +17,7 @@
 //! of those established results carried up to mx#1934's own fixture and sizes.
 //!
 //! REPRODUCED FIRST, BIT FOR BIT. Every figure mx#1934 published reproduces on this tree:
-//! 377,824 -> 1,897,824 live-page entries for the all-pending round (5.023x), 609,052 ->
+//! 377,824 -> 1,897,824 live-block entries for the all-pending round (5.023x), 609,052 ->
 //! 2,849,052 for the fixed-pending round (4.678x), and 304.526 -> 1,424.526 entries per record of
 //! work retired. Nothing below disputes a number it reported.
 //!
@@ -46,7 +46,7 @@
 //!
 //! SO WHAT IS THE DEFECT? THE ROUND'S COST NEVER CONSULTS ANY OF IT. With the dump firing and the
 //! dirty set drained to EMPTY -- no pending work of any kind, nothing to dump, nothing to retire
-//! -- a round still walks the whole live page set. This is `an_idle_round_still_walks_the_live_block_set`
+//! -- a round still walks the whole live block set. This is `an_idle_round_still_walks_the_live_block_set`
 //! carried to the two sizes above the 100,000-record line, where it can be scaled rather than
 //! stated, and set beside a fixed backlog so the two terms can be separated:
 //!
@@ -60,7 +60,7 @@
 //!                                                          RECORD OF WORK
 //! ```
 //!
-//! A round with NOTHING TO DO costs 2,889,724 live-page entries at 100,000 records and 569,724 at
+//! A round with NOTHING TO DO costs 2,889,724 live-block entries at 100,000 records and 569,724 at
 //! 20,000: 5.072x for a store 5x larger, and 81% of what the 2,000-record round costs. That figure
 //! divided by the work retired is not large, it is UNDEFINED -- the work retired is zero. Per
 //! record of WORK retired the backlog's own marginal cost goes 92.656 -> 332.656, 3.590x, because
@@ -99,25 +99,25 @@
 //!
 //! WHAT WAS PRICED AND DECLINED. Scoping `bucket_storage_summaries` to the dirty bucket set is the
 //! obvious change and would take 2,889,724 entries off the empty round at 100,000 records. It is
-//! declined here because it is not provably exact. The walk credits each page to
+//! declined here because it is not provably exact. The walk credits each block to
 //! `entry.address.routing_bucket()` with a hash fallback over the SHARD'S range, while
-//! `upsert_bucket_index_block_inner` files that same page under a fallback over `0..u32::MAX`, so
-//! a page whose address carries no explicit routing bucket can be filed under one bucket and
+//! `upsert_bucket_index_block_inner` files that same block under a fallback over `0..u32::MAX`, so
+//! a block whose address carries no explicit routing bucket can be filed under one bucket and
 //! summarised under another. A walk scoped to the dirty buckets would then miss it, which is the
-//! losing direction. Measured on this fixture the branch does not fire -- zero unrouted pages and
-//! zero misfiled pages at both sizes -- but "does not fire on this fixture" is not the same
+//! losing direction. Measured on this fixture the branch does not fire -- zero unrouted blocks and
+//! zero misfiled blocks at both sizes -- but "does not fire on this fixture" is not the same
 //! statement as "cannot fire", and the shortfall is the whole argument.
 //!
 //! SUM THE INTEGRAL. The floor is the term that matters, because it is paid whether or not
 //! anything happened. A store grown to N records with one round every `k` records pays about
-//! `28.9 N^2 / 2k` live-page entries in floor alone -- 1.445e12 at a million records with a round
+//! `28.9 N^2 / 2k` live-block entries in floor alone -- 1.445e12 at a million records with a round
 //! every 10,000 -- and every one of those rounds truthfully reports zero dirty buckets.
 //!
 //! CRASH AND RESTART. The dirty set is in memory only and is EMPTY after a restart: 2,000 dirty
 //! objects become 0. That is safe for data and is asserted to be -- every sampled record is still
 //! readable after the restart, after a round that dumped nothing, and after a second restart --
 //! because durability is anchored on the persisted bucket index and the log, not on the dirty set.
-//! `load_shard_with` clears every bucket and page dirty flag on load and
+//! `load_shard_with` clears every bucket and block dirty flag on load and
 //! `refresh_bucket_runtime_flags` recomputes `bucket.dirty` from the empty set, which is the
 //! clear-dirty-on-load contract. What a restart DOES take away is dump SELECTION: the round after
 //! a restart selects no bucket to dump even though the log still counts those writes as undumped.
@@ -638,7 +638,7 @@ fn the_set_of_buckets_the_round_acts_on_equals_a_witness_built_outside_the_engin
 /// Two backlogs -- NOTHING pending, and a fixed 2,000 records pending -- at two store sizes five
 /// times apart, with the dump firing so the backlog in each arm is the one the fixture asked for.
 ///
-/// The empty-backlog arm is the finding. It retires zero records and walks 2,889,724 live-page
+/// The empty-backlog arm is the finding. It retires zero records and walks 2,889,724 live-block
 /// entries at 100,000 records. Per record of work retired that is not a large number, it is
 /// undefined; per record of STORE it is 28.9 and it is the same 28.9 at a fifth of the size.
 ///
@@ -812,7 +812,7 @@ fn a_round_with_an_empty_backlog_still_costs_the_whole_store() {
 /// A dirty set that empties on restart is either safe -- everything is rebuilt -- or a silent loss,
 /// and which one it is cannot be argued from the fact that it empties. It is safe here, because
 /// durability is anchored on the persisted bucket index and the log rather than on the dirty set:
-/// `load_shard_with` clears every bucket and page dirty flag on load and
+/// `load_shard_with` clears every bucket and block dirty flag on load and
 /// `refresh_bucket_runtime_flags` recomputes `bucket.dirty` from the (empty) set, which is the
 /// clear-dirty-on-load contract. Asserted by reading the records back, after the restart, after a
 /// round that dumped nothing, and after a SECOND restart -- because a fix that preserves data for
@@ -938,7 +938,7 @@ fn a_restart_empties_the_dirty_set_and_no_record_is_lost() {
 ///
 /// So the span is widened to start BEFORE the round, where a real whole-store quantity can be put
 /// inside it that no stage row can see: a `bucket_storage_summaries` call made just before the
-/// round materialises the entire live page set, is charged to the process-wide counter, and is
+/// round materialises the entire live block set, is charged to the process-wide counter, and is
 /// charged to no stage because the stage accumulators are cleared when the round starts. Two
 /// rounds, identical but for that plant, and the residual has to move by exactly the plant.
 #[test]

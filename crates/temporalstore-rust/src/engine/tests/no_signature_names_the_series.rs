@@ -6,7 +6,7 @@
 //!
 //! # WHY THIS GUARD EXISTS, AND WHAT IT REPLACES
 //!
-//! Eight resident maps hold `object key -> (timestamp -> page address)`. The seam that let them be
+//! Eight resident maps hold `object key -> (timestamp -> block address)`. The seam that let them be
 //! narrowed one at a time required their helpers to take the OPERATIONS rather than the container.
 //! That seam was built by following one function's neighbourhood and covered **four** signatures.
 //! There were **nine**. The fifth was found when a migration failed to compile against it, and the

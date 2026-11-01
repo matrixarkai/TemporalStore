@@ -251,8 +251,8 @@ impl DataNodeRuntime {
         // bucket index is large and whose cache is small -- the exact shape eviction exists for --
         // read as carrying no memory and was never asked to give any back.
         //
-        // The moving figure (nodes + per-page entries), not the node-only floor, because the
-        // per-page entries are what a release frees: the pressure this reports falls when the
+        // The moving figure (nodes + per-block entries), not the node-only floor, because the
+        // per-block entries are what a release frees: the pressure this reports falls when the
         // evict stage acts on it, which is what makes it a gate and not a klaxon.
         let bucket_index_resident_bytes = self.inner.engine.bucket_index_resident_bytes(shard_id);
         // Mirrors `apply_storage_eviction`'s own gate term for term, so the reported signal and
@@ -265,7 +265,7 @@ impl DataNodeRuntime {
         let eviction_memory_pressure_bytes = bucket_index_resident_bytes;
         // THE NODE MEMORY SCORE KEEPS THE WIDE COMPOSITION, and is now a different number from the
         // evict gate's input rather than an alias of it. It is published for an operator watching
-        // the node, and `reclaim_memory` -- the stage that invalidates cached pages -- is the thing
+        // the node, and `reclaim_memory` -- the stage that invalidates cached blocks -- is the thing
         // it describes; narrowing it to the index would make it report a debt that stage cannot pay.
         // The two were one field only because the gate used to read the wide number.
         let memory_cache_pressure_score = cache
@@ -484,9 +484,9 @@ impl DataNodeRuntime {
                 stats.storage_manager_reclaim_wal_runs += 1;
             }
             lifecycle_report = Some(response.report);
-            // Move the oldest pages that live only inside a WAL record into the block store,
+            // Move the oldest blocks that live only inside a WAL record into the block store,
             // before anything tries to reclaim the log. `min_registered_sequence` pins retention
-            // to the LOWEST registration, so one resident page holds the floor down whatever the
+            // to the LOWEST registration, so one resident block holds the floor down whatever the
             // retention policy says. The dump this stage just took does NOT do it: measured on 48
             // async writes, a flush left all 48 registered and so did a full eight-stage cycle,
             // with the log floor still at sequence 1.
@@ -620,17 +620,17 @@ impl DataNodeRuntime {
         ));
 
         // Evict, when the operator has asked for it -- beside expire, and before the stages
-        // that rewrite pages.
+        // that rewrite blocks.
         //
         // Expire drops what has died of old age and evict drops what is merely cold; they are two
         // halves of relieving memory, and the design runs them together at this point in the
         // round. This stage ran LAST, after the metrics reap, which put it after every stage that
-        // rewrites pages: it decided what to drop from a state compaction had just churned, and
+        // rewrites blocks: it decided what to drop from a state compaction had just churned, and
         // the memory it frees arrived too late to spare those stages any work. It has no data
         // dependency on any of them -- it reads options and engine state only -- so the position
         // was incidental.
         //
-        // reclaim_memory above relieves memory by invalidating cached pages, which frees the cache
+        // reclaim_memory above relieves memory by invalidating cached blocks, which frees the cache
         // and leaves the index untouched. This is the stage that can actually free a bucket -- and
         // dump it first, so freeing does not strand the log.
         // Keep taking batches until the pressure is back under the threshold, the count budget
@@ -828,7 +828,7 @@ impl DataNodeRuntime {
                 // The cap, not 0. This stage dumps before it invalidates, and an unbounded dump
                 // here made the cap `reclaim_wal` respects meaningless: measured, one round with
                 // every stage on dumped 1,280 of 1,280 dirty buckets, while `reclaim_wal` alone
-                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED pages, and the
+                // dumped exactly 64. Bounding is safe -- invalidation drops CACHED blocks, and the
                 // data is in the write-ahead log whether or not its bucket was dumped this round.
                 max_dump_buckets_per_round: options.max_dump_buckets_per_round,
                 min_undumped_wal_records: 0,
@@ -898,7 +898,7 @@ impl DataNodeRuntime {
             // The floor is a MIN over the stale slabs, so a stale slab that can never be deleted
             // freezes it -- and one always can be. `run_gc_inner` treats every slab named by a
             // bucket dump manifest as live, so the moment a dump exists, the slab it names is
-            // stale (its pages have moved) and retained (the manifest needs it). `min` then sits
+            // stale (its blocks have moved) and retained (the manifest needs it). `min` then sits
             // on that slab for ever, the floor never advances, and every slab compaction rolls
             // afterwards is above it and permanently out of reach.
             //
@@ -949,10 +949,10 @@ impl DataNodeRuntime {
                     // Quarantine rather than unlink, as the cycle has always done. This stage
                     // deleted a slab outright, so if the retain floor above was ever computed too
                     // generously there was nothing left to recover from. The prepare stage passes
-                    // `purge_delayed_destroy` whenever page GC is on, so quarantined slabs are
+                    // `purge_delayed_destroy` whenever block GC is on, so quarantined slabs are
                     // still collected -- an hour later, not never.
                     block_gc_delayed_destroy: true,
-                    // This stage ran every round page pressure held, and each run emptied the
+                    // This stage ran every round block pressure held, and each run emptied the
                     // shard's cache outright -- memory, pmem and disk tiers alike -- however few
                     // slabs it went on to reclaim. Invalidate what was reclaimed instead.
                     block_gc_invalidate_removed_slabs_only: true,
@@ -1142,7 +1142,7 @@ impl DataNodeRuntime {
         ));
 
         // Reclaim the index log BEFORE rewriting blocks, not after, so the stages run in the
-        // order the design intends: reclaim memory, reclaim pages, reclaim the index, compact.
+        // order the design intends: reclaim memory, reclaim blocks, reclaim the index, compact.
         //
         // This is an ALIGNMENT, not a throughput fix, and the probe beside it is what settles
         // that. `what_the_stage_order_buys` runs the same eight-round overwrite fixture under
@@ -1162,7 +1162,7 @@ impl DataNodeRuntime {
         // `stale_block_pressure` counts reclaim candidates, and a candidate is any slab carrying
         // dead space. That lumps together the slab compaction must empty and the slab compaction
         // has ALREADY emptied -- and the second is its own residue: a round relocates a slab's
-        // live pages onto a fresh one, and the vacated slab stays a candidate until the collector
+        // live blocks onto a fresh one, and the vacated slab stays a candidate until the collector
         // destroys it, which is the pressure that runs the next round. Measured on an idle
         // 8,000-record shard: `compact_pages` executed in all twelve rounds with nobody writing,
         // the whole live set rewritten every four rounds, and the index log growing 63 bytes a
@@ -1170,7 +1170,7 @@ impl DataNodeRuntime {
         // those rounds persists a fresh index record. With compaction off over the identical
         // fixture the index log grew by zero, which is what attributes it.
         //
-        // The question below is answered PER OBJECT: does any object still hold a page on a slab
+        // The question below is answered PER OBJECT: does any object still hold a block on a slab
         // someone wants emptied? A slab holding nothing but dead space answers no -- no object has
         // a page there, nothing can be relocated off it, and destroying it is `reclaim_page`'s
         // job, not this stage's. That is the distinction three shard-wide predicates could not
@@ -1187,11 +1187,11 @@ impl DataNodeRuntime {
         // the count is what makes this round worth starting, the set is what the round is then
         // allowed to touch. They were not always the same answer. The gate has asked the
         // per-object question since the self-retrigger fix, but the round it issued relocated
-        // every live page in the shard -- so one overwritten record anywhere cost a rewrite of
+        // every live block in the shard -- so one overwritten record anywhere cost a rewrite of
         // the WHOLE live set, over as many rounds of shard write lock as the ref budget needed,
-        // to recover that one page.
+        // to recover that one block.
         //
-        // Relocating a page off a slab that carries no dead space recovers nothing.
+        // Relocating a block off a slab that carries no dead space recovers nothing.
         // `compact_block_addresses` copies its bytes verbatim, so it lands byte for byte what
         // it was, on a slab that is now the one carrying the dead space -- same live bytes, one
         // more emptied slab for the collector, one more share of an index record.

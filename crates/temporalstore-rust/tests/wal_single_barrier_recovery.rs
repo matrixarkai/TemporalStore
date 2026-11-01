@@ -2,11 +2,11 @@
 // Copyright 2026 MatrixArkAI
 
 //! WAL-replay recovery under the single write-path durability barrier -- now the DEFAULT (only the
-//! WAL takes a synchronous fdatasync per write; the data-page fdatasync and the served-index delta
+//! WAL takes a synchronous fdatasync per write; the data-block fdatasync and the served-index delta
 //! fdatasync are both deferred, and recovery is base-only). After a crash, EVERY acked write must
 //! be reconstructed -- the WAL is self-sufficient (a record states its RESULTS: an outcome item
-//! naming the page's address and, when no page backs it, carrying the bytes themselves), so even if
-//! the deferred-fsync index-log tail AND, as a stronger stress, the pages are lost to a simulated
+//! naming the block's address and, when no block backs it, carrying the bytes themselves), so even if
+//! the deferred-fsync index-log tail AND, as a stronger stress, the blocks are lost to a simulated
 //! power cut, replay rebuilds every key. A final phase exercises the TS_WAL_LEGACY_RECOVERY escape
 //! hatch (legacy multi-barrier write + delta-fold recovery) so the fallback stays covered. Each
 //! phase runs in its own subprocess so any mode env var never leaks into the rest of the suite.
@@ -30,7 +30,7 @@
 //!
 //! What closed it: `WalOutcomeItem` carries a `value` beside its `address` (#380, "a record can now
 //! say what a write DID, and a shard can be rebuilt from that alone"). The old analysis was right
-//! that an outcome naming only an address states nothing recoverable when the page write is
+//! that an outcome naming only an address states nothing recoverable when the block write is
 //! deferred and then lost -- the answer was to let the outcome carry the bytes, which is what the
 //! design being followed does with a `value` beside its `page` and a `meta_log` flag to tell them
 //! apart.
@@ -41,7 +41,7 @@
 //! failures is here.
 //!
 //! Left as a warning rather than deleted, because the failure mode it describes is real whenever
-//! an outcome can name a page that is not yet durable. If a future change makes outcomes
+//! an outcome can name a block that is not yet durable. If a future change makes outcomes
 //! address-only again on the synchronous path, this is the file that will catch it, and
 //! `examples/wal_scan_probe.rs` prints exactly what a record is carrying:
 //!
@@ -105,7 +105,7 @@ fn recover_ok(root: &str, keys: &str) {
     );
 }
 
-// Single-barrier helpers: the TRUE single barrier (per-write data-page fdatasync also deferred)
+// Single-barrier helpers: the TRUE single barrier (per-write data-block fdatasync also deferred)
 // with base-only recovery -- the unconditional write/recovery path. Each phase runs in its own
 // subprocess.
 fn populate_sb(root: &str, keys: &str, flush_at: Option<&str>) {
@@ -152,12 +152,12 @@ fn recover_sb_ok(root: &str, keys: &str) {
 
 #[test]
 fn single_barrier_data_block_loss_after_dump_rebuilds_from_wal() {
-    // THE data-page kill-point case for the true single barrier. The per-write data-page fdatasync
-    // is deferred, so pages become durable only at the dump. A dump at key 150 fsyncs pages 0..150
-    // and anchors the watermark; writes 151..300 then append pages that are NEVER fsync'd. Model a
-    // real power cut of exactly those un-synced page tails (truncate each slab back to its recorded
+    // THE data-block kill-point case for the true single barrier. The per-write data-block fdatasync
+    // is deferred, so blocks become durable only at the dump. A dump at key 150 fsyncs blocks 0..150
+    // and anchors the watermark; writes 151..300 then append blocks that are NEVER fsync'd. Model a
+    // real power cut of exactly those un-synced block tails (truncate each slab back to its recorded
     // post-dump durable length). Base-only recovery replays 151..300 from the dump watermark and
-    // rebuilds every lost page from its WAL command -> zero data loss.
+    // rebuilds every lost block from its WAL command -> zero data loss.
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
     populate_sb(root, "300", Some("150"));
@@ -191,7 +191,7 @@ fn recover_counter_sb_ok(root: &str, expected: &str) {
 #[test]
 fn single_barrier_non_idempotent_counter_applies_exactly_once() {
     // A hash counter incremented 200 times, dumped at 100, then crashed with the un-synced tail
-    // pages lost. Base-only recovery replays 101..200 from the dump watermark EXACTLY ONCE (no
+    // blocks lost. Base-only recovery replays 101..200 from the dump watermark EXACTLY ONCE (no
     // delta fold that would re-apply the tail on top of the base), so the counter must be exactly
     // 200 -- not doubled to 300, and not short.
     let dir = tempfile::tempdir().unwrap();
@@ -203,7 +203,7 @@ fn single_barrier_non_idempotent_counter_applies_exactly_once() {
 
 #[test]
 fn single_barrier_full_block_loss_no_dump_rebuilds_from_wal() {
-    // No dump: every data page is un-synced. Wipe all non-WAL state (pages + served index + delta);
+    // No dump: every data block is un-synced. Wipe all non-WAL state (blocks + served index + delta);
     // only the fsync'd WAL survives. Base-only replay from 0 rebuilds all 300 keys.
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
@@ -261,7 +261,7 @@ fn single_barrier_evict_then_crash_before_dump_does_not_resurrect() {
 fn deferred_indexlog_loss_never_drops_an_ack_after_a_dump() {
     // The mode's ONLY relaxation is the deferred delta-log fdatasync, so its worst-case loss is
     // the whole un-synced delta log. A dump anchors a durable base at key 150; the post-dump
-    // deltas (151..) are then lost. The durable pages + WAL replay from the base watermark must
+    // deltas (151..) are then lost. The durable blocks + WAL replay from the base watermark must
     // still restore every acked write.
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().to_str().unwrap();
@@ -283,7 +283,7 @@ fn deferred_indexlog_loss_never_drops_an_ack_without_a_dump() {
 
 #[test]
 fn wal_is_self_sufficient_when_all_non_wal_state_is_wiped() {
-    // Strongest stress (beyond what the mode actually defers): drop the pages AND the served index
+    // Strongest stress (beyond what the mode actually defers): drop the blocks AND the served index
     // AND the delta log; only the fsync'd WAL remains. The WAL embeds the full command payload, so
     // replay rebuilds every acked write from scratch.
     let dir = tempfile::tempdir().unwrap();
@@ -294,7 +294,7 @@ fn wal_is_self_sufficient_when_all_non_wal_state_is_wiped() {
 }
 
 // Legacy escape-hatch helpers: TS_WAL_LEGACY_RECOVERY=1 restores the legacy multi-barrier write
-// path (WAL + data-page + delta all fsync'd per write) + delta-fold recovery. Kept covered so the
+// path (WAL + data-block + delta all fsync'd per write) + delta-fold recovery. Kept covered so the
 // operator fallback does not rot.
 fn populate_legacy(root: &str, keys: &str, flush_at: Option<&str>) {
     let mut cmd = Command::new(bin());
@@ -330,7 +330,7 @@ fn recover_legacy_ok(root: &str, keys: &str) {
 
 #[test]
 fn legacy_recovery_escape_hatch_delta_fold_recovers_every_ack() {
-    // The TS_WAL_LEGACY_RECOVERY fallback. A dump anchors a durable base at key 150 (pages fsync'd
+    // The TS_WAL_LEGACY_RECOVERY fallback. A dump anchors a durable base at key 150 (blocks fsync'd
     // per write in legacy mode); the served-index delta is then lost. Delta-fold recovery folds the
     // durable base and replays the WAL tail 151..300, so every acked write is restored -- proving
     // the operator escape hatch still recovers cleanly.

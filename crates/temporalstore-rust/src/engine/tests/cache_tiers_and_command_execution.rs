@@ -858,7 +858,7 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
     assert!(write.status.ok);
     // The write records
     // a WAL entry even in async mode; async only means the commit does not
-    // block (no fsync -> syncs == 0), and page/index materialization is deferred.
+    // block (no fsync -> syncs == 0), and block/index materialization is deferred.
     assert_eq!(engine.block_store().stats().writes, 0);
     assert_eq!(engine.write_ahead_log_store().stats(1).writes, 1);
     assert_eq!(engine.write_ahead_log_store().stats(1).syncs, 0);
@@ -882,11 +882,11 @@ fn async_storage_string_write_stays_on_hot_memory_path() {
 
 #[test]
 fn async_hot_block_survives_memory_eviction_via_spill() {
-    // Regression for the log-backed hot-page read-as-missing bug (gap P1): under async_storage a
-    // write lives ONLY in the memory tier at a synthetic hot-page address. If the memory-only
+    // Regression for the log-backed hot-block read-as-missing bug (gap P1): under async_storage a
+    // write lives ONLY in the memory tier at a synthetic hot-block address. If the memory-only
     // entry is evicted before the next dump, a read used to miss the cache, hit a non-existent
     // slab file, and return value:None for an ACKED write. The eviction handler now spills the
-    // evicted hot page to a real slab and a hot-address cache miss resolves the redirect, so the
+    // evicted hot block to a real slab and a hot-address cache miss resolves the redirect, so the
     // value survives eviction on the live path (no reload needed).
     let dir = tempfile::tempdir().unwrap();
     // Deliberately tiny memory tier so the flood below forces capacity eviction of the target.
@@ -910,7 +910,7 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
             .ok
     );
 
-    // Async write -> memory-only hot page, nothing in the block store yet.
+    // Async write -> memory-only hot block, nothing in the block store yet.
     let target_value = b"durable-async-value-that-must-survive-eviction".to_vec();
     assert!(
         engine
@@ -926,8 +926,8 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
     );
     assert_eq!(engine.block_store().stats().writes, 0);
 
-    // Flood the memory tier with far more async hot pages than it can hold, forcing the target's
-    // page to be evicted (and spilled to a real slab by the eviction handler).
+    // Flood the memory tier with far more async hot blocks than it can hold, forcing the target's
+    // block to be evicted (and spilled to a real slab by the eviction handler).
     for i in 0..400 {
         engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -938,7 +938,7 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
         });
     }
 
-    // At least one hot page must have spilled to a durable slab (proves the handler fired).
+    // At least one hot block must have spilled to a durable slab (proves the handler fired).
     assert!(
         engine.block_store().stats().writes > 0,
         "evicted hot blocks must spill to a durable slab"
@@ -946,7 +946,7 @@ fn async_hot_block_survives_memory_eviction_via_spill() {
 
     // Drop EVERY cache tier for the shard so the only surviving copy of the target is the durable
     // spilled slab (plus the WAL). This defeats the cache's own cross-tier retention and forces
-    // the read to resolve through the hot-page spill redirect -- the path this fix adds.
+    // the read to resolve through the hot-block spill redirect -- the path this fix adds.
     let _ = engine.cache().invalidate_shard(1);
 
     let reads_before = engine.block_store().stats().reads;
@@ -1210,7 +1210,7 @@ fn durable_index_survives_restart_and_points_to_block_file() {
 
 #[test]
 fn async_write_survives_restart_via_wal_replay_like_native() {
-    // conformance: an async_storage write records a WAL entry but defers page/
+    // conformance: an async_storage write records a WAL entry but defers block/
     // index materialization to the background dump. If the crash beats the dump,
     // Startup load replays the wal and recovers the write. Rust must replay
     // its WAL on shard load the same way, or the async write is silently lost.
@@ -1287,7 +1287,7 @@ fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
         &index_dir,
     );
     engine.load_shard(1);
-    // async_storage: the write lands in the WAL but page/index materialization is deferred, so
+    // async_storage: the write lands in the WAL but block/index materialization is deferred, so
     // it is absent from the served index until the WAL is replayed on the next load.
     assert!(
         engine
@@ -1358,10 +1358,10 @@ fn read_during_wal_replay_recovery_returns_retryable_not_false_null() {
     );
 }
 
-// Coalesced control-state persistence skips the per-write whole-series page rewrite
+// Coalesced control-state persistence skips the per-write whole-series block rewrite
 // (write-amplification) and relies on the index snapshot + WAL replay for durability, the
 // same model control_state_changes/fol already use. This MUST stay crash-safe: increments
-// recorded only in the WAL (no page materialization, no flush) must be recovered on reload.
+// recorded only in the WAL (no block materialization, no flush) must be recovered on reload.
 #[test]
 fn control_state_coalesced_write_survives_restart_via_wal_replay() {
     let dir = tempfile::tempdir().unwrap();
@@ -1394,7 +1394,7 @@ fn control_state_coalesced_write_survives_restart_via_wal_replay() {
             },
         });
     }
-    // Coalesced: the per-write control_state page rewrite is skipped; the WAL carries durability.
+    // Coalesced: the per-write control_state block rewrite is skipped; the WAL carries durability.
     assert_eq!(
         engine.block_store().stats().writes,
         0,
@@ -1433,7 +1433,7 @@ fn control_state_coalesced_write_survives_restart_via_wal_replay() {
 #[test]
 fn async_storage_batch_write_records_wal_without_sync_or_index() {
     // Batch analog of the single-command async conformance: the batch path (used by
-    // ingestion) must also record a WAL entry per async write, unfsynced, with page/
+    // ingestion) must also record a WAL entry per async write, unfsynced, with block/
     // index materialization deferred.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -2158,7 +2158,7 @@ fn hdel_last_field_removes_key_like_native() {
 #[test]
 fn timestamped_models_survive_unload_reload_round_trip() {
     // Regression net for the membership-authoritative reconcile + serde round-trip: write a
-    // string plus the reconcile page-reading timestamped kinds (feature + sequence), then
+    // string plus the reconcile block-reading timestamped kinds (feature + sequence), then
     // unload + reload and assert every value comes back intact (no loss, no resurrection).
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(
@@ -2277,9 +2277,9 @@ fn timestamped_models_survive_unload_reload_round_trip() {
 
 #[test]
 fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
-    // A single FeatureAppend packs all timestamps into one page; the feature_max_size trim
-    // drops the oldest from the in-memory series, but the page still physically holds them.
-    // reconcile-from-pages must keep the persisted (trimmed) membership -- the evicted points
+    // A single FeatureAppend packs all timestamps into one block; the feature_max_size trim
+    // drops the oldest from the in-memory series, but the block still physically holds them.
+    // reconcile-from-blocks must keep the persisted (trimmed) membership -- the evicted points
     // must NOT resurrect on reload (writes per-timestamp deleted tombstones for this).
     let dir = tempfile::tempdir().unwrap();
     let block_dir = dir.path().join("blocks");
@@ -2359,7 +2359,7 @@ fn reconcile_does_not_resurrect_evicted_feature_points_on_reload() {
 /// The object-lifecycle snapshot answers exactly what the recovery report answers.
 ///
 /// The maintenance round used to obtain this field by building a whole recovery report, which
-/// reads every live page off the block store to count the readable ones and then discards all
+/// reads every live block off the block store to count the readable ones and then discards all
 /// of that. The snapshot computes the same field from the shard's maps and the slab reports.
 /// "Same" has to be checked rather than argued: this drives a workload that moves each of its
 /// parts -- writes, overwrites, deletes, a maintenance cycle, a rolled slab -- and compares the
@@ -2427,11 +2427,11 @@ fn object_lifecycle_snapshot_matches_the_recovery_report() {
     assert_eq!(stages, 6, "every stage must have been compared");
 }
 
-/// Planning and applying a maintenance round reads no pages at all.
+/// Planning and applying a maintenance round reads no blocks at all.
 ///
-/// Both phases used to build a whole `StorageRecoveryReport`, which reads EVERY live page off
+/// Both phases used to build a whole `StorageRecoveryReport`, which reads EVERY live block off
 /// the block store so it can count the readable ones -- and then kept one field: the planner
-/// kept a per-slab byte tally, the apply kept `object_lifecycle`. Neither field needs a page.
+/// kept a per-slab byte tally, the apply kept `object_lifecycle`. Neither field needs a block.
 ///
 /// This is the property that regresses silently: a caller reaching for the recovery report
 /// again still passes `object_lifecycle_snapshot_matches_the_recovery_report`, because the
@@ -2498,7 +2498,7 @@ fn planning_a_maintenance_round_reads_no_blocks() {
     // the old assertion would have failed, and weakening it to `is_none()` would have removed the
     // non-vacuity guard altogether and left `planned == 0` proving nothing.
     //
-    // Count the live-page entries the plan materialised instead. The plan still surveys the live
+    // Count the live-block entries the plan materialised instead. The plan still surveys the live
     // set for its reclaim and slab stages, so this is the same claim -- the plan inspects the
     // shard without reading the block store -- anchored to a source the conditional does not
     // remove.
@@ -2534,8 +2534,8 @@ zero-read count above proves nothing"
 ///   cargo test --release -p temporalstore-rust --lib what_the_plan_phase_costs -- --ignored --nocapture
 ///
 /// This is the measurement the narrow reclaim view was made for. Before it, the plan built a
-/// whole StorageRecoveryReport -- 50.04 / 219.92 / 978.02 ms at 2k / 8k / 32k live pages, and
-/// one read of every live page. After: 2.31 / 17.40 / 82.84 ms, and no reads at all.
+/// whole StorageRecoveryReport -- 50.04 / 219.92 / 978.02 ms at 2k / 8k / 32k live blocks, and
+/// one read of every live block. After: 2.31 / 17.40 / 82.84 ms, and no reads at all.
 #[test]
 #[ignore]
 fn what_the_plan_phase_costs() {
@@ -2590,7 +2590,7 @@ fn what_the_plan_phase_costs() {
 /// selection had ever consulted one of them the two lists would separate here -- which is
 /// exactly the claim being made, and not one to take on inspection.
 ///
-/// The fixture rolls slabs so the stale/live split is real: a slab whose pages have all been
+/// The fixture rolls slabs so the stale/live split is real: a slab whose blocks have all been
 /// overwritten is the case the planner exists to find.
 #[test]
 fn the_reclaim_planner_sees_the_same_candidates() {
@@ -2809,7 +2809,7 @@ fn what_the_slab_survey_costs() {
         if survey_blocks == walk_blocks { "AGREE" } else { "DISAGREE" });
 }
 
-/// What does the boundary report cost, and how many pages does a whole round read? Prints.
+/// What does the boundary report cost, and how many blocks does a whole round read? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib what_a_round_still_reads -- --ignored --nocapture
 #[test]
@@ -3498,7 +3498,7 @@ fn catalog_dump_reclaim_shrinks_both_logs_and_reload_stays_exact() {
 
 #[test]
 fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_blocks() {
-    // An async write's page can live ONLY in its WAL record (served back through the
+    // An async write's block can live ONLY in its WAL record (served back through the
     // block-in-WAL registration). A post-dump WAL sweep must pin its floor at the lowest
     // registered sequence so that record survives, even when the dump anchor is far above it.
     let dir = tempfile::tempdir().unwrap();
@@ -3509,7 +3509,7 @@ fn catalog_dump_reclaim_pins_wal_records_holding_block_in_wal_blocks() {
         dir.path().join("indexes"),
     );
     engine.load_shard(1);
-    // One async write first: its WAL record carries its staged page.
+    // One async write first: its WAL record carries its staged block.
     engine.set_config(SetConfigRequest {
         shard_id: 1,
         config: Config {
@@ -5120,7 +5120,7 @@ fn control_state_distinct_sketch_survives_restart() {
         &index_dir,
     );
     engine.load_shard(1);
-    // ChangeAdd is in-memory (no per-write page); durability here comes from the index-snapshot
+    // ChangeAdd is in-memory (no per-write block); durability here comes from the index-snapshot
     // flush, so sync mode is enough and avoids a per-write WAL fsync for every distinct value.
     let mut config = Config {
         version: 2,
@@ -5747,7 +5747,7 @@ fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
     assert_eq!(before, vec![30, 40, 50]);
     drop(engine);
     // Simulate a WAL-only crash: the served index base + delta were not fsync'd and are
-    // lost; only the WAL and the data pages survive.
+    // lost; only the WAL and the data blocks survive.
     std::fs::remove_file(index_dir.join("shard-1.index.json")).ok();
     if let Ok(rd) = std::fs::read_dir(index_dir.join("indexlogs")) {
         for e in rd.flatten() {
@@ -5776,7 +5776,7 @@ fn walonly_recovery_rederives_feature_trim_under_single_barrier() {
 /// What does the default control-state write cost as the counter grows?
 ///
 /// `persist_control_state_block` serialises the WHOLE counter series to JSON and appends it as a
-/// page, once per increment -- so a counter holding n points re-writes all n on the n+1th. The
+/// block, once per increment -- so a counter holding n points re-writes all n on the n+1th. The
 /// function already carries the escape (`async_storage && control_coalesce_persist`), but `flag()`
 /// resolves an absent flag to false, so the whole-series rewrite is the default.
 ///

@@ -29,7 +29,7 @@ impl TemporalEngine {
             }),
         }
     }
-    /// WHAT THE BUCKET MAINTENANCE SCAN HAS SEEN of the pages and the object list.
+    /// WHAT THE BUCKET MAINTENANCE SCAN HAS SEEN of the blocks and the object list.
     ///
     /// Process-wide and monotonic for the life of the process, with no reset on the production
     /// surface: a counter a reader can zero is a counter whose history a reader can lose. Two calls
@@ -520,10 +520,10 @@ impl TemporalEngine {
         // THE ADDRESSES ARE CHOSEN UNDER THE GUARD; THE READS HAPPEN AFTER IT DROPS.
         //
         // This stage used to hold the shard-table READ guard across the whole loop below -- one
-        // block-store read and one cache insert PER LIVE PAGE, with no per-round budget of any
+        // block-store read and one cache insert PER LIVE BLOCK, with no per-round budget of any
         // kind. A read guard admits other readers, so this looks cheap and is not: it excludes
         // every WRITER on the shard for as long as the I/O takes, which on a warm of the whole
-        // shard is every page in the store. The rest of the maintenance round is among the
+        // shard is every block in the store. The rest of the maintenance round is among the
         // writers it blocks.
         //
         // Nothing in the loop needs the shard. `collect_live_block_entries` already MATERIALIZES
@@ -533,12 +533,12 @@ impl TemporalEngine {
         // the consumer.
         //
         // WHAT A STALE ADDRESS MAKES THIS DO. Between the walk and the read a writer can delete
-        // the page this entry names. The consequence is bounded in both directions: a read that
+        // the block this entry names. The consequence is bounded in both directions: a read that
         // no longer resolves returns Err and is counted as `failed_page_refs`, which the loop
-        // already handles, and a page that IS read populates the cache under
+        // already handles, and a block that IS read populates the cache under
         // `CacheKey::page_with_slot` -- keyed by slab id, offset and length, i.e. by the physical
         // location whose bytes do not change while the slab is live. The entry is a cached copy
-        // of bytes that are still on disk, not a claim that the page is live, and nothing reads
+        // of bytes that are still on disk, not a claim that the block is live, and nothing reads
         // the cache to decide what is live. This is a REPORT and a cache fill; it decides no
         // reclaim, so a stale answer costs at most one wasted cache slot.
         let mut plan: Vec<(CacheKey, ElementEntry)> = Vec::new();
@@ -639,7 +639,7 @@ impl TemporalEngine {
             .map_err(|err| Status::error("cache_slot_invalidation_failed", err.to_string()))
     }
 
-    /// The boundary report, checking EVERY live page for readability.
+    /// The boundary report, checking EVERY live block for readability.
     ///
     /// What the diagnostic endpoint and the harnesses want: the whole store looked at. The
     /// maintenance cycle calls the sampled form instead -- see
@@ -651,7 +651,7 @@ impl TemporalEngine {
         self.storage_recovery_boundary_report_sampled(shard_id, 0)
     }
 
-    /// The same report, reading at most `readable_probe_limit` live pages. 0 means no bound.
+    /// The same report, reading at most `readable_probe_limit` live blocks. 0 means no bound.
     pub fn storage_recovery_boundary_report_sampled(
         &self,
         shard_id: ShardId,

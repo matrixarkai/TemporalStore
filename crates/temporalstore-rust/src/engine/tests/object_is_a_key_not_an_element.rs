@@ -4,7 +4,7 @@
 //! AN OBJECT IS A KEY, NOT ONE OF ITS ELEMENTS.
 //!
 //! `stable_block_object_id` folded the component into the object's identity, so an object held
-//! exactly one page: a hash of twenty-five fields was twenty-five objects that happened to share a
+//! exactly one block: a hash of twenty-five fields was twenty-five objects that happened to share a
 //! key. #1986 recorded the result as "the object id names a page's triple, not an object" -- a
 //! DESCRIPTION OF A DEFECT rather than a property to preserve. The parameter is REMOVED here, not
 //! merely ignored, because keeping it and discarding its value would leave every call site
@@ -13,15 +13,15 @@
 //! # WHY THIS IS AVAILABLE ONLY NOW
 //!
 //! #2011 refuted it, and the mechanism was precise: the object id was the only discriminator
-//! between pages INSIDE ONE WAL RECORD, because `StagedBlock` was `{ object_id, bytes }` and
-//! `block_in_wal::read_block` picked with `find(|page| page.object_id == object_id)`. One record
-//! routinely carries many pages -- `append_batch_as_one_record` writes a whole batch as one -- so a
-//! component-free id served the FIRST page's bytes for the second. Measured there: 2/2 today,
-//! 1/2 with WRONG BYTES component-free, 96.00% of hash pages unreachable at batch scale.
+//! between blocks INSIDE ONE WAL RECORD, because `StagedBlock` was `{ object_id, bytes }` and
+//! `block_in_wal::read_block` picked with `find(|block| block.object_id == object_id)`. One record
+//! routinely carries many blocks -- `append_batch_as_one_record` writes a whole batch as one -- so a
+//! component-free id served the FIRST block's bytes for the second. Measured there: 2/2 today,
+//! 1/2 with WRONG BYTES component-free, 96.00% of hash blocks unreachable at batch scale.
 //!
 //! #2013 closed exactly that. `stage()` takes a component, `StagedBlock` carries it, and both
-//! in-record `find` sites share one predicate: `page.object_id == object_id &&
-//! page.component.as_deref() == component`. The registry key became `(u64, Option<Arc<str>>)`.
+//! in-record `find` sites share one predicate: `block.object_id == object_id &&
+//! block.component.as_deref() == component`. The registry key became `(u64, Option<Arc<str>>)`.
 //! Its measured result was 96.00% -> 0.00% unreachable with a negative control still at 1/2.
 //!
 //! So the acceptance test for THIS change is #2011's failing case passing on the product's own
@@ -33,10 +33,10 @@
 //!
 //! The consequences that are NOT the in-record read:
 //!
-//!   1. THE PRIZE, read off `bucket.object_index` itself rather than off a grouping of page
+//!   1. THE PRIZE, read off `bucket.object_index` itself rather than off a grouping of block
 //!      entries, with the distribution that says where the effect exists.
 //!   2. THE TOMBSTONE, which is where this most easily becomes data loss. `deleted_object_index`
-//!      is filed per removed page's id, and one id now covers every element of a key.
+//!      is filed per removed block's id, and one id now covers every element of a key.
 //!   3. HLEN, asserted unmoved beside the listing it must agree with.
 //!   4. THE READ PATH, asserted from outside to select on the component at every arm, including
 //!      the first-match fallback #1964 enumerates.
@@ -44,7 +44,7 @@
 //! # THE HANDLE CONSEQUENCE, AND THE STAMP
 //!
 //! `state::block_index_handle` hashes `address.generation()`, `generation` is
-//! `block_id.or(object_id)`, and for a WAL-resident page the block id is absent -- so the
+//! `block_id.or(object_id)`, and for a WAL-resident block the block id is absent -- so the
 //! generation IS the object id and every such handle moves with it. Handles are written to disk
 //! inside the lookup's refs. `engine::SHARD_INDEX_FORMAT_VERSION` is bumped 2 -> 3 for that
 //! reason, and the reason is spelled out where the constant is declared: an old index decodes
@@ -63,7 +63,7 @@ const OPERATOR_END: u32 = 1023;
 /// `entry_object_identity` both use, so the rows here are comparable to theirs line for line.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// The CONTROL population. A string page's component is already `None`, so this change is the
+/// The CONTROL population. A string block's component is already `None`, so this change is the
 /// IDENTITY on it and the mechanism predicts no movement whatever.
 const ROUTED_KEYS: usize = 200;
 
@@ -155,10 +155,10 @@ fn seed_routed_strings(engine: &TemporalEngine) {
     );
 }
 
-/// `(live pages, distinct object-index rows)` for one kind, read off the buckets themselves.
+/// `(live blocks, distinct object-index rows)` for one kind, read off the buckets themselves.
 ///
 /// `object_index` is the thing this change shrinks, so it is read DIRECTLY rather than inferred
-/// from a grouping of page entries. Only rows belonging to the kind's own keys are counted, so one
+/// from a grouping of block entries. Only rows belonging to the kind's own keys are counted, so one
 /// arm's rows cannot leak into the other's.
 fn blocks_and_index_rows(
     engine: &TemporalEngine,
@@ -203,9 +203,9 @@ fn tombstone_holds(engine: &TemporalEngine, object_id: u64) -> bool {
         .any(|bucket| bucket.deleted_object_index.contains(&object_id))
 }
 
-/// The components of one key's live pages, sorted. An absent component reads as the empty string,
+/// The components of one key's live blocks, sorted. An absent component reads as the empty string,
 /// which is distinguishable here because no fixture in this module writes one.
-/// LIVE PAGE ENTRIES THIS OBJECT HOLDS. A COUNT, AND IT SAYS SO IN ITS NAME.
+/// LIVE BLOCK ENTRIES THIS OBJECT HOLDS. A COUNT, AND IT SAYS SO IN ITS NAME.
 ///
 /// THIS WAS `live_components` RETURNING A `Vec<String>` AND IT HAD STOPPED RETURNING COMPONENTS.
 /// When the element-name field came off `BlockIndex` the body was left pushing `String::new()` per
@@ -257,12 +257,12 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 // 1. THE PRIZE: ONE OBJECT-INDEX ROW PER KEY, READ OFF THE INDEX ITSELF.
 // =================================================================================================
 
-/// `bucket.object_index` HOLDS ONE ROW PER KEY INSTEAD OF ONE PER PAGE.
+/// `bucket.object_index` HOLDS ONE ROW PER KEY INSTEAD OF ONE PER BLOCK.
 ///
-/// #2007 measured the row count at 0.9983 per page, and grouping the same pages on `(kind, key)`
-/// at MAX 100 per object, saving 6.409-6.496 B/page. THE HONEST CAVEAT FROM THAT WORK IS REPEATED
-/// HERE RATHER THAN BURIED: across a real corpus, pages per `(kind, key)` is p50 1, p90 1, p99 1.
-/// Ninety-nine percent of keys hold ONE page, so on a general population this saves almost
+/// #2007 measured the row count at 0.9983 per block, and grouping the same blocks on `(kind, key)`
+/// at MAX 100 per object, saving 6.409-6.496 B/block. THE HONEST CAVEAT FROM THAT WORK IS REPEATED
+/// HERE RATHER THAN BURIED: across a real corpus, blocks per `(kind, key)` is p50 1, p90 1, p99 1.
+/// Ninety-nine percent of keys hold ONE block, so on a general population this saves almost
 /// nothing -- it is NOT 30 bytes an object. It is the CONTAINER population -- hashes, sets, zsets,
 /// lists -- where a key holds many elements and the row count collapses, and that is the
 /// population seeded here.
@@ -270,8 +270,8 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 /// So the number below is not a claim about a whole store. It is the size of the effect where the
 /// effect exists, printed beside the distribution that says where that is.
 ///
-/// THE CONTROL is the routed string arm, whose component was already `None`: one page per key
-/// before and after, so its rows-per-page must be 1.0000. Its page count is asserted FIRST -- a
+/// THE CONTROL is the routed string arm, whose component was already `None`: one block per key
+/// before and after, so its rows-per-block must be 1.0000. Its block count is asserted FIRST -- a
 /// control that read nothing reports no movement for the wrong reason.
 ///
 /// rust-internal: reads the engine's own bucket index, no external surface
@@ -379,13 +379,13 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
 ///
 /// `mark_bucket_index_block_deleted_with` removes ONE element -- its `retain` matches on
 /// `(model_id, object_key, component)` -- and then files the ids of what it removed into
-/// `bucket.deleted_object_index`. That was exactly right while the id named a page: every page
-/// sharing a removed page's id had the same component and was removed with it, so no survivor
+/// `bucket.deleted_object_index`. That was exactly right while the id named a block: every block
+/// sharing a removed block's id had the same component and was removed with it, so no survivor
 /// could carry it.
 ///
 /// It is WRONG the moment one id covers every element of a key, and the damage is not theoretical.
-/// `object_manager::runtime_report` asks `deleted_object_index.contains(page.object_id())` once per
-/// page, so dropping one field of a twenty-five-field hash would count all twenty-four survivors
+/// `object_manager::runtime_report` asks `deleted_object_index.contains(block.object_id())` once per
+/// block, so dropping one field of a twenty-five-field hash would count all twenty-four survivors
 /// as `deleted_block_ref_count` instead of hot or cold. The fix is the same last-element condition
 /// `remove_block_entry_from_buckets` already applies to `object_index`.
 ///
@@ -448,15 +448,15 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
         "  {:>7}  {:>10}  {:>10}",
         1, after_one, tombstoned_after_one
     );
-    // THE REMOVAL IS READ OFF THE RESIDENT MAP, AND THE PAGE COUNT IS READ AS THE COST.
+    // THE REMOVAL IS READ OFF THE RESIDENT MAP, AND THE BLOCK COUNT IS READ AS THE COST.
     //
-    // This asserted `after_one.len() == FIELDS - 1` -- one fewer live page per deleted field -- and
+    // This asserted `after_one.len() == FIELDS - 1` -- one fewer live block per deleted field -- and
     // measured 25 for 24. The removal happened; the live ENTRY is retained on purpose. A removal
     // reaches the index through `mark_bucket_index_block_deleted_recording`, whose `retain` cannot
-    // match a page-named entry, so it adds a tombstone and leaves the live entry standing, on the
-    // stated grounds that the page may still hold the object's other members. That is a footprint
+    // match a block-named entry, so it adds a tombstone and leaves the live entry standing, on the
+    // stated grounds that the block may still hold the object's other members. That is a footprint
     // cost -- an entry per removal that nothing collects -- and NOT a membership error:
-    // `container_membership` folds by append position and the tombstone is the later page.
+    // `container_membership` folds by append position and the tombstone is the later block.
     //
     // So the membership claim is asked of `shard.hashes`, which is the authority and is what
     // `HashLen` and `HashGetAll` answer from, and the retained entry is asserted as the cost rather
@@ -475,7 +475,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
          question of the index listing and could only ever pass once that listing stopped naming \
          elements -- the map is where the answer is"
     );
-    // AND THE PAGE-COUNT ASSERTION BELOW IS A TRIPWIRE, NOT A DRIVEN GUARD. Widening
+    // AND THE BLOCK-COUNT ASSERTION BELOW IS A TRIPWIRE, NOT A DRIVEN GUARD. Widening
     // `mark_bucket_index_block_deleted_recording`'s retain from `component.is_none()` to `true`
     // leaves it GREEN, because for a container that retain never runs at all: `target_buckets`
     // comes from `block_refs_for(model_id, key, component)` and a container removal resolves no
@@ -587,7 +587,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
         );
     }
     // A REWRITE MUST NOT ADD AN ENTRY. This is the arm the id could plausibly have moved: two
-    // writes of one field are two pages sharing an id, and had the replacement `retain` matched on
+    // writes of one field are two blocks sharing an id, and had the replacement `retain` matched on
     // the id rather than the component, it would now also match every OTHER field of the key.
     write(
         &engine,
@@ -625,17 +625,17 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     );
     // THE NO-DUPLICATE CLAIM, RE-ATTRIBUTED TO WHERE ELEMENT IDENTITY LIVES.
     //
-    // This counted DISTINCT COMPONENTS in the index listing and required one per page: "the listing
+    // This counted DISTINCT COMPONENTS in the index listing and required one per block: "the listing
     // repeats a component, so a rewrite accumulated a second entry for one field". The entry has no
     // element-name field, so that listing had become a run of blanks -- `live_components` pushed
-    // `String::new()` per page -- and the count was 1 against 7 rather than 7 against 7. It was not
+    // `String::new()` per block -- and the count was 1 against 7 rather than 7 against 7. It was not
     // vacuous, it was simply measuring nothing that exists.
     //
     // The question it asked is still a real one: did the rewrite of `f0` above leave TWO live
     // entries for one field? It is asked of the two artefacts that can answer it. `shard.hashes` is
-    // the authority for which fields exist, and the live page count is what a rewrite would inflate
-    // if it filed beside rather than superseding. Seven distinct names over seven live pages is the
-    // shape; six names over seven pages is the accumulation this exists to catch.
+    // the authority for which fields exist, and the live block count is what a rewrite would inflate
+    // if it filed beside rather than superseding. Seven distinct names over seven live blocks is the
+    // shape; six names over seven blocks is the accumulation this exists to catch.
     assert_eq!(
         resident.len() as i64,
         FIELDS,
@@ -655,18 +655,18 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
 ///
 /// #1964 enumerated five readers that take an ascending walk as given, and the fifth is
 /// `bucket_index_block_address`'s first-match fallback -- `.next()` over a filtered walk. A
-/// first-match selector keyed on the object id would, after this change, hand back the FIRST page
+/// first-match selector keyed on the object id would, after this change, hand back the FIRST block
 /// of the object for EVERY element of it: precisely the failure #2011 measured inside a WAL record
 /// and #2013 closed there.
 ///
 /// It does not, and this is the arm that says so from OUTSIDE the function. Every element of every
 /// key is read back through the product and must answer its own bytes. The values are distinct per
-/// `(key, field)`, so serving one page for another is detectable rather than a coincidence of
+/// `(key, field)`, so serving one block for another is detectable rather than a coincidence of
 /// equal bytes. An unload/load cycle runs first, so the answers come through the decode path
 /// rather than from a warm cache or a resident map.
 ///
-/// THREE OUTCOMES, NOT TWO. A page that reads MISSING is a read fault; a page that reads ANOTHER
-/// PAGE'S BYTES is silent corruption. Folding them into one counter would let this pass at either.
+/// THREE OUTCOMES, NOT TWO. A block that reads MISSING is a read fault; a block that reads ANOTHER
+/// BLOCK'S BYTES is silent corruption. Folding them into one counter would let this pass at either.
 ///
 /// rust-internal: drives a reload and HashGet, no external surface
 #[test]

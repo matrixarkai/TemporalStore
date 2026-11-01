@@ -3,11 +3,11 @@
 
 //! WHAT ONE BLOCK PER CONTAINER MEMBER COSTS, AND WHY A PACKED MEMBER BUFFER IS NOT THE LEVER.
 //!
-//! A container in this engine gives every member its own page. A zset member becomes a page whose
+//! A container in this engine gives every member its own block. A zset member becomes a block whose
 //! component name is `zset_component(member)`, a set member's is `hex::encode(member)`, a
-//! list element's is the biased sequence in hex. Each page gets a `BlockIndex` in the routing
-//! bucket's page index, an entry in the object/component lookup, and an outcome staged for the
-//! index log. So a hundred-member container is a hundred page entries under one object key -- and
+//! list element's is the biased sequence in hex. Each block gets a `BlockIndex` in the routing
+//! bucket's block index, an entry in the object/component lookup, and an outcome staged for the
+//! index log. So a hundred-member container is a hundred block entries under one object key -- and
 //! `bucket_fill.rs` already established that one object key is ONE routing bucket at any range,
 //! because routing takes the object key and never sees the component.
 //!
@@ -15,25 +15,25 @@
 //! ONE packed byte buffer per container: a small header, then the members as raw bytes and the
 //! scores as numbers, with no per-member name string and no per-member index entry.
 //!
-//! THE ANSWER FOR A ZSET IS THAT THE PACKED BUFFER ALREADY EXISTS, AND THE PER-MEMBER PAGES ARE A
+//! THE ANSWER FOR A ZSET IS THAT THE PACKED BUFFER ALREADY EXISTS, AND THE PER-MEMBER BLOCKS ARE A
 //! SECOND COPY OF IT. `ShardState::zsets` is
 //! `HashMap<String, BTreeMap<Vec<u8>, (u64, BlockAddress)>>` and it is PERSISTED, through
 //! `zset_index_serde`, as a sequence of `(member bytes, (score, address))` per key -- members as
 //! RAW BYTES, the score as a NUMBER, one container per key, no component names anywhere in it.
 //! That is the packed shape, already written, already the better encoding. What sits beside it is
-//! a per-member page shadow that this module prices.
+//! a per-member block shadow that this module prices.
 //!
 //! THREE FACTS DECIDE THE SHAPE OF THE SHADOW, AND ALL THREE ARE ASSERTED BELOW RATHER THAN
 //! ARGUED.
 //!
 //!   1. THE PAGE PAYLOAD IS THE MEMBER, AND THE COMPONENT NAME ALREADY SPELLS THE MEMBER.
-//!      `Command::ZSetAdd` calls `append_value(.., &member, ..)`, so the stored page IS the member
+//!      `Command::ZSetAdd` calls `append_value(.., &member, ..)`, so the stored block IS the member
 //!      bytes; the component beside it is sixteen hex digits of score followed by the same member
 //!      in hex. `a_zset_element_page_holds_exactly_what_its_component_name_already_spells` decodes
 //!      every component in a seeded shard back to (score, member) and asserts it against the model
 //!      map, so the redundancy is a byte-level fact and not an inference from the call site.
 //!
-//!   2. NO ZSET READ RESOLVES THROUGH THE PAGE INDEX. `ZSetScore` takes the score out of
+//!   2. NO ZSET READ RESOLVES THROUGH THE BLOCK INDEX. `ZSetScore` takes the score out of
 //!      `shard.zsets`, `ZSetCard` takes `len()`, `ZSetRange` orders the same map's keys.
 //!      `bucket_index_component_block_addresses` -- the door a container read goes through -- is
 //!      called for `"hash"` and `"set"` and for nothing else.
@@ -44,19 +44,19 @@
 //!   3. INDEX-LOG REPLAY REBUILDS THE MEMBER AND THE SCORE FROM THE COMPONENT NAME. The `"zset"`
 //!      arm of `apply_outcome_item` (`lifecycle.rs`) splits the component at sixteen, parses the
 //!      score with `u64::from_str_radix` and the member with `hex::decode`, and inserts the pair
-//!      into `shard.zsets`. It never reads the page. So the shadow is not dead weight everywhere:
+//!      into `shard.zsets`. It never reads the block. So the shadow is not dead weight everywhere:
 //!      it is the SOURCE OF TRUTH for one of the three recovery routes, and that is the reader
 //!      that pins it.
 //!
-//! WHICH IS WHY THIS MODULE MEASURES AND DOES NOT CONVERT. Removing the per-member pages for a
+//! WHICH IS WHY THIS MODULE MEASURES AND DOES NOT CONVERT. Removing the per-member blocks for a
 //! zset would take the index-log route's only copy of the member away, and replacing the model map
-//! with a single page per container would turn a one-member update from a small append into a
+//! with a single block per container would turn a one-member update from a small append into a
 //! whole-container rewrite. `what_one_more_member_rewrites_against_what_one_packed_buffer_would`
 //! measures both sides of that with the engine's own serializer rather than projecting it.
 //!
 //! WHAT IS NOT MEASURED HERE, stated so the cover is not read as total: the `hashes` map is
 //! `skip_serializing` on `ShardState` and is rebuilt FROM the bucket index on load, so for a hash
-//! the per-field pages ARE the only durable copy and none of the above applies to it. The hash arm
+//! the per-field blocks ARE the only durable copy and none of the above applies to it. The hash arm
 //! appears below only as the read-path control.
 //!
 //! THE STORE PATH LENGTH is held constant across arms and asserted equal: it moves allocation
@@ -165,7 +165,7 @@ fn seed_zsets(engine: &TemporalEngine) -> Vec<String> {
     keys
 }
 
-/// One zset page in the seeded shard: which object key, which component, and the address.
+/// One zset block in the seeded shard: which object key, which component, and the address.
 #[derive(Debug, Clone)]
 struct ZsetBlock {
     routing_bucket: u32,
@@ -177,7 +177,7 @@ struct ZsetBlock {
     log_backed: bool,
 }
 
-/// Every `zset` page the bucket index holds, read off the engine's own index.
+/// Every `zset` block the bucket index holds, read off the engine's own index.
 fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -193,9 +193,9 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 object_key: named.at(*routing_bucket, *handle).to_string(),
                 // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
                 // `page.component.as_deref().expect("a zset page is named by its component")`.
-                // A zset page entry names no element -- that is the collapse -- so the walk
+                // A zset block entry names no element -- that is the collapse -- so the walk
                 // panicked rather than failing an assertion. The redundancy this module measures
-                // between a component and the page payload is what the collapse DELETED, so the
+                // between a component and the block payload is what the collapse DELETED, so the
                 // field is carried as the empty string and the arms that priced that redundancy
                 // are restated where they are read.
                 component: String::new(),
@@ -227,7 +227,7 @@ fn model_members(engine: &TemporalEngine, key: &str) -> BTreeMap<Vec<u8>, u64> {
 
 /// Components held per routing bucket, as bucket COUNTS keyed by the number held.
 ///
-/// A histogram and not a mean: a mean of 1.98 pages a bucket once contained not one bucket holding
+/// A histogram and not a mean: a mean of 1.98 blocks a bucket once contained not one bucket holding
 /// two, and a mean of 1.001 was two populations.
 #[derive(Debug, Default)]
 struct Histogram {
@@ -551,7 +551,7 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 /// # WHAT IT USED TO SAY
 ///
 /// "A ZSET ELEMENT PAGE HOLDS EXACTLY WHAT ITS COMPONENT NAME ALREADY SPELLS." The write path
-/// stores the member as the page and named the page with the same member in hex, so this decoded
+/// stores the member as the block and named the block with the same member in hex, so this decoded
 /// every component in a seeded shard back to a member and asserted the set against `shard.zsets`'s
 /// own members -- "the payload is a second copy", as a byte-level fact about a real shard. It had
 /// already been restated once, when the component stopped spelling `(score, member)`.
@@ -566,8 +566,8 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 ///
 /// # WHAT IT ASSERTS INSTEAD, AND WHY THAT IS NOT A WEAKER CLAIM
 ///
-/// The member's identity lives in exactly two places now: `shard.zsets`, and the page's own item
-/// key -- written by `container_blocks::element_key_from_component` precisely so a page is
+/// The member's identity lives in exactly two places now: `shard.zsets`, and the block's own item
+/// key -- written by `container_blocks::element_key_from_component` precisely so a block is
 /// interpretable without the entry that names it. That key is the ONLY copy outside the model map,
 /// which makes a codec that does not round-trip a LOSS rather than a mislabelling. So the round
 /// trip is asserted, per member, over the members the model map actually holds, in both directions:
@@ -575,12 +575,12 @@ fn a_zset_component_name_spells_exactly_half_its_bytes_in_hex_at_every_member_wi
 /// member entirely.
 ///
 /// The per-member record FRAMING measurement is untouched and is still the figure worth having --
-/// it is about the page payload, which is where the member's second copy always was.
+/// it is about the block payload, which is where the member's second copy always was.
 ///
-/// IT STILL ASSERTS THE POPULATION IT CLAIMS: every container key present, one page per member,
+/// IT STILL ASSERTS THE POPULATION IT CLAIMS: every container key present, one block per member,
 /// every member of every key covered. A loop over an empty index asserts nothing and passes.
 ///
-/// rust-internal: reads the engine's own bucket index and the page codec, no product behaviour
+/// rust-internal: reads the engine's own bucket index and the block codec, no product behaviour
 #[test]
 fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -600,15 +600,15 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
 
     // THE COMPONENT DECODE IS GONE, AND SO IS THE REDUNDANCY IT MEASURED.
     //
-    // This walked every page, ran `hex::decode(&page.component)`, asserted the result was
+    // This walked every block, ran `hex::decode(&block.component)`, asserted the result was
     // `MEMBER_WIDTH` bytes, and collected the members per key to compare against `shard.zsets`.
     // An index entry has no component, so there is nothing to decode -- and the thing the loop
     // proved, that the entry's name was a SECOND COPY of the member, is not a fact that has become
     // false: it has become unrepresentable. There is no second copy because there is no name.
     //
     // WHAT REPLACES IT IS A ROUND TRIP, not a corrected number. The member's identity now lives in
-    // exactly two places: `shard.zsets` and the page's own item key, written by
-    // `container_blocks::element_key_from_component` so a page is interpretable without the entry
+    // exactly two places: `shard.zsets` and the block's own item key, written by
+    // `container_blocks::element_key_from_component` so a block is interpretable without the entry
     // that names it. That codec is what the identity passes through, it is the thing a change can
     // still break, and the round trip is what catches the class this campaign has been bitten by:
     // `hex::decode` has no opinion about what the bytes mean, so a key that framed and decoded
@@ -625,7 +625,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
 
     // THE STORED LENGTH IS THE MEMBER PLUS PER-MEMBER RECORD FRAMING, and the framing is what a
     // single buffer would pay ONCE instead of per member. Measured here rather than assumed: the
-    // first draft of this test asserted the page was exactly the member and was wrong by the
+    // first draft of this test asserted the block was exactly the member and was wrong by the
     // framing, which is the figure worth having.
     assert_eq!(
         stored_lengths.len(),
@@ -715,7 +715,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
 /// THE CONTROL THIS COUNT IS TAKEN AGAINST: one `HashGetAll` over a populated hash.
 ///
 /// It is the arm where the mechanism predicts an effect. `HashGetAll` resolves the object through
-/// `bucket_index_component_block_addresses`, which asks `bucket.block_index.get` for every page of
+/// `bucket_index_component_block_addresses`, which asks `bucket.block_index.get` for every block of
 /// the object and so enters `find_block` -- the one door the counter sits in. It walks the INDEX by
 /// construction rather than reading a block by an address it was handed, which is what makes it
 /// hold at any fixture size and what the point read no longer does.
@@ -724,7 +724,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
 /// single-block bucket with one comparison and never enters `find_block`, so a control over a thin
 /// object would read zero for a reason that has nothing to do with this module; and a listing that
 /// came back empty would examine entries over nothing. A count of `MEMBERS` fields served is what
-/// makes a non-zero entry count a page walk over a whole container.
+/// makes a non-zero entry count a block walk over a whole container.
 fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (u64, usize) {
     crate::engine::state::reset_block_lookup_entries_examined();
     let response = engine.execute(ExecuteRequest {
@@ -747,21 +747,21 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
     (examined, listed)
 }
 
-/// A ZSET READ EXAMINES NO PAGE-INDEX ENTRIES, AND A HASH WHOLE-OBJECT READ DOES.
+/// A ZSET READ EXAMINES NO BLOCK-INDEX ENTRIES, AND A HASH WHOLE-OBJECT READ DOES.
 ///
 /// This is the answer to "what would packing cost the read path" for a zset, and it is zero:
-/// nothing on the zset read path resolves a member through the page index, so there is no per-member
+/// nothing on the zset read path resolves a member through the block index, so there is no per-member
 /// addressing to lose. `ZSetScore` reads the score straight out of `shard.zsets`, `ZSetCard` reads
 /// `len()`, `ZSetRange` orders the same map's keys.
 ///
 /// COUNT, DO NOT TIME. `BLOCK_LOOKUP_ENTRIES_EXAMINED` is incremented inside `find_block`, the one
-/// door every page lookup goes through, so this reads the copy production calls. A timing ratio on
+/// door every block lookup goes through, so this reads the copy production calls. A timing ratio on
 /// this box once read 485x idle against 11x busy off identical code.
 ///
 /// # THE CONTROL MOVED FROM THE POINT READ TO THE WHOLE-OBJECT READ
 ///
 /// This test was named `..._and_a_hash_read_does`, and its control was the hash POINT read: a
-/// `HashGet` resolved a field through `bucket_index_component_block_addresses` into the page index,
+/// `HashGet` resolved a field through `bucket_index_component_block_addresses` into the block index,
 /// so it MUST be non-zero and an instrument reading zero on both arms would be measuring nothing.
 /// Under `container_index_files_one_entry_a_page` a `HashGet` answers from `shard.hashes` and hands
 /// the address it holds to `read_block_bytes`, which consults the cache, the WAL-resident redirect
@@ -773,14 +773,14 @@ fn whole_object_hash_read_examined(engine: &TemporalEngine, hash_key: &str) -> (
 /// choice. It is FIXTURE-DEPENDENT: on this fixture the hundred point reads examine ZERO
 /// entries, and on a fixture holding only the hash -- no zsets seeded ahead of it -- the same
 /// hundred reads examined 580, 5.8 a read, which is a bisection of this bucket per read. The same
-/// production code, two fixtures, two answers, so "a gated point read examines no page-index
+/// production code, two fixtures, two answers, so "a gated point read examines no block-index
 /// entries" is not a property of the engine and must not be asserted as one. Which of the three
 /// fallbacks under `read_block_frame_bytes` the lean fixture reaches, and why that one is charged,
 /// is NOT established here -- so the number is recorded rather than explained, and a change in
 /// either figure is a signal to come and find out.
 ///
 /// THE WHOLE-OBJECT READ CARRIES THE CONTROL INSTEAD. `HashGetAll` is untouched by the gate and
-/// walks the index by construction -- one `bucket.block_index.get` per page of the object, not one
+/// walks the index by construction -- one `bucket.block_index.get` per block of the object, not one
 /// block read by a handed address -- so it is non-zero on both fixtures above.
 ///
 /// WHY A CONTROL IS KEPT AT ALL. An `assert_eq!(zset_examined, 0)` standing alone is unfailable:
@@ -891,7 +891,7 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
     }
     let point_examined = crate::engine::state::block_lookup_entries_examined();
 
-    // HASH ARM, THE CONTROL. The same count over a read that does resolve through the page index.
+    // HASH ARM, THE CONTROL. The same count over a read that does resolve through the block index.
     let (whole_examined, whole_listed) = whole_object_hash_read_examined(&engine, &hash_key);
 
     println!("--- entries examined, {MEMBERS}-member containers ---");
@@ -935,9 +935,9 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
 ///   * one `ComponentBlocks` in the object/component lookup;
 ///   * the component NAME on the heap, whose length is measured off the real names;
 ///   * the `BlockAddress` the model map carries beside the score, which exists only to point at a
-///     page nothing reads.
+///     block nothing reads.
 ///
-/// BOTH RANGES, AND THE OPERATOR'S IS THE NARROW ONE. The page COUNT per member is one at either
+/// BOTH RANGES, AND THE OPERATOR'S IS THE NARROW ONE. The block COUNT per member is one at either
 /// width -- routing takes the object key and never sees the component -- so the per-member figure
 /// is range-INDEPENDENT, and that is itself the finding: narrowing the range does not reduce the
 /// shadow at all, it only decides how many containers share a bucket. The histograms are reported
@@ -993,7 +993,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         );
 
         // Per member: the structures whose count IS the member count, plus the name on the heap
-        // and the address the model map holds to reach a page nothing reads.
+        // and the address the model map holds to reach a block nothing reads.
         // No `ComponentBlocks` term: the object lookup holds one slot per OBJECT, so it adds
         // nothing that scales with members. It used to be charged here, once per member.
         let structural = index_width + address_width;
@@ -1034,7 +1034,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
     // THE RANGE-INDEPENDENCE CLAIM, asserted rather than left to the reader: the per-member shadow
     // is the same at both widths, because routing takes the OBJECT KEY and never sees the
-    // component, so a container's members are one bucket's pages at any range.
+    // component, so a container's members are one bucket's blocks at any range.
     let (wide_range, wide, _, wide_max) = per_member[0];
     let (narrow_range, narrow, _, narrow_max) = per_member[1];
     assert!(
@@ -1046,8 +1046,8 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 
     // THE ANTI-CONSTANT CONTROL, and it is on the mechanism rather than on the range. The claim
     // above is only interesting because a container's members SHARE one bucket: if every member
-    // landed in a bucket of its own, the widest bucket would hold one page and the per-member
-    // figure would be a statement about single-page buckets instead. Both arms must reach a bucket
+    // landed in a bucket of its own, the widest bucket would hold one block and the per-member
+    // figure would be a statement about single-block buckets instead. Both arms must reach a bucket
     // holding the whole container.
     //
     // WHAT THIS FIXTURE DOES NOT EXERCISE, said here rather than implied: at CONTAINER_KEYS keys
@@ -1079,14 +1079,14 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
 /// WHAT ONE MORE MEMBER REWRITES TODAY, AGAINST WHAT ONE PACKED BUFFER WOULD.
 ///
 /// This is the cost a packed representation would ADD, and it is the reason this module measures
-/// rather than converts. Today a `ZSetAdd` into an existing container appends ONE page of the
+/// rather than converts. Today a `ZSetAdd` into an existing container appends ONE block of the
 /// member's own width; the container's other members are not touched. A single packed buffer per
-/// container has one page, so the same write rewrites all of it.
+/// container has one block, so the same write rewrites all of it.
 ///
 /// THE "AFTER" IS MEASURED, NOT MODELLED. `zset_index_serde` already writes exactly the packed
 /// shape -- `(member bytes, (score, address))` per key -- so the buffer's length is taken from the
 /// engine's own `rmp_serde` encoding of a real container's members, with the address dropped
-/// because a packed member has no page of its own to point at. A projection from a rule would be a
+/// because a packed member has no block of its own to point at. A projection from a rule would be a
 /// model; this is the encoder.
 ///
 /// rust-internal: reads the engine's own index encoder, no product behaviour
@@ -1106,15 +1106,15 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
          at the wrong container size"
     );
 
-    // TODAY: one more member is one more page, of the member's own width. Taken off the index
-    // rather than from the command: the page the write actually filed.
+    // TODAY: one more member is one more block, of the member's own width. Taken off the index
+    // rather than from the command: the block the write actually filed.
     //
-    // IDENTIFIED BY SET DIFFERENCE ON THE ADDRESS, NOT BY NAME. The new page used to be found with
-    // `page.component == zset_component(&member)`, and an entry carries no component -- so that
-    // filter matched nothing and the arm failed with "the new member's page is not identifiable in
+    // IDENTIFIED BY SET DIFFERENCE ON THE ADDRESS, NOT BY NAME. The new block used to be found with
+    // `block.component == zset_component(&member)`, and an entry carries no component -- so that
+    // filter matched nothing and the arm failed with "the new member's block is not identifiable in
     // the index". The addresses held before the write are recorded here and the one address that is
-    // new afterwards IS the page the write filed. That is a stricter identification than the name
-    // was, because it cannot match a page the write did not create.
+    // new afterwards IS the block the write filed. That is a stricter identification than the name
+    // was, because it cannot match a block the write did not create.
     let before_addresses: BTreeSet<(u64, u64, u64)> = zset_blocks(&engine)
         .iter()
         .map(|block| {
@@ -1159,7 +1159,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
          addresses the write created, not one",
         added.len()
     );
-    // The stored page is the member plus the per-member record framing. Taken off the index, so
+    // The stored block is the member plus the per-member record framing. Taken off the index, so
     // this is the length the write actually filed rather than the width it was handed.
     let today_block_bytes = added[0].address.length() as usize;
     assert!(

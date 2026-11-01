@@ -1,46 +1,46 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A CARRIED PAGE NOW STATES WHICH ELEMENT IT IS, AND THAT IS WHAT FREES THE OBJECT ID.
+//! A CARRIED BLOCK NOW STATES WHICH ELEMENT IT IS, AND THAT IS WHAT FREES THE OBJECT ID.
 //!
 //! # THE HOLE THIS CLOSES, MEASURED BEFORE IT WAS CLOSED
 //!
-//! `block_in_wal::read_block` serves a page whose only durable copy is its WAL record. It resolves
-//! a record and then picks one page out of it. Until this change the only thing it could pick by
+//! `block_in_wal::read_block` serves a block whose only durable copy is its WAL record. It resolves
+//! a record and then picks one block out of it. Until this change the only thing it could pick by
 //! was the object id:
 //!
 //! ```text
-//!     pages.iter().find(|page| page.object_id == object_id)
+//!     blocks.iter().find(|block| block.object_id == object_id)
 //! ```
 //!
 //! `StagedBlock` was `{ object_id, bytes }` and nothing else, so the object id was not merely the
-//! registry's KEY -- it was the record's only discriminator BETWEEN ITS OWN PAGES. And one record
+//! registry's KEY -- it was the record's only discriminator BETWEEN ITS OWN BLOCKS. And one record
 //! routinely carries many: `append_batch_as_one_record` puts a whole batch in one record, so a
-//! batch writing twenty-five fields of one hash writes one record holding twenty-five pages.
+//! batch writing twenty-five fields of one hash writes one record holding twenty-five blocks.
 //!
 //! Measured on `ddecb8e10`, driven through the product's own read, before any line of this change:
 //!
 //! ```text
 //!     today (kind:key:component)      2 / 2 correct, 0 wrong bytes, 0 missing
 //!     component-free id               1 / 2 correct, 1 WRONG BYTES, 0 missing
-//!     at batch scale                  96.00% of hash pages unreachable (200 pages, 8 groups)
-//!     string control                  0.00%, 200 pages exercised
+//!     at batch scale                  96.00% of hash blocks unreachable (200 blocks, 8 groups)
+//!     string control                  0.00%, 200 blocks exercised
 //! ```
 //!
-//! The losing page was served the FIRST page's BYTES rather than answering missing. `find` returns
+//! The losing block was served the FIRST block's BYTES rather than answering missing. `find` returns
 //! the first match and cannot see an ambiguity, so a caller asking for one field of a hash was
-//! handed a plausible page of a different field, on the one path that exists to stop a durably
+//! handed a plausible block of a different field, on the one path that exists to stop a durably
 //! acknowledged write reading as missing.
 //!
 //! # WHAT CHANGED
 //!
-//! `StagedBlock` gained `component: Option<Arc<str>>` -- which element of the object this page
+//! `StagedBlock` gained `component: Option<Arc<str>>` -- which element of the object this block
 //! holds -- and both in-record `find` sites now test it. The registry key gained it too. The
 //! numbers above are the BEFORE; the tests here are the AFTER, on the same read path.
 //!
 //! # WHY THE COMPONENT AND NOT `BlockAddress::block_id`
 //!
-//! The ordinal was the other candidate, and #2008 threaded a real one onto container pages. FOUR
+//! The ordinal was the other candidate, and #2008 threaded a real one onto container blocks. FOUR
 //! of the five reasons it loses are already measured elsewhere in this tree and are CITED rather
 //! than re-derived here:
 //!
@@ -49,7 +49,7 @@
 //!   2. #2008: "`max` FALLS after a delete and the next insert is handed the ordinal just freed...
 //!      a reader that treated the ordinal as naming a particular element would be silently corrupt
 //!      the moment it happened." Driven there by `the_ordinal_names_a_position_and_a_delete_frees_it`.
-//!   3. #2008 again: past an object's 65,535th element the ordinal is left at 0, so those pages
+//!   3. #2008 again: past an object's 65,535th element the ordinal is left at 0, so those blocks
 //!      share it. Driven by `past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking`.
 //!   4. #1996: the delta fold delivers elements whose durable-map entry was never written, and for
 //!      those the component is the ONLY copy of the member.
@@ -61,7 +61,7 @@
 //! **It fails at READ time**: the asynchronous arm of `append_value_inner` builds its address with
 //! `BlockAddress::try_from_parts(HOT_BLOCK_SLAB_ID, ticket, len, None, object_id)` -- `block_id`
 //! is `None` -- and that synthetic address is the one `is_wal_resident` sends down this path. So
-//! on the very path a carried page exists to serve, there is no ordinal on the address to read
+//! on the very path a carried block exists to serve, there is no ordinal on the address to read
 //! back. `a_wal_resident_address_carries_no_ordinal_to_read_back` measures it.
 //!
 //! # WHAT THIS DOES NOT BUY
@@ -82,7 +82,7 @@ const OPERATOR_END: u32 = 1023;
 /// rows below are comparable to them line for line rather than merely similar.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// The CONTROL population. A string page's component is already `None`, so every transformation
+/// The CONTROL population. A string block's component is already `None`, so every transformation
 /// this module measures is the IDENTITY on it and the mechanism predicts no effect whatever.
 const ROUTED_KEYS: usize = 200;
 
@@ -131,7 +131,7 @@ fn ack_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// The value a field is written with, distinct per (key, field) so that serving one field's page
+/// The value a field is written with, distinct per (key, field) so that serving one field's block
 /// for another is DETECTABLE rather than a coincidence of equal bytes.
 fn hash_value(k: usize, f: usize) -> Vec<u8> {
     format!("h{k}-f{f}-value-{}", "x".repeat(16)).into_bytes()
@@ -163,12 +163,12 @@ fn seed_routed_strings(engine: &TemporalEngine) {
     );
 }
 
-/// Every live page of one kind, as `(object_key, component)`, read off the page entries themselves.
-/// EVERY LIVE PAGE OF A KIND, WITH THE ELEMENT IT HOLDS -- READ FROM THE AUTHORITY FOR THAT.
+/// Every live block of one kind, as `(object_key, component)`, read off the block entries themselves.
+/// EVERY LIVE BLOCK OF A KIND, WITH THE ELEMENT IT HOLDS -- READ FROM THE AUTHORITY FOR THAT.
 ///
 /// RE-ATTRIBUTED, AND THE OLD BODY IS WHY THIS COMMENT IS LONG. It returned the entry's own
 /// element name until the width step removed that field, and was then left handing back a
-/// hardcoded `None::<String>` under a note saying "an entry names a page, not an element -- this
+/// hardcoded `None::<String>` under a note saying "an entry names a block, not an element -- this
 /// module's subject". That made the two groupings in
 /// `the_element_beside_the_id_makes_every_block_of_a_batch_reachable` the SAME computation: "id
 /// alone" and "id + element" both grouped on `(id, None)`, so the arm's deliverable compared a
@@ -176,12 +176,12 @@ fn seed_routed_strings(engine: &TemporalEngine) {
 ///
 /// THE ELEMENT NAME IS STILL CARRIED -- JUST NOT THERE. `wal::StagedBlock` keeps a per-element
 /// discriminator and says in its own doc why it has to ("the record's only discriminator BETWEEN
-/// ITS OWN PAGES"), which is this module's whole subject. What moved is where a READER recovers it
-/// from: `shard.hashes` is durable and is the authority for which field a hash page holds.
+/// ITS OWN BLOCKS"), which is this module's whole subject. What moved is where a READER recovers it
+/// from: `shard.hashes` is durable and is the authority for which field a hash block holds.
 ///
 /// JOINED BY ADDRESS, WHICH IS THE JOIN THE ENGINE ITSELF MAKES. The resident map holds an
 /// `ElementEntry` per field and the index entry holds the same address, so the address is what
-/// identifies a page in both. `RecordedMap::block_an_element_vacates` asks this exact question on
+/// identifies a block in both. `RecordedMap::block_an_element_vacates` asks this exact question on
 /// the write path, so this is not a fixture-only correspondence.
 fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<String>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -242,32 +242,32 @@ fn carrier(label: &str) -> Command {
 }
 
 // =================================================================================================
-// 1. THE DELIVERABLE: THE SAME READ PATH, A COMPONENT-FREE ID, AND BOTH PAGES BACK.
+// 1. THE DELIVERABLE: THE SAME READ PATH, A COMPONENT-FREE ID, AND BOTH BLOCKS BACK.
 // =================================================================================================
 
-/// TWO CARRIED PAGES OF ONE KEY, SHARING AN OBJECT ID, EACH SERVE THEIR OWN BYTES.
+/// TWO CARRIED BLOCKS OF ONE KEY, SHARING AN OBJECT ID, EACH SERVE THEIR OWN BYTES.
 ///
 /// This is the test the change exists to pass. It does not simulate `read_block`; it calls it.
 ///
-/// A record is appended carrying two pages with different bytes -- the shape a batch writing two
+/// A record is appended carrying two blocks with different bytes -- the shape a batch writing two
 /// fields of one hash produces -- and registered exactly as `register_record` registers a real
-/// append. **Both pages carry the SAME object id**, the one a component-free
+/// append. **Both blocks carry the SAME object id**, the one a component-free
 /// `stable_block_object_id` would hand them. Before this change that arm read 1 of 2 correctly and
-/// served the first page's bytes for the second. It now reads 2 of 2, because the record says
-/// which element each page is and `read_block` asks for one.
+/// served the first block's bytes for the second. It now reads 2 of 2, because the record says
+/// which element each block is and `read_block` asks for one.
 ///
 /// THREE ARMS, and the third is what makes the first mean anything:
 ///
-///   * TODAY'S IDENTITY, the control. Two distinct ids, both pages back. If this arm ever fails,
+///   * TODAY'S IDENTITY, the control. Two distinct ids, both blocks back. If this arm ever fails,
 ///     nothing below is attributable to anything.
-///   * THE COMPONENT-FREE IDENTITY, the deliverable. One id, two components, both pages back.
-///   * ONE ID AND ONE COMPONENT, the NEGATIVE control. Two pages that really are indistinguishable
+///   * THE COMPONENT-FREE IDENTITY, the deliverable. One id, two components, both blocks back.
+///   * ONE ID AND ONE COMPONENT, the NEGATIVE control. Two blocks that really are indistinguishable
 ///     still collapse to 1 of 2. Without it, a `read_block` that had simply started returning
-///     both pages for any question would pass the second arm exactly as a correct one does.
+///     both blocks for any question would pass the second arm exactly as a correct one does.
 ///
-/// THREE OUTCOMES, NOT TWO, and the split is the whole severity of the finding this closes. A page
+/// THREE OUTCOMES, NOT TWO, and the split is the whole severity of the finding this closes. A block
 /// that reads MISSING is a read fault: the caller falls through and the WAL replay still holds the
-/// value. A page that reads ANOTHER PAGE'S BYTES is silent corruption. Folding them into one
+/// value. A block that reads ANOTHER BLOCK'S BYTES is silent corruption. Folding them into one
 /// "wrong" counter would let this test pass at 1/2 whichever of them the collapse produced.
 ///
 /// rust-internal: drives the WAL append and the block-in-WAL read directly, no external surface
@@ -291,7 +291,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
     // reachable only as a simulation when this module was written; it is now simply the id.
     let free = stable_block_object_id(1, "hash", "hk");
     // THE CONTROL'S TWO IDS. The folded identity used to produce a distinct id per element, and
-    // there is no longer a call that does. What the control is FOR is unchanged -- two pages
+    // there is no longer a call that does. What the control is FOR is unchanged -- two blocks
     // bearing DIFFERENT ids must both come back, or nothing below attributes anything to the
     // change -- so the two distinct numbers come from two distinct keys instead.
     let distinct_a = stable_block_object_id(1, "hash", "hk:f0");
@@ -414,23 +414,23 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
 
 /// AT BATCH SCALE: 96.00% UNREACHABLE ON THE ID ALONE, 0.00% ONCE THE ELEMENT IS BESIDE IT.
 ///
-/// Every live page is grouped twice: by the identity a component-free `stable_block_object_id`
-/// would give it, and by the PAGE KEY this change made the record and the registry use, which is
-/// that identity plus the element. A group of size N > 1 is N pages the lookup cannot tell apart,
+/// Every live block is grouped twice: by the identity a component-free `stable_block_object_id`
+/// would give it, and by the BLOCK KEY this change made the record and the registry use, which is
+/// that identity plus the element. A group of size N > 1 is N blocks the lookup cannot tell apart,
 /// of which at most one is reachable.
 ///
 /// THE FIRST GROUPING IS NOT A BUG BEING REPORTED -- it is the hazard the second grouping removes,
 /// and it is here so the two are read off ONE population rather than two runs. This module's own
 /// BEFORE numbers put it at 96.00%, and it reproduces here unchanged, because this change does not
-/// touch the index: it changes what the RECORD can say about its own pages.
+/// touch the index: it changes what the RECORD can say about its own blocks.
 ///
-/// THE CONTROL IS THE STRING ARM and it is why the hash arm means anything. A string page's
+/// THE CONTROL IS THE STRING ARM and it is why the hash arm means anything. A string block's
 /// component is already `None`, so adding the element to the key is the IDENTITY on it: the
-/// mechanism predicts every group is size one under BOTH groupings and no page is ever lost. Its
-/// exercised page count is asserted first, because a control that read nothing reports 0.00% lost
+/// mechanism predicts every group is size one under BOTH groupings and no block is ever lost. Its
+/// exercised block count is asserted first, because a control that read nothing reports 0.00% lost
 /// and "not exercised" wears the face of "did not move".
 ///
-/// rust-internal: reads a seeded store's own page entries, no external surface
+/// rust-internal: reads a seeded store's own block entries, no external surface
 #[test]
 fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -537,18 +537,18 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
 
 /// A WAL-RESIDENT ADDRESS CARRIES NO ORDINAL, SO THE READ COULD NOT HAVE USED ONE.
 ///
-/// The mandate asked whether a page ordinal is available at STAGE time. IT IS, and saying
+/// The mandate asked whether a block ordinal is available at STAGE time. IT IS, and saying
 /// otherwise would have been wrong: `append_value_of_object` takes `block_ordinal` as an argument
 /// and `container_block_ordinal` computes it immediately before the call. The stage is not where an
 /// ordinal fails.
 ///
 /// IT FAILS AT READ TIME. `read_block` is reached from `read_block_bytes`, whose handle is a
-/// `BlockAddress`. For a page served out of its record that address is the SYNTHETIC one the
+/// `BlockAddress`. For a block served out of its record that address is the SYNTHETIC one the
 /// asynchronous arm minted, and that arm passes `None` for `block_id`. So the reader has no
 /// ordinal to pass even when the writer had one.
 ///
 /// Driven on real writes through the product, not on a hand-built address: the store is opened
-/// with asynchronous storage so the pages stay log-resident, the addresses are read off the served
+/// with asynchronous storage so the blocks stay log-resident, the addresses are read off the served
 /// index, and every one is asserted to be WAL-resident first -- an arm that measured only durable
 /// addresses would report "no ordinals" for the wrong reason.
 ///
@@ -559,7 +559,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
     let engine = engine_on(dir.path());
     load_on(&engine);
     // Asynchronous storage is a per-REQUEST replication mode here, and it is what makes a
-    // page stay in its record: the write never hands the page to the block store, so its
+    // block stay in its record: the write never hands the block to the block store, so its
     // address is the synthetic one this test is about.
     for k in 0..CONTAINER_KEYS {
         for f in 0..MEMBERS_PER_KEY {
@@ -629,25 +629,25 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
 // 4. WHAT THE RECORD GREW.
 // =================================================================================================
 
-/// BYTES PER STAGED PAGE, ON THE WIRE AND ON DISK, AT TWO CORPUS SIZES.
+/// BYTES PER STAGED BLOCK, ON THE WIRE AND ON DISK, AT TWO CORPUS SIZES.
 ///
-/// TWO FIGURES, BECAUSE THEY ARE NOT THE SAME NUMBER AND ONLY ONE OF THEM IS PER PAGE.
+/// TWO FIGURES, BECAUSE THEY ARE NOT THE SAME NUMBER AND ONLY ONE OF THEM IS PER BLOCK.
 ///
-///   * THE WIRE COST is what the field occupies in the protobuf body of one staged page, read
+///   * THE WIRE COST is what the field occupies in the protobuf body of one staged block, read
 ///     from the writer's own length function rather than from a second copy of the rule -- the
 ///     same function that RESERVES the buffer the writer fills, so a figure here that disagreed
 ///     with the writer would be a record written into the wrong number of bytes.
 ///   * THE DISK COST is what the framed, zstd-compressed record actually grows by. It is
-///     SUBLINEAR in the page count and gets cheaper the more pages a record carries, because the
+///     SUBLINEAR in the block count and gets cheaper the more blocks a record carries, because the
 ///     element name repeats and that is exactly what a compressor removes. Reporting only the
 ///     wire cost would overstate what this change costs a real log; reporting only the disk cost
-///     would hide that the field is per page.
+///     would hide that the field is per block.
 ///
 /// `ALLOC_CHUNK_BYTES` is a FLOOR above the request rather than an equality (#1969 measured a
 /// request of 104 landing in 128), so the chunk is reported beside the request and never instead
 /// of it.
 ///
-/// THE CONTROL IS THE COMPONENT-LESS PAGE. A whole-object page's component is `None`, the writer
+/// THE CONTROL IS THE COMPONENT-LESS BLOCK. A whole-object block's component is `None`, the writer
 /// skips the field entirely, and the record is byte-identical to one written before the field
 /// existed. It must report +0.00% on BOTH figures -- and its exercised bytes are asserted non-zero
 /// first, because a control that encoded nothing reports +0.00% for the wrong reason.
@@ -687,8 +687,8 @@ fn what_an_element_named_block_adds_to_the_record() {
             .len()
     }
 
-    // The writer's own measurement, for ONE page. `implied_object_id` is `None` here because a
-    // record carrying many pages never elides an object id -- which is precisely the record shape
+    // The writer's own measurement, for ONE block. `implied_object_id` is `None` here because a
+    // record carrying many blocks never elides an object id -- which is precisely the record shape
     // this whole module is about.
     fn wire_len(component: Option<&str>, payload: usize) -> usize {
         crate::raft::wal_proto::staged_block_body_len(&block_of(0, component, payload), None)
@@ -721,8 +721,8 @@ fn what_an_element_named_block_adds_to_the_record() {
         }
     }
 
-    // THE CONTROL, on both figures. A component-less page cannot be moved by adding a component
-    // field to the page, because the writer never emits the field for it.
+    // THE CONTROL, on both figures. A component-less block cannot be moved by adding a component
+    // field to the block, because the writer never emits the field for it.
     for (label, wire) in &wire_rows {
         if label.starts_with("CONTROL") {
             assert_eq!(
@@ -742,7 +742,7 @@ fn what_an_element_named_block_adds_to_the_record() {
         }
     }
 
-    // The WIRE cost is per page, so it cannot depend on how many pages the record holds. The disk
+    // The WIRE cost is per block, so it cannot depend on how many blocks the record holds. The disk
     // cost deliberately can, and the two assertions below are what keep the two apart.
     let named_wire: Vec<i64> = wire_rows
         .iter()
@@ -801,13 +801,13 @@ fn what_an_element_named_block_adds_to_the_record() {
 /// THE ALLOCATIONS, which a byte count cannot see. The log is on the write path.
 ///
 /// `stage` is charged to `CarriedBlock`, and this change adds the component's own copy to that same
-/// class deliberately -- it is a cost of carrying the page, and charging it elsewhere would let it
+/// class deliberately -- it is a cost of carrying the block, and charging it elsewhere would let it
 /// disappear from the class that exists to measure exactly this.
 ///
 /// The control is the same staging with no component: it must add no allocation at all, because
 /// `None.map(Arc::from)` allocates nothing.
 ///
-/// rust-internal: stages pages into the thread-local buffer, no store and no external surface
+/// rust-internal: stages blocks into the thread-local buffer, no store and no external surface
 #[cfg(feature = "alloc-probe")]
 #[test]
 fn what_an_element_named_block_allocates_when_it_is_staged() {
@@ -865,14 +865,14 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
 }
 
 // =================================================================================================
-// 5. PAGES PER RECORD -- THE REASON ANY OF THIS MATTERS.
+// 5. BLOCKS PER RECORD -- THE REASON ANY OF THIS MATTERS.
 // =================================================================================================
 
-/// HOW MANY PAGES ONE RECORD CARRIES. HISTOGRAM, NEVER A MEAN.
+/// HOW MANY BLOCKS ONE RECORD CARRIES. HISTOGRAM, NEVER A MEAN.
 ///
-/// A record holding one page has no ambiguity to resolve, so the whole finding rests on records
+/// A record holding one block has no ambiguity to resolve, so the whole finding rests on records
 /// holding several. `append_batch_as_one_record` is the engine's default path for a batch that
-/// produced outcomes, so the many-page record is the NORMAL shape for exactly the container writes
+/// produced outcomes, so the many-block record is the NORMAL shape for exactly the container writes
 /// this concerns rather than a corner case.
 ///
 /// Read off the written log rather than predicted from the batch size: a record is what the log
@@ -943,7 +943,7 @@ fn how_many_blocks_one_record_carries() {
 // 6. THE GUARANTEE THE RECORD MAKES IS NOT WEAKENED.
 // =================================================================================================
 
-/// THE RECORD STILL CARRIES EVERY PAGE, AND EVERY PAGE STILL ROUND-TRIPS THROUGH THE WIRE.
+/// THE RECORD STILL CARRIES EVERY BLOCK, AND EVERY BLOCK STILL ROUND-TRIPS THROUGH THE WIRE.
 ///
 /// This is the refusal condition the mandate named: if the record could not carry an element
 /// identity without weakening what a carried record guarantees, the change does not ship. The
@@ -962,10 +962,10 @@ fn how_many_blocks_one_record_carries() {
 fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoders() {
     use crate::wal::{decode_wal_line, encode_wal_line_for_test, WriteAheadLogRecord};
 
-    // Deliberately mixed: named elements, a whole-object page, and an EMPTY element name. The
+    // Deliberately mixed: named elements, a whole-object block, and an EMPTY element name. The
     // empty one is not decoration -- `put_len_delimited` skips an empty payload, so an encoder
-    // that reused it here would turn `Some("")` into `None` and make an element page read as its
-    // key's whole-object page.
+    // that reused it here would turn `Some("")` into `None` and make an element block read as its
+    // key's whole-object block.
     let blocks: Vec<StagedBlock> = [
         (Some("f0"), b"zero".to_vec()),
         (Some("f1"), b"one".to_vec()),
@@ -1043,7 +1043,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 // 7. CARRIED OVER FROM #2011, UNCHANGED, BECAUSE IT STILL HOLDS.
 // =================================================================================================
 //
-// #2011 -- the refutation this PR answers -- established that a hash page's FIELD NAME is
+// #2011 -- the refutation this PR answers -- established that a hash block's FIELD NAME is
 // independently recoverable, which is what made a component-free identity worth pursuing at all.
 // Nothing here changes that, so the measurement is carried over verbatim rather than rewritten: it
 // asks a different question from every test above, and re-deriving a figure that still holds would
@@ -1056,20 +1056,20 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 //     grouping; `the_element_beside_the_id_makes_every_block_of_a_batch_reachable` measures that
 //     grouping AND the one this change introduces, off ONE population, and keeps its 96.00% row.
 //   * `two_carried_pages_sharing_an_object_id_serve_one_anothers_bytes` asserted 1/2. That is now
-//     2/2 for two pages of DIFFERENT elements, and its 1/2 survives as the NEGATIVE CONTROL arm of
-//     the first test above, where two pages sharing BOTH terms still collapse.
+//     2/2 for two blocks of DIFFERENT elements, and its 1/2 survives as the NEGATIVE CONTROL arm of
+//     the first test above, where two blocks sharing BOTH terms still collapse.
 //   * `a_carried_page_carries_no_ordinal_so_a_fourth_key_term_cannot_reach_the_record` asserted
 //     `StagedBlock` has exactly two fields, and said in its own words: "If an ordinal has been
 //     added, the WAL wire format has moved and the argument in this module needs RE-MEASURING
 //     rather than re-reading." It has moved, and `a_wal_resident_address_carries_no_ordinal_to_read_back`
 //     is that re-measurement -- on the read side, which is where the ordinal actually fails.
 
-/// A HASH PAGE'S FIELD NAME IS HELD BESIDE THE ID, NOT INSIDE IT, AND SURVIVES A RELOAD.
+/// A HASH BLOCK'S FIELD NAME IS HELD BESIDE THE ID, NOT INSIDE IT, AND SURVIVES A RELOAD.
 ///
-/// THE SOURCE MOVED AND THE CLAIM DID NOT. This read the name off the page entry:
+/// THE SOURCE MOVED AND THE CLAIM DID NOT. This read the name off the block entry:
 /// "`BlockIndex::component: Option<Arc<str>>` is its own `#[serde]` field, written to the index and
 /// read back from it. `bucket_index_component_block_addresses(shard, model_id, object_key)` ... takes
-/// NO component and returns `(page.component.clone(), page.address.clone())` off the entry." That
+/// NO component and returns `(block.component.clone(), block.address.clone())` off the entry." That
 /// field is gone and the walk recovered 0 of 25 names.
 ///
 /// The name is recovered from `shard.hashes` instead, and the claim is the same one: it is held
@@ -1084,13 +1084,13 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 ///         pairs.iter().map(|_| stable_block_object_id(1, "hash", &key)).collect();
 ///     assert_eq!(free_ids.len(), 1, ...);
 ///
-/// The closure IGNORES its item and returns the same value for every page, so the set has one
+/// The closure IGNORES its item and returns the same value for every block, so the set has one
 /// element for any non-empty input and the assertion could only ever fail on an EMPTY one. It was a
-/// real measurement when the id was computed from the element name -- then two pages of one key
+/// real measurement when the id was computed from the element name -- then two blocks of one key
 /// genuinely produced two ids, and collapsing them to one was the thing being shown.
 /// `stable_block_object_id` takes no element at all now, so "every page of this key carries one id"
 /// is a property of its SIGNATURE and not something a fixture can observe. The only content in that
-/// assertion was its emptiness check, which is kept as an explicit page-count floor with its own
+/// assertion was its emptiness check, which is kept as an explicit block-count floor with its own
 /// message.
 ///
 /// rust-internal: drives the engine's own unload/load cycle, no external surface

@@ -46,7 +46,7 @@
 //!
 //! One fixture, built by [`build_fixture`]:
 //!
-//!   1. `StringSet` on the key, giving it a live page;
+//!   1. `StringSet` on the key, giving it a live block;
 //!   2. a `context_nodes` entry planted under the SAME key, as a clone of that live string entry
 //!      -- `ElementEntry` has no public constructor, and an address no slab holds would be
 //!      dropped on load for a reason that is not the door;
@@ -54,7 +54,7 @@
 //!      two halves `delta_key_state_change` fires on, so `capture_key_states` runs and writes a
 //!      blob for the key -- and the blob carries `context_nodes`, because the map holds it. It is
 //!      `CommonExpire` and not `StringSetEx` on purpose: a value-replacing write would relocate
-//!      the string's page and leave the planted entry naming a superseded address, which is a
+//!      the string's block and leave the planted entry naming a superseded address, which is a
 //!      second variable.
 //!
 //! The controls:

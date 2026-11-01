@@ -699,7 +699,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         size_of::<crate::block_store::ElementEntry>()
     );
     // 24, HAVING BEEN 40 AND 56: the entry stopped naming its element, and then stopped carrying
-    // its object identity at all. The proposal this arm refuses -- a page's address fitting in a
+    // its object identity at all. The proposal this arm refuses -- a block's address fitting in a
     // tagged 64-bit word -- is refused by the ADDRESS being 16 bytes on its own, asserted just
     // above, so the entry's width moving does not soften it: the entry is still three words, the
     // address inside it is still two, and a 64-bit word is one.
@@ -909,7 +909,7 @@ struct LiveNodeMirror {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -1070,7 +1070,7 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         "the tagged node is {} bytes, not 56",
         size_of::<TaggedNode>()
     );
-    // 40, not 56 and not 72: this payload holds a page entry, and the entry has shed sixteen bytes
+    // 40, not 56 and not 72: this payload holds a block entry, and the entry has shed sixteen bytes
     // for the second time -- it stopped naming its element, and then stopped carrying its object
     // identity -- on top of the eight its address shed with the object id. The reconstruction above
     // is symbolic and followed on its own ALL THREE times; this literal has had to be edited all
@@ -2223,8 +2223,8 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
 //
 // THE SECOND HALF COULD ONLY EVER HAVE FAILED. Its closing assertion was `many_total > 0`, with
 // the message "if it reached ZERO Many arms then a field is not a component of its key's object
-// and the whole reading of this level is wrong". Once the element name came off the page entry,
-// `insert_object_block_lookup` filed every page of an object under one nameless slot -- so every
+// and the whole reading of this level is wrong". Once the element name came off the block entry,
+// `insert_object_block_lookup` filed every block of an object under one nameless slot -- so every
 // object had exactly one component, no `Many` arm could arise, and `many_total` was 0 for any
 // fixture at all. The arm carries `#[ignore]` and runs only by name, so it never reported the
 // conclusion its own failure message spelled out.

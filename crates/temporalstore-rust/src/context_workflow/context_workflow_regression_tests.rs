@@ -558,7 +558,7 @@ fn a_node_and_its_level_two_summary_share_one_embedding() {
     let summary = summaries.first().expect("the extract wrote a level-2 summary");
     assert_eq!(summary.text, report.l1, "the summary that embeds the node's own text");
 
-    // The NODE as stored, not as reported. The summary above came back through a page, and every
+    // The NODE as stored, not as reported. The summary above came back through a block, and every
     // stored vector form rounds -- four decimal places for the uniformly-scaled encoding that is
     // on by default, a per-vector scale for the int8 one -- so the value in the report is not the
     // value on disk. Comparing the two would not be asserting that one vector reached both
@@ -3586,7 +3586,7 @@ fn which_ingest_write_grows_with_the_store() {
 /// One add allocates 5,293 / 13,099 / 32,629 at 40 / 120 / 320 memories while a bare engine write is
 /// flat at 188 / 188 / 190, so the growth sits above the engine inside `ingest_extract_context`.
 /// That function closes its coalescing window and calls `reconstruct_bucket_index_now`, which walks
-/// every live page in the shard.
+/// every live block in the shard.
 ///
 /// Measuring the reconstruct alone against the same rungs decides it: growth here means the walk IS
 /// the cost and the remedy is for context writes to maintain the index rather than ask for a
@@ -4195,7 +4195,7 @@ fn what_one_add_costs_end_to_end() {
             dir.path().join("indexes"),
         );
         engine.load_shard(1);
-        // Pages visited per site, which is where an O(corpus) add would show itself: a per-write
+        // Blocks visited per site, which is where an O(corpus) add would show itself: a per-write
         // rebuild that scans a bucket grows with the bucket, so its visit count grows with the
         // square of the ingest while the call count stays linear. Counting the work beats timing
         // it -- a duration on a loaded machine cannot tell those two apart.
@@ -5076,7 +5076,7 @@ fn a_copy_from_a_replaced_encoder_is_declined_and_counted() {
 /// counts. Yet `ContextUpsertSummary` costs 1,553 allocations at 40 and 10,667 at 320 while
 /// `ContextUpsertNode` stays at ~190. The cost is therefore not the write but what the post-write
 /// path does after it: maintain the bucket index for the touched keys, or -- when maintenance does
-/// not cover them -- rebuild it, walking every live page in the shard.
+/// not cover them -- rebuild it, walking every live block in the shard.
 ///
 /// `live_block_scan_entries` counts exactly the entries that walk materializes, so it separates the
 /// two outcomes by measurement rather than by reading:

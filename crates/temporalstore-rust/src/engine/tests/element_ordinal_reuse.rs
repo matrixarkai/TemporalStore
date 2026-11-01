@@ -2,12 +2,12 @@
 // Copyright 2026 MatrixArkAI
 
 //! AN ELEMENT ORDINAL WOULD HAVE TO BE HANDED OUT BY A COUNTER, AND EVERY PLACE TO KEEP ONE IS
-//! REBUILT FROM THE PAGES THAT LOSE IT.
+//! REBUILT FROM THE BLOCKS THAT LOSE IT.
 //!
 //! # WHAT WAS ASKED
 //!
-//! `BlockIndex.component` is `Option<Arc<str>>` -- sixteen bytes on every page entry, plus one heap
-//! allocation per page for a name this engine RENDERED rather than received. For the container kinds
+//! `BlockIndex.component` is `Option<Arc<str>>` -- sixteen bytes on every block entry, plus one heap
+//! allocation per block for a name this engine RENDERED rather than received. For the container kinds
 //! the name is content-derived:
 //!
 //! ```text
@@ -35,10 +35,10 @@
 //! folded out of the delta log arrives".
 //!
 //! `apply_key_states` folds THIRTEEN maps and `sets`, `zsets`, `lists` and `hashes` are **not** among
-//! them, while `fold_delta_block_items` DOES restore the page items. So after a fold the index holds
-//! pages for elements the durable map never received, and for those the component is the ONLY copy of
+//! them, while `fold_delta_block_items` DOES restore the block items. So after a fold the index holds
+//! blocks for elements the durable map never received, and for those the component is the ONLY copy of
 //! the member. Driven with #1989's own fixture and the name made ordinal-shaped: the control comes back
-//! at 1.0 and the ordinal-named member comes back as `None`. Its bytes survive only in the page
+//! at 1.0 and the ordinal-named member comes back as `None`. Its bytes survive only in the block
 //! PAYLOAD, which the reconcile deliberately does not read.
 //!
 //! **An ordinal here is a lossy migration, so it was not built.** For it to be safe the FOLD must carry
@@ -49,14 +49,14 @@
 //! ## 1. A TOMBSTONE THAT KEEPS ITS NUMBER IN THE `max`
 //!
 //! **THIS SECTION HAS BEEN OVERTAKEN, AND WHAT OVERTOOK IT IS NOT THE ORDINAL.** It used to say there
-//! was no tombstone to keep a number in, because EVERY delete path removed the page: the per-element
+//! was no tombstone to keep a number in, because EVERY delete path removed the block: the per-element
 //! four went through `mark_bucket_index_block_deleted`, named for a mark it did not make, whose body
-//! was `block_index.retain(.., |_, page| ..false..)`. That was correct, and it is the reason the
+//! was `block_index.retain(.., |_, block| ..false..)`. That was correct, and it is the reason the
 //! reservation this section is about could not be built.
 //!
-//! There IS a per-element tombstone now, and it arrived for an unrelated reason: a container's pages
-//! became the statement of its membership, and a page nothing points at is a page no derivation can
-//! read. So a removal keeps an entry pointing at the page that records it.
+//! There IS a per-element tombstone now, and it arrived for an unrelated reason: a container's blocks
+//! became the statement of its membership, and a block nothing points at is a block no derivation can
+//! read. So a removal keeps an entry pointing at the block that records it.
 //!
 //! **IT STILL DOES NOT RESERVE THE NUMBER, and that is deliberate rather than incidental.** The
 //! freed ordinal is still handed to the next element --
@@ -72,7 +72,7 @@
 //! `state::container_block_ordinal`'s own doc sets out.
 //!
 //! AND THAT MATTERS MORE THAN A TIDIER MECHANISM, because the retained live ENTRY a removal leaves
-//! would have defeated the filter. An entry over a vacated page is not deleted, so a walk over live
+//! would have defeated the filter. An entry over a vacated block is not deleted, so a walk over live
 //! entries no longer falls after a removal -- which is exactly how this module's own probe broke:
 //! `next_element_ordinal_would_be` was `blocks_of(..).len()`, it reported one too many, and two arms
 //! read that as the engine having stopped reusing. It asks the allocator now. The hazard the old
@@ -89,10 +89,10 @@
 //! **THIS WIDENS #1990.** That issue names the whole-object path (`FeatureAppend`, `FeatureDelete`,
 //! `FeatureAppend`) and says of a partial removal that it "does not free a number, because for the
 //! container kinds no per-element number is assigned at all". True today, and it is true only because
-//! nothing is assigned: the page it would have been assigned to is removed by the same `retain`. The
+//! nothing is assigned: the block it would have been assigned to is removed by the same `retain`. The
 //! per-element path is the one an element ordinal would live on, and it is a removal too. It follows
 //! that #1976's published mechanism -- "the absence of a `!block.deleted` filter is what reserves the
-//! ordinal" -- is wrong on BOTH paths and not just the one #1990 corrected; `page.deleted` is written
+//! ordinal" -- is wrong on BOTH paths and not just the one #1990 corrected; `block.deleted` is written
 //! by the upsert and read by five filters, and no delete command in this engine ever sets it.
 //!
 //! ## 2. THE ONE TOMBSTONE THIS STORE DOES KEEP, AND WHY IT IS STILL NOT A RESERVATION
@@ -103,14 +103,14 @@
 //!
 //! **THE FIRST DRAFT OF THIS MODULE REFUTED IT ON THE WRONG GROUND AND THE TEST WENT RED.** The claim
 //! was that the reusing write clears it, reasoning off
-//! `deleted_object_index.remove(&object_id)` sitting four statements before the page insert. That
+//! `deleted_object_index.remove(&object_id)` sitting four statements before the block insert. That
 //! call was in `sync_bucket_index_object_blocks_with_mode` -- the WHOLE-OBJECT restate path -- and
 //! NOT in `upsert_bucket_index_block_inner`, the path every container ELEMENT write takes, which
 //! did `object_index.insert(object_id)` and never touched the tombstone. Measured then: after
-//! `ZSetAdd`, `ZSetRemove`, `ZSetAdd` of the same member the tombstone still held that page's
-//! object id, and a LIVE page's object reported `deleted` through the public report. **That
+//! `ZSetAdd`, `ZSetRemove`, `ZSetAdd` of the same member the tombstone still held that block's
+//! object id, and a LIVE block's object reported `deleted` through the public report. **That
 //! asymmetry was a reporting defect and is fixed**; the element path clears the id it files a live
-//! page for, and the test below holds the fixed arithmetic.
+//! block for, and the test below holds the fixed arithmetic.
 //!
 //! The reuse idea is refuted on three grounds that the fix does not touch, all in
 //! `the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot`:
@@ -119,7 +119,7 @@
 //!      ordinal N used?" and cannot answer "what is the highest?", so an assignment on it probes
 //!      one candidate at a time and cannot reach a ceiling without 65,535 probes.
 //!   2. **CLEARING IS WHAT KEEPS THE REPORT HONEST, AND A RESERVATION CANNOT ALLOW IT.** Both
-//!      write paths now drop the id: the element one for the page it files, and a whole-object
+//!      write paths now drop the id: the element one for the block it files, and a whole-object
 //!      restate for every address it republishes -- so an unrelated whole-object write discards
 //!      every element's reservation at once, and the element path discards its own on re-add.
 //!   3. **A RESERVATION IS NEVER CLEARED, AND THAT INVERTS ITS OWN MEASURED ECONOMICS.** The field's
@@ -129,8 +129,8 @@
 //!      per removed element in every bucket that has ever had a removal.
 //!
 //! **AND THE STALE TOMBSTONE IS A DEFECT IN ITS OWN RIGHT, FOUND IN PASSING.**
-//! `object_manager::runtime_report` reads `page.deleted || bucket.deleted() ||
-//! bucket.deleted_object_index.contains(&page.object_id())`, so a LIVE page whose member was once
+//! `object_manager::runtime_report` reads `block.deleted || bucket.deleted() ||
+//! bucket.deleted_object_index.contains(&block.object_id())`, so a LIVE block whose member was once
 //! removed and re-added reports its object `deleted` and is counted as a deleted block ref instead of
 //! a hot one. Reachable, not dead: `TemporalEngine::object_manager_runtime_report` is public and
 //! `recovery_sweep_compact` calls it twice. Driven through that public surface. FOUND, NOT FIXED --
@@ -141,7 +141,7 @@
 //!
 //! Both rejections are in the tree and both are about this.
 //!
-//! `next_block_index_for_object`, which is the existing page ordinal, states the design:
+//! `next_block_index_for_object`, which is the existing block ordinal, states the design:
 //!
 //! > Read from the blocks the object already has rather than from a counter, so it survives a restart
 //! > without anything having to be persisted for it.
@@ -149,12 +149,12 @@
 //! And `block_index_handle` records what the counter COST:
 //!
 //! > Derived rather than assigned, because handles are written to disk inside the lookup's refs. Two
-//! > processes holding the same page must compute the same handle or those refs point at nothing --
+//! > processes holding the same block must compute the same handle or those refs point at nothing --
 //! > which is what a counter did, silently, until a reload lost an object.
 //!
 //! **THE SECOND QUOTE IS NOT THE ONE THAT REFUTES THIS, AND SAYING SO IS THE POINT.** A handle is
 //! assigned and never stored, so it must be recomputable; an element ordinal would be a STORED field
-//! of the page, and a stored field does not have to be recomputed on load. Read carelessly the quote
+//! of the block, and a stored field does not have to be recomputed on load. Read carelessly the quote
 //! closes the question, and it does not. What closes it is the third clause of the same sentence
 //! applied to the ordinal's own home: **a reload lost an object because the number and the thing it
 //! named were recovered from different places.**
@@ -165,7 +165,7 @@
 //! three structures:
 //!
 //! ```text
-//!     CoreIndex.bucket_map            SERIALIZED      the pages -- max over them is the derivation
+//!     CoreIndex.bucket_map            SERIALIZED      the blocks -- max over them is the derivation
 //!                                                     #1990 shows dropping back
 //!     CoreIndex.object_block_lookup   skip_serializing rebuilt from the bucket map on load
 //!     ShardState.sets/zsets/lists     SERIALIZED      the durable maps #1989 made authoritative
@@ -175,9 +175,9 @@
 //! So the durable maps are the candidate, and they genuinely survive a reload -- asserted, not
 //! assumed. But the store's recovery contract is that **a stale index is treated exactly like an
 //! absent one and rebuilt from the log**, and the rebuild door is
-//! `reconcile_secondary_views_from_bucket_index`, which derives those same maps FROM THE PAGES and
+//! `reconcile_secondary_views_from_bucket_index`, which derives those same maps FROM THE BLOCKS and
 //! merges. A mark held in the durable map is therefore recomputed as a `max` over the elements the
-//! pages still hold -- which is the derivation the delete drops back. Driven below: the mark is 3
+//! blocks still hold -- which is the derivation the delete drops back. Driven below: the mark is 3
 //! before the delete, 3 after it in memory, and 2 after the reload.
 //!
 //! **A counter that the rebuild can recompute from the data is not a counter. A counter the rebuild
@@ -266,7 +266,7 @@
 //! as a HISTOGRAM with the store path held at 15 characters:
 //!
 //! ```text
-//!     kind      n   pages  comp chars   REQUEST B    CHUNK B  chars/n
+//!     kind      n   blocks  comp chars   REQUEST B    CHUNK B  chars/n
 //!     set       8     100          16       48.00      68.64     2.00
 //!     set      16     100          32       64.00      80.80     2.00
 //!     set      32     100          64       96.00     114.40     2.00
@@ -283,8 +283,8 @@
 //! ```
 //!
 //! **`chars/n` IS EXACTLY 2.00 FOR `set` AT EVERY WIDTH.** `hex::encode` spells the member at two
-//! characters a byte, so a set element holds its member ONCE as the page payload and AGAIN, at double
-//! width, as the name of the page. A zset adds a fixed sixteen characters of score bits on top -- and
+//! characters a byte, so a set element holds its member ONCE as the block payload and AGAIN, at double
+//! width, as the name of the block. A zset adds a fixed sixteen characters of score bits on top -- and
 //! that score is a third copy, because `zset_index_serde` persists it as a `u64` in the durable map.
 //!
 //! So at a sixteen-byte member a zset element pays **96.16 B of chunk for the name plus the 16-byte
@@ -307,7 +307,7 @@
 //! The pointer half is measured separately by `what_an_element_ordinal_would_have_saved_a_block`, at
 //! both routing ranges and two corpus sizes: 58.06-58.13 B requested and 69.20-69.32 B of chunk a
 //! name over a container store whose mean name is 22.4 characters, against 0.00 on the routed control
-//! where no page carries a component at all. Two populations and never a mean: routed p50 1 page an
+//! where no block carries a component at all. Two populations and never a mean: routed p50 1 block an
 //! object, containers p50 100.
 //!
 //! # THE WIDTH AND THE CEILING, IF IT EVER LANDS
@@ -364,18 +364,18 @@ fn write(engine: &TemporalEngine, command: Command) {
     assert!(response.status.ok, "the fixture write failed: {response:?}");
 }
 
-/// Every page this object holds, as `(component, block_id)`, whatever its state.
+/// Every block this object holds, as `(component, block_id)`, whatever its state.
 ///
-/// Reads the SAME walk `next_block_index_for_object` reads -- every page of the object in the
+/// Reads the SAME walk `next_block_index_for_object` reads -- every block of the object in the
 /// bucket, with no filter on `deleted` -- so a count taken here is the count the assignment would
 /// take.
-/// THE OBJECT'S LIVE PAGES. Tombstone entries are excluded, and the exclusion is new.
+/// THE OBJECT'S LIVE BLOCKS. Tombstone entries are excluded, and the exclusion is new.
 ///
 /// WHAT THIS USED TO RETURN AND WHY THE CHANGE IS NOT A RELAXATION. It returned EVERY entry, with no
 /// `deleted` filter -- and that was the same set, because nothing in this engine ever set
 /// `BlockIndex::deleted` to true. Live entries and all entries were one quantity, so the distinction
 /// could not be expressed and did not need to be. A container removal now leaves a tombstone entry
-/// behind so the page recording the removal stays reachable, and the two quantities have come apart.
+/// behind so the block recording the removal stays reachable, and the two quantities have come apart.
 ///
 /// Every assertion in this module that uses this helper means the LIVE set: it is asking what the
 /// object holds and what ordinal the next element would take. So the filter restores each of those
@@ -408,7 +408,7 @@ fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
     // TOMBSTONES ARE THE SUBJECT HERE, so the object has to come from the door that names a
-    // deleted page -- the bucket's own removal row. The object lookup holds no deleted page at
+    // deleted block -- the bucket's own removal row. The object lookup holds no deleted block at
     // all, and a walk that asked it would come back empty and read as "no tombstone kept an
     // ordinal", which is the claim this exists to refute.
     let mut held = Vec::new();
@@ -423,7 +423,7 @@ fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<
     held
 }
 
-/// Pages of this object that carry `deleted == true`.
+/// Blocks of this object that carry `deleted == true`.
 fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -441,15 +441,15 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
 /// WHAT THE ENGINE'S OWN ALLOCATOR WOULD HAND A NEW ELEMENT OF THIS OBJECT.
 ///
 /// THIS WAS `blocks_of(engine, kind, key).len()` AND THAT PROXY HAS BROKEN. Counting the object's
-/// LIVE page entries stood in for the ordinal high-water mark for as long as the two moved
-/// together, and they no longer do: a container removal leaves the live entry over the page its
-/// element vacated STANDING, beside a tombstone, because the page may still hold the object's other
+/// LIVE block entries stood in for the ordinal high-water mark for as long as the two moved
+/// together, and they no longer do: a container removal leaves the live entry over the block its
+/// element vacated STANDING, beside a tombstone, because the block may still hold the object's other
 /// members. So the live count does not fall after a removal and the proxy reported one too many --
 /// `the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_element` read the
 /// arrival's ordinal as 3 against the removed member's 2, and
 /// `a_high_water_mark_lives_only_where_the_rebuild_recomputes_it` read 8 where 7 was due. Both were
 /// the helper, which is what that arm's own message said to check first: "The helper above counts
-/// LIVE pages; a red caused by the tombstone being counted is a helper that lost its `deleted`
+/// LIVE blocks; a red caused by the tombstone being counted is a helper that lost its `deleted`
 /// filter, not a reservation." The filter is intact; what changed is that a retained entry is not
 /// deleted.
 ///
@@ -536,9 +536,9 @@ fn zset_name(member: &[u8]) -> String {
 /// body and the whole-object deleter's were a `retain` returning false. Nothing in this engine ever
 /// set `BlockIndex::deleted` to true.
 ///
-/// A container's PAGES are now the statement of its membership, which is what the fold this module
-/// sits under exists to make possible, and a page nothing points at is a page no derivation can read.
-/// So a per-element removal appends a page that records it and keeps an entry pointing at that page,
+/// A container's BLOCKS are now the statement of its membership, which is what the fold this module
+/// sits under exists to make possible, and a block nothing points at is a block no derivation can read.
+/// So a per-element removal appends a block that records it and keeps an entry pointing at that block,
 /// carrying `deleted`. The old claim is therefore FALSE BY INTENT for four of the five arms.
 ///
 /// IT IS INVERTED HERE RATHER THAN RELAXED OR DELETED. Relaxing it -- dropping the `tombstoned == 0`
@@ -554,7 +554,7 @@ fn zset_name(member: &[u8]) -> String {
 /// leaking an entry per deleted object forever, so its zero is asserted as firmly as the others' one.
 ///
 /// THE DENOMINATOR IS PRINTED AND ASSERTED for every arm, because a delete of nothing and a delete
-/// that tombstones produce the same page counts.
+/// that tombstones produce the same block counts.
 ///
 /// rust-internal: drives five commands, no external surface
 #[test]
@@ -665,7 +665,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
             tombstoned
         );
         // RESTATED FOR THE COLLAPSED PROJECTION, AS THE INVARIANT AND NOT AS A COUNT. A gated
-        // per-element removal does not reduce the LIVE page count: the page it removes from still
+        // per-element removal does not reduce the LIVE block count: the block it removes from still
         // holds the object's other elements, so the entry stays and a tombstone naming the removed
         // element is added beside it. What must fall is the live count OR -- under the collapse --
         // the tombstone count must rise, and the element must be gone either way.
@@ -677,7 +677,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         // RESTATED FROM `kind == "set"`, WHICH WAS THE WHOLE COLLAPSED SET WHEN THIS WAS WRITTEN.
         //
         // `zset` and `list` are collapsed too now, so a hand-written kind here would leave their
-        // per-element arms in the `else` branch below asserting that the LIVE page count FALLS --
+        // per-element arms in the `else` branch below asserting that the LIVE block count FALLS --
         // which is exactly what a gated removal does not do, and the arm would have gone red for
         // the right reason with the wrong explanation. Asking the shared predicate means the kind
         // list lives in ONE place: a kind added to `index_entry_names_a_block` arrives here with
@@ -749,7 +749,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
 ///
 /// #1990 drove `FeatureAppend`, `FeatureDelete`, `FeatureAppend` -- the whole-object path. The path an
 /// element ordinal would live on is `ZSetAdd`, `ZSetRemove`, `ZSetAdd`, and it is the same story: the
-/// removal takes the page away, the walk's `max` drops back, and the next element is handed the
+/// removal takes the block away, the walk's `max` drops back, and the next element is handed the
 /// number the removed one had.
 ///
 /// **THIS IS THE TEST THAT WOULD FAIL IF NON-REUSE WERE ENFORCED**, and it is written the way round
@@ -838,7 +838,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 
     // THE FREED NUMBER IS NOW HELD TWICE, AND EXACTLY ONE OF THE TWO IS LIVE.
     //
-    // A NEW FACT, not a relaxation of the one above: the removal keeps an entry pointing at the page
+    // A NEW FACT, not a relaxation of the one above: the removal keeps an entry pointing at the block
     // that records it, and `container_block_ordinal` filters `deleted`, so the tombstone keeps the
     // number it had while the arrival is handed the same number. That is safe for exactly the reason
     // this module has always given -- an ordinal names a POSITION and identity lives in the component
@@ -868,17 +868,17 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 // 3. THE ONE TOMBSTONE THIS STORE KEEPS CANNOT REFUSE THE WRITE
 // =================================================================================================
 
-/// THE TOMBSTONE SURVIVES THE REWRITE, AND A LIVE PAGE THEN READS AS DELETED.
+/// THE TOMBSTONE SURVIVES THE REWRITE, AND A LIVE BLOCK THEN READS AS DELETED.
 ///
 /// **THIS TEST WAS WRITTEN TO ASSERT THE OPPOSITE AND THE TREE REFUSED IT.** The first draft claimed
 /// the reservation is cleared by the write that would reuse it, reasoning from
-/// `deleted_object_index.remove(&object_id)` sitting four statements before the page insert. That
+/// `deleted_object_index.remove(&object_id)` sitting four statements before the block insert. That
 /// call is real, and it is in `sync_bucket_index_object_blocks_with_mode` -- the WHOLE-OBJECT restate
 /// path that `FeatureAppend` uses. It is **not** in `upsert_bucket_index_block_inner`, which is the
 /// path every container ELEMENT write takes. So on the element path the tombstone only ever grows.
 ///
-/// Measured: after `ZSetAdd`, `ZSetRemove`, `ZSetAdd` of the SAME member the bucket holds a live page
-/// AND a tombstone for that page's own object id.
+/// Measured: after `ZSetAdd`, `ZSetRemove`, `ZSetAdd` of the SAME member the bucket holds a live block
+/// AND a tombstone for that block's own object id.
 ///
 /// # SO THE TOMBSTONE IS NOT REFUTED BY BEING CLEARED. IT IS REFUTED THREE OTHER WAYS
 ///
@@ -889,7 +889,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 ///   2. **BOTH WRITE PATHS CLEAR IT, AND THE WHOLE-OBJECT ONE CLEARS EVERY ELEMENT'S.** A restate
 ///      through `sync_bucket_index_object_blocks_with_mode` removes the id of every address it
 ///      republishes, so any reservation an element held is dropped by an unrelated whole-object
-///      write; and `upsert_bucket_index_block_inner` now clears the id it is filing a live page
+///      write; and `upsert_bucket_index_block_inner` now clears the id it is filing a live block
 ///      for, which is what keeps the report honest but is also a clear a reservation cannot allow.
 ///   3. **A RESERVATION MUST NEVER BE CLEARED, AND THAT INVERTS ITS OWN MEASURED ECONOMICS.** The
 ///      field's doc chose its shape on a census -- "97.68% of buckets carry no tombstone, and the
@@ -900,16 +900,16 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
 ///
 /// # AND THE DEFECT THAT CAME WITH IT, NOW FIXED
 ///
-/// `object_manager::runtime_report` computes `page.deleted || bucket.deleted() ||
-/// bucket.deleted_object_index.contains(&page.object_id())`. While the element write path left the
-/// id behind, a surviving tombstone made a LIVE page's object report `deleted` and counted its page
+/// `object_manager::runtime_report` computes `block.deleted || bucket.deleted() ||
+/// bucket.deleted_object_index.contains(&block.object_id())`. While the element write path left the
+/// id behind, a surviving tombstone made a LIVE block's object report `deleted` and counted its block
 /// as a deleted block ref rather than a hot one -- reaching the public report as
-/// `tombstone_object_count=1` on a store holding one live page. Reachable:
+/// `tombstone_object_count=1` on a store holding one live block. Reachable:
 /// `TemporalEngine::object_manager_runtime_report` is public and `recovery_sweep_compact` calls it
 /// twice.
 ///
 /// The clear now happens on both write paths, and this test holds the fixed arithmetic: the
-/// tombstone is gone after the rewrite, the page reads HOT, and the public aggregate reports zero.
+/// tombstone is gone after the rewrite, the block reads HOT, and the public aggregate reports zero.
 /// The four assertions below were written to hold the defect and are inverted, not relaxed -- each
 /// one still names the denominator it reads, so a fixture that writes nothing cannot pass it.
 ///
@@ -1074,9 +1074,9 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
 ///      WOULD come back from a reload. Driven: seven elements written, engine dropped, engine
 ///      reopened, seven elements still there.
 ///   2. But the mark's value is the thing at issue, and the reload's door is
-///      `reconcile_secondary_views_from_bucket_index`, which derives the same maps FROM the pages and
-///      merges. So after a removal the reloaded mark is a `max` over what the pages still hold.
-///      Driven: three elements, remove the highest, the in-memory walk still reads 2 live pages and
+///      `reconcile_secondary_views_from_bucket_index`, which derives the same maps FROM the blocks and
+///      merges. So after a removal the reloaded mark is a `max` over what the blocks still hold.
+///      Driven: three elements, remove the highest, the in-memory walk still reads 2 live blocks and
 ///      the reload reads 2 -- the number the removed element had is free again, across the restart.
 ///
 /// **ELEMENT BY ELEMENT, NOT BY COUNT**, because a count can balance while two elements swap.
@@ -1241,15 +1241,15 @@ fn a_high_water_mark_lives_only_where_the_rebuild_recomputes_it() {
 ///
 ///   * `list` -- the component IS already an ordinal. Asserted by spelling one and matching it.
 ///   * `hash` -- the component IS the caller's field name. Asserted by writing a field and finding
-///     that exact text on the page.
+///     that exact text on the block.
 ///   * `zset`, `set` -- the component is the member's CONTENT, and the member is already held in a
 ///     persisted map keyed by itself. Asserted both ways: the name contains the member's hex, and the
 ///     durable map holds the member.
 ///
-/// rust-internal: reads page entries, no external surface
+/// rust-internal: reads block entries, no external surface
 #[test]
 fn what_an_element_ordinal_would_mean_for_each_kind() {
-    // IT ASSERTS THAT NO PAGE CARRIES AN ABSENT ELEMENT NAME -- the absence of exactly what this
+    // IT ASSERTS THAT NO BLOCK CARRIES AN ABSENT ELEMENT NAME -- the absence of exactly what this
     // gate creates. Pinned rather than restated because its subject is the per-element ordinal,
     // and the ordinal under the collapsed projection is `ordinal_under_the_gate`'s subject, which
     // drives both arms.
@@ -1297,9 +1297,9 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
     // RE-ATTRIBUTED. This read `blocks_of(...)[0].0` -- the component off the index entry -- and
     // `unwrap_or_else(|| panic!("{kind}/{key} holds a page with no component"))` is exactly what it
     // did, because an entry has no element-name field to hold one. The four spellings this arm is
-    // about did NOT go anywhere: a container page states its own elements in its payload, which is
+    // about did NOT go anywhere: a container block states its own elements in its payload, which is
     // what `container_blocks::ElementKeySpelling` renders and what makes several pages foldable into
-    // one. So the component comes off the page, through the engine's own
+    // one. So the component comes off the block, through the engine's own
     // `container_membership::derive_membership`, which is the same door `SetMembers` answers from.
     //
     // THE DERIVATION IS FLOORED BOTH WAYS before its key is read: complete, and holding exactly one
@@ -1684,7 +1684,7 @@ fn the_mis_parse_rate_of_an_ordinal_against_the_names_this_store_already_holds()
 /// WHAT THIS ARM USED TO COMPUTE, so the change is legible: `field_bytes_now - component_width +
 /// ordinal` against a hand-written `field_bytes_now = 56`. With no component term in the struct
 /// that subtracts a field that is not there, and it reported 44 and 48 as NARROWINGS of a 40-byte
-/// entry -- both larger than the thing they were narrowing. Its own floor caught it: "the page
+/// entry -- both larger than the thing they were narrowing. Its own floor caught it: "the block
 /// entry is 40 bytes, not the 56 this arithmetic is written against; re-derive the field sum before
 /// trusting the two numbers above."
 ///
@@ -1866,7 +1866,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 // 9. THE PRIZE, MEASURED ON ONE INSTRUMENT
 // =================================================================================================
 
-/// Every page of this shard, as `(kind, key, component length)`.
+/// Every block of this shard, as `(kind, key, component length)`.
 fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usize>)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -1930,13 +1930,13 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
     }
 }
 
-/// WHAT AN ELEMENT ORDINAL WOULD HAVE SAVED A PAGE, AND WHAT THE ASSIGNMENT WOULD HAVE COST.
+/// WHAT AN ELEMENT ORDINAL WOULD HAVE SAVED A BLOCK, AND WHAT THE ASSIGNMENT WOULD HAVE COST.
 ///
 /// Recorded so the refutation carries the number it is declining rather than waving at it.
 ///
 /// ONE INSTRUMENT, BOTH COLUMNS. `ALLOC_BYTES` charges `layout.size()` -- what the caller asked for
 /// -- and `ALLOC_CHUNK_BYTES` reads `malloc_usable_size`, what was handed over. The component name is
-/// one `Arc<str>` a page, so the span measured is exactly that: every name this store holds,
+/// one `Arc<str>` a block, so the span measured is exactly that: every name this store holds,
 /// re-allocated as the write path allocated it, and nothing else inside the probe.
 ///
 /// **THE CHUNK RULE IS A FLOOR, NOT AN EQUALITY** (#1969: a 104-byte request read 128), so the chunk
@@ -1944,8 +1944,8 @@ fn seed_routed_strings(engine: &TemporalEngine, keys: usize) {
 ///
 /// **TWO POPULATIONS, NEVER A MEAN.** #1986 found the mixed histogram holds only 1 and 100 and
 /// nothing at two, so a single average over both is a number no object has. The routed population
-/// (strings, p50 1 page an object, no component at all) is measured as the control that must save
-/// ZERO -- a change to a field that is `None` on every page of it cannot pay there, and a table that
+/// (strings, p50 1 block an object, no component at all) is measured as the control that must save
+/// ZERO -- a change to a field that is `None` on every block of it cannot pay there, and a table that
 /// showed it paying would be measuring something else.
 ///
 /// Both routing ranges, two corpus sizes, store path length held and asserted.
@@ -1988,7 +1988,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
                 census.len()
             );
 
-            // The span is exactly the names: one Arc<str> a page, as the write path makes them.
+            // The span is exactly the names: one Arc<str> a block, as the write path makes them.
             let spellings: Vec<String> = named.iter().map(|len| "x".repeat(*len)).collect();
             let probe = Probe::start();
             let held: Vec<std::sync::Arc<str>> = spellings
@@ -2108,7 +2108,7 @@ fn at_the_ceiling_the_address_refuses_rather_than_truncating() {
     );
 
     // One past it must PANIC, not truncate. A truncating narrow would make ordinal 65,536 and
-    // ordinal 0 the same page of the same object -- which is precisely the reuse this module is
+    // ordinal 0 the same block of the same object -- which is precisely the reuse this module is
     // about, arrived at by arithmetic instead of by a delete.
     let refused = std::panic::catch_unwind(move || {
         fits.set_block_id(Some(CEILING + 1));
@@ -2136,14 +2136,14 @@ fn at_the_ceiling_the_address_refuses_rather_than_truncating() {
 /// THE COMPONENT IS A SECOND COPY OF THE MEMBER AT TWO CHARACTERS A BYTE, AND IT IS MEASURED HERE
 /// RATHER THAN DERIVED FROM THE FORMAT STRING.
 ///
-/// The arithmetic off the write arms says a member of n bytes costs n in the page payload and 2n again
+/// The arithmetic off the write arms says a member of n bytes costs n in the block payload and 2n again
 /// in the component, because both `set` and `zset` spell the member with `hex::encode`. That is a
 /// prediction, and predictions about this structure have been wrong four times in this campaign, so
 /// every number below comes off a seeded store and the allocator.
 ///
 /// # WHAT IS MEASURED
 ///
-/// For each kind and each member width: the component lengths actually found on the page entries (a
+/// For each kind and each member width: the component lengths actually found on the block entries (a
 /// HISTOGRAM, never a mean -- a mean over a bimodal population is a number no element has), and the
 /// request and chunk bytes for exactly those names, allocated as the write path allocates them.
 ///
@@ -2211,7 +2211,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
                         member,
                         left: false,
                     }),
-                    // The second control: one page per key, no component at all.
+                    // The second control: one block per key, no component at all.
                     _ => commands.push(Command::StringSet {
                         key: format!("{key}-{element}"),
                         value: member,
@@ -2382,8 +2382,8 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
 ///     ITS THREE CALLERS, ONE DISCARDS THE COMPONENT AND ONE READS ONLY `len()`. `SetMembers` takes
 ///     `|(_, address)|`", and that was the last leg the "consumed by nobody" conclusion stood on.
 ///     `SetMembers` does not walk index entries at all now: an entry naming no element "can only be
-///     answered by a page that names no element either", so that arm was deleted and the command
-///     folds the object's PAGES through `container_membership::derive_membership` -- whose map is
+///     answered by a block that names no element either", so that arm was deleted and the command
+///     folds the object's BLOCKS through `container_membership::derive_membership` -- whose map is
 ///     KEYED BY THE COMPONENT SPELLING. The listing therefore comes back in component order.
 ///     Measured in the arm below, on one population: write order [07, 01, 09, 03, 05, 00, 08, 02,
 ///     06, 04], the whole-object door's walk in address order [01, 04, 00, 06, 05, 08, 09, 02, 03,
@@ -2507,7 +2507,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // RETARGETED, and the reason matters more than the new pattern. This arm used to assert the
     // literal `filter_map(|(_, address)| {` -- that SetMembers THREW THE COMPONENT AWAY -- as a
     // proxy for the property it means, which is that set member order is not component order.
-    // The proxy stopped holding when a carried page started needing to say which element it is:
+    // The proxy stopped holding when a carried block started needing to say which element it is:
     // `read_block_bytes` now takes the component, so this arm binds it and passes it on. The
     // PROPERTY did not move. Member order is still the order
     // `bucket_index_component_block_addresses` walked in, exactly as before.
@@ -2557,7 +2557,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // and compared them against a correct listing, so the instrument failed and not the read.
         //
         // WHAT THE DOOR STILL GIVES IS THE ORDER, which is the only thing this comparison is about.
-        // `bucket_index_component_block_addresses` returns the object's pages sorted, and
+        // `bucket_index_component_block_addresses` returns the object's blocks sorted, and
         // `SetMembers` is built by walking exactly that. So the walk is taken as its ADDRESS
         // sequence and each address is turned back into its member through `shard.sets` -- the same
         // address join the engine makes on the write path. The property is unchanged: the listing
@@ -2624,10 +2624,10 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // This asserted `walked == listed`: that `SetMembers` INHERITS the whole-object door's
         // order and imposes none of its own, which is what made component order free to respell.
         // It is false now, and the mechanism is the landed change. `SetMembers` no longer walks
-        // index entries and answers each from the page it named -- that arm was deleted, because an
+        // index entries and answers each from the block it named -- that arm was deleted, because an
         // entry naming no element "can only be answered by a page that names no element either"
         // and it returned an EMPTY listing. It asks the PAYLOAD through
-        // `container_membership::derive_membership`, which folds every page of the object into a
+        // `container_membership::derive_membership`, which folds every block of the object into a
         // `BTreeMap` KEYED BY THE COMPONENT SPELLING.
         //
         // So the listing's order IS component order, and a reader does consume it. Measured here:
@@ -2739,7 +2739,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 /// The case FOR an ordinal rests on the member already being persisted twice: `set_index_serde` holds
 /// `(member bytes, address)` and `zset_index_serde` holds `(member bytes, (score, address))`, and the
 /// reconcile's own comment calls the name "a second copy of it rendered as text". If the durable map
-/// always had the member, an ordinal would have a source for the join and would need no page reads.
+/// always had the member, an ordinal would have a source for the join and would need no block reads.
 ///
 /// **IT DOES NOT ALWAYS HAVE IT, AND THE EXCEPTION IS NAMED IN THE SAME COMMENT**: the name's score is
 /// "the fallback for a member the durable map does not have, which is how an element folded out of the
@@ -2748,8 +2748,8 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///   * `apply_key_states` folds THIRTEEN maps -- `features`, `expires_at_ms`, four `control_state_*`
 ///     and seven `context_*`. **`sets`, `zsets`, `lists` and `hashes` are not among them**, asserted
 ///     below at source level with the input size checked first.
-///   * `fold_delta_block_items` DOES restore the page items, so after a fold the bucket index holds
-///     pages for elements whose durable map entry was never written.
+///   * `fold_delta_block_items` DOES restore the block items, so after a fold the bucket index holds
+///     blocks for elements whose durable map entry was never written.
 ///   * So on that path the component is the only copy of the member, which is exactly what #1989's
 ///     `an_element_the_durable_map_does_not_hold_still_comes_back_from_its_name` exists to protect.
 ///
@@ -2757,7 +2757,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///
 /// It read: "Two zset members. One is dropped from the durable map only -- the shape a fold
 /// produces. Then its page entry's component is rewritten to a SIXTEEN-CHARACTER ordinal spelling,
-/// which is what a 2-byte inline page id would leave behind: a name that identifies the page and
+/// which is what a 2-byte inline block id would leave behind: a name that identifies the block and
 /// carries no member. Reload."
 ///
 /// THE SECOND STEP IS GONE. `BlockIndex` has no component field, so an entry already carries no
@@ -2766,7 +2766,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///
 /// AND THE QUESTION IT WAS PRICING DOES NOT ARISE. The experiment asked whether NARROWING the name
 /// from sixteen bytes to two was safe, and answered no. The name was not narrowed, it was removed:
-/// `engine_storage_state.rs` pins the entry at 40 bytes against the 56 it was, so all sixteen bytes a page came
+/// `engine_storage_state.rs` pins the entry at 40 bytes against the 56 it was, so all sixteen bytes a block came
 /// back and there is no two-byte residue whose safety has to be argued.
 ///
 /// WHAT THE ARM STILL ASSERTS, UNCHANGED: the dropped member does not come back and the untouched
@@ -2776,8 +2776,8 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
 ///   * The untouched member comes back -- the control, so a total loss cannot pass as this finding.
 ///   * The member whose name became an ordinal **does not**, and cannot: the reconcile's zset arm
 ///     requires `component.len() > 16` and the durable map has nothing, so the element is skipped and
-///     there is no second source. Its bytes are still in the page PAYLOAD, and the reconcile
-///     deliberately does not read pages -- that is the whole reason a record carries its outcomes.
+///     there is no second source. Its bytes are still in the block PAYLOAD, and the reconcile
+///     deliberately does not read blocks -- that is the whole reason a record carries its outcomes.
 ///
 /// **SO THE ORDINAL IS UNSAFE AND THIS IS THE STOP CONDITION, NOT A HURDLE.** Shipping it would be a
 /// lossy migration: an ordinary fold-backed recovery would return fewer members than were written, and
@@ -2850,7 +2850,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // STILL EXCLUDED FROM THIS FUNCTION, and now for a different reason than when this was
     // written. The four container maps are restored by `fold_carried_container_elements`, NOT here,
     // because an element may only be restored once the whole fold has finished: a fold replays a
-    // suffix of the log and can add an element and then take its page away again, and applying per
+    // suffix of the log and can add an element and then take its block away again, and applying per
     // record would leave it in the durable map for `fill_absent_elements` to serve after a delete.
     for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
         assert!(
@@ -2866,7 +2866,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     // the fold restoring the durable container maps "is the one change that would make an element
     // ordinal safe". That change has landed: the fold now restores all four from the member bytes
     // the delta record carries, so a folded element's identity no longer arrives by decoding the
-    // component its page was filed under. Inverted rather than deleted, because what has to keep
+    // component its block was filed under. Inverted rather than deleted, because what has to keep
     // holding is that the fold DOES carry them.
     let carried = window("fn fold_carried_container_elements(");
     for container in ["shard.sets", "shard.zsets", "shard.lists", "shard.hashes"] {
@@ -2911,10 +2911,10 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         "DENOMINATOR: the fixture did not file two blocks"
     );
 
-    // The shape a fold produces for ONE element: a page entry with no durable map entry.
+    // The shape a fold produces for ONE element: a block entry with no durable map entry.
     //
     // The component this used to look up (`let doomed_component = zset_name(&doomed);`) was the
-    // handle by which the rewrite below found the doomed page. There is no component to look up
+    // handle by which the rewrite below found the doomed block. There is no component to look up
     // and no rewrite to do -- see the block below for both.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
@@ -2932,15 +2932,15 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
 
         // THE REWRITE IS GONE, AND THE STATE IT MANUFACTURED IS THE SHIPPED STATE NOW.
         //
-        // Thirty-five lines stood here. They removed the doomed member's page entry from
+        // Thirty-five lines stood here. They removed the doomed member's block entry from
         // `block_index`, overwrote its component with a sixteen-character ordinal spelling -- "a
-        // name that identifies the page and carries no member" -- re-inserted it, asserted exactly
+        // name that identifies the block and carries no member" -- re-inserted it, asserted exactly
         // one entry had been rewritten, and rebuilt the object lookup. All of it existed to
-        // MANUFACTURE the state a 2-byte inline page id would leave behind.
+        // MANUFACTURE the state a 2-byte inline block id would leave behind.
         //
         // `BlockIndex` has no component field, so that state cannot be manufactured and does not
         // need to be: an entry carries no member name of any width, ordinal or otherwise. What the
-        // fixture still builds is the half that matters -- a page entry whose element the DURABLE
+        // fixture still builds is the half that matters -- a block entry whose element the DURABLE
         // MAP does not hold, which is the shape a fold produces -- and that is the `remove` above,
         // unchanged.
         //
@@ -2948,7 +2948,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         // NOT come back after a reload while the control does. That was the stop condition against
         // the ordinal; it is now a statement about the shipped index, and it is the same claim the
         // `durable_outranks_derived` arms hold from the other side -- the durable maps are the sole
-        // source, so an element they do not hold is gone from the derived view whatever its page
+        // source, so an element they do not hold is gone from the derived view whatever its block
         // payload still contains.
         //
         // AND THE PROPOSAL IT REFUSED IS SUPERSEDED RATHER THAN STILL PENDING. The experiment was

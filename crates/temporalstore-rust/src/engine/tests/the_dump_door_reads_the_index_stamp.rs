@@ -61,7 +61,7 @@ const SHARD: ShardId = 11;
 const SERIES_KEY: &str = "series/written-before-the-stamp-moved";
 const ROW_TIMESTAMP_MS: u64 = 1_700_000_000_123;
 
-/// A source shard with real pages and a real dump manifest over it.
+/// A source shard with real blocks and a real dump manifest over it.
 struct DumpFixture {
     dir: tempfile::TempDir,
     manifest: crate::engine::reports::BucketDumpManifest,
@@ -120,7 +120,7 @@ fn a_real_dump_manifest() -> DumpFixture {
 
 /// Re-stamp a real manifest's embedded index, leaving everything else about it real.
 ///
-/// Its pages, slab ids, bucket summaries and log sequences are untouched, so validation and
+/// Its blocks, slab ids, bucket summaries and log sequences are untouched, so validation and
 /// preflight pass or fail for the same reasons they do in production and the only variable is the
 /// stamp. Written as plain JSON because `encode_index_bytes`'s container arm is the one arm whose
 /// decode checks a version, and that is not the check under test.
@@ -148,7 +148,7 @@ fn re_stamp(manifest: &mut crate::engine::reports::BucketDumpManifest, stamp: u3
     );
 }
 
-/// A restore target over the SAME pages, with its own index dir and its shard not loaded.
+/// A restore target over the SAME blocks, with its own index dir and its shard not loaded.
 ///
 /// Not loaded on purpose: that is the install-then-load order the install path's own comment
 /// calls "the production order, reached over `POST /server/storage/dumps/install`".

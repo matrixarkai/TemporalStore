@@ -6,9 +6,9 @@
 //! # TWO OPERATIONS, NOT ONE
 //!
 //! Relieving memory pressure and reclaiming disk space are different operations in this store and
-//! run as different stages. `apply_storage_eviction` dumps and releases a bucket's resident page
+//! run as different stages. `apply_storage_eviction` dumps and releases a bucket's resident block
 //! list; the bytes on disk are exactly where they were when it returns. `compact_pages` rewrites
-//! live pages off the slabs carrying dead space so the collector can destroy them. Neither is a
+//! live blocks off the slabs carrying dead space so the collector can destroy them. Neither is a
 //! side effect of the other, and the third test below is the measurement that says so.
 //!
 //! # THE RATIO THE TRIGGER DOES NOT READ, AND WHY THAT IS THE CORRECT CHOICE
@@ -108,10 +108,10 @@ fn engine_at(dir: &std::path::Path) -> TemporalEngine {
 /// `live_physical_bytes` 0, every score is identical, and nothing is relocatable -- so a fixture
 /// built that way cannot tell an ordering from any other order and cannot issue a compaction round
 /// at all. Measured on that shape first: three candidates, all at score 107,600, 0 relocatable
-/// page refs.
+/// block refs.
 ///
 /// Halving the rewritten prefix gives each slab a DIFFERENT amount of dead space while leaving
-/// live pages on it, which is the state the collector actually has to choose between.
+/// live blocks on it, which is the state the collector actually has to choose between.
 const REWRITE_ROUNDS: &[usize] = &[KEYS, KEYS / 2, KEYS / 4, KEYS / 8];
 
 /// Seed the fixture and return, per key, the round whose value it now holds.
@@ -490,7 +490,7 @@ it is handed first of {}",
 ///   3. and the dead bytes on disk are EXACTLY where they were, by three terms: the candidates'
 ///      summed stale bytes, the candidate count, and the non-purged file bytes.
 ///   4. while a compaction round over the same store moves what IT is measured by -- it relocates
-///      page refs and empties the drain set -- which is what makes (3) a statement about eviction
+///      block refs and empties the drain set -- which is what makes (3) a statement about eviction
 ///      rather than about a store with nothing to reclaim.
 ///   5. every acknowledged key still reads back the value its LAST write gave it, cold.
 ///   6. with a never-written control beside it.

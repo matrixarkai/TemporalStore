@@ -3,11 +3,11 @@
 
 //! Storage-manager cycle + merged-dump policy report for TemporalEngine, split from engine.rs.
 //!
-//! CROSS-SHARD RECLAIM, always on. Page-slab reclaim retains any slab referenced by ANY shard
+//! CROSS-SHARD RECLAIM, always on. Block-slab reclaim retains any slab referenced by ANY shard
 //! loaded into this engine, not only the shard whose cycle is running: one engine shares a single
-//! page_store across all its shards with a global slab cursor, so a slab can hold committed pages
+//! page_store across all its shards with a global slab cursor, so a slab can hold committed blocks
 //! from multiple shards, and driving GC off a single shard's live set deletes another shard's live
-//! pages (silent data loss). `TS_CROSS_SHARD_RECLAIM_GUARD` used to be able to restore the legacy
+//! blocks (silent data loss). `TS_CROSS_SHARD_RECLAIM_GUARD` used to be able to restore the legacy
 //! per-shard live set; nothing selected that position, and it was unsafe under multi-shard hosting
 //! by construction. For a single loaded shard the union equals that shard's live set, so
 //! single-shard behavior was byte-identical either way.
@@ -24,7 +24,7 @@ use crate::engine::reports::StageWalkCharges;
 /// round, while the four stages that had actually done the work reported nothing.
 ///
 /// Measured before this existed, on a store of 8,000 records taking a proportional round:
-/// `reclaim_wal` 503 ms and 39,360 live-page entries with `applied: false`, against `expire` 0 ms
+/// `reclaim_wal` 503 ms and 39,360 live-block entries with `applied: false`, against `expire` 0 ms
 /// / 0 entries having removed 128 records, and `reclaim_page`, `evict` and `index_gc` at 0 ms and
 /// 0 entries each. This is the same defect mx#1435 fixed for `prepare` by giving the plan its own
 /// row -- `prepare` was reporting 328 ms at 32,000 records for pre-allocating one slab -- and it
@@ -80,12 +80,12 @@ impl StageSpan {
     }
 }
 
-/// How many live pages one maintenance round checks for readability.
+/// How many live blocks one maintenance round checks for readability.
 ///
 /// The round used to check every one. A bound makes the cost of the check independent of the
 /// store's size, and 512 is chosen the way the other round bounds were: large enough that a
 /// small store is still fully checked every round, small enough that a large one pays a fixed
-/// price. At the measured ~18 microseconds per page read that is about 9 ms.
+/// price. At the measured ~18 microseconds per block read that is about 9 ms.
 pub(super) const RECOVERY_READABLE_PROBE_PER_ROUND: usize = 512;
 
 impl TemporalEngine {
@@ -112,9 +112,9 @@ impl TemporalEngine {
         // round is not the round's cost.
         crate::engine::reset_stage_walk_charges();
         // Short-circuit while the shard is RECOVERING (WAL replay in progress). The cycle
-        // mutates shard state (eviction / page + WAL reclaim / compaction); a GC or compaction
+        // mutates shard state (eviction / block + WAL reclaim / compaction); a GC or compaction
         // round interleaved with an in-flight replay would observe a half-reconstructed bucket
-        // index and could mis-reclaim a page that is still live -> silent durable loss. The
+        // index and could mis-reclaim a block that is still live -> silent durable loss. The
         // synchronous POST /load path calls load_shard_with directly (it never registers in
         // running_shards), so `recovering` is the reliable, path-independent guard: it is set
         // for the whole replay window by both the async and the synchronous load. A recovering
@@ -198,7 +198,7 @@ impl TemporalEngine {
         //
         // `plan.bucket_summaries` is `None` when the round skipped the whole-shard walk because
         // no bucket was dirty. That is NOT "the shard holds nothing": a settled shard with
-        // millions of live pages reports `None` every round. The stage figures below are derived
+        // millions of live blocks reports `None` every round. The stage figures below are derived
         // from it and therefore read 0 on such a round.
         //
         // What keeps that 0 honest is that the plan travels WITH them:
@@ -488,9 +488,9 @@ impl TemporalEngine {
         // Without a publish the block store falls back to its older `used_bytes` figure, which
         // sums the file sizes of the NEIGHBOURING slabs that are not collectable -- a quantity
         // that is zero for every candidate by construction and would be wrong rather than zero if
-        // it ever were not. Published, `used_bytes` is the live page bytes on the slab itself.
+        // it ever were not. Published, `used_bytes` is the live block bytes on the slab itself.
         //
-        // Costs the number of slabs, not the number of pages: the shards keep the tally running
+        // Costs the number of slabs, not the number of blocks: the shards keep the tally running
         // on their own mutation path and this only sums them.
         self.publish_block_slab_live_bytes();
         let reclaimable_block_slab_ids = block_gc_dependency_plan
@@ -511,7 +511,7 @@ impl TemporalEngine {
                 .unwrap_or_default()
                 .saturating_add(1);
             // Retain slabs live in ANY shard sharing this engine's page_store, not just the
-            // shard being cycled (see the module header): otherwise a slab whose pages belong to
+            // shard being cycled (see the module header): otherwise a slab whose blocks belong to
             // another shard is absent from this shard's live set and gets deleted.
             let reclaim_live_refs = self.live_block_slab_ids_all_shards();
             match self.block_store.gc_slabs_before_with_live_refs_policy_limited(
@@ -587,7 +587,7 @@ impl TemporalEngine {
             lifecycle_request.purge_delayed_destroy_slab_ids =
                 Some(reclaimable_block_slab_ids.iter().copied().collect());
             let report = Some(self.apply_storage_lifecycle(lifecycle_request));
-            // AND AGAIN AFTERWARDS. The round just relocated pages onto a fresh slab and
+            // AND AGAIN AFTERWARDS. The round just relocated blocks onto a fresh slab and
             // destroyed others; the tally published above describes the state before it. A caller
             // that inspects the store after the round -- which is what every reclaim assertion
             // does -- should read what the round left, not what it found.
@@ -597,11 +597,11 @@ impl TemporalEngine {
         // The dump belongs to `reclaim_wal`: the log cannot be reclaimed past what a dump has
         // made durable, so the dump is the price this stage pays and is charged to it.
         let reclaim_wal_dump_span = StageSpan::close(&mut stage_clock);
-        // apply_storage_lifecycle's warm phase brings freshly-dumped pages into DRAM.
+        // apply_storage_lifecycle's warm phase brings freshly-dumped blocks into DRAM.
         // The pressure snapshot above was captured during prepare (pre-warm), so
         // re-measure memory residency here so the emitted snapshot reflects the warmed
         // cache. Only the memory fields are refreshed; disk_cache_bytes stays at its
-        // prepare value (warmed pages also write through to SSD, and downstream
+        // prepare value (warmed blocks also write through to SSD, and downstream
         // reclamation assertions compare against that pre-warm disk figure).
         if !request.dry_run {
             let warmed_cache = self.storage_cache_inspection_report(request.shard_id).stats;
@@ -674,15 +674,15 @@ impl TemporalEngine {
         // The warm re-measure above feeds this stage's own pressure gate, so it is charged here
         // rather than to the dump that warmed the cache.
         let evict_span = StageSpan::close(&mut stage_clock);
-        // Pages whose only durable copy is a WAL record leave the log HERE, before the reclaim
+        // Blocks whose only durable copy is a WAL record leave the log HERE, before the reclaim
         // plan is computed, because `min_registered_sequence` pins retention to the LOWEST
-        // registration: a page still resident holds the floor down and no retention policy can
+        // registration: a block still resident holds the floor down and no retention policy can
         // pass it. That is the order this stage's counterpart uses in the design this
         // follows -- dump the dirty slots, advance the dumped-log id, and only then reclaim.
         //
-        // Until this ran, the only caller that moved a page out of the log was the write path,
+        // Until this ran, the only caller that moved a block out of the log was the write path,
         // which sweeps once registrations pass `TS_WAL_RESIDENT_PAGES` and therefore stops the
-        // moment writes stop. An idle shard kept every page it had ever written that way.
+        // moment writes stop. An idle shard kept every block it had ever written that way.
         // Measured on 48 async writes: a flush left all 48 registered, and so did a full
         // eight-stage cycle, with the log floor still at sequence 1.
         //
@@ -697,7 +697,7 @@ impl TemporalEngine {
         {
             // Zero is how this request spells "no bound" -- its own default is 0 while the
             // scheduler's is 64 -- so a cycle asked for no bound drains the shard rather than
-            // one page per pass.
+            // one block per pass.
             let per_round = if request.max_dump_buckets_per_round == 0 {
                 usize::MAX
             } else {
@@ -915,7 +915,7 @@ impl TemporalEngine {
                 "weighted_slot_object_eviction+memory_pressure_gate+bucket_index_resident+batch_limit"
                     .to_string(),
             // The index term belongs HERE and only here among the stages: evict is the one stage
-            // that can release it. `reclaim_memory` invalidates cached pages and leaves the index
+            // that can release it. `reclaim_memory` invalidates cached blocks and leaves the index
             // exactly where it was, so reporting index bytes as its pressure would name a debt it
             // has no way to pay.
             pressure_score: pressure_signals
@@ -1185,12 +1185,12 @@ impl TemporalEngine {
                 install_dump_manifest: false,
             });
         // Its own stage, because it is its own work: this report runs a lifecycle plan, an apply
-        // and a recovery-boundary report (which reads every live page).
+        // and a recovery-boundary report (which reads every live block).
         //
         // `stage_clock` measures from the PREVIOUS stage's push, so before this entry existed
         // every millisecond of that landed on `compact`. Compaction then read as the most
         // expensive stage of the round at 32,000 records -- about 1.7 s -- while reporting
-        // `skipped=true` and moving zero pages, because it was being charged for work it does
+        // `skipped=true` and moving zero blocks, because it was being charged for work it does
         // not do. A stage report that names the wrong stage is worse than no stage report: it
         // sends whoever reads it to optimise the wrong function, which is exactly what it did.
         let merged_dump_load_policy_span = StageSpan::close(&mut stage_clock);
@@ -1399,7 +1399,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
             .clone()
             .or_else(|| latest_bucket_dump_manifest_at(&self.index_dir, lifecycle_request.shard_id));
         // Sampled, not the whole store. This report is here for `manifest_chain_issues`, the two
-        // dump sequences and the two replay sequences, none of which reads a page -- but it also
+        // dump sequences and the two replay sequences, none of which reads a block -- but it also
         // CARRIES `stale_index_block_refs` / `unreadable_page_bytes`, so the readability check is
         // bounded rather than skipped: corruption is still found, across rounds instead of all in
         // one. Measured at 32,000 records the unbounded version was 575 ms and 32,000 reads,
@@ -1419,9 +1419,9 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
         let install_roll_forward_reports = lifecycle.install_roll_forward_reports.clone();
         // Sampled, because this round is not installing anything: `install_dump_manifest` is
         // false here, the result feeds a reported readiness flag and gates nothing destructive,
-        // and the unbounded form read every page the manifest names -- the last whole-store pass
+        // and the unbounded form read every block the manifest names -- the last whole-store pass
         // left in a round. A real install still uses the unbounded one, where a sample could let
-        // a dump with unreadable pages through.
+        // a dump with unreadable blocks through.
         let load_preflight = manifest.as_ref().map(|manifest| {
             if request.install_dump_manifest {
                 self.bucket_dump_install_preflight_report(manifest)

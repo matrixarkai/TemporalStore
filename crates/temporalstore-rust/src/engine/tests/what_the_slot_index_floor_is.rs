@@ -19,12 +19,12 @@
 //!     module prices it, on the pre-compression payload AND on the shipped container, at two key
 //!     shapes and two store sizes.
 //!
-//!   * `node/object_index` IS DECLARED `Redundancy` with the pages of its own bucket named as its
+//!   * `node/object_index` IS DECLARED `Redundancy` with the blocks of its own bucket named as its
 //!     reconstructor, and the reconstruction is asserted on all 1,024 buckets of a corpus in which
 //!     every bucket is resident. A RELEASED bucket is not: `release_bucket_blocks` empties
 //!     `block_index` and KEEPS `object_index`, and production says in as many words that the
 //!     keeping "is the only thing that tells a released bucket from one legitimately holding
-//!     nothing". So the set has a state in which no page names its members, and a term that cannot
+//!     nothing". So the set has a state in which no block names its members, and a term that cannot
 //!     be rebuilt in a state the engine reaches is not reconstructible -- it is floor. Built here
 //!     rather than argued.
 //!
@@ -77,12 +77,12 @@
 //! AND THE FORM DOES NOT LOAD, WHICH IS THE DECLINE'S OWN REASON AND IT BITES FURTHER UP THAN THE
 //! COMMENT SAYS. The decoder refuses a positional index with `invalid type: sequence, expected a
 //! core index` -- so it is `CoreIndex`'s own hand-written `Deserialize` that will not take an
-//! array, before `BucketNode`'s or the page entry's is reached. Three hand-written visitors, a
+//! array, before `BucketNode`'s or the block entry's is reached. Three hand-written visitors, a
 //! `BucketNode` whose arity moves with `tombstone_elements`, a stamp step and a reader for the
 //! named shape is the bill for one to three bytes an object.
 //!
 //! AND `node/object_index` IS NOT RECONSTRUCTIBLE. 342 released buckets held 400 object ids with
-//! ZERO pages beside them to name one. At 22.603 B/object -- the largest single term in
+//! ZERO blocks beside them to name one. At 22.603 B/object -- the largest single term in
 //! `slot_index` -- that moves out of `Redundancy` and into the floor.
 //!
 //! rust-internal: measures this crate's own index codec, no product behaviour
@@ -298,7 +298,7 @@ fn per_object(bytes: usize, objects: usize) -> f64 {
 /// # WHAT IS BEING DECIDED
 ///
 /// `engine::encode_index_msgpack` writes `with_struct_map()`, so every struct inside the served
-/// index -- the bucket node's twelve keys, the page entry's three, the address's five -- spends its
+/// index -- the bucket node's twelve keys, the block entry's three, the address's five -- spends its
 /// field NAMES once per instance. Dropping that one builder call makes each of them an array, and
 /// the names are not written at all.
 ///
@@ -488,20 +488,20 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
 // THE TERM THAT IS NOT RECONSTRUCTIBLE AFTER ALL
 // =================================================================================================
 
-/// `node/object_index` CANNOT BE REBUILT FROM THE PAGES BESIDE IT, BECAUSE A RELEASED BUCKET HAS
+/// `node/object_index` CANNOT BE REBUILT FROM THE BLOCKS BESIDE IT, BECAUSE A RELEASED BUCKET HAS
 /// NONE.
 ///
 /// # WHAT THIS CORRECTS
 ///
 /// [`super::what_the_slot_index_is_made_of`] declares that term `Redundancy` and names "the stable
-/// object id of each page entry in the same bucket" as its reconstructor, and asserts the
+/// object id of each block entry in the same bucket" as its reconstructor, and asserts the
 /// reconstruction on all 1,024 buckets. Every bucket in that corpus is RESIDENT. The engine reaches
 /// a state in which a bucket is not: `release_bucket_blocks` empties `block_index` and keeps
 /// `object_index`, and `settle_released_bucket_object_delete` says in as many words that the
 /// keeping "is the only thing that tells a released bucket from one legitimately holding nothing".
 ///
-/// So in that state the written set has members NO PAGE NAMES, and a decoder that rebuilt the set
-/// from the pages would load a released bucket as an EMPTY one -- which is the one distinction the
+/// So in that state the written set has members NO BLOCK NAMES, and a decoder that rebuilt the set
+/// from the blocks would load a released bucket as an EMPTY one -- which is the one distinction the
 /// release depends on. The term is floor, not redundancy, and the 22.6 B/object it was measured at
 /// cannot be subtracted from the figure on the strength of a fixture in which the state does not
 /// occur.
@@ -509,7 +509,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
 /// # HOW IT IS SHOWN
 ///
 /// By building the state through the production function and asserting BOTH halves on the same
-/// bucket: the written `object_index` non-empty, and the set derivable from that bucket's own pages
+/// bucket: the written `object_index` non-empty, and the set derivable from that bucket's own blocks
 /// EMPTY. One without the other is not the finding -- an empty derivation over an empty written set
 /// is just an empty bucket.
 ///
@@ -518,7 +518,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
 ///
 /// THE STORE IS WRITTEN, FLUSHED, DROPPED AND REOPENED, which is the only thing that makes a
 /// release possible at all. A freshly written bucket is dirty and a release of a dirty bucket is
-/// refused -- rightly, since the model maps carry no per-page dirty bit. Neither `flush_shard_index`
+/// refused -- rightly, since the model maps carry no per-block dirty bit. Neither `flush_shard_index`
 /// nor `dump_index_catalog` clears the flag (`refresh_one_bucket_runtime_flags` ORs it); the
 /// clear-dirty-on-load contract in `persistence.rs` does.
 #[test]

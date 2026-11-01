@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A CONTAINER PAGE'S ORDINAL WAS A HARDCODED ZERO, AND THE FIELD TO HOLD IT WAS ALREADY STORED.
+//! A CONTAINER BLOCK'S ORDINAL WAS A HARDCODED ZERO, AND THE FIELD TO HOLD IT WAS ALREADY STORED.
 //!
 //! # WHAT THIS IS, AND WHAT IT DELIBERATELY IS NOT
 //!
-//! `BlockAddress::block_id` is a stored `u16` -- a page's position INSIDE its object. Every
+//! `BlockAddress::block_id` is a stored `u16` -- a block's position INSIDE its object. Every
 //! TIMESTAMPED kind already gets one: `next_block_index_for_object` has thirteen call sites covering
 //! `feature` and the six `context_*` kinds, and `compaction` preserves the value across a rewrite
 //! with a comment saying why ("taking a fresh one here would give every block of a multi-block
@@ -19,7 +19,7 @@
 //! fold delivers elements whose durable-map entry was never written -- is still true on this
 //! revision. Nothing here reads the ordinal to find a row. Deletion still matches by component,
 //! which is what `deletion_still_finds_its_element_by_component` holds. THE ENTRY no longer carries
-//! that component: a container element's identity lives in its resident map and in its page's
+//! that component: a container element's identity lives in its resident map and in its block's
 //! payload, which is where every arm in this module now reads it from.
 //!
 //! # IT NAMES A POSITION, NOT AN ELEMENT
@@ -39,7 +39,7 @@
 //! it.
 //!
 //! AND THE FILTER WOULD NOT HAVE BEEN ENOUGH, which is why this is worth more than a tidier
-//! mechanism. A removal keeps the live entry over the page its element vacated -- not deleted, so
+//! mechanism. A removal keeps the live entry over the block its element vacated -- not deleted, so
 //! no `deleted` filter can see it -- so a walk over live ENTRIES does not fall after a removal at
 //! all. The arms here assert both quantities wherever they part company: the POSITIONS from the
 //! resident map, and the retained live entry as a footprint cost with its own message saying which
@@ -55,7 +55,7 @@
 //! # TWO DEPARTURES FROM THE SERIES DERIVATION, BOTH FORCED
 //!
 //!   * AN OVERWRITE KEEPS ITS ORDINAL. `HashSet`/`SetAdd` on an existing member REPLACES that
-//!     member's page. `max + 1` there would climb once per WRITE rather than once per ELEMENT, and a
+//!     member's block. `max + 1` there would climb once per WRITE rather than once per ELEMENT, and a
 //!     single member rewritten 65,536 times would reach the ceiling on a set of one. Driven by
 //!     `an_overwrite_keeps_the_members_ordinal_rather_than_climbing`, which fails at 4 instead of 0
 //!     without the component lookup.
@@ -71,7 +71,7 @@
 //! refuses the page with "page id mismatch" when they differ -- the one cross-check on a read that
 //! can actually fire. It is inert today only because the address side is 0 on both sides. Stamping
 //! the ordinal onto the INDEX's copy of the address after the append would have left the header
-//! saying 0 and the address saying N, and every container page written would have become unreadable.
+//! saying 0 and the address saying N, and every container block written would have become unreadable.
 //! So the ordinal is threaded into `append_block_of_object`, which builds the header and the
 //! returned address from the same value. `a_reloaded_container_still_reads_every_element` is the
 //! guard: it unloads the shard, loads it again so nothing is served from a warm cache, and reads
@@ -130,13 +130,13 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
     response.response
 }
 
-/// The ordinals this object's LIVE page entries carry, in index order.
+/// The ordinals this object's LIVE block entries carry, in index order.
 ///
 /// THE COMPONENT SLOT IS GONE FROM THIS TUPLE, BECAUSE IT HAD STOPPED CARRYING ONE. This returned
 /// `Vec<(Option<String>, Option<u64>)>` and the first half was a hardcoded `None::<String>` once
 /// the element-name field left `BlockIndex`. Three callers only ever took `.len()`, but two
 /// FILTERED on that half -- and a filter over a column that is always `None` matches nothing, so
-/// one of them counted zero stale pages and PASSED for that reason. Dropping the slot makes every
+/// one of them counted zero stale blocks and PASSED for that reason. Dropping the slot makes every
 /// such filter a compile error instead. Element identity is `ordinal_for_component` below, which
 /// asks the authority for it.
 fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>> {
@@ -160,10 +160,10 @@ fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>>
     held
 }
 
-/// This object's TOMBSTONE entries: the element each is about, and the ordinal its page carries.
+/// This object's TOMBSTONE entries: the element each is about, and the ordinal its block carries.
 ///
 /// THE ELEMENT NOW COMES FROM THE BUCKET'S TOMBSTONE ROWS, NOT FROM THE ENTRY. It read
-/// `page.component`, and a tombstone entry files `None` there: the element a removal is about is a
+/// `block.component`, and a tombstone entry files `None` there: the element a removal is about is a
 /// per-ELEMENT fact and lives beside the entries, where only a removal pays for it. Restated rather
 /// than re-goldened -- the two arms below are about WHICH element a removal is recorded against,
 /// and that question still has an answer; what moved is where the answer is kept. Reading the
@@ -206,7 +206,7 @@ fn ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64
 /// The positions this object's live ELEMENTS hold, ascending -- the allocator's own input.
 ///
 /// NOT THE SAME QUANTITY AS [`ordinals_of`], AND THE DIFFERENCE IS THE POINT. A removal keeps the
-/// live entry over the page its element vacated, so the live INDEX still carries that element's
+/// live entry over the block its element vacated, so the live INDEX still carries that element's
 /// ordinal while the element itself is gone. `container_block_ordinal` reads the RESIDENT MAP, so
 /// this is the set a position claim is actually about, and the two are asserted separately wherever
 /// they part company.
@@ -320,11 +320,11 @@ fn seed_one_of_each_kind(engine: &TemporalEngine) -> Vec<(&'static str, String)>
 // 1. THE ASSIGNMENT, PER KIND, WITH THE DENOMINATOR PRINTED
 // =================================================================================================
 
-/// EVERY CONTAINER PAGE CARRIES ITS OWN ORDINAL, AND ON `main` EVERY ONE OF THEM CARRIES ZERO.
+/// EVERY CONTAINER BLOCK CARRIES ITS OWN ORDINAL, AND ON `main` EVERY ONE OF THEM CARRIES ZERO.
 ///
 /// Four kinds, `MEMBERS` elements each, and the assertion is on the SET of ordinals rather than on
 /// a count: `0..MEMBERS` exactly, no duplicate and none missing. A count alone would pass on a store that
-/// handed every page the same number, which is precisely what `main` does.
+/// handed every block the same number, which is precisely what `main` does.
 ///
 /// The denominator is printed per kind because a kind that seeded nothing and a kind whose ordinals
 /// are all correct both produce "no wrong ordinals".
@@ -378,10 +378,10 @@ fn every_container_block_carries_its_own_ordinal_rather_than_zero() {
 // 2. A CONTROL THAT MUST NOT MOVE
 // =================================================================================================
 
-/// THE CONTROL: A `string` PAGE IS UNTOUCHED, AT 0.00%.
+/// THE CONTROL: A `string` BLOCK IS UNTOUCHED, AT 0.00%.
 ///
 /// `string` is the kind with no component at all, it is not a container, and its arm still calls
-/// plain `append_value`. Every string page must still carry ordinal 0 -- if this moves, the change
+/// plain `append_value`. Every string block must still carry ordinal 0 -- if this moves, the change
 /// reached an arm it was not supposed to reach, and the measurement above is measuring the harness.
 ///
 /// rust-internal: drives StringSet, no external surface
@@ -444,8 +444,8 @@ fn a_string_block_is_left_at_zero_which_is_the_control() {
 /// rust-internal: drives repeated writes of one element, no external surface
 #[test]
 fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
-    // ONE MEMBER REWRITTEN REPEATEDLY IS A ONE-PAGE SHAPE ONLY UNGATED -- gated it settles on
-    // two pages and this test's own floor says so ("not measuring an overwrite"). The ordinal
+    // ONE MEMBER REWRITTEN REPEATEDLY IS A ONE-BLOCK SHAPE ONLY UNGATED -- gated it settles on
+    // two blocks and this test's own floor says so ("not measuring an overwrite"). The ordinal
     // under the collapsed projection is asserted by
     // `ordinal_under_the_gate::an_overwrite_keeps_the_members_ordinal_under_either_projection`,
     // which drives BOTH arms, so pinning this one loses nothing.
@@ -527,15 +527,15 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
 /// This is asserted rather than avoided, because it is what the tree does and the PR has to say
 /// which of the two it is.
 ///
-/// WHAT THE MECHANISM USED TO BE AND WHAT IT IS NOW. This said the page was REMOVED -- the body of
+/// WHAT THE MECHANISM USED TO BE AND WHAT IT IS NOW. This said the block was REMOVED -- the body of
 /// `mark_bucket_index_block_deleted_with` was a `retain` returning false -- and that was why `max`
-/// fell. A removal now KEEPS an entry, pointing at the page that records it and carrying `deleted`,
-/// so that a membership derived from the pages does not resurrect the element. The `max` still falls
+/// fell. A removal now KEEPS an entry, pointing at the block that records it and carrying `deleted`,
+/// so that a membership derived from the blocks does not resurrect the element. The `max` still falls
 /// for a different reason: `container_block_ordinal` filters `deleted`. So the CLAIM of this test is
 /// unchanged and its MECHANISM moved, which is exactly the case worth spelling out -- a reader who
 /// assumed the old mechanism would expect this test to be red.
 ///
-/// AND THE SAFETY CONDITION IS ASSERTED IN THE SAME TEST: the page that inherits ordinal 2 carries
+/// AND THE SAFETY CONDITION IS ASSERTED IN THE SAME TEST: the block that inherits ordinal 2 carries
 /// the NEW member's component, not the deleted one's. Identity stayed in the component, so the
 /// reused ordinal names a place and never an element. If a future reader resolved an element by its
 /// ordinal, this is the test that would have to change -- and it would be changing to describe
@@ -576,7 +576,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     );
     // THE POSITIONS, READ WHERE POSITIONS LIVE. This read the LIVE INDEX ENTRIES and expected them
     // to fall to [0, 1]; they stay at [0, 1, 2], because a removal keeps the live entry over the
-    // page its element vacated. The message said the fall happens "because `container_block_ordinal`
+    // block its element vacated. The message said the fall happens "because `container_block_ordinal`
     // filters `deleted`" -- that walk is gone. The allocator reads the RESIDENT MAP, which holds
     // exactly the object's live elements, so that is the set a position claim is about and the one
     // that falls. The retained index entry is asserted below, as a cost rather than a position.
@@ -668,10 +668,10 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
     //     asked of the resident map because that is where elements live and where the allocator
     //     reads.
     //   * TWO LIVE INDEX ENTRIES carry ordinal 2 -- m9's, and the one m2's removal left standing
-    //     over the page it vacated. A removal reaches the index through a door that matches
-    //     `component.is_none()`, which a page-named entry cannot satisfy, so the entry stays and a
+    //     over the block it vacated. A removal reaches the index through a door that matches
+    //     `component.is_none()`, which a block-named entry cannot satisfy, so the entry stays and a
     //     tombstone is added beside it. Membership is unaffected: `container_membership` folds by
-    //     append position and the tombstone is the later page.
+    //     append position and the tombstone is the later block.
     //
     // This assertion read `1 == at_two_live` over the live INDEX and would now fail at 2. Changing
     // the number alone would have recorded the cost as if it were the invariant; the invariant has
@@ -746,7 +746,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
 /// removes the wrong element or none: what changed is which artefact holds the row.
 ///
 /// AND THE DENOMINATOR IS ASSERTED ON BOTH SIDES OF THE MOVE: three live ELEMENTS after removing
-/// one of four, four live INDEX ENTRIES because the removal keeps the one over the vacated page,
+/// one of four, four live INDEX ENTRIES because the removal keeps the one over the vacated block,
 /// exactly one tombstone naming exactly the removed component, and the survivor set equal to the
 /// members that were not deleted.
 ///
@@ -806,7 +806,7 @@ fn deletion_still_finds_its_element_by_component() {
     );
     // THE DELETE FOUND ITS ELEMENT, AND THAT IS ASKED OF THE RESIDENT MAP.
     //
-    // This asserted three LIVE PAGES and its own message explained the four it did not expect:
+    // This asserted three LIVE BLOCKS and its own message explained the four it did not expect:
     // "a removal now retains a tombstone entry, so counting every entry would report 4 here and
     // that would be the retention rather than a mismatched delete". That accounted for the
     // TOMBSTONE and not for the RETAINED LIVE ENTRY, which is a second entry and is not deleted,
@@ -837,7 +837,7 @@ fn deletion_still_finds_its_element_by_component() {
     //
     // The new half of "deletion still finds its row": it has to find the right row to REMOVE and the
     // right row to RECORD, and a delete that matched the wrong component would now be wrong twice --
-    // once in the live set and once in the pages. Asserting only the live count would miss the second.
+    // once in the live set and once in the blocks. Asserting only the live count would miss the second.
     let tombstoned = tombstone_blocks_of(&engine, "set", key);
     println!("  tombstone entries after the delete: {tombstoned:?}");
     assert_eq!(
@@ -876,7 +876,7 @@ fn deletion_still_finds_its_element_by_component() {
 /// entry would move HLEN's answer. This change assigns a field on an existing entry and adds none,
 /// so HLEN must equal the number of distinct fields written -- before any ordinal existed and after.
 ///
-/// Asserted against the number of fields the fixture wrote AND against the page count, so a drift
+/// Asserted against the number of fields the fixture wrote AND against the block count, so a drift
 /// in either direction fails rather than cancelling out.
 ///
 /// rust-internal: drives HashSet and HashLen, no external surface
@@ -931,15 +931,15 @@ fn hash_len_still_answers_the_entry_count() {
 }
 
 // =================================================================================================
-// 7. THE PAGE STILL READS -- THE ONE WAY THIS COULD HAVE BEEN DATA LOSS
+// 7. THE BLOCK STILL READS -- THE ONE WAY THIS COULD HAVE BEEN DATA LOSS
 // =================================================================================================
 
 /// A RELOADED CONTAINER STILL READS EVERY ELEMENT, AND KEEPS THE ORDINALS IT WAS WRITTEN WITH.
 ///
-/// THIS IS THE TEST THAT MATTERS. `decode_block_record` refuses a page whose address block id and
+/// THIS IS THE TEST THAT MATTERS. `decode_block_record` refuses a block whose address block id and
 /// record header block id differ ("page id mismatch"), and that arm is inert today only because both
 /// sides are 0. Had the ordinal been stamped onto the index's copy of the address after the append
-/// -- the obvious way to write this change -- every container page would still have had a header
+/// -- the obvious way to write this change -- every container block would still have had a header
 /// saying 0, and every one of these reads would come back empty.
 ///
 /// The unload/load cycle is what makes the read go through the decode path rather than a warm cache
@@ -962,7 +962,7 @@ fn a_reloaded_container_still_reads_every_element() {
     engine.unload_shard(1);
     load_on(&engine, OPERATOR_END);
 
-    // EVERY hash field must come back with its own bytes. An unreadable page answers None here.
+    // EVERY hash field must come back with its own bytes. An unreadable block answers None here.
     let mut read_back = 0usize;
     for m in 0..MEMBERS {
         let field = format!("field-{m}");
@@ -1036,13 +1036,13 @@ fn a_reloaded_container_still_reads_every_element() {
 /// PAST THE CEILING THE ORDINAL IS LEFT UNASSIGNED, RATHER THAN PANICKING OR SATURATING.
 ///
 /// Driven on the helper directly, because reaching the ceiling through the engine means 65,536
-/// writes to one object. The index is built by hand with one page already AT the ceiling, which is
+/// writes to one object. The index is built by hand with one block already AT the ceiling, which is
 /// the state the next insert has to cope with.
 ///
 /// Both wrong answers are refused by name. PANICKING is what `set_block_id` does above the ceiling
 /// and it would turn a large container into a crash where `main` serves it. SATURATING would hand
-/// out 65,535 twice, and this tree's own doctrine on that field is that a saturated page id is a
-/// legal page id for a DIFFERENT page of the same object.
+/// out 65,535 twice, and this tree's own doctrine on that field is that a saturated block id is a
+/// legal block id for a DIFFERENT block of the same object.
 ///
 /// rust-internal: drives the assignment helper on a hand-built index, no engine
 #[test]

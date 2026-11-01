@@ -359,10 +359,10 @@ pub(crate) mod restore_phase_probe {
 }
 
 /// Counts of the times a replay had to fall back to the recorded outcome's own element name,
-/// because the page could not be asked.
+/// because the block could not be asked.
 ///
-/// A DETECTOR ON A FALLBACK, WHICH IS THE ONE SHAPE WORTH COUNTING. The page is meant to be the
-/// authority; every one of these is a write whose page cannot name its own element, so the count is
+/// A DETECTOR ON A FALLBACK, WHICH IS THE ONE SHAPE WORTH COUNTING. The block is meant to be the
+/// authority; every one of these is a write whose block cannot name its own element, so the count is
 /// the size of the class that still depends on the outcome carrying the name. It is also what says
 /// whether a test exercised the fallback at all -- a fallback nothing reaches is a fallback nothing
 /// has checked.
@@ -371,7 +371,7 @@ static OUTCOME_NAME_FROM_COMPONENT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 static OUTCOME_NAME_DISAGREED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// (from the page, from the outcome's own copy, refused for disagreeing).
+/// (from the block, from the outcome's own copy, refused for disagreeing).
 pub fn outcome_element_name_sources() -> (u64, u64, u64) {
     (
         OUTCOME_NAME_FROM_BLOCK.load(std::sync::atomic::Ordering::Relaxed),
@@ -387,14 +387,14 @@ pub fn reset_outcome_element_name_sources() {
     OUTCOME_NAME_DISAGREED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// What the page an outcome names could say about its own elements.
+/// What the block an outcome names could say about its own elements.
 ///
 /// `Unreadable` carries WHY, because the reason is what the refusal message has to print and what
 /// the next reader of a failed load needs. An `Option` here lost it once already.
 enum OutcomeBlockElements {
     /// The frame named these elements, with each one's removed flag.
     Named(Vec<(String, bool)>),
-    /// The page could not be asked, for this reason.
+    /// The block could not be asked, for this reason.
     Unreadable(&'static str),
 }
 
@@ -406,17 +406,17 @@ impl OutcomeBlockElements {
         }
     }
 
-    /// THE PRECEDENCE, IN ONE PLACE: the page first, the outcome's own copy as the fallback, and a
+    /// THE PRECEDENCE, IN ONE PLACE: the block first, the outcome's own copy as the fallback, and a
     /// refusal only when neither can name the element or when both can and they DISAGREE.
     ///
-    /// # WHY THE PAGE WINS WHERE IT CAN ANSWER
+    /// # WHY THE BLOCK WINS WHERE IT CAN ANSWER
     ///
-    /// It is the durable statement of what the page holds, and it is the thing a later derivation
+    /// It is the durable statement of what the block holds, and it is the thing a later derivation
     /// will read. Where it answers, nothing else is needed.
     ///
     /// # WHY THE OUTCOME'S COPY IS A FALLBACK AND NOT DEAD
     ///
-    /// Because there are reachable writes whose page cannot name its element -- `--bins`'
+    /// Because there are reachable writes whose block cannot name its element -- `--bins`'
     /// `matrixark_publish_visibility_can_target_only_written_keys` is one, and the first version of
     /// this code refused its load rather than reading a name that was sitting in the record. A
     /// fallback is not a guess: the outcome's copy is what the write itself recorded about the
@@ -424,16 +424,16 @@ impl OutcomeBlockElements {
     ///
     /// # AND A DISAGREEMENT IS LOUD, WHICH IS THE CLAUSE THAT EARNS ITS KEEP
     ///
-    /// If the page names elements and the outcome's component is not among them, then the page in
-    /// hand is not the page this outcome is about -- which is the `object_id` pairing defect
+    /// If the block names elements and the outcome's component is not among them, then the block in
+    /// hand is not the block this outcome is about -- which is the `object_id` pairing defect
     /// recorded in `the_shared_install_pairs_carried_blocks_by_object_and_component`
-    /// arriving with evidence. Installing the page's names would file this element's address under
-    /// another element's name; installing the component's would file another page's bytes under
+    /// arriving with evidence. Installing the block's names would file this element's address under
+    /// another element's name; installing the component's would file another block's bytes under
     /// this one. Both are corruption, so neither is chosen and the load is refused.
     ///
     /// `want_removed` selects the half the caller is about: an insert installs the LIVE items, a
     /// removal drops the ones the frame marks gone. The disagreement check looks at ALL of them,
-    /// because the component names its element whichever state the page records it in.
+    /// because the component names its element whichever state the block records it in.
     fn element_names(
         &self,
         item: &crate::wal::WalOutcomeItem,
@@ -706,7 +706,7 @@ impl TemporalEngine {
         // A NAMED ELEMENT'S ADDRESS COMES FROM THE RESIDENT MAP.
         //
         // This asked `bucket_index_block_address`, which requires
-        // `page.component.as_deref() == component` on every branch. An entry carries no element
+        // `block.component.as_deref() == component` on every branch. An entry carries no element
         // name, so for a container element that resolved NOTHING and this door answered `None` for
         // elements that were present and served:
         // `container_block_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
@@ -1414,8 +1414,8 @@ impl TemporalEngine {
         let identities = shard.bucket_index.block_identities();
         for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
             for (block_ref_key, block) in &bucket.block_index {
-                // A page whose neighbours do not name an object prints an empty key and a zero
-                // id, which is what this shape has to say about a page nothing names.
+                // A block whose neighbours do not name an object prints an empty key and a zero
+                // id, which is what this shape has to say about a block nothing names.
                 let beside = identities.identity_of(bucket, *block_ref_key, block);
                 let object_key = beside
                     .as_ref()
@@ -1551,7 +1551,7 @@ impl TemporalEngine {
         }
         // CALLED PER MAP RATHER THAN ITERATED OVER AN ARRAY, because the maps no longer agree on
         // one key type: the context kinds are keyed by `ModelKey` so they can share one allocation
-        // with the page index, while `features` keeps its `String` key -- that map holds 40 keys at
+        // with the block index, while `features` keeps its `String` key -- that map holds 40 keys at
         // a 40,040-key corpus, so converting it would buy nothing and touch 87 call sites. An array
         // literal forces one type on every element; a generic call does not.
         append_series_shape(&mut out, "feature", shard.features());
@@ -1701,82 +1701,82 @@ impl TemporalEngine {
         true
     }
 
-    /// Which elements the page an outcome names actually holds, read from the PAGE -- or WHY it
+    /// Which elements the block an outcome names actually holds, read from the BLOCK -- or WHY it
     /// could not be asked.
     ///
-    /// # THE PAGE IS THE AUTHORITY FOR WHAT ELEMENT IT HOLDS, AND IT IS NOT ALWAYS AVAILABLE
+    /// # THE BLOCK IS THE AUTHORITY FOR WHAT ELEMENT IT HOLDS, AND IT IS NOT ALWAYS AVAILABLE
     ///
-    /// A container page states its own elements -- `container_blocks` is the module that made it do
+    /// A container block states its own elements -- `container_blocks` is the module that made it do
     /// so, and its own doc says why: "the element name now exists in a second place, which is the
     /// precondition for it leaving the first." Replay used to ask the RECORDED OUTCOME which
-    /// element its page was about; it asks the page.
+    /// element its block was about; it asks the block.
     ///
     /// AND THE FIRST VERSION OF THIS RETURNED AN `Option`, WHICH LOST THE ONE THING THE CALLER
     /// NEEDED. A `None` meant "no element name from here" and the arms turned it straight into a
-    /// refused LOAD -- so a reachable path where the page cannot answer and the OUTCOME CAN became
+    /// refused LOAD -- so a reachable path where the block cannot answer and the OUTCOME CAN became
     /// a store that would not open. `--bins`' `matrixark_publish_visibility_can_target_only_written_keys`
     /// found exactly that, and the message it printed is the shape of the defect: "address
-    /// resolved, page UNREADABLE or names nothing, component present, 27 chars". The information
+    /// resolved, block UNREADABLE or names nothing, component present, 27 chars". The information
     /// was sitting right there and the refusal threw it away. So this answers with a REASON, and
     /// the arms fall back to the outcome's own copy rather than refusing.
     ///
     /// # WHAT THAT FAILURE ACTUALLY WAS, MEASURED, AND IT IS NOT WHAT IT LOOKED LIKE
     ///
     /// "The page names nothing" reads as a missing frame, and the first reading of it here was that
-    /// some write path stores an unframed page -- `container_blocks::UNFRAMED_CONTAINER_WRITES`
-    /// exists for exactly that class, so it was a plausible cause. IT WAS WRONG. The pages are
+    /// some write path stores an unframed block -- `container_blocks::UNFRAMED_CONTAINER_WRITES`
+    /// exists for exactly that class, so it was a plausible cause. IT WAS WRONG. The blocks are
     /// framed. Driven from the proxy binary's own suite with a temporary print on this arm, 24 of
     /// 24 fallbacks reported:
     ///
     /// ```text
     ///     kind=hash  component=Some(27)
-    ///     why=the record carries several pages of this object, so the carried page cannot be
+    ///     why=the record carries several blocks of this object, so the carried block cannot be
     ///         told apart, and the address is not in the block store
     /// ```
     ///
-    /// So BOTH ways of reaching the page failed at once, and neither is about the frame:
+    /// So BOTH ways of reaching the block failed at once, and neither is about the frame:
     ///
-    ///   * the record is a `HashMultiSet` of several fields of ONE key, so it carries several pages
-    ///     under one `object_id` and the carried page cannot be matched to this outcome -- the
+    ///   * the record is a `HashMultiSet` of several fields of ONE key, so it carries several blocks
+    ///     under one `object_id` and the carried block cannot be matched to this outcome -- the
     ///     pairing defect `the_shared_install_pairs_carried_blocks_by_object_and_component`
     ///     records, arriving in the wild rather than in a fixture;
     ///   * and that test runs with ASYNC STORAGE on, so the block the address names was still
     ///     buffered and the store did not have it.
     ///
-    /// THE ELEMENT NAME WAS IN THE PAGE THE WHOLE TIME. What replay could not do is lay hands on
-    /// the page. That changes what this fallback is for: it does not cover pages that cannot name
-    /// their element, it covers pages this replay cannot reach -- and the durable fix is to make a
-    /// carried page identifiable, not to add frames to anything.
+    /// THE ELEMENT NAME WAS IN THE BLOCK THE WHOLE TIME. What replay could not do is lay hands on
+    /// the block. That changes what this fallback is for: it does not cover blocks that cannot name
+    /// their element, it covers blocks this replay cannot reach -- and the durable fix is to make a
+    /// carried block identifiable, not to add frames to anything.
     ///
     /// IT ALSO CORRECTS A FIGURE THIS CAMPAIGN PUBLISHED. "0 block reads, structurally zero,
-    /// because `stage` is unconditional" was measured on single-page records and is true of them.
-    /// `stage` being unconditional says a page is CARRIED; it says nothing about whether the
-    /// carried page can be told apart from its siblings, and nothing about whether the address is
+    /// because `stage` is unconditional" was measured on single-block records and is true of them.
+    /// `stage` being unconditional says a block is CARRIED; it says nothing about whether the
+    /// carried block can be told apart from its siblings, and nothing about whether the address is
     /// readable yet. A targeted fixture could not see either, and the proxy suite did -- which is
     /// the recorded lesson that a targeted run is not a suite.
     ///
     /// NOT A SUBSTRING, A DECODE. The bytes were already known to CONTAIN the name -- a probe found
     /// it in 3 of 3 payloads by searching for it -- and that is a weaker claim than it looks:
-    /// present is not the same as recoverable. What makes this sound is that the page carries a
+    /// present is not the same as recoverable. What makes this sound is that the block carries a
     /// one-byte KEY SPELLING and `component_from_element_key` is a defined inverse of the rendering
     /// the write path used, driven both ways by `container_block_element_key`.
     ///
     /// # WHERE THE BYTES COME FROM, AND WHY THE ORDER IS THIS ONE
     ///
-    /// THE CARRIED PAGE FIRST, AND ONLY WHEN IT IS UNAMBIGUOUS. `stage` is unconditional -- its own
-    /// doc says the flag that gated it is gone -- so every page a write produces travels inside its
+    /// THE CARRIED BLOCK FIRST, AND ONLY WHEN IT IS UNAMBIGUOUS. `stage` is unconditional -- its own
+    /// doc says the flag that gated it is gone -- so every block a write produces travels inside its
     /// record, and replay has already deserialized them. Taking the name from there costs NO BLOCK
     /// READ AT ALL, and the baseline it has to beat is zero: measured, a cold replay of 64 records
     /// performs 0 block reads.
     ///
     /// But a `StagedBlock` is keyed by `object_id`, and an object id is per (kind, key) and NOT per
-    /// element -- its own doc records what that costs ("two pages of one key sharing an id serve 1
-    /// of 2 correctly"). So a record carrying SEVERAL pages of one key cannot say which of them an
+    /// element -- its own doc records what that costs ("two blocks of one key sharing an id serve 1
+    /// of 2 correctly"). So a record carrying SEVERAL blocks of one key cannot say which of them an
     /// outcome is about, and guessing is how a replay installs a field name against another field's
-    /// address. The carried page is therefore used only when exactly ONE of the record's pages
+    /// address. The carried block is therefore used only when exactly ONE of the record's blocks
     /// belongs to this outcome's object.
     ///
-    /// THE ADDRESS SECOND, WHICH IS EXACT AND COSTS A READ. `item.address` names one page and no
+    /// THE ADDRESS SECOND, WHICH IS EXACT AND COSTS A READ. `item.address` names one block and no
     /// other, so reading it can never pick the wrong one. It is the fallback rather than the rule
     /// because a read per replayed record is recovery time, and recovery time is a product
     /// property: `durable_outranks_derived::what_resolving_the_element_from_the_block_costs_a_replay`
@@ -1800,7 +1800,7 @@ impl TemporalEngine {
         let bytes = match (of_this_object.next(), of_this_object.next()) {
             (Some(only), None) => only.bytes.clone(),
             // READ THROUGH THE STORE AND NOT THE READ FUNNEL, deliberately. The funnel resolves a
-            // log-resident page through `wal_resident_blocks`, which is keyed by (object id,
+            // log-resident block through `wal_resident_blocks`, which is keyed by (object id,
             // ELEMENT NAME) -- so asking it would need the very name this is recovering. The store
             // is keyed by the address, which the outcome has.
             (Some(_), Some(_)) => match self.block_store.read(&address) {
@@ -1838,7 +1838,7 @@ impl TemporalEngine {
                     }
                 }
                 if named.is_empty() {
-                    // A FRAME NAMING NOTHING IS NOT AN EMPTY ANSWER. A page exists because a write
+                    // A FRAME NAMING NOTHING IS NOT AN EMPTY ANSWER. A block exists because a write
                     // put an element on it, so a frame with no items is as unusable as no frame.
                     return OutcomeBlockElements::Unreadable("the frame names no element");
                 }
@@ -1932,27 +1932,27 @@ impl TemporalEngine {
             // to stage -- replay installs a removal that was already recorded, and staging another
             // would record the recovery as a write of its own.
             "string" | "hash" | "set" | "list" | "zset" if item.deleted => {
-                // THE TOMBSTONE PAGE NAMES WHAT WAS REMOVED, so a removal reads its element the
+                // THE TOMBSTONE BLOCK NAMES WHAT WAS REMOVED, so a removal reads its element the
                 // same way an insert does.
                 //
                 // `remove_container_element` appends `container_blocks::tombstone_block(kind,
-                // component)` before it records anything, and the outcome carries THAT page's
+                // component)` before it records anything, and the outcome carries THAT block's
                 // address -- the comment on the re-filing below already says the address travels
-                // for the entry's sake. The page it names is a frame whose item for the removed
-                // element has `deleted` set, which is the whole reason the v2 page shape exists.
-                // So the element the removal is about is readable from the page, and the recorded
+                // for the entry's sake. The block it names is a frame whose item for the removed
+                // element has `deleted` set, which is the whole reason the v2 block shape exists.
+                // So the element the removal is about is readable from the block, and the recorded
                 // outcome does not have to spell it.
                 //
-                // A REMOVAL WITH NO TOMBSTONE PAGE IS REFUSED, and that is a deliberate narrowing
+                // A REMOVAL WITH NO TOMBSTONE BLOCK IS REFUSED, and that is a deliberate narrowing
                 // rather than a gap left open. `tombstone_block` answers `None` for a kind with no
                 // element-key spelling and counts it, and the append can fail and is counted by
                 // `TOMBSTONE_APPEND_FAILURES`. In either case the removal was never recorded IN THE
-                // PAGES -- so a derivation after the replay would resurrect the element whatever
+                // BLOCKS -- so a derivation after the replay would resurrect the element whatever
                 // this arm did with it. Refusing the load says so; installing from a name the
-                // outcome happened to carry would hide it. `"string"` is untouched: its page is its
+                // outcome happened to carry would hide it. `"string"` is untouched: its block is its
                 // whole object, it has no element, and it never had a component.
                 // ONE REMOVAL AT A TIME, by taking the SINGLE removed element and refusing a
-                // page that names several. A tombstone page is written per removal and holds
+                // block that names several. A tombstone block is written per removal and holds
                 // exactly one removed item; a frame naming two would mean one outcome stood for two
                 // removals, and dropping both from a record that recorded one is a guess.
                 let component = match removed.as_deref() {
@@ -2005,21 +2005,21 @@ impl TemporalEngine {
                     _ => return false,
                 }
                 if item.kind != "string" {
-                    // THE OUTCOME'S ADDRESS IS THE TOMBSTONE PAGE, AND REPLAY HAS TO RE-FILE IT.
+                    // THE OUTCOME'S ADDRESS IS THE TOMBSTONE BLOCK, AND REPLAY HAS TO RE-FILE IT.
                     //
-                    // A container removal appends a page stating the removal and keeps an entry
-                    // pointing at it, so a membership derived from the pages does not resurrect the
-                    // element. The page survives a crash like any other page. The ENTRY does not: it
+                    // A container removal appends a block stating the removal and keeps an entry
+                    // pointing at it, so a membership derived from the blocks does not resurrect the
+                    // element. The block survives a crash like any other block. The ENTRY does not: it
                     // lives in the index, and a replay is what runs when the index was not usable.
                     //
                     // So the address travels in the outcome -- `mark_bucket_index_block_deleted_recording`
                     // puts it there at the original removal -- and is handed back here. Drop it and the
-                    // replay re-drops the entry, the tombstone page is named by nothing, and a
+                    // replay re-drops the entry, the tombstone block is named by nothing, and a
                     // derivation after the recovery puts the element back: the original defect,
                     // reappearing only on the path where it is hardest to see.
                     //
                     // `None` for an outcome written before this change, which is correct: there was no
-                    // tombstone page, so there is no entry to file.
+                    // tombstone block, so there is no entry to file.
                     super::mark_bucket_index_block_deleted_recording(
                         shard,
                         shard_id,
@@ -2106,24 +2106,24 @@ impl TemporalEngine {
             // The component is what the map is keyed by, encoded. Each of these mirrors the
             // encoder that produced it; a wrong decode shows up as an equivalence failure, not
             // as a silently different shard.
-            // THE PAGE SAYS WHICH FIELD IT HOLDS, AND THE OUTCOME NO LONGER HAS TO.
+            // THE BLOCK SAYS WHICH FIELD IT HOLDS, AND THE OUTCOME NO LONGER HAS TO.
             //
             // This arm read `item.component` -- the recorded outcome's own copy of the field name
-            // -- and refused when it was absent. It reads the page the outcome's address names
+            // -- and refused when it was absent. It reads the block the outcome's address names
             // instead, through `elements_the_outcome_block_holds`, which decodes the container frame
             // and renders each element key back through the spelling the write path used.
             //
-            // EVERY ELEMENT THE PAGE NAMES IS INSTALLED, not one, and that is a widening rather
-            // than a substitution. Under one entry a page a folded page backs SEVERAL fields at one
-            // address, and all of them resolve through it -- so installing the page's whole element
+            // EVERY ELEMENT THE BLOCK NAMES IS INSTALLED, not one, and that is a widening rather
+            // than a substitution. Under one entry a block a folded block backs SEVERAL fields at one
+            // address, and all of them resolve through it -- so installing the block's whole element
             // set is what the resident map should hold, where the outcome's single name could only
             // ever describe one of them. Measured on the shape a write actually produces: every
-            // staged page holds exactly ONE item, so on the common path this installs exactly what
+            // staged block holds exactly ONE item, so on the common path this installs exactly what
             // the previous arm did.
             //
-            // A REMOVED ITEM IS SKIPPED AND NOT INSTALLED. The v2 page shape can say an element is
+            // A REMOVED ITEM IS SKIPPED AND NOT INSTALLED. The v2 block shape can say an element is
             // gone, and `ContainerBlockItem::deleted` is that statement; installing it would put
-            // back the element the page records the removal of, which is the resurrection the shape
+            // back the element the block records the removal of, which is the resurrection the shape
             // exists to prevent.
             "hash" => {
                 let (Some(address), Some(fields)) = (item.resolved_address(), live.as_ref()) else {
@@ -2151,7 +2151,7 @@ impl TemporalEngine {
             // set: the PAGE spells the member, and the page's key IS the member.
             //
             // THE SAME MOVE AS THE HASH ARM AND ONE DEGREE MORE DIRECT. For `ElementKeySpelling::Hex`
-            // the element key stored in the page is the member's own bytes, and the component is
+            // the element key stored in the block is the member's own bytes, and the component is
             // `hex::encode` of them -- so the hex round trip below is undoing a rendering that only
             // ever existed to put the member in a `String`. It is kept rather than short-circuited
             // because `elements_the_outcome_block_holds` answers in components for every kind, which
@@ -2226,9 +2226,9 @@ impl TemporalEngine {
             // is deliberate rather than an oversight.
             //
             // The page's key for this spelling is eight bytes of biased score followed by the
-            // member, so the score IS in the page -- but `component_from_element_key` drops those
+            // member, so the score IS in the block -- but `component_from_element_key` drops those
             // eight bytes, because the component stopped spelling a score when zset collapsed to
-            // one entry a page. Reading the score back out of the key would mean this arm decoding
+            // one entry a block. Reading the score back out of the key would mean this arm decoding
             // the frame itself instead of going through the shared resolver, for a value the
             // outcome already carries in `value`. The member is what was duplicated; the score was
             // not.
@@ -2351,7 +2351,7 @@ impl TemporalEngine {
                     // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
                     // under the same object key, so they share one allocation instead of minting two.
                     // Taken here rather than before the append on purpose: the handle this borrows has
-                    // to exist already, and the page index is what holds it.
+                    // to exist already, and the block index is what holds it.
                     let stored_key = shard
                         .bucket_index
                         .any_shared_object_key(&*item.object_key)
@@ -2749,7 +2749,7 @@ impl TemporalEngine {
     /// This read "the element has to be read back from the place that has always held it:
     /// `BlockIndex::component`, sitting on the same block entry as the address whose object id this
     /// is." That field is gone, and the paragraph was already describing a value that was `None`
-    /// for every entry of every kind: one entry a page files no element name, so this walk has
+    /// for every entry of every kind: one entry a block files no element name, so this walk has
     /// folded on `wal_resident_key(object_id, None)` -- which the function returns as `object_id`
     /// unchanged -- since the collapse, not since this change.
     ///
@@ -2784,14 +2784,14 @@ impl TemporalEngine {
                 if block.deleted {
                     continue;
                 }
-                // A LIVE page is named by the object lookup, which the decode fills -- so the
+                // A LIVE block is named by the object lookup, which the decode fills -- so the
                 // `else` here is the window between a decode and that filing, which no longer
                 // exists on any path that reaches this.
                 let Some(beside) = identities.identity_of(bucket, *handle, block) else {
                     continue;
                 };
                 let object_id = block.object_id(shard_id, beside.object_key);
-                // `None`: an entry names a page, not an element. See this function's doc for what
+                // `None`: an entry names a block, not an element. See this function's doc for what
                 // that skips and why skipping is the safe direction.
                 let component = None;
                 let folded = super::block_in_wal::wal_resident_key(object_id, component);
@@ -3080,14 +3080,14 @@ impl TemporalEngine {
                                 None => "missing".to_string(),
                                 Some(value) => format!("present, {} chars", value.len()),
                             };
-                            // AND WHETHER THE PAGE NAMES ITS OWN ELEMENTS, which is the term that
+                            // AND WHETHER THE BLOCK NAMES ITS OWN ELEMENTS, which is the term that
                             // was missing from this message and is now the one the hash arm
                             // actually fails on. A message naming only the component sent the next
                             // reader to look at a field the arm no longer asks for -- the shape
                             // this file documents elsewhere as a gate whose output is not the thing
                             // it measured.
                             //
-                            // RESOLVED A SECOND TIME, DELIBERATELY. It costs a page read on a path
+                            // RESOLVED A SECOND TIME, DELIBERATELY. It costs a block read on a path
                             // that is about to refuse the whole load, and the alternative is
                             // threading a diagnostic out of eighteen `false` returns.
                             let block = self

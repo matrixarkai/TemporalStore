@@ -7,7 +7,7 @@
 //! sequence number, a hash, a timestamp and a byte count all want the full width, and a structure
 //! that exists once per shard can be as fat as it likes. `ShardState` is 1,888 bytes and there is
 //! one of it. What is different about the handful of structures below is that their count is the
-//! CORPUS: one per stored address, one per page-index entry, one per routing bucket. At those
+//! CORPUS: one per stored address, one per block-index entry, one per routing bucket. At those
 //! counts a byte is a megabyte, and nothing in this tree stopped one of them growing.
 //!
 //! WHAT THIS MODULE IS FOR. Two things, and the second is the durable one:
@@ -112,9 +112,9 @@ fn budget() -> Vec<Budgeted> {
             // it is now the block id alone, and still not a row.
             // `block_slab_id` and `offset` were two more u64s until they became the two halves of
             // `address` -- two rows became one for the same reason, and by the same eight bytes.
-            // `routing_bucket` was a third u32 until it stopped being held at all: a page's bucket
+            // `routing_bucket` was a third u32 until it stopped being held at all: a block's bucket
             // is `block_routing_bucket(object_key, ..)` over the range the store is stamped with,
-            // so the container a page is read through answers it. `block_id` narrowed from 32 bits
+            // so the container a block is read through answers it. `block_id` narrowed from 32 bits
             // to 16 in the same change, and NEITHER of those is worth anything on its own -- four
             // bytes off 29 is 25 and two off 29 is 27, both of which round back to 32. Together
             // they shed six and the struct crosses to 24.
@@ -150,8 +150,8 @@ fn budget() -> Vec<Budgeted> {
             name: "BlockIndexMap",
             size: size_of::<BlockIndexMap>(),
             align: align_of::<BlockIndexMap>(),
-            // WIDEST ARM: `Many(Vec<(u64, BlockIndex)>)` -- the page list's header, and nothing
-            // wider. The single-page arm holds a handle and a BOX, which is sixteen bytes, and both
+            // WIDEST ARM: `Many(Vec<(u64, BlockIndex)>)` -- the block list's header, and nothing
+            // wider. The single-block arm holds a handle and a BOX, which is sixteen bytes, and both
             // it and `Empty` ride pointer niches so neither adds a discriminant word.
             //
             // IT USED TO BE `u64 + BlockIndex`, the whole entry held inline, and that is what made
@@ -235,7 +235,7 @@ fn budget() -> Vec<Budgeted> {
             name: "IndexItem",
             size: size_of::<IndexItem>(),
             align: align_of::<IndexItem>(),
-            // kind, routing_bucket, TWO String handles (the composite page handle and the
+            // kind, routing_bucket, TWO String handles (the composite block handle and the
             // model spelling), the Arc<str> object key it shares with the resident entry,
             // object_id, the shared Option<ElementEntry> payload, deleted.
             //
@@ -537,9 +537,9 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
     // `length` may saturate: `u32::MAX` is four times the largest length `encode_block_record`
     // accepts, so a saturated length is a value no writer could have produced and reads as broken.
     // `u16::MAX` IS the largest block id the encoder accepts, so saturating there would produce a
-    // perfectly legal block id -- the LARGEST LEGAL PAGE of the same object -- and
+    // perfectly legal block id -- the LARGEST LEGAL BLOCK of the same object -- and
     // `decode_block_record`'s block-id arm, the one cross-check on a read that can actually fire,
-    // would confirm it against that page's own record. That is the address-word hazard one level
+    // would confirm it against that block's own record. That is the address-word hazard one level
     // down, so it takes the address word's answer: refuse.
     for over in [u64::from(u16::MAX) + 1, 1u64 << 33, u64::MAX] {
         let refused = ElementEntry::try_from_parts(1, 0, 64, Some(over), None)
@@ -589,7 +589,7 @@ fn a_block_id_that_does_not_fit_the_field_saturates_rather_than_wrapping() {
 /// `set_block_id` is the second write path into the same field. It panics rather than returning,
 /// because every caller's value is bounded by construction -- the record decoder's comes off the
 /// wire as a `u16` already -- and the doctrine is `from_parts`'s: a truncated block id names a
-/// different page of the same object, so it is refused rather than narrowed.
+/// different block of the same object, so it is refused rather than narrowed.
 #[test]
 #[should_panic(expected = "does not fit the block id field")]
 fn the_block_id_setter_refuses_a_value_the_encoder_would_refuse() {
@@ -610,14 +610,14 @@ fn the_block_id_setter_refuses_a_value_the_encoder_would_refuse() {
 /// moved, the explanation would be wrong whatever the three did.
 ///
 /// THREE AND NOT FIVE, AND THE ASSERTION IS WHAT SAID SO. `BlockIndexMap` and `BucketNode` held a
-/// page entry -- and therefore an address -- INLINE until #1975 put the single page behind a pointer.
+/// block entry -- and therefore an address -- INLINE until #1975 put the single block behind a pointer.
 /// They are now 24 and 88 whatever the entry weighs, so they belong in the control group, and this
 /// test reported the reclassification rather than absorbing it: it failed with `BlockIndexMap holds 1
 /// address(es) inline and moved by 56 bytes, not 8`. That is the row landing in the wrong list, which
 /// is the failure the `addresses` column exists to produce. What the eight bytes are worth in those
 /// two structures is now a HEAP figure, measured in `inline_arm_trade.rs`: eight bytes on every entry
 /// slot in the request column, and -324.44 B a bucket on the chunk column at the shipped routing
-/// range and 40,000 records, where every bucket holds a page LIST.
+/// range and 40,000 records, where every bucket holds a block LIST.
 ///
 /// THE WIDTHS ARE READ, NOT WRITTEN DOWN. Each row states how many addresses the structure holds,
 /// and the assertion is that the structures holding one are exactly the ones whose width is
@@ -641,13 +641,13 @@ fn only_the_structures_that_hold_an_address_moved() {
         ("ElementEntry", size_of::<ElementEntry>(), 24, 1),
         ("BlockIndex", size_of::<BlockIndex>(), 64, 1),
         ("IndexItem", size_of::<crate::index_log::IndexItem>(), 160, 1),
-        // Held an address inline until #1975 boxed the single-page arm; 24 and 88 whatever the
+        // Held an address inline until #1975 boxed the single-block arm; 24 and 88 whatever the
         // entry weighs now, so they are control rows and not holder rows.
         ("BlockIndexMap", size_of::<BlockIndexMap>(), 24, 0),
         // 96 AND 96, AND THE `before` COLUMN MOVED WITH IT. This row's claim is that a structure
         // holding no `ElementEntry` inline did not move when the address shed -- and it did not.
         // What moved it since is a DIFFERENT change, named rather than absorbed: the node gained
-        // one word, `tombstone_elements`, when a removal's element name left the page entries. So
+        // one word, `tombstone_elements`, when a removal's element name left the block entries. So
         // both columns are 96 and the row still says what it was written to say; freezing the
         // `before` at 88 would have made this arm report an address defect for a field that holds
         // no address.
@@ -915,8 +915,8 @@ fn the_stored_form_moved_in_one_slot_and_the_version_stamp_pays_for_it() {
     // not the same case and this is where the difference is driven: `u32::MAX` is four times the
     // largest length the encoder accepts, so a saturated length is a value no writer could have
     // produced and reads as broken. `u16::MAX` IS the largest block id it accepts, so a saturated
-    // one is a legal block id for a different page of the same object -- which
-    // `decode_block_record`'s block-id arm would then confirm against that page's own record.
+    // one is a legal block id for a different block of the same object -- which
+    // `decode_block_record`'s block-id arm would then confirm against that block's own record.
     //
     // NO generation key here, deliberately. Besides the saturation it was written for, this is the
     // shape of an index written before the generation existed: an identity and no generation at all.
@@ -965,7 +965,7 @@ struct ItemCounts {
 
 impl ItemCounts {
     /// Every resident `BlockAddress`: the one each model-map entry holds, plus the one inside
-    /// every page-index entry. The two are separate copies of the same address, which is why
+    /// every block-index entry. The two are separate copies of the same address, which is why
     /// this structure's count is roughly twice the record count rather than equal to it.
     fn block_addresses(&self) -> usize {
         self.model_map_addresses + self.block_index_entries
@@ -1008,7 +1008,7 @@ fn count_items(shard: &crate::engine::state::ShardState) -> ItemCounts {
 ///
 /// Ranked by the product, which is the only ranking that answers the question this module asks.
 /// `BlockStoreSlabDescriptor` is the reason: it is 168 bytes against `BlockLookupRef`'s 16, and a
-/// store holding a gigabyte of pages has ONE of it and eighty thousand of the other.
+/// store holding a gigabyte of blocks has ONE of it and eighty thousand of the other.
 ///
 /// A per-item figure that is FLAT across the two corpus sizes is what makes the total multiply
 /// out to any scale. One that grows is a finding in itself, and the per-structure rows say which
@@ -1099,7 +1099,7 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
             total as f64 / counts.records as f64
         );
 
-        // BlockIndex is NOT added into the total separately: every page entry lives inside a
+        // BlockIndex is NOT added into the total separately: every block entry lives inside a
         // BucketNode's own `BlockIndexMap`, so its bytes are already inside the BucketNode row.
         // Counting it twice would report a win twice.
         let counted: usize = rows
@@ -1317,14 +1317,14 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
 
     // 94 AND 96, NOT 86 AND 88, AND THE EXTRA WORD IS NAMED. `tombstone_elements` is the eleventh
     // field: ONE WORD, holding the element name of each tombstone this bucket carries, which the
-    // page ENTRIES stopped carrying. It is `Option<Box<Vec<_>>>` rather than a `Vec` for exactly
+    // block ENTRIES stopped carrying. It is `Option<Box<Vec<_>>>` rather than a `Vec` for exactly
     // the reason this table exists -- the node's count is the bucket count, so three words a
     // bucket to carry nothing in almost every bucket is not a trade and one word is.
     //
     // IT LANDED IN THE EIGHT-ALIGNED GROUP AND COST A WHOLE WORD. The tail was 6 rounded to 8 and
     // is untouched, so the slack is still 2 and the step is the full eight bytes: this structure
-    // had no room to absorb it. Against it, `BlockIndex` -- one per PAGE, which is what the index
-    // is made of -- went 56 to 40. Eight bytes a bucket for sixteen bytes a page.
+    // had no room to absorb it. Against it, `BlockIndex` -- one per BLOCK, which is what the index
+    // is made of -- went 56 to 40. Eight bytes a bucket for sixteen bytes a block.
     assert_eq!(94, sum, "the fields of BucketNode add up to {sum}, not 94");
     assert_eq!(96, size, "BucketNode is {size} bytes wide, not 96");
     assert_eq!(2, slack, "BucketNode carries {slack} bytes of alignment slack, not 2");
@@ -1334,15 +1334,15 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     let align = align_of::<BucketNode>();
     assert_eq!(8, align, "BucketNode's alignment moved, and the arithmetic below assumes 8");
     // 80, AND EVERY BYTE THAT HAS EVER LEFT THIS STRUCTURE LEFT THIS GROUP -- none has come out of
-    // the tail. In order: the address inside the inline page entry shed a derived `generation`;
+    // the tail. In order: the address inside the inline block entry shed a derived `generation`;
     // `last_dump_sequence` left the node; that same address merged its slab id and its offset into
     // ONE WORD; the page entry's model spelling stopped being a sixteen-byte fat pointer to a string
     // from a closed set of seventeen, which was the first step to take TWO words at once (168 -> 152
-    // -> 136); and then the page index stopped holding that entry INLINE at all, which took SEVEN
+    // -> 136); and then the block index stopped holding that entry INLINE at all, which took SEVEN
     // words in one step, 136 -> 80. The tail is still six because the five flags became five bits,
-    // which is the other half of the structure entirely and no change to the page entry can reach it.
+    // which is the other half of the structure entirely and no change to the block entry can reach it.
     // 88 AND NOT 80: the eight-aligned group gained `tombstone_elements`, one word, when a
-    // removal's element name left the page entries for the bucket that holds them. It is the only
+    // removal's element name left the block entries for the bucket that holds them. It is the only
     // byte this structure has ever GAINED, and it came into the same group every earlier step came
     // out of -- which is why it cost a whole word rather than disappearing into the tail's rounding.
     assert_eq!(88, eight_aligned, "the eight-aligned group is {eight_aligned} B, not 88");
@@ -1390,11 +1390,11 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
          tail field changes nothing is only true while it does not"
     );
 
-    // --- THE BIGGEST SINGLE FIELD, AND IT IS NO LONGER THE PAGE INDEX. ---
+    // --- THE BIGGEST SINGLE FIELD, AND IT IS NO LONGER THE BLOCK INDEX. ---
     //
-    // This assertion used to read the other way: `block_index` held a whole page entry INLINE and
+    // This assertion used to read the other way: `block_index` held a whole block entry INLINE and
     // was over HALF the structure, which is what made it the field an accounting had to lead with.
-    // The entry is behind a pointer now, so the page index is a quarter of the node and the widest
+    // The entry is behind a pointer now, so the block index is a quarter of the node and the widest
     // field is whichever the table says -- asserted to be found rather than named, so a future
     // narrowing moves it instead of leaving this comment describing the wrong one.
     let block = fields
@@ -1570,7 +1570,7 @@ struct MirrorHoistedClaims {
     tombstone_elements: TombstoneElements,
 }
 
-/// The inline page entry held behind a pointer instead.
+/// The inline block entry held behind a pointer instead.
 ///
 /// ITS `Many` ARM IS THE SHIPPED LIST, which is what makes the only difference between this mirror
 /// and the declaration the arm under discussion. It used to spell that arm as a `BTreeMap`, which
@@ -1583,7 +1583,7 @@ enum MirrorBoxedBlockIndexMap {
     Many(Vec<(u64, BlockIndex)>),
 }
 
-/// The page index WITH the inline single-page arm -- the shape that was dropped.
+/// The block index WITH the inline single-block arm -- the shape that was dropped.
 ///
 /// Kept beside the boxed one because the three shapes are what a proposal to bring the arm back
 /// would have to argue between, and a shape that exists only as an absence cannot be priced.
@@ -1595,7 +1595,7 @@ enum MirrorInlineBlockIndexMap {
     Many(Vec<(u64, BlockIndex)>),
 }
 
-/// The node as it was before the single-page entry was boxed: every field the same, and the page index
+/// The node as it was before the single-block entry was boxed: every field the same, and the block index
 /// still holding a whole entry inline.
 #[allow(dead_code)]
 struct MirrorInlineBlock {
@@ -1664,11 +1664,11 @@ struct MirrorBoxedBlock {
 /// decides it is the dirty FRACTION, which the corpus probe prints; at the fraction this store
 /// runs at it is not a win.
 ///
-/// THE ONE THAT IS A LOSS, AND THE ONLY ONE WHOSE SIGN IS NOT OBVIOUS. Putting the inline page
+/// THE ONE THAT IS A LOSS, AND THE ONLY ONE WHOSE SIGN IS NOT OBVIOUS. Putting the inline block
 /// entry behind a pointer takes the most off the struct of anything here -- and then pays it
-/// back with interest, because almost every bucket holds exactly one page and would allocate for
+/// back with interest, because almost every bucket holds exactly one block and would allocate for
 /// it. The allocation is rounded up by the allocator, so the pair costs MORE than the inline form
-/// it replaced, plus an indirection on every page read and an allocation on every bucket.
+/// it replaced, plus an indirection on every block read and an allocation on every bucket.
 #[test]
 fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // --- The control. Nothing below means anything without it. ---
@@ -1716,11 +1716,11 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // MOVED. Each mirror is the live declaration plus one historical difference, so when the live
     // node loses a word every mirror loses it too -- and it has to, or the differences below would
     // be measured against a shape this engine does not have. `last_dump_sequence` left the
-    // eight-aligned group whole, and the address inside the inline page entry merged its two slab
+    // eight-aligned group whole, and the address inside the inline block entry merged its two slab
     // coordinates into one word out of that same group, which is the same reason the two earlier
     // eight-byte changes came out of it whole.
     // AND EVERY ABSOLUTE FIGURE IS NOW SEVENTY-TWO BYTES LOWER AGAIN, FOR THE SAME REASON AND ON
-    // THE LARGEST STEP YET: the page index stopped holding its single entry inline. Every mirror here
+    // THE LARGEST STEP YET: the block index stopped holding its single entry inline. Every mirror here
     // carries `BlockIndexMap` (or a variant of it that differs only in the arm under discussion),
     // so all of them lost the same 72 bytes and not one DIFFERENCE below moved.
     assert_eq!(
@@ -1787,15 +1787,15 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
 
     // --- WHAT THE INLINE ENTRY COST, AND WHY BOXING IT TURNED OUT TO BE THE ANSWER. ---
     //
-    // THIS ROW USED TO PRICE A PROPOSAL AND NOW PRICES A CHANGE THAT HAPPENED. The page index held
-    // its single page INLINE, and the row asked whether that entry should go behind a POINTER. The
+    // THIS ROW USED TO PRICE A PROPOSAL AND NOW PRICES A CHANGE THAT HAPPENED. The block index held
+    // its single block INLINE, and the row asked whether that entry should go behind a POINTER. The
     // answer was no, on a measurement, and the measurement was taken over a population where every
-    // bucket held exactly one page -- which was a property of `load_shard` defaulting the routing
+    // bucket held exactly one block -- which was a property of `load_shard` defaulting the routing
     // range to the whole `u32` keyspace, not of any workload. #1973 made 1023 the default, the
     // population inverted, and the entry went behind the pointer after all.
     //
     // AND THE INTERESTING READING IS THAT BOXING COSTS THE SAME WIDTH AS DROPPING THE ARM. Measured,
-    // a boxed single-page arm lays out in the SAME bytes as a two-arm shape with no single-page case
+    // a boxed single-block arm lays out in the SAME bytes as a two-arm shape with no single-block case
     // at all -- the compiler finds room for the third tag without growing the enum -- so boxing
     // recovers exactly the width dropping would. The two are separated by the HEAP, not by the
     // struct: a boxed entry is one allocation of the entry's own size, and a one-entry list is one
@@ -1911,7 +1911,7 @@ fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
 #[test]
 fn the_stored_spelling_of_a_bucket_node_did_not_move() {
     // --- NEW WRITE: the exact bytes. ---
-    // `wire_fixture` HOLDS NO PAGES, so there is no object to name in any arm of this module.
+    // `wire_fixture` HOLDS NO BLOCKS, so there is no object to name in any arm of this module.
     let with_ttl =
         serde_json::to_string(&crate::engine::state::NodeNamedBy(&wire_fixture(Some(5_000)), &[])).expect("a node serializes");
     assert_eq!(
@@ -3088,14 +3088,14 @@ fn what_the_object_side_of_the_bucket_node_costs() {
              recorded here is stale"
         );
 
-        // --- THE PAGE INDEX, PRICED RATHER THAN NAMED -- AND IT IS NO LONGER THE DOMINANT TERM. ---
+        // --- THE BLOCK INDEX, PRICED RATHER THAN NAMED -- AND IT IS NO LONGER THE DOMINANT TERM. ---
         //
         // This note used to read "the page index is 104 of the node's 176 -- 56.5%" and name it as
-        // the next thing to change. It WAS changed: the single page is behind a pointer now, the page
+        // the next thing to change. It WAS changed: the single block is behind a pointer now, the block
         // index is a 24-byte list header, and it is now a quarter of the node rather than over
         // half. What the note got right is the question it posed -- whether an inline arm earns its
         // width -- and what it could not see is that the answer depends on the ROUTING RANGE, which
-        // decides how many buckets hold exactly one page. `inline_arm_trade.rs` is that
+        // decides how many buckets hold exactly one block. `inline_arm_trade.rs` is that
         // measurement. The census and the allocator reading below are still the right place for the
         // NEXT change to start, and they are measured here rather than assumed.
         let block_charge = clone_alloc_bytes(&block_indexes);
@@ -3159,7 +3159,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
 /// THE READ PATH, PRICED. A representation that makes the common lookup slower to make the
 /// structure smaller is declined here, with the number that declines it.
 ///
-/// `contains` is the read this structure exists for: the object fold asks it once per page, and
+/// `contains` is the read this structure exists for: the object fold asks it once per block, and
 /// the delete path asks it once per key. The sweep below asks it over the WHOLE measured
 /// distribution rather than over one object, because a microbench on a single index measures the
 /// wrong regime -- a bucket holding one id and a bucket holding eight take different paths and
@@ -3297,7 +3297,7 @@ fn the_read_path_of_each_object_index_shape_is_priced() {
 //
 // An object index that LOSES an entry is silent data loss: the object is still in the store, the
 // bucket still routes to it, and nothing finds it -- `object_manager`'s fold stops reporting it
-// and the delete path stops retiring its pages. An index that KEEPS too much is merely fat. So
+// and the delete path stops retiring its blocks. An index that KEEPS too much is merely fat. So
 // every assertion below is the strong form: the FULL SET of entries, element by element, against
 // a control built with the container the arm used to be, in both the single and the multi case,
 // and with the transition driven in both directions -- a bucket that grows from one object to
@@ -3939,7 +3939,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
 
 /// A TOMBSTONE'S ELEMENT NAME IS ON THE WIRE, AND AN ORDINARY NODE STILL SPELLS WHAT IT DID.
 ///
-/// The element a removal is about moved OFF the page entry and onto the bucket, which makes it a
+/// The element a removal is about moved OFF the block entry and onto the bucket, which makes it a
 /// stored format in a new place. Two things have to hold and they pull in opposite directions, so
 /// both are driven here rather than one being inferred from the other:
 ///

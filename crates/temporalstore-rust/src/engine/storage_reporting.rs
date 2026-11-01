@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Storage physical-index / object-manager / feature-page layout report helpers, split from engine.rs.
+//! Storage physical-index / object-manager / feature-block layout report helpers, split from engine.rs.
 use super::*;
 
 pub(super) fn storage_object_lifecycle_report(
@@ -28,7 +28,7 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
 
 /// WHERE THE INDEX BESIDE THESE MAPS FILES EACH KEY, so a model-map walk can be scoped by bucket.
 ///
-/// A model-map walk knows no filing, and the bucket a key's pages belong to is the one the bucket
+/// A model-map walk knows no filing, and the bucket a key's blocks belong to is the one the bucket
 /// index files them under -- NOT a hash over whatever range the reading process runs on. That
 /// distinction is the whole of a cross-range manifest install: a restored dump image was written
 /// under the SOURCE shard's range, so deriving the bucket from the reader's range partitions the same
@@ -36,9 +36,9 @@ pub(super) fn storage_object_lifecycle_report_for_buckets(
 /// source's bucket and answered this for free; the index that ships with the image answers it now.
 fn filing_by_object_key(shard: &ShardState) -> HashMap<Arc<str>, u32> {
     let mut filed = HashMap::new();
-    // THE IDENTITY COMES FROM BESIDE THE PAGE, not off it -- one inversion of the object lookup
-    // for the whole walk, which is the same order as the walk. A page whose neighbours do not name
-    // it is skipped: the one such page is a tombstone whose removal named no element, and a filing
+    // THE IDENTITY COMES FROM BESIDE THE BLOCK, not off it -- one inversion of the object lookup
+    // for the whole walk, which is the same order as the walk. A block whose neighbours do not name
+    // it is skipped: the one such block is a tombstone whose removal named no element, and a filing
     // map keyed by object cannot state an entry for an object it cannot name.
     let identities = shard.bucket_index.block_identities();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
@@ -107,11 +107,11 @@ pub(super) fn object_lifecycle_report_from_entries(
     for entry in &entries {
         let expected_object_id = expected_live_block_object_id(shard_id, entry);
         expected_object_ids.insert(expected_object_id);
-        // THE OBJECT ID IS THE WHOLE OF "OWNER" NOW. This counted a page whose address named
+        // THE OBJECT ID IS THE WHOLE OF "OWNER" NOW. This counted a block whose address named
         // neither its object nor its bucket, and the bucket half has stopped being answerable HERE:
-        // a bucket-index walk knows the filing for every page, so the term would be vacuous, and a
+        // a bucket-index walk knows the filing for every block, so the term would be vacuous, and a
         // MODEL-MAP walk knows it for none, so the term would be universal. Either way it reports a
-        // property of the walk rather than of the page -- and the two derivations this report is
+        // property of the walk rather than of the block -- and the two derivations this report is
         // compared against are one of each, so keeping it made a consistent dump refuse to install.
         //
         // AND THE OTHER HALF HAS STOPPED BEING ANSWERABLE HERE TOO, for the same reason one level
@@ -217,16 +217,16 @@ pub(crate) static DIRTY_SUMMARY_VISITS: std::sync::atomic::AtomicU64 =
 /// `dirty_objects.bucket_counts()` loop at the foot of [`bucket_storage_summaries`], and several
 /// consumers only ever asked it `> 0`. That is a question about the BUCKET, and the bucket already
 /// records the answer: `mark_object_dirty` CREATES the routing bucket's node when the key has none
-/// and sets `dirty` on it, so even a key with no page at all leaves a node reading dirty.
+/// and sets `dirty` on it, so even a key with no block at all leaves a node reading dirty.
 ///
 /// The two records are independent, not one cached from the other, and that is measured rather
 /// than argued: `whether_a_bucket_can_count_its_own_dirty_objects` neutralises each of the three
 /// sites that maintain this flag in turn, and the arm with BOTH set-derived OR terms gone and the
-/// mark kept still agrees with the set on every bucket -- including the ones carrying dirt no page
+/// mark kept still agrees with the set on every bucket -- including the ones carrying dirt no block
 /// walk can see. So a consumer reading this survives the set being retired.
 ///
 /// THE COUNT IS A DIFFERENT QUESTION AND IS NOT ANSWERED HERE. It is not derivable from the
-/// bucket: the same measurement finds a page walk reporting 3 of 11 marks and reading 5 of 8 dirty
+/// bucket: the same measurement finds a block walk reporting 3 of 11 marks and reading 5 of 8 dirty
 /// buckets as clean, at 17x the producer's work. `bucket_storage_summaries` goes on reading the
 /// set for the count, and that pin is asserted there.
 ///
@@ -257,10 +257,10 @@ pub(super) fn bucket_storage_summaries(
         // `block_routing_bucket(key, start, end)`. This site reached for `bucket_for_object(key,
         // 0, u32::MAX)` instead, which is the same answer only while the shard spans the whole
         // range. Narrow the range -- `TS_SHARD_END_ROUTING_SLOT=1023` is the setting that cuts
-        // resident memory 45% -- and the two place the same page in different buckets: this one
+        // resident memory 45% -- and the two place the same block in different buckets: this one
         // in a bucket id above the shard's own end, no other component in agreement, and so a
         // summary for a bucket `bucket_map` does not hold while the bucket that does hold the
-        // page reports no pages at all. A dump naming that bucket then carries no slabs for it.
+        // block reports no blocks at all. A dump naming that bucket then carries no slabs for it.
         //
         // THE WALK'S OWN FILING FIRST, THE DERIVATION AS THE FALLBACK -- and this site is the one
         // that proves why the order matters.
@@ -277,7 +277,7 @@ pub(super) fn bucket_storage_summaries(
         // the other half.
         //
         // The fallback is for an entry from a MODEL-MAP walk, where there is no filing to read: the
-        // map holds pages by key and kind and knows nothing about buckets. That is the only shape the
+        // map holds blocks by key and kind and knows nothing about buckets. That is the only shape the
         // derivation is right for here.
         let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
@@ -289,7 +289,7 @@ pub(super) fn bucket_storage_summaries(
         summary.block_ref_count = summary.block_ref_count.saturating_add(1);
         summary.physical_bytes = summary.physical_bytes.saturating_add(entry.address.length());
         summary.logical_bytes = summary.logical_bytes.saturating_add(entry.address.length());
-        // Record which page slab backs each bucket so bucket-dump manifests carry the
+        // Record which block slab backs each bucket so bucket-dump manifests carry the
         // live slab set (used by manifest validation and the dump/copy path).
         // Without this the map stayed empty and every summary reported no slabs.
         block_slabs_by_bucket
@@ -309,9 +309,9 @@ pub(super) fn bucket_storage_summaries(
         // fields (compared by bucket_dump_summary_matches_current_generation to anchor
         // WAL/index reclaim). They must reflect durable bucket content, not the
         // transient `dirty` flag -- so a bucket that was dumped and then had its dirty
-        // flag cleared but still owns live pages keeps its
+        // flag cleared but still owns live blocks keeps its
         // reclaim fingerprint. Populate whenever the bucket is dirty OR already has a
-        // live-page summary; behaviour is unchanged for every pre-clear state (a bucket
+        // live-block summary; behaviour is unchanged for every pre-clear state (a bucket
         // with content is dirty today, so the branch was always taken).
         let has_live_summary = buckets.contains_key(routing_bucket);
         if !bucket.dirty() && !has_live_summary {
@@ -396,7 +396,7 @@ pub(super) fn native_packed_bucket_node_bytes(bucket: &StoragePhysicalBucketNode
     let flag_bytes = flags.to_le_bytes();
     bytes[0..3].copy_from_slice(&flag_bytes[0..3]);
     bytes[3..7].copy_from_slice(&(bucket.physical_bytes as u32).to_le_bytes());
-    // 0 HERE MEANS THE BUCKET NAMES NO PAGE, and now it means only that. Every declared kind
+    // 0 HERE MEANS THE BUCKET NAMES NO BLOCK, and now it means only that. Every declared kind
     // packs as a non-zero code (`model_kind_registry` asserts it), and a kind the registry does
     // not declare refuses rather than landing on this value -- so a reader can tell an empty
     // bucket from one holding a zset, which it could not before.
@@ -461,10 +461,10 @@ pub(super) fn storage_physical_index_report(
         })
         .collect::<BTreeMap<_, _>>();
 
-    // WHAT "MISSING" MEANS NOW. It used to count pages whose ADDRESS carried no routing bucket --
-    // a page rebuilt from a source that did not stamp one. An address carries none by construction
-    // today, so counting that would count every page. What is still answerable, and is the same
-    // question the count was asked for, is a page the INDEX cannot say the filing of: an entry from
+    // WHAT "MISSING" MEANS NOW. It used to count blocks whose ADDRESS carried no routing bucket --
+    // a block rebuilt from a source that did not stamp one. An address carries none by construction
+    // today, so counting that would count every block. What is still answerable, and is the same
+    // question the count was asked for, is a block the INDEX cannot say the filing of: an entry from
     // a model-map walk, where there is no filing to report.
     let mut missing_routing_bucket_count = 0usize;
     for entry in collect_live_block_entries(shard) {
@@ -495,7 +495,7 @@ pub(super) fn storage_physical_index_report(
             block_id: entry.address.block_id(),
             object_id: Some(expected_live_block_object_id(shard_id, &entry)),
             stored_slab_id: entry.address.slab_id(),
-            // The index does not hold a digest; a caller wanting one reads the page.
+            // The index does not hold a digest; a caller wanting one reads the block.
             checksum: None,
             dirty: entry.dirty,
             deleted: entry.deleted,
@@ -539,8 +539,8 @@ pub(super) fn storage_physical_index_report(
         // by anything that decided anything.
         let identities = shard.bucket_index.block_identities();
         for (handle, block) in runtime_bucket.block_index.iter() {
-            // THE ROW NAMES AN OBJECT, so a page whose neighbours do not name one cannot produce a
-            // row. The one such page is a tombstone whose removal named no element.
+            // THE ROW NAMES AN OBJECT, so a block whose neighbours do not name one cannot produce a
+            // row. The one such block is a tombstone whose removal named no element.
             let Some(beside) = identities.identity_of(runtime_bucket, *handle, block) else {
                 continue;
             };
@@ -548,7 +548,7 @@ pub(super) fn storage_physical_index_report(
                 existing.object_key.as_str() == beside.object_key.as_ref()
                     && existing.model_id.as_str() == block.model_id.as_str()
                     // THE COMPONENT TERM IS DROPPED AS A TAUTOLOGY. It compared
-                    // `existing.component` against `page.component`; the report row's component
+                    // `existing.component` against `block.component`; the report row's component
                     // is filled from an index entry and an index entry has no element name, so
                     // both sides were `None` for every row and the term decided nothing. What
                     // identifies a row here is (key, kind, slab, offset) and that has not moved.
@@ -564,7 +564,7 @@ pub(super) fn storage_physical_index_report(
                 // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::component` is
                 // a PUBLIC field of a serialized report, so retiring it is a schema change and not
                 // part of a width step; it is filled from an index entry, and an index entry names
-                // a page rather than an element, so the value it carried was already `None` for
+                // a block rather than an element, so the value it carried was already `None` for
                 // every row this arm produced.
                 component: None,
                 routing_bucket: *routing_bucket,
@@ -663,7 +663,7 @@ pub(super) fn object_manager_runtime_report(
     )
 }
 
-/// The same report, from live-page entries the caller ALREADY has.
+/// The same report, from live-block entries the caller ALREADY has.
 ///
 /// This walked the shard TWICE: once for the ownership report below, and once more at the very end
 /// purely to COUNT entries of eight timestamped kinds. Measured at 2.0x the shard
@@ -767,9 +767,9 @@ pub(super) fn object_manager_runtime_report_from_entries(
             .blockers
             .push("block refs disagree with expected object owners".to_string());
     }
-    // Count live timestamped-kv pages (feature/sequence and the context
+    // Count live timestamped-kv blocks (feature/sequence and the context
     // timeline families). collect_live_block_entries already dedupes packed series
-    // pages via unique_timestamped_kv_block_addresses, so this is the packed page
+    // blocks via unique_timestamped_kv_block_addresses, so this is the packed block
     // count. Previously this field was left at its default (0).
     const TIMESTAMPED_KINDS: [&str; 8] = [
         "feature",
@@ -804,7 +804,7 @@ pub(super) fn bucket_object_block_ownership_report(
     )
 }
 
-/// The same report, from live-page entries the caller ALREADY has.
+/// The same report, from live-block entries the caller ALREADY has.
 pub(super) fn bucket_object_block_ownership_report_from_entries(
     shard_id: ShardId,
     shard: &ShardState,
@@ -827,11 +827,11 @@ pub(super) fn bucket_object_block_ownership_report_from_entries(
         let routing_bucket = entry.filed_bucket().unwrap_or_else(|| {
             block_routing_bucket(&entry.object_key, start_routing_bucket, end_routing_bucket)
         });
-        // THE SAME OUT-OF-RANGE FILTER, AND THE SAME REASON IT IS GONE. This report skipped a page
+        // THE SAME OUT-OF-RANGE FILTER, AND THE SAME REASON IT IS GONE. This report skipped a block
         // whose explicit bucket fell outside the range; a derived bucket cannot.
         //
         // It read `if routing_bucket < start || routing_bucket > end { continue; }` and its only
-        // possible input was an EXPLICIT bucket carried on the address -- a page whose stored bucket
+        // possible input was an EXPLICIT bucket carried on the address -- a block whose stored bucket
         // fell outside the range the shard was loaded on. There are no explicit buckets: the line
         // above DERIVES the bucket as `start + FNV-1a-64(key) % (end - start + 1)`, which is inside
         // `start..=end` by construction (and `start` itself for a degenerate range).
@@ -839,7 +839,7 @@ pub(super) fn bucket_object_block_ownership_report_from_entries(
         // and several ranges rather than leaving it as arithmetic in a comment.
         //
         // What this removes is not a check but a HAZARD: mx#1974 measured this filter dropping a
-        // page from the index entirely when an explicit bucket sat outside the range, and bounded it
+        // block from the index entirely when an explicit bucket sat outside the range, and bounded it
         // by showing the engine does not produce that state. It now cannot be produced at all.
         let expected_object_id = stable_block_object_id(
             shard_id,
@@ -1059,7 +1059,7 @@ pub(super) fn timestamped_kv_series<'a>(
     }
     // Since the event rekey, context_events is keyed by EVENT ID; the timestamps live in
     // context_event_timeline (timeline key -> event id). The validator compares index keys
-    // against the timestamps packed in pages, so it must see the TIMELINE view -- handing it
+    // against the timestamps packed in blocks, so it must see the TIMELINE view -- handing it
     // the id-keyed map made every context event look like a missing indexed timestamp.
     for (key, ids_by_time) in &shard.context_event_timeline {
         let Some(by_id) = shard.context_events().get(key) else {

@@ -942,7 +942,7 @@ pub struct StorageManagerOptions {
     /// How much log must be undumped before a dump is worth taking.
     ///
     /// A bucket is dumped, dirtied again by the next write, and dumped again -- so writing one key
-    /// repeatedly cost one page write per write. Waiting lets those writes merge into a single
+    /// repeatedly cost one block write per write. Waiting lets those writes merge into a single
     /// dump. What the wait buys back is a longer log to replay after a restart, and nothing else:
     /// the records are durable in the log either way.
     #[serde(
@@ -979,7 +979,7 @@ pub struct StorageManagerOptions {
     pub enable_index_gc: bool,
     #[serde(default = "default_storage_manager_stage_enabled")]
     pub enable_metrics_reap: bool,
-    /// Whether the periodic loop may EVICT, not merely invalidate cached pages.
+    /// Whether the periodic loop may EVICT, not merely invalidate cached blocks.
     ///
     /// DEFAULTS TO TRUE, with the other eight stage flags, and what changed is not an appetite for
     /// eviction -- it is that the stage now has a bound to run under. Until this field existed the
@@ -1221,7 +1221,7 @@ fn default_storage_manager_index_gc_max_entries_per_round() -> usize {
 /// is below the threshold. Measured writing one key a hundred times, with the dumps taken: 100
 /// dumps at that setting, 10 at a threshold of ten, 2 at fifty. Dumps fall in proportion, and the
 /// only cost is that much more log to replay after a restart -- a thousand records is a few hundred
-/// kilobytes, against two orders of magnitude fewer page writes for a bucket that is written often.
+/// kilobytes, against two orders of magnitude fewer block writes for a bucket that is written often.
 fn default_storage_manager_min_undumped_wal_records() -> u64 {
     1_000
 }
@@ -1443,12 +1443,12 @@ pub struct StorageManagerPressureSnapshot {
     ///
     /// Deliberately not widened to include the bucket index, even though `total_pressure_score`
     /// below now does. This field gates `reclaim_memory`, which relieves memory by invalidating
-    /// cached pages and leaves the index untouched -- so folding index bytes in here would make
+    /// cached blocks and leaves the index untouched -- so folding index bytes in here would make
     /// that stage fire on a pressure it cannot reduce, every round, for ever. The index term
     /// belongs to the stage that can release it, which is `evict`.
     pub cache_memory_bytes: u64,
     pub cache_disk_bytes: u64,
-    /// Resident bucket-index bytes: nodes PLUS per-page entries, the moving number, the same one
+    /// Resident bucket-index bytes: nodes PLUS per-block entries, the moving number, the same one
     /// `apply_storage_eviction` gates on and the same one `ShardLoad.memory_bytes` reports.
     ///
     /// Not the node-only `bucket_index_resident_bytes_floor`. The floor cannot move when a bucket
@@ -1477,7 +1477,7 @@ pub struct StorageManagerPressureSnapshot {
     /// NOT the evict gate's input, and no longer an alias of `eviction_memory_pressure_bytes`
     /// above. The two were the same field while the gate read the wide number; they separated when
     /// the gate narrowed. This one stays wide because what it describes is `reclaim_memory`, the
-    /// stage that invalidates cached pages -- the cache terms are the ones that stage can move.
+    /// stage that invalidates cached blocks -- the cache terms are the ones that stage can move.
     #[serde(default)]
     pub memory_cache_pressure_score: u64,
     /// See `engine::reports::StorageManagerPressureSnapshot::live_block_summaries_measured`:

@@ -12,13 +12,13 @@
 //!   * `zset` REFUSED, 12 tests across 5 modules. A zset's component is not a name for the
 //!     element, it IS THE SCORE: `{biased_score:016x}{hex(member)}`. Dropping it deletes the
 //!     index's only copy of the score, so a member whose durable entry the fold has not delivered
-//!     cannot be rebuilt from its page at all -- `durable_outranks_derived::an_empty_zset_member_
+//!     cannot be rebuilt from its block at all -- `durable_outranks_derived::an_empty_zset_member_
 //!     is_a_whole_component_and_survives_the_fold_shape` came back `None` where `Some(3.0)` was
 //!     written. And a RESCORE is an in-place rewrite from the index's side: the old element key is
 //!     tombstoned while its live entry is not superseded, leaving TWO live entries for one member
 //!     at one score, which is precisely the shape `index_entry_names_a_block` warns an
 //!     address-keyed predicate mishandles.
-//!   * `hash` REFUSED on its readers. Four of them resolve through the page index BY COMPONENT
+//!   * `hash` REFUSED on its readers. Four of them resolve through the block index BY COMPONENT
 //!     with no resident-map fallback, so a nameless hash entry makes a present field unreachable
 //!     rather than merely unnamed.
 //!
@@ -39,8 +39,8 @@
 //!
 //! # THE FOLD IS NOT OPTIONAL AND ITS ABSENCE WOULD MAKE EVERY ARM VACUOUS
 //!
-//! One entry per PAGE is one entry per ELEMENT until elements SHARE a page. Without
-//! `compact_shard_blocks` every element is its own page, the collapsed count equals the
+//! One entry per BLOCK is one entry per ELEMENT until elements SHARE a block. Without
+//! `compact_shard_blocks` every element is its own block, the collapsed count equals the
 //! per-element count, and every assertion below would pass over a gate that changed nothing. The
 //! fold runs in every arm and the entry floor (`live < ELEMENTS`) is what proves it did.
 //!
@@ -255,7 +255,7 @@ fn fold(engine: &TemporalEngine) {
 /// THE SECOND HALF OF THIS FLOOR IS GONE. It also asserted that not one entry named an element,
 /// and `BlockIndex` has no field for a name -- so that half could only pass. What is left is the
 /// half that can still fail, and it is the sharper one: fewer live entries than elements means the
-/// elements actually folded onto a shared page.
+/// elements actually folded onto a shared block.
 fn assert_collapsed(engine: &TemporalEngine, model_id: &str, object_key: &str) {
     let live = live_entries(engine, model_id, object_key);
     println!(
@@ -372,7 +372,7 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
         drop(engine);
     }
     // ITS OWN CACHE, so every byte served comes off disk through the index just decoded rather
-    // than out of pages the writer left warm.
+    // than out of blocks the writer left warm.
     let reloaded = engine_on(&dir.path().join("cache-reloaded"), &blocks, &indexes);
     load_on(&reloaded);
 
@@ -411,7 +411,7 @@ fn a_popped_list_element_does_not_come_back_when_the_index_is_re_derived() {
 /// WHY COLLAPSING THE INDEX ENTRY DOES NOT REACH IT, which is the thing being pinned: that
 /// component comes from the WAL outcome item, which `stage_outcome` fills from the
 /// `ElementComponent` -- taken BEFORE the `FiledComponent` collapse, and a separate newtype
-/// precisely so transposing the two fails to compile rather than silently filing the page's name
+/// precisely so transposing the two fails to compile rather than silently filing the block's name
 /// where the element's belongs. The index entry and the outcome record are different things that
 /// share a field name. The existing module that drives this (`replay_under_the_gate`) is SET-ONLY,
 /// so for `list` the reading was unpinned until here.
@@ -487,12 +487,12 @@ fn a_gated_list_comes_back_through_wal_replay() {
 ///
 /// `element_ordinal_reuse::every_per_element_delete_leaves_one_tombstone_and_the_whole_object_
 /// delete_leaves_none` branched on `kind == "set"`: the collapsed kind took an arm asserting a
-/// TOMBSTONE APPEARS, and every other kind took an arm asserting the LIVE PAGE COUNT FALLS. With
+/// TOMBSTONE APPEARS, and every other kind took an arm asserting the LIVE BLOCK COUNT FALLS. With
 /// `list` collapsed it falls into the second arm, and that arm is false for it.
 ///
 /// This records the measurement that makes it so, rather than leaving it as a reading of the other
 /// module's source: under the collapse a per-element removal does NOT reduce the live entry count,
-/// because the one entry names a PAGE that still holds the object's other elements. What moves
+/// because the one entry names a BLOCK that still holds the object's other elements. What moves
 /// instead is the tombstone count.
 #[test]
 fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing_the_count() {
@@ -600,7 +600,7 @@ fn the_projection_collapses_every_container_kind() {
     // `engine_storage_state.rs`'s width pin at const-evaluation before any test runs. The half the paragraph
     // dismissed as the one that "would not notice" is now the only one with a subject, and the
     // fold floor is what stops it being vacuous: `live < ELEMENTS` is satisfied trivially when
-    // elements share no page, which is why `assert_collapsed` is only ever called after `fold`.
+    // elements share no block, which is why `assert_collapsed` is only ever called after `fold`.
     assert_collapsed(&engine, "list", LIST_KEY);
     assert_collapsed(&engine, "hash", HASH_KEY);
     assert_collapsed(&engine, "zset", ZSET_KEY);
@@ -633,8 +633,8 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
             );
         }
         // AND THE OTHER SIDE, WHICH IS THE HALF THAT STAYS FALSE. These kinds file no element
-        // name and hold exactly one page per object, so the convergence they need is the
-        // object-wide one and NOT the page-keyed one: an address-keyed predicate here would leave
+        // name and hold exactly one block per object, so the convergence they need is the
+        // object-wide one and NOT the block-keyed one: an address-keyed predicate here would leave
         // a stale live entry on every string write in the engine. Asserted per kind over the
         // whole registry rather than by naming two, so a kind added later is covered by this
         // test instead of by whoever remembers it.
@@ -654,12 +654,12 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
     // AND THERE IS NO SECOND POSITION TO CHECK, WHICH IS WHY THIS ARM IS INVERTED RATHER THAN
     // DELETED.
     //
-    // This held the gate explicitly OFF and asserted that NO kind answered page-named -- the
+    // This held the gate explicitly OFF and asserted that NO kind answered block-named -- the
     // escape hatch's own behaviour. The gate is retired, so that arm was left asserting something
     // FALSE the moment its holder was deleted: a line removed from a guard can leave the
     // assertion beside it reading the opposite of the truth, which is worse than deleting both.
     //
-    // Restated as the claim that replaces it: the four container kinds answer page-named with NO
+    // Restated as the claim that replaces it: the four container kinds answer block-named with NO
     // variable set anywhere, because there is no variable. Asserted over the same list, so the
     // non-container kinds are still checked in the same breath.
     for kind in ["set", "zset", "list", "hash"] {
@@ -679,15 +679,15 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
 }
 
 /// THE OTHER SIDE OF THE PREDICATE, DRIVEN RATHER THAN ASSERTED: a collapsed kind supersedes
-/// exactly the page it replaces and leaves every sibling page of the object alone.
+/// exactly the block it replaces and leaves every sibling block of the object alone.
 ///
 /// # WHY THIS IS NOT COVERED BY THE ARMS ABOVE
 ///
 /// Those measure what the projection emits from the model maps -- a DERIVED index, rebuilt whole.
-/// This one writes one more element into an object whose pages are already folded, which is the
-/// path where a slot-keyed removal took every other page of the object with it: measured, on a
-/// five-member set folded onto one page and written to once, as a listing serving ONE member.
-/// Under one entry a page every entry of an object shares one slot keyed `None`, so the page key
+/// This one writes one more element into an object whose blocks are already folded, which is the
+/// path where a slot-keyed removal took every other block of the object with it: measured, on a
+/// five-member set folded onto one block and written to once, as a listing serving ONE member.
+/// Under one entry a block every entry of an object shares one slot keyed `None`, so the block key
 /// derived from the address is the only thing telling the object's own entries apart -- and HASH
 /// and ZSET reach this path for the first time with this change, which is what makes driving it
 /// per kind worth the engine starts.
@@ -718,7 +718,7 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
         );
 
         // ONE MORE ELEMENT, under a name the fold has never seen, so the entry it files is a NEW
-        // page rather than a rewrite of one already folded.
+        // block rather than a rewrite of one already folded.
         let fresh = ELEMENTS + 1;
         match model_id {
             "list" => write(
@@ -752,10 +752,10 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
         // THE SIBLINGS SURVIVED, AS AN EXACT COUNT AND NOT A FLOOR.
         //
         // A FLOOR IS THE WRONG SHAPE HERE AND THE FIRST DRAFT OF THIS USED ONE. It asserted
-        // `after_live >= folded_live`, and all forty elements fold onto ONE page -- so the broken
-        // behaviour this arm is about, a slot-wide removal that takes the folded page with it,
+        // `after_live >= folded_live`, and all forty elements fold onto ONE block -- so the broken
+        // behaviour this arm is about, a slot-wide removal that takes the folded block with it,
         // leaves exactly one entry too, and `1 >= 1` passes. Measured: the mutation below was
-        // green against that draft. The folded page's entry and the new page's entry are two
+        // green against that draft. The folded block's entry and the new block's entry are two
         // distinct entries, so the count after the write is the count before it PLUS ONE, and
         // that is the only reading the slot-wide behaviour cannot satisfy.
         assert_eq!(
@@ -814,8 +814,8 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
 ///
 /// `HashLen` is the sharpest of the four and the reason this arm is worth the engine start: it was
 /// `bucket_index_component_block_addresses(..).len()`, so it counted ENTRIES, and over a collapsed
-/// index it would report the PAGE count with no union to rescue it. It answers the full element
-/// count here with the fields on folded pages, which is only possible because it stopped counting
+/// index it would report the BLOCK count with no union to rescue it. It answers the full element
+/// count here with the fields on folded blocks, which is only possible because it stopped counting
 /// entries.
 #[test]
 fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
@@ -906,7 +906,7 @@ fn no_zset_entry_spells_a_score_now_that_the_collapse_drops_the_name() {
     // cannot be served by counting entries any more.
     //
     // WHAT CAN STILL REGRESS IS THE RENDERER, and that is what this now asserts.
-    // `container_blocks::component_from_element_key` is the function that turns a page's item key
+    // `container_blocks::component_from_element_key` is the function that turns a block's item key
     // back into a component string, and its `ScoreThenMember` arm is the one that used to spell
     // the score: it returns `hex::encode(key[8..])`, the member alone, deliberately skipping the
     // eight score bytes. A change that dropped the `8..` would put the score straight back into

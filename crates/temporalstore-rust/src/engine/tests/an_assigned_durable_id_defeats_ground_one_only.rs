@@ -5,7 +5,7 @@
 //!
 //! [`super::the_entry_cannot_name_its_object_by_slot`] refuses a bucket-relative ordinal on two
 //! independent grounds. A later proposal reopens the leg from a different direction -- keep the
-//! page index addressed by a `u64`, but make that `u64` an ASSIGNED, PERSISTED id rather than the
+//! block index addressed by a `u64`, but make that `u64` an ASSIGNED, PERSISTED id rather than the
 //! computed digest `block_index_handle` produces, so that the non-invertibility that kills the
 //! digest route does not arise. This module prices that proposal, because it is the best-shaped
 //! one the leg has had and the next reader will have it too.
@@ -68,7 +68,7 @@
 //! it. The second half is the one that bites a persisted id:
 //! `Engine::dump_and_reclaim_index_logs_with_min_reclaimable` at `persistence.rs:744` calls
 //! `gc_reflected_before_anchor` at `persistence.rs:755`, whose own comment is "drop every record
-//! the durable base already reflects", and the line below it reads "Pages at or below the anchor
+//! the durable base already reflects", and the line below it reads "Blocks at or below the anchor
 //! are in the durable base now".
 //!
 //! SO THE LOG IS GIVEN BACK AT A DUMP. Anything whose only durable home is a log item has the
@@ -111,16 +111,16 @@
 //! # CLAIM 6 -- THE TOTALS, WITH BOTH DENOMINATORS NAMED WHERE THE NUMBERS ARE WRITTEN
 //!
 //! A width step is not a footprint step, and this proposal is the case where the two have opposite
-//! signs. The arithmetic is pinned below rather than stated. At the measured one page per object
+//! signs. The arithmetic is pinned below rather than stated. At the measured one block per object
 //! THE ENTRY AND THE OBJECT ARE ONE TO ONE, so moving the key out of the entry to share it between
-//! pages has nothing to share it between -- the saving a re-keying exists to capture is zero by
+//! blocks has nothing to share it between -- the saving a re-keying exists to capture is zero by
 //! construction at that population, and a container to hold the key costs more than the sixteen
 //! bytes the entry frees.
 //!
 //! PER ENTRY, NODE AGAINST NODE: forty today, twenty-four under this proposal. A real sixteen
 //! bytes, and it is the number a node-to-node comparison should use.
 //!
-//! PER OBJECT, TOTAL AGAINST TOTAL, at one page per object: forty-eight today for the entry and
+//! PER OBJECT, TOTAL AGAINST TOTAL, at one block per object: forty-eight today for the entry and
 //! its map key; thirty-two under this proposal, plus at least twenty-four for a persisted
 //! key-to-id map holding one shared pointer and one id per object. Fifty-six against forty-eight.
 //! EIGHT BYTES WORSE, AND THAT IS A FLOOR -- it counts payload only, with no container overhead
@@ -138,13 +138,13 @@
 //! `drain_buckets`) beside its key-keyed one. The dirty rollup in
 //! `refresh_one_bucket_runtime_flags` -- one of the two readers in that function, and one of the
 //! hardest cases because it holds only a bucket -- could therefore be answered from the bucket
-//! number alone, needing neither the characters nor an id, and more cheaply than the per-page
+//! number alone, needing neither the characters nor an id, and more cheaply than the per-block
 //! probe it runs today.
 //!
 //! IT IS NOT ASSERTED HERE AND MUST NOT RIDE ON THIS MODULE. It widens the predicate from "any
-//! page's object is dirty" to "any dirty object routes here", and the differing-numbers warning
+//! block's object is dirty" to "any dirty object routes here", and the differing-numbers warning
 //! above applies again: the bucket a dirty object is FILED under is not guaranteed to be the
-//! bucket HOLDING its pages. It needs its own fail-first test with a control that can refuse.
+//! bucket HOLDING its blocks. It needs its own fail-first test with a control that can refuse.
 //! The other reader in that function, the TTL minimum over `expires_at_ms`, has no bucket-keyed
 //! counterpart at all -- that map is `BTreeMap<String, u64>` at `engine_storage_state.rs:129`, keyed by the
 //! characters.
@@ -273,7 +273,7 @@ const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == 24);
 ///
 /// It was built to measure "the entry with no identity term" against an entry that had one. The
 /// entry has none: the identity lives once per object in `CoreIndex::object_block_lookup` and is
-/// resolved from the position the page is filed at. So the proposal's ENTRY SIDE and the shipped
+/// resolved from the position the block is filed at. So the proposal's ENTRY SIDE and the shipped
 /// entry are one field set, and every arithmetic below that subtracts one from the other is zero.
 ///
 /// THE MIRROR IS KEPT RATHER THAN FOLDED, AND ONLY BECAUSE THIS EQUALITY IS WRITTEN. Two
@@ -285,7 +285,7 @@ const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == size_of::<Block
 
 /// PER ENTRY, NODE AGAINST NODE -- AND THE TWO COLUMNS HAVE MET.
 ///
-/// The map arm holds the key beside the entry either way, so this is what a page costs resident.
+/// The map arm holds the key beside the entry either way, so this is what a block costs resident.
 /// It was 48 with the identity on the entry and the proposal's side was 32; the identity left and
 /// the live element IS 32. The second assertion of this pair is the equality above.
 const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
@@ -388,15 +388,15 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
 // checkable form of that.
 //
 // SO THE CORRECTED TOTAL, with both denominators named again. Per entry, node against node: forty
-// to twenty-four. Per object, TOTAL against total at the measured one page per object: forty-eight
-// to thirty-two -- the entry sheds a sixteen-byte shared pointer per page and NOTHING is added, so
+// to twenty-four. Per object, TOTAL against total at the measured one block per object: forty-eight
+// to thirty-two -- the entry sheds a sixteen-byte shared pointer per block and NOTHING is added, so
 // it is a SIXTEEN BYTE SAVING on both denominators rather than eight bytes of regression.
 //
 // WHAT THE CHARACTERS COST IS UNCHANGED BY ANY OF THIS, and saying so is what keeps the number
 // honest. They are stored twice today -- once as the model map's own key and once as the object
 // lookup's inner key -- and they would still be stored twice afterwards, because the lookup needs
 // its key to BE a key. The entry's field is a POINTER at the lookup's allocation, so what the
-// removal sheds is sixteen bytes of pointer per page and not one byte of text.
+// removal sheds is sixteen bytes of pointer per block and not one byte of text.
 //
 // AND THE SAVING IS CONDITIONAL ON THE READER CENSUS, WHICH IS WHERE THIS NOW LIVES OR DIES. Two
 // functions cannot take a model-map source at all, and one of them is on the write path:
@@ -419,7 +419,7 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
 /// THIS PIN FIRED, AND IT WAS RIGHT TO. It previously read `Box<str>` and said "the characters,
 /// owned, one per object", precisely so that a `ModelKey` which stopped being an owned copy would
 /// fail here rather than leave the claim standing in prose. It did fail, on the change that made
-/// the model map share the page index's allocation instead of keeping its own -- which is the
+/// the model map share the block index's allocation instead of keeping its own -- which is the
 /// duplication the paragraph above describes as "stored twice today".
 ///
 /// So the claim is restated rather than the pin relaxed: a `ModelKey` is still exactly the
@@ -438,7 +438,7 @@ const _: fn(&crate::engine::state::ShardState) -> Vec<crate::engine::storage_buc
 /// CLAIM 7, AS ARITHMETIC -- AND IT HAS LANDED, SO IT IS WIDTHS NOW AND NOT A DIFFERENCE.
 ///
 /// It read `size_of::<(u64, BlockIndex)>() - size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 16`:
-/// the per-page saving from reading the identity out of existing structure instead of holding it
+/// the per-block saving from reading the identity out of existing structure instead of holding it
 /// on the entry. That is what this change did. Both sides are now the same type, so the difference
 /// is ZERO and an assertion of sixteen over it is false -- while an assertion of zero would be a
 /// comparison of a value with itself wearing the name of a saving.
@@ -487,7 +487,7 @@ const _: () = assert!(size_of::<Arc<str>>() == 16);
 //
 // WHAT THAT BUYS, AND IT IS THE CHEAPEST OF THREE. The per-write refresh can simply DROP the TTL
 // term and leave it to the full sweep, which already runs on load at `persistence.rs:375` and
-// `:536`. That REMOVES a per-write loop over a bucket's pages rather than re-sourcing it: no new
+// `:536`. That REMOVES a per-write loop over a bucket's blocks rather than re-sourcing it: no new
 // structure, no bytes, and no stamp. The value then goes stale between full sweeps, which is a
 // reporting-accuracy decision rather than a correctness one -- and whoever implements it owes the
 // code a statement of HOW STALE it can get and WHAT refreshes it, because that is the claim a
@@ -497,10 +497,10 @@ const _: () = assert!(size_of::<Arc<str>>() == 16);
 // would take it off the wire and buy a format stamp for a statistic. A third bucket-keyed expiry
 // mirror, maintained at the `set_expiry` chokepoint -- which has the whole shard in scope at
 // `engine.rs:4846`, so it can commit to `block_routing_bucket(key, start, end)`, the same number
-// that decides where a page lives -- is sound with a CONSERVATIVE minimum precisely because the
+// that decides where a block lives -- is sound with a CONSERVATIVE minimum precisely because the
 // consumer is a report, so it never has to search for the next minimum on a removal. It would cost
-// about twelve bytes a bucket against a removal saving sixteen bytes a page at the in-tree p50 of
-// thirty-nine pages a bucket (`engine_storage_state.rs:1414`), so roughly two per cent of the saving. Cheap, and
+// about twelve bytes a bucket against a removal saving sixteen bytes a block at the in-tree p50 of
+// thirty-nine blocks a bucket (`engine_storage_state.rs:1414`), so roughly two per cent of the saving. Cheap, and
 // unnecessary if the term is simply dropped.
 // =================================================================================================
 

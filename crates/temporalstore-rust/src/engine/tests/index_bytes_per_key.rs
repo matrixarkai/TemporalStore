@@ -65,8 +65,8 @@ fn object_index_arm(index: &ObjectIndex) -> &'static str {
 }
 
 /// THREE ARMS STILL, AND THE MIDDLE ONE IS NOW A POINTER RATHER THAN AN INLINE ENTRY. A bucket
-/// holding one page still has a representation of its own, so the ladder this is checked against is
-/// the shared [`expected_arm`]; what changed is that the single-page arm costs eight bytes in the
+/// holding one block still has a representation of its own, so the ladder this is checked against is
+/// the shared [`expected_arm`]; what changed is that the single-block arm costs eight bytes in the
 /// node instead of the width of a whole entry.
 fn block_index_map_arm(map: &BlockIndexMap) -> &'static str {
     match map {
@@ -179,9 +179,9 @@ fn every_inline_shape_collapses_back_on_a_fill_and_drain() {
         }
     }
 
-    // --- BlockIndexMap: the retain() path, which is the OTHER way pages leave a bucket. ---
-    // One page at a time, so the one-entry tail is visited exactly as the removal drain visits it.
-    // BOTH of the page index's collapses matter and both are on this ladder: at one entry the list
+    // --- BlockIndexMap: the retain() path, which is the OTHER way blocks leave a bucket. ---
+    // One block at a time, so the one-entry tail is visited exactly as the removal drain visits it.
+    // BOTH of the block index's collapses matter and both are on this ladder: at one entry the list
     // becomes a box, and at zero the box goes too.
     {
         let mut live = crate::engine::state::BlockSlabLiveIndex::default();
@@ -563,8 +563,8 @@ fn walk_bucket_index_strings(
         for (_handle, _block) in bucket.block_index.iter() {
             // THE ENTRY'S OWN KEY LINE IS GONE AND THE TOTAL DID NOT MOVE, which is the one case
             // in this change where that is true rather than argued. It read
-            // `arc_str_bytes(seen, &page.object_key)`, and `seen` is shared with the lookup walk
-            // twenty lines below -- the page's `Arc` and the lookup's were THE SAME ALLOCATION,
+            // `arc_str_bytes(seen, &block.object_key)`, and `seen` is shared with the lookup walk
+            // twenty lines below -- the block's `Arc` and the lookup's were THE SAME ALLOCATION,
             // so whichever reached it first charged it and the other found it already seen. With
             // the entry holding no key, the lookup is simply the one that reaches it.
             //
@@ -588,7 +588,7 @@ fn walk_bucket_index_strings(
     //
     // `seen` dedupes by DATA POINTER across both walks, so a key held by a slot row and by the
     // lookup is charged once -- which is the same guarantee this walk has always made about the
-    // page entry and the lookup sharing one allocation.
+    // block entry and the lookup sharing one allocation.
     for table in bucket_index.objects.values() {
         for object_key in table.keys() {
             bytes += arc_str_bytes(seen, object_key);
@@ -606,7 +606,7 @@ fn walk_bucket_index_strings(
 ///
 /// `DirtyObjectIndex::insert` builds `Arc::from(object_key)` from the `&str` it is handed. Its two
 /// inner maps share that one allocation with each other -- that sharing is documented and is why
-/// the second index is cheap -- but nothing hands it the `Arc<str>` the page index already holds
+/// the second index is cheap -- but nothing hands it the `Arc<str>` the block index already holds
 /// for the same object. Whether that matters is a COUNT, not a reading: this returns the bytes, the
 /// number of distinct allocations, and how many of them the bucket index turned out to be sharing.
 /// The key characters `strings` owns that the bucket index does not already hold.
@@ -662,7 +662,7 @@ fn dirty_arc_payload_bytes(shard: &crate::engine::state::ShardState) -> (u64, us
             // THE BUCKET INDEX ALREADY CHARGED THIS ALLOCATION. `total` sums this figure
             // with the bucket index's, so the bytes belong to exactly one of them or one
             // buffer is billed twice. Counted as shared and NOT billed. Before the dirty
-            // index adopted the page index's handles this branch never ran and the two
+            // index adopted the block index's handles this branch never ran and the two
             // rows WERE additive, which is what the flipped assertion below now pins.
             shared += 1;
             seen.insert(ptr);
@@ -1515,7 +1515,7 @@ fn what_a_live_key_costs_on_the_shipped_routing_range() {
 ///
 /// READS MUST STILL ANSWER, and that is asserted rather than printed. A release that recovers memory
 /// and breaks a read is not a win, and the whole claim about releasing is that the node stays
-/// routable and the next read loads its pages back from the model maps.
+/// routable and the next read loads its blocks back from the model maps.
 ///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 #[test]
@@ -1712,8 +1712,8 @@ fn deep_heap_columns<T: Clone>(value: &T) -> (u64, u64) {
 /// `unit` is carried as text and printed, rather than left to the reader, because this campaign has
 /// published three non-comparable per-key numbers already. A term divided by the wrong denominator
 /// is not an approximation, it is a different measurement: the B-tree container divides by BUCKETS
-/// and the block list divides by PAGES, and on one of the two routing ranges measured below those
-/// are the same number -- which is exactly how a per-bucket cost gets quoted as a per-page cost.
+/// and the block list divides by BLOCKS, and on one of the two routing ranges measured below those
+/// are the same number -- which is exactly how a per-bucket cost gets quoted as a per-block cost.
 #[cfg(feature = "alloc-probe")]
 struct BucketMapTerm {
     name: &'static str,
@@ -1736,11 +1736,11 @@ struct BucketMapDecomposition {
     single_block_buckets: usize,
     multi_block_buckets: usize,
     blocks_in_list_arm: usize,
-    /// Slots the page lists have RESERVED, which a clone cannot see.
+    /// Slots the block lists have RESERVED, which a clone cannot see.
     ///
     /// A `Vec` clones to its LENGTH, so every figure the clone probe reports omits spare capacity
     /// outright. That omission is not neutral here: the production resident-byte model charges the
-    /// page list at `capacity * size_of::<(u64, BlockIndex)>()`, so the number an eviction gate
+    /// block list at `capacity * size_of::<(u64, BlockIndex)>()`, so the number an eviction gate
     /// reads and the number this probe reports are measuring different quantities whenever the two
     /// diverge. This is the term that says by how much.
     list_capacity: usize,
@@ -1914,24 +1914,24 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
 /// # THE QUESTION THIS ANSWERS, AND THE DENOMINATOR TRAP IT WALKS INTO
 ///
 /// `what_a_live_key_costs_in_the_index_at_two_corpus_sizes` prices `bucket_map` at 185.6 B/key over
-/// 40,040 keys, and that fixture holds 40,080 pages -- so the same figure reads as 185 B per PAGE,
-/// and a page entry is 24 bytes wide. That looks like 160 bytes of overhead nothing can account for.
+/// 40,040 keys, and that fixture holds 40,080 blocks -- so the same figure reads as 185 B per BLOCK,
+/// and a block entry is 24 bytes wide. That looks like 160 bytes of overhead nothing can account for.
 ///
 /// It is not, and the reason is the third denominator nobody divided by. That probe loads on the
 /// LEGACY whole-u32 routing range, where every key gets a bucket of its own by construction -- so
-/// keys, pages and BUCKETS are all the same number, and a per-BUCKET cost is indistinguishable from
-/// a per-page cost in every column. The container is a `BTreeMap<u32, BucketNode>` holding a
+/// keys, blocks and BUCKETS are all the same number, and a per-BUCKET cost is indistinguishable from
+/// a per-block cost in every column. The container is a `BTreeMap<u32, BucketNode>` holding a
 /// 96-byte node INLINE in its arrays; divided by buckets that is a bucket cost, and divided by
-/// pages on that fixture it is the same arithmetic wearing a different name.
+/// blocks on that fixture it is the same arithmetic wearing a different name.
 ///
 /// So this measures both ranges and prints every term against its OWN denominator, plus the same
-/// term normalised per page and per bucket so the two can be read side by side.
+/// term normalised per block and per bucket so the two can be read side by side.
 ///
 /// # THE REGIME CONTROL
 ///
 /// The two ranges must actually BE two regimes, or the comparison says nothing. That is asserted,
-/// not assumed: the shipped range must hold materially fewer buckets than pages while the legacy
-/// range must hold about one bucket per page. A fixture where both came out alike would make every
+/// not assumed: the shipped range must hold materially fewer buckets than blocks while the legacy
+/// range must hold about one bucket per block. A fixture where both came out alike would make every
 /// conclusion below an artefact of one population measured twice.
 ///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
@@ -2060,7 +2060,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         //
         // Reported rather than folded into a term above, because it is a DIFFERENT measurement: the
         // rows above are what the structure holds, and this is what it has reserved and not filled.
-        // The production model `bucket_index_resident_bytes` charges the page list at its CAPACITY,
+        // The production model `bucket_index_resident_bytes` charges the block list at its CAPACITY,
         // so the two numbers answer different questions and the band between them belongs in the
         // open rather than inside either one.
         let pair = std::mem::size_of::<(u64, BlockIndex)>();
@@ -2155,7 +2155,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
 ///   3. WHAT CATCHES IT. Only a comparison against the object key the entry was filed under, which
 ///      is the allocation the route exists to remove. So integer addressing WITH verification pays
 ///      nothing -- it is eight bytes an entry wider than the key-addressed shape it replaces -- and
-///      integer addressing without it can serve another object's pages.
+///      integer addressing without it can serve another object's blocks.
 #[test]
 fn an_integer_addressed_lookup_serves_another_objects_refs() {
     use crate::engine::hashing::{stable_object_hash, stable_object_hash_update};
@@ -2313,11 +2313,11 @@ fn an_integer_addressed_lookup_serves_another_objects_refs() {
 //     entry for this kind at all" exactly, and answers "what does the entry cost" only on average
 //     across a rehash;
 //   * STEADY-STATE, the structure's whole heap over ITS OWN denominator -- `strings` over the
-//     string count, `bucket_map` over the PAGE count, `bucket_recency` over the BUCKET count --
+//     string count, `bucket_map` over the BLOCK count, `bucket_recency` over the BUCKET count --
 //     which is the resident figure including table slack, and is the one to quote.
 //
 // Mixing those two denominators is the error this campaign has already paid for once, so each row
-// prints the denominator it used. A per-page or per-bucket row is meaningless without the bucket
+// prints the denominator it used. A per-block or per-bucket row is meaningless without the bucket
 // count, which is printed in the arm header and asserted to be a 0..1023 population.
 #[cfg(feature = "alloc-probe")]
 fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, u64)> {
@@ -2747,8 +2747,8 @@ fn how_many_structures_hold_an_entry_for_one_object() {
 ///
 ///   * **per live key** -- one object, one index record. This is the denominator for anything
 ///     charged once per object, a per-record width above all.
-///   * **per live address** -- one stored page. This is the denominator for anything charged once
-///     per page.
+///   * **per live address** -- one stored block. This is the denominator for anything charged once
+///     per block.
 ///
 /// On this fixture they differ by exactly 2x, because half the addresses are series points hanging
 /// off forty keys. Quoting a per-record cost against the per-address figure halves it, and that is
@@ -2766,7 +2766,7 @@ fn how_many_structures_hold_an_entry_for_one_object() {
 ///     REGIME, and a bracket taken on one says nothing about the other.
 ///   * **the bucket count** -- 1,024, asserted exactly. It is the denominator of every per-bucket
 ///     term and it is what separates the two regimes.
-///   * **the corpus** -- 40,000 single-page objects and 40 series of 1,000 points. Asserted at both
+///   * **the corpus** -- 40,000 single-block objects and 40 series of 1,000 points. Asserted at both
 ///     ends, because the per-key figure FALLS as the corpus grows (0.798x across a 10x corpus, so
 ///     per-bucket costs amortise), which makes the corpus size part of the number itself.
 ///
@@ -2990,13 +2990,13 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
     // --- because every wrong figure this campaign has published was a denominator question.
     //
     // numerator: total live index heap, bytes. denominator: LIVE KEYS -- one per object, which is
-    // 40,000 single-page objects plus 40 series maps. This is the denominator for a per-record cost.
+    // 40,000 single-block objects plus 40 series maps. This is the denominator for a per-record cost.
     let live_keys = string_keys + series_map_keys;
     let bytes_per_live_key = total_index_heap_bytes as f64 / live_keys as f64;
     //
     // numerator: the SAME total live index heap, bytes. denominator: LIVE ADDRESSES -- one per
-    // stored page, which is 40,000 object pages plus 40,000 series points. This is the denominator
-    // for a per-page cost, and it is 2x the key count on this fixture, so the two ratios are not
+    // stored block, which is 40,000 object blocks plus 40,000 series points. This is the denominator
+    // for a per-block cost, and it is 2x the key count on this fixture, so the two ratios are not
     // interchangeable and neither is derived from the other.
     let live_addresses = string_keys + feature_points;
     let bytes_per_live_address = total_index_heap_bytes as f64 / live_addresses as f64;
@@ -3417,7 +3417,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     // the one-copy road rather than a gap in it. A key is shareable only if some OTHER structure
     // holds the same characters; the dirty keys carry their own prefixes (`ctx:dirty:`,
     // `ctx:embdirty:`), no other map is keyed by them, and they are never written to the block
-    // store so the page index does not hold them either. One holder, one allocation, nothing to
+    // store so the block index does not hold them either. One holder, one allocation, nothing to
     // adopt.
     let single_holder = copies.values().filter(|n| **n == 1).count();
     let total_entries: usize = holders.iter().map(|(_, k)| k.len()).sum();
@@ -3475,7 +3475,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     println!("    same allocation as bucket index   {shared_with_bucket:>5}");
 
     // IS THERE A THIRD COPY AT ALL? A zero on the line above is AMBIGUOUS, and the two readings
-    // need different work: the page index might hold an equal-but-distinct copy of this key, or it
+    // need different work: the block index might hold an equal-but-distinct copy of this key, or it
     // might not hold the key yet at all. An adoption route exists only in the first case. Asking
     // the lookup directly is the only way to tell, so ask it.
     let mut lookup_holds = 0usize;
@@ -3503,8 +3503,8 @@ fn how_many_times_a_context_keys_characters_exist() {
     );
 
     // ASSERTED IN BOTH DIRECTIONS, because one direction alone is not informative. "The pair
-    // shares one allocation" was ALREADY true while a second, equal allocation sat in the page
-    // index -- so it passing says nothing about the page index. The second assertion is the one
+    // shares one allocation" was ALREADY true while a second, equal allocation sat in the block
+    // index -- so it passing says nothing about the block index. The second assertion is the one
     // that catches a leftover copy: no key the lookup holds may be a DISTINCT allocation.
     //
     // The adoption counters are printed and deliberately NOT asserted: they are process-global,
@@ -3975,14 +3975,14 @@ fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
     assert!(hash_bytes > 0 && tree_bytes > 0, "a zero figure cannot be compared");
 }
 
-/// WHAT ONE KEY WITH ONE PAGE COSTS, which is the denominator a per-key index figure uses.
+/// WHAT ONE KEY WITH ONE BLOCK COSTS, which is the denominator a per-key index figure uses.
 ///
 /// Every figure in this file so far is taken on a fixture that seeds 40,000 strings AND 40 series
 /// of 1,000 points -- about TWO stored addresses per live key. A per-key index cost measured there
-/// is not comparable to one measured on a corpus of single-page objects, because half the addresses
+/// is not comparable to one measured on a corpus of single-block objects, because half the addresses
 /// belong to forty keys. The honest matched measurement is one address per key, and this is it.
 ///
-/// No feature series at all, so every live key owns exactly one page: `live_keys == pages`, which
+/// No feature series at all, so every live key owns exactly one block: `live_keys == blocks`, which
 /// is asserted rather than assumed because the whole figure divides by it.
 ///
 /// # WHICH SURFACE, AND WHAT THE FIGURE HAS DONE
@@ -4022,7 +4022,7 @@ fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
 ///
 /// WHAT THE EIGHT BYTES BUY is the owned-element array that lets one map hold the kinds that have
 /// several elements per object. An object with exactly one element carries the pointer and leaves
-/// it `None`, so on a corpus of single-page objects -- this one -- the eight bytes are paid and
+/// it `None`, so on a corpus of single-block objects -- this one -- the eight bytes are paid and
 /// nothing hangs off them, and the table's own slack turns the eight into thirteen.
 ///
 /// IT IS STILL RUN BY NOTHING. This test is `#[ignore]`d and behind `alloc-probe`, so the bounds
@@ -4255,7 +4255,7 @@ fn what_one_key_with_one_block_costs() {
 /// two readings -- so this runs the default cycle, untouched, and records the verdict.
 ///
 /// THE DEFAULT IS A CAP, NOT A SCHEDULE. It bounds the resident index at 64 MiB a shard. A
-/// 40,000-key single-page shard holds about 1.4 MB of it, so the default DECLINES here, and that
+/// 40,000-key single-block shard holds about 1.4 MB of it, so the default DECLINES here, and that
 /// is correct: a cap that fired at 2% of its limit would be a thrash, not a bound. The figure a
 /// deployment at this size sees is therefore the unbounded one, and an operator wanting the
 /// bounded figure sets the limit below that shard's own resident index.
@@ -4544,7 +4544,7 @@ fn why_there_are_many_per_key_maps_and_not_one() {
 /// `why_there_are_many_per_key_maps_and_not_one` shows a raw key landing in `strings`, `features`
 /// and `control_state_selection`. The obvious next move is one entry per key instead of three, and
 /// the obvious place is the consolidated map -- except that `ObjectRecord` is 24 bytes carrying a
-/// deadline word and a page-address word, and nothing else. It cannot hold an 8-byte series or a
+/// deadline word and a block-address word, and nothing else. It cannot hold an 8-byte series or a
 /// 40-byte selection value: those maps are DOMAIN-valued, not address-valued, so they cannot fold
 /// into `ObjectSlot` without widening it.
 ///
@@ -4691,7 +4691,7 @@ fn what_consolidating_three_holders_would_cost() {
 /// So the change has two arms, and a single average would hide one of them:
 ///
 ///   * raw half: the inline key field goes 24 -> 16 bytes AND the characters stop being a second
-///     allocation, because the handle is the one the page index already owns;
+///     allocation, because the handle is the one the block index already owns;
 ///   * decorated half: the inline field still goes 24 -> 16, but the characters are STILL one
 ///     allocation, now with two counter words ahead of them.
 ///
@@ -4726,7 +4726,7 @@ fn what_consolidating_three_holders_would_cost() {
 ///
 /// `deep_heap_bytes` measures by CLONING, and cloning an `Arc` is a refcount bump -- so it cannot
 /// see an `Arc` payload at all. For the shared arm that happens to be right, because those
-/// characters genuinely belong to the page index rather than to this map. For the DECORATED arm it
+/// characters genuinely belong to the block index rather than to this map. For the DECORATED arm it
 /// is wrong in the direction that flatters the change: that map owns its `Arc` outright, and a
 /// clone probe would report its characters as free. So every arm here is built under the counting
 /// allocator instead, with the key texts materialised OUTSIDE the probe, so each arm is charged
@@ -4766,7 +4766,7 @@ fn what_a_shared_control_state_key_costs_on_each_half() {
         let raw_texts: Vec<String> = (0..KEYS).map(|i| pad(format!("k{i:07}"))).collect();
         let dec_texts: Vec<String> =
             raw_texts.iter().map(|k| format!("control_state:h:{k}")).collect();
-        // The handles the page index owns. The shared arm borrows from here, which is what
+        // The handles the block index owns. The shared arm borrows from here, which is what
         // adoption does -- so these characters are not charged to the map under test, exactly as
         // they are not charged in the engine.
         let handles: Vec<std::sync::Arc<str>> =
@@ -5212,7 +5212,7 @@ fn what_the_composed_entity_key_costs_the_walk() {
 ///
 /// The whole-shard walk sits at 1.00 allocations per entry and I have now been wrong TWICE about
 /// what that one is. I said it was the component's intermediate `String` -- it is not, because
-/// every container kind converges on the page and no live arm emits a component at all. I ruled out
+/// every container kind converges on the block and no live arm emits a component at all. I ruled out
 /// the `ElementEntry` clone by reading, which is right as far as it goes: that type is all inline
 /// fields.
 ///
@@ -5225,7 +5225,7 @@ fn what_the_composed_entity_key_costs_the_walk() {
 ///   strings    one entry per object, key lent, no component, no inner collection
 ///   features   goes through `visit_timestamped_series`, which builds a collection of unique
 ///              addresses per series before emitting
-///   hashes     goes through `emit_one_entry_a_block`, which builds a `BTreeSet` of pages per key
+///   hashes     goes through `emit_one_entry_a_block`, which builds a `BTreeSet` of blocks per key
 ///              to dedup them
 ///
 /// So if the residual is per-SERIES rather than per-entry, the arms with an inner collection will
@@ -5371,7 +5371,7 @@ fn which_arm_the_last_allocation_per_entry_belongs_to() {
 /// CONSECUTIVE duplicates, and entries differing in `block_id` compare Equal under that sort, so a
 /// stable sort can order them `A, B, A` and the second `A` survives.
 ///
-/// So the fixture below is exactly that arrangement: two entries naming one page and differing in
+/// So the fixture below is exactly that arrangement: two entries naming one block and differing in
 /// their block id, with a repeat of the first. A correct dedup returns TWO entries; a `dedup()`
 /// after that sort returns three.
 ///
@@ -5383,7 +5383,7 @@ fn the_series_dedup_keeps_one_of_each_distinct_entry() {
     use crate::engine::storage_reporting::unique_timestamped_kv_block_addresses;
     use crate::engine::timestamped_series::OwnedTimestampedSeries;
 
-    // One page -- same slab, offset and length -- carrying two different block ids, and the first
+    // One block -- same slab, offset and length -- carrying two different block ids, and the first
     // id seen again at a later timestamp. Under the sort these three compare Equal to each other,
     // which is the whole point.
     let block_a_id5 = ElementEntry::from_parts(7, 4_096, 64, Some(5), None);
@@ -5688,7 +5688,7 @@ fn what_repeated_field_names_cost_the_model_maps() {
 /// distinct names of ten to sixteen characters, 38.4 bytes saved per field. That is the right
 /// shape for the Redis-compatible surface and the wrong one for the dominant arm, and
 /// `hash_field_map`'s own module doc says why: `write_context_node` is the one producer of a
-/// context-node page and it files that page under the single constant `CONTEXT_NODE_FIELD`
+/// context-node block and it files that block under the single constant `CONTEXT_NODE_FIELD`
 /// (`"meta"`), so the fields-per-hash histogram was p50 = p90 = p99 = MAX = 1 at both 4,000 and
 /// 40,000 nodes, with a single distinct occupancy at 100% of keys.
 ///
@@ -6031,7 +6031,7 @@ fn what_one_hash_field_write_allocates() {
 /// # WHAT IS AND IS NOT IN THE FIGURE
 ///
 /// This drives `FeatureAppend` through the engine, so the number is the whole write path -- the
-/// block append, the index, the staged outcome, the page filing -- and not one container's growth.
+/// block append, the index, the staged outcome, the block filing -- and not one container's growth.
 /// It is NOT an A/B against anything: it is the current cost, recorded so a later change has a
 /// before.
 ///
@@ -6168,7 +6168,7 @@ fn what_one_append_costs_at_two_series_lengths() {
 /// But it is NOT the same arm and must not be assumed to behave the same way. A context event
 /// writes TWO resident structures per append (the event series keyed by event id, and
 /// `context_event_timeline` keyed by timeline key), it can fire auto compression, and its index
-/// entry is keyed by the event id while its page is keyed by the timeline key -- which is why
+/// entry is keyed by the event id while its block is keyed by the timeline key -- which is why
 /// `timestamped_component` takes an identity at all. So this measures the arm rather than
 /// inferring it from the feature result.
 ///
@@ -6354,7 +6354,7 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
 /// # WHY THIS IS MEASURED AT THE FUNCTION AND NOT ONLY AT THE APPEND
 ///
 /// `next_block_index_for_object` answers one question -- the lowest block ordinal this object may
-/// safely use next -- and it is called on every write that adds a page. An append probe can only
+/// safely use next -- and it is called on every write that adds a block. An append probe can only
 /// say that the append got cheaper; it cannot say this is why. Calling the function directly, at
 /// two shard sizes an octave apart, says whether its cost is sized by the SHARD (which has
 /// nothing to do with the question) or by the OBJECT (which is the question).
@@ -6363,7 +6363,7 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
 ///
 /// It built `BlockKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s,
 /// one insert per block ref of every object in the shard -- and then walked the bucket's whole
-/// page index asking `identity_of` for each page, to choose one integer. Both terms sized by the
+/// block index asking `identity_of` for each block, to choose one integer. Both terms sized by the
 /// shard, neither by the object. Measured by this arm on the parent commit, after the bucket bug
 /// below was fixed:
 ///
@@ -6382,7 +6382,7 @@ fn what_one_context_event_append_costs_at_two_series_lengths() {
 ///
 /// This probe's first version derived the routing bucket as `block_routing_bucket(&key, 0,
 /// DEFAULT_END_ROUTING_BUCKET)`, which is not the range the shard files under. So it asked about a
-/// bucket holding none of the object's pages: the call answered ordinal 0 for a 400-block object
+/// bucket holding none of the object's blocks: the call answered ordinal 0 for a 400-block object
 /// and allocated nothing, and the arm printed 0.0 bytes per call both BEFORE and AFTER the change
 /// it exists to measure. A cost probe aimed at the wrong question reports the cheapest possible
 /// answer, which reads exactly like a win. The bucket now comes out of the object's own filing,
@@ -6677,7 +6677,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
 /// feature path. They are on the path EVERY block-backed write takes: the dirty mark in
 /// `push_object_dirty_onto_its_existing_blocks`, which every write calls once per touched object,
 /// and the publish step's bucket derivation in `sync_bucket_index_object_blocks_with_mode`, which
-/// every kind reaches. Both were sized by the object's page count, so any object with many pages
+/// every kind reaches. Both were sized by the object's block count, so any object with many blocks
 /// paid them -- a long feature series was just the easiest one to grow.
 ///
 /// If that reading is right, a set with 3,200 members should show the same shape as a feature
@@ -6706,7 +6706,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
 ///     components          176
 ///     push_dirty            0      <- 51,952 on the feature path before #2239
 ///
-/// The dirty mark is free now for a 3,200-page object whatever kind it is, so that fix was on the
+/// The dirty mark is free now for a 3,200-block object whatever kind it is, so that fix was on the
 /// shared path as claimed rather than specific to the feature arm.
 ///
 /// AND THAT ACCOUNTS FOR ONLY ~4.5 KB OF 60 KB. The rest -- about 55.7 KB -- is spent inside the
@@ -6716,7 +6716,7 @@ fn is_the_appends_cost_the_series_or_the_shard() {
 /// the collection and neither allocates, so neither is the figure above:
 /// `resident_highest_block_id`, which takes a max over every member's address to choose an
 /// ordinal (O(members) per add, so O(members squared) to fill), and
-/// `block_an_element_vacates`, which the filer consults when an index entry names a page.
+/// `block_an_element_vacates`, which the filer consults when an index entry names a block.
 ///
 /// WRITTEN DOWN RATHER THAN ACTED ON, because "it is on the shared path so it must generalise"
 /// was the reasoning this probe existed to check, and it was half right. The same caution applies
@@ -7720,20 +7720,20 @@ fn what_the_four_converted_context_maps_cost() {
 ///
 /// VARYING THE CORPUS IS THE WHOLE POINT, because a single rung cannot tell a fixed cost from a
 /// linear one -- a series that varied the wrong dimension has hidden exactly this before. The
-/// denominator asserted below is that the pages the walk reads actually accumulated.
+/// denominator asserted below is that the blocks the walk reads actually accumulated.
 ///
 /// # WHAT IT FOUND, AND THE TWO CANDIDATES IT CLEARED
 ///
-///     corpus   live pages   allocs   alloc_bytes   bytes/page
+///     corpus   live blocks   allocs   alloc_bytes   bytes/block
 ///         40           40      377        220745       5518.6
 ///        320          320     2645        776311       2426.0
 ///
-///       of which, at 320 pages:  slab summary + block store stats       0 B
+///       of which, at 320 blocks:  slab summary + block store stats       0 B
 ///                                object_manager_stats                4,112 B
 ///                                the rest of `shard_stats`         772,199 B   (99.5%)
 ///
-/// ONE STATS READ ALLOCATES THREE QUARTERS OF A MEGABYTE over a 320-page store, and it is paid again
-/// on every read. The shape is not flat -- 220,745 B over 40 pages against 776,311 over 320 -- so a
+/// ONE STATS READ ALLOCATES THREE QUARTERS OF A MEGABYTE over a 320-block store, and it is paid again
+/// on every read. The shape is not flat -- 220,745 B over 40 blocks against 776,311 over 320 -- so a
 /// share of it follows what the store holds.
 ///
 /// BOTH OF THE OBVIOUS SUSPECTS ARE INNOCENT, which is why they are named here rather than left for
@@ -7745,10 +7745,10 @@ fn what_the_four_converted_context_maps_cost() {
 ///     which looked like the whole-index walk -- is 4,112 B of 776,311, or 0.5%.
 ///
 /// AND A FIX THAT MEASURED ZERO IS WORTH MORE THAN THE BYTES IT SAVED. The arm of
-/// `object_manager_stats` that counts live pages built a `Vec` of every page's reference to take its
+/// `object_manager_stats` that counts live blocks built a `Vec` of every block's reference to take its
 /// `.len()`, which is an allocation that buys nothing; removing it moved this probe's figure by
 /// **zero bytes**, because that arm is only taken when `object_block_lookup` is EMPTY and a store
-/// with pages never takes it. The change stands because the allocation is pointless at any size, but
+/// with blocks never takes it. The change stands because the allocation is pointless at any size, but
 /// the lesson is the probe's: a per-read cost nobody had measured was about to be "fixed" by a line
 /// that does not execute.
 ///
@@ -7763,7 +7763,7 @@ fn what_the_four_converted_context_maps_cost() {
 ///     look. A `BTreeSet` collect buffers its iterator before building the tree; the sums walk keys
 ///     and allocate nothing. Skipped in the two cases where the set cannot change the answer.
 ///
-/// THE READ IS NOW FLAT: 1,137 B at 40 pages and 1,137 B at 320, where it began at 220,745 and
+/// THE READ IS NOW FLAT: 1,137 B at 40 blocks and 1,137 B at 320, where it began at 220,745 and
 /// 776,311. Flat is the property that matters -- a scheduled read whose cost follows the store is
 /// the thing that cannot be left in place -- and it is why the assertion below is about growth.
 ///
@@ -7836,7 +7836,7 @@ fn what_one_stats_read_allocates() {
 
         // SPLIT IN THREE, because the first version of this probe removed an allocation from the
         // stats path and the figure did not move by one byte -- the line was in an arm a store with
-        // pages never takes. A total that cannot be attributed invites exactly that kind of fix.
+        // blocks never takes. A total that cannot be attributed invites exactly that kind of fix.
         let slab_probe = crate::alloc_probe::Probe::start();
         let _ = engine.block_store.slab_summary();
         let _ = engine.block_store.stats();
@@ -7974,7 +7974,7 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
         scan_counts.push((rung, live_blocks, scans_after.saturating_sub(scans_before), wal_bytes));
     }
 
-    // --- DENOMINATOR: the walk this prices reads live pages, so the corpus has to have produced
+    // --- DENOMINATOR: the walk this prices reads live blocks, so the corpus has to have produced
     // --- them. Two rungs that both held nothing would print a flat zero and read as "free".
     for (rung, blocks, _, _) in &measured {
         assert!(
@@ -8552,7 +8552,7 @@ fn the_amplification_set_in_the_published_format() {
     println!("    space_amplification_ppm (memory) {payload_space_memory:>9}  ({:.3}x)   cache resident / live", as_x(payload_space_memory));
     // AGAINST LOGICAL TOO, because the `live` denominator the format prescribes carries the same
     // compression conflation the logical-write ratio does: `live` is counted on disk AFTER
-    // compression and the cache holds pages UNCOMPRESSED, so the headline figure multiplies the
+    // compression and the cache holds blocks UNCOMPRESSED, so the headline figure multiplies the
     // cache's own overhead by the compression factor. Both are printed; the first is the format's.
     let payload_cache_over_logical = ppm(payload_resident, logical_written);
     println!(
@@ -8819,10 +8819,10 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
 
         let with_bytes = crate::engine::encode_index_bytes(shard).len();
         // THE REFS SPILL BEFORE THE TABLE GOES. Each object's refs live in its slot row, so
-        // removing the kind's table takes the only record of where that kind's pages are with it
-        // -- and `serialize_block_index` then REFUSES the index rather than writing a page that
+        // removing the kind's table takes the only record of where that kind's blocks are with it
+        // -- and `serialize_block_index` then REFUSES the index rather than writing a block that
         // names no object, which is how this arm first reported the fold. Spilling them into the
-        // lookup keeps every page nameable and moves no written byte, because the refs are not
+        // lookup keeps every block nameable and moves no written byte, because the refs are not
         // written from either home. The measurement below is unchanged: it is the difference the
         // ROWS make to the stored image.
         shard.bucket_index.spill_refs_to_lookup(StoredModelKind::ContextEvent);
@@ -9008,7 +9008,7 @@ fn what_consolidating_five_holders_would_cost() {
 /// `what_consolidating_five_holders_would_cost` prices a union of five `Option` members -- 128
 /// bytes wide, crossover 75.7% -- and that is a design the tree does not use. `ObjectRecord` is a
 /// FIXED 24 bytes: a deadline word that is a value or a handle, an address word that is a value or
-/// a handle, a page size, sixteen flag bits and a model id. An absent attribute is a CLEARED BIT,
+/// a handle, a block size, sixteen flag bits and a model id. An absent attribute is a CLEARED BIT,
 /// not an empty slot, so a key holding one attribute pays the same 24 bytes as a key holding all of
 /// them -- the sparse arm stops growing with the number of members the design can represent.
 ///
@@ -9131,8 +9131,8 @@ fn what_consolidating_into_a_fixed_node_would_cost() {
 ///
 /// Two claims, because asking the first produced the second.
 ///
-/// ONE: `strings` CANNOT fold. `ObjectRecord` is 24 bytes -- an address word, a page size, sixteen
-/// flag bits, a model id -- and has no field for `ElementEntry::block_id`, the u16 naming which page
+/// ONE: `strings` CANNOT fold. `ObjectRecord` is 24 bytes -- an address word, a block size, sixteen
+/// flag bits, a model id -- and has no field for `ElementEntry::block_id`, the u16 naming which block
 /// of the object an entry is, nor for its generation. 8+8+4+2+1 is 23, padded to 24, so the single
 /// spare byte cannot take a u16, and widening the record would cost the property that makes one node
 /// per key affordable at all. Every entry this fixture writes carries both, so the fold would drop a
@@ -10773,9 +10773,9 @@ fn what_a_release_does_to_the_published_amplification_ratio() {
 /// # AND IT IS NOT THE REFUSED CHANGE EITHER
 ///
 /// `ObjectBlockLookup`'s doc refuses two things on three pinned grounds
-/// (`an_integer_addressed_lookup_serves_another_objects_refs`): addressing page->object identity by
+/// (`an_integer_addressed_lookup_serves_another_objects_refs`): addressing block->object identity by
 /// a `u64` rather than the object key, and dropping that identity -- which would write an index
-/// whose pages name no object, because `impl Serialize for CoreIndex` composes each page's written
+/// whose blocks name no object, because `impl Serialize for CoreIndex` composes each block's written
 /// key from this map in every build.
 ///
 /// **Relocating the identity into the slot is neither.** It stays keyed by the object key, and the
@@ -10971,8 +10971,8 @@ fn what_folding_the_block_refs_into_the_slot_would_save() {
 /// bucket exists, so it contributes **nothing** to a per-key slope however large it is in absolute
 /// terms. The same is true of `deleted_object_index`, also per bucket.
 ///
-/// So the slope has to live in the terms whose unit grows with the corpus -- the page list, the
-/// single-page box, the multi-object arm -- and those are **payload**, not container. If that is
+/// So the slope has to live in the terms whose unit grows with the corpus -- the block list, the
+/// single-block box, the multi-object arm -- and those are **payload**, not container. If that is
 /// what this measures, then `bucket_map` is not a container-overhead row at all, and the 40.7 B/key
 /// still needed for a 4.0x target cannot be taken from here by tidying a container.
 ///
@@ -10988,7 +10988,7 @@ fn what_folding_the_block_refs_into_the_slot_would_save() {
 ///
 /// # A TERM THIS PROBE CANNOT SEE, NAMED SO THE TOTAL IS NOT READ AS COMPLETE
 ///
-/// A `Vec` clones to its LENGTH, so the page lists' RESERVED capacity is invisible here. The
+/// A `Vec` clones to its LENGTH, so the block lists' RESERVED capacity is invisible here. The
 /// production resident-byte model charges those lists at `capacity * size_of::<(u64, BlockIndex)>()`,
 /// so the number an eviction gate reads and the number this reports are different quantities
 /// whenever a list is not exactly full. `list_capacity` is printed beside the measured bytes for

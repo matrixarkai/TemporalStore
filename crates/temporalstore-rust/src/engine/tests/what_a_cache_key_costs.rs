@@ -11,7 +11,7 @@
 //! keys that must not merge: `what_the_two_cache_keys_are` shows the logical and physical keys for
 //! one string agreeing on `shard_id` alone and differing in the other three.
 //!
-//! The **representation** is, and only for the page namespace, where every part of the key is an
+//! The **representation** is, and only for the block namespace, where every part of the key is an
 //! integer carried as formatted decimal text:
 //!
 //! ```text
@@ -37,7 +37,7 @@
 //! | `selector` | `String` | `Cow<'static, str>` — **borrowed** for literal selectors |
 //!
 //! The second is the one that pays on the hot path. `"value"`, `"members"` and the other literal
-//! selectors now cost no heap at all, where every key built a `String` for them before. The page
+//! selectors now cost no heap at all, where every key built a `String` for them before. The block
 //! selector still has to be computed, so it stays owned — with the exact capacity rather than a
 //! flat 64.
 //!
@@ -46,7 +46,7 @@
 //!
 //! # WHAT SURVIVES, AND WHAT THIS DOES NOT CLAIM
 //!
-//! The slack is gone; the **rendering** is not. A page key still spends far more than the 32 bytes
+//! The slack is gone; the **rendering** is not. A block key still spends far more than the 32 bytes
 //! of integers it names, and closing that means changing `CacheKey` itself — another crate's type —
 //! rather than its capacities. This arm prices that and does not attempt it.
 //!
@@ -109,7 +109,7 @@ fn what_a_cache_key_costs() {
 
     let struct_bytes = std::mem::size_of::<matrixcache::CacheKey>();
 
-    // ---- WHAT A PAGE KEY ACTUALLY SAYS, as integers: shard, slab, offset, length, bucket.
+    // ---- WHAT A BLOCK KEY ACTUALLY SAYS, as integers: shard, slab, offset, length, bucket.
     const BLOCK_INFORMATION_BYTES: usize = std::mem::size_of::<u32>()
         + std::mem::size_of::<u64>()
         + std::mem::size_of::<u64>()
@@ -158,7 +158,7 @@ fn what_a_cache_key_costs() {
         &*logical.selector
     );
 
-    // ---- AND THE PAGE SELECTOR IS STILL COMPUTED, so it is owned. That is not a defect: the
+    // ---- AND THE BLOCK SELECTOR IS STILL COMPUTED, so it is owned. That is not a defect: the
     // ---- bucket, offset and length are not known until the block is placed.
     assert!(
         matches!(physical.selector, Cow::Owned(_)),

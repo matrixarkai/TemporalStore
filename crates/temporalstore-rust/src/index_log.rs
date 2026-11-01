@@ -144,7 +144,7 @@ pub(crate) mod probe {
     pub(crate) static FOLD_DECISIONS: Mutex<Vec<(ShardId, u64, bool)>> = Mutex::new(Vec::new());
     /// The records the fold actually APPLIED, in order, as (shard, sequence).
     ///
-    /// Recorded where the WORK LANDS -- after the page items are re-attached and the key-states
+    /// Recorded where the WORK LANDS -- after the block items are re-attached and the key-states
     /// are applied -- and not where the decision is taken. The two are separate on purpose: a
     /// change that asks the predicate and then ignores the answer leaves [`FOLD_DECISIONS`]
     /// exactly as it was, and is visible only here.
@@ -325,7 +325,7 @@ pub enum IndexLogError {
     /// integrity envelope (framing length / SHA-256 digest) or violated delta
     /// sequence-continuity. Surfaced as data loss so the load aborts instead of silently
     /// skipping a delta (an eviction/removal recorded ONLY in the delta -- not the WAL --
-    /// would otherwise be lost, resurrecting the removed point or dangling its page ref).
+    /// would otherwise be lost, resurrecting the removed point or dangling its block ref).
     #[error("index-log record integrity error: {0}")]
     Corruption(String),
     /// A binary-container record could not be decoded: an unknown codec id (written by a
@@ -431,7 +431,7 @@ fn index_log_compression_enabled() -> bool {
 
 /// Payloads below this many bytes are stored uncompressed.
 ///
-/// zstd on a very small record spends a frame header to save little; the page tier draws
+/// zstd on a very small record spends a frame header to save little; the block tier draws
 /// the same line at 256 bytes for the same reason.
 fn index_log_compression_min_bytes() -> usize {
     std::env::var("TS_INDEX_LOG_COMPRESSION_MIN_BYTES")
@@ -510,7 +510,7 @@ pub(crate) fn encode_index_payload<T: serde::Serialize>(
     // field means adding it at the END and never reordering what precedes it.
     //
     // It is also why this encoding is SMALLER than the tagged alternative rather than larger.
-    // Measured on a delta record carrying eight page items: 550 bytes here against 595 as
+    // Measured on a delta record carrying eight block items: 550 bytes here against 595 as
     // protobuf, because a tag costs a byte per present field and a position costs nothing.
     let mut packed = Vec::new();
     // Values in field order, for the record as well as for the rows inside it: nothing written
@@ -586,9 +586,9 @@ pub struct IndexLogRecord {
 }
 
 /// Kind of a single delta item in the append-only served-index log. A write emits a
-/// bounded set of these (the pages/objects it touched), so the log grows by O(delta)
+/// bounded set of these (the blocks/objects it touched), so the log grows by O(delta)
 /// per write instead of O(store). Follows the on-disk item taxonomy: a block item is a
-/// concrete page-index entry change, an OBJECT item is an object-level change (e.g. a
+/// concrete block-index entry change, an OBJECT item is an object-level change (e.g. a
 /// TTL-only or whole-object tombstone), and a META item carries the compaction anchor.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum IndexItemKind {
@@ -625,7 +625,7 @@ pub struct IndexItem {
     pub kind: IndexItemKind,
     #[serde(rename = "rb", alias = "routing_bucket", alias = "routing_slot", default)]
     pub routing_bucket: u32,
-    /// The page handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
+    /// The block handle. A `String` in this struct, a NUMBER on the wire whenever it holds one.
     ///
     /// It is a `u64` everywhere else -- `BlockLookupRef::page_ref_key` is one, and the write path
     /// stringifies it on the way in. As decimal text it was 20 bytes of a 161-byte item, 12.4%;
@@ -1034,8 +1034,8 @@ impl From<IndexItemWire> for IndexItem {
     }
 }
 
-/// One per changed page per write, and transient -- it lives for the length of an append.
-/// Pinned because it is the widest thing built per page anywhere in the engine.
+/// One per changed block per write, and transient -- it lives for the length of an append.
+/// Pinned because it is the widest thing built per block anywhere in the engine.
 ///
 /// WHAT THIS NUMBER IS MADE OF IS RECONSTRUCTED RATHER THAN RESTATED, by
 /// `tests::what_every_byte_of_an_index_item_is_spent_on`: the eight-aligned fields come to 96
@@ -1069,7 +1069,7 @@ impl From<IndexItemWire> for IndexItem {
 /// 160, not 168, since the `BlockAddress` it carries shed its `routing_bucket` and narrowed its
 /// `block_id` to sixteen bits. The address is inside an `Option` here and the item is 8-aligned, so
 /// the six bytes of payload that left round to one whole word -- the same step, and the same reason,
-/// as in the page entry. 168, not 176, since that address merged its slab id and its offset into one
+/// as in the block entry. 168, not 176, since that address merged its slab id and its offset into one
 /// word; 176, not 184, since it shed its derived `generation` before that.
 ///
 /// (THE CHAIN USED TO START AT 160 WHILE THE ASSERTION BELOW SAID 152. The step the address took
@@ -1099,11 +1099,11 @@ fn is_zero_u64(value: &u64) -> bool {
     *value == 0
 }
 
-/// Accept a page handle written either as text or as a number.
+/// Accept a block handle written either as text or as a number.
 ///
 /// The handle is a `u64`; it has been carried as decimal text. This lets a reader consume a log
 /// whose writer has moved to the number, so the writer can move whenever every reader has this.
-/// Write the page-ref key as a NUMBER when it is one, and as text when it is not.
+/// Write the block-ref key as a NUMBER when it is one, and as text when it is not.
 ///
 /// This is the second half of the two-step change the reader half landed for. The key is a `u64`
 /// everywhere else and the write path stringifies it on the way in; as decimal text it was 20
@@ -1143,7 +1143,7 @@ impl IndexItem {
     ///
     /// THE PRECONDITION THAT WAS MISSING, AND IT IS THE WHOLE POINT. That only bites WHEN SOMETHING
     /// DOWNSTREAM READS THE RECONSTRUCTION. Here nothing does. `fold_delta_block_items` is the only
-    /// thing that turns index-log items into pages, and it never mentions `block_ref_key`: it builds a
+    /// thing that turns index-log items into blocks, and it never mentions `block_ref_key`: it builds a
     /// `BlockIndex` from the item's own fields and hands it to `BlockIndexMap::insert`, which
     /// ALLOCATES the handle the map is keyed by. `persistence.rs` does not mention the field at all.
     /// Driven: a record whose handle was OMITTED, and a record carrying a handle that is no derivation
@@ -1159,14 +1159,14 @@ impl IndexItem {
     /// recorded rather than deleted, because the condition it named is exactly what lifted it. The
     /// paragraph read: unlike `block_ref_key` the element name is carried into memory and
     /// participates in MATCHING, because `fold_delta_block_items` set it on the `BlockIndex` and the
-    /// upsert `retain` compared `page.component.as_deref() == item.component.as_deref()`; it was the
-    /// only discriminator between two elements of ONE folded page, which share model id, object key
+    /// upsert `retain` compared `block.component.as_deref() == item.component.as_deref()`; it was the
+    /// only discriminator between two elements of ONE folded block, which share model id, object key
     /// AND address; and it "cannot go until the entry stops being per-element".
     ///
-    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::component` came off when the page entry
+    /// THE ENTRY HAS STOPPED BEING PER-ELEMENT. `BlockIndex::component` came off when the block entry
     /// went 56 bytes to 40, so the fold has no field to set, and that comparison is deleted as a
     /// tautology with the reason at its own site -- both sides were already `None` for every kind.
-    /// What discriminates two elements of one page now is the page's own payload, which names every
+    /// What discriminates two elements of one block now is the block's own payload, which names every
     /// element on it, and the four durable maps, which are keyed by the element.
     ///
     /// So `IndexItem::component` is gone too and slot 5 carries a constant nil. The rule below is
@@ -1237,7 +1237,7 @@ impl IndexItem {
 
     /// Drop the size when the address already states it.
     ///
-    /// `size` and `address.length` are the same number on a page item, written twice.
+    /// `size` and `address.length` are the same number on a block item, written twice.
     /// ABSORBED INTO THE CODEC, and kept as a no-op only so the call sites that walk a record
     /// still read as one list of per-item steps.
     ///
@@ -1285,9 +1285,9 @@ impl IndexItem {
 
     /// NOTHING LEFT TO STRIP, AND THE FUNCTION STAYS AS THE PLACE THAT RECORDS WHY.
     ///
-    /// It stripped the object-id repeat that an item and its address both carried: for a page
+    /// It stripped the object-id repeat that an item and its address both carried: for a block
     /// belonging to one object those were the same value, and the WAL side strips the same pair on
-    /// its way to protobuf -- `item_to_proto` calls it "a full varint on every item whose page
+    /// its way to protobuf -- `item_to_proto` calls it "a full varint on every item whose block
     /// belongs to one object". MEASURED WHILE IT EXISTED, the pair was 18 bytes of a 142-byte item,
     /// 12.7%. That figure is kept rather than deleted with the behaviour, because it is the reason
     /// there was something to strip and therefore the reason there is now nothing.
@@ -1319,7 +1319,7 @@ impl IndexItem {
 /// The model names this log writes as a number instead of as themselves.
 ///
 /// A page header in this design spells the model as an integer; ours spelled it as its name, on
-/// every item -- "string" and "hash" written out again for every page a shard has ever indexed,
+/// every item -- "string" and "hash" written out again for every block a shard has ever indexed,
 /// measured at 7 bytes of a 176-byte item.
 ///
 /// APPEND ONLY, and never reordered. The position IS what goes on disk, so moving a name changes
@@ -1385,7 +1385,7 @@ where
                 1 => Ok(IndexItemKind::Object),
                 2 => Ok(IndexItemKind::Meta),
                 // Refused rather than defaulted: a kind this cannot name would otherwise arrive as
-                // a page item, and a page item names an address that an object or meta item does
+                // a block item, and a block item names an address that an object or meta item does
                 // not have.
                 other => Err(E::custom(format!("unknown item kind number {other}"))),
             }
@@ -1722,7 +1722,7 @@ where
 
         fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<String, E> {
             // A number this table cannot name is refused rather than guessed. Answering the wrong
-            // model would file a page under a model that did not write it, which reads as missing
+            // model would file a block under a model that did not write it, which reads as missing
             // data for one model and foreign data for another.
             MODEL_ID_NUMBERS
                 .get(value as usize)
@@ -1811,7 +1811,7 @@ pub enum SlabCatalogState {
 
 /// One slab catalog entry folded into the index-log MetaItem, mirroring this design
 /// the durable slab catalog in the index-log anchor. Carries the DURABLE catalog fields the
-/// slab descriptor tracks -- lifecycle state, byte counts, timestamps, page-id range, version.
+/// slab descriptor tracks -- lifecycle state, byte counts, timestamps, block-id range, version.
 /// The slab descriptor's DIAGNOSTIC fields (readable_prefix_physical_bytes / has_corruption /
 /// first_error*) are intentionally ABSENT: they are recomputed on load by scanning the slab
 /// (`inspect_slab`, driven by `rebuild_slab_manifest_at` / reconcile-on-open), exactly as the
@@ -1838,7 +1838,7 @@ pub struct SlabCatalogEntry {
     pub version: u64,
 }
 
-/// One per SLAB, not per item: a slab is a gigabyte of pages by default, so this is here to be
+/// One per SLAB, not per item: a slab is a gigabyte of blocks by default, so this is here to be
 /// ranked last rather than to be narrowed.
 const _: () = assert!(std::mem::size_of::<SlabCatalogEntry>() == 104);
 
@@ -1868,7 +1868,7 @@ pub struct MetaItem {
     pub slab_version: u64,
 }
 
-/// One appended delta record: either a batch of page/object item deltas (PAGE/OBJECT) or
+/// One appended delta record: either a batch of block/object item deltas (BLOCK/OBJECT) or
 /// a compaction anchor (META). Written one JSON line per record to the same append-only
 /// log file as `IndexLogRecord`; the two are distinguished on read by the presence of the
 /// `items`/`meta` fields, so legacy whole-index records replay untouched.
@@ -1886,25 +1886,25 @@ pub struct IndexDeltaRecord {
     /// load, deltas with a sequence at or below the base snapshot's anchor are already
     /// folded into the base and are skipped; folding the rest advances the reconstructed
     /// anchor so WAL replay re-executes only the uncaptured tail (never relocating the
-    /// pages the deltas already pin at their original addresses).
+    /// blocks the deltas already pin at their original addresses).
     #[serde(rename = "aw", alias = "applied_wal_sequence", default)]
     pub applied_wal_sequence: Option<u64>,
-    /// When true, this record's items are the exact pages the write produced: replay replaces
+    /// When true, this record's items are the exact blocks the write produced: replay replaces
     /// each item's (kind, object, component) predecessor and inserts, WITHOUT the covered-key
     /// wipe -- mirroring the write path's upsert_bucket_index_block. When false (the default,
     /// and every record written before this field existed), the record snapshots each covered
-    /// object's whole page set and replay wipes-then-restores. The snapshot shape is what made
+    /// object's whole block set and replay wipes-then-restores. The snapshot shape is what made
     /// every append O(store): a batch touching the grow-with-the-store index hashes logged
-    /// every page of each of them, every time.
+    /// every block of each of them, every time.
     #[serde(rename = "u", alias = "upsert", default)]
     pub upsert: bool,
     /// Opaque per-touched-key state blobs (one JSON object per key) carrying the
     /// authoritative post-write value of the maps that are NOT reconstructable from a
-    /// single page-index entry -- packed timestamped series (feature membership survives
-    /// eviction) and the non-page maps (TTL, control-state change/selection, context
+    /// single block-index entry -- packed timestamped series (feature membership survives
+    /// eviction) and the non-block maps (TTL, control-state change/selection, context
     /// nodes). Opaque here so the index-log layer stays decoupled from `ShardState`; the
     /// engine builds and applies them. Replaying these on load pins the exact membership a
-    /// write produced, so reconstruction from physical pages cannot resurrect evicted data.
+    /// write produced, so reconstruction from physical blocks cannot resurrect evicted data.
     #[serde(rename = "ks", alias = "key_states", default)]
     pub key_states: Vec<serde_json::Value>,
     /// The one object key every item carries, when they all carry the same one.
@@ -1952,9 +1952,9 @@ pub struct IndexDeltaRecord {
     pub shared_object_key: Option<String>,
 }
 
-/// The key a page is written under, from its parts.
+/// The key a block is written under, from its parts.
 ///
-/// One definition, called from the page index's serialization and from the replay log, so the two
+/// One definition, called from the block index's serialization and from the replay log, so the two
 /// cannot drift into different spellings of the same page.
 pub fn block_ref_key_from_parts(
     kind: &str,
@@ -1967,7 +1967,7 @@ pub fn block_ref_key_from_parts(
     generation: u64,
 ) -> String {
     // Built into one buffer rather than with `format!`, which allocates its own and then
-    // allocates again to hand back a String. This runs once per page on every dump of the index,
+    // allocates again to hand back a String. This runs once per block on every dump of the index,
     // where it was the largest single source of allocations.
     use std::fmt::Write as _;
     let component = component.unwrap_or("");
@@ -1988,7 +1988,7 @@ pub fn block_ref_key_from_parts(
 
 /// The eight slots [`block_ref_key_from_parts`] composed, read back out of the key it built.
 ///
-/// BORROWED, NOT OWNED. The text slots are slices of the key, so reading a page's identity back
+/// BORROWED, NOT OWNED. The text slots are slices of the key, so reading a block's identity back
 /// out of the name it is filed under allocates nothing until a caller asks for an owned copy. The
 /// served index's decode asks for exactly one -- the object key, as the `Arc<str>` the entry used
 /// to carry -- so the parse costs what the removed field cost and no more.
@@ -2034,7 +2034,7 @@ impl std::fmt::Display for BlockRefKeyUnparsable {
 /// `u64::from_str` takes a leading `+` and takes leading zeros, and both of those re-render as
 /// something else -- so accepting them would make the parse something other than the renderer's
 /// inverse, on keys that round-trip to a DIFFERENT string. Rejecting them is what lets the
-/// recomposition be exact by construction rather than by a rebuilt string compared per page.
+/// recomposition be exact by construction rather than by a rebuilt string compared per block.
 fn canonical_decimal(text: &str) -> Option<u64> {
     if text.is_empty() || !text.bytes().all(|byte| byte.is_ascii_digit()) {
         return None;
@@ -2067,12 +2067,12 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 /// is the proof and it still stands. This parse resolves the ambiguity one way -- positionally,
 /// reading that key as the object `a:b` with no component.
 ///
-/// NO PAGE KEY THIS TREE WRITES CAN BE AMBIGUOUS, and that is structural rather than measured:
+/// NO BLOCK KEY THIS TREE WRITES CAN BE AMBIGUOUS, and that is structural rather than measured:
 /// [`crate::engine::state::block_index_written_key`] takes no component parameter and passes a
-/// literal `None`, so the slot is always empty. It is also MEASURED, on 8,000 pages of two key
+/// literal `None`, so the slot is always empty. It is also MEASURED, on 8,000 blocks of two key
 /// shapes, by
 /// `the_key_a_page_is_filed_under_inverts_exactly::the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus`,
-/// which asserts the component slot empty page by page. An index carrying the ambiguous shape
+/// which asserts the component slot empty block by block. An index carrying the ambiguous shape
 /// predates `SHARD_INDEX_FORMAT_VERSION` 27 and is refused by `persistence`'s `<` comparison at
 /// every one of `decode_index_bytes`'s production callers before anything acts on it.
 ///
@@ -2082,9 +2082,9 @@ fn canonical_decimal(text: &str) -> Option<u64> {
 /// with the seven separators reproduces the input byte for byte without anything having to check
 /// it -- provided each decimal slot is in the one spelling the renderer writes, which
 /// [`canonical_decimal`] is what enforces. A verification string built per page would cost an
-/// allocation per page on every load to re-establish what the index arithmetic already gives.
+/// allocation per block on every load to re-establish what the index arithmetic already gives.
 /// `the_renderer_and_the_parse_are_inverse_on_every_page_of_the_shipped_corpus` drives the
-/// property on 8,000 real pages and
+/// property on 8,000 real blocks and
 /// `a_key_that_does_not_round_trip_is_refused_rather_than_guessed` drives the refusals.
 pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKeyUnparsable> {
     let refuse = |because: &'static str| BlockRefKeyUnparsable { key: key.to_string(), because };
@@ -2503,7 +2503,7 @@ impl IndexLogInner {
 
 fn indexlog_enabled() -> bool {
     // The index-log is the delta served-index's durable per-write delta stream: the
-    // load-time fold reconstructs the served index (at the original page addresses) from
+    // load-time fold reconstructs the served index (at the original block addresses) from
     // these records, so it must be written in ALL builds, not just tests. It is kept
     // bounded by GC-at-compaction, which truncates every delta already folded into the
     // durably-rewritten base snapshot (retain-from-anchor). Always on.
@@ -2525,7 +2525,7 @@ fn indexlog_wal_only_sync() -> bool {
 
 /// MANIFEST-CONFORMANCE FOLD, always on: the slab catalog is folded into the index-log
 /// anchor at a threshold dump, and the per-write slab-manifest file is no longer the catalog's
-/// source of truth (it is reconstructed on load from the durable pages plus the folded anchor).
+/// source of truth (it is reconstructed on load from the durable blocks plus the folded anchor).
 /// `TS_INDEX_CATALOG_FOLD` used to be able to skip all of it. It shipped dark (the flip once
 /// broke proxy tests), then defaulted on once the upsert-delta and single-barrier work landed,
 /// and nothing ever selected the off position again -- the five tests that exercise the fold
@@ -2945,7 +2945,7 @@ impl LocalIndexLogStore {
         Ok(next_sequence)
     }
 
-    /// Append one O(delta) served-index record: the page/object items a single write
+    /// Append one O(delta) served-index record: the block/object items a single write
     /// touched, optionally carrying a compaction anchor. Unlike `append_json`, this never
     /// serializes the whole index -- the appended bytes are proportional to the change,
     /// which is what turns the per-write served-index persist cost from O(store) into
@@ -3083,7 +3083,7 @@ impl LocalIndexLogStore {
         }
         // Hoist the object key when every item names the same one, and blank the copies.
         //
-        // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the page handle from
+        // LAST, after the strips above. `strip_block_ref_key_repeat` DERIVES the block handle from
         // the item's own fields and `object_key` is one of them, so blanking the key first would
         // derive a different handle and the strip would decline -- costing more than this saves.
         let shared_object_key = match items.split_first() {
@@ -3109,7 +3109,7 @@ impl LocalIndexLogStore {
             shared_object_key,
         };
         // Frame the delta record with a length + SHA-256 digest (crate::log_framing) so a
-        // value-preserving bit-flip (e.g. a flipped `deleted` flag or page address) in this
+        // value-preserving bit-flip (e.g. a flipped `deleted` flag or block address) in this
         // committed line is detected on read rather than replayed as truth on recovery.
         // Both buffers are taken off `inner` and put back below, because the framing borrows one
         // while the other is still being read and `inner` is needed either side.
@@ -5482,7 +5482,7 @@ mod tests {
         store
             .append_delta(3, vec![block_item(1, "covered", false)], Vec::new(), Some(2), None, false, true)
             .unwrap();
-        // seq 2: no anchor at all, and it carries page items. Must STAY.
+        // seq 2: no anchor at all, and it carries block items. Must STAY.
         store
             .append_delta(3, vec![block_item(1, "anchorless", false)], Vec::new(), None, None, false, true)
             .unwrap();
@@ -7278,7 +7278,7 @@ mod tests {
     /// is left is the JSON itself -- quotes, braces, commas, and integers spelled in decimal.
     #[test]
     fn what_is_left_to_gain_from_a_binary_index_record() {
-        // One page item plus a key-state blob: the common delta the ingest path appends.
+        // One block item plus a key-state blob: the common delta the ingest path appends.
         let line = r#"{"s":1,"q":1,"items":[{"k":"page","rb":545210715,
             "pk":"string:m:0::0:0:126:0:0","ok":"m:0","mi":"string",
             "oi":122110326161599232,"pi":0,
@@ -7559,7 +7559,7 @@ mod tests {
         assert!(round_tripped.deleted, "a true deleted must still be written");
     }
 
-    /// A page handle reads whether it was written as a number or as text.
+    /// A block handle reads whether it was written as a number or as text.
     ///
     /// The handle is a `u64` everywhere but the log, where it is stringified -- 20 bytes of a
     /// 161-byte item. Moving the writer to the number cannot come first: msgpack refuses a type it
@@ -8313,7 +8313,7 @@ flag exists to say",
     /// What the address repeats costs, per index item.
     ///
     /// `BlockAddress` carries `object_id` and `routing_bucket`, and the item carries both again as
-    /// its own fields. For a page belonging to one object they hold the same value, so the pair is
+    /// its own fields. For a block belonging to one object they hold the same value, so the pair is
     /// written twice per item. The WAL side already strips that on its way to protobuf --
     /// `item_to_proto` drops the address's object id when it repeats the item's, and says why --
     /// and this measures whether the index log is paying what the WAL stopped paying.
@@ -9147,7 +9147,7 @@ flag exists to say",
     ///
     /// Zero per ROW is not zero. A container element's name is carried once per touched element in
     /// the delta record's own `key_states` blobs, under `engine::CARRIED_CONTAINER_FIELDS`, beside
-    /// the address. So the charge moved from one copy per PAGE ENTRY to one copy per TOUCHED
+    /// the address. So the charge moved from one copy per BLOCK ENTRY to one copy per TOUCHED
     /// ELEMENT per record, and anyone pricing it has to price it there. This arm does not measure
     /// that, and says so rather than leaving a zero to be read as a saving.
     ///

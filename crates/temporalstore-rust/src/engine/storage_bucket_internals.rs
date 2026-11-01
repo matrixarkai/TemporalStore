@@ -933,7 +933,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
         }
     }
 
-    // THE IDENTITY COMES FROM BESIDE THE PAGE. The delete marker below states an object, and
+    // THE IDENTITY COMES FROM BESIDE THE BLOCK. The delete marker below states an object, and
     // the entry is losing its own copy; the inversion is built once for the whole walk, which
     // `shard` being immutable here makes free of any borrow to split.
     let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
@@ -948,9 +948,9 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
             }
             bucket.block_refs
                 .push(storage_page_address_sample(shard_id, &block.address));
-            // A DELETED PAGE IS NAMED BY THIS BUCKET'S OWN TOMBSTONE ROW, which is the source
-            // `identity_of` reaches for one -- the lookup never holds a deleted page. A marker for
-            // a page nothing names would name no object, so it is not written.
+            // A DELETED BLOCK IS NAMED BY THIS BUCKET'S OWN TOMBSTONE ROW, which is the source
+            // `identity_of` reaches for one -- the lookup never holds a deleted block. A marker for
+            // a block nothing names would name no object, so it is not written.
             if let Some(beside) = block
                 .deleted
                 .then(|| identities.identity_of(runtime_bucket, *handle, block))
@@ -1043,7 +1043,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
 
 /// Running total of live-block entries materialized by [`collect_live_block_entries`].
 ///
-/// This walk is `O(live pages)` and clones two strings per entry, and several callers run it on
+/// This walk is `O(live blocks)` and clones two strings per entry, and several callers run it on
 /// a background loop, so its cost is easy to introduce and hard to notice. The counter makes it
 /// measurable: a test can assert that a code path's scan volume does not grow with the store.
 static LIVE_BLOCK_SCAN_ENTRIES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1162,7 +1162,7 @@ pub fn reset_bucket_index_resident_bytes_visits() {
 ///
 /// Distinct from [`LIVE_BLOCK_SCAN_ENTRIES`], which counts materialized live-block entries. This
 /// one counts the cheaper-looking `bucket.block_index.values()` passes -- `update_bucket_layout`
-/// and the per-object dirty-state clear. Each is `O(pages in the bucket)` and they run inside
+/// and the per-object dirty-state clear. Each is `O(blocks in the bucket)` and they run inside
 /// loops over buckets, so their cost is a product, not a sum, and does not show up in any single
 /// obvious place.
 static BUCKET_BLOCK_INDEX_VISITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -1300,21 +1300,21 @@ pub mod bucket_visit_sites {
     ///
     /// This is charged inside `refresh_one_bucket_runtime_flags`, but inside the
     /// `BucketTtlRollup::Recompute` arm AND inside the `else` of `if expires_at_ms.is_empty()`. So
-    /// it counts pages only when the caller asked for a TTL recompute and the shard holds at least
+    /// it counts blocks only when the caller asked for a TTL recompute and the shard holds at least
     /// one expiry. The write path passes `LeaveStale`, and a store that never sets a TTL takes the
-    /// short-circuit, so on both of those this counter is zero no matter how many pages the refresh
+    /// short-circuit, so on both of those this counter is zero no matter how many blocks the refresh
     /// walked.
     ///
     /// The refresh's own two folds are counted by [`FLAG_FOLDS`]. A probe reading this one to price
-    /// them reported 0 against a bucket of 321 pages, and a positive control -- calling the sweep
+    /// them reported 0 against a bucket of 321 blocks, and a positive control -- calling the sweep
     /// deliberately -- also reported 0, which is how the gap was found.
     pub(super) static REFRESH_FLAGS: AtomicU64 = AtomicU64::new(0);
     pub(super) static REMOVE_ALL_BUCKETS: AtomicU64 = AtomicU64::new(0);
-    /// Pages actually visited by the two unconditional folds in `refresh_one_bucket_runtime_flags`:
-    /// `all(page.deleted)` and `any(page.dirty)`.
+    /// Blocks actually visited by the two unconditional folds in `refresh_one_bucket_runtime_flags`:
+    /// `all(block.deleted)` and `any(block.dirty)`.
     ///
     /// ITERATIONS TAKEN, NOT BUCKET LENGTH. Both folds short-circuit -- the comment at the fold says
-    /// so -- so a bucket of 321 pages can decide on page one. Charging `block_index.len()` would
+    /// so -- so a bucket of 321 blocks can decide on block one. Charging `block_index.len()` would
     /// report the walk this refresh did NOT do; `inspect` charges what it did.
     pub(super) static FLAG_FOLDS: AtomicU64 = AtomicU64::new(0);
 
@@ -1332,7 +1332,7 @@ pub mod bucket_visit_sites {
         )
     }
 
-    /// Pages visited by the refresh's own folds since the last reset. See [`FLAG_FOLDS`].
+    /// Blocks visited by the refresh's own folds since the last reset. See [`FLAG_FOLDS`].
     pub fn flag_folds() -> u64 {
         FLAG_FOLDS.load(Ordering::Relaxed)
     }
@@ -1430,7 +1430,7 @@ pub(super) fn mark_object_dirty(
     }
     // PUSHED, NOT PULLED -- see `push_object_dirty_onto_its_existing_blocks`. This is the second of
     // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
-    // push: a mark that does not reach its pages leaves the bucket reading clean.
+    // push: a mark that does not reach its blocks leaves the bucket reading clean.
     super::push_object_dirty_onto_its_existing_blocks(shard, object_key);
     let bucket = shard
         .bucket_index
@@ -1473,10 +1473,10 @@ pub(super) fn rebuild_bucket_block_ownership(
     // This function rebuilds every bucket from `collect_model_live_block_entries`, and those maps hold
     // only LIVE elements -- a removed one is gone from `shard.sets` by construction. So a rebuild
     // produces one entry per live element and NONE for a removal, and the entry that keeps a removal's
-    // tombstone page reachable is erased by any round that rebuilds. `compact_shard_blocks` calls this
+    // tombstone block reachable is erased by any round that rebuilds. `compact_shard_blocks` calls this
     // directly, twice, and `promote_model_maps_to_bucket_index_authority` calls it as well; so before
-    // this, a removal stopped being recorded in the pages at the next compaction round and a
-    // page-derived membership would have resurrected the element.
+    // this, a removal stopped being recorded in the blocks at the next compaction round and a
+    // block-derived membership would have resurrected the element.
     //
     // THE ENTRIES ARE CARRIED OVER RATHER THAN RE-DERIVED, because they cannot be re-derived: nothing
     // outside the index knows a removal happened except the WAL, and a rebuild is not a replay. They
@@ -1512,11 +1512,11 @@ pub(super) fn rebuild_bucket_block_ownership(
     // AND THE LOOKUP WITH IT, because it describes the map that was just emptied.
     //
     // It used to survive this clear and be rebuilt wholesale at the end of the function. Now that
-    // the refile below files each page as it goes, a surviving pre-compaction entry would be a
-    // position naming a page that no longer exists -- so the structure has to start empty for the
+    // the refile below files each block as it goes, a surviving pre-compaction entry would be a
+    // position naming a block that no longer exists -- so the structure has to start empty for the
     // filing to be the whole story. The ref total goes back to the zero a fresh index carries, for
     // the same reason: `insert_object_block_lookup` counts up from it, and a total carried over
-    // from the emptied map would count pages twice.
+    // from the emptied map would count blocks twice.
     shard.bucket_index.clear_object_pages();
     shard.bucket_index.object_component_block_refs = Some(0);
     // The tally counts the map that was just emptied. Emptied with it, and re-earned by the
@@ -1583,8 +1583,8 @@ pub(super) fn rebuild_bucket_block_ownership(
             },
             &mut shard.bucket_index.block_slab_live,
         );
-        // THE PAGE IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
-        // entry the lookup records is the entry the map HOLDS. A page whose handle collided
+        // THE BLOCK IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
+        // entry the lookup records is the entry the map HOLDS. A block whose handle collided
         // with an earlier one is not in the map twice and must not be in the lookup twice
         // either; that is the decoder's rule, read off the same reasoning.
         if let Some(placed) = bucket.block_index.get(&handle) {
@@ -1614,8 +1614,8 @@ pub(super) fn rebuild_bucket_block_ownership(
     for (routing_bucket, tombstone, element) in preserved_tombstones {
         let Some(element) = element else {
             // A TOMBSTONE NAMING NO ELEMENT CANNOT BE REFILED, and this is where that becomes
-            // visible rather than theoretical. The handle a page is filed under is hashed from its
-            // identity; a deleted page is not in the object lookup, so its row is the only thing
+            // visible rather than theoretical. The handle a block is filed under is hashed from its
+            // identity; a deleted block is not in the object lookup, so its row is the only thing
             // beside it that states one -- and a tombstone with no row states nothing. It is
             // dropped rather than filed under a guessed identity.
             //
@@ -1637,7 +1637,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         // just derived from, so asking it is reading the same authority one element at a time.
         //
         // A tombstone with NO element row cannot be asked at all. It is refiled, which is the safe
-        // direction: a refiled tombstone over a live element is still outranked by the live page's
+        // direction: a refiled tombstone over a live element is still outranked by the live block's
         // later append position, where a DROPPED tombstone over a removed element resurrects it.
         let live_again = resident_holds_component(
             shard,
@@ -1688,15 +1688,15 @@ pub(super) fn rebuild_bucket_block_ownership(
     note_tombstones_refiled(tombstones_refiled);
     // THE WHOLE-SHARD REBUILD IS GONE FROM HERE, and the claim it stood for is checked instead.
     //
-    // It cleared the lookup and re-filed every page in the shard, reading the object key off each
+    // It cleared the lookup and re-filed every block in the shard, reading the object key off each
     // one. The refile above files as it goes, so there is nothing left for it to discover -- and
-    // the rebuild was the last whole-shard reader of the identity ON a page, rebuilding the very
-    // structure that is the identity BESIDE a page, which is circular and is why it has to go
+    // the rebuild was the last whole-shard reader of the identity ON a block, rebuilding the very
+    // structure that is the identity BESIDE a block, which is circular and is why it has to go
     // rather than be rewritten to take the identities as a parameter.
     //
     // In a release build this is one fewer O(blocks) pass per compaction round, and the debug
     // verification that earned the removal has now been spent: it compared the lookup against the
-    // pages' own copies of the identity and the pages have none. `engine_storage_state.rs` carries why a version
+    // blocks' own copies of the identity and the blocks have none. `engine_storage_state.rs` carries why a version
     // of it over one source would compare that source with itself.
     // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
     // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
@@ -1936,16 +1936,16 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // loop also counted entries that named no field and printed a line per load saying they had
     // been skipped rather than defaulted to the empty field name -- the right thing while an entry
     // COULD name one and some did not. With no entry able to name one, that count is simply the
-    // number of live hash pages in the shard and the line would fire on every load of every
+    // number of live hash blocks in the shard and the line would fire on every load of every
     // populated store, reporting a structural fact as an anomaly. So it goes with the loop that
     // produced it.
     //
     // THE RECONCILE BELOW STAYS, AND IT IS STILL LOAD-BEARING. `reconcile_from_durable` is
     // `fill_absent_elements(derived, persisted, live, refused)`: the persisted map is deserialized
-    // BEFORE it and the call FILTERS that map against the live page set as well as merging the
+    // BEFORE it and the call FILTERS that map against the live block set as well as merging the
     // derived view into it. Dropping the call would therefore leave MORE in the map, not less --
-    // every durable element whose page the settled index no longer holds would be restored. An
-    // empty derived view is passed instead, so the merge contributes nothing and the live-page
+    // every durable element whose block the settled index no longer holds would be restored. An
+    // empty derived view is passed instead, so the merge contributes nothing and the live-block
     // refusal still runs, which is the half this function keeps.
     let hashes = HashMap::<super::state::ModelKey, super::hash_field_map::HashFieldMap>::new();
     // THE SAME LIVE-ADDRESS SET THE RECONCILE BUILDS, and built from the same walk the derived view
@@ -1962,7 +1962,7 @@ pub(super) fn rebuild_unserialized_model_maps_from_bucket_index(shard: &mut Shar
     // durable now, so a wholesale assignment here would discard exactly the elements this function's
     // own header warns about discarding -- a field whose block the index cannot NAME is a field the
     // durable map is now the only record of. The merge keeps it; the live-address filter still drops
-    // a durable element whose page the settled index does not hold.
+    // a durable element whose block the settled index does not hold.
     let mut resurrections_refused = 0usize;
     shard.hashes.reconcile_from_durable(
         hashes,
@@ -1984,7 +1984,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
     // the supplement walk below either -- it charged what was RETURNED, while the walk
     // materializes the indexed blocks and then, whenever anything is released, the whole shard.
     let mut from_index = 0usize;
-    // THE IDENTITY COMES FROM BESIDE THE PAGE, once for the walk. `shard` is immutable here.
+    // THE IDENTITY COMES FROM BESIDE THE BLOCK, once for the walk. `shard` is immutable here.
     let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         for (handle, block) in bucket.block_index.iter() {
@@ -1994,12 +1994,12 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             // window that explains it.
             // NAMED WHEREVER IT IS FILED, which is what this walk's consumer needs.
             //
-            // `identity_of` asks by POSITION and so cannot name a page filed in a bucket the
-            // lookup does not record it under -- and that page is exactly the subject of
+            // `identity_of` asks by POSITION and so cannot name a block filed in a bucket the
+            // lookup does not record it under -- and that block is exactly the subject of
             // `validate_bucket_ownership_index_from_entries`, which these rows feed. Dropping it
             // would hand that check an empty set and have it report a damaged index as healthy.
-            // So: the position index first, for a deleted page's tombstone row as well, then the
-            // handle index for a live page the lookup names somewhere else.
+            // So: the position index first, for a deleted block's tombstone row as well, then the
+            // handle index for a live block the lookup names somewhere else.
             let beside = identities
                 .identity_of(bucket, *handle, block)
                 .map(|named| named.object_key)
@@ -2018,9 +2018,9 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             entries.push(LiveBlockEntry {
                 object_key: Arc::clone(beside),
                 kind: block.model_id,
-                // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A PAGE.
+                // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A BLOCK.
                 //
-                // This cloned `page.component`, under a note about avoiding a double allocation
+                // This cloned `block.component`, under a note about avoiding a double allocation
                 // through a `String`. There is no name on an entry to clone, and there was no
                 // value in it before the field was removed either -- every entry's component was
                 // `None`. So a `LiveBlockEntry` produced from the INDEX carries no element name,
@@ -2506,9 +2506,9 @@ pub(super) fn release_bucket_blocks(
         // The per-block terms, likewise. `find_map` stops at the first block that fails, which
         // is the same set as the `all` it replaces: `all` is false exactly when `find_map` is
         // Some.
-        // THE IDENTITY OF EVERY PAGE IN THIS BUCKET, TAKEN ONCE FOR THE FOUR READERS BELOW.
+        // THE IDENTITY OF EVERY BLOCK IN THIS BUCKET, TAKEN ONCE FOR THE FOUR READERS BELOW.
         //
-        // All four asked each page which object it belonged to. The projection is OWNED, so it
+        // All four asked each block which object it belonged to. The projection is OWNED, so it
         // outlives the immutable borrow of the bucket and is still in hand when the un-filing
         // further down takes the index mutably.
         let names = crate::engine::state::block_identities_in(
@@ -2517,8 +2517,8 @@ pub(super) fn release_bucket_blocks(
         );
         let block_refusal = bucket.block_index.iter().find_map(|(handle, block)| {
             let Some(beside) = names.get(handle) else {
-                // A PAGE THE INDEX CANNOT NAME REFUSES THE RELEASE, and `LookupNotLocal` is
-                // exactly what that is: the lookup holds no entry for this page, so dropping this
+                // A BLOCK THE INDEX CANNOT NAME REFUSES THE RELEASE, and `LookupNotLocal` is
+                // exactly what that is: the lookup holds no entry for this block, so dropping this
                 // bucket's lookup entries cannot be shown to drop only its own.
                 return Some(BucketReleaseRefusal::LookupNotLocal);
             };
@@ -2555,7 +2555,7 @@ pub(super) fn release_bucket_blocks(
                 names.get(handle).is_some_and(|beside| {
                     shard
                         .bucket_index
-                        // `None`: the lookup files every page of an object under one nameless
+                        // `None`: the lookup files every block of an object under one nameless
                         // slot, which is the slot an entry has always been filed in here.
                         .block_refs_for(block.model_id.as_str(), beside, None)
                         .map(|refs| {
@@ -2572,14 +2572,14 @@ pub(super) fn release_bucket_blocks(
             .block_index
             .iter()
             .filter_map(|(handle, block)| {
-                // A PAGE NOTHING NAMES CONTRIBUTES NO IDENTITY, which makes the resident set
+                // A BLOCK NOTHING NAMES CONTRIBUTES NO IDENTITY, which makes the resident set
                 // smaller than the derived one and refuses the release below. That is the safe
                 // direction: releasing across a disagreement loses blocks.
                 names.get(handle).map(|beside| {
                     released_block_identity(
                         block.model_id.as_str(),
                         beside,
-                        // `None`: the identity an entry can state is its page's, not its
+                        // `None`: the identity an entry can state is its block's, not its
                         // element's.
                         None,
                         &block.address,
@@ -2611,8 +2611,8 @@ pub(super) fn release_bucket_blocks(
                 shard.bucket_index.remove_object_block_lookup_entry(
                     model_id.as_str(),
                     object_key,
-                    // `None` -- the slot the lookup filed every page of this object under. The
-                    // triple this walked used to carry `page.component` as its third term and the
+                    // `None` -- the slot the lookup filed every block of this object under. The
+                    // triple this walked used to carry `block.component` as its third term and the
                     // term was `None` for every entry, so the un-filing it drives does not move.
                     None,
                 );
@@ -2659,8 +2659,8 @@ pub(super) fn reload_released_bucket(
         shard.bucket_index.released_buckets.remove(&routing_bucket);
         return false;
     }
-    // THE IDENTITY TRAVELS WITH THE PAGE, in the tuple, because the model-map entry it is read
-    // off is the only place it exists on this path and the page is about to stop carrying one.
+    // THE IDENTITY TRAVELS WITH THE BLOCK, in the tuple, because the model-map entry it is read
+    // off is the only place it exists on this path and the block is about to stop carrying one.
     let mut blocks: Vec<(Arc<str>, BlockIndex, u64)> = Vec::new();
     // ONE bucket's blocks, filtered inside the walk. This used to materialize every live block in
     // the shard and then drop all but this bucket's -- a batch reload over N released buckets
@@ -2707,10 +2707,10 @@ pub(super) fn reload_released_bucket(
         shard.bucket_index.released_buckets.remove(&routing_bucket);
         return true;
     }
-    // THE LIVE SET FROM WHAT WAS JUST INSTALLED, which is every page this bucket now holds: the
-    // release emptied the page index, so `installed` is not a subset of it but the whole of it. The
+    // THE LIVE SET FROM WHAT WAS JUST INSTALLED, which is every block this bucket now holds: the
+    // release emptied the block index, so `installed` is not a subset of it but the whole of it. The
     // identity is in hand here, and the object lookup has nothing to say yet -- the refiling in the
-    // loop below is what puts these pages back into it.
+    // loop below is what puts these blocks back into it.
     let live_object_ids: BTreeSet<u64> = installed
         .iter()
         .filter(|(_, _, block)| !block.deleted)
@@ -2757,7 +2757,7 @@ pub(super) fn bucket_index_node_bytes(shard: &ShardState) -> u64 {
 /// that one.
 ///
 /// THE BLOCK TERM IS ASKED OF THE CONTAINER, NOT COMPUTED FROM A BLOCK COUNT. It was
-/// `pages * size_of::<BlockIndex>()`, and measured against the counting allocator that is right on
+/// `blocks * size_of::<BlockIndex>()`, and measured against the counting allocator that is right on
 /// one of the three arms and wrong on the one the shipped routing range puts every bucket into:
 /// 0.6817 of what the allocator held at 4,000 records on `0..1023` and 0.8542 at 40,000, because
 /// a `Many` arm's element is the eight-byte-wider PAIR and its buffer is owned at CAPACITY. The
@@ -3534,7 +3534,7 @@ fn visit_model_live_blocks(
     //
     // The kind is a `ModelKind`, not a string literal: see `model_kind_registry` above for why
     // an arm that could name its own kind is an arm the reporting registry can fall behind.
-    /// ONE ENTRY PER DISTINCT PAGE, CARRYING NO COMPONENT -- the whole of the collapse, written
+    /// ONE ENTRY PER DISTINCT BLOCK, CARRYING NO COMPONENT -- the whole of the collapse, written
     /// once for every kind that takes it.
     ///
     /// # THE DEDUP IS LOAD-BEARING FOR CORRECTNESS, NOT ONLY FOR THE COUNT
@@ -3543,7 +3543,7 @@ fn visit_model_live_blocks(
     /// `block_index` is still keyed by -- HASHES the component along with the object key and five
     /// address terms. Two entries of one object that agreed on every one of those AND carried
     /// `None` would hash to one handle, and the second `insert` would displace the first: a handle
-    /// collision does not fail, it returns a DIFFERENT page. That is the recorded 39-of-40 element
+    /// collision does not fail, it returns a DIFFERENT block. That is the recorded 39-of-40 element
     /// loss, and it is why this is not merely a count fix.
     ///
     /// What makes it unreachable is exactly this set: at most one entry per distinct
@@ -3561,7 +3561,7 @@ fn visit_model_live_blocks(
     /// page, which is the case this whole series is about. The set arm spelled this inline until
     /// now and calls this instead, so there is exactly ONE dedup in the projection and a kind
     /// added later cannot be given a subtly different one.
-    /// AND THIS HELPER LENDS TOO. Its key was `&str`, so the four kinds that reach their pages
+    /// AND THIS HELPER LENDS TOO. Its key was `&str`, so the four kinds that reach their blocks
     /// through it -- hash, zset, list, set -- handed over characters even though every one of them
     /// iterates a `ModelKey`-keyed map and had a handle in hand.
     ///
@@ -3577,27 +3577,27 @@ fn visit_model_live_blocks(
         accept: &impl Fn(&str, &ElementEntry) -> bool,
         emit: &mut impl FnMut(ModelKind, KeyRef<'_>, Option<&str>, &ElementEntry),
     ) {
-        // THE SET WAITS FOR A SECOND PAGE, because most keys never have one.
+        // THE SET WAITS FOR A SECOND BLOCK, because most keys never have one.
         //
         // Measured per arm: this helper's dedup cost the hashes arm 1.01 allocations per entry,
         // against 0.01 for the strings arm which has nothing nested
         // (`which_arm_the_last_allocation_per_entry_belongs_to`). A `BTreeSet` does not allocate
-        // when it is created -- the first `insert` does -- so a key with ONE page was paying a
+        // when it is created -- the first `insert` does -- so a key with ONE block was paying a
         // node for a dedup that cannot matter: there is nothing to be a duplicate of.
         //
-        // So the first page is held inline and the set is built only when a SECOND distinct page
-        // turns up. A one-page key allocates nothing; a multi-page key pays what it paid before,
-        // plus one comparison against the first page.
+        // So the first block is held inline and the set is built only when a SECOND distinct block
+        // turns up. A one-block key allocates nothing; a multi-block key pays what it paid before,
+        // plus one comparison against the first block.
         //
-        // The dedup key stays the page triple, NOT the whole `ElementEntry`: two entries can name
-        // one page and differ in their element, which is the whole reason this helper exists.
+        // The dedup key stays the block triple, NOT the whole `ElementEntry`: two entries can name
+        // one block and differ in their element, which is the whole reason this helper exists.
         let mut first_block: Option<(u64, u64, u64)> = None;
         let mut emitted_blocks: Option<std::collections::BTreeSet<(u64, u64, u64)>> = None;
         for address in addresses {
             // ACCEPT FIRST, AND THE ORDER IS LOAD-BEARING. The original read
             // `accept(..) && emitted_blocks.insert(..)`, which short-circuits: a REJECTED address
-            // never marked its page as seen. Computing the dedup first would mark it, and then a
-            // later accepted address naming that page would be dropped -- a faster walk that
+            // never marked its block as seen. Computing the dedup first would mark it, and then a
+            // later accepted address naming that block would be dropped -- a faster walk that
             // loses entries. So the gate stays ahead of the state.
             if !accept(key, address) {
                 continue;
@@ -3608,11 +3608,11 @@ fn visit_model_live_blocks(
                 address.length(),
             );
             let is_new = match (&first_block, &mut emitted_blocks) {
-                // Second and later pages, once the set exists.
+                // Second and later blocks, once the set exists.
                 (_, Some(seen)) => seen.insert(block),
-                // A repeat of the only page seen so far: nothing to allocate.
+                // A repeat of the only block seen so far: nothing to allocate.
                 (Some(held), None) if *held == block => false,
-                // The second DISTINCT page: the set is worth building now, and it starts holding
+                // The second DISTINCT block: the set is worth building now, and it starts holding
                 // both so the dedup is complete from here on.
                 (Some(held), None) => {
                     let mut seen = std::collections::BTreeSet::new();
@@ -3621,7 +3621,7 @@ fn visit_model_live_blocks(
                     emitted_blocks = Some(seen);
                     fresh
                 }
-                // The first page of this key.
+                // The first block of this key.
                 (None, None) => {
                     first_block = Some(block);
                     true
@@ -3657,7 +3657,7 @@ fn visit_model_live_blocks(
                 emit(ModelKind::String, KeyRef::Shared(key), None, &address);
             }
         }
-        // WHICH KINDS FILE A PAGE-NAMED ENTRY, ASKED ONCE FOR THE WHOLE WALK.
+        // WHICH KINDS FILE A BLOCK-NAMED ENTRY, ASKED ONCE FOR THE WHOLE WALK.
         //
         // `index_entry_names_a_block` is the single authority and every filing predicate in the
         // engine reads it, so the projection cannot come to disagree with
@@ -3702,14 +3702,14 @@ fn visit_model_live_blocks(
                 // the live branch unreachable and, by implication, the dead one live.
                 //
                 // Which way round this sits is not cosmetic: every container kind now converges on
-                // the PAGE, so no live arm of this walk emits a component at all, and the
+                // the BLOCK, so no live arm of this walk emits a component at all, and the
                 // `Some(component)` branches below are unreachable today. A reader costing out the
                 // component's allocations would be pricing code that never executes -- which is
                 // exactly the mistake this note caused.
                 //
                 // AND THE CLAIM IS ENFORCED, not just asserted here:
                 // `the_shared_predicate_names_every_container_kind_and_nothing_else` pins all four
-                // container kinds as page-named in both directions, so if that ever changes the
+                // container kinds as block-named in both directions, so if that ever changes the
                 // `else` arms become live and this note stops being true -- with a failing test
                 // rather than a silent inversion.
                 //
@@ -3754,7 +3754,7 @@ fn visit_model_live_blocks(
                 }
             }
         }
-        // THE SET ARM, AND THE ONE PLACE THIS PROJECTION DECIDES WHAT NAMES A PAGE.
+        // THE SET ARM, AND THE ONE PLACE THIS PROJECTION DECIDES WHAT NAMES A BLOCK.
         //
         // The index is a DERIVED PROJECTION of the model maps, and this is where the derivation
         // happens: whatever shape it emits is the shape the index takes, because
@@ -3762,22 +3762,22 @@ fn visit_model_live_blocks(
         // compaction sweep. So changing how a container is FILED anywhere else is undone before the
         // sweep returns, and changing it HERE is the whole change.
         //
-        // UNDER THE GATE THE PAGE ID IS THE IDENTITY. A set's component is `hex::encode(member)`,
+        // UNDER THE GATE THE BLOCK ID IS THE IDENTITY. A set's component is `hex::encode(member)`,
         // and it exists only because the entry is per-element: something has to tell two entries of
-        // one object apart. One entry per PAGE needs no such name -- the page already carries each
-        // element's key in its payload, written there by `container_blocks` precisely so a page is
+        // one object apart. One entry per BLOCK needs no such name -- the block already carries each
+        // element's key in its payload, written there by `container_blocks` precisely so a block is
         // interpretable without the entry that names it -- so the entry is emitted with no
         // component at all.
         //
         // WHY THE MEMBERS DO NOT GO MISSING, which is the question this shape raises and #2098
         // answered: the reconcile's live filter keys on `(slab, offset, length)` and carries NO
-        // component, so it asks whether an element's PAGE is one the index names, not whether the
-        // element is NAMED by an entry. One entry naming the folded page therefore keeps every
-        // member of that page live. The model map is already the authority for existence; this
+        // component, so it asks whether an element's BLOCK is one the index names, not whether the
+        // element is NAMED by an entry. One entry naming the folded block therefore keeps every
+        // member of that block live. The model map is already the authority for existence; this
         // stops the index pretending to be the name-holder.
         //
         // BOTH ARMS WALK THE SAME ITERATION, over the same map with the same `accept`, so they
-        // cannot come to disagree about WHICH pages are live -- only about how many entries name
+        // cannot come to disagree about WHICH blocks are live -- only about how many entries name
         // each one. And the ungated arm is left byte-identical, including its allocation
         // behaviour: this walk is deliberately careful not to build a `String` for a block the
         // caller will discard, so the gated arm's bookkeeping is created only when it is used.
@@ -4119,7 +4119,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///
 /// The void-returning spelling below stays for the thirty-odd callers that are not behind a
 /// recorded container; this one exists so that those that are cannot skip it and still compile.
-/// Whether an index entry for this kind takes its identity from the PAGE rather than the ELEMENT.
+/// Whether an index entry for this kind takes its identity from the BLOCK rather than the ELEMENT.
 ///
 /// # THE SET OF KINDS, AND WHY HASH AND ZSET ARE NOT IN IT
 ///
@@ -4136,7 +4136,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///   * `zset` -- ITS COMPONENT IS NOT A NAME, IT IS THE SCORE. A zset component is
 ///     `{biased_score:016x}{hex(member)}`, so the entry's name is the only copy of an element's
 ///     score outside `shard.zsets`. Dropping it DELETES DATA rather than a label: a member whose
-///     durable entry a fold has not delivered cannot be rebuilt from its page at all, measured as
+///     durable entry a fold has not delivered cannot be rebuilt from its block at all, measured as
 ///     `Some(3.0)` written and `None` served. And a RESCORE is an in-place rewrite from this
 ///     function's side -- the old element key is tombstoned while its live entry is not superseded
 ///     -- which left TWO live entries for one member at one score. Attempting it turned 12 tests
@@ -4146,10 +4146,10 @@ pub(super) struct ObjectDeletionFiled(());
 ///     zset means first taking the score OUT of the component.
 ///   * `hash` -- FOUR OF ITS READERS RESOLVE THROUGH THE INDEX BY COMPONENT, with no resident-map
 ///     fallback. `read_bucket_index_value` -> `bucket_index_block_address` requires
-///     `page.component.as_deref() == component` on every branch, so a nameless entry makes a
+///     `block.component.as_deref() == component` on every branch, so a nameless entry makes a
 ///     present field unreachable: `HashGet` answers MISSING for a field that is there,
 ///     `HashIncrBy` reads that miss as `unwrap_or_default()` and restarts the counter at zero,
-///     `HashLen` counts entries and so reports the PAGE count, and `HashGetAll` survives only
+///     `HashLen` counts entries and so reports the BLOCK count, and `HashGetAll` survives only
 ///     because it already serves the union with `shard.hashes`. Hash is also the one container
 ///     kind that rewrites an element IN PLACE -- `HashSet` on an existing field keeps the
 ///     component and takes a new address -- which is the shape the paragraph below says an
@@ -4174,13 +4174,13 @@ pub(super) struct ObjectDeletionFiled(());
 /// over -- what refuses it now is a THIRD obstacle that neither paragraph above is about and that
 /// the prerequisites could not have addressed.
 ///
-/// WHAT THE PAGE-KEYED TERM DOES AND DOES NOT FIX. `upsert_bucket_index_block_inner`'s supersede
-/// term keys on `super::live_block_key` when a kind names a page, and that solves OVER-matching:
+/// WHAT THE BLOCK-KEYED TERM DOES AND DOES NOT FIX. `upsert_bucket_index_block_inner`'s supersede
+/// term keys on `super::live_block_key` when a kind names a block, and that solves OVER-matching:
 /// one filing no longer takes every sibling entry of the object with it. It does not solve
 /// UNDER-matching. An element rewritten IN PLACE is written to a NEW address, so the new filing's
-/// page key matches NO existing entry and the element's previous live entry is never superseded at
+/// block key matches NO existing entry and the element's previous live entry is never superseded at
 /// all. `set` and `list` are immune because neither can rewrite an element in place -- a set
-/// member's page key is its member, and a list has no `LSET`, `LINSERT` or `LREM`. Hash
+/// member's block key is its member, and a list has no `LSET`, `LINSERT` or `LREM`. Hash
 /// (`HashSet` on an existing field) and zset (a rescore) both can, which is the shape the hash
 /// paragraph above already warned "an address-keyed predicate mishandles" -- a warning that
 /// survived its own prerequisite.
@@ -4221,10 +4221,10 @@ pub(super) struct ObjectDeletionFiled(());
 /// the live entry, which is what the step actually needs and is not this function's to do.
 ///
 /// MEASURED, which is why the scope is not a matter of taste: `string`, `control_state` and
-/// `context_node` file NO element name with exactly ONE page per object, and for them the
-/// component-keyed convergence is what supersedes a relocated page -- a string rewritten three
-/// times leaves one live entry over one page because of it. An address-keyed predicate applied to
-/// every kind would leave two live entries naming dead pages on a single set rewrite and one on
+/// `context_node` file NO element name with exactly ONE block per object, and for them the
+/// component-keyed convergence is what supersedes a relocated block -- a string rewritten three
+/// times leaves one live entry over one block because of it. An address-keyed predicate applied to
+/// every kind would leave two live entries naming dead blocks on a single set rewrite and one on
 /// every string write in the engine. `write_after_fold::a_component_less_kind_rewritten_still_
 /// resolves_to_one_page` holds that.
 ///
@@ -4238,15 +4238,15 @@ pub(super) struct ObjectDeletionFiled(());
 ///
 ///  1. THE FILING SUPERSEDE TERM. Keyed on the landing address it finds nothing for a rewrite in
 ///     place. `ReplacedBlock` carries the element's previous address, read from the resident map,
-///     and the filer retires that page's entry when no sibling is left on it.
+///     and the filer retires that block's entry when no sibling is left on it.
 ///  2. THE TOMBSTONE SWEEP. A tombstone is a per-ELEMENT fact; its name lives in
 ///     `BucketNode::tombstone_elements` now, where only a removal pays for it.
 ///  3. THE ORDINAL ALLOCATOR. `state::container_block_ordinal` picked an element's existing position
 ///     out of the index BY COMPONENT; it asks the resident map, which answers the overwrite's own
 ///     address and the live high-water mark alike.
 ///  4. `Command::HashGetAll`. Its index half read a nameless entry's component through
-///     `unwrap_or_default()`, so every page was served as a field called `""` whose value was the
-///     raw page FRAME. That -- not a stale entry -- is what served `hash: 41` of 40.
+///     `unwrap_or_default()`, so every block was served as a field called `""` whose value was the
+///     raw block FRAME. That -- not a stale entry -- is what served `hash: 41` of 40.
 ///
 /// MEASURED AFTER ALL FOUR: the two product defects that refused this before are gone. The upgrade
 /// arm serves `hash 40 set 40 zset 40 list 40 of 40`, `conformance_oracle_matches_reference_model`
@@ -4255,18 +4255,18 @@ pub(super) struct ObjectDeletionFiled(());
 ///
 /// ## ONE THING IS STILL ASYMMETRIC, AND IT IS A DEFECT OF FOOTPRINT RATHER THAN OF ANSWERS
 ///
-/// A gated REMOVAL does not retire the live entry over the page its element vacates.
-/// `mark_bucket_index_block_deleted_recording`'s `retain` matches `page.component == component`,
-/// which a page-named entry cannot satisfy, so the live entry stays and a tombstone is added beside
-/// it. That is deliberate where the page still holds siblings -- dropping it would take them with
-/// it -- and it is a STALE LIVE ENTRY over a dead page where it does not. Membership is still right,
-/// because `container_membership` folds by append position and the tombstone is the later page:
+/// A gated REMOVAL does not retire the live entry over the block its element vacates.
+/// `mark_bucket_index_block_deleted_recording`'s `retain` matches `block.component == component`,
+/// which a block-named entry cannot satisfy, so the live entry stays and a tombstone is added beside
+/// it. That is deliberate where the block still holds siblings -- dropping it would take them with
+/// it -- and it is a STALE LIVE ENTRY over a dead block where it does not. Membership is still right,
+/// because `container_membership` folds by append position and the tombstone is the later block:
 /// `a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds` serves every element
 /// and `a_gated_removal_leaves_every_other_member_whole_across_a_reload` holds across a reload.
 /// What it costs is an entry per removal that nothing collects.
 ///
 /// THE FIX IS THE ONE THE WRITE PATH ALREADY HAS: ask the resident map whether any sibling is still
-/// on the vacated page -- `RecordedMap::block_an_element_vacates` is that question -- and retire the
+/// on the vacated block -- `RecordedMap::block_an_element_vacates` is that question -- and retire the
 /// entry when none is. It is not done here because a removal reaches the index through a different
 /// door and that door takes no element type. `container_block_ordinal::the_ordinal_names_a_position_
 /// and_a_delete_frees_it` is the arm that reads the retained live entry.
@@ -4305,7 +4305,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// THE RATCHET ARM IS NOT THE ONE THAT FIRES. The floors do not trend upward -- [2869, 2869, 2898],
 /// [2858, 2917, 2851] -- so what moved is the VARIANCE of the settled floor, not its level. The
 /// likeliest cause is this series' own extra per-rewrite work on the index-log delta: a rewrite now
-/// retires the entry over the page it vacates, so a round's delta is a slightly different size than
+/// retires the entry over the block it vacates, so a round's delta is a slightly different size than
 /// it was.
 ///
 /// THE BAND IS NOT WIDENED, and that is deliberate. The test's own comment already says the last
@@ -4358,10 +4358,10 @@ pub(super) struct ObjectDeletionFiled(());
 ///   * `carried_block_identity` x2 -- both recover a hash field's name FROM THE ENTRY. "key h0
 ///     recovered 0 of 25 field names after a reload" is the collapse; the module's subject is
 ///     whether the name is independently recoverable, and under the collapse it is recoverable from
-///     the PAGE's own frame and from `shard.hashes`, not from the entry.
-///   * `container_member_shadow` x3 -- its zset page walk does
+///     the BLOCK's own frame and from `shard.hashes`, not from the entry.
+///   * `container_member_shadow` x3 -- its zset block walk does
 ///     `.expect("a zset page is named by its component")`. The redundancy it measures between a
-///     component and the page payload is what the collapse DELETED, so two arms are measuring a
+///     component and the block payload is what the collapse DELETED, so two arms are measuring a
 ///     cost that is gone; the third is an inherited red (below).
 ///   * `durable_outranks_derived` x4 -- these plant a state where the index names an element the
 ///     durable map does not hold, and assert it comes back FROM ITS NAME. A collapsed index names
@@ -4422,13 +4422,13 @@ pub(super) struct ObjectDeletionFiled(());
 /// AND THREE `retain` PREDICATES COMPARE A COMPONENT. TWO ARE ALREADY VACUOUS AND ONE IS LOAD-
 /// BEARING, which is the distinction whoever removes the field has to make site by site:
 ///
-///   * `storage_bucket_internals`'s no-lookup arm compares `page.component` against
+///   * `storage_bucket_internals`'s no-lookup arm compares `block.component` against
 ///     `entry.component` -- two entries. Both are `None` for every kind now, so the term is
 ///     ALREADY always true and asserts nothing before the field is touched.
-///   * `engine.rs`'s delta-fold arm compares `page.component` against `filed_name`, which is
-///     `None` whenever the kind names a page and `None` for the three kinds that do not file an
+///   * `engine.rs`'s delta-fold arm compares `block.component` against `filed_name`, which is
+///     `None` whenever the kind names a block and `None` for the three kinds that do not file an
 ///     element name at all. So `filed_name` is unconditionally `None` and this term is vacuous too.
-///   * `mark_bucket_index_block_deleted_recording`'s arm compares `page.component` against the
+///   * `mark_bucket_index_block_deleted_recording`'s arm compares `block.component` against the
 ///     FUNCTION ARGUMENT, and that one still decides something: `None == Some(member)` is false for
 ///     a container and `None == None` true for a string. It must become `component.is_none()` and
 ///     NOT be deleted as a tautology -- it is what keeps the ungated arm serving the kinds that
@@ -4437,7 +4437,7 @@ pub(super) struct ObjectDeletionFiled(());
 /// THE THIRD ONE IS ALSO WHERE A REMOVAL'S OBJECT TOMBSTONE WENT. Because that argument match
 /// cannot fire for a container, `deleted_object_ids` stays empty and `bucket.deleted_object_index`
 /// is never extended -- so a container key whose LAST element is removed never reads as a deleted
-/// object, and `object_manager::runtime_report` asks `deleted_object_index.contains` per page.
+/// object, and `object_manager::runtime_report` asks `deleted_object_index.contains` per block.
 /// `container_tombstone_entry::a_keys_last_element_still_files_its_object_id` is the arm, and it
 /// passed on the base only by holding the gate OFF: all 7 of that module pass on `2ae24a03d` and 4
 /// fail here. So this is the collapse's consequence and not the width step's, and it is an ANSWER
@@ -4458,7 +4458,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///   * THE GATE'S OFF POSITION RETIRED. `BlockIndex::component` is the only place an element name
 ///     can live on an entry, so with the field gone `index_entry_names_a_block` returning false
 ///     cannot be honoured: nothing could file a name, and the ungated readers that match
-///     `page.component == component` -- `bucket_store::bucket_index_block_address` and its
+///     `block.component == component` -- `bucket_store::bucket_index_block_address` and its
 ///     component walk -- would answer wrongly. `TS_CONTAINER_ONE_ENTRY_A_PAGE` becomes a ONE-WAY
 ///     door. Seven non-test sites read it.
 ///   * THE DERIVED VIEW'S ELEMENT DERIVATION RETIRED. `rebuild_unserialized_model_maps_from_bucket_
@@ -4467,10 +4467,10 @@ pub(super) struct ObjectDeletionFiled(());
 ///     become the sole source. That is the direction this campaign has been heading, and it is what
 ///     the four `durable_outranks_derived` arms above are about.
 pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
-    // NO GATE. Every container kind files one entry a page, unconditionally: the entry has no field
+    // NO GATE. Every container kind files one entry a block, unconditionally: the entry has no field
     // for an element name, so there is no other position to be in. What this function still decides
-    // is which KINDS converge on the PAGE rather than on the object -- a real distinction, because
-    // `string`, `control_state` and `context_node` hold one page per object and converge on the
+    // is which KINDS converge on the BLOCK rather than on the object -- a real distinction, because
+    // `string`, `control_state` and `context_node` hold one block per object and converge on the
     // object key instead.
     // Spelled against `ModelKind::as_str` rather than against string literals so a kind renamed in
     // the registry cannot leave this list silently matching nothing.
@@ -4480,7 +4480,7 @@ pub(super) fn index_entry_names_a_block(kind: &str) -> bool {
         || kind == ModelKind::Zset.as_str()
 }
 
-/// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the page is the
+/// The name an index ENTRY IS FILED UNDER -- `None` for a gated container, where the block is the
 /// identity.
 ///
 /// # WHY THIS IS A TYPE AND NOT AN `Option<&str>`
@@ -4519,23 +4519,23 @@ impl ElementComponent {
     }
 }
 
-/// THE PAGE A WRITE REPLACES -- the address the element's resident map held for it before this
-/// write, and only when that write leaves the page EMPTY.
+/// THE BLOCK A WRITE REPLACES -- the address the element's resident map held for it before this
+/// write, and only when that write leaves the block EMPTY.
 ///
 /// # WHY A TYPE AND NOT AN `Option<ElementEntry>`
 ///
 /// The same reason [`FiledComponent`] and [`ElementComponent`] are two types rather than two
 /// `Option<&str>`. The filer already takes the address the write LANDS AT, so a bare
 /// `Option<ElementEntry>` beside it makes a transposition compile -- and a transposition here is
-/// silent in the worst direction: the supersede would converge on the page being vacated and leave
-/// the entry over the page just written, which reads as a container that dropped the element it
+/// silent in the worst direction: the supersede would converge on the block being vacated and leave
+/// the entry over the block just written, which reads as a container that dropped the element it
 /// had just accepted.
 ///
 /// # EMPTY IS THE ORDINARY CASE
 ///
-/// A first write replaces no page. A rewrite that lands back on its own page is superseded through
-/// the landing address and needs nothing extra. A rewrite off a page a SIBLING element is still on
-/// replaces nothing either -- that page is still live, and its entry is what keeps the sibling
+/// A first write replaces no block. A rewrite that lands back on its own block is superseded through
+/// the landing address and needs nothing extra. A rewrite off a block a SIBLING element is still on
+/// replaces nothing either -- that block is still live, and its entry is what keeps the sibling
 /// reachable. `recorded_map::RecordedMap::block_an_element_vacates` is the one producer of a
 /// non-empty one, and it asks all three questions.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -4553,7 +4553,7 @@ impl ReplacedBlock {
         Self(None)
     }
 
-    /// The page key the supersede compares against: slab, offset and length, which is what an
+    /// The block key the supersede compares against: slab, offset and length, which is what an
     /// entry's identity is once it no longer names an element.
     fn block_key(&self) -> Option<super::LiveBlockKey> {
         self.0.as_ref().map(super::live_block_key)
@@ -4604,7 +4604,7 @@ pub(super) fn upsert_bucket_index_block(
     upsert_bucket_index_block_with(shard, shard_id, kind, object_key, component, address, dirty, true)
 }
 
-/// File the entry that keeps a removal's TOMBSTONE PAGE reachable.
+/// File the entry that keeps a removal's TOMBSTONE BLOCK reachable.
 ///
 /// # WHY NOT [`upsert_bucket_index_block`]
 ///
@@ -4612,22 +4612,22 @@ pub(super) fn upsert_bucket_index_block(
 /// rather than an inefficiency:
 ///
 ///   * it STAGES AN OUTCOME. `mark_bucket_index_block_deleted_recording` has already staged one for
-///     this removal, carrying this very address; a second would replay as a page installed twice.
+///     this removal, carrying this very address; a second would replay as a block installed twice.
 ///   * it CLEARS `deleted_object_index` for the object. A removal is not a re-add -- that line
 ///     exists because writing a member back must clear the tombstone the removal filed -- so a
-///     tombstone page clearing it would undo the object deletion the removal just recorded.
+///     tombstone block clearing it would undo the object deletion the removal just recorded.
 ///   * it DROPS the object's existing entry for this component first. There is none left; the
 ///     `retain` in the caller took it, which is the whole reason this runs afterwards.
 ///
 /// # AND IT DOES NOT ENTER `object_block_lookup`
 ///
-/// `insert_object_block_lookup` returns early on a deleted page and always has, so calling it would
+/// `insert_object_block_lookup` returns early on a deleted block and always has, so calling it would
 /// be a no-op -- it is called anyway, deliberately, so that the skip lives in the one function that
 /// owns the lookup's rules rather than being a condition this site remembers. What follows from the
 /// skip is the load-bearing part: the fast per-object reader `bucket_index_component_block_addresses`
 /// resolves THROUGH that lookup, so a tombstone entry is invisible to it and every index answer is
 /// unchanged. A derivation therefore has to walk `block_index` itself, which is what
-/// `container_membership` does and what makes its walk O(pages) rather than O(elements of one
+/// `container_membership` does and what makes its walk O(blocks) rather than O(elements of one
 /// object).
 /// `routing_bucket` IS THE ONE THE REMOVED ENTRY WAS FILED IN, handed in by the caller that took it.
 /// It must not be recomputed here: `block_routing_bucket(key, 0, u32::MAX)` -- the form the removal's
@@ -4636,12 +4636,12 @@ pub(super) fn upsert_bucket_index_block(
 /// all-tombstone (so a twelve-member set reported as a deleted object) and made its filed bucket
 /// disagree with the one its key routes to (so a compaction round refused with
 /// `block_compaction_owner_mismatch` on any container that had had a removal). Both were driven.
-/// Drop an object's LIVE page entries for one kind, leaving its tombstones where they are.
+/// Drop an object's LIVE block entries for one kind, leaving its tombstones where they are.
 ///
 /// # WHY LIVE ONLY
 ///
 /// The counterpart of [`insert_container_tombstone_entry`], turning on the same distinction: a LIVE
-/// entry claims this object has a page with members on it, and a TOMBSTONE records that a named
+/// entry claims this object has a block with members on it, and a TOMBSTONE records that a named
 /// element was removed. When an object's last element goes the first claim becomes false and the
 /// second stays true -- the tombstone is what makes the removal win a fold by append position, so
 /// taking it along would undo the removal it records.
@@ -4650,21 +4650,21 @@ pub(super) fn upsert_bucket_index_block(
 ///
 /// EXISTENCE HAS TWO SOURCES. `record_exists_exact` ORs the resident map together with the bucket
 /// index, so an object is enumerable while EITHER names it. A gated removal drops the member from
-/// the resident map and deliberately keeps the live page entry, because the page still holds the
+/// the resident map and deliberately keeps the live block entry, because the block still holds the
 /// object's other members -- false for the last one. Without this, the key stays answerable through
 /// the index with nothing in it, which `redis::tests::redis_core_api_extensions_use_engine_and_state`
 /// catches through KEYS, SCAN, DBSIZE, EXISTS and TYPE rather than through the index.
 ///
-/// The lookup holds LIVE refs only -- `insert_object_block_lookup` returns early on a deleted page
+/// The lookup holds LIVE refs only -- `insert_object_block_lookup` returns early on a deleted block
 /// -- so dropping the object's refs there is the same narrowing by construction.
 ///
 /// # AND IT FILES THE OBJECT TOMBSTONE, WHICH IS THE OTHER HALF OF THE SAME FACT
 ///
 /// `deleted_object_index` is where the shard records that an OBJECT is gone, and
-/// `object_manager::runtime_report` -- a public report -- asks it per page. Under one entry a page
+/// `object_manager::runtime_report` -- a public report -- asks it per block. Under one entry a block
 /// nothing was filing it for a container, and the hole was not in this function but in
 /// `mark_bucket_index_block_deleted_recording`: its `retain` matched the element's name against the
-/// entry's, which a page-named entry cannot satisfy, so for a container `removed` stayed false, the
+/// entry's, which a block-named entry cannot satisfy, so for a container `removed` stayed false, the
 /// `if bucket_removed` arm that extends `deleted_object_index` never ran, and a key whose LAST
 /// element was removed never read as a deleted object. MEASURED: `a_keys_last_element_still_files_
 /// its_object_id` reported `0 live, 2 tombstone entries` with the id not filed.
@@ -4676,15 +4676,15 @@ pub(super) fn upsert_bucket_index_block(
 /// and the two halves of "this object is gone" then sit in one place rather than being talked into
 /// agreeing.
 ///
-/// FILED IN EVERY BUCKET THAT HOLDS A PAGE OF THE OBJECT, live or tombstone, which is the set the
-/// report reads it against: it asks `deleted_object_index.contains(page.object_id())` for each page
-/// in that page's OWN bucket, so an id filed anywhere else answers nothing. Detected inside the
-/// `retain` rather than by a second walk -- `retain` visits every page of the bucket already, the
+/// FILED IN EVERY BUCKET THAT HOLDS A BLOCK OF THE OBJECT, live or tombstone, which is the set the
+/// report reads it against: it asks `deleted_object_index.contains(block.object_id())` for each block
+/// in that block's OWN bucket, so an id filed anywhere else answers nothing. Detected inside the
+/// `retain` rather than by a second walk -- `retain` visits every block of the bucket already, the
 /// tombstones it keeps included.
 ///
 /// NOT CLEARED HERE, AND IT DOES NOT HAVE TO BE: a re-add goes through
 /// `upsert_bucket_index_block_inner`, which removes the id from `deleted_object_index` when it
-/// files a live page for it.
+/// files a live block for it.
 pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, object_key: &str) {
     let model_id = stored_model_kind(kind);
     // READ BEFORE THE INDEX IS BORROWED, and `None` only for a state that never entered the engine
@@ -4693,8 +4693,8 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
     let object_id = shard
         .shard_id()
         .map(|shard_id| crate::engine::hashing::stable_block_object_id(shard_id, kind, object_key));
-    // THIS OBJECT'S PAGES, NAMED BY THE LOOKUP, instead of every page of every bucket compared
-    // against the key. The old predicate retained a deleted page of the object and removed the
+    // THIS OBJECT'S BLOCKS, NAMED BY THE LOOKUP, instead of every block of every bucket compared
+    // against the key. The old predicate retained a deleted block of the object and removed the
     // live ones, and the lookup names exactly the live ones -- so the set it hands back IS the set
     // that predicate removed.
     let targets: Vec<(u32, u64)> = shard
@@ -4708,7 +4708,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
         .unwrap_or_default();
     // AND THE BUCKETS HOLDING ONLY A TOMBSTONE OF IT, which no ref can name. The old walk set
     // `holds_a_page_of_the_object` from deleted pages as well as live ones, and filed the object's
-    // id in that bucket's tombstone list for either -- so a bucket whose only page of the object
+    // id in that bucket's tombstone list for either -- so a bucket whose only block of the object
     // was already deleted still got the id. The rows are what state that now.
     let tombstoned: Vec<u32> = shard
         .bucket_index
@@ -4778,23 +4778,23 @@ pub(super) fn insert_container_tombstone_entry(
     // is no longer needed here to produce it.
     // A TOMBSTONE MUST NAME AN ELEMENT, AND THAT IS A REFUSAL IN EVERY BUILD NOW.
     //
-    // Its row is the only thing that will state which object its page belonged to once the entry
-    // carries no identity: a deleted page is never in the object lookup, so the row beside it is
+    // Its row is the only thing that will state which object its block belonged to once the entry
+    // carries no identity: a deleted block is never in the object lookup, so the row beside it is
     // the whole of its identity.
     //
     // WHY A `debug_assert!` ALONE IS THE WRONG SHAPE FOR THIS ONE. The encoder now REFUSES to
-    // write a page whose stored key would name no object, and that refusal is a release-build
+    // write a block whose stored key would name no object, and that refusal is a release-build
     // behaviour. Leaving the invariant it depends on to a debug-only predicate is a guard that
     // cannot fire where it matters -- the same shape as the `names_no_position()` hatch this leg
     // already closed, and as the deleted class the old key check could not reach. The failure it
     // would leave is a dump refusing for a reason nothing at the point of cause recorded.
     //
     // SO THE TWO BUILDS FAIL DIFFERENTLY AND BOTH FAIL EARLIER THAN THE DUMP. A debug build still
-    // panics here, where the stack is the diagnosis. A release build DECLINES: it files no page
+    // panics here, where the stack is the diagnosis. A release build DECLINES: it files no block
     // and no row, leaving the index exactly as it found it.
     //
     // AND DECLINING LOSES NOTHING, which is what makes this a tightening rather than a product
-    // change. The page it would have filed is already discarded by its only consumer -- the
+    // change. The block it would have filed is already discarded by its only consumer -- the
     // refile in `rebuild_unserialized_model_maps_from_bucket_index` hits `let Some(element) =
     // element else { continue }` on exactly this case, under a note saying a tombstone naming no
     // element cannot be refiled and is dropped rather than filed under a guessed identity. What
@@ -4837,7 +4837,7 @@ pub(super) fn insert_container_tombstone_entry(
     bucket.set_dirty(true);
     // THE BUCKET IS NOT EMPTY ANY MORE. The caller ran `set_deleted(block_index.is_empty())` before
     // this entry existed, so a bucket whose last live entry was the one just removed is marked
-    // deleted while it is about to hold a page. A deleted bucket is not dumped, and the tombstone
+    // deleted while it is about to hold a block. A deleted bucket is not dumped, and the tombstone
     // would not survive a reload -- which is the one place it has to survive.
     bucket.set_deleted(false);
     bucket.set_in_memory(true);
@@ -4855,7 +4855,7 @@ pub(super) fn insert_container_tombstone_entry(
     // THE ELEMENT IS NAMED UNCONDITIONALLY NOW, because a call that could not name one has
     // already returned above. This was `if let Some(component) = component`, under a note saying a
     // removal with no component files no row and that this was honest rather than lossy. It was --
-    // but what it left behind was a PAGE with no row, which is the half that cannot be served.
+    // but what it left behind was a BLOCK with no row, which is the half that cannot be served.
     // THE HANDLE, READ BEFORE THE `&mut` BORROW BELOW. This is the one caller of
     // `record_tombstone_element` that genuinely starts from a `&str`: the two rebuild callers pass
     // a block entry's own `Arc<str>` and hand it straight through. Measured before this existed,
@@ -4867,7 +4867,7 @@ pub(super) fn insert_container_tombstone_entry(
     //
     // The `unwrap_or_else` arm is reachable and correct. A tombstone can be the last thing left
     // naming an object, and then this row IS the identity -- which is what the note above says
-    // about a deleted page never being in the object lookup.
+    // about a deleted block never being in the object lookup.
     let shared_object_key = shard
         .bucket_index
         .shared_object_key(kind, object_key)
@@ -4892,11 +4892,11 @@ pub(super) fn insert_container_tombstone_entry(
     //
     // It used to read:
     //
-    //     .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::from(object_key), &page)
+    //     .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::from(object_key), &block)
     //
     // `page` is built `deleted: true` a few lines up, and the first statement of
-    // `insert_object_block_lookup` is `if page.deleted { return; }` -- for the reason given on it,
-    // that a deleted page is never in the object lookup. So the only possible outcome was to
+    // `insert_object_block_lookup` is `if block.deleted { return; }` -- for the reason given on it,
+    // that a deleted block is never in the object lookup. So the only possible outcome was to
     // return, while the `Arc::from(object_key)` handed to it was allocated and immediately
     // dropped: one allocation and one free per tombstoned container element.
     //
@@ -4904,7 +4904,7 @@ pub(super) fn insert_container_tombstone_entry(
     // allocates` deletes one field of a two-field hash and finds the object's filed ref count
     // unchanged at 2 across the delete, which is the early return being taken.
     //
-    // The assert keeps the reasoning attached to the fact it depends on. If this page ever stops
+    // The assert keeps the reasoning attached to the fact it depends on. If this block ever stops
     // being a deleted one, the filing above was removed deliberately and has to come back.
     debug_assert!(
         block.deleted,
@@ -4943,7 +4943,7 @@ pub(super) fn upsert_bucket_index_block_with(
         dirty,
         stage,
         None,
-        // NO PAGE REPLACED, AND THAT IS A STATEMENT AND NOT A DEFAULT. Every caller of this
+        // NO BLOCK REPLACED, AND THAT IS A STATEMENT AND NOT A DEFAULT. Every caller of this
         // function files a block whose element it does not claim to have overwritten -- the
         // context-node registration and the maintenance paths -- so there is no previous address
         // for it to hand over. The element writes that DO overwrite go through
@@ -5012,7 +5012,7 @@ fn upsert_bucket_index_block_inner(
     // THE TWO NAMES, SPLIT ONCE AND NEVER RECOMBINED.
     //
     // `element` is the element this write is about. `filed` is what its ENTRY is filed under, which
-    // for a gated container is nothing at all, because there the page is the identity. They are
+    // for a gated container is nothing at all, because there the block is the identity. They are
     // different types so that no site below can take one for the other: a transposition compiles if
     // both are `Option<&str>`, and it resurrects a removed member rather than failing.
     let names_a_block = index_entry_names_a_block(kind);
@@ -5037,9 +5037,9 @@ fn upsert_bucket_index_block_inner(
                 object_key: object_key.to_string(),
                 // THE ELEMENT, NOT WHAT ITS ENTRY WAS FILED UNDER, and this is the one place
                 // where that distinction costs something if it is got wrong in the other
-                // direction. This component is the only record of WHICH element a replayed page
+                // direction. This component is the only record of WHICH element a replayed block
                 // holds: recovery decodes it to put the member back into the model map. Filing the
-                // page name here made the outcome un-installable and recovery fell back to
+                // block name here made the outcome un-installable and recovery fell back to
                 // re-executing commands -- 4 of 9 outcomes installed -- which
                 // `part4::a_cold_reload_rebuilds_the_shard_from_what_the_writes_recorded` floors
                 // on, because the end state looks the same whichever path ran.
@@ -5105,25 +5105,25 @@ fn upsert_bucket_index_block_inner(
     // recorded once they end, so the per-write refresh can skip the rest of the shard.
     let mut touched_buckets: Vec<u32> = Vec::new();
     let lookup_enabled = !shard.bucket_index.names_no_object_pages();
-    // CONVERGE ON THE PAGE WHEN THE PAGE IS THE IDENTITY, AND ON THE SLOT WHEN THE ELEMENT IS.
+    // CONVERGE ON THE BLOCK WHEN THE BLOCK IS THE IDENTITY, AND ON THE SLOT WHEN THE ELEMENT IS.
     //
     // The slot-wide removal is right while an entry's identity is its element: a new filing for
     // that element supersedes the previous one and nothing else shares the slot. Under one entry a
-    // page every entry of an object shares ONE slot keyed `None`, so dropping the slot to file one
-    // page takes every other page of the object with it. MEASURED: on a five-member set folded onto
-    // one page and then written to once, that left the listing serving ONE member -- the one just
+    // block every entry of an object shares ONE slot keyed `None`, so dropping the slot to file one
+    // block takes every other block of the object with it. MEASURED: on a five-member set folded onto
+    // one block and then written to once, that left the listing serving ONE member -- the one just
     // written -- and orphaned four. `write_after_fold` holds the shape.
     //
-    // So under the gate this selects the refs that name the SAME PHYSICAL PAGE and removes those
+    // So under the gate this selects the refs that name the SAME PHYSICAL BLOCK and removes those
     // singly, which is the uniqueness the gate establishes: the gated producer emits at most one
-    // entry per distinct page, so no two of its entries share an address.
+    // entry per distinct block, so no two of its entries share an address.
     //
-    // AND THE PAGE THE WRITE IS LEAVING, WHICH THE LANDING ADDRESS CANNOT NAME. A rewrite in place
-    // is written to a NEW address, so keyed on the landing page alone this converges on nothing and
-    // the element's previous entry survives as a live entry over a dead page -- measured as a gated
+    // AND THE BLOCK THE WRITE IS LEAVING, WHICH THE LANDING ADDRESS CANNOT NAME. A rewrite in place
+    // is written to a NEW address, so keyed on the landing block alone this converges on nothing and
+    // the element's previous entry survives as a live entry over a dead block -- measured as a gated
     // hash serving one element more than was written, and as a zset rescore leaving two live
-    // entries for one member. `ReplacedBlock` is the caller's answer to which page that is, and it
-    // is empty unless the write really is a rewrite that leaves its old page empty.
+    // entries for one member. `ReplacedBlock` is the caller's answer to which block that is, and it
+    // is empty unless the write really is a rewrite that leaves its old block empty.
     let vacated = replaces.block_key();
     let here = super::live_block_key(&entry.address);
     // FILTERED WHERE THE REFS LIVE, INSTEAD OF COPIED AND THEN FILTERED.
@@ -5131,7 +5131,7 @@ fn upsert_bucket_index_block_inner(
     // This took the object's whole ref slot with `to_vec` and filtered the copy. MEASURED on a
     // 3,200-member set: 51,928 bytes in ONE allocation per add -- 3,250 refs at sixteen bytes --
     // of the 60,162 an add moved, while the segment that consumed the copy allocated 0.0, because
-    // the filter keeps at most the one or two refs naming the same physical page.
+    // the filter keeps at most the one or two refs naming the same physical block.
     //
     // IT IS EVERY CONTAINER KIND. A container entry carries `component: None`, so
     // `names_the_only_slot` is satisfied and `block_refs_for` returns the object's WHOLE slot; and
@@ -5195,7 +5195,7 @@ fn upsert_bucket_index_block_inner(
     } else {
         // THE SLOT-WIDE REMOVAL STILL NEEDS EVERY REF, so this arm keeps the copy. A kind whose
         // entry identity is its ELEMENT supersedes the whole slot, and the loop below removes each
-        // of those pages -- so the list is read, not discarded, and copying it is the price of
+        // of those blocks -- so the list is read, not discarded, and copying it is the price of
         // handing it to a loop that mutates the index it came from.
         let all = if lookup_enabled {
             shard
@@ -5219,7 +5219,7 @@ fn upsert_bucket_index_block_inner(
             };
             touched_buckets.push(block_ref.routing_bucket);
             // THE OBJECT IS THIS UPSERT'S OWN, which is what the supersede predicate
-            // established: a page is superseded only when it matches this entry's (object key,
+            // established: a block is superseded only when it matches this entry's (object key,
             // kind, component), so the id derived here is derived from the same characters it
             // always was.
             let removed_object_id = bucket
@@ -5250,13 +5250,13 @@ fn upsert_bucket_index_block_inner(
     }
     // AND THE SECOND ARM IS GONE, WHICH RETIRES THE THIRD OF THE THREE SUPERSEDE CASES.
     //
-    // It ran `else if !lookup_enabled` -- a whole-shard retain comparing every page's identity
-    // against this write's, for the shard that had pages and no lookup. The decode fills the
-    // lookup now and the write path files every page it adds, so `lookup_enabled` is true wherever
-    // a page exists to supersede: the arm could only fire on an index this engine cannot produce.
+    // It ran `else if !lookup_enabled` -- a whole-shard retain comparing every block's identity
+    // against this write's, for the shard that had blocks and no lookup. The decode fills the
+    // lookup now and the write path files every block it adds, so `lookup_enabled` is true wherever
+    // a block exists to supersede: the arm could only fire on an index this engine cannot produce.
     //
-    // WHAT IT DECIDED, AND WHERE THAT DECISION LIVES NOW. Its predicate was the page-key
-    // disjunction -- the landing page for a kind that converges on the page, the VACATED page for
+    // WHAT IT DECIDED, AND WHERE THAT DECISION LIVES NOW. Its predicate was the block-key
+    // disjunction -- the landing block for a kind that converges on the block, the VACATED block for
     // a rewrite in place, and (kind, object key) alone for a kind that converges on the object --
     // and the first branch above makes the same decision from the lookup's refs, which is the
     // direction that does not need the entry to name its object. The tombstone sweep below was
@@ -5269,7 +5269,7 @@ fn upsert_bucket_index_block_inner(
     //
     //   * lookup established AND it names a live ref for this component -> the first branch removes
     //     that ref, and a tombstone is never IN the lookup (`insert_object_block_lookup` returns early
-    //     on a deleted page), so the tombstone survives it;
+    //     on a deleted block), so the tombstone survives it;
     //   * lookup NOT established -> the second branch's `retain` matches on the component and does
     //     take the tombstone with it;
     //   * LOOKUP ESTABLISHED AND IT NAMES NOTHING for this component -- which is EXACTLY the re-add
@@ -5285,19 +5285,19 @@ fn upsert_bucket_index_block_inner(
     //
     // THE ELEMENT'S NAME COMES FROM THE BUCKET'S TOMBSTONE ROWS, NOT FROM THE ENTRY.
     //
-    // This used to read `page.component == element` over the bucket's pages. That worked only while
+    // This used to read `block.component == element` over the bucket's blocks. That worked only while
     // a tombstone entry named its element, and a tombstone entry does not: the name is a per-element
     // fact filed beside the entries, where only a removal pays for it. Asking the rows is also
-    // STRICTLY NARROWER than the old scan -- it names one page -- where the old predicate silently
+    // STRICTLY NARROWER than the old scan -- it names one block -- where the old predicate silently
     // widened to every tombstone of the object the moment the filed name went to `None`, which is
     // the resurrection `a_re_add_after_a_removal_does_not_bring_the_removed_member_back` holds.
     //
     // The two names are separate TYPES so that reading the FILED name here does not compile.
     //
-    // ASKED BEFORE IT IS DONE, because this runs on EVERY page write. `BlockIndexMap::retain` walks
+    // ASKED BEFORE IT IS DONE, because this runs on EVERY block write. `BlockIndexMap::retain` walks
     // the bucket and then `shrink`s it, which can reallocate, and paying that per write for a
     // tombstone that is almost never there would be a new cost on the hot path. A find over the
-    // rows is bounded by the removals this bucket has seen, against the two whole-bucket page scans
+    // rows is bounded by the removals this bucket has seen, against the two whole-bucket block scans
     // the branches above already do, so the common case is cheaper than the scan it replaces.
     let sweep: Option<(u64, u64, u64)> = element.as_deref().and_then(|element| {
         shard
@@ -5316,8 +5316,8 @@ fn upsert_bucket_index_block_inner(
                     &mut shard.bucket_index.block_slab_live,
                     crate::engine::state::StaleCause::Swept,
                     |_, block| {
-                    // THE ONE PAGE THE ROW NAMED, and the deleted flag beside it so a live entry
-                    // that happens to sit at that address is never taken: a page is reachable
+                    // THE ONE BLOCK THE ROW NAMED, and the deleted flag beside it so a live entry
+                    // that happens to sit at that address is never taken: a block is reachable
                     // again once its bytes are reused.
                     !(block.deleted
                         && crate::engine::state::tombstone_block_key(&block.address)
@@ -5331,8 +5331,8 @@ fn upsert_bucket_index_block_inner(
     // The address carries no object id to be given: the entry derives one from its own terms, so
     // there is no second copy to keep in step.
     let address = entry.address;
-    // THE IDENTITY, BOUND BEFORE THE PAGE TAKES IT, so the handle and the lookup can both be given
-    // it once the page has none to read.
+    // THE IDENTITY, BOUND BEFORE THE BLOCK TAKES IT, so the handle and the lookup can both be given
+    // it once the block has none to read.
     let filed_object_key = Arc::clone(&entry.object_key);
     let block_index = BlockIndex {
         model_id: entry.kind,
@@ -5389,7 +5389,7 @@ fn upsert_bucket_index_block_inner(
             &block_index,
         );
     // THE HANDLE EXISTS NOW, WHICH IT DID NOT WHEN THIS OBJECT WAS MARKED DIRTY.
-    // `mark_object_dirty` asks the lookup for a shared key BEFORE the first page is filed,
+    // `mark_object_dirty` asks the lookup for a shared key BEFORE the first block is filed,
     // so the first write to an object always takes the allocating arm. Adopting here, once the
     // lookup holds the handle, turns that second copy of the characters into a refcount bump.
     shard.dirty_objects.adopt_shared_key(&filed_object_key);
@@ -5456,15 +5456,15 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // TWO QUESTIONS WERE BEING ANSWERED BY ONE FLAG, AND ONLY ONE OF THEM SURVIVES.
     //
     // `lookup_needs_establishing` decided THREE unrelated things: which buckets this call visits,
-    // whether it files the pages it places, and whether to rebuild the whole shard's lookup at the
+    // whether it files the blocks it places, and whether to rebuild the whole shard's lookup at the
     // end. That is the same defect as the single `Option` in `refresh_one_bucket_runtime_flags` --
     // one parameter standing for a source and a decision at once -- and it would be a poor trade
     // to leave it standing in the commit that removes its last consumer.
     //
     // WHAT IS LEFT IS THE TARGETING QUESTION, AND IT KEEPS THE OLD CONDITION under its own name:
-    // can the lookup be trusted to say which buckets hold this object's pages? When it cannot,
+    // can the lookup be trusted to say which buckets hold this object's blocks? When it cannot,
     // every bucket is visited, which is what it always did. The filing question is answered
-    // unconditionally below, because this call holds the identity of every page it places.
+    // unconditionally below, because this call holds the identity of every block it places.
     //
     // THE REF TOTAL IS PART OF THE CONDITION AND IS ALREADY DEAD AS A DISJUNCT. Only a rebuild
     // could lift it from `None`, and no construction route leaves it there: `impl Default for
@@ -5485,11 +5485,11 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // `if !replace_existing { break; }` -- it supersedes nothing, so there is nothing to drop --
     // and the set it would have swept costs the object's ENTIRE ref list to build: every ref
     // iterated to collect its routing bucket, for a set that collapses to one element because
-    // every page of an object lands in its key's bucket. This function says exactly that at its
+    // every block of an object lands in its key's bucket. This function says exactly that at its
     // other bucket-deriving site: "every address published here belongs to ONE object key, so
     // they all land in the key's bucket. The set was a set of one."
     //
-    // No bytes -- one element is one node -- but O(the object's pages) of work on every append,
+    // No bytes -- one element is one node -- but O(the object's blocks) of work on every append,
     // which is the same shape as the ref-list copy that
     // `push_object_dirty_onto_its_existing_blocks` used to make, on the same write path.
     let target_buckets = if !replace_existing {
@@ -5531,13 +5531,13 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             crate::engine::state::StaleCause::Overwrite,
             |handle, block| {
             // `object_key` IS THIS FUNCTION'S ARGUMENT, so the comparison is against the same
-            // characters it always was -- read from beside the page rather than off it.
+            // characters it always was -- read from beside the block rather than off it.
             let matches_object = block.model_id.as_str() == kind
                 && names.get(handle).is_some_and(|beside| &**beside == object_key);
             if matches_object {
                 // THE SET THIS FILLS COLLAPSES TO AT MOST ONE ELEMENT, AND THAT IS NOT NEW.
                 //
-                // It collected `page.component` so the lookup un-filing below could be driven once
+                // It collected `block.component` so the lookup un-filing below could be driven once
                 // per distinct name dropped. Every entry's component was `None` before the field
                 // was removed, so the set already held either nothing or the single value `None`,
                 // and the loop below already ran at most once per bucket sweep. Inserting `None`
@@ -5558,7 +5558,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             bucket.set_in_memory(!bucket.block_index.is_empty());
             // THE REPAIR AT THE REMOVAL SITE. A delta over the id this call superseded stood
             // here and was wrong; `repair_object_index_against_its_blocks` carries the measurement
-            // that says so. The pass is over this bucket's own pages, which this loop is already
+            // that says so. The pass is over this bucket's own blocks, which this loop is already
             // walking, and it asks for no whole-shard inversion.
             repair_object_index_against_its_blocks(shard_id, bucket, &names);
             classify_bucket_layout_in_place(bucket);
@@ -5646,8 +5646,8 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         bucket.object_index.insert(object_id);
         bucket.deleted_object_index.remove(&object_id);
         let mut block_ref_key: u64 = 0;
-        // THE IDENTITY, BOUND BEFORE THE PAGE TAKES IT, so the handle and the lookup can both
-        // be given it once the page has none.
+        // THE IDENTITY, BOUND BEFORE THE BLOCK TAKES IT, so the handle and the lookup can both
+        // be given it once the block has none.
         let filed_object_key = Arc::clone(&entry.object_key);
         let block = BlockIndex {
             model_id: entry.kind,
@@ -5674,7 +5674,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         //
         // This was skipped whenever the lookup was being established, and a whole-shard rebuild at
         // the end of the call filed it instead. The identity is right here -- `filed_object_key`,
-        // bound before the page took it -- so the rebuild was recovering, by walking every block
+        // bound before the block took it -- so the rebuild was recovering, by walking every block
         // in the shard, what this line already knows.
         {
             shard
@@ -5726,13 +5726,13 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // `is_empty()` -- a FRESH INDEX ON ITS FIRST WRITE. The common case, not an exotic one.
     //
     // So this could not be deleted on an unreachability claim. What makes it unnecessary is that
-    // the pages this call places are now filed by this call.
+    // the blocks this call places are now filed by this call.
     //
     // # AND THE AGREEMENT IS CHECKED WHERE THE REBUILD USED TO RUN
     //
     // Scoped to the case the rebuild existed for -- a lookup that could not be trusted to target
     // -- so an established index pays nothing for it. It compares the lookup against every live
-    // page in the shard, which is the postcondition the rebuild used to deliver by construction.
+    // block in the shard, which is the postcondition the rebuild used to deliver by construction.
     // The debug verification that stood here is spent with its scaffold -- see `engine_storage_state.rs`.
     let _ = lookup_can_target;
 }
@@ -5783,8 +5783,8 @@ pub(super) fn bucket_layout_name(layout: BucketLayoutState) -> &'static str {
 /// `bucket_map` from block entries where nothing maintained the set, keep the full rebuild.
 pub(super) fn classify_bucket_layout_in_place(bucket: &mut BucketNode) {
     // THE TOMBSTONE ROWS ARE PUT BACK IN STEP HERE, which is the lighter of the two passes every
-    // bucket mutation funnels through. A row whose page carries no deleted entry any more
-    // describes a tombstone that is gone, and deriving that from the pages is what keeps the rows
+    // bucket mutation funnels through. A row whose block carries no deleted entry any more
+    // describes a tombstone that is gone, and deriving that from the blocks is what keeps the rows
     // from being a second statement of the entries that can drift from them. Early-returns on an
     // empty row list, so a bucket that has never had a removal pays one `is_empty`.
     bucket.reconcile_tombstone_elements();
@@ -5837,15 +5837,15 @@ pub mod layout_by_caller {
 // callers -- it looked like attribution and was not. Applied only under `cfg(test)`, because the
 // attribute adds a hidden location argument at every call site and this is a write path.
 #[cfg_attr(test, track_caller)]
-/// Rebuild one bucket's live-object set from the identity held BESIDE each page, then classify.
+/// Rebuild one bucket's live-object set from the identity held BESIDE each block, then classify.
 ///
-/// THE SHARD IS A PARAMETER BECAUSE THE SET IS DERIVED PER PAGE. A page's object id is
+/// THE SHARD IS A PARAMETER BECAUSE THE SET IS DERIVED PER BLOCK. A block's object id is
 /// `stable_block_object_id(shard, kind, key)`, so this cannot be done without a shard and must not
 /// be done with a guessed one -- a zero derives a well-formed id belonging to a different shard.
 ///
-/// AND THE KEY IS NO LONGER TAKEN FROM THE PAGE. The entry is losing the only copy it held, so the
-/// walk asks the structure beside a live page instead: `object_block_lookup`, inverted by the
-/// `(routing_bucket, handle)` the page is filed under. [`BlockKeysByPosition`] is that inversion,
+/// AND THE KEY IS NO LONGER TAKEN FROM THE BLOCK. The entry is losing the only copy it held, so the
+/// walk asks the structure beside a live block instead: `object_block_lookup`, inverted by the
+/// `(routing_bucket, handle)` the block is filed under. [`BlockKeysByPosition`] is that inversion,
 /// and it is HOISTED BY THE CALLER rather than built here -- building it is O(block refs), which is
 /// the order of a whole-shard pass and not of one bucket. Every caller that reaches this function
 /// is making such a pass. A caller holding one bucket on a targeted path must not build one; the
@@ -5853,21 +5853,21 @@ pub mod layout_by_caller {
 ///
 /// # WHEN `object_index` IS PRUNED, WHICH IS THE WHOLE OF WHAT THIS CHANGE MOVES
 ///
-/// EXACTLY WHEN EVERY LIVE PAGE IN THE BUCKET HAS AN IDENTITY BESIDE IT, and otherwise not at all.
-/// A derived set that is missing pages is not a smaller answer to the same question, it is a WRONG
-/// one: [`reconcile_object_index_with_live_blocks`] reads the absence of an id as "no live page
+/// EXACTLY WHEN EVERY LIVE BLOCK IN THE BUCKET HAS AN IDENTITY BESIDE IT, and otherwise not at all.
+/// A derived set that is missing blocks is not a smaller answer to the same question, it is a WRONG
+/// one: [`reconcile_object_index_with_live_blocks`] reads the absence of an id as "no live block
 /// names this object" and would drop an id whose object is still live. So a bucket holding even one
-/// unnamed live page reclassifies from the set the mutation sites already maintain, and prunes
+/// unnamed live block reclassifies from the set the mutation sites already maintain, and prunes
 /// nothing.
 ///
 /// THAT STATE HAS EXACTLY ONE CAUSE and it is named rather than tolerated: the window between a
-/// decode and the rebuild that fills the lookup, in which no page has anything beside it. The
+/// decode and the rebuild that fills the lookup, in which no block has anything beside it. The
 /// refusal below asserts that, which is the difference between a skip with a reason and a skip that
 /// hides the one case this move would break.
 ///
 /// AND THE PRUNING A REMOVAL OWES IS NOT TAKEN HERE ANY MORE. The three sites that drop an object's
-/// pages call [`repair_object_index_against_its_blocks`] instead, which reconciles the ONE bucket
-/// they are holding against its own live pages and asks for no inversion. It was briefly a delta
+/// blocks call [`repair_object_index_against_its_blocks`] instead, which reconciles the ONE bucket
+/// they are holding against its own live blocks and asks for no inversion. It was briefly a delta
 /// over the ids a removal had dropped; that was wrong, and the measurement that says so is on it.
 ///
 /// A caller that genuinely has no shard uses [`classify_bucket_layout_in_place`] instead, which
@@ -5878,8 +5878,8 @@ pub mod layout_by_caller {
 /// # THE MEASUREMENT THAT REFUSED AN EARLIER ATTEMPT, AND WHY IT DOES NOT PRICE THIS ONE
 ///
 /// An earlier version asked the bucket for the ids it ALREADY held rather than deriving them, on
-/// the reasoning that the function had no shard. That kept every id for as long as any page in the
-/// bucket was live, so an object whose last page was deleted was never dropped BY ANYTHING:
+/// the reasoning that the function had no shard. That kept every id for as long as any block in the
+/// bucket was live, so an object whose last block was deleted was never dropped BY ANYTHING:
 /// `object_index` grew monotonically, the count fed to `classify_bucket_layout` was wrong, and the
 /// collect grew with the corpus. Measured on the allocation probe, `SetAdd` went from 5,784 ->
 /// 5,785 bytes (1.00x flat) across a sixteen-fold corpus to 5,723 -> 9,631 (1.68x). A width pin
@@ -5887,8 +5887,8 @@ pub mod layout_by_caller {
 ///
 /// WHAT THAT FIGURE PRICED WAS THE ABSENT PRUNING, NOT THE ABSENT DERIVE, which is why it is not a
 /// measurement of this change. Here the pruning is MOVED rather than dropped: a removal prunes the
-/// object it removed, and a pass that can name every live page reconciles the whole set. There is
-/// no site at which an id outlives its last live page, so the monotonic growth that figure
+/// object it removed, and a pass that can name every live block reconciles the whole set. There is
+/// no site at which an id outlives its last live block, so the monotonic growth that figure
 /// measured has no mechanism here. The scaling control is still the only thing that can confirm
 /// that, and it is what has to be re-read before this paragraph is believed a second time.
 pub(super) fn update_bucket_layout(
@@ -5904,7 +5904,7 @@ pub(super) fn update_bucket_layout(
     #[cfg(test)]
     layout_by_caller::note(std::panic::Location::caller(), bucket.block_index.len());
     // Read out before the walk: the inversion is keyed by position, and a position is
-    // `(routing_bucket, handle)` -- the bucket half is a property of the node, not of the page.
+    // `(routing_bucket, handle)` -- the bucket half is a property of the node, not of the block.
     let routing_bucket = bucket.routing_bucket;
     let mut live_blocks_with_no_identity = 0usize;
     let live_object_ids: BTreeSet<u64> = bucket
@@ -5928,13 +5928,13 @@ pub(super) fn update_bucket_layout(
         // THE TIE BACK TO THE ENTRY'S OWN COPY, FOR AS LONG AS THE ENTRY STILL HOLDS ONE.
         //
         // This is the scaffold that makes the whole suite a check on the MOVE rather than on the
-        // compile: every call through here compares the set derived from beside the pages against
-        // the set derived from the pages themselves. IT HAS GONE WITH THE FIELD, exactly as the
-        // sentence above it said it would: there is nothing left to compare, because the pages
+        // compile: every call through here compares the set derived from beside the blocks against
+        // the set derived from the blocks themselves. IT HAS GONE WITH THE FIELD, exactly as the
+        // sentence above it said it would: there is nothing left to compare, because the blocks
         // hold no identity of their own to derive a second set from.
         //
         // WHAT IT CAUGHT, so the next reader knows what is no longer caught: a caller whose
-        // hoisted inversion does not cover the bucket it is handed. That now shows up as a page
+        // hoisted inversion does not cover the bucket it is handed. That now shows up as a block
         // the inversion cannot name, which `block_identities_in` omits -- so the failure mode moved
         // from a set disagreement to a short set, and the guard that would see it is a count on
         // the caller's side rather than an equality here.
@@ -5949,16 +5949,16 @@ pub(super) fn update_bucket_layout(
         );
     }
     // AND THE TOMBSTONE ROWS, BY THE SAME RULE AS THE OBJECT LIST ABOVE: derived back from
-    // the pages, here, rather than at each mutation site.
+    // the blocks, here, rather than at each mutation site.
     bucket.reconcile_tombstone_elements();
     bucket.layout = classify_bucket_layout(bucket.object_index.object_count(), bucket.block_index.len());
 }
 
 /// The same step for a caller that ALREADY KNOWS its bucket's live object ids.
 ///
-/// A RECONSTRUCT THAT FILES ITS OWN PAGES HAS THE IDENTITY IN HAND, and has no inversion to ask:
+/// A RECONSTRUCT THAT FILES ITS OWN BLOCKS HAS THE IDENTITY IN HAND, and has no inversion to ask:
 /// `rebuild_bucket_first_index` reads every entry out of the model maps, where the key lives, and
-/// derives the id before it builds the page. Sending it through the derive above would invert a
+/// derives the id before it builds the block. Sending it through the derive above would invert a
 /// whole shard's lookup to recover what the caller is already carrying -- and would recover
 /// nothing, because a reconstruct's lookup is not built until it has finished.
 ///
@@ -5980,17 +5980,17 @@ pub(super) fn update_bucket_layout_with_live_objects(
 ///
 /// # THE DELTA THAT STOOD HERE WAS WRONG, AND ITS OWN SCAFFOLD IS WHAT SAID SO
 ///
-/// It removed exactly the ids whose pages the call had dropped, on the argument that no other
-/// object's pages had changed so no other id's membership could have. That argument is sound about
+/// It removed exactly the ids whose blocks the call had dropped, on the argument that no other
+/// object's blocks had changed so no other id's membership could have. That argument is sound about
 /// THIS CALL and it is not the whole claim: `reconcile_object_index_with_live_blocks` removed every
-/// held id that no live page named -- a REPAIR -- so drift that existed before the call was
+/// held id that no live block named -- a REPAIR -- so drift that existed before the call was
 /// silently fixed by it, and a delta cannot fix what it did not cause.
 ///
 /// MEASURED, by the assertion that shipped beside the delta rather than by reasoning:
 /// `dirty_bucket_count_matches_the_unshortened_scan` and
 /// `dirty_objects_versus_the_blocks_own_dirty_flags` both drive a `StringSet` and then a
 /// `CommonDelete`, and both reddened with the bucket and both id sets -- bucket 50 holding
-/// `{9978707636403695476, 11659942300020297180}` where its live pages named only the second, and
+/// `{9978707636403695476, 11659942300020297180}` where its live blocks named only the second, and
 /// bucket 7 the same shape. The drift is real and it has a source: a delete that empties a bucket
 /// keeps the deleted object's id deliberately (see `engine.rs`'s resident delete path, where that
 /// is how a tombstone comes to be reported at all), the bucket is later re-populated, and the write
@@ -6002,7 +6002,7 @@ pub(super) fn update_bucket_layout_with_live_objects(
 /// Worth stating because the two are easy to confuse. `update_bucket_layout` only ever walked the
 /// bucket it was GIVEN; what was expensive at a removal site was never that walk but the O(block
 /// refs) inversion the derive needs once the identity leaves the entry. So reconciling this
-/// bucket's set against this bucket's own live pages costs one pass over pages the caller is
+/// bucket's set against this bucket's own live blocks costs one pass over blocks the caller is
 /// already walking, reproduces the previous semantics exactly, and asks for no inversion.
 ///
 /// EXACTLY THE PREVIOUS SEMANTICS, line for line: the old call was derive, reconcile, reconcile the
@@ -6016,18 +6016,18 @@ pub(super) fn update_bucket_layout_with_live_objects(
 ///
 /// # WHAT THIS STILL READS, AND WHAT THAT COSTS THE NEXT STEP
 ///
-/// `page.object_key`, once per live page. The three sites it serves therefore keep three of the
+/// `block.object_key`, once per live block. The three sites it serves therefore keep three of the
 /// identity reads this leg is removing, and they are the removal step's problem rather than this
-/// one's: a removal site needs an identity for its OWN bucket's live pages, which is a narrower
+/// one's: a removal site needs an identity for its OWN bucket's live blocks, which is a narrower
 /// question than the whole-shard inversion and is not answered here.
 #[cfg_attr(test, track_caller)]
-/// THE IDENTITIES ARRIVE AS A PARAMETER, because the pages cannot be asked any more.
+/// THE IDENTITIES ARRIVE AS A PARAMETER, because the blocks cannot be asked any more.
 ///
-/// It read each live page's object key off the entry. Its three callers all hold the per-bucket
+/// It read each live block's object key off the entry. Its three callers all hold the per-bucket
 /// projection already -- two of them built it for their own `retain` -- so this takes it rather
 /// than inverting a whole shard's lookup to recover what the caller is already carrying.
 ///
-/// A PAGE THE PROJECTION DOES NOT NAME CONTRIBUTES NO ID, which is the conservative direction: the
+/// A BLOCK THE PROJECTION DOES NOT NAME CONTRIBUTES NO ID, which is the conservative direction: the
 /// reconcile then does not claim an object this bucket cannot be shown to hold.
 pub(super) fn repair_object_index_against_its_blocks(
     shard_id: ShardId,
@@ -6054,8 +6054,8 @@ pub(super) fn repair_object_index_against_its_blocks(
     // reconcile was called" and "the bucket now names these objects" are two claims and this is
     // the second.
     //
-    // SCOPED TO A BUCKET THAT STILL HOLDS PAGES, which is the reconcile's own early return and the
-    // one state in which the set is deliberately NOT equal to the live pages.
+    // SCOPED TO A BUCKET THAT STILL HOLDS BLOCKS, which is the reconcile's own early return and the
+    // one state in which the set is deliberately NOT equal to the live blocks.
     #[cfg(debug_assertions)]
     if !bucket.block_index.is_empty() {
         let held_now: BTreeSet<u64> = bucket.object_index.iter().copied().collect();
@@ -6068,7 +6068,7 @@ pub(super) fn repair_object_index_against_its_blocks(
     }
 }
 
-/// THE PAGES AND THE OBJECT LIST ARE RECONCILED, NOT ONE REPLACED BY THE OTHER.
+/// THE BLOCKS AND THE OBJECT LIST ARE RECONCILED, NOT ONE REPLACED BY THE OTHER.
 ///
 /// This was `bucket.object_index = live_object_ids.into()` -- a whole-array assignment from a
 /// `BTreeSet`, so every call re-handed every slot in ASCENDING ID ORDER. Nothing could store a slot
@@ -6083,14 +6083,14 @@ pub(super) fn repair_object_index_against_its_blocks(
 ///
 /// WHAT IT DOES NOW, and the three cases are kept apart because they mean different things:
 ///
-///   * NOTHING LIVE -> the list is cleared, exactly as before. A bucket whose pages are all
+///   * NOTHING LIVE -> the list is cleared, exactly as before. A bucket whose blocks are all
 ///     tombstones names no object.
-///   * THE LIST IS EMPTY AND PAGES NAME OBJECTS -> a RECONSTRUCT. This is the load, recovery and
+///   * THE LIST IS EMPTY AND BLOCKS NAME OBJECTS -> a RECONSTRUCT. This is the load, recovery and
 ///     reconstruct path, where the list was never maintained and must be derived; slots are handed
 ///     out by `insert` because no slot existed for anything to be naming. Counted separately, so a
 ///     reconstruct cannot be read as a divergence or a divergence as a reconstruct.
-///   * OTHERWISE -> a RECONCILE. An id the pages name that the list lacks is inserted; an id the
-///     list holds that no live page names is removed. Every id in both keeps the slot it is in,
+///   * OTHERWISE -> a RECONCILE. An id the blocks name that the list lacks is inserted; an id the
+///     list holds that no live block names is removed. Every id in both keeps the slot it is in,
 ///     which is the property the whole step rests on.
 ///
 /// IT COUNTS AND DOES NOT ERROR, deliberately. A disagreeing row is accepted silently today, and a
@@ -6135,7 +6135,7 @@ fn reconcile_object_index_with_live_blocks(bucket: &mut BucketNode, live: &BTree
 
 /// WHAT THE MAINTENANCE SCAN HAS SEEN OF THE TWO SOURCES IT USED TO OVERWRITE ONE WITH.
 ///
-/// The scan that rebuilt the object list from the pages is the evidence for the list being correct,
+/// The scan that rebuilt the object list from the blocks is the evidence for the list being correct,
 /// and it destroyed that evidence by assignment: a list that disagreed was silently replaced, so
 /// `8,679 rebuilds, 0 divergences` was a statement about a comparison nobody made. These counters
 /// are what make the same claim checkable.
@@ -6162,12 +6162,12 @@ pub(super) mod object_index_divergence {
     /// After the burst, log one in this many.
     const LOG_EVERY: u64 = 1_024;
 
-    /// THE DENOMINATOR: one bucket whose pages were scanned and compared against its list.
+    /// THE DENOMINATOR: one bucket whose blocks were scanned and compared against its list.
     pub(crate) fn note_rebuild() {
         REBUILDS.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// A list that held nothing and was derived from the pages. Not a divergence: there was no
+    /// A list that held nothing and was derived from the blocks. Not a divergence: there was no
     /// stored answer to disagree with.
     pub(crate) fn note_reconstruct() {
         RECONSTRUCTS.fetch_add(1, Ordering::Relaxed);
@@ -6237,7 +6237,7 @@ pub(super) fn note_bucket_flags_stale(shard: &mut ShardState, routing_bucket: u3
 /// not being a bare `bool` beside another bare `bool`.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub(super) enum BucketTtlRollup {
-    /// Recompute the minimum from the shard's expiry map. One map lookup per page in the bucket.
+    /// Recompute the minimum from the shard's expiry map. One map lookup per block in the bucket.
     Recompute,
     /// Leave the field exactly as it stands, accepting that it may be out of date.
     ///
@@ -6264,7 +6264,7 @@ pub(super) enum BucketTtlRollup {
 #[cfg_attr(test, track_caller)]
 fn refresh_one_bucket_runtime_flags(
     // `None` for a state that carries no shard id. The object-index rebuild below needs one to
-    // derive a page's object with, and there is no id that is safe to guess, so an unstamped state
+    // derive a block's object with, and there is no id that is safe to guess, so an unstamped state
     // RECLASSIFIES what it already holds rather than rebuilding against a different shard's terms.
     // In production a served state is always stamped -- `install_shard_state` is the only place
     // `set_shard_id` is called -- so the rebuild always runs where it matters.
@@ -6272,7 +6272,7 @@ fn refresh_one_bucket_runtime_flags(
     bucket: &mut BucketNode,
     now: u64,
     // KEPT IN THE SIGNATURE DELIBERATELY, AND NO LONGER READ HERE. The dirty rollup below is
-    // `any(page.dirty)` now. The parameter stays because removing it would touch every caller for
+    // `any(block.dirty)` now. The parameter stays because removing it would touch every caller for
     // no behavioural reason, and because the next reader should see that this function was handed
     // the set and chose not to consult it rather than never having had access to it.
     dirty_objects: &DirtyObjectIndex,
@@ -6317,19 +6317,19 @@ fn refresh_one_bucket_runtime_flags(
             .inspect(|_| fold_visits += 1)
             .all(|block| block.deleted);
     bucket.set_deleted(every_block_deleted);
-    // ASKED OF THE INDEX, NOT FOLDED OVER THE PAGES. The dirty-object index already records which
+    // ASKED OF THE INDEX, NOT FOLDED OVER THE BLOCKS. The dirty-object index already records which
     // routing bucket each dirty object belongs to -- it is recorded there at mark time, beside the
     // bucket that was just computed for the key -- so this is one ordered-map lookup where it was
-    // a pass over the bucket's pages. The parameter was already threaded to this function and
+    // a pass over the bucket's blocks. The parameter was already threaded to this function and
     // ignored; `DirtyObjectIndex::has_bucket` carries the argument for why the answer is the same
     // or safer.
     //
     // AND IT COMBINES WITH `|`, WHICH IS WHAT MAKES THE SUBSTITUTION SOUND HERE RATHER THAN
     // GENERALLY. A bucket already marked dirty stays dirty, so the only way this can differ from
-    // the fold is by reporting dirt the fold would have missed -- an object with no live page, or a
-    // page not yet filed. Both of those refuse a release and keep data resident. The sibling fold
+    // the fold is by reporting dirt the fold would have missed -- an object with no live block, or a
+    // block not yet filed. Both of those refuse a release and keep data resident. The sibling fold
     // in `clear_published_object_dirty_state` ASSIGNS instead, and is deliberately left as a fold:
-    // `insert_container_tombstone_entry` files a page `dirty: true` and sets the bucket flag
+    // `insert_container_tombstone_entry` files a block `dirty: true` and sets the bucket flag
     // directly without a mark, so a tombstone's dirt need not be in the index, and an assignment is
     // where that would cost something.
     let bucket_holds_dirty_object = dirty_objects.has_bucket(bucket.routing_bucket);
@@ -6371,11 +6371,11 @@ fn refresh_one_bucket_runtime_flags(
                 bucket.ttl_ms = BucketTtl::ABSENT;
             } else {
                 note_site(&bucket_visit_sites::REFRESH_FLAGS, bucket.block_index.len());
-                // THE ROLLUP NEEDS A SOURCE FOR EACH PAGE'S OBJECT, SO IT IS TIED TO THE
+                // THE ROLLUP NEEDS A SOURCE FOR EACH BLOCK'S OBJECT, SO IT IS TIED TO THE
                 // IDENTITIES RATHER THAN TO A FLAG.
                 //
-                // `expires_at_ms` is keyed by OBJECT KEY, so this selection asked each page which
-                // object it belonged to. With the key beside the page, a refresh handed no
+                // `expires_at_ms` is keyed by OBJECT KEY, so this selection asked each block which
+                // object it belonged to. With the key beside the block, a refresh handed no
                 // inversion has nothing to select on -- and leaving the field stale is the only
                 // honest answer, which is exactly what the one caller that passes `None` already
                 // asks for by name.
@@ -6416,7 +6416,7 @@ fn refresh_one_bucket_runtime_flags(
     }
 }
 
-/// Refresh EVERY bucket in the shard. `O(total pages)`.
+/// Refresh EVERY bucket in the shard. `O(total blocks)`.
 ///
 /// Correct everywhere and the right thing after a load, a recovery or a reconstruct, where the
 /// set of changed buckets is not known. On the per-write path use
@@ -6469,7 +6469,7 @@ fn refresh_all_bucket_runtime_flags(
     // as well as the maintenance one.
     let index = &mut shard.bucket_index;
     // BUILT WHENEVER A CONSUMER NEEDS IT, WHICH IS NOT THE SAME QUESTION AS WHETHER THE OBJECT
-    // INDEX IS BEING REBUILT. The TTL rollup selects pages by the object held BESIDE them, so a
+    // INDEX IS BEING REBUILT. The TTL rollup selects blocks by the object held BESIDE them, so a
     // `Recompute` needs the inversion even on the reconstruct path, which skips the rescan.
     let keys = if rebuild_object_index || matches!(ttl_rollup, BucketTtlRollup::Recompute) {
         Some(crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup))
@@ -6604,15 +6604,15 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     // loop below can rebuild when the state is stamped and reclassify when it is not.
     let shard_id = shard.shard_id();
     shard.dirty_objects.remove(object_key);
-    // THIS OBJECT'S PAGES, NAMED BEFORE THE INDEX IS BORROWED MUTABLY.
+    // THIS OBJECT'S BLOCKS, NAMED BEFORE THE INDEX IS BORROWED MUTABLY.
     //
     // EVERY KIND, because this takes an object key and no kind -- the same loop
     // `record_exists_exact` makes over the closed set of stored kinds. The old walk compared the
-    // key alone and so matched a page of any kind.
+    // key alone and so matched a block of any kind.
     //
-    // AND THE TOMBSTONED PAGES BY THEIR TRIPLE, because the lookup names only live ones and the
-    // old walk cleared the flag on a deleted page too. A tombstone is filed `dirty: true`, and
-    // the `any(page.dirty)` below reads every page in the bucket, so leaving one set would hold
+    // AND THE TOMBSTONED BLOCKS BY THEIR TRIPLE, because the lookup names only live ones and the
+    // old walk cleared the flag on a deleted block too. A tombstone is filed `dirty: true`, and
+    // the `any(block.dirty)` below reads every block in the bucket, so leaving one set would hold
     // the bucket dirty on a published object.
     let mut live_targets: Vec<(u32, u64)> = Vec::new();
     for kind in super::storage_model_kinds() {
@@ -6671,8 +6671,8 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
             let any_block_dirty = bucket
                 .block_index
                 .values()
-                // `any(page.dirty)` alone; the keys were just dropped from the dirty set and
-                // this object's pages were just cleared, so the two halves agree by construction.
+                // `any(block.dirty)` alone; the keys were just dropped from the dirty set and
+                // this object's blocks were just cleared, so the two halves agree by construction.
                 .any(|block| block.dirty);
             bucket.set_dirty(any_block_dirty);
             match shard_id {
@@ -6707,11 +6707,11 @@ pub(super) fn rebuild_bucket_first_index(
     // The paragraph above is the precedent and it states the rule exactly: a delete takes the object
     // out of the model maps, so a rebuild that reads those maps cannot re-derive it, and a
     // reconstruct-based reload would silently drop what the deserialize path keeps. That was written
-    // about a deleted OBJECT's id. A per-element removal now keeps an ENTRY -- pointing at the page
-    // that records the removal, so a membership derived from the pages does not resurrect the element
+    // about a deleted OBJECT's id. A per-element removal now keeps an ENTRY -- pointing at the block
+    // that records the removal, so a membership derived from the blocks does not resurrect the element
     // -- and it is invisible to `collect_model_live_block_entries` for precisely the same reason.
     //
-    // WITHOUT THIS, A COMPACTION ROUND ERASED EVERY REMOVAL FROM THE PAGES. This function runs first
+    // WITHOUT THIS, A COMPACTION ROUND ERASED EVERY REMOVAL FROM THE BLOCKS. This function runs first
     // in the round and `rebuild_bucket_block_ownership` runs after it; both rebuild from the model
     // maps, and the tombstone count went to zero at this one. Driven by
     // `a_removal_retains_one_entry_and_nothing_yet_collects_it`, whose denominator is
@@ -6747,8 +6747,8 @@ pub(super) fn rebuild_bucket_first_index(
     // A reconstruct has no lookup to invert -- it builds one at the END, out of what it filed --
     // and it needs none: it reads every entry out of the model maps, where the key lives, and
     // derives the id for its own `object_index` insert a few lines below. Recording the same ids
-    // here means the layout step is HANDED the set instead of re-deriving it from the pages, which
-    // is the only thing it ever read the pages for.
+    // here means the layout step is HANDED the set instead of re-deriving it from the blocks, which
+    // is the only thing it ever read the blocks for.
     let mut live_object_ids_by_bucket: BTreeMap<u32, BTreeSet<u64>> = BTreeMap::new();
     let no_live_objects: BTreeSet<u64> = BTreeSet::new();
     // THE DERIVED HALF ONLY. Its object map stays empty and `install_reconstructed` asserts
@@ -6795,8 +6795,8 @@ pub(super) fn rebuild_bucket_first_index(
             },
             &mut bucket_index.block_slab_live,
         );
-        // THE PAGE IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
-        // entry the lookup records is the entry the map HOLDS. A page whose handle collided
+        // THE BLOCK IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
+        // entry the lookup records is the entry the map HOLDS. A block whose handle collided
         // with an earlier one is not in the map twice and must not be in the lookup twice
         // either; that is the decoder's rule, read off the same reasoning.
         if let Some(placed) = bucket.block_index.get(&handle) {
@@ -6834,8 +6834,8 @@ pub(super) fn rebuild_bucket_first_index(
     for (routing_bucket, tombstone, element) in prior_tombstone_entries {
         let Some(element) = element else {
             // A TOMBSTONE NAMING NO ELEMENT CANNOT BE REFILED, and this is where that becomes
-            // visible rather than theoretical. The handle a page is filed under is hashed from its
-            // identity; a deleted page is not in the object lookup, so its row is the only thing
+            // visible rather than theoretical. The handle a block is filed under is hashed from its
+            // identity; a deleted block is not in the object lookup, so its row is the only thing
             // beside it that states one -- and a tombstone with no row states nothing. It is
             // dropped rather than filed under a guessed identity.
             //
@@ -6904,13 +6904,13 @@ pub(super) fn rebuild_bucket_first_index(
     //
     // After the tombstone pass rather than before it, which costs nothing and leaves the two loops
     // in the order they already had: a tombstone is never in this structure --
-    // `insert_object_block_lookup` returns early on a deleted page -- so nothing the second loop
+    // `insert_object_block_lookup` returns early on a deleted block -- so nothing the second loop
     // files could belong here anyway.
     for (routing_bucket, handle, object_key, block) in &filed_blocks {
         bucket_index.insert_object_block_lookup(*routing_bucket, *handle, object_key, block);
     }
     // The same removal as in `rebuild_bucket_block_ownership`, and the verification that stood in
-    // its place is spent with its scaffold: it read the pages' own copies of the identity, which
+    // its place is spent with its scaffold: it read the blocks' own copies of the identity, which
     // the entry no longer holds. `engine_storage_state.rs` carries the reasoning and names what the obligation
     // moved to.
     // NOT `shard.bucket_index = bucket_index`. The object map is DURABLE and lives on this
@@ -7209,7 +7209,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             // Each of these was its own arm reading the element out of `entry.component`: a hash
             // field name verbatim, a set member as `hex::decode`, a zset member the same, a list
             // position as sixteen hex digits of a biased sequence word. An index entry has no
-            // component -- it names a PAGE -- so there is no longer an input to decode. This is
+            // component -- it names a BLOCK -- so there is no longer an input to decode. This is
             // not "the name could not be read this time", which is what the four arms counted and
             // printed; it is "an entry cannot carry an element name at all".
             //
@@ -7225,7 +7225,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             // WHAT IS DELETED WITH THE ARMS, so it is not mistaken for a behaviour change:
             //
             //   * `unreadable_names`, incremented only by these four arms. With no entry able to
-            //     name an element it would have counted EVERY live container page and printed a
+            //     name an element it would have counted EVERY live container block and printed a
             //     line on every load of every populated store, reporting a structural fact as an
             //     anomaly.
             //   * `derived_scores`, incremented only by the zset arm, where a member the durable
@@ -7239,9 +7239,9 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
             // AND THE RECONCILE FOR ALL FOUR STAYS, which is the part a reader must not take as
             // dead with the derivation. `reconcile_from_durable` is `fill_absent_elements(derived,
             // persisted, live, refused)`: the persisted map is deserialized BEFORE it and the call
-            // FILTERS that map against the live page set as well as merging the derived view in.
+            // FILTERS that map against the live block set as well as merging the derived view in.
             // With an empty derived view the merge contributes nothing and the filter still drops a
-            // persisted element whose page the finished index does not hold -- so removing the call
+            // persisted element whose block the finished index does not hold -- so removing the call
             // would leave MORE in the resident map, not less. The note above the four calls already
             // records that running them with an empty derived view is the safe direction.
             "hash" | "set" | "zset" | "list" => {}
@@ -7423,10 +7423,10 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         //
         // This ASSIGNED a table of fresh `ObjectSlot::default()` rows, one per derived key. That
         // cost nothing while a row WAS an address: a default slot carrying the derived address was
-        // the whole of the old row. The row carries this object's PAGE REFS now, so rebuilding it
-        // left every string page named by nothing -- measured as
+        // the whole of the old row. The row carries this object's BLOCK REFS now, so rebuilding it
+        // left every string block named by nothing -- measured as
         // `address_footprint::the_warm_block_is_found_under_the_key_the_other_side_wrote` tripping
-        // `update_bucket_layout`'s "a live page with no identity beside it while the inversion DOES
+        // `update_bucket_layout`'s "a live block with no identity beside it while the inversion DOES
         // name positions". Same class as the wholesale `shard.bucket_index = ...` that
         // `CoreIndex::install_reconstructed` replaced: a durable thing moved into a structure
         // something rebuilds.
@@ -7881,7 +7881,7 @@ pub(super) fn insert_context_event_views<K, S>(
     // THE KEY ARRIVES ONCE AND IS USED TWICE. This minted a second key with
     // `K::from` beside the owned one moved into the time index, so the
     // characters of every rebuilt event key existed twice. The caller hands in
-    // the handle the page entry already holds; the clone is a refcount bump.
+    // the handle the block entry already holds; the clone is a refcount bump.
     let series = events.entry(object_key.clone()).or_default();
     let index = timeline.entry(object_key).or_default();
     for point in points {
@@ -8242,10 +8242,10 @@ mod release_refusal_guards {
         panic!("no key with prefix {prefix} routes to bucket {routing_bucket} in 100,000 tries");
     }
 
-    /// THE PAGE ORDINAL IS ZERO, AND THAT IS WHAT MAKES THIS FIXTURE BUILDABLE.
+    /// THE BLOCK ORDINAL IS ZERO, AND THAT IS WHAT MAKES THIS FIXTURE BUILDABLE.
     ///
-    /// It was 11, and no object in this store can carry that. The ordinal names WHICH PAGE of an
-    /// object an address is, so a single-page object -- which every `string` is -- has page zero
+    /// It was 11, and no object in this store can carry that. The ordinal names WHICH BLOCK of an
+    /// object an address is, so a single-block object -- which every `string` is -- has block zero
     /// by construction. `ObjectRecord::from_object_rows` refuses a nonzero one by name as
     /// `NonZeroBlockOrdinalDoesNotFitInline`, and the measurement behind that refusal found
     /// ordinal 0 on 400 of 400 live string addresses, the largest seen being 0.
@@ -8257,17 +8257,17 @@ mod release_refusal_guards {
     /// its VALUE, so `set_string_address` was handed 11 and `string_address` gave back 0. The
     /// bucket index still holds a whole `ElementEntry`, and kept the 11.
     ///
-    /// `release_bucket_blocks`' map-agreement term reads the same page out of both of those and
+    /// `release_bucket_blocks`' map-agreement term reads the same block out of both of those and
     /// compares the two identities. Six of their eight fields matched; the last two -- the ordinal
     /// and the generation derived from it -- read `Some(11)` resident against `Some(0)` derived.
     /// So every release in this module and in three others was refused as `ModelMapDisagreement`:
     /// nine guards red at once, each naming a term it was not about, over one datum the store
     /// cannot hold.
     ///
-    /// `Some(0)` RATHER THAN `None`, because this fixture's page is slab-resident and an ABSENT
+    /// `Some(0)` RATHER THAN `None`, because this fixture's block is slab-resident and an ABSENT
     /// ordinal is exactly what log-residence means -- see `ElementEntry::log_resident`. Both
     /// round-trip the row faithfully; only this one leaves both presence bits set, which is the
-    /// shape a releasable page actually has.
+    /// shape a releasable block actually has.
     fn address(routing_bucket: u32, length: u64) -> ElementEntry {
         ElementEntry::from_parts(
             3,
@@ -8310,10 +8310,10 @@ mod release_refusal_guards {
         }
     }
 
-    /// THE HANDLE THESE FIXTURES FILE THEIR ONE PAGE UNDER.
+    /// THE HANDLE THESE FIXTURES FILE THEIR ONE BLOCK UNDER.
     ///
     /// [`node`] builds `BlockIndexMap::One` directly rather than going through `insert_block`,
-    /// because which ARM the page sits in is part of what these guards are about. So the handle is
+    /// because which ARM the block sits in is part of what these guards are about. So the handle is
     /// this region's own literal rather than `block_index_handle`'s -- and the object lookup has
     /// to be filed at the SAME position or the two halves name different places. It is a named
     /// constant precisely so that cannot drift: there is one place to read it from.
@@ -8330,17 +8330,17 @@ mod release_refusal_guards {
         }
     }
 
-    /// PLACE A PAGE IN A BUCKET AND FILE IT IN THE OBJECT LOOKUP -- ONE DOOR, BECAUSE THEY ARE ONE
+    /// PLACE A BLOCK IN A BUCKET AND FILE IT IN THE OBJECT LOOKUP -- ONE DOOR, BECAUSE THEY ARE ONE
     /// OBLIGATION.
     ///
     /// # WHY THIS EXISTS, AND IT IS A FIFTEEN-TEST RED
     ///
     /// Every fixture in this region used to poke `bucket_map.insert` directly and stop there. That
-    /// left a page the shard's OBJECT LOOKUP does not name -- and while the entry carried its own
-    /// copy of the identity it cost nothing, because every reader read the key off the page.
+    /// left a block the shard's OBJECT LOOKUP does not name -- and while the entry carried its own
+    /// copy of the identity it cost nothing, because every reader read the key off the block.
     ///
-    /// THE READERS READ IT FROM BESIDE THE PAGE NOW. `release_bucket_blocks` takes
-    /// `block_identities_in` over the bucket and refuses a page it cannot name with
+    /// THE READERS READ IT FROM BESIDE THE BLOCK NOW. `release_bucket_blocks` takes
+    /// `block_identities_in` over the bucket and refuses a block it cannot name with
     /// `LookupNotLocal` BEFORE it reaches any per-block term; `collect_bucket_index_live_block_
     /// entries` and the released supplement do the same. So fifteen guards across four modules
     /// were refusing or miscounting for a reason that had nothing to do with the term each was
@@ -8364,10 +8364,10 @@ mod release_refusal_guards {
         file_block(shard, routing_bucket, key, &block);
     }
 
-    /// File an ALREADY-PLACED page's position in the object lookup.
+    /// File an ALREADY-PLACED block's position in the object lookup.
     ///
     /// Separate from [`install_block`] for the one fixture that MOVES a node after building it: the
-    /// move has to carry the filing with it, or the page stops being named and the guard refuses
+    /// move has to carry the filing with it, or the block stops being named and the guard refuses
     /// on the wrong term.
     fn file_block(shard: &mut ShardState, routing_bucket: u32, key: &str, block: &BlockIndex) {
         let object_key: Arc<str> = Arc::from(key);
@@ -8448,7 +8448,7 @@ mod release_refusal_guards {
     ///
     /// `release_bucket_blocks` refuses a release when the model maps would not rebuild what is
     /// resident. For a `string` the model map is an `ObjectSlot`, and this module files its row
-    /// and its bucket-index page out of ONE `ElementEntry` -- so that term can be satisfied only
+    /// and its bucket-index block out of ONE `ElementEntry` -- so that term can be satisfied only
     /// while the row hands the whole address back.
     ///
     /// Asserted here standing alone, because the symptom is useless as a diagnosis: nine guards
@@ -8640,9 +8640,9 @@ mod release_refusal_guards {
         //
         // The lookup is keyed BY POSITION -- `block_identities_in` asks
         // `live_identity(node.routing_bucket, handle)` -- so a node moved to another bucket while
-        // its lookup ref still names the old one is a page the reader cannot name, and it refuses
+        // its lookup ref still names the old one is a block the reader cannot name, and it refuses
         // with `LookupNotLocal` before the routing term is ever reached. That is a DIFFERENT
-        // defect from the one this guard is about: this one is a page whose KEY does not route to
+        // defect from the one this guard is about: this one is a block whose KEY does not route to
         // the bucket it SITS in, both halves agreeing about where it sits.
         let moved = node
             .block_index
@@ -9247,10 +9247,10 @@ mod model_kind_registry_guards {
     use crate::engine::state::ShardState;
     use std::collections::{BTreeMap, BTreeSet};
 
-    /// PAGE ORDINAL ZERO, which is the only one a single-page object can hold.
+    /// BLOCK ORDINAL ZERO, which is the only one a single-block object can hold.
     ///
-    /// The ordinal names WHICH page of an object an address is, and every kind this fixture files
-    /// holds one page, so zero is not a convenience here -- it is the only value the store can
+    /// The ordinal names WHICH block of an object an address is, and every kind this fixture files
+    /// holds one block, so zero is not a convenience here -- it is the only value the store can
     /// keep. `ObjectRecord::from_object_rows` refuses a nonzero one by name
     /// (`NonZeroBlockOrdinalDoesNotFitInline`) and `set_string_address` silently coerces it, which
     /// is how this fixture carried an 11 that the string map turned into a 0 without anything
@@ -9270,7 +9270,7 @@ mod model_kind_registry_guards {
         let at = address(7);
         shard.set_string_address("s".into(), &at.clone());
         // READ BACK WHAT WAS FILED, for the reason `file_string_row` gives in
-        // `release_refusal_guards`: a string row keeps a page ordinal's PRESENCE and drops its
+        // `release_refusal_guards`: a string row keeps a block ordinal's PRESENCE and drops its
         // VALUE, so a fixture that files a nonzero ordinal here holds one address in the bucket
         // index and a different one in the string map. This fixture only ever asserted that the
         // walk REACHES every map, so a narrowed address was invisible to it -- and the same datum

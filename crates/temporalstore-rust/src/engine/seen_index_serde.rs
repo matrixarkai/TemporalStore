@@ -40,7 +40,7 @@ where
                 seen.by_member.insert(member, seen_at);
             }
             // The stored form carries a `String` key; the map holds a `ModelKey` so it can
-            // share one allocation with the page index, so convert at the boundary.
+            // share one allocation with the block index, so convert at the boundary.
             (std::sync::Arc::from(key.as_str()), seen)
         })
         .collect())

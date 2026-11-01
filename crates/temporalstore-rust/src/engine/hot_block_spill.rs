@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Durable read-by-address fallback for log-backed hot pages.
+//! Durable read-by-address fallback for log-backed hot blocks.
 //!
 //! Under `async_storage`, a freshly written value is served only from the in-memory cache tier
-//! at a SYNTHETIC page address (`block_slab_id == HOT_BLOCK_SLAB_ID`); it is not written to the
+//! at a SYNTHETIC block address (`block_slab_id == HOT_BLOCK_SLAB_ID`); it is not written to the
 //! block store, so it exists on disk only as its WAL record. That has two costs:
 //!
 //!   1. Correctness -- if the memory-only entry is evicted before the next dump/flush
 //!      materializes it, a read misses the cache and `page_store.read(synthetic_address)` finds
 //!      no file, so the acked write reads back as MISSING (looks deleted). Only a full reload
 //!      (WAL replay) would recover it.
-//!   2. Memory footprint -- hot pages are a primary consumer of the DRAM tier because their only
+//!   2. Memory footprint -- hot blocks are a primary consumer of the DRAM tier because their only
 //!      residence is memory.
 //!
-//! This module fixes both by SPILLING a hot page to a real slab exactly when it is evicted from
+//! This module fixes both by SPILLING a hot block to a real slab exactly when it is evicted from
 //! the cache: an eviction handler writes the evicted bytes to the durable block store and records
 //! a redirect from the synthetic address to the real one. Reads consult the redirect on a
-//! hot-address cache miss and read the real slab, so an evicted hot page is never read-as-missing.
+//! hot-address cache miss and read the real slab, so an evicted hot block is never read-as-missing.
 //! Because the eviction moves the bytes out of DRAM (to the block store / SSD-backed slab) and
 //! keeps only a tiny redirect entry, steady-state RSS drops as well.
 //!
 //! The redirect map is purely live-path state: on crash/reload the WAL is the source of truth and
-//! re-derives every hot page from scratch, so the map is never persisted. It is bounded by
+//! re-derives every hot block from scratch, so the map is never persisted. It is bounded by
 //! clearing a shard's entries on unload.
 
 use std::collections::HashMap;
@@ -46,7 +46,7 @@ fn hot_block_record_key() -> String {
 }
 
 /// Parse `(offset, routing_bucket)` out of a hot-page cache key selector. Selector forms produced
-/// for a hot page are `slot-{routing}:{offset}:{length}` or `{offset}:{length}`; the offset is the
+/// for a hot block are `slot-{routing}:{offset}:{length}` or `{offset}:{length}`; the offset is the
 /// second-to-last colon-separated component and any leading `slot-{n}` carries the routing bucket.
 fn parse_hot_selector(selector: &str) -> Option<(u64, Option<u32>)> {
     let parts: Vec<&str> = selector.split(':').collect();
@@ -61,14 +61,14 @@ fn parse_hot_selector(selector: &str) -> Option<(u64, Option<u32>)> {
     Some((offset, routing_bucket))
 }
 
-/// Install the eviction handler that spills this engine's evicted hot pages to ITS block store.
+/// Install the eviction handler that spills this engine's evicted hot blocks to ITS block store.
 ///
 /// Registered per engine cache (not process-globally): every engine owns its own cache + block
-/// store, and a spilled page's real address is only valid within the block store it was written
+/// store, and a spilled block's real address is only valid within the block store it was written
 /// to. A process-wide handler capturing one engine's block store would misroute another engine's
 /// spills (their real slab lives in a different store). `register_eviction_callback` replaces the
 /// cache's callback, so a cache used 1:1 with an engine ends up with the correct store; the shared
-/// redirect map stays coherent because hot-page offsets are globally unique (one process-wide
+/// redirect map stays coherent because hot-block offsets are globally unique (one process-wide
 /// atomic), so an engine only ever looks up offsets it minted itself.
 ///
 /// Always installed. `TS_HOT_PAGE_SPILL` used to be able to skip it -- strictly additive, so the
@@ -117,7 +117,7 @@ fn spill_evicted_hot_block(
         }
         Err(err) => {
             // The value is still recoverable from the WAL on reload; log so an operator can see a
-            // hot page that failed to spill (it will read-as-missing until reload).
+            // hot block that failed to spill (it will read-as-missing until reload).
             tracing::error!(
                 shard_id,
                 offset,
@@ -128,7 +128,7 @@ fn spill_evicted_hot_block(
     }
 }
 
-/// Look up the real slab address a spilled hot page was written to, if any. Keyed by the synthetic
+/// Look up the real slab address a spilled hot block was written to, if any. Keyed by the synthetic
 /// address's `(shard_id, offset)`.
 pub(super) fn lookup_spilled(shard_id: ShardId, offset: u64) -> Option<ElementEntry> {
     redirects()

@@ -1,15 +1,15 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE PAGE LIST OF ONE BUCKET, AS A CONTAINER.
+//! THE BLOCK LIST OF ONE BUCKET, AS A CONTAINER.
 //!
 //! `BlockIndexMap::Many` held a `BTreeMap<u64, BlockIndex>` from #654 until #1963. This module is
 //! the measurement that replaced it with a flat list, and the guards that make the replacement a
 //! container change rather than a behaviour change.
 //!
 //! WHAT A TREE COSTS HERE. A `BTreeMap` leaf carries eleven value slots whether or not it fills
-//! them. At a 104-byte page entry that is 16 + 11x8 + 11x104 = 1,248 bytes of node per eleven
-//! pages, and the fill was measured at 63% -- so a page in a tree pays for about one and a half
+//! them. At a 104-byte block entry that is 16 + 11x8 + 11x104 = 1,248 bytes of node per eleven
+//! blocks, and the fill was measured at 63% -- so a block in a tree pays for about one and a half
 //! slots. A list pays for its own entry and for whatever capacity slack the growth policy leaves,
 //! and the growth policy is something this engine chooses. That is the whole of the argument, and
 //! every figure below is a measurement of one side of it.
@@ -23,7 +23,7 @@
 //!     representation, not by a sort at each reader.
 //!   * DUPLICATES. A map deduplicated by construction; a list does not.
 //!     `a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it` drives the
-//!     rewrite that would otherwise file a page twice, on both arms.
+//!     rewrite that would otherwise file a block twice, on both arms.
 //!   * THE STORED SHAPE. `BlockIndexMap` serializes as the same map of rendered string keys, in
 //!     the same string order, that it always did.
 //!     `the_stored_block_index_is_byte_for_byte_what_the_tree_wrote` holds that with an injection
@@ -34,7 +34,7 @@
 //! no `Many` arm is ever built, so a measurement taken there cannot say anything about the shape
 //! this module changes. `docs/runtime_tuning.md` tells an operator to set
 //! `TS_SHARD_END_ROUTING_BUCKET=1023`. Both ranges are measured at both corpus sizes, and the
-//! narrow arm ASSERTS it reached a multi-page bucket before any figure taken from it is believed.
+//! narrow arm ASSERTS it reached a multi-block bucket before any figure taken from it is believed.
 #![allow(clippy::all)]
 use super::*;
 use crate::engine::state::{
@@ -44,7 +44,7 @@ use crate::engine::state::{
 };
 use std::mem::size_of;
 
-/// The shortest list the `Many` arm ever holds. A bucket with one page is held inline and a
+/// The shortest list the `Many` arm ever holds. A bucket with one block is held inline and a
 /// bucket with none is `Empty`, so no shorter list exists to choose a strategy for.
 const SHORTEST_MANY: usize = 2;
 use std::collections::BTreeMap;
@@ -119,7 +119,7 @@ fn seed_routed(engine: &TemporalEngine, count: usize) -> Vec<String> {
 // 1. PRICE THE LENGTH FIRST: THE DISTRIBUTION, NEVER A MEAN
 // =============================================================================================
 
-/// Pages held per routing bucket, as bucket counts keyed by pages held.
+/// Blocks held per routing bucket, as bucket counts keyed by blocks held.
 #[derive(Debug, Default, Clone)]
 struct Lengths {
     counts: BTreeMap<usize, usize>,
@@ -140,7 +140,7 @@ impl Lengths {
 
     /// The length at or below which `fraction` of BUCKETS sit.
     ///
-    /// Over buckets and not over pages, because the question a representation asks is "how long is
+    /// Over buckets and not over blocks, because the question a representation asks is "how long is
     /// the list I am about to walk", and every bucket asks it once.
     fn percentile(&self, fraction: f64) -> usize {
         let buckets = self.buckets();
@@ -197,7 +197,7 @@ fn many_arm_lengths(engine: &TemporalEngine) -> Lengths {
 
 /// (Empty, One, Many) bucket counts.
 ///
-/// The single-page arm holds a POINTER rather than an inline entry now, so `One` costs eight bytes
+/// The single-block arm holds a POINTER rather than an inline entry now, so `One` costs eight bytes
 /// in the node plus one allocation instead of the width of a whole entry. The three-way split is
 /// unchanged, and it is still what the container decision turns on.
 fn arms(engine: &TemporalEngine) -> (usize, usize, usize) {
@@ -214,7 +214,7 @@ fn arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     counts
 }
 
-/// THE ARM HISTOGRAM AND THE PAGES-PER-KEY DISTRIBUTION, AT BOTH RANGES, AT TWO CORPUS SIZES.
+/// THE ARM HISTOGRAM AND THE BLOCKS-PER-KEY DISTRIBUTION, AT BOTH RANGES, AT TWO CORPUS SIZES.
 ///
 /// The number a container decision rests on is the LENGTH DISTRIBUTION, and a mean cannot carry
 /// it: a scan's cost lives entirely in the tail, and the tail is what a mean hides. So this
@@ -307,12 +307,12 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
 // 2. ORDER -- THE CENTRAL RISK, ANSWERED BY THE REPRESENTATION
 // =============================================================================================
 
-/// One page WITH ITS OBJECT KEY BESIDE IT rather than on it.
+/// One block WITH ITS OBJECT KEY BESIDE IT rather than on it.
 ///
 /// The pair is the shape every production site uses: `BlockIndexMap::insert`, `insert_released`
 /// and `block_index_handle` all take the identity as a PARAMETER, because the entry is losing its
 /// own copy. A fixture handing back a bare entry would force each caller to read the key off the
-/// page, which is the one thing this change removes.
+/// block, which is the one thing this change removes.
 fn block(
     object_key: &str,
     component: Option<&str>,
@@ -355,23 +355,23 @@ fn walk(index: &BlockIndexMap) -> Vec<u64> {
 /// production readers depend on that, and none of them would fail a test if it changed -- each
 /// would quietly produce a different answer:
 ///
-///   1. `engine::collect_command_index_items_for` emits one index-log item per page IN THIS
+///   1. `engine::collect_command_index_items_for` emits one index-log item per block IN THIS
 ///      ORDER, so the order is what goes into the index log.
-///   2. `storage_bucket_internals::collect_live_block_entries` materialises the live page set in
+///   2. `storage_bucket_internals::collect_live_block_entries` materialises the live block set in
 ///      this order; the dump manifest, WAL reclaim, compaction and the GC snapshot all read it.
 ///   3. `storage_bucket_internals`' storage-topology sampler walks it and BREAKS at
-///      `MAX_STORAGE_TOPOLOGY_SAMPLES`, so the order decides WHICH pages are sampled.
+///      `MAX_STORAGE_TOPOLOGY_SAMPLES`, so the order decides WHICH blocks are sampled.
 ///   4. `engine::bucket_index_shape_for_test` renders it as the string that a shard built by
 ///      commands is compared against a shard rebuilt from records -- two different fill orders.
 ///   5. `bucket_store::bucket_index_block_address`'s whole-scan fallback takes the FIRST match.
 ///
 /// Keeping the list sorted by the handle the tree was keyed by makes all five see the identical
-/// sequence. This asserts exactly that, by filling the same pages in three different orders.
+/// sequence. This asserts exactly that, by filling the same blocks in three different orders.
 ///
-/// AND IT CARRIES ITS OWN NEGATIVE CONTROL: the same pages appended UNSORTED are shown to give a
+/// AND IT CARRIES ITS OWN NEGATIVE CONTROL: the same blocks appended UNSORTED are shown to give a
 /// different walk, so a run in which the sort silently stopped happening cannot pass.
 ///
-/// rust-internal: page index ordering, no product behaviour
+/// rust-internal: block index ordering, no product behaviour
 #[test]
 fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
     let blocks: Vec<(std::sync::Arc<str>, BlockIndex)> = (0..24)
@@ -422,12 +422,12 @@ fn an_unsorted_block_list_would_reorder_every_walk_of_this_index() {
     );
 }
 
-/// The walk survives a page being REMOVED from the middle and another inserted after it.
+/// The walk survives a block being REMOVED from the middle and another inserted after it.
 ///
 /// A sorted list inserts in the middle; a guard that only ever appends would not notice a policy
 /// that pushed to the back.
 ///
-/// rust-internal: page index ordering, no product behaviour
+/// rust-internal: block index ordering, no product behaviour
 #[test]
 fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
     let mut live = BlockSlabLiveIndex::default();
@@ -470,33 +470,33 @@ fn the_walk_stays_ascending_across_removals_and_middle_inserts() {
 ///
 /// EVERY INSERT PATH REACHES `insert_unaccounted`: `BlockIndexMap::insert` (the accounted write
 /// path, four production call sites), `insert_released` (the one caller that re-files a released
-/// bucket's already-counted pages), and the `FromIterator` a load arrives through. So the
+/// bucket's already-counted blocks), and the `FromIterator` a load arrives through. So the
 /// duplicate decision is made in one place, and it is REPLACE -- which is what the map did, and
-/// what a rewrite of the same page needs, because the lookup refs on disk hold the handle and a
-/// second entry under it would be a page that can be found twice or lost on the next rewrite.
+/// what a rewrite of the same block needs, because the lookup refs on disk hold the handle and a
+/// second entry under it would be a block that can be found twice or lost on the next rewrite.
 ///
 /// Driven on BOTH arms: a duplicate arriving at `One` and a duplicate arriving at `Many`.
 ///
-/// rust-internal: page index insert semantics, no product behaviour
+/// rust-internal: block index insert semantics, no product behaviour
 #[test]
 fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() {
     let mut live = BlockSlabLiveIndex::default();
 
-    // --- The One arm, whose entry is now behind a pointer. A rewrite of the same page replaces the
+    // --- The One arm, whose entry is now behind a pointer. A rewrite of the same block replaces the
     // --- entry INSIDE the box it already has, so it allocates nothing and does not spill.
     //
     // WHAT A "REWRITE" IS HERE, BECAUSE IT IS NARROWER THAN IT SOUNDS. `block_index_handle` hashes
     // the model kind, the object key, the component AND the address -- slab, offset, length, block id
-    // and generation. So a page that MOVES gets a different handle and is a different entry; the only
-    // thing that reaches the replace branch is re-filing the BYTE-IDENTICAL page, which is what a
+    // and generation. So a block that MOVES gets a different handle and is a different entry; the only
+    // thing that reaches the replace branch is re-filing the BYTE-IDENTICAL block, which is what a
     // repeated append of an unchanged value produces.
     //
     // AND THAT IS WHY THE OBSERVABLE IS THE TALLY RATHER THAN THE ENTRY. A mutation run replaced
-    // `mem::replace(&mut **held, page)` with a no-op returning `None` and it SURVIVED: the stored
+    // `mem::replace(&mut **held, block)` with a no-op returning `None` and it SURVIVED: the stored
     // entry is byte-identical either way, so no amount of reading it back can tell the two apart.
     // What CAN tell them apart is the accounting. `insert` discharges the displaced address and
-    // charges the new one, which for an identical page nets to zero; a branch that reports no
-    // displaced address charges without discharging and DOUBLE-COUNTS the page. One page filed twice
+    // charges the new one, which for an identical block nets to zero; a branch that reports no
+    // displaced address charges without discharging and DOUBLE-COUNTS the block. One block filed twice
     // must leave one live ref, not two, and that is what this asserts.
     let mut index = BlockIndexMap::default();
     let (only_key, only) = block("solo", None, 5, 128);
@@ -568,15 +568,15 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
             walk(&index).windows(2).all(|pair| pair[0] < pair[1]),
             "the list stopped being sorted after a duplicate insert at length {length}"
         );
-        // And the page that came back is the one just written, not the one it displaced.
+        // And the block that came back is the one just written, not the one it displaced.
         let stored = index.get(&handle).expect("the rewritten block is findable");
         assert_eq!(
             target.address, stored.address,
             "the duplicate insert left the displaced address in place"
         );
         // AND THE TALLY DID NOT DOUBLE-COUNT IT -- the same blind spot the One arm had. A handle
-        // hashes the address, so a re-filed page is byte-identical and reading the entry back cannot
-        // distinguish a replacement from a no-op. The accounting can: this list's pages each sit on
+        // hashes the address, so a re-filed block is byte-identical and reading the entry back cannot
+        // distinguish a replacement from a no-op. The accounting can: this list's blocks each sit on
         // slab 9, so `length` refs is right and `length + 1` is the overwrite failing to discharge.
         assert_eq!(
             length as u64,
@@ -588,16 +588,16 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
     }
 }
 
-/// A rewrite that MOVES the page charges the tally the move, which is what a replace has to do
+/// A rewrite that MOVES the block charges the tally the move, which is what a replace has to do
 /// and what an append would get wrong twice over.
 ///
-/// The handle is a hash of identity AND address, so a page whose address moved takes a NEW handle
+/// The handle is a hash of identity AND address, so a block whose address moved takes a NEW handle
 /// and is a genuinely new entry -- the old one is removed by its own path. What this covers is the
 /// other case: the same handle arriving twice, where the map used to discharge the displaced
 /// address and charge the new one. `insert` returns the handle and discharges through
 /// `BlockSlabLiveIndex`, so the tally is the observable.
 ///
-/// rust-internal: page index accounting, no product behaviour
+/// rust-internal: block index accounting, no product behaviour
 #[test]
 fn replacing_a_block_discharges_the_address_it_displaced() {
     let mut live = BlockSlabLiveIndex::default();
@@ -630,7 +630,7 @@ fn replacing_a_block_discharges_the_address_it_displaced() {
 
 /// THE LIST, AND THE ONE OBJECT KEY EVERY ENTRY IN IT BELONGS TO.
 ///
-/// Every page here is a component of the same object, so ONE key names the whole list and the
+/// Every block here is a component of the same object, so ONE key names the whole list and the
 /// element type stays exactly `(u64, BlockIndex)`. That is load-bearing rather than tidy: two
 /// callers below measure `Vec<(u64, BlockIndex)>`'s own growth against this list's, and a key
 /// folded into the element would widen the very thing being measured and move both columns.
@@ -654,9 +654,9 @@ fn sorted_list(length: usize) -> (std::sync::Arc<str>, Vec<(u64, BlockIndex)>) {
 /// answering a correctness question it had no business answering.
 ///
 /// Covers hits and MISSES: the miss arm is the one that decides where an insert lands, so a
-/// strategy that got misses wrong would corrupt the sort rather than return a wrong page.
+/// strategy that got misses wrong would corrupt the sort rather than return a wrong block.
 ///
-/// rust-internal: page index lookup, no product behaviour
+/// rust-internal: block index lookup, no product behaviour
 #[test]
 fn the_walk_and_the_bisection_answer_identically_at_every_length() {
     let mut checked = 0usize;
@@ -721,10 +721,10 @@ fn the_walk_and_the_bisection_answer_identically_at_every_length() {
 /// WHAT IT SETTLES. The bisection becomes the cheaper of the two at a list of THREE, and the
 /// `Many` arm exists only from TWO -- where the two tie exactly. There is therefore no length
 /// this arm ever holds at which a walk is ahead, and no ceiling worth carrying. At the measured
-/// p50 of 39 pages a bucket the walk touches twenty entries against the bisection's five, which
+/// p50 of 39 blocks a bucket the walk touches twenty entries against the bisection's five, which
 /// is far outside any correction contiguity could make to a count.
 ///
-/// rust-internal: page index lookup cost, no product behaviour
+/// rust-internal: block index lookup cost, no product behaviour
 #[test]
 fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
     println!(
@@ -938,15 +938,15 @@ fn span_counts_both(body: impl FnOnce()) -> (u64, u64, u64) {
     (counts.alloc_bytes, counts.chunk_bytes, counts.allocs)
 }
 
-/// WHAT THE PAGE INDEX OF A REAL STORE COSTS AS A LIST AGAINST WHAT IT COST AS A TREE.
+/// WHAT THE BLOCK INDEX OF A REAL STORE COSTS AS A LIST AGAINST WHAT IT COST AS A TREE.
 ///
 /// BYTES AND ALLOCATIONS PER RECORD, AT TWO CORPUS SIZES, ON ONE INSTRUMENT. Both sides are built
-/// here, in one process, from the SAME pages the engine filed, at the real length distribution --
+/// here, in one process, from the SAME blocks the engine filed, at the real length distribution --
 /// so this is a before/after rather than a measurement set against an arithmetic. A published
 /// decline in this area had its sign inverted by comparing a `size_of` saving against an
 /// allocator cost; no `size_of` appears in this comparison.
 ///
-/// AT THE CONFIGURED RANGE. On the default whole keyspace every bucket holds its page inline and
+/// AT THE CONFIGURED RANGE. On the default whole keyspace every bucket holds its block inline and
 /// there is no container to compare, which is the trap #1959 fell into; the range measured here
 /// is the one `docs/runtime_tuning.md` tells an operator to set, and the fixture asserts it
 /// reached the `Many` arm before reporting anything.
@@ -974,7 +974,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         load_on(&engine, NARROW_END);
         let keys = seed_routed(&engine, records);
 
-        // The pages, bucket by bucket, exactly as the engine filed them -- EACH WITH THE KEY
+        // The blocks, bucket by bucket, exactly as the engine filed them -- EACH WITH THE KEY
         // THE BUCKET'S OWN LOOKUP NAMES IT BY. The entry carries no identity of its own, so the
         // pair is taken from `block_identities_in`, which is the same per-bucket projection every
         // production sweep uses. Built OUTSIDE the counted spans below, so the two container
@@ -1154,7 +1154,7 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     println!("  the step policy's worst byte saving against doubling is {worst:.1}%");
     // NEVER BEHIND. A policy that saves at the long lengths and LOSES at the short ones is a
     // policy that costs bytes on the corpus most buckets are in: at 4,000 records the measured
-    // p50 is 4 pages and the maximum is 8. The first spill taking two steps instead of one made
+    // p50 is 4 blocks and the maximum is 8. The first spill taking two steps instead of one made
     // a list of three cost twice what `Vec` would have, and this is what said so.
     assert!(
         worst >= 0.0,
@@ -1202,12 +1202,12 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     }
 }
 
-/// The single-page arm holding its entry INLINE, as a MIRROR of the shape that was replaced.
+/// The single-block arm holding its entry INLINE, as a MIRROR of the shape that was replaced.
 ///
 /// Built from the same field types the declaration used, so the width below is a statement about
 /// that shape rather than an estimate of it. Its other two arms are the shipped ones, which is what
 /// makes the only difference between it and `BlockIndexMap` the one under discussion: whether the
-/// single page sits in the node or behind a pointer.
+/// single block sits in the node or behind a pointer.
 #[allow(dead_code)]
 enum MirrorInlineArm {
     Empty,
@@ -1219,8 +1219,8 @@ enum MirrorInlineArm {
 ///
 /// THE TWO SIDES OF THE TRADE, AND #1964's OWN ARITHMETIC RE-DERIVED ON THIS TREE. #1964 kept the
 /// entry inline and recorded two numbers for it: "save 160.9 B on every bucket through `BucketMap`
-/// and pay 112.0 B on every single-page one, so it loses at every occupancy including the default
-/// range's 100%". Neither number is reused here -- every term in them has moved, the page entry
+/// and pay 112.0 B on every single-block one, so it loses at every occupancy including the default
+/// range's 100%". Neither number is reused here -- every term in them has moved, the block entry
 /// twice -- and the second column it never read is added:
 ///
 ///   SAVED, per bucket, everywhere: the inline arm's width is `8 + size_of::<BlockIndex>()` and the
@@ -1231,23 +1231,23 @@ enum MirrorInlineArm {
 ///   `BTreeMap`'s node cost depends on nothing else about the value, and a literal would go stale
 ///   the next time the entry narrows.
 ///
-///   PAID, per SINGLE-PAGE bucket only: one heap allocation holding one entry, in BOTH byte
+///   PAID, per SINGLE-BLOCK bucket only: one heap allocation holding one entry, in BOTH byte
 ///   columns. The served column is the one that decides; it is where a fresh allocation's rounding
 ///   appears, and an inline payload has no rounding to pay.
 ///
-/// SO THE ANSWER IS A CROSSOVER IN THE FRACTION OF BUCKETS HOLDING EXACTLY ONE PAGE, and what
+/// SO THE ANSWER IS A CROSSOVER IN THE FRACTION OF BUCKETS HOLDING EXACTLY ONE BLOCK, and what
 /// changed between #1964 and now is not the crossover but the FRACTION. #1964 measured on
 /// `load_shard`'s default of the whole `u32` routing keyspace, where every key lands in a bucket of
 /// its own by construction and the fraction is 100% for any workload. #1973 made 1023 the shipped
 /// default, where the same routed keys give 4.510% at 4,000 records and 0.000% at 40,000.
 ///
 /// WHAT #1964 SAID KEPT THE ARM, AND IT IS THE HALF THAT DOES NOT INVERT: "one allocation per
-/// single-page bucket on the write path." That is still exactly one allocation. What inverted is how
+/// single-block bucket on the write path." That is still exactly one allocation. What inverted is how
 /// many buckets pay it -- a twentieth of them at the small corpus and none at the large one -- so
 /// the COST is a twentieth of what it was, and the saving is unchanged on every bucket.
 ///
 /// AND THE ARM ITSELF SURVIVES. Boxing recovers the identical width dropping it would, measured, so
-/// the single-page case keeps a representation of its own; `inline_arm_trade.rs` is where dropping
+/// the single-block case keeps a representation of its own; `inline_arm_trade.rs` is where dropping
 /// and boxing are separated, and it is separated on the heap rather than on the width.
 ///
 /// rust-internal: measures container footprint, no product behaviour
@@ -1255,7 +1255,7 @@ enum MirrorInlineArm {
 #[test]
 #[ignore = "the counting allocator is process-wide; run by name"]
 fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it_would() {
-    // --- What the inline entry SAVED a bucket that holds one page: the whole heap cost of it. ---
+    // --- What the inline entry SAVED a bucket that holds one block: the whole heap cost of it. ---
     let (object_key, blocks) = sorted_list(1);
     let single = blocks[0].1.clone();
     let mut listed = BlockIndexMap::default();
@@ -1312,7 +1312,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     // --- What the inline entry cost EVERY bucket: the width it added, through the bucket map. ---
     //
     // BOTH STAND-INS DERIVED, NOT WRITTEN. `WIDE_WORDS` and `NARROW_WORDS` are computed from
-    // `size_of`, so the next change to the page entry moves them instead of silently leaving this
+    // `size_of`, so the next change to the block entry moves them instead of silently leaving this
     // test pricing a node width the engine no longer has.
     const BUCKETS: u32 = 4_096;
     const LIST_WIDTH: usize = size_of::<BlockIndexMap>();
@@ -1406,10 +1406,10 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     // shipped routing range is above or below it -- which is what the default decides and what is
     // asserted here.
     //
-    // 0.04510 is the measured single-page fraction at 4,000 records on the shipped range, and it is
+    // 0.04510 is the measured single-block fraction at 4,000 records on the shipped range, and it is
     // the WORST of the two corpus sizes for this change: at 40,000 the fraction is zero. If the
     // crossover ever falls below it, the inline entry has started paying for itself at the shipped
-    // default -- a node that narrowed further, or a page entry that widened -- and this change
+    // default -- a node that narrowed further, or a block entry that widened -- and this change
     // should be reconsidered rather than the assertion relaxed.
     const WORST_SHIPPED_SINGLE_BLOCK_FRACTION: f64 = 0.04510;
     assert!(
@@ -1433,10 +1433,10 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
 /// moved. So an index written by a build from before #1963 loads here, and one written here loads
 /// there, and this asserts it at the byte level rather than at the "it round-trips" level.
 ///
-/// WITH AN INJECTION CONTROL: one page altered must move the bytes, or a byte comparison that
+/// WITH AN INJECTION CONTROL: one block altered must move the bytes, or a byte comparison that
 /// always passes is proving nothing.
 ///
-/// rust-internal: page index wire shape, no product behaviour
+/// rust-internal: block index wire shape, no product behaviour
 #[test]
 fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     let (object_key, blocks) = sorted_list(24);
@@ -1484,7 +1484,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         written.len()
     );
 
-    // INJECTION CONTROL: a single altered page must move the bytes.
+    // INJECTION CONTROL: a single altered block must move the bytes.
     let mut injected = BlockIndexMap::default();
     for (at, (_, entry)) in blocks.iter().enumerate() {
         let mut entry = entry.clone();
@@ -1519,7 +1519,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
 /// the cache.
 ///
 /// THE CONTROL ON THE EXPLANATION: the same resolutions on the WHOLE keyspace, where every bucket
-/// holds one page inline and no list lookup happens at all, must charge ZERO. If that arm moves,
+/// holds one block inline and no list lookup happens at all, must charge ZERO. If that arm moves,
 /// the counter is counting something other than the list lookup and the narrow figure below
 /// cannot be attributed to it.
 ///
@@ -1580,13 +1580,13 @@ fn a_read_examines_entries_only_where_a_block_list_exists() {
 // 8. AN INDEPENDENT RESIDUAL
 // =============================================================================================
 
-/// EVERY PAGE THE ENGINE WROTE IS IN EXACTLY ONE LIST, COUNTED FROM THE OTHER END.
+/// EVERY BLOCK THE ENGINE WROTE IS IN EXACTLY ONE LIST, COUNTED FROM THE OTHER END.
 ///
 /// Not the sum of the rows above: this walks the bucket index and counts distinct HANDLES, then
-/// sets that against the keys the fixture wrote. A list that lost a page to a duplicate, or held
+/// sets that against the keys the fixture wrote. A list that lost a block to a duplicate, or held
 /// one twice, shows here as a non-zero residual with a name.
 ///
-/// WITH A PLANTED MARKER: a page is removed from the index behind the engine's back and the
+/// WITH A PLANTED MARKER: a block is removed from the index behind the engine's back and the
 /// residual must come back at exactly one, so a residual of zero is a measurement rather than an
 /// instrument that cannot count.
 ///
@@ -1602,8 +1602,8 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     let (distinct, total, listed_keys) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
-        // THE KEYS COME FROM THE LOOKUP BESIDE THE PAGES, not from the pages. That is a
-        // STRONGER claim than the field read was, and deliberately: a page the lookup does not
+        // THE KEYS COME FROM THE LOOKUP BESIDE THE BLOCKS, not from the blocks. That is a
+        // STRONGER claim than the field read was, and deliberately: a block the lookup does not
         // name would have been counted under its own copy of the key before, and is refused
         // here -- which is the state `insert_object_block_lookup` exists to rule out.
         let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
@@ -1643,10 +1643,10 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     );
     println!("  {total} blocks in {distinct} distinct handles over {} written keys; residual 0", keys.len());
 
-    // THE PLANTED LOSS. Take one page out from under the index and confirm the count above sees
+    // THE PLANTED LOSS. Take one block out from under the index and confirm the count above sees
     // it -- a residual that reads zero because it cannot count is worse than none.
     // NAMED UNDER THE READ LOCK, REMOVED UNDER THE WRITE ONE. The key is drawn from the
-    // bucket's lookup, which is a SIBLING FIELD of the bucket map -- so naming the page and
+    // bucket's lookup, which is a SIBLING FIELD of the bucket map -- so naming the block and
     // taking it out cannot be one borrow, and splitting them into two phases is simpler than
     // splitting the borrow.
     let planted = {

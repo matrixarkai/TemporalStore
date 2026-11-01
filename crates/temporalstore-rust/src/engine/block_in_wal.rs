@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Serving a written page back out of the log record that carries it.
+//! Serving a written block back out of the log record that carries it.
 //!
 //! # The hole this closes
 //!
@@ -17,14 +17,14 @@
 //!
 //! # Staging
 //!
-//! A page is often derived state rather than the command's own bytes -- a serialized counter
-//! series cannot be rebuilt from the command that bumped it -- so the page itself has to travel
-//! with the write. As a write produces pages it puts them aside here; the append attaches
+//! A block is often derived state rather than the command's own bytes -- a serialized counter
+//! series cannot be rebuilt from the command that bumped it -- so the block itself has to travel
+//! with the write. As a write produces blocks it puts them aside here; the append attaches
 //! whatever was staged to the record it writes and reports the log id that record landed at;
-//! and a read resolves the log id and takes its page straight out of the record.
+//! and a read resolves the log id and takes its block straight out of the record.
 //!
 //! The buffer is per thread and cleared at the start of every execute, so a command that stages
-//! a page and then fails to append cannot leak it into the next command's record.
+//! a block and then fails to append cannot leak it into the next command's record.
 //!
 //! # Addressing
 //!
@@ -36,7 +36,7 @@
 //! # Lifetime
 //!
 //! Registrations are live-path state, like the spill redirects: on reload the WAL is replayed
-//! and every page is re-derived, so they are never persisted, and a shard's entries are dropped
+//! and every block is re-derived, so they are never persisted, and a shard's entries are dropped
 //! when the shard unloads.
 
 use std::cell::RefCell;
@@ -47,21 +47,21 @@ use crate::types::ShardId;
 use crate::wal::{decode_wal_line, LocalWriteAheadLogStore, StagedBlock};
 
 thread_local! {
-    /// Pages produced by the write currently executing on this thread.
+    /// Blocks produced by the write currently executing on this thread.
     static STAGED: RefCell<Vec<StagedBlock>> = const { RefCell::new(Vec::new()) };
 }
 
 /// Start a write with nothing staged.
 ///
-/// Called before every execute. Without it a command that staged a page and then did not append
-/// -- a rejected write, a read-only command -- would leave the page for the next command to
+/// Called before every execute. Without it a command that staged a block and then did not append
+/// -- a rejected write, a read-only command -- would leave the block for the next command to
 /// attach to an unrelated record.
 pub(super) fn begin_write() {
     STAGED.with(|staged| staged.borrow_mut().clear());
     OUTCOMES.with(|outcomes| outcomes.borrow_mut().clear());
 }
 
-/// Put a page aside for the record this write is about to append.
+/// Put a block aside for the record this write is about to append.
 ///
 /// Unconditional. `TS_BLOCK_IN_WAL` used to gate it and is gone -- said the way
 /// `hot_block_spill` says the same thing about `TS_HOT_PAGE_SPILL`, because a retired flag that
@@ -70,12 +70,12 @@ pub(super) fn begin_write() {
 /// somebody reads to decide what an ack promises.
 pub(super) fn stage(object_id: u64, component: Option<&str>, bytes: &[u8]) {
     // Charged here rather than at the two call sites inside `append_value`: this copy is what
-    // carrying a page in its record COSTS, and a third caller staging a page would otherwise add
+    // carrying a block in its record COSTS, and a third caller staging a block would otherwise add
     // that cost to the store while adding nothing to the count.
     //
     // The component's copy is charged to the same class for the same reason. It is a second,
-    // smaller cost of carrying the page -- a hash field name is two or three bytes, a zset member
-    // is `16 + 2n` characters -- and it belongs beside the page copy it travels with rather than
+    // smaller cost of carrying the block -- a hash field name is two or three bytes, a zset member
+    // is `16 + 2n` characters -- and it belongs beside the block copy it travels with rather than
     // against whichever caller happened to render the name.
     crate::alloc_probe::in_class(crate::alloc_probe::AllocClass::CarriedBlock, || {
         STAGED.with(|staged| {
@@ -94,9 +94,9 @@ thread_local! {
         const { RefCell::new(Vec::new()) };
 }
 
-/// Put aside what this write DID: which object, and where its page now lives.
+/// Put aside what this write DID: which object, and where its block now lives.
 ///
-/// Staged for the same reason pages are -- the record does not exist yet, so there is nowhere
+/// Staged for the same reason blocks are -- the record does not exist yet, so there is nowhere
 /// to put it until the append.
 /// PROOF THAT AN OUTCOME HAS BEEN STAGED FOR THE RECORD.
 ///
@@ -134,7 +134,7 @@ pub(super) fn stage_outcome(item: crate::wal::WalOutcomeItem) {
 /// The staging itself, so the class above covers the opt-out return as well as the push.
 ///
 /// This charge sees the outcome BUFFER. Each item's own strings are built by the caller, before it
-/// gets here, and are charged to whatever class that caller is in -- for a page upsert the
+/// gets here, and are charged to whatever class that caller is in -- for a block upsert the
 /// bucket-index primitive re-enters this class around the item it builds, so that one path is
 /// whole; a future caller that does not will have its item counted as its own class's cost.
 fn stage_outcome_inner(item: crate::wal::WalOutcomeItem) {
@@ -166,23 +166,23 @@ pub(super) fn take_staged() -> Vec<StagedBlock> {
     STAGED.with(|staged| std::mem::take(&mut *staged.borrow_mut()))
 }
 
-/// (shard, object id) -> the log holding that page, where in it, and the WAL sequence of the
+/// (shard, object id) -> the log holding that block, where in it, and the WAL sequence of the
 /// record carrying it.
 ///
 /// The log handle is stored per entry rather than once per process: two engines in one process
 /// have separate logs, and a single shared handle would resolve one engine's addresses against
 /// the other's log -- reading the wrong bytes, silently.
 ///
-/// The sequence is what lets WAL reclaim coexist with these registrations: a registered page's
+/// The sequence is what lets WAL reclaim coexist with these registrations: a registered block's
 /// only durable copy is its record, so reclaim must never truncate below the lowest registered
 /// sequence (see [`min_registered_sequence`]).
 type Registration = (LocalWriteAheadLogStore, u64, u64);
 
-/// Which page this table is about: the object, and which element of it.
+/// Which block this table is about: the object, and which element of it.
 ///
 /// The second term is the whole point of this type existing rather than a bare `u64`. An object id
-/// resolves a RECORD, and one record carries many pages; without the element beside it the last
-/// page of a key to be written owns that key's entry and every earlier one becomes unreachable.
+/// resolves a RECORD, and one record carries many blocks; without the element beside it the last
+/// block of a key to be written owns that key's entry and every earlier one becomes unreachable.
 pub(super) type BlockKey = (u64, Option<std::sync::Arc<str>>);
 
 /// Build a key without owning the component until the map needs it.
@@ -190,23 +190,23 @@ fn block_key(object_id: u64, component: Option<&str>) -> BlockKey {
     (object_id, component.map(std::sync::Arc::from))
 }
 
-/// The same page identity, folded into ONE `u64`, for the persisted map that survives a reload.
+/// The same block identity, folded into ONE `u64`, for the persisted map that survives a reload.
 ///
 /// `ShardState::wal_resident_blocks` is part of the SERVED INDEX, so widening its key would be a
 /// change to a stored shape and would need `SHARD_INDEX_FORMAT_VERSION` to move -- and there is one
 /// such bump available in this campaign, held elsewhere. Folding instead keeps the stored type
 /// exactly as it is.
 ///
-/// A WHOLE-OBJECT PAGE KEEPS ITS OLD KEY EXACTLY. That is the property that makes this safe without
+/// A WHOLE-OBJECT BLOCK KEEPS ITS OLD KEY EXACTLY. That is the property that makes this safe without
 /// a version bump rather than merely cheap: `None` returns the object id unchanged, so every entry
 /// an older build wrote for a string or a control state still matches. An older build's entry for a
 /// container ELEMENT was written under the element's own object id and will not match the folded
 /// key, so it is simply not found -- and not-found is the direction this field's own documentation
 /// calls safe ("a stale entry costs a miss, never wrong bytes"), because the read falls through to
-/// the block store and, failing that, to a WAL replay that re-derives the page.
+/// the block store and, failing that, to a WAL replay that re-derives the block.
 ///
 /// FNV-1a over the id's bytes and then the component's, which is the mixing `stable_block_object_id`
-/// uses one level up, so a component that distinguishes two pages there distinguishes them here.
+/// uses one level up, so a component that distinguishes two blocks there distinguishes them here.
 pub(super) fn wal_resident_key(object_id: u64, component: Option<&str>) -> u64 {
     let Some(component) = component else {
         return object_id;
@@ -228,9 +228,9 @@ pub(super) fn wal_resident_key(object_id: u64, component: Option<&str>) -> u64 {
 /// that key for the whole process and handed its own log to whoever asked next -- so one engine
 /// served another engine's bytes for any key they happened to share.
 ///
-/// The element term is here for the same shape of reason one level down: two pages of one object
+/// The element term is here for the same shape of reason one level down: two blocks of one object
 /// are two entries, not one, and which of them a read wants is a question the object id cannot be
-/// asked. It is not sufficient on its own -- the map resolves a record and the page is then chosen
+/// asked. It is not sufficient on its own -- the map resolves a record and the block is then chosen
 /// INSIDE that record -- which is why [`StagedBlock::component`] exists as well.
 fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration>> {
     static REGISTRY: OnceLock<Mutex<HashMap<(usize, ShardId, BlockKey), Registration>>> =
@@ -238,11 +238,11 @@ fn registry() -> &'static Mutex<HashMap<(usize, ShardId, BlockKey), Registration
     REGISTRY.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
-/// Note that the pages in `record` live in the record at `log_id`, carried by the WAL record
+/// Note that the blocks in `record` live in the record at `log_id`, carried by the WAL record
 /// at `sequence`.
 ///
 /// A later write of the same object replaces its entry, so a registration always names the
-/// record holding the current page rather than a superseded one.
+/// record holding the current block rather than a superseded one.
 pub(super) fn register_record(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
@@ -268,7 +268,7 @@ pub(super) fn register_record(
     }
 }
 
-/// Register a page whose location came from the index rather than from an append.
+/// Register a block whose location came from the index rather than from an append.
 ///
 /// The append path learns the log id by writing the record; a reload learns it by reading the
 /// index. Same fact, different source, so it lands in the same table -- which is what lets the
@@ -292,7 +292,7 @@ pub(super) fn register_at(
 
 /// The lowest WAL sequence any of this shard's registrations IN THIS LOG still depends on, or
 /// `None` when nothing is registered. WAL reclaim uses this as the block-retention floor: a
-/// record at or above it may hold the only copy of a page the served index still points at, so
+/// record at or above it may hold the only copy of a block the served index still points at, so
 /// truncating it would turn an acked write into a MISSING read.
 ///
 /// Filtered by log identity, not just shard id: the registry is process-wide and every
@@ -321,11 +321,11 @@ pub(super) fn min_registered_sequence(
 ///
 /// Oldest first because that is the order in which they stop being worth holding: the lowest
 /// registered sequence is the one pinning the log's retention floor, so retiring it is what lets
-/// reclaim move at all. Newest are kept because a page written a moment ago is the one a read is
+/// reclaim move at all. Newest are kept because a block written a moment ago is the one a read is
 /// most likely to want, and it is already in the record the writer just wrote.
-/// Answers with the PAGE, not the object: two elements of one object are two entries here and
+/// Answers with the BLOCK, not the object: two elements of one object are two entries here and
 /// retiring one of them does not retire the other, so a caller handed only the object id would
-/// deregister a page it never looked at.
+/// deregister a block it never looked at.
 pub(super) fn oldest_registered_objects(
     block_store: &crate::block_store::BlockStore,
     shard_id: ShardId,
@@ -358,7 +358,7 @@ pub(super) fn registration_count(
 
 /// Retire one object's registration.
 ///
-/// Called when its page stops being log-resident -- materialised into the block store, so the
+/// Called when its block stops being log-resident -- materialised into the block store, so the
 /// index now names a real slab. Keeping it would pin the WAL retention floor to a record nothing
 /// needs, which is not a leak of bytes but of RECLAIM: the floor is the lowest live registration,
 /// so one stale entry holds the whole log.
@@ -387,10 +387,10 @@ pub(super) fn clear_shard(block_store: &crate::block_store::BlockStore, shard_id
     }
 }
 
-/// Read the page for `object_id` back out of the record carrying it.
+/// Read the block for `object_id` back out of the record carrying it.
 ///
 /// `None` means the object was never registered, its record has been reclaimed, or the record
-/// does not carry that page -- in every case the caller falls through to the behaviour it had
+/// does not carry that block -- in every case the caller falls through to the behaviour it had
 /// before, so this can only turn a miss into a hit.
 pub(super) fn read_block(
     block_store: &crate::block_store::BlockStore,
@@ -407,8 +407,8 @@ pub(super) fn read_block(
             block_key(object_id, component),
         ))?
         .clone();
-    // One batch record carries many pages, and an ingest reads several of the fields its own
-    // batch just wrote -- so the same record used to be pread and re-parsed once per page. WAL
+    // One batch record carries many blocks, and an ingest reads several of the fields its own
+    // batch just wrote -- so the same record used to be pread and re-parsed once per block. WAL
     // records are immutable once written (append-only), so a small decoded-record LRU cannot go
     // stale: a superseding write registers a NEWER log_id and old entries simply age out.
     if let Ok(cache) = record_lru().lock() {
@@ -459,12 +459,12 @@ pub(super) fn read_block(
         .map(|block| block.bytes)
 }
 
-/// Whether this carried page is the one the read asked for.
+/// Whether this carried block is the one the read asked for.
 ///
 /// BOTH TERMS, and that is the change this module exists for. `find` returns the first match and
-/// cannot see an ambiguity, so a predicate that tests less than the page's full identity does not
-/// answer "not found" when two pages match -- it answers with whichever one it reached first. On
-/// this path that is not a miss the caller falls through on; it is a plausible page of the right
+/// cannot see an ambiguity, so a predicate that tests less than the block's full identity does not
+/// answer "not found" when two blocks match -- it answers with whichever one it reached first. On
+/// this path that is not a miss the caller falls through on; it is a plausible block of the right
 /// object served for an element nobody asked about, which the caller then caches and serves.
 ///
 /// Written once and used at both sites deliberately. The two were separate copies of a one-line
@@ -473,7 +473,7 @@ fn names_block(block: &StagedBlock, object_id: u64, component: Option<&str>) -> 
     block.object_id == object_id && block.component.as_deref() == component
 }
 
-/// Decoded staged pages of recently read records, keyed by (log identity, shard, log id).
+/// Decoded staged blocks of recently read records, keyed by (log identity, shard, log id).
 /// Tiny on purpose: the working set is "the record(s) the current request's batch just wrote".
 /// Entries cannot go stale: WAL records are immutable, a superseding write registers a newer
 /// log id, and the post-dump WAL sweep never truncates a registered record (its floor).

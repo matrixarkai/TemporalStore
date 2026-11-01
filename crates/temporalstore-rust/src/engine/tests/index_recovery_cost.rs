@@ -179,7 +179,7 @@
 //! - THE RECOVERY SERVED THE CORPUS. A cheap recovery and a lossy one read the same, so every arm
 //!   probes the recovered store across the whole key range and reads the WITHHELD ordinal at the
 //!   same moment, which has to come back absent.
-//! - AND ONE EXPECTATION THAT WAS WRONG, KEPT HERE RATHER THAN QUIETLY DROPPED: the page term was
+//! - AND ONE EXPECTATION THAT WAS WRONG, KEPT HERE RATHER THAN QUIETLY DROPPED: the block term was
 //!   first required NON-ZERO, on the argument that a load warms the cache. It is ZERO at every
 //!   budget, in both regimes, at both store sizes. The expectation was wrong, not the instrument;
 //!   see the comment at the term itself.
@@ -628,7 +628,7 @@ fn recover(
     let (wal_after, wal_reads_after) = crate::wal::wal_piece_read_counts_on_this_thread();
     let (index_after, index_reads_after) =
         crate::index_log::index_log_piece_read_counts_on_this_thread();
-    // BEFORE the readback below, which would charge its own page reads to the recovery.
+    // BEFORE the readback below, which would charge its own block reads to the recovery.
     let blocks_after = engine.block_store().stats();
     let manifest = crate::engine::bucket_dump_manifest_io_counts();
     // `stats`, not `raw_stats`: the cached `last_sequence` is set by an APPEND, and a store
@@ -742,14 +742,14 @@ fn assert_recovery_can_express_it(reading: &Recovery) {
         "APPARATUS: {tag} has a zero base-image term, so the one reader every recovery has is \
          missing from the accounting"
     );
-    // NO ASSERTION ON THE PAGE TERM, AND THE REASON IS A MEASUREMENT THAT CONTRADICTED AN
+    // NO ASSERTION ON THE BLOCK TERM, AND THE REASON IS A MEASUREMENT THAT CONTRADICTED AN
     // EXPECTATION. This file first required it NON-ZERO, on the argument that the load warms
     // the cache through `reconcile_secondary_views_from_bucket_index`. It is ZERO -- at every
     // budget, in both regimes, at both store sizes. The expectation was wrong rather than the
     // instrument: a recovery over a base image plus a WAL tail rebuilds the secondary views
     // from the decoded index and from the records it replays, and asks the block store for
     // nothing. The term stays in the accounting by NAME so that a recovery which does start
-    // reading pages appears as a row rather than inside the residual, and the residual beside
+    // reading blocks appears as a row rather than inside the residual, and the residual beside
     // it is what would catch those bytes if the counter were the thing at fault.
     assert!(
         reading.kernel_rchar.is_some(),

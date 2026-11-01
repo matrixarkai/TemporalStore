@@ -62,7 +62,7 @@
 use super::*;
 use std::collections::BTreeMap;
 
-/// Resident set size of this process, in bytes. Field 2 of `/proc/self/statm` is resident pages.
+/// Resident set size of this process, in bytes. Field 2 of `/proc/self/statm` is resident blocks.
 fn resident_bytes() -> u64 {
     let statm = std::fs::read_to_string("/proc/self/statm").expect("procfs is mounted");
     let blocks: u64 = statm
@@ -536,10 +536,10 @@ fn the_optional_payload_is_paid_for_on_every_live_address() {
 ///
 /// EVERY ARM IS HELD ALIVE TO THE END, and that is load-bearing rather than tidy. Dropping an arm
 /// before measuring the next one returns its heap to the allocator's free lists but NOT to the
-/// kernel, so the next arm allocates into pages that are already resident and its RSS delta reads
+/// kernel, so the next arm allocates into blocks that are already resident and its RSS delta reads
 /// as approximately zero. That is a vacuous measurement that looks exactly like a free container:
 /// an earlier draft of this test reported "0.3 bytes/entry" for the packed arm and it meant
-/// nothing. Keeping every map live forces each arm to fault in new pages.
+/// nothing. Keeping every map live forces each arm to fault in new blocks.
 ///
 /// The `Vec` arm is the POSITIVE CONTROL: a `Vec<(u64, BlockAddress)>` has a known, tight
 /// footprint (56 bytes per element, no node), so if the harness cannot see that it cannot see
@@ -1577,7 +1577,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     );
 
     // Every arm still live, which is what makes the deltas independent rather than the
-    // allocator handing the next arm pages the last one just freed.
+    // allocator handing the next arm blocks the last one just freed.
     std::hint::black_box((&control, &short_btree, &short_split, &long_btree, &long_table));
 
     println!("--- SHORT population: {SHORT_SERIES} series of ONE entry ---");
@@ -1716,15 +1716,15 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
          Any excess means an arm has stopped riding a pointer niche and the node is paying for a \
          tag again"
     );
-    // THE PREDICATE IS AGAINST THE PAIR, NOT THE PAGE, BECAUSE THE PAGE DREW LEVEL WITH THE
-    // HEADER. It read `split < page` -- the map cannot be wide enough to hold a whole entry inline
-    // -- and that stopped discriminating the moment the entry reached twenty-four: a page-list
-    // header is a `Vec` header, which is also twenty-four, so the map and the page it must not be
+    // THE PREDICATE IS AGAINST THE PAIR, NOT THE BLOCK, BECAUSE THE BLOCK DREW LEVEL WITH THE
+    // HEADER. It read `split < block` -- the map cannot be wide enough to hold a whole entry inline
+    // -- and that stopped discriminating the moment the entry reached twenty-four: a block-list
+    // header is a `Vec` header, which is also twenty-four, so the map and the block it must not be
     // able to hold are now the SAME WIDTH and a strict `<` is simply false.
     //
     // THAT IS A COINCIDENCE OF WIDTHS AND NOT THE INLINE ARM COMING BACK, which is the distinction
     // worth getting right rather than relaxing the `<` to a `<=`. `<=` would be satisfied by the
-    // real shape AND by a map that had grown to exactly fit a page, which is the mutation this
+    // real shape AND by a map that had grown to exactly fit a block, which is the mutation this
     // guard exists to catch -- the one-sided comparison satisfied on the side the change moves.
     //
     // WHAT THE INLINE ARM WOULD ACTUALLY COST IS THE PAIR, not the entry alone: the `One` variant
@@ -1741,7 +1741,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
 
     // POSITIVE CONTROL for the predicate above, so a passing assert is not just a narrow enum.
     // This is exactly what the mutation would produce -- the `One` variant holding its entry INLINE
-    // again -- and it must FAIL the same test the real shape passes. Without this, `split < page`
+    // again -- and it must FAIL the same test the real shape passes. Without this, `split < block`
     // would keep passing on any enum that happened to be narrow for an unrelated reason, and the
     // guard would stop watching the thing it names.
     enum InlineShape {
@@ -1754,7 +1754,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     }
     let inline = std::mem::size_of::<InlineShape>();
     println!("  positive control: the same shape with One held inline is {inline} B");
-    // AGAINST THE PAIR TOO, for the same reason the subject assert is: `inline >= page` was true of
+    // AGAINST THE PAIR TOO, for the same reason the subject assert is: `inline >= block` was true of
     // any shape at least as wide as a lone entry, and an inline `One` holds a handle beside it.
     assert!(
         inline >= pair,
@@ -2007,8 +2007,8 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
     let mut named: BTreeMap<String, (u64, bool)> = BTreeMap::new();
     let mut longest: Vec<(u64, String)> = Vec::new();
 
-    // EVERY ROW BELOW NAMES ITS OBJECT FROM THE STRUCTURE BESIDE THE PAGE. `identity_of` is
-    // used rather than the live-only inversion because this walk reports on DELETED pages too --
+    // EVERY ROW BELOW NAMES ITS OBJECT FROM THE STRUCTURE BESIDE THE BLOCK. `identity_of` is
+    // used rather than the live-only inversion because this walk reports on DELETED blocks too --
     // two of its rows are about zero-length tombstones -- and a tombstone's object is named by
     // the bucket's own removal row, not by the object lookup.
     let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
@@ -2745,7 +2745,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     // two buckets, and `bucket_map` holds both.
     // AND THE LOOKUP IS FILED, WHICH IS WHAT THE REPORT NOW READS THE IDENTITY FROM.
     //
-    // `runtime_report` used to fall back to the entry's own copy for a live page nothing named,
+    // `runtime_report` used to fall back to the entry's own copy for a live block nothing named,
     // under a note calling that fallback "a scaffold with a lifetime" whose answer was that "the
     // lookup must be established before this report walks". The fallback is gone, so this fixture
     // has to establish it -- and it CAN, which that note doubted: it said the fixture cannot file
@@ -2754,7 +2754,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
     // here, and it is the door every production placement goes through.
     //
     // The handle is read back out of the map rather than recomputed, so the lookup records the
-    // position the map actually filed the page under.
+    // position the map actually filed the block under.
     let key: std::sync::Arc<str> = std::sync::Arc::from("one-key");
     for (routing_bucket, offset) in [(11u32, 0u64), (2_222u32, 4_096u64)] {
         let mut bucket = BucketNode {
@@ -2911,7 +2911,7 @@ impl DerivationCensus {
 
 /// THE STORED-AGAINST-DERIVED CENSUS IS RETIRED, AND ITS RETIREMENT IS WHAT IT LICENSED.
 ///
-/// `derivation_census` walked every live page entry, derived `stable_block_object_id(shard, kind,
+/// `derivation_census` walked every live block entry, derived `stable_block_object_id(shard, kind,
 /// key)` and compared it against the id the ADDRESS stored, reporting agree / differ / absent. It
 /// measured 100.00% agreement with 0 differing over 2,524 and 20,632 entries, and that measurement
 /// is the whole reason the stored copy could go.
@@ -2946,7 +2946,7 @@ const HASH_KEYS: usize = 64;
 const HASH_FIELDS: usize = 8;
 
 /// RETIRED WITH THE CENSUS IT READ. Its verdict -- the stored id equals the derivation on every
-/// live page entry, so the field is a cache and the address can shed it -- has been acted on. The
+/// live block entry, so the field is a cache and the address can shed it -- has been acted on. The
 /// address has shed it, so the measurement cannot be repeated and does not need to be.
 #[test]
 #[ignore = "retired: the stored side of this census no longer exists"]
@@ -3246,7 +3246,7 @@ fn the_priced_shapes_for_an_address_and_its_siblings() {
     const WAS_OPTION_VALUE: usize = 24;
     // 24, HAVING BEEN 40 AND 56, AND BOTH STEPS WERE LATER CHANGES THAN THE ADDRESS RELOCATION
     // THIS MODULE PRICES. The entry gave up its element name, and then its OBJECT IDENTITY, which
-    // lives once per object in `CoreIndex::object_block_lookup` instead of once per page; sixteen
+    // lives once per object in `CoreIndex::object_block_lookup` instead of once per block; sixteen
     // bytes each time. This module's own claim -- that the relocation changes neither the entry nor
     // the map by one byte -- is untouched by either; what moved is the baseline it says it about.
     //

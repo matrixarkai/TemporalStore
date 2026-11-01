@@ -145,10 +145,10 @@ pub struct RaftSnapshot {
     pub state_image_externalized: bool,
 }
 
-/// S2: an opaque engine STATE IMAGE — the exported served index plus every referenced page slab —
+/// S2: an opaque engine STATE IMAGE — the exported served index plus every referenced block slab —
 /// that reconstructs a shard's applied state without replaying the committed log. Mirrors the
 /// metadata-checkpoint the shared-store recovery path builds (index bytes + slab bytes +
-/// next-page-id), letting a snapshot install run in O(state) rather than O(total history).
+/// next-block-id), letting a snapshot install run in O(state) rather than O(total history).
 #[derive(Debug, Serialize, Deserialize, PartialEq, Eq)]
 pub struct RaftSnapshotStateImage {
     pub index_bytes: Vec<u8>,
@@ -262,7 +262,7 @@ pub const DATA_RAFT_CODEC_VERSION: u32 = 1;
 const DATA_RAFT_LOG_HEADER_LEN: usize = 56;
 const DATA_RAFT_COMMAND_HEADER_LEN: usize = 40;
 
-// S2: snapshot the engine STATE IMAGE (exported index + page slabs) instead of every committed
+// S2: snapshot the engine STATE IMAGE (exported index + block slabs) instead of every committed
 // log entry. `create_snapshot` captures an opaque image at the leader's applied index and drops
 // the replayable entries, so a far-behind follower installs in O(state) rather than replaying
 // O(total history); install reconstructs state from the image.

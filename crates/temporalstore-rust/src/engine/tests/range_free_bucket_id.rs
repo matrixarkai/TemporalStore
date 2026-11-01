@@ -34,10 +34,10 @@
 //! `bucket_for_object` is `start + hash % count`. At the shipped default `start` is 0 and `count`
 //! is 1,024, so `block_routing_bucket(key, 0, 1023)` and a range-free `hash(key) % 1024` are the
 //! SAME ARITHMETIC. `a_range_free_id_is_the_same_function_as_the_shipped_default` asserts that
-//! key for key at both corpus sizes, and it is why the pages-per-bucket distribution is not
+//! key for key at both corpus sizes, and it is why the blocks-per-bucket distribution is not
 //! measured again here: it cannot differ. `routing_range_default.rs` already reports that
 //! distribution as a histogram with p50/p90/p99/MAX and an asserted denominator over five ranges
-//! at 4,000 and 40,000 records, and the published table is `docs/runtime_tuning.md` -- 39 pages in
+//! at 4,000 and 40,000 records, and the published table is `docs/runtime_tuning.md` -- 39 blocks in
 //! the p50 bucket and 50 in the MAX at 40,000 records on `0..1023`, against 1 and 1 on the whole
 //! keyspace. A range-free id at a fixed count of 1,024 reproduces the `0..1023` column exactly,
 //! because it IS that column.
@@ -45,7 +45,7 @@
 //! # 3. WHAT IT COSTS IS THE ONLY FILL LEVER THE OPERATOR HAS
 //!
 //! The fill is `records / bucket-count`, and `docs/runtime_tuning.md` states the consequence
-//! plainly: "no fixed bucket count is right for every corpus ... `1023` sits at 3.91 pages a
+//! plainly: "no fixed bucket count is right for every corpus ... `1023` sits at 3.91 blocks a
 //! bucket for a 4,000-record store and 39.06 for a 40,000-record one." A range-free id needs a
 //! FIXED count to keep buckets full, and a fixed count is exactly what that sentence rules out.
 //! `a_fixed_bucket_count_cannot_reproduce_the_fills_the_range_produces` prints the four fills the
@@ -100,7 +100,7 @@
 //! `BucketMap` key; `BlockAddressWire`'s `rs` was a fourth until the slot was retired, and an
 //! address carries no bucket at all now), the index log's `IndexItem`, and the WAL's
 //! `WalOutcomeItem` -- and all three carry `object_key` as a string beside it. A re-file is
-//! therefore a walk of the index recomputing one `u32` per page.
+//! therefore a walk of the index recomputing one `u32` per block.
 //!
 //! THAT IS NOT A REASON TO DO IT. The migration being cheap is not an argument that the
 //! destination is better, and #1973's stamp already collects the whole benefit a re-file could:
@@ -111,7 +111,7 @@
 //!
 //! # AND THE FIELD IS NOT ONLY A DUPLICATE
 //!
-//! `validate_bucket_ownership_index_from_entries` compares the bucket a page CLAIMS on its address
+//! `validate_bucket_ownership_index_from_entries` compares the bucket a block CLAIMS on its address
 //! against the bucket the index FILED it under. Those are two independent statements of one fact,
 //! and the comparison is the only thing that can notice them diverging -- the mis-filing #1973 and
 //! #1977 both measured. Dropping the stamped copy to save bytes it does not save would also retire
@@ -149,10 +149,10 @@ fn range_free_bucket(key: &str, fixed_count: u32) -> u32 {
     (stable_object_hash(key) % u64::from(fixed_count)) as u32
 }
 
-/// Pages held per bucket, as bucket counts keyed by pages held, with the percentiles taken over
+/// Blocks held per bucket, as bucket counts keyed by blocks held, with the percentiles taken over
 /// the BUCKET population and the denominator printed on every line.
 ///
-/// One page per key, which is what a routed string key produces -- so this is the same quantity
+/// One block per key, which is what a routed string key produces -- so this is the same quantity
 /// `routing_range_default.rs` measures through a populated engine, computed from the id function
 /// instead. `the_fill_instrument_reproduces_the_published_figure` is what says the two agree.
 #[derive(Debug, Default)]
@@ -186,7 +186,7 @@ impl Fill {
         self.counts.keys().copied().next_back().unwrap_or_default()
     }
 
-    /// A count off the histogram, never an interpolation: every value it returns is a page count
+    /// A count off the histogram, never an interpolation: every value it returns is a block count
     /// some bucket actually holds.
     fn percentile(&self, fraction: f64) -> usize {
         let buckets = self.buckets();
@@ -227,7 +227,7 @@ impl Fill {
 ///
 /// `bucket_for_object` is `start + hash % count`, `start` is 0 at the shipped default and
 /// `routing_bucket_count(0, 1023)` is 1,024 -- so there is nothing left for a range-free
-/// `hash % 1024` to differ on. This is the measurement that makes the pages-per-bucket comparison
+/// `hash % 1024` to differ on. This is the measurement that makes the blocks-per-bucket comparison
 /// unnecessary rather than unreported: the distributions cannot differ because the ids do not.
 ///
 /// Stated over both corpus sizes with the denominator printed, because a value-identity assertion
@@ -312,7 +312,7 @@ fn the_same_scheme_against_itself_disagrees_on_nothing() {
 ///
 /// MEASURED, and the two corpus sizes do not agree on a rate: folding the stored legacy bucket
 /// into 1,024 recovers the range-free bucket for 155 of 4,000 keys (3.88%) and 255 of 40,000
-/// (0.64%). So 96.12% and 99.36% of a legacy store's pages could not be re-filed from what is
+/// (0.64%). So 96.12% and 99.36% of a legacy store's blocks could not be re-filed from what is
 /// stored.
 ///
 /// THE RESIDUAL IS NOT A NESTING RELATION AND MUST NOT BE READ AS ONE. Nested schemes would
@@ -445,7 +445,7 @@ fn a_fixed_bucket_count_cannot_reproduce_the_fills_the_range_produces() {
 
 /// THE FILL INSTRUMENT HERE REPRODUCES THE PUBLISHED FIGURE, WHICH IS WHAT LETS IT BE COMPARED.
 ///
-/// `docs/runtime_tuning.md` publishes 39 pages in the p50 bucket and 50 in the MAX at 40,000
+/// `docs/runtime_tuning.md` publishes 39 blocks in the p50 bucket and 50 in the MAX at 40,000
 /// routed records on `0..1023`, measured through a populated engine by `routing_range_default.rs`.
 /// This module computes the same quantity from the id function alone. If the two did not agree the
 /// figures above would not be comparable with anything, and a pure-function instrument that
@@ -622,7 +622,7 @@ fn removing_the_routing_bucket_recovers_no_bytes_alone_and_eight_in_combination(
     // the tail leaves 2, which still rounds to 8.
     //
     // 88 AND NOT 80: the node gained `tombstone_elements`, one word, when a removal's element name
-    // left the page entries, and it landed in the EIGHT-ALIGNED group. This is the FIFTH
+    // left the block entries, and it landed in the EIGHT-ALIGNED group. This is the FIFTH
     // decomposition of this struct in the suite and the last one found -- the other four were
     // restated when the word landed and this one was not, which is why the figure is a named
     // constant rather than a literal inside the assertion: a constant at least fails in one place.

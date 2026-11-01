@@ -29,7 +29,7 @@
 //!    publish_and_seed     3.109     3.107  0.999         3.109      3.107  0.999
 //!    wal_replay           0.467     0.156  0.333         7.661     10.566  1.379
 //!    index_fold          2 allocations, not a rate       14.360     14.352  0.999
-//!   promotion-check pages 1.0000    1.0000  1.000        1.5000     1.5000  1.000
+//!   promotion-check blocks 1.0000    1.0000  1.000        1.5000     1.5000  1.000
 //!   manifest bytes read 190.28    191.23   1.005        93.535     95.421  1.020
 //!   the log store's own
 //!     bytes_read           0         0      --         150.892    150.905  1.000
@@ -43,8 +43,8 @@
 //! WHAT IS FLAT. Everything the engine can see. Allocations per stored record in the reflected
 //! regime, 22.03 -> 21.71. The checkpoint decode, 18.458 -> 18.448 and 9.233 -> 9.225. The seed,
 //! 3.109 -> 3.107. The fold, 14.360 -> 14.352. The promotion check's walk, 1.0000 and 1.5000
-//! live model-map pages per stored record to four decimal places -- which is the count the 4.0
-//! allocations a page and 6.0 a stored record of #1884 and #1891 are rates over, and it has not
+//! live model-map blocks per stored record to four decimal places -- which is the count the 4.0
+//! allocations a block and 6.0 a stored record of #1884 and #1891 are rates over, and it has not
 //! moved at ten times the store. Manifest bytes read, 190.28 -> 191.23. Two of the nine
 //! allocation classes of #1922, 1.2309 -> 1.2289 and 1.0007 -> 1.0001. And the part of the span
 //! no phase row accounts for: 8 or 9 allocations, at every size and in every regime, which is a
@@ -353,7 +353,7 @@ struct Corpus {
     /// same value could not tell a correct pick from a constant.
     manifest_anchors: Vec<u64>,
     /// Slabs on disk after the writes, and how many of them hold live bytes. Both, because a
-    /// store whose every live page sits in slab 0 compares `{0}` against `{0}`.
+    /// store whose every live block sits in slab 0 compares `{0}` against `{0}`.
     slabs_on_disk: usize,
     slabs_holding_live_bytes: usize,
     /// Distinct keys the corpus actually wrote, counted from the strings rather than assumed.
@@ -394,7 +394,7 @@ fn build_corpus(
         engine.load_shard(1);
         // WHERE THE SLABS ROLL. Deliberately NOT the checkpoint boundary: a fixture whose slab
         // edges sat on the dumped/unreflected split would confound the two, and one whose every
-        // live page sat in slab 0 would compare `{0}` against `{0}`. A quarter and three
+        // live block sat in slab 0 would compare `{0}` against `{0}`. A quarter and three
         // quarters puts a DISJOINT key range in each of three slabs and crosses the checkpoint
         // boundary at neither.
         let roll_at = [records / 4, records * 3 / 4];
@@ -460,7 +460,7 @@ fn seed(
     let mut index = from;
     while index < to {
         let end = (index + BATCH).min(to);
-        // Roll the active slab when the corpus crosses a roll point, so the pages this shard
+        // Roll the active slab when the corpus crosses a roll point, so the blocks this shard
         // will be rebuilt from are spread over more than one slab.
         if roll_at
             .iter()
@@ -506,13 +506,13 @@ struct Restart {
     wal_bytes_read: u64,
     index_log_bytes_read: u64,
     index_log_reads: u64,
-    /// Page bytes the block store handed back during the restore, and the reads that fetched
+    /// Block bytes the block store handed back during the restore, and the reads that fetched
     /// them. The fourth named reader, and the one the first draft of this file was missing --
     /// which is what a residual that can be wrong is for.
     block_bytes_read: u64,
     page_reads: u64,
     /// The promotion check's borrow-only walk: how many times it ran, how many of those
-    /// REBUILT, and how many live model-map pages it walked. The 4.0 allocations a page and
+    /// REBUILT, and how many live model-map blocks it walked. The 4.0 allocations a block and
     /// 6.0 a stored record that #1884 and #1891 left behind are rates over exactly this
     /// count, and it is what makes them checkable at a size nobody has run them at.
     promote_checks: u64,
@@ -623,7 +623,7 @@ fn restore(dir: &std::path::Path, corpus: Corpus) -> Restart {
     let manifest_counts = crate::engine::bucket_dump_manifest_io_counts();
     let wal = engine.write_ahead_log_store().raw_stats(1);
     let index_log_after = engine.index_log_store().stats(1);
-    // BEFORE the probe reads below, which would charge their own page reads to the restore.
+    // BEFORE the probe reads below, which would charge their own block reads to the restore.
     let blocks_after = engine.block_store().stats();
     let (promote_checks, promote_rebuilds, promote_blocks) = promote_model_map_check_counts();
     let mut readable = 0usize;

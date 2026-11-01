@@ -35,7 +35,7 @@
 //!     is bounded by the victims -- so the audit row for a whole-store term read as a batch-sized
 //!     term at every size ever measured.
 //!   * the pressure gate reads `bucket_index_resident_bytes` before the round and again after it,
-//!     and each read walks every node and every resident page in the bucket index.
+//!     and each read walks every node and every resident block in the bucket index.
 //!
 //! AND IT IS UNDER THE SHARD-TABLE WRITE GUARD. `apply_storage_eviction` takes `shards.write()`
 //! and calls `release_bucket_blocks` inside it, so the whole-store walk is an interval every
@@ -43,7 +43,7 @@
 //!
 //! WHAT THE ACTUATOR RELEASES AT THE SHIPPED SETTINGS: nothing. `eviction_dump_before_evict`
 //! ships false, a bucket written and not yet dumped is dirty, and a dirty bucket is refused --
-//! correctly, because the model maps carry no per-page dirty bit for a reload to restore. So a
+//! correctly, because the model maps carry no per-block dirty bit for a reload to restore. So a
 //! default-configured round pays the whole-store walk and the two index walks to release zero
 //! blocks. Turn the dump on and the same round releases its victims; both arms are measured, and
 //! the refusal TERM is named rather than left as a count.
@@ -95,13 +95,13 @@ fn evict_engine(dir: &std::path::Path) -> TemporalEngine {
 /// THE SLAB LAYOUT IS THE FIXTURE, AND TWO EARLIER SHAPES OF IT PROVED NOTHING.
 ///
 /// The shipped slab target is 1 GiB, so a corpus of this size writes into ONE slab: every live
-/// page a victim holds carries `block_slab_id` 0, and a guard asserting that the victims span
+/// block a victim holds carries `block_slab_id` 0, and a guard asserting that the victims span
 /// slabs compares `{0}` with `{0}` and passes whatever the selection does.
 ///
 /// Rolling ONCE at the midpoint does not fix it, and the reason is the selection rather than the
 /// layout. `block_routing_bucket` recency is stamped by every command, read or write, with
 /// `now_ms()` (`engine.rs`), and the sampler ranks its pool coldest-first -- so the victims are
-/// the EARLIEST-WRITTEN buckets in its scan window, and the earliest-written pages are on the
+/// the EARLIEST-WRITTEN buckets in its scan window, and the earliest-written blocks are on the
 /// first slab by construction. Measured: a midpoint roll gave sixteen victims all on slab 0.
 ///
 /// A third shape also failed and is worth naming because it looks like the fix. Keys of the form
@@ -130,7 +130,7 @@ fn seed_with_a_slab_roll(engine: &TemporalEngine, count: usize) {
 /// the store's object hash is FNV-1a, a run of ordinals differs only in its last few digits, and
 /// at 8,000 records the eighty LOWEST routing buckets in the whole store came from ordinals 4,680
 /// to 4,699 -- twenty consecutive ordinals. The sampler ranks its pool by routing bucket when
-/// recency ties, so it chose sixteen victims from a twenty-ordinal window; pages are appended in
+/// recency ties, so it chose sixteen victims from a twenty-ordinal window; blocks are appended in
 /// write order, so any slab boundary drawn on the ordinal puts that whole window on ONE slab, and
 /// a guard asserting the victims span slabs compared `{1}` with `{1}` and failed -- or, had the
 /// roll fallen the other way, passed while proving nothing.
@@ -181,11 +181,11 @@ fn seed_range(engine: &TemporalEngine, from: usize, to: usize) {
     }
 }
 
-/// Live pages per object key, read straight off the model maps.
+/// Live blocks per object key, read straight off the model maps.
 ///
 /// The COUNT per key, not merely which keys are present. Evicting too much is data loss and it is
 /// silent, so the direction guard compares this map element by element against the same map taken
-/// before the round: a key that kept its entry but lost a page would pass a presence check.
+/// before the round: a key that kept its entry but lost a block would pass a presence check.
 fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -198,7 +198,7 @@ fn live_blocks_by_key(engine: &TemporalEngine) -> BTreeMap<String, usize> {
 
 /// Objects each routing bucket still claims, by bucket.
 ///
-/// A release empties a bucket's RESIDENT page list and deliberately keeps its `object_index` --
+/// A release empties a bucket's RESIDENT block list and deliberately keeps its `object_index` --
 /// that is what keeps a released bucket countable and distinguishes it from one that genuinely
 /// holds nothing. The model maps do not record it, so [`live_blocks_by_key`] cannot see it go; a
 /// release that dropped it would be silent everywhere else in this file.
@@ -213,7 +213,7 @@ fn objects_by_bucket(engine: &TemporalEngine) -> BTreeMap<u32, usize> {
         .collect()
 }
 
-/// Slab ids the shard's live pages actually sit on, and how many pages sit on each.
+/// Slab ids the shard's live blocks actually sit on, and how many blocks sit on each.
 fn live_blocks_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -224,7 +224,7 @@ fn live_blocks_by_slab(engine: &TemporalEngine) -> BTreeMap<u64, usize> {
     by_slab
 }
 
-/// The slab ids the named routing buckets hold resident pages on.
+/// The slab ids the named routing buckets hold resident blocks on.
 fn slabs_spanned_by(engine: &TemporalEngine, buckets: &BTreeSet<u32>) -> BTreeSet<u64> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -254,12 +254,12 @@ struct RoundCost {
     victims: usize,
     /// Model-map addresses the round LOOKED AT. The whole-store term.
     model_visits: u64,
-    /// Model-map pages the round MATERIALIZED. The batch-sized term, and the only one that had a
+    /// Model-map blocks the round MATERIALIZED. The batch-sized term, and the only one that had a
     /// counter before this file.
     model_emitted: u64,
-    /// Bucket-index nodes and pages the two resident-bytes reads walked.
+    /// Bucket-index nodes and blocks the two resident-bytes reads walked.
     resident_visits: u64,
-    /// Whole-store live-page entries materialized anywhere in the round.
+    /// Whole-store live-block entries materialized anywhere in the round.
     live_scan: u64,
     /// Recency entries the selection copied. Zero on the sampled arm by construction.
     recency_cloned: u64,
@@ -345,18 +345,18 @@ fn ratio(small: u64, large: u64) -> f64 {
 ///      are the same object and every ratio is a comparison of a thing with itself;
 ///   2. the store holds MORE THAN ONE block slab, and both slabs hold RECORDS. A slab count taken
 ///      from the directory would pass on two empty files;
-///   3. the victims a round chooses are the OLDEST-WRITTEN pages in the store, and not the
-///      pages a scan-ordered selection would reach. This clause used to assert that the victims
+///   3. the victims a round chooses are the OLDEST-WRITTEN blocks in the store, and not the
+///      blocks a scan-ordered selection would reach. This clause used to assert that the victims
 ///      SPAN slabs, and that was a property of the selection WINDOW rather than of the ordering.
-///      Every bucket in this fixture holds exactly one page and nothing is ever read here, so a
+///      Every bucket in this fixture holds exactly one block and nothing is ever read here, so a
 ///      bucket's recency IS its write time, and the fixture rolls a slab per seed batch -- which
 ///      makes the slab monotonic in that time. The coldest sixteen buckets in the store are
-///      therefore the earliest-written sixteen and their pages are on the FIRST slab, by
+///      therefore the earliest-written sixteen and their blocks are on the FIRST slab, by
 ///      construction, once the pass looks at enough of the store to find them. A selection that
 ///      spans slabs here is one that is NOT ordering by recency: the sixteen lowest ROUTING
 ///      buckets are scattered across the seed batches (see [`scale_key`]) and so across slabs,
 ///      which is exactly the set this clause now asserts the round does not take. Clause 2 is
-///      what keeps this from comparing `{0}` with `{0}`: live pages sit on every slab, so
+///      what keeps this from comparing `{0}` with `{0}`: live blocks sit on every slab, so
 ///      confining the victims to the first one is a choice the selection made;
 ///   4. the round chooses FEWER victims than there are buckets, which is what makes "per victim"
 ///      and "per record" different denominators at all.
@@ -418,9 +418,9 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     //
     // `scan_order` is what a selection ordered by position in the key space would take: the
     // leading entries of the ordered bucket map. Those buckets' ordinals are scattered across the
-    // seed batches, so their pages are scattered across slabs -- which is why this set is the
+    // seed batches, so their blocks are scattered across slabs -- which is why this set is the
     // right control and why a span used to read as a pass. The round's own victims are the
-    // oldest-written buckets, so their pages are on the earliest slabs. The two statements below
+    // oldest-written buckets, so their blocks are on the earliest slabs. The two statements below
     // are each other's: the recency answer reaches no further forward in slab order than the
     // scan answer does, and it is not the same answer.
     let scan_order = all_buckets
@@ -480,7 +480,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
 ///
 /// `eviction_dump_before_evict` ships FALSE. A bucket that has been written and not dumped is
 /// dirty, `release_bucket_blocks` refuses a dirty bucket, and it is right to -- the model maps
-/// carry no per-page dirty bit, so a reload could not restore what a release of a dirty bucket
+/// carry no per-block dirty bit, so a reload could not restore what a release of a dirty bucket
 /// dropped. Turn the dump on, the round dumps its victims and clears their dirty state first, and
 /// the same actuator releases them.
 ///
@@ -604,13 +604,13 @@ fn the_release_actuator_is_refused_at_the_shipped_setting_and_releases_with_the_
 /// A ROUND LOSES NOTHING, CHECKED ELEMENT BY ELEMENT AGAINST A CONTROL.
 ///
 /// The strong form, in both arms. Not "the store is still non-empty" and not "the keys are still
-/// there": the live-page COUNT for every key before the round is compared with the count after,
-/// key by key, so a key that survived with one of its two pages dropped fails here. The control
+/// there": the live-block COUNT for every key before the round is compared with the count after,
+/// key by key, so a key that survived with one of its two blocks dropped fails here. The control
 /// is the same map taken on the same engine immediately before the round.
 ///
 /// Both settings, because they take different paths through the actuator: one refuses every
 /// victim and one releases them. A release drops RESIDENT entries and keeps the model maps
-/// whole -- that is what makes it reversible -- so the live-page map must be identical across it.
+/// whole -- that is what makes it reversible -- so the live-block map must be identical across it.
 #[test]
 fn an_eviction_round_leaves_every_live_key_and_block_exactly_where_it_was() {
     for dump in [false, true] {
@@ -661,7 +661,7 @@ fn an_eviction_round_leaves_every_live_key_and_block_exactly_where_it_was() {
         );
 
         // THE SECOND DIRECTION, which the model maps cannot report. A released bucket keeps its
-        // object index; a mutant that cleared it alongside the page list would leave every
+        // object index; a mutant that cleared it alongside the block list would leave every
         // assertion above green and the store uncountable.
         let buckets_after = objects_by_bucket(&engine);
         let emptied = buckets_before
@@ -1333,7 +1333,7 @@ fn an_eviction_round_cannot_keep_up_with_the_store_it_is_draining() {
         }
 
         // WHAT ACCRUES, on the same engine and in the same process, so the box's load is common
-        // to both numbers and divides out of the ratio below. One write puts one page into the
+        // to both numbers and divides out of the ratio below. One write puts one block into the
         // index, which is the unit a release gives back.
         const WRITES: usize = 200;
         let started = std::time::Instant::now();
@@ -1462,7 +1462,7 @@ fn an_eviction_round_cannot_keep_up_with_the_store_it_is_draining() {
 /// Markers planted into the corpus so the visit counter's denominator can be recovered exactly.
 const PLANTED_MARKERS: usize = 37;
 
-/// Live model-map pages the shard holds, counted by a DIFFERENT walk from the one under test.
+/// Live model-map blocks the shard holds, counted by a DIFFERENT walk from the one under test.
 fn live_blocks_total(engine: &TemporalEngine) -> u64 {
     live_blocks_by_key(engine).values().map(|n| *n as u64).sum()
 }
@@ -1495,13 +1495,13 @@ fn plant_markers(engine: &TemporalEngine, count: usize) {
 /// Read this before any of the zeros below are believed. The claim of the two tests that follow
 /// is that a counter reads ZERO, and a counter wired to nothing reads zero at every store size
 /// and in every configuration -- so the first thing asserted here is the OTHER arm: a round that
-/// does reach the derivation charges the counter exactly the number of live model-map pages the
+/// does reach the derivation charges the counter exactly the number of live model-map blocks the
 /// shard holds, counted by a separate walk.
 ///
 /// PLANTED MARKERS. The corpus is `GUARD_SMALL` records and then [`PLANTED_MARKERS`] more under a
-/// disjoint prefix. The instrument must recover the planted count exactly: live pages minus the
+/// disjoint prefix. The instrument must recover the planted count exactly: live blocks minus the
 /// corpus is asserted EQUAL to 37, not merely positive, and the visit count is asserted EQUAL to
-/// live pages, not within a tolerance. An instrument that under-counted by one map, or that
+/// live blocks, not within a tolerance. An instrument that under-counted by one map, or that
 /// charged what the walk EMITS instead of what it VISITS -- which is the mistake that let this
 /// defect live -- fails both.
 #[test]
@@ -1566,7 +1566,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
 ///     reaches the model-map comparison. Visits and derivations are asserted EQUAL to zero at
 ///     both sizes.
 ///   * RELEASING (dump on) -- the control. Candidates survive, one derivation runs, and it visits
-///     exactly the live pages. Asserted EQUAL at each size rather than as a ratio, and asserted
+///     exactly the live blocks. Asserted EQUAL at each size rather than as a ratio, and asserted
 ///     to GROW with the corpus, so the refusing arm's zeros cannot be produced by a dead counter.
 ///
 /// The test fails if the two arms agree. That is the assertion that matters: a mutant that stops
@@ -1847,8 +1847,8 @@ fn the_surviving_release_pass_is_still_whole_store_in_both_batch_regimes() {
 /// Releasing a bucket that should have been kept is data loss and it is silent; failing to
 /// release one is space held. So the set released is compared ELEMENT BY ELEMENT against an
 /// oracle computed in this test from the shard's own state before the call, and every bucket the
-/// oracle says should survive is asserted to hold a page count EQUAL to what it held before --
-/// not merely non-zero, which a bucket that lost one of its two pages would satisfy.
+/// oracle says should survive is asserted to hold a block count EQUAL to what it held before --
+/// not merely non-zero, which a bucket that lost one of its two blocks would satisfy.
 ///
 /// The fixture is mixed by production code rather than by poking flags: half the candidates are
 /// dumped through `create_bucket_dump_manifest` and cleared through
@@ -1864,7 +1864,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
     let engine = evict_engine(dir.path());
     seed_with_a_slab_roll(&engine, GUARD_SMALL);
 
-    // Sixteen routing buckets that actually hold resident pages, in a stable order.
+    // Sixteen routing buckets that actually hold resident blocks, in a stable order.
     let candidates: Vec<u32> = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1 loaded");

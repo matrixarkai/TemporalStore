@@ -11,7 +11,7 @@
 //! and the model id -- folds them into one record, unfolds them, and compares. A merge that cannot
 //! survive that is a merge that drops a fact.
 //!
-//! AND ONE MEASUREMENT RATHER THAN AN ASSUMPTION. The inline arm cannot hold a page identity, so
+//! AND ONE MEASUREMENT RATHER THAN AN ASSUMPTION. The inline arm cannot hold a block identity, so
 //! how often that matters is a COUNT, not a reading:
 //! [`how_often_a_real_store_needs_the_layout_arm`] seeds a store through the ordinary write path
 //! and reports the split. Its answer decides whether the inline arm is the common case or the rare
@@ -386,8 +386,8 @@ fn the_decoder_refuses_by_name_rather_than_panicking() {
 /// generation it never had.
 #[test]
 fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
-    // The inline arm. Both ordinal states belong here: ABSENT (a log-resident page) and PRESENT
-    // AT ZERO (a slab-resident single-page object, which the store measurement says is 400 of 400
+    // The inline arm. Both ordinal states belong here: ABSENT (a log-resident block) and PRESENT
+    // AT ZERO (a slab-resident single-block object, which the store measurement says is 400 of 400
     // of what the ordinary write path files).
     let inline_cases: [(&str, ElementEntry, u8, Option<u64>, bool); 7] = [
         ("log-resident, no deadline, clean", ElementEntry::from_parts(3, 4_096, 128, None, None), 1, None, false),
@@ -420,7 +420,7 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
         checked += 1;
     }
 
-    // The layout arm: a page of a MULTI-page object, whose ordinal is nonzero. Ordinal zero is
+    // The layout arm: a block of a MULTI-block object, whose ordinal is nonzero. Ordinal zero is
     // included too, because the layout arm must hold everything the inline arm holds as well --
     // an arm that only works for the cases the other one refuses cannot serve a mixed object.
     let layout_cases: [(&str, ElementEntry, u8, Option<u64>, bool); 4] = [
@@ -453,11 +453,11 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
 
 /// THE INLINE ARM'S ONE LIMIT, REFUSED BY NAME RATHER THAN DROPPED -- AND ITS EXACT BOUNDARY.
 ///
-/// Twenty-three of the record's twenty-four bytes are spoken for, so the sixteen-bit page ordinal
+/// Twenty-three of the record's twenty-four bytes are spoken for, so the sixteen-bit block ordinal
 /// an [`ElementEntry`] carries has no inline home as a VALUE. Its PRESENCE does, as `BLOCK_IN_LOG`.
 /// So the boundary is at zero: ordinal absent and ordinal zero are both inline, and a nonzero
-/// ordinal -- which is a page of a multi-page object -- is refused by name and routed to the
-/// layout arm. Dropping it instead would resolve a key to a different page of the same object and
+/// ordinal -- which is a block of a multi-block object -- is refused by name and routed to the
+/// layout arm. Dropping it instead would resolve a key to a different block of the same object and
 /// read the wrong bytes with no error anywhere.
 ///
 /// BOTH SIDES OF THE BOUNDARY ARE ASSERTED. A test that only checked the refusal would pass if the
@@ -826,7 +826,7 @@ fn which_half_of_the_dirty_index_a_record_flag_would_remove() {
 
 /// HOW OFTEN A REAL STORE WOULD NEED THE LAYOUT ARM, measured through the ordinary write path.
 ///
-/// The inline arm holds a page with no identity; the layout arm holds one with an identity, at the
+/// The inline arm holds a block with no identity; the layout arm holds one with an identity, at the
 /// cost of a side allocation. Which of those is the COMMON case decides whether this record saves
 /// memory or spends it, and that is not something to reason about from the type -- it is a count
 /// over what a store actually files.

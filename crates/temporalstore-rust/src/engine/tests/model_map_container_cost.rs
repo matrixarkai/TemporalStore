@@ -25,7 +25,7 @@
 //!
 //! WHAT THE HISTOGRAM TURNED OUT TO BE, and it is a property of the WRITE PATH rather than of a
 //! fixture. `write_context_node` in `execute_on_shard.rs` is commented "the one producer of a node
-//! page", and it does exactly one thing to the model map:
+//! block", and it does exactly one thing to the model map:
 //!
 //!     shard.hashes.entry(object_key.to_string()).or_default()
 //!          .insert(CONTEXT_NODE_FIELD.to_string(), address);
@@ -276,7 +276,7 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     // first spelled `.insert(CONTEXT_NODE_FIELD.to_string(), address)` straight into the model map.
     // Then it minted a record and installed a proof, because the map's inner field became private.
     // Now it calls ONE function that does both. Each time, the fact this test pins -- exactly one
-    // producer of a context-node page -- was unchanged, and each time the matcher reported zero
+    // producer of a context-node block -- was unchanged, and each time the matcher reported zero
     // until it was updated. That is the right failure mode: a rename makes this test fail loudly
     // rather than pass while counting nothing, and the assertion below names the number it saw.
     //
@@ -287,7 +287,7 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     // RESTATED A FOURTH TIME, and the count of restatements is itself the point: this matcher has
     // tracked an inline `.insert(CONTEXT_NODE_FIELD.to_string(), address)`, then a record mint, then
     // a one-call `install_context_node_element`, and now the ONE generic operation named with the
-    // kind it is for. Each time the FACT it pins -- exactly one producer of a context-node page --
+    // kind it is for. Each time the FACT it pins -- exactly one producer of a context-node block --
     // was unchanged, and each time the matcher reported zero until it was moved. Reporting zero
     // loudly is the right failure mode; being relaxed to accept anything would not be.
     //
@@ -447,7 +447,7 @@ fn percentile(sorted: &[usize], p: f64) -> usize {
 }
 
 /// Print a histogram -- the distinct occupancies with their counts and share -- plus percentiles,
-/// MAX and the denominator. Never a mean standing alone: a mean of 1.98 pages a bucket in this
+/// MAX and the denominator. Never a mean standing alone: a mean of 1.98 blocks a bucket in this
 /// engine covered a population with ZERO buckets holding two.
 fn report_histogram(label: &str, sorted: &[usize]) {
     println!("--- fields per hash: {label} ---");
@@ -709,7 +709,7 @@ fn what_a_hash_field_map_costs_per_instance_and_per_field() {
             drop(built);
         }
 
-        // --- #1964's shape for the page index: one exact-sized sorted vector ---
+        // --- #1964's shape for the block index: one exact-sized sorted vector ---
         {
             let batches = pairs_for(INSTANCES, occupancy);
             let probe = Probe::start();
@@ -987,7 +987,7 @@ fn what_the_outer_model_maps_cost_per_map_and_per_key() {
 /// THE OBJECT KEY IS STORED TWICE, AND THIS PRICES THE SECOND COPY.
 ///
 /// Every object key is the `String` key of its outer model map AND `object_key: Arc<str>` on every
-/// bucket-index page entry for that object. The index side is an `Arc`, so the question is how
+/// bucket-index block entry for that object. The index side is an `Arc`, so the question is how
 /// many DISTINCT allocations back those entries -- counted here by pointer identity rather than by
 /// multiplying entries by a width, which would report a shared allocation once per sharer.
 ///
@@ -1019,16 +1019,16 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
 
         // COPY TWO: the index side. Counted by DISTINCT Arc allocation.
         //
-        // THE TEXT IS READ THROUGH THE POSITION MAP AND THE PER-ENTRY POINTER IS GONE. A page
+        // THE TEXT IS READ THROUGH THE POSITION MAP AND THE PER-ENTRY POINTER IS GONE. A block
         // entry holds no `Arc<str>`, so there is no per-entry pointer to charge and no copy on
-        // the page to deduplicate; what the index side costs for this object's TEXT is what the
+        // the block to deduplicate; what the index side costs for this object's TEXT is what the
         // bucket's own lookup holds, which is one allocation per (kind, object). That is reached
         // here through the same inversion every reader uses, so the pointer set is still a set of
         // real allocations and `distinct` still answers the question this census asks: how many
         // allocations of the key text does the index side hold.
         //
         // `arc_pointer_bytes` WAS `entries * size_of::<Arc<str>>()` AND IS NOW ZERO. It was the
-        // fat pointer every page carried whether or not it shared the text, and it was a third of
+        // fat pointer every block carried whether or not it shared the text, and it was a third of
         // this comparison. It is stated as a zero with the entry width beside it rather than
         // dropped, because a table that simply lost the row would read as the pointer having been
         // forgotten rather than retired.
@@ -1504,7 +1504,7 @@ fn what_the_engine_resident_field_maps_cost_against_the_container_they_replaced(
 ///
 /// The histogram is bimodal and 99% of its keys hold one field, which is exactly the shape that
 /// invites an inline arm: keep the one field IN the enum and allocate nothing at all. #1964 found
-/// such an arm held only at 100% single-page buckets and cost 179.1 B a bucket on the wide range,
+/// such an arm held only at 100% single-block buckets and cost 179.1 B a bucket on the wide range,
 /// so it needs its own measurement at the real occupancy rather than an argument -- and the cost it
 /// carries is not in the arm, it is in the OUTER map, whose value slot has to widen to the inline
 /// arm's width for every key including the wide ones.

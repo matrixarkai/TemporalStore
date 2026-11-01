@@ -18,7 +18,7 @@
 //!     by position.
 //!   * THE REBUILD. `update_bucket_layout` assigned `bucket.object_index = live_object_ids.into()`
 //!     from a `BTreeSet`, so every call re-handed every slot in ascending id order -- and it has
-//!     eleven production callers, so a write touching any page in a bucket renumbered every object
+//!     eleven production callers, so a write touching any block in a bucket renumbered every object
 //!     in it. It reconciles now, and what it reconciles is counted rather than overwritten.
 //!
 //! # WHY EACH TEST HERE CARRIES A CONTROL THAT WOULD FAIL UNDER THE OLD BEHAVIOUR
@@ -298,7 +298,7 @@ fn a_stored_array_that_names_one_object_twice_keeps_the_first_slot_and_counts_th
 
 /// THE DIVERGENCE COUNTER MOVES ON A PLANTED DISAGREEMENT, and this exists before any zero is read.
 ///
-/// The maintenance scan used to ASSIGN the object list from the pages, so a list that disagreed was
+/// The maintenance scan used to ASSIGN the object list from the blocks, so a list that disagreed was
 /// overwritten and the disagreement left no trace. "8,679 rebuilds, 0 divergences" was therefore a
 /// statement about a comparison nobody made. The scan reconciles now and counts what it reconciles
 /// -- and a counter that has never moved cannot be told from one that is not wired up, which is why
@@ -359,7 +359,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
     // only a delta taken inside this body is. Every assertion below is therefore a subtraction
     // between two readings taken around one action.
 
-    // --- ARM 1, THE POSITIVE CONTROL: plant an id no live page names, then rebuild that bucket. ---
+    // --- ARM 1, THE POSITIVE CONTROL: plant an id no live block names, then rebuild that bucket. ---
     const PLANTED: u64 = 0xD15A_6E_ED_BEEF_0001u64;
     let (routing_bucket, slots_before) = {
         let mut shards = engine.shards.write().expect("shards lock poisoned");

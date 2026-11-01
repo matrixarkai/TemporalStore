@@ -1973,7 +1973,7 @@ impl ProxyService {
             .iter()
             .enumerate()
             .all(|(offset, id)| *id == options.context_first_shard_id + offset as u64);
-        // A short page means there are more shards than were listed; a partial view could look
+        // A short block means there are more shards than were listed; a partial view could look
         // contiguous when the whole set is not, so do not conclude anything from it.
         let complete = listed.next_after_shard_id.is_none();
         let usable = complete && contiguous_from_first;

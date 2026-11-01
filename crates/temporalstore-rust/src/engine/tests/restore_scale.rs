@@ -130,18 +130,18 @@
 //! ```
 //!
 //! 6.0 allocations per record the shard holds, at both sizes, because the fold is not the only
-//! caller inside the measured span. The rate is the same 4.0 per live model-map page at each: the
+//! caller inside the measured span. The rate is the same 4.0 per live model-map block at each: the
 //! fold sees all 2,000 and 20,000, and the publish sees the 1,000 and 10,000 the checkpoint
 //! carried, before replay has put the tail back. The fold falls from 18.4 to 14.4 allocations per
 //! stored record, which is the rate
 //! `what_bringing_a_shard_back_costs_at_two_corpus_sizes` holds to a band.
 //!
-//! What was NOT taken is stopping the walk at the first page found missing. The old `any()` did;
+//! What was NOT taken is stopping the walk at the first block found missing. The old `any()` did;
 //! `visit_model_live_blocks` is shared by four callers and has no way to be told to stop, and on
 //! every path measured here nothing is ever missing, so the early exit was never reached and
 //! removing it costs nothing that can be measured. The lookup still stops.
 //!
-//! What the check decides, and the four arms of it -- including the one where a page IS missing,
+//! What the check decides, and the four arms of it -- including the one where a block IS missing,
 //! which no corpus here reaches -- are in `engine/tests/promote_precondition.rs`.
 //!
 //! TWO THINGS THE PHASE NAMES DO NOT PREDICT, both in

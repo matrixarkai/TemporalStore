@@ -48,7 +48,7 @@ async fn main() {
     ] {
         replicator
             // THESE TWO FIELDS ARE NOT OPTIONAL TO SUPPLY, ONLY OPTIONAL TO CARRY. A shared-store
-            // WAL entry gained `staged_blocks` (pages a command cannot rebuild) and `outcomes`
+            // WAL entry gained `staged_blocks` (blocks a command cannot rebuild) and `outcomes`
             // (what the write DID, so a successor installs results instead of re-running), and
             // `command` became `Option` because an entry carrying outcomes has no need of it.
             // Both new fields are `serde(default)`, so an older entry still decodes -- but a

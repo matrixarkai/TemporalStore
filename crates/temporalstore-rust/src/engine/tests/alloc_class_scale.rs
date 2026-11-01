@@ -95,7 +95,7 @@ const BATCH: usize = 100;
 /// xorshift64*, seeded by index, so no two records share a payload.
 ///
 /// A repeated byte compresses, and the biggest class by bytes is a compressing encode: a corpus of
-/// identical values would report the page-byte class at a fraction of its real size and call that
+/// identical values would report the block-byte class at a fraction of its real size and call that
 /// a measurement.
 fn incompressible(len: usize, seed: u64) -> Vec<u8> {
     let mut state = 0x2545_F491_4F6C_DD1D_u64
@@ -437,7 +437,7 @@ fn allocations_outside_every_class_move_no_row() {
 
 /// Nesting: the innermost scope owns the allocation, and the outer one resumes afterwards.
 ///
-/// This is what lets the carried-page copy and the payload encode be told apart from the slab
+/// This is what lets the carried-block copy and the payload encode be told apart from the slab
 /// append they both happen inside, which is the one place classes are genuinely nested in
 /// production.
 #[cfg(feature = "alloc-probe")]

@@ -9,43 +9,43 @@
 //! `shard.dirty_objects.bucket_counts()` loop at the foot of `bucket_storage_summaries` -- and that
 //! set is object-keyed and grows with the ingest. The dirty-BUCKET question has already stopped
 //! needing it: `the_block_bit_answers_the_dirty_bucket_question` measures the bucket's own `dirty`
-//! bit and its pages' bits answering it exactly. The obvious next step is to answer the per-bucket
-//! COUNT the same way, from each bucket's own pages, and retire the set.
+//! bit and its blocks' bits answering it exactly. The obvious next step is to answer the per-bucket
+//! COUNT the same way, from each bucket's own blocks, and retire the set.
 //!
 //! This measures whether that is possible, and the answer is different for the two questions the
-//! field is asked. THE COUNT IS NOT DERIVABLE. THE `> 0` IS, but not from the pages -- from the
+//! field is asked. THE COUNT IS NOT DERIVABLE. THE `> 0` IS, but not from the blocks -- from the
 //! `dirty` flag on the bucket's own node, which `mark_object_dirty` sets after CREATING the node
-//! when the key has none. So a key with no page at all still leaves a node reading dirty, and the
+//! when the key has none. So a key with no block at all still leaves a node reading dirty, and the
 //! three consumers that only ask `> 0` can move where the count cannot. Both results are measured
 //! below on one shard.
 //!
-//! A COUNT OF DIRTY PAGES IS NOT A COUNT OF DIRTY OBJECTS, so the derived figure counts DISTINCT
-//! objects having at least one dirty page in the bucket -- identity taken from
-//! `BlockKeysByPosition`, which is how a production derivation would have to take it, because a page
-//! entry holds no identity of its own. The fixture is built so a page count and an object count are
-//! DIFFERENT NUMBERS; otherwise this could not tell a correct derivation from a page tally.
+//! A COUNT OF DIRTY BLOCKS IS NOT A COUNT OF DIRTY OBJECTS, so the derived figure counts DISTINCT
+//! objects having at least one dirty block in the bucket -- identity taken from
+//! `BlockKeysByPosition`, which is how a production derivation would have to take it, because a block
+//! entry holds no identity of its own. The fixture is built so a block count and an object count are
+//! DIFFERENT NUMBERS; otherwise this could not tell a correct derivation from a block tally.
 //!
 //! # WHAT IT MEASURES
 //!
 //!     48 keys on a 16-bucket routing range, dumped clean, then three re-dirtied and two removed
 //!
 //!       buckets with a count, via the SET        8     total via the SET       11
-//!       buckets with a count, via the PAGES      3     total via the PAGES      3
-//!                                                     total dirty PAGES        9
-//!       set members with NO live page at all     8     widest object 3 pages
+//!       buckets with a count, via the BLOCKS      3     total via the BLOCKS      3
+//!                                                     total dirty BLOCKS        9
+//!       set members with NO live block at all     8     widest object 3 blocks
 //!
 //!       bucket        0   2   3   6   7  11  12  15
 //!       set           1   1   1   1   3   2   1   1
 //!       node.dirty()  t   t   t   t   t   t   t   t
 //!       objects       0   0   1   0   1   0   0   1
 //!
-//! The page-derived figure reports 3 of the authority's 11 marks, and FIVE OF THE EIGHT DIRTY
-//! BUCKETS report zero. Bucket 7 shows the shortfall is not confined to the buckets the page walk
+//! The block-derived figure reports 3 of the authority's 11 marks, and FIVE OF THE EIGHT DIRTY
+//! BUCKETS report zero. Bucket 7 shows the shortfall is not confined to the buckets the block walk
 //! cannot see at all: it holds three marks and the walk finds one, so this is not a factor that
 //! could be corrected for.
 //!
 //! THE NODE FLAG, THOUGH, AGREES WITH THE SET ON EVERY ONE OF THE SIXTEEN BUCKETS -- in both
-//! directions, and including the five that hold no page at all. That is asserted here, so the
+//! directions, and including the five that hold no block at all. That is asserted here, so the
 //! three `> 0` consumers rest on a measurement rather than on this paragraph.
 //!
 //! # AND THE FLAG IS AN INDEPENDENT RECORD, NOT A CACHE OF THE SET
@@ -55,7 +55,7 @@
 //! reconstruct ORs in `dirty_objects.contains(key)` -- so the agreement above could have been
 //! circular, with the flag merely echoing the set on the very buckets that carry the result. The
 //! `has_bucket` doc is itself a reason to suspect it: those OR terms exist because the index "is a
-//! strict SUPERSET of what that fold can find", which is this same non-page-backed population.
+//! strict SUPERSET of what that fold can find", which is this same non-block-backed population.
 //!
 //! Six arms, each neutralising maintainers of the flag and re-running this test:
 //!
@@ -63,13 +63,13 @@
 //!     B  the `has_bucket` OR neutralised ..................... PASSES
 //!     C  the `contains` OR neutralised ....................... PASSES
 //!     D  all three at once ................................... FAILS, buckets [0, 11, 12]
-//!     E  BOTH set-derived ORs off, the mark KEPT .............. PASSES, no-page buckets intact
+//!     E  BOTH set-derived ORs off, the mark KEPT .............. PASSES, no-block buckets intact
 //!     F  both ORs off AND the mark off (= D) ................. FAILS, buckets [0, 11, 12]
 //!
 //! A, B and C passing alone says only that the three maintainers are REDUNDANT -- no single
 //! removal can decide which record is authoritative, because the survivors cover. E is the arm that
 //! decides it: with both set-derived terms gone, the agreement still holds on all sixteen buckets
-//! and the five no-page buckets are still reported. So the mark alone maintains the flag, and F
+//! and the five no-block buckets are still reported. So the mark alone maintains the flag, and F
 //! differing from E is what shows E is isolating the mark rather than agreeing with nothing.
 //!
 //! The consequence is the useful part: the node's flag and the set are two records of the same
@@ -79,19 +79,19 @@
 //!
 //! # WHY, AND BOTH REASONS WERE REACHED HERE
 //!
-//!   1. A DIRTY OBJECT NEED NOT HAVE A PAGE. A removal marks a `control_state:cpc:*` record
-//!      alongside the data object, and control state is not page-backed -- so there is no `dirty`
+//!   1. A DIRTY OBJECT NEED NOT HAVE A BLOCK. A removal marks a `control_state:cpc:*` record
+//!      alongside the data object, and control state is not block-backed -- so there is no `dirty`
 //!      bit anywhere that could carry its dirtiness.
 //!      `dirty_objects_versus_the_blocks_own_dirty_flags` measures the same thing from the other
 //!      end, at 80 of 160. Eight of the eleven marks here are of this kind.
 //!   2. THOSE RECORDS ROUTE TO BUCKETS OF THEIR OWN. `DirtyObjectIndex::insert` files a key under
 //!      `block_routing_bucket(key, start, end)`, so a `control_state:cpc:*` record contributes 1 to
-//!      ITS bucket -- which holds no page at all. That is where the five invisible buckets come
+//!      ITS bucket -- which holds no block at all. That is where the five invisible buckets come
 //!      from, and it is why the shortfall is not a uniform factor that could be corrected for.
 //!
-//! # WHY A PAGE-DERIVED COUNT IS A LOSS AND NOT A WOBBLE
+//! # WHY A BLOCK-DERIVED COUNT IS A LOSS AND NOT A WOBBLE
 //!
-//! Dump selection filters on `summary.dirty_object_count > 0`. A bucket a page walk reads as zero
+//! Dump selection filters on `summary.dirty_object_count > 0`. A bucket a block walk reads as zero
 //! is a bucket that STOPS BEING DUMPED while it holds undumped marks, so the five buckets above are
 //! unflushed state that no round would ever pick up. The figure is also a MAGNITUDE downstream --
 //! the per-bucket gauge publishes it, and the summary is SERIALIZED into a dump manifest -- and
@@ -129,9 +129,9 @@ fn authority(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     shard.dirty_objects.bucket_counts().collect()
 }
 
-/// Per-bucket counts derived from the buckets themselves: DISTINCT objects with a dirty page.
+/// Per-bucket counts derived from the buckets themselves: DISTINCT objects with a dirty block.
 ///
-/// Identity comes from the object lookup, which is where a page's identity lives now. A page
+/// Identity comes from the object lookup, which is where a block's identity lives now. A block
 /// entry carries `dirty` but no key, so a per-bucket walk cannot count objects without it.
 fn derived_distinct_objects(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, BTreeSet<String>> = BTreeMap::new();
@@ -154,9 +154,9 @@ fn derived_distinct_objects(shard: &crate::engine::state::ShardState) -> BTreeMa
 /// Per-bucket PRESENCE and generation, read off the NODE.
 ///
 /// `mark_object_dirty` does four things, and two of them are here: it creates the routing bucket's
-/// node when the key has none -- so even a key with no page at all gets a node -- then sets `dirty`
+/// node when the key has none -- so even a key with no block at all gets a node -- then sets `dirty`
 /// and bumps `dirty_generation`. That makes the node flag a candidate for the three consumers that
-/// only ask `> 0`, which a page walk cannot serve.
+/// only ask `> 0`, which a block walk cannot serve.
 fn node_state(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, (bool, u64)> {
     shard
         .bucket_index
@@ -166,7 +166,7 @@ fn node_state(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, (bool, 
         .collect()
 }
 
-/// Per-bucket counts of dirty PAGES -- the number a careless derivation would produce.
+/// Per-bucket counts of dirty BLOCKS -- the number a careless derivation would produce.
 fn derived_dirty_blocks(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, u64> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
@@ -180,7 +180,7 @@ fn derived_dirty_blocks(shard: &crate::engine::state::ShardState) -> BTreeMap<u3
 
 #[test]
 fn whether_a_bucket_can_count_its_own_dirty_objects() {
-    // ---- A NARROW ROUTING RANGE, so keys SHARE buckets and an object's pages can land outside
+    // ---- A NARROW ROUTING RANGE, so keys SHARE buckets and an object's blocks can land outside
     // ---- its own routing bucket. On the default whole-keyspace range every key gets a bucket to
     // ---- itself by construction and the case that distinguishes the two methods never arises.
     let dir = tempfile::tempdir().expect("tempdir");
@@ -206,8 +206,8 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         loaded.status
     );
 
-    // ---- THREE WRITES A KEY, OF THREE KINDS, so an object holds SEVERAL PAGES. A fixture where
-    // ---- every object is single-page makes a page count and an object count the same number, and
+    // ---- THREE WRITES A KEY, OF THREE KINDS, so an object holds SEVERAL BLOCKS. A fixture where
+    // ---- every object is single-block makes a block count and an object count the same number, and
     // ---- then this test cannot tell one from the other.
     for index in 0..KEYS {
         let key = format!("dirty-count-{index:04}");
@@ -234,11 +234,11 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     });
 
     // ---- THE FIRST OF TWO MEASUREMENT POINTS, and it is the one that tests the NODE FLAG rather
-    // ---- than the page walk. Right after a dump the set is empty, so every node still reading
+    // ---- than the block walk. Right after a dump the set is empty, so every node still reading
     // ---- dirty here is reading dirty about nothing: `clear_published_object_dirty_state`
-    // ---- reassigns `set_dirty(any_block_dirty)` only for the buckets that held a PAGE of the
+    // ---- reassigns `set_dirty(any_block_dirty)` only for the buckets that held a BLOCK of the
     // ---- published object, while dropping the key from the set unconditionally -- so a bucket
-    // ---- whose only dirt was a non-page-backed key is never recomputed.
+    // ---- whose only dirt was a non-block-backed key is never recomputed.
     let (after_dump, after_dump_nodes_dirty, after_dump_set_buckets) = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard 1");
@@ -259,10 +259,10 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         });
         assert!(out.status.ok, "re-dirtying {index}: {:?}", out.status);
     }
-    // ---- AND TWO REMOVALS, which is what puts a dirty object with NO PAGE in the set. A removal
+    // ---- AND TWO REMOVALS, which is what puts a dirty object with NO BLOCK in the set. A removal
     // ---- marks a `control_state:cpc:*` record alongside the data object, control state is not
-    // ---- page-backed, and that record routes to a bucket of its OWN. Without this the fixture
-    // ---- holds only page-backed dirty objects and cannot see the term that decides the question.
+    // ---- block-backed, and that record routes to a bucket of its OWN. Without this the fixture
+    // ---- holds only block-backed dirty objects and cannot see the term that decides the question.
     for index in [2usize, 6] {
         let out = engine.execute(ExecuteRequest {
             shard_id: 1,
@@ -304,7 +304,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     let by_node = node_state(shard);
 
     let bucket_total = shard.bucket_index.bucket_map.len();
-    // What a per-bucket page walk would have to look at: a page's own `dirty` bit is the only
+    // What a per-bucket block walk would have to look at: a block's own `dirty` bit is the only
     // thing that marks it, so finding the dirty ones means visiting all of them.
     let block_total_in_shard: usize = shard
         .bucket_index
@@ -324,7 +324,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     }
     let widest_object = blocks_per_object.values().copied().max().unwrap_or(0);
 
-    // How much of the set has no live page anywhere -- the term no page walk can ever reach.
+    // How much of the set has no live block anywhere -- the term no block walk can ever reach.
     let any_block: BTreeSet<String> = super::blocks_with_identity(&shard.bucket_index)
         .into_iter()
         .map(|(_, _, object_key, _)| object_key.to_string())
@@ -420,7 +420,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     );
     println!();
 
-    // The buckets the node reports with no dirty page of their own -- computed here, beside the
+    // The buckets the node reports with no dirty block of their own -- computed here, beside the
     // table it belongs with, and ASSERTED much further down. See the ordering note below.
     let node_carries_what_no_block_does: Vec<u32> = by_set
         .keys()
@@ -452,7 +452,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     //   1. THE FIXTURE REACHED ITS REGIME -- every clause that stops this test passing for the
     //      wrong reason. These come first because a plant that breaks the fixture should say so
     //      rather than failing somewhere downstream.
-    //   2. THE COUNT IS NOT DERIVABLE -- the conclusion about the page walk.
+    //   2. THE COUNT IS NOT DERIVABLE -- the conclusion about the block walk.
     //   3. PRESENCE IS, FROM THE NODE -- the conclusion about the flag.
     //   4. THE PRODUCER IS PINNED -- before the identity, because switching the producer breaks
     //      both and this is the clause that names the re-attempt.
@@ -490,7 +490,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          holds {widest_object} pages"
     );
 
-    // STILL BLOCK 1: the term that makes a page walk unsound at all, and a property of the
+    // STILL BLOCK 1: the term that makes a block walk unsound at all, and a property of the
     // FIXTURE rather than a conclusion -- which is why it belongs here, above the node clause that
     // used to shadow it. Without it the conclusions below would rest on bucket attribution alone,
     // which is a weaker claim than this module states.
@@ -563,8 +563,8 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // ---- 3. PRESENCE IS A DIFFERENT QUESTION FROM THE COUNT, AND THE NODE ANSWERS IT.
     //
     // `mark_object_dirty` creates the routing bucket's node when the key has none and sets `dirty`
-    // on it, so a key with NO PAGE AT ALL still leaves a node reading dirty. That is why the five
-    // buckets a page walk cannot see are nonetheless visible here, and it is the whole reason the
+    // on it, so a key with NO BLOCK AT ALL still leaves a node reading dirty. That is why the five
+    // buckets a block walk cannot see are nonetheless visible here, and it is the whole reason the
     // three `> 0` consumers can move while the count cannot.
     //
     // ASSERTED IN BOTH DIRECTIONS, because one direction holding is not agreement and the two
@@ -590,8 +590,8 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
          reclaim plan. So this clause is what licenses moving the RECLAIM consumers, not just the \
          dump filter"
     );
-    // AND IT AGREES WHERE A PAGE WALK CANNOT, which is the case that makes the agreement worth
-    // something: without it the two columns could be agreeing only on page-backed buckets.
+    // AND IT AGREES WHERE A BLOCK WALK CANNOT, which is the case that makes the agreement worth
+    // something: without it the two columns could be agreeing only on block-backed buckets.
     assert!(
         !node_carries_what_no_block_does.is_empty(),
         "every dirty bucket here has a dirty page, so the node flag and the page walk cannot be \

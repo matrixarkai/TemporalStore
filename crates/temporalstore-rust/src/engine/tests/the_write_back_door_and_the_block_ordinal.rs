@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! The write-back door, the page ordinal it cannot hold, and the two halves of one contract that
+//! The write-back door, the block ordinal it cannot hold, and the two halves of one contract that
 //! used to disagree about it.
 //!
-//! THE ASYMMETRY. `ObjectRecord`'s inline arm keeps a page ordinal's PRESENCE and not its value,
-//! which is correct and measured: a single-page object has page zero by construction, and 400 of
+//! THE ASYMMETRY. `ObjectRecord`'s inline arm keeps a block ordinal's PRESENCE and not its value,
+//! which is correct and measured: a single-block object has block zero by construction, and 400 of
 //! 400 live addresses on a real store carried ordinal 0. The conversion path refuses a NONZERO
 //! ordinal by name, as `NonZeroBlockOrdinalDoesNotFitInline`. `set_address` -- the compactor's
 //! write-back door -- did not refuse it; it wrote the presence bit and dropped the value.
@@ -23,7 +23,7 @@ use crate::engine::object_record::{
     ObjectRecordRefusal,
 };
 
-/// An entry whose page ordinal is `at`, with everything else fixed so only the ordinal varies.
+/// An entry whose block ordinal is `at`, with everything else fixed so only the ordinal varies.
 fn entry_with_ordinal(ordinal: Option<u64>) -> ElementEntry {
     ElementEntry::from_parts(1, 64, 32, ordinal, Some(11))
 }
@@ -56,7 +56,7 @@ fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
         "the refusal does not name the ordinal it refused: {refusal}"
     );
 
-    // --- POSITIVE CONTROL ONE: ordinal zero, which is what a single-page object carries.
+    // --- POSITIVE CONTROL ONE: ordinal zero, which is what a single-block object carries.
     let mut record = ObjectRecord::default();
     record
         .try_set_address(&entry_with_ordinal(Some(0)))
@@ -67,7 +67,7 @@ fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
         "the accepted address did not land, so the refusal above may be firing on everything"
     );
 
-    // --- POSITIVE CONTROL TWO: no ordinal at all, which is a page still in the log.
+    // --- POSITIVE CONTROL TWO: no ordinal at all, which is a block still in the log.
     let mut record = ObjectRecord::default();
     record
         .try_set_address(&entry_with_ordinal(None))
@@ -81,9 +81,9 @@ fn the_write_back_door_refuses_a_block_ordinal_it_cannot_hold() {
 
 /// WHAT THE UNCHANGED DOOR STILL DOES, PINNED, AND COUNTED WHILE IT DOES IT.
 ///
-/// `set_address` keeps today's behaviour deliberately: the destination for a multi-page object does
+/// `set_address` keeps today's behaviour deliberately: the destination for a multi-block object does
 /// not exist yet, so a fatal refusal would make a recovery path unopenable and a skip would drop
-/// the page's address -- the same loss by another mechanism. What changes is that the drop is no
+/// the block's address -- the same loss by another mechanism. What changes is that the drop is no
 /// longer silent.
 ///
 /// So this asserts BOTH halves: that the value is still dropped, and that the counter saw it. The
@@ -127,7 +127,7 @@ fn the_unchanged_door_still_drops_the_value_and_now_says_so() {
 
 /// AND IT NEVER FIRES ON THE REAL WRITE PATHS, which is the claim the counter exists to make.
 ///
-/// Every map holding a record today is single-page, so no production write should ever hand the
+/// Every map holding a record today is single-block, so no production write should ever hand the
 /// door a nonzero ordinal. That is an assertion about the whole engine rather than about one
 /// record, so it is made after driving real writes through the command surface rather than by
 /// constructing addresses by hand.

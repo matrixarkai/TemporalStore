@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE PAGE ENTRY STOPS RESTATING THE KEY IT IS FILED UNDER -- AND ONE OF THE THREE FACTS CANNOT GO.
+//! THE BLOCK ENTRY STOPS RESTATING THE KEY IT IS FILED UNDER -- AND ONE OF THE THREE FACTS CANNOT GO.
 //!
 //! # WHAT #2350 LEFT ON THE TABLE, AND WHICH HALF OF IT IS TAKEN HERE
 //!
 //! #2350 decomposed `slot_index` into 50 charged terms at 226.349 B/object and found that EVERY
-//! per-page fact is written twice -- once as a decimal inside the composite map key and once as a
+//! per-block fact is written twice -- once as a decimal inside the composite map key and once as a
 //! named field on the entry -- at wildly different prices. The same five address values are 12.008
 //! B/object inside the key and 53.008 B/object as the named `address` object, 4.41x, all of it
 //! field names, braces, separators and a nil slot.
@@ -16,7 +16,7 @@
 //!
 //! ```text
 //!     removal                                   stream B/obj     container B/obj
-//!     composite page key -> the live handle            19.6       -5.14 to -6.77   COSTS
+//!     composite block key -> the live handle            19.6       -5.14 to -6.77   COSTS
 //!     entry -> drop `object_key`                       30.0       +2.34 to +2.96
 //!     entry -> drop `model_id`                         20.0       +0.26 to +0.37
 //!     entry -> drop `address`                          54.0       +4.27 to +4.52
@@ -25,7 +25,7 @@
 //!
 //! The intuitive change is the wrong one: the composite key is the most compressible structure in
 //! the index -- sorted, long shared prefixes, repeating decimal runs -- so replacing it with the
-//! handle the live map already keys the page by lands a container 5 to 7 B/object LARGER at every
+//! handle the live map already keys the block by lands a container 5 to 7 B/object LARGER at every
 //! measured point. Exactly one copy of each fact may go, and it is the ENTRY side.
 //!
 //! What #2350 named as the whole cost of that direction, and deliberately did not pay, is that THE
@@ -36,17 +36,17 @@
 //! `object_key` and `model_id` invert EXACTLY. `address` does NOT, and the field that loses it is
 //! not one of the five values -- it is the two PRESENCE bits beside them:
 //!
-//!   * `block_index_written_key` renders `page.address.block_id().unwrap_or_default()` and
-//!     `page.address.generation().unwrap_or_default()`. A `None` renders `0`, and so does a
+//!   * `block_index_written_key` renders `block.address.block_id().unwrap_or_default()` and
+//!     `block.address.generation().unwrap_or_default()`. A `None` renders `0`, and so does a
 //!     `Some(0)`.
 //!   * `ElementEntry::block_id()` is `None` EXACTLY while the block is log-resident
 //!     (`log_backed()` is that derivation and has five production readers), and `Some(0)` is the
-//!     first page of an object in a slab. Both are ordinary states of a live page index.
+//!     first block of an object in a slab. Both are ordinary states of a live block index.
 //!   * So THREE distinct addresses render one key, and
 //!     [`the_presence_bits_of_an_address_are_not_in_the_key_it_renders`] builds all three and
 //!     asserts the keys IDENTICAL while the entries compare unequal.
 //!
-//! A reconstruction that guessed the BLOCK-ID bit would hand a log-resident page a slab-backed
+//! A reconstruction that guessed the BLOCK-ID bit would hand a log-resident block a slab-backed
 //! address, and a read would then go looking on a slab for bytes that are still in the log --
 //! `log_backed()` is that derivation and it has five production readers. So the address STAYS, and
 //! 17-23% of the artefact becomes 2.6-3.3% of it.
@@ -89,7 +89,7 @@
 //! # CORRECTNESS, WHICH IS THE REAL RISK IN DELETING STORED DATA
 //!
 //! `the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus` compares the
-//! reconstruction field by field against the LIVE value the encoder was handed, on all 8,000 pages
+//! reconstruction field by field against the LIVE value the encoder was handed, on all 8,000 blocks
 //! -- not against a re-render of itself, and not on a sample. `a_reload_reads_every_object_back`
 //! writes a corpus, drops the engine, reloads from the same directories and reads every object
 //! back, with a key never written asserted ABSENT in the same moment. The old-format reader is
@@ -283,13 +283,13 @@ impl Seeded {
         let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
         let value: serde_json::Value =
             serde_json::to_value(shard).expect("the index must serialize as a value");
-        // THE PAGE INDEX, WITH THE OBJECT ROWS TAKEN BACK OUT.
+        // THE BLOCK INDEX, WITH THE OBJECT ROWS TAKEN BACK OUT.
         //
         // `objects` moved INTO `slot_index` at `SHARD_INDEX_FORMAT_VERSION` 30 -- it was a
         // top-level key of the shard before that. This surface is compared against a BEFORE figure
         // taken while it was, so counting the object rows here compares two different quantities:
         // the arm's own subtraction underflowed, which is how the move announced itself. Taking
-        // them out keeps the comparison about what it claims to be about, the bytes a page entry
+        // them out keeps the comparison about what it claims to be about, the bytes a block entry
         // spends restating the key it is filed under.
         let slot_index_stream = {
             let entry = value
@@ -424,20 +424,20 @@ fn no_stored_model_spelling_holds_the_separator() {
 }
 
 // =================================================================================================
-// THE RECONSTRUCTION, EXACT AND ON EVERY PAGE
+// THE RECONSTRUCTION, EXACT AND ON EVERY BLOCK
 // =================================================================================================
 
-/// THE PARSE IS THE RENDERER'S INVERSE ON EVERY PAGE OF THE SHIPPED CORPUS, FIELD BY FIELD.
+/// THE PARSE IS THE RENDERER'S INVERSE ON EVERY BLOCK OF THE SHIPPED CORPUS, FIELD BY FIELD.
 ///
 /// # WHAT IS COMPARED AGAINST WHAT, WHICH IS THE WHOLE WEIGHT OF THIS ARM
 ///
 /// The left side is the reconstruction: the object key and the kind read back out of the key the
-/// page is filed under. The right side is the LIVE value the encoder is handed -- the `object_key`
+/// block is filed under. The right side is the LIVE value the encoder is handed -- the `object_key`
 /// off `BlockKeysByPosition`, which is what `serialize_block_index` composes the key from, and the
-/// `model_id` off the page itself. So this is a parse compared with a SOURCE, not a renderer
+/// `model_id` off the block itself. So this is a parse compared with a SOURCE, not a renderer
 /// compared with itself.
 ///
-/// EVERY PAGE, NOT A SAMPLE, and the count is asserted against the corpus so a walk that reached
+/// EVERY BLOCK, NOT A SAMPLE, and the count is asserted against the corpus so a walk that reached
 /// none of them cannot pass. Both of the two key shapes, at the shipped routing range.
 ///
 /// AND THE FIVE NUMERIC SLOTS ARE COMPARED TOO, although they are not being removed: they are what
@@ -604,7 +604,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
             "[CLAUSE awkward-keys-survive] a numeric slot moved for object key {object_key:?}"
         );
         // AND THE RECOMPOSITION IS CHECKED HERE RATHER THAN IN PRODUCTION, which is where the
-        // allocation per page belongs: the parse is exact by index arithmetic, and this is the arm
+        // allocation per block belongs: the parse is exact by index arithmetic, and this is the arm
         // that says so on the shapes that could break it.
         let recomposed = format!(
             "{}:{}:{}:{}:{}:{}:{}:{}",
@@ -697,12 +697,12 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
 /// page entries each spell `object_key` and `model_id` as named fields -- and whose composite keys
 /// each spell the same two values. This arm takes it through `decode_index_bytes`, the one door
 /// every served-index reader goes through, and asserts the identity the new reader reconstructs is
-/// the identity the OLD entry carried, page by page.
+/// the identity the OLD entry carried, block by block.
 ///
 /// # AND IT IS THE HARDEST AVAILABLE CASE, WHICH IS WHY IT IS THIS FIXTURE AND NOT A NEWER ONE
 ///
 /// Its keys carry a NON-EMPTY component slot -- `hash:ungated/hash:f0:0:0:27:0:0` and
-/// `zset:ungated/zset:6d30:0:54:34:0:0` -- from an era when a page entry named its element. A parse
+/// `zset:ungated/zset:6d30:0:54:34:0:0` -- from an era when a block entry named its element. A parse
 /// that searched for its fields rather than counting them from the END would read the object key
 /// short on exactly these keys and would still look right on every key this binary writes. Nothing
 /// a current store contains would catch that.
@@ -751,7 +751,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
         decoded.index_format_version
     );
 
-    // ---- EVERY PAGE, AND THE IDENTITY IT CAME BACK WITH ----
+    // ---- EVERY BLOCK, AND THE IDENTITY IT CAME BACK WITH ----
     let blocks = super::blocks_with_identity(&decoded.bucket_index);
     let mut rebuilt: Vec<(String, String)> = blocks
         .iter()
@@ -766,7 +766,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     }
 
     // THE EXPECTATION IS WHAT THE OLD ENTRIES SPELL, written out independently of the fixture text
-    // -- three rows, one per page, which is the set `an_ungated_store_is_refused_before_it_is_served`
+    // -- three rows, one per block, which is the set `an_ungated_store_is_refused_before_it_is_served`
     // counts in the same bytes.
     let expected: Vec<(String, String)> = {
         let mut rows = vec![
@@ -830,9 +830,9 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
 /// states and renders their keys, so the collision is a property of the renderer and not of a
 /// fixture:
 ///
-///   * a LOG-RESIDENT page -- `block_id` absent, which is the shape a staged page has before a
+///   * a LOG-RESIDENT block -- `block_id` absent, which is the shape a staged block has before a
 ///     dump, and which `log_backed()` is the derivation of;
-///   * the FIRST page of an object in a slab, built the way every production site builds one, so
+///   * the FIRST block of an object in a slab, built the way every production site builds one, so
 ///     `block_id` is `Some(0)` and the generation is present;
 ///   * the same address with the generation bit CLEAR, which is the shape an index written before
 ///     the generation existed loads as -- the one state `try_from_wire_parts` exists to let the
@@ -846,7 +846,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
 ///
 /// `generation` is hashed into `block_index_handle` and rendered into the block-ref key, and those
 /// handles are written to disk inside the lookup's refs -- so deriving a different value re-keys
-/// every page and points the stored refs at nothing. `block_id`'s absence IS log-residency, so
+/// every block and points the stored refs at nothing. `block_id`'s absence IS log-residency, so
 /// guessing it present claims a slab for a block that is still in the log, and a read then goes
 /// looking on a slab for bytes that are not there.
 ///
@@ -974,7 +974,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     // MEASUREMENT IS HERE RATHER THAN THE CLAIM.
     //
     // This asserted that the generation presence bit reaches `block_index_handle`, so that losing
-    // it would re-key a page. IT DOES NOT, at a block id of 0: the handle hashes
+    // it would re-key a block. IT DOES NOT, at a block id of 0: the handle hashes
     // `generation().unwrap_or_default()`, exactly as the key renders it, so `Some(0)` and `None`
     // hash the same word -- measured here, 1416957377325452083 both ways on the first run of this
     // arm. The claim was read off the field's own doc ("the generation is hashed into
@@ -1189,7 +1189,7 @@ const PREDICTED_STREAM_SAVING: f64 = 50.0;
 ///
 /// # THE DIRECTION NOTHING REPORTS
 ///
-/// A page the load path cannot find does not fail: the block is still on its slab and nothing looks
+/// A block the load path cannot find does not fail: the block is still on its slab and nothing looks
 /// for it. So the assertion is a COUNT equal to the corpus with zero missing and zero wrong, taken
 /// after the engine is dropped and a second one is pointed at the same directories -- not a spot
 /// check and not a non-emptiness.
@@ -1201,19 +1201,19 @@ const PREDICTED_STREAM_SAVING: f64 = 50.0;
 ///
 /// # AND THE RELOAD IS ASSERTED TO HAVE READ THE INDEX, WHICH A PLANT IS WHY
 ///
-/// This arm was planted on: the reconstruction was made to answer a CONSTANT kind for every page,
+/// This arm was planted on: the reconstruction was made to answer a CONSTANT kind for every block,
 /// and this test PASSED. Two things were wrong with it and both are fixed here rather than noted.
 ///
 ///   1. IT NEVER ASSERTED WHICH PATH THE RELOAD TOOK. "The base index file is non-empty on disk" is
 ///      not "the base index was read": `load_index_inner` answers `Ok(None)` for a stale stamp, an
 ///      undecodable image and an absent file alike, and the caller then replays the log -- slower,
-///      correct, and reading not one stored page entry. `index_load_path_counts` is asserted
+///      correct, and reading not one stored block entry. `index_load_path_counts` is asserted
 ///      instead, as the four-tuple it is, with `accepted` non-zero and `refused_stale` and
 ///      `undecodable` at zero over the same reset window.
-///   2. A STRING READ DOES NOT GO THROUGH THE PAGE INDEX'S KIND. A `StringGet` resolves through
+///   2. A STRING READ DOES NOT GO THROUGH THE BLOCK INDEX'S KIND. A `StringGet` resolves through
 ///      the string row in `objects`, so 600 correct reads said nothing about the `model_id` the
-///      bucket's page entries came back with. The identities are therefore compared DIRECTLY,
-///      page by page, against what the pre-unload engine held -- which is the comparison the plant
+///      bucket's block entries came back with. The identities are therefore compared DIRECTLY,
+///      block by block, against what the pre-unload engine held -- which is the comparison the plant
 ///      walked straight through.
 ///
 /// rust-internal: drives this crate's own reload path, no product behaviour
@@ -1230,8 +1230,8 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
 
     let index_path = indexes.join(format!("shard-{SHARD}.index.json"));
     let mut expected: BTreeMap<String, Vec<u8>> = BTreeMap::new();
-    // THE IDENTITY OF EVERY PAGE AS THE WRITER HELD IT, so the reload can be compared against it
-    // rather than against itself. Keyed by the handle, which is what the map files a page under in
+    // THE IDENTITY OF EVERY BLOCK AS THE WRITER HELD IT, so the reload can be compared against it
+    // rather than against itself. Keyed by the handle, which is what the map files a block under in
     // both processes.
     let mut identities_before: BTreeMap<u64, (String, String)> = BTreeMap::new();
     {
@@ -1280,7 +1280,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
 
         // UNLOADED RATHER THAN DROPPED, so the base index is MATERIALIZED on disk: a dropped engine
         // leaves whatever the last dump wrote, and a reload that replayed the log instead would
-        // exercise the WAL path and say nothing about the stored page entries.
+        // exercise the WAL path and say nothing about the stored block entries.
         engine.unload_shard(SHARD);
         let written = std::fs::metadata(&index_path)
             .map(|meta| meta.len())
@@ -1316,16 +1316,16 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     // --- THE DECODE ITSELF, BEFORE ANY REBUILD PASS TOUCHES IT ---
     //
     // THIS ARM EXISTS BECAUSE A PLANT WALKED THROUGH THE ONE BELOW IT. The reconstruction was made
-    // to answer a CONSTANT kind for every page and the whole reload arm -- 600 reads, the accepted
-    // counter, and a page-by-page identity comparison on the LIVE index after the load -- passed.
+    // to answer a CONSTANT kind for every block and the whole reload arm -- 600 reads, the accepted
+    // counter, and a block-by-block identity comparison on the LIVE index after the load -- passed.
     // So the live index after a load is not where the reconstruction's answer survives: the load
     // path has rebuild passes over the bucket index, and for a string store the authoritative map
-    // is `objects`, so a wrong `model_id` on a decoded page entry is overwritten before anything
+    // is `objects`, so a wrong `model_id` on a decoded block entry is overwritten before anything
     // can see it.
     //
     // THAT IS A FACT ABOUT THE GUARD'S REACH AND NOT A REASON TO WEAKEN THE CLAIM. The decode is
     // where the reconstruction's answer IS observable, so it is read here: the bytes the unload
-    // wrote, through `decode_index_bytes`, with every page's rebuilt identity compared against what
+    // wrote, through `decode_index_bytes`, with every block's rebuilt identity compared against what
     // the writer held -- which is what the plant moves and what this arm fails on.
     {
         let stored = std::fs::read(&index_path)
@@ -1360,7 +1360,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     //
     // BOUND BY POSITION AGAINST THE SIGNATURE, which is (accepted, refused_stale, absent,
     // undecodable). A tuple and not a sum, because a sum cannot tell a store that read its index
-    // from one that replayed -- and replaying reads not one stored page entry, so every assertion
+    // from one that replayed -- and replaying reads not one stored block entry, so every assertion
     // below it would be about the write-ahead log instead.
     let (accepted, refused_stale, _absent, undecodable) = index_load_path_counts();
     println!(
@@ -1381,10 +1381,10 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
          clause above pass over a store that also replayed"
     );
 
-    // --- AND EVERY PAGE CAME BACK WITH THE IDENTITY THE WRITER HELD. ---
+    // --- AND EVERY BLOCK CAME BACK WITH THE IDENTITY THE WRITER HELD. ---
     //
     // THE COMPARISON A PLANT WALKED THROUGH WITHOUT THIS. A `StringGet` resolves through the string
-    // row and not through the page index's kind, so the 600 reads below are silent about the
+    // row and not through the block index's kind, so the 600 reads below are silent about the
     // `model_id` the reconstruction produces. This is the arm that is not.
     {
         let shards = engine.shards.read().expect("engine lock poisoned");

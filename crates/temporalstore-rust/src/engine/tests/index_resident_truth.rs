@@ -8,7 +8,7 @@
 //! in the eviction pressure score `storage_manager_cycle` reads to decide whether to release a
 //! bucket at all. A figure that reads low makes the engine hold an index it should have released.
 //!
-//! It is derived, not measured: `nodes * size_of::<BucketNode>() + pages * size_of::<BlockIndex>()`.
+//! It is derived, not measured: `nodes * size_of::<BucketNode>() + blocks * size_of::<BlockIndex>()`.
 //! This module measures the same index four ways -- two corpus sizes crossed with the two routing
 //! ranges this engine ships -- against the counting allocator, and reports the shortfall.
 //!
@@ -21,11 +21,11 @@
 //!      the PAIR: `size_of::<(u64, BlockIndex)>()`, not `size_of::<BlockIndex>()`. `One` holds
 //!      `Box<BlockIndex>` -- the handle rides in the enum, so that arm's allocation really is one
 //!      entry wide and the shipped arithmetic is RIGHT for it. Charging the pair stride to every
-//!      page would over-charge a single-page bucket, and on the whole-keyspace range EVERY bucket
-//!      is single-page. No per-page constant can be correct at both ranges, in either direction,
+//!      block would over-charge a single-block bucket, and on the whole-keyspace range EVERY bucket
+//!      is single-block. No per-block constant can be correct at both ranges, in either direction,
 //!      which is the actual defect: the report reads a container's cost off a type name instead
 //!      of off the container.
-//!   2. CAPACITY, NOT LENGTH. `reserve_one_more` steps the page list by `BLOCK_LIST_GROWTH_STEP`
+//!   2. CAPACITY, NOT LENGTH. `reserve_one_more` steps the block list by `BLOCK_LIST_GROWTH_STEP`
 //!      with `reserve_exact`, so a list of five entries owns a buffer of eight. The report counts
 //!      `len()`.
 //!   3. NOTHING OUT OF LINE IS COUNTED. `object_key: Arc<str>` and `component: Option<Arc<str>>`
@@ -85,7 +85,7 @@ pub(super) fn arc_str_request(len: usize) -> usize {
 // THE WALK
 // =============================================================================================
 
-/// One shard's page index, walked from the containers rather than from a type name.
+/// One shard's block index, walked from the containers rather than from a type name.
 #[derive(Debug, Default, Clone)]
 pub(super) struct IndexWalk {
     pub(super) buckets: u64,
@@ -97,7 +97,7 @@ pub(super) struct IndexWalk {
     pub(super) list_len: u64,
     /// Summed `capacity()` over `Many` arms -- what the buffer was allocated at.
     pub(super) list_capacity: u64,
-    /// Request bytes of the page-list buffers and the boxed single entries.
+    /// Request bytes of the block-list buffers and the boxed single entries.
     pub(super) block_heap_request: u64,
     /// Distinct heap allocations behind `object_key`, counted by data pointer.
     pub(super) key_allocs: u64,
@@ -114,9 +114,9 @@ pub(super) struct IndexWalk {
     pub(super) keys_held_outside: u64,
     /// The same census for component names.
     pub(super) components_held_outside: u64,
-    /// Page-list length histogram over the `Many` arms: length -> how many buckets.
+    /// Block-list length histogram over the `Many` arms: length -> how many buckets.
     pub(super) list_lengths: BTreeMap<usize, u64>,
-    /// The REQUEST size of every allocation the page index owns, one entry per allocation.
+    /// The REQUEST size of every allocation the block index owns, one entry per allocation.
     ///
     /// Kept so the chunk column can be measured rather than modelled: replaying these sizes
     /// through the counting allocator reads what the allocator actually set aside for this exact
@@ -131,7 +131,7 @@ impl IndexWalk {
             .saturating_mul(std::mem::size_of::<BucketNode>() as u64)
     }
 
-    /// What the SHIPPED report answers: nodes by node width plus pages by ENTRY width.
+    /// What the SHIPPED report answers: nodes by node width plus blocks by ENTRY width.
     pub(super) fn reported_before(&self) -> u64 {
         self.node_inline_request().saturating_add(
             self.blocks
@@ -201,21 +201,21 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
         }
         for (_handle, _block) in bucket.block_index.iter() {
             out.blocks += 1;
-            // NO KEY REQUEST PER ENTRY EITHER, AND THIS CENSUS IS THE PAGE INDEX'S OWN BYTES.
+            // NO KEY REQUEST PER ENTRY EITHER, AND THIS CENSUS IS THE BLOCK INDEX'S OWN BYTES.
             //
             // This asked the allocator-request model what one entry's `Arc<str>` of key text
-            // costs, and deduplicated by pointer so that pages of one object charged it once.
-            // The entry has no key, so the page index requests NOTHING on that account -- the
+            // costs, and deduplicated by pointer so that blocks of one object charged it once.
+            // The entry has no key, so the block index requests NOTHING on that account -- the
             // counter is a structural zero and the ownership pass below has nothing to attribute.
             //
             // THE BYTES DID NOT VANISH AND THIS IS NOT WHERE THEY ARE. One allocation per
             // (kind, object) lives in the bucket index's object lookup, which this walk does not
-            // enter: it walks `bucket_map` and reports what the PAGE INDEX holds resident.
+            // enter: it walks `bucket_map` and reports what the BLOCK INDEX holds resident.
             // `index_bytes_per_key::walk_bucket_index_strings` is the walk that enters both and
             // charges each allocation once, and it is where the key text is counted now.
             //
             // THE COUNTER IS KEPT AT ZERO RATHER THAN REMOVED because the arms below print it as
-            // a column of the per-entry request table, beside the page-list and entry strides
+            // a column of the per-entry request table, beside the block-list and entry strides
             // that still have a subject.
             //
             // NO COMPONENT REQUEST PER ENTRY: the entry carries no element name, so it asks the
@@ -226,10 +226,10 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
     // THE SECOND PASS IS GONE WITH THE FIRST, AND ITS THREE COUNTERS ARE STRUCTURAL ZEROES.
     //
     // It existed to settle how many entries held each key allocation, which can only be known
-    // after the whole index has been walked, and then to ask whether anything OUTSIDE the page
+    // after the whole index has been walked, and then to ask whether anything OUTSIDE the block
     // index held that allocation too -- `strong_count` against the count of entries holding it.
     // With no key on the entry, `seen_keys` is empty, `key_allocs` and `key_request` are zero,
-    // and `keys_held_outside` has no question left: the page index holds no key allocation at
+    // and `keys_held_outside` has no question left: the block index holds no key allocation at
     // all, so there is no "outside" to compare against. Every key in this store is held outside
     // it, which is the change rather than a finding this census could report.
     //
@@ -246,7 +246,7 @@ pub(super) fn walk(engine: &TemporalEngine) -> IndexWalk {
 // THE EXACT INSTRUMENT
 // =============================================================================================
 
-/// What the allocator gives back when shard 1's page indexes are dropped.
+/// What the allocator gives back when shard 1's block indexes are dropped.
 ///
 /// THE INDEX IS DESTROYED BY THIS. It is the last thing any fixture does.
 ///
@@ -289,7 +289,7 @@ pub(super) fn freed_by_dropping_block_indexes(engine: &TemporalEngine) -> (u64, 
 /// `layout.size()`; `ALLOC_CHUNK_BYTES` reads `malloc_usable_size` and adds the header word. The
 /// two differ by a rounding that is a FLOOR above the request and not an equality -- #1969 measured
 /// a 104-byte request served from a 128-byte chunk -- so the shipped report, which can only compute
-/// requests, is a floor on what the process actually holds. This replays the page index's OWN size
+/// requests, is a floor on what the process actually holds. This replays the block index's OWN size
 /// distribution so the size of that floor is a reading rather than an average applied to a guess.
 ///
 /// Returns `(request_bytes, chunk_bytes)`.
@@ -400,8 +400,8 @@ fn the_arc_payload_rule_used_here_is_recovered_from_the_allocator() {
 /// the index inside a probe window and reads back what the allocator actually returned. The
 /// denominator on every row is the exact instrument, never another `size_of` product.
 ///
-/// WRITTEN DOWN, BECAUSE A PER-PAGE FIGURE NEEDS ITS POPULATION STATED. The page population is one
-/// page per routed string key, asserted against the seed's own key count; the bucket population is
+/// WRITTEN DOWN, BECAUSE A PER-BLOCK FIGURE NEEDS ITS POPULATION STATED. The block population is one
+/// block per routed string key, asserted against the seed's own key count; the bucket population is
 /// decided by the routing range and differs by three orders of magnitude between the two arms,
 /// which is the whole reason both are run.
 ///
@@ -418,8 +418,8 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
         std::mem::size_of::<(u64, BlockIndex)>(),
         std::mem::size_of::<BlockIndexMap>()
     );
-    // ONE PAGE PER HASH FIELD, so the container arm's page population is keys * members and not
-    // one per key. #1959's whole measurement was an artefact of a page population nobody wrote
+    // ONE BLOCK PER HASH FIELD, so the container arm's block population is keys * members and not
+    // one per key. #1959's whole measurement was an artefact of a block population nobody wrote
     // down; both denominators are asserted below against the seed that produced them.
     const MEMBERS: usize = 100;
     for shape in [Shape::Routed, Shape::Container] {
@@ -489,7 +489,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     seen.block_heap_request,
                     seen.out_of_line_request()
                 );
-                // THE SHIPPED PAGE TERM ON ITS OWN. The whole-report ratio mixes in the node term,
+                // THE SHIPPED BLOCK TERM ON ITS OWN. The whole-report ratio mixes in the node term,
                 // which is INLINE in the bucket map and is not freed by the drop below -- comparing
                 // the two would be comparing different populations and reading the difference as an
                 // error. This is the term the change actually moves.
@@ -572,7 +572,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                      {} B. The calibration is then of something other than the shipped figure",
                     seen.node_inline_request() + seen.block_heap_request
                 );
-                // AND THE NAMES ARE NOT THIS INDEX'S TO CHARGE. The drop above returned the page
+                // AND THE NAMES ARE NOT THIS INDEX'S TO CHARGE. The drop above returned the block
                 // buffers and NOTHING ELSE: every shared name survived it, because something other
                 // than the bucket index still owns one. Charging them to this report would be
                 // double counting, which is the correction this arm exists to establish.
@@ -590,14 +590,14 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
     }
 }
 
-/// Which of the two page populations an arm seeds.
+/// Which of the two block populations an arm seeds.
 #[cfg(feature = "alloc-probe")]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Shape {
-    /// One page per routed string key, and no component on any of them.
+    /// One block per routed string key, and no component on any of them.
     Routed,
-    /// One page per hash FIELD. Routing never sees the component, so a container's pages all share
-    /// one bucket at any range -- and every page carries a component name out of line, which is
+    /// One block per hash FIELD. Routing never sees the component, so a container's blocks all share
+    /// one bucket at any range -- and every block carries a component name out of line, which is
     /// the half of the out-of-line question the routed arm cannot ask.
     Container,
 }
@@ -606,7 +606,7 @@ enum Shape {
 // THE GUARD, AND THE CONTROL THAT SAYS IT IS READING ANYTHING
 // =============================================================================================
 
-/// The page term the shipped report must produce, rebuilt from widths supplied by the caller.
+/// The block term the shipped report must produce, rebuilt from widths supplied by the caller.
 ///
 /// PARAMETERISED ON THE WIDTHS ON PURPOSE. A guard that spelled `size_of::<BlockIndex>()` inline
 /// would read the same expression the report reads and could only ever agree with it -- it would
@@ -625,12 +625,12 @@ pub(super) fn reconstruct_nodes(seen: &IndexWalk, node_width: u64) -> u64 {
     seen.buckets.saturating_mul(node_width)
 }
 
-/// A store holding BOTH page-index arms, which is what the reconstruction needs to be non-vacuous.
+/// A store holding BOTH block-index arms, which is what the reconstruction needs to be non-vacuous.
 ///
 /// The shipped routing range at the small corpus is the one population that has both: measured
-/// 54 single-page buckets and 970 lists at 4,000 records on `0..1023`. On the whole keyspace every
-/// bucket is single-page and the list term would be zero; at the large corpus on `0..1023` there
-/// is no single-page bucket left and the box term would be.
+/// 54 single-block buckets and 970 lists at 4,000 records on `0..1023`. On the whole keyspace every
+/// bucket is single-block and the list term would be zero; at the large corpus on `0..1023` there
+/// is no single-block bucket left and the box term would be.
 fn both_arms() -> (tempfile::TempDir, TemporalEngine, IndexWalk) {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
@@ -669,7 +669,7 @@ fn both_arms() -> (tempfile::TempDir, TemporalEngine, IndexWalk) {
 ///   3. THE PUBLISHED FIGURE EQUALS THE RECONSTRUCTION, on a store holding both arms.
 ///
 /// AND THE OLD ARITHMETIC IS SHOWN TO BE A DIFFERENT NUMBER, so the guard cannot be satisfied by a
-/// report that quietly went back to charging a page count.
+/// report that quietly went back to charging a block count.
 #[test]
 fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare() {
     let (_dir, engine, seen) = both_arms();
@@ -793,8 +793,8 @@ fn perturbing_any_width_the_index_report_reads_makes_the_reconstruction_disagree
 
 /// THE CONTROL AT 0.00%: THE RANGE THIS CHANGE CANNOT MOVE.
 ///
-/// On the whole keyspace every key lands in a bucket of its own, so every page index is the boxed
-/// single-page arm -- whose allocation IS one entry wide, which is what the arithmetic this change
+/// On the whole keyspace every key lands in a bucket of its own, so every block index is the boxed
+/// single-block arm -- whose allocation IS one entry wide, which is what the arithmetic this change
 /// replaced charged. The published figure must therefore be byte-identical to the old one there.
 ///
 /// AND THE BYTES IT EXERCISES ARE ASSERTED, because a control that reads zero bytes reports

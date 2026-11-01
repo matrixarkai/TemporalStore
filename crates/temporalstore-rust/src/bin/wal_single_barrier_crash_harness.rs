@@ -2,21 +2,21 @@
 // Copyright 2026 MatrixArkAI
 
 //! WAL-replay recovery harness. Exercises the single write-path durability barrier (the DEFAULT:
-//! only the WAL takes a synchronous fdatasync per write; the data-page fdatasync and the
+//! only the WAL takes a synchronous fdatasync per write; the data-block fdatasync and the
 //! served-index delta fdatasync are both deferred, and recovery is base-only) and proves the WAL
 //! alone is self-sufficient: the WAL record embeds the full command payload, so startup replay
-//! from the last durable watermark rebuilds the served index and the page state. Set
+//! from the last durable watermark rebuilds the served index and the block state. Set
 //! TS_WAL_LEGACY_RECOVERY=1 to exercise the legacy multi-barrier write path + delta-fold recovery.
 //!
 //! A plain SIGKILL / process::abort preserves the OS page cache, so un-fsync'd bytes survive it
 //! and would not exercise recovery. To faithfully model real power loss this harness also drops
-//! state (up to and including the pages, beyond what the relaxed mode actually defers), then
+//! state (up to and including the blocks, beyond what the relaxed mode actually defers), then
 //! asserts that every acked write is reconstructed by WAL replay.
 //!
 //! Modes:
 //!   populate   --root R --keys N [--flush-at F]
 //!                write keys 0..N (each ack'd); at write F force a durable dump
-//!                (flush_shard_index) and record the durable page-slab lengths; then abort.
+//!                (flush_shard_index) and record the durable block-slab lengths; then abort.
 //!   powerloss  --root R --scope <wipe-nondurable|truncate-tail|torn-tail>
 //!                simulate loss of the never-fsync'd state.
 //!   recover    --root R --keys N
@@ -37,7 +37,7 @@ fn key_of(i: u64) -> String {
     format!("sbk-{i:010}")
 }
 fn value_of(i: u64) -> Vec<u8> {
-    // Non-trivial, sequence-dependent payload so a stale/duplicate page cannot pass.
+    // Non-trivial, sequence-dependent payload so a stale/duplicate block cannot pass.
     format!("sbv-{i:010}-{}", "x".repeat(48)).into_bytes()
 }
 
@@ -104,7 +104,7 @@ fn populate(root: PathBuf, keys: u64, flush_at: Option<u64>) -> ! {
     for i in 0..keys {
         write_key(&engine, i);
         if Some(i) == flush_at {
-            // Background threshold dump: fsync pages + persist the anchored base index, then
+            // Background threshold dump: fsync blocks + persist the anchored base index, then
             // record the durable frontier (post-dump slab lengths) for the power-loss step.
             engine.flush_shard_index(1);
             record_durable_slab_lengths(&root);
@@ -114,18 +114,18 @@ fn populate(root: PathBuf, keys: u64, flush_at: Option<u64>) -> ! {
         // No dump happened: nothing but the WAL is durable. Record empty frontier.
         fs::write(durable_lengths_path(&root), "").expect("record durable lengths");
     }
-    // Abrupt process loss AFTER the acks (page/index fsyncs were deferred).
+    // Abrupt process loss AFTER the acks (block/index fsyncs were deferred).
     std::process::abort();
 }
 
 fn powerloss(root: PathBuf, scope: &str) {
     match scope {
         // No dump occurred: the ONLY durable state is the fsync'd WAL. Drop everything else,
-        // exactly as a power cut would drop the never-fsync'd pages + served index.
+        // exactly as a power cut would drop the never-fsync'd blocks + served index.
         "wipe-nondurable" => {
             // THE CUT HAS TO CUT SOMETHING. "Every acked key recovered" is also what this harness
             // reports when the directory it wiped was already empty -- the writes would simply
-            // never have reached a page -- and the two are indistinguishable in the recovery
+            // never have reached a block -- and the two are indistinguishable in the recovery
             // line. So count the slabs FIRST and refuse to call it a power cut otherwise.
             let slabs = fs::read_dir(root.join("blocks"))
                 .map(|entries| {
@@ -157,7 +157,7 @@ fn powerloss(root: PathBuf, scope: &str) {
                 "WAL must survive a power cut -- it is the single durable barrier"
             );
         }
-        // A dump made pages durable up to the recorded frontier; the post-dump tail pages were
+        // A dump made blocks durable up to the recorded frontier; the post-dump tail blocks were
         // appended but never fsync'd. Truncate each slab back to its recorded durable length,
         // modelling loss of exactly the un-synced tail. The (durable) base index + WAL remain.
         "truncate-tail" => {
@@ -186,13 +186,13 @@ fn powerloss(root: PathBuf, scope: &str) {
         }
         // Realistic power loss for the index-log-defer-sync (3->2) mode: the ONLY relaxation is
         // the deferred delta-log fdatasync, so the loss it can cause is an un-synced delta tail.
-        // Drop the entire delta index-log (worst case) while the durable pages + WAL + base index
+        // Drop the entire delta index-log (worst case) while the durable blocks + WAL + base index
         // remain. Recovery must fold the (durable) base + replay the WAL tail to restore every
-        // acked write; the durable pages are never referenced through a lost delta.
+        // acked write; the durable blocks are never referenced through a lost delta.
         "drop-indexlog" => {
             let _ = fs::remove_dir_all(root.join("indexes").join("indexlogs"));
         }
-        // A page write was torn by the crash: lop a few bytes off the newest slab (partial
+        // A block write was torn by the crash: lop a few bytes off the newest slab (partial
         // record). Reconcile-on-open must drop the torn record and replay must rebuild it.
         "torn-tail" => {
             let mut newest: Option<(PathBuf, std::time::SystemTime)> = None;
@@ -296,7 +296,7 @@ fn recover(root: PathBuf, keys: u64) {
 
 /// DECISIVE single-barrier case: evict (feature_max_size trim) BEFORE any dump, then crash.
 /// One FeatureAppend of 5 points with feature_max_size=3 keeps the newest 3 in the series but
-/// leaves all 5 physically in the page. The trim decision is config-driven; the config is made
+/// leaves all 5 physically in the block. The trim decision is config-driven; the config is made
 /// durable + WAL-ordered by the single-barrier config-log. After the crash only the fsync'd WAL
 /// and config-log survive (no dump), so recovery must re-derive the trim and NOT resurrect the
 /// two evicted points.

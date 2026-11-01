@@ -231,7 +231,7 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "iter",
         "entries",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
-        // CLONE of an address the map already holds -- the page an element is moving off, which the
+        // CLONE of an address the map already holds -- the block an element is moving off, which the
         // filer needs because an index entry no longer names its element. There is no `&mut` on it
         // and nothing it returns can be written through, so it is on the same footing as the reads
         // above rather than on the exception list below.
@@ -252,7 +252,7 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "IterableMutElementMap",
         // READ-ONLY BY DECLARATION, both of its methods. `AddressedElementMap` is what lets the
         // generic emitter ask a concrete level-two container which address it holds for one element
-        // and whether any OTHER element sits on a given page. Both take `&self`; neither can insert,
+        // and whether any OTHER element sits on a given block. Both take `&self`; neither can insert,
         // remove or retain, so a kind declaring it gains no way to change what its map holds. It is
         // the fourth of these small traits and the only one that is purely a read.
         "AddressedElementMap",

@@ -2,14 +2,14 @@
 // Copyright 2026 MatrixArkAI
 
 // =================================================================================================
-// DOES THE FOLD ROUTE LEAVE THE DURABLE SET MAP NAMING EVERY MEMBER THE PAGE INDEX NAMES?
+// DOES THE FOLD ROUTE LEAVE THE DURABLE SET MAP NAMING EVERY MEMBER THE BLOCK INDEX NAMES?
 //
 // #2078 established this for `hashes` and for `hashes` ONLY. The proof does not carry over: a
 // different kind has different install arms, a different level-2 key, and a different reconcile
 // shape, so "the fold leaves the container complete" has to be re-established per kind or it is an
 // assumption wearing a test's clothes. This module is that proof for `sets`, or its refutation.
 //
-// WHY IT MATTERS HERE, which is the same reason it mattered for hash. A page entry carries
+// WHY IT MATTERS HERE, which is the same reason it mattered for hash. A block entry carries
 // `component` -- for a set, the member hex -- and the model map is a second copy of the same
 // identity. The entry's `component` is 16 of the 56 bytes a resident entry weighs, and taking it off
 // leaves `SetMembers` nowhere to read a member name FROM except `shard.sets`. So the order is not
@@ -178,7 +178,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     //   * the KEY accessor's arm, which is how a carry gets grouped by object key.
     //   * the APPLY arm, which is what makes the carry non-vacuous -- a producer whose carry
     //     nothing applies writes a record no reload reads, and the completeness measured above
-    //     would then be a property of the page index rather than of the carry.
+    //     would then be a property of the block index rather than of the carry.
     let producers = engine
         .matches("vec![TouchedContainerElement::Set {")
         .count();
@@ -233,7 +233,7 @@ fn every_command_that_installs_a_set_member_reports_a_touched_element() {
     //
     // The claim is unchanged and is the one that matters: this replay path RECORDS. Hash's census
     // found `write_context_node` installing a hash element and filing nothing, which is the shape
-    // that makes a replayed element resident and named by no page. The `set` replay arm is not that
+    // that makes a replayed element resident and named by no block. The `set` replay arm is not that
     // shape, and after the conversion it cannot become it without this assertion failing -- because
     // the only other way to reach the map from a replay arm is a named exception in the container.
     assert!(
