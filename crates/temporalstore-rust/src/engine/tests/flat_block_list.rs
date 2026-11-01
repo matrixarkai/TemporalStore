@@ -1326,6 +1326,120 @@ fn what_the_slots_owned_element_headroom_costs() {
          that no longer exists"
     );
 }
+/// WHAT THE PUBLISHED AMPLIFICATION ARM CANNOT SEE: ONE ROW, TWO QUANTITIES.
+///
+/// `the_amplification_set_at_two_arms_four_times_apart` weighs the index through
+/// `deep_heap_columns`, which CLONES -- and `Vec::clone` takes exactly `len` capacity. The
+/// production model `BlockIndexMap::resident_heap_bytes` charges `capacity`. So on every row
+/// holding a geometrically grown buffer **the published figure and the figure an eviction
+/// trigger reads are different quantities, and the published one is the smaller of the two.**
+/// This measures the difference.
+///
+/// # THIS ARM CHANGES NOTHING AND RECLAIMS NOTHING
+///
+/// It is a census. Giving the slack back at dump time was built and measured and is NOT
+/// landed: it lowers `bucket_index_resident_bytes` on a round that releases nothing, which two
+/// eviction guards reject correctly -- `the_shipped_default_opens_the_bound_and_never_the_wide_gate`
+/// asserts the resident index does not move on such a round, and
+/// `the_eviction_loop_settles_below_its_threshold_instead_of_refiring` states in its own doc
+/// that "the only term left moving is the resident index, which is the one eviction acts on".
+/// Reclaiming at dump gives that term a SECOND MOVER, and whether it may fall on a round that
+/// evicts nothing is a question for the eviction path, not for a footprint change. So the
+/// NUMBER lands here and the behaviour does not.
+///
+/// # WHY BOTH CONTAINERS
+///
+/// The block list steps capacity up by `BLOCK_LIST_GROWTH_STEP` with `reserve_exact`; the slot
+/// array `push`es, which DOUBLES, while `drop_trailing_placeholders` `pop`s. Neither ever
+/// lowers capacity. At the larger corpus the slot arrays carried MORE spare slots than the
+/// block lists, so a census of the lists alone reports about half of it.
+///
+/// # THE FIXTURE IS THE PUBLISHED ONE, DELIBERATELY
+///
+/// 1,792 and 7,168 keys -- 7/8 of two powers of two, exactly 4.0x apart -- with the same
+/// 256-byte value, so the figure reads beside the published rows. A per-unit figure taken from
+/// a neighbouring arm's fixture is not comparable: the 0..1023 arm of
+/// `what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges` seeds 8,000 records and
+/// reports 11.2 B/block of list slack, which is NOT this corpus' figure. The marginal is what
+/// is quoted, because the per-corpus figures fall with scale and only the marginal is
+/// base-independent.
+///
+/// rust-internal: measures container footprint, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_published_arm_cannot_see_in_container_capacity -- --exact --nocapture
+#[test]
+fn what_the_published_arm_cannot_see_in_container_capacity() {
+    const SHIPPED_END: u32 = 1_023;
+    /// 7/8 of 2,048.
+    const ONE_X: usize = 1_792;
+    /// 7/8 of 8,192, exactly 4.0x `ONE_X`.
+    const FOUR_X: usize = 7_168;
+    /// The width the published arm writes, so the block population per key matches.
+    const VALUE: usize = 256;
+
+    let block_entry = std::mem::size_of::<(u64, BlockIndex)>();
+    let slot_entry = std::mem::size_of::<u64>();
+
+    let weigh = |keys: usize| -> (usize, usize, usize) {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let engine = engine_on(dir.path());
+        load_on(&engine, SHIPPED_END);
+        run_batch(
+            &engine,
+            (0..keys)
+                .map(|i| Command::StringSet {
+                    key: format!("amp-{i:06}"),
+                    value: vec![b'v'; VALUE],
+                })
+                .collect(),
+        );
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        let (mut bl, mut bc, mut ol, mut oc) = (0usize, 0usize, 0usize, 0usize);
+        for bucket in shard.bucket_index.bucket_map.values() {
+            let (l, c) = bucket.block_index.list_len_and_capacity();
+            bl += l;
+            bc += c;
+            let (l, c) = bucket.object_index.slots_len_and_capacity();
+            ol += l;
+            oc += c;
+        }
+        let unseen = (bc - bl) * block_entry + (oc - ol) * slot_entry;
+        println!();
+        println!("  {keys} keys, {VALUE}-byte values, shipped 0..{SHIPPED_END}");
+        println!("    block lists  len {bl} cap {bc}   ({block_entry} B an entry)");
+        println!("    slot arrays  len {ol} cap {oc}   ({slot_entry} B an entry)");
+        println!(
+            "    unseen by the clone: {unseen} B = {:.2} B/key",
+            unseen as f64 / keys as f64
+        );
+        // NON-VACUITY, both containers populated, or this census is over nothing.
+        assert!(bl > 0, "{keys} keys produced no block list, so this is not the shipped range");
+        assert!(ol > 0, "{keys} keys produced no slot array");
+        (keys, unseen, bc - bl + oc - ol)
+    };
+
+    let (k1, u1, s1) = weigh(ONE_X);
+    let (k4, u4, s4) = weigh(FOUR_X);
+    let marginal = (u4 as f64 - u1 as f64) / (k4 - k1) as f64;
+    println!();
+    println!("  MARGINAL, the figure to quote: {marginal:.2} B/key of resident container");
+    println!("  capacity that `resident_heap_bytes` charges and the published arm cannot see.");
+    println!("  spare slots {s1} -> {s4}");
+
+    // THE DIVERGENCE EXISTS AT BOTH SIZES. If either reads zero the two instruments agree and
+    // this arm is a band around nothing.
+    assert!(u1 > 0, "no unseen capacity at {k1} keys, so the two instruments agree there");
+    assert!(u4 > 0, "no unseen capacity at {k4} keys");
+    // AND IT SURVIVES THE SCALE-UP. A divergence real at one corpus size and gone at 4.0x would
+    // be a property of that fixture, which is the error that produced an 11.2 B/block figure
+    // from a neighbouring arm's 8,000-record corpus.
+    assert!(
+        marginal > 0.0,
+        "the marginal unseen capacity is {marginal:.2} B/key ({u1} B at {k1} keys, {u4} at \
+         {k4}), so the divergence does not scale and belongs to one corpus size"
+    );
+}
 /// WHAT A RETAIN LEAVES IN THE LIST'S CAPACITY, against the cap the growth policy claims.
 ///
 /// `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement` asserts a live list
