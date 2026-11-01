@@ -14,9 +14,9 @@ pub(super) fn run_compaction_inner(
 
 /// The same task, optionally restricted to the slabs the caller wants emptied.
 ///
-/// `None` relocates every live page, which is what a queued compaction task and the operator
+/// `None` relocates every live block, which is what a queued compaction task and the operator
 /// RPC mean. `Some` is what the periodic maintenance round issues: it already knows which
-/// slabs carry dead space that objects still hold pages on, and those are the only slabs a
+/// slabs carry dead space that objects still hold blocks on, and those are the only slabs a
 /// relocation can recover anything for.
 pub(super) fn run_compaction_inner_draining(
     inner: &DataNodeRuntimeInner,
@@ -260,10 +260,10 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
     if status.ok {
         if let Some(retain_from_block_slab_id) = request.retain_block_slabs_from_id {
             // One engine shares a single block_store across every shard it hosts, so a slab can
-            // hold pages from multiple shards. Retain slabs live in ANY loaded shard, not just
-            // this request's shard; a per-shard live set would delete another shard's live pages.
+            // hold blocks from multiple shards. Retain slabs live in ANY loaded shard, not just
+            // this request's shard; a per-shard live set would delete another shard's live blocks.
             let mut live_block_slab_ids = inner.engine.live_block_slab_ids_all_shards();
-            // Retain any page slab still referenced by a durable bucket-dump manifest. The
+            // Retain any block slab still referenced by a durable bucket-dump manifest. The
             // operator /gc RPC must not delete a slab a retained manifest needs: a lagging
             // follower's replay or a snapshot-install reads it, and deleting it makes the
             // manifest uninstallable (replica data loss). The gated storage-manager cycle

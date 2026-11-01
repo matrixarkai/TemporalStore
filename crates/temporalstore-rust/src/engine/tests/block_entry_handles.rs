@@ -1,13 +1,13 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! PRICING A HANDLE FOR EACH OF THE THREE NAMES A PAGE ENTRY CARRIES, one name at a time.
+//! PRICING A HANDLE FOR EACH OF THE THREE NAMES A BLOCK ENTRY CARRIES, one name at a time.
 //!
 //! #1959 opened `BlockIndex` at 104 bytes and called the three names "48 bytes, the largest
 //! group". `block_entry_names` then measured the premise under that and found HALF of it false: an
-//! object's pages already hold ONE allocation of its key, so the 16 bytes an entry spends on a
+//! object's blocks already hold ONE allocation of its key, so the 16 bytes an entry spends on a
 //! name is the FAT POINTER and the payload is already shared. A handle therefore saves at most 12
-//! bytes of field per page, not 16 -- and an interning table COSTS an entry per distinct name,
+//! bytes of field per block, not 16 -- and an interning table COSTS an entry per distinct name,
 //! which is an allocation, so that cost lands on the chunk column where the saving does not.
 //!
 //! THE THREE NAMES ARE THREE DIFFERENT ANSWERS and a blended number would hide it:
@@ -17,15 +17,15 @@
 //!     authority. A closed set of seventeen needs no table at all: the handle IS the discriminant
 //!     and the name is a `&'static str`. TAKEN, and this module states what it cost.
 //!   * `object_key` is per-OBJECT, so a handle's table costs one entry per object and pays once
-//!     per PAGE. Whether it pays is therefore a property of the pages-per-OBJECT distribution and
+//!     per BLOCK. Whether it pays is therefore a property of the blocks-per-OBJECT distribution and
 //!     of nothing else, and that distribution is measured here -- as a histogram with percentiles
-//!     and a MAX, never a mean, because a mean of 1.98 pages a bucket in this engine once
+//!     and a MAX, never a mean, because a mean of 1.98 blocks a bucket in this engine once
 //!     contained ZERO buckets holding two.
 //!   * `component` is TWO POPULATIONS, and this module was written expecting one. The reasoning
-//!     was that a container key's fields are each their own page and the component is the only
-//!     thing telling them apart, so distinct component names must grow with the pages -- true
+//!     was that a container key's fields are each their own block and the component is the only
+//!     thing telling them apart, so distinct component names must grow with the blocks -- true
 //!     WITHIN one object and false ACROSS a store, because a schema repeats: forty hashes sharing
-//!     a hundred field names hold 400 distinct components over 4,000 pages. The anti-vacuity
+//!     a hundred field names hold 400 distinct components over 4,000 blocks. The anti-vacuity
 //!     assertion caught that and refused to score, so the verdict is stated per population. A
 //!     repeated SCHEMA name pays; a CONTENT-DERIVED one -- which is what `zset_component` and
 //!     `timestamped_component` build -- does not, and cannot be replaced by an ordinal at all
@@ -52,7 +52,7 @@
 //!
 //! BOTH ROUTING RANGES, and the default moved. #1973 took `TS_SHARD_END_ROUTING_BUCKET` from the
 //! whole keyspace to 1023 because the old default gave every key a bucket of its own BY
-//! CONSTRUCTION. Pages per BUCKET is not pages per OBJECT and this module's subject is the second,
+//! CONSTRUCTION. Blocks per BUCKET is not blocks per OBJECT and this module's subject is the second,
 //! which is range-INDEPENDENT -- so both ranges are measured anyway, and their agreement is the
 //! evidence for that independence rather than an assumption about it.
 #![allow(clippy::all)]
@@ -119,7 +119,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// Keys that route one to a bucket and hold ONE page each: the population a handle loses on.
+/// Keys that route one to a bucket and hold ONE block each: the population a handle loses on.
 fn seed_routed_keys(engine: &TemporalEngine, records: usize) {
     run_batch(
         engine,
@@ -132,7 +132,7 @@ fn seed_routed_keys(engine: &TemporalEngine, records: usize) {
     );
 }
 
-/// Container keys: every element is its own page under ONE object key. The population a handle
+/// Container keys: every element is its own block under ONE object key. The population a handle
 /// wins on, and the one whose component names are hex.
 fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
     let mut commands = Vec::with_capacity(keys * members);
@@ -218,10 +218,10 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) {
 }
 
 // =================================================================================================
-// THE DISTRIBUTION. Pages per OBJECT, which is the term that decides `object_key`.
+// THE DISTRIBUTION. Blocks per OBJECT, which is the term that decides `object_key`.
 // =================================================================================================
 
-/// Pages per object, as object counts keyed by pages held.
+/// Blocks per object, as object counts keyed by blocks held.
 #[derive(Debug, Default, Clone)]
 struct BlocksPerObject {
     histogram: BTreeMap<usize, usize>,
@@ -363,16 +363,16 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
     measured
 }
 
-/// PAGES PER OBJECT IS TWO POPULATIONS, AT BOTH RANGES AND BOTH CORPUS SIZES.
+/// BLOCKS PER OBJECT IS TWO POPULATIONS, AT BOTH RANGES AND BOTH CORPUS SIZES.
 ///
 /// This is the measurement `object_key`'s verdict rests on, and the reason it is a histogram is
-/// #1959's: a mean over this distribution names neither population. A routed key holds ONE page;
+/// #1959's: a mean over this distribution names neither population. A routed key holds ONE block;
 /// a container object holds a hundred. A single interning table serves both, so the verdict is a
 /// property of the MIX and is stated per population rather than blended.
 ///
-/// THE RANGE IS THE CONTROL HERE, not a variable. An object's pages all route to its own key's
-/// bucket, so pages-per-object cannot depend on how many buckets exist -- and both ranges are
-/// measured so that independence is evidence rather than an assumption. Pages per BUCKET does
+/// THE RANGE IS THE CONTROL HERE, not a variable. An object's blocks all route to its own key's
+/// bucket, so blocks-per-object cannot depend on how many buckets exist -- and both ranges are
+/// measured so that independence is evidence rather than an assumption. Blocks per BUCKET does
 /// depend on it, which is what #1973 measured and is a different question.
 ///
 /// THE STORE PATH LENGTH is held constant and asserted. Counts are immune to it; allocation bytes
@@ -534,7 +534,7 @@ struct TableCost {
 }
 
 impl TableCost {
-    /// Cumulative chunk bytes a page's share of BUILDING the table cost.
+    /// Cumulative chunk bytes a block's share of BUILDING the table cost.
     fn chunk_per_block(&self) -> f64 {
         if self.blocks == 0 {
             0.0
@@ -543,7 +543,7 @@ impl TableCost {
         }
     }
 
-    /// What the built table HOLDS, per page. The figure a verdict is taken on.
+    /// What the built table HOLDS, per block. The figure a verdict is taken on.
     fn resident_per_block(&self) -> f64 {
         if self.blocks == 0 {
             0.0
@@ -571,7 +571,7 @@ fn resident_bytes(table: &CandidateTable) -> usize {
     handle_side + map_side
 }
 
-/// The bytes a handle SAVES in the entry, per page.
+/// The bytes a handle SAVES in the entry, per block.
 ///
 /// Not 12, and the difference is the whole reason this is a constant with a comment rather than a
 /// subtraction at the call site. Swapping a 16-byte fat pointer for a 4-byte handle removes 12
@@ -591,7 +591,7 @@ fn measure_object_key_table(engine: &TemporalEngine) -> TableCost {
     // Collected first, so the probe charges the TABLE and not the walk that feeds it.
     //
     // THE NAMES COME FROM THE LOOKUP, WHICH IS WHERE THE ALLOCATION THEY MEASURE NOW LIVES. The
-    // table this prices interns shared names; the pages have none of their own, so the shared
+    // table this prices interns shared names; the blocks have none of their own, so the shared
     // names the bucket's own lookup holds are the input, and that is the same set of `Arc`s the
     // table would be fed in production.
     let named = super::BlockObjects::of(&shard.bucket_index);
@@ -635,7 +635,7 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
             // would cost, over the names the entries held. The entries hold none, so the table
             // has no input -- and the question it was pricing is settled more cheaply than it
             // proposed: the name did not need interning, it needed removing, and `engine_storage_state.rs`'s pin
-            // records the sixteen bytes a page that recovered.
+            // records the sixteen bytes a block that recovered.
         }
     }
     let probe = Probe::start();
@@ -660,7 +660,7 @@ fn measure_component_table(engine: &TemporalEngine) -> TableCost {
 /// A HANDLE FOR `object_key` PAYS ON ONE POPULATION AND LOSES ON THE OTHER, and the break-even is
 /// measured rather than argued.
 ///
-/// The saving is 16 bytes a PAGE. The cost is one table entry per distinct OBJECT KEY, and that
+/// The saving is 16 bytes a BLOCK. The cost is one table entry per distinct OBJECT KEY, and that
 /// cost is an allocation, so it appears on the chunk column and nowhere else -- which is why this
 /// arm is `alloc-probe` gated and the counting arm above is not.
 ///
@@ -786,7 +786,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     }
 
     let break_even: f64 = {
-        // Bytes a table entry HOLDS, from the routed arm where entries == pages exactly.
+        // Bytes a table entry HOLDS, from the routed arm where entries == blocks exactly.
         let per_entry = routed[0].1.resident_per_block();
         per_entry / ENTRY_BYTES_A_HANDLE_SAVES as f64
     };
@@ -820,10 +820,10 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
 /// POPULATIONS TOO.
 ///
 /// THIS TEST WAS WRITTEN TO REFUTE THE HANDLE OUTRIGHT and its own anti-vacuity assertion refused to
-/// let it. The reasoning was that a container key's fields are each their own page and the component
-/// is the only thing telling them apart, so distinct component names must grow with the pages. That
+/// let it. The reasoning was that a container key's fields are each their own block and the component
+/// is the only thing telling them apart, so distinct component names must grow with the blocks. That
 /// is true WITHIN one object and false ACROSS a store: forty hashes with the same hundred field
-/// names hold 400 distinct components over 4,000 pages, because a schema repeats. The assertion
+/// names hold 400 distinct components over 4,000 blocks, because a schema repeats. The assertion
 /// fired, and the verdict is stated by population instead.
 ///
 /// THE TWO POPULATIONS, and which one a real store is in depends on where the name comes from:
@@ -833,7 +833,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
 ///   * A CONTENT-DERIVED name does not repeat at all. `zset_component` is
 ///     `format!("{biased:016x}{}", hex::encode(member))` and `timestamped_component` is
 ///     `format!("{stored_key:016x}{identity:016x}")`: the name IS the lookup key, computed from the
-///     element. One entry per page, and a handle LOSES.
+///     element. One entry per block, and a handle LOSES.
 ///
 /// AND THE SECOND POPULATION CANNOT BE ORDINALISED AWAY, which is the part that matters for
 /// sequencing. A content-derived name needs a per-object member-to-ordinal map to be replaced by an
@@ -925,7 +925,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
         );
     }
 
-    // --- THE CONTENT-DERIVED POPULATION: one name per page, and the handle LOSES. ---
+    // --- THE CONTENT-DERIVED POPULATION: one name per block, and the handle LOSES. ---
     for (label, cost, _) in &content {
         assert!(
             cost.entries_per_block() > 0.9,
@@ -1147,16 +1147,16 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     //
     // This used to assert `BlockIndexMap == 8 + size_of::<BlockIndex>()` -- a handle plus an inline
     // entry -- and that was the relation that made narrowing the entry worth a word off every
-    // `BucketNode` in the `BucketMap`. The single-page arm now holds a POINTER, so the page index is
+    // `BucketNode` in the `BucketMap`. The single-block arm now holds a POINTER, so the block index is
     // a bare container header and its width is INDEPENDENT of the entry's.
     //
     // WHICH MEANS THE NARROWING MEASURED ABOVE IS STILL WORTH SOMETHING, BUT SOMEWHERE ELSE: on the
-    // HEAP rather than in the node. Every boxed single-page arm and every element of every page list
+    // HEAP rather than in the node. Every boxed single-block arm and every element of every block list
     // is sixteen bytes smaller for it. The node banked its share once, and once only, whichever of
     // the two changes landed second.
     //
     // The relation is asserted in the NEGATIVE so this cannot silently become true again: an entry
-    // back inside the page index would put the width of the whole structure back on every bucket.
+    // back inside the block index would put the width of the whole structure back on every bucket.
     let arm = size_of::<crate::engine::state::BlockIndexMap>();
     assert_ne!(
         8 + size_of::<BlockIndex>(),
@@ -1176,9 +1176,9 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // as the arm and `arm < size_of::<BlockIndex>()` is false of two equal numbers.
     //
     // IT WAS NEVER THE RIGHT COMPARISON ANYWAY, which the println below already said: the arm is a
-    // bare page-list header and its width is INDEPENDENT of the entry's. What "too narrow to hold
+    // bare block-list header and its width is INDEPENDENT of the entry's. What "too narrow to hold
     // one inline" means is that it cannot hold a HANDLE AND AN ENTRY, which is what an inline
-    // single-page arm would have to carry -- so that is what is asserted. At 24 against 32 it
+    // single-block arm would have to carry -- so that is what is asserted. At 24 against 32 it
     // holds, and it would hold at any entry width, which is the point: this is a claim about the
     // representation and not an accident of two numbers meeting.
     assert!(
@@ -1252,14 +1252,14 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
 }
 
 // =================================================================================================
-// THE LIFETIME HAZARD. Release empties a bucket's page list; reload re-derives it.
+// THE LIFETIME HAZARD. Release empties a bucket's block list; reload re-derives it.
 // =================================================================================================
 
-/// A RELEASED BUCKET RELOADS EVERY PAGE'S NAMES, ELEMENT BY ELEMENT.
+/// A RELEASED BUCKET RELOADS EVERY BLOCK'S NAMES, ELEMENT BY ELEMENT.
 ///
-/// `release_bucket_blocks` empties a bucket's page list and `reload_released_bucket` re-derives it
+/// `release_bucket_blocks` empties a bucket's block list and `reload_released_bucket` re-derives it
 /// from the model maps. Anything the entry holds has to survive that or be re-derived IDENTICALLY,
-/// and a count of pages cannot show it: a reload that produced the right NUMBER of pages with one
+/// and a count of blocks cannot show it: a reload that produced the right NUMBER of blocks with one
 /// spelling wrong would pass a count and mis-attribute a page.
 ///
 /// So the comparison is element by element, over the sorted triples, and the fixture is asserted
@@ -1322,7 +1322,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     );
     let released = outcome.released_buckets.clone();
 
-    // The released buckets really did lose their pages.
+    // The released buckets really did lose their blocks.
     let during = block_triples(&engine);
     assert!(
         during.len() < before.len(),
@@ -1371,7 +1371,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     println!("  {compared} blocks compared element by element, all three names identical");
 }
 
-/// Every page's three names and its address identity, sorted, so two walks are comparable.
+/// Every block's three names and its address identity, sorted, so two walks are comparable.
 fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>, u64, u64)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -1400,7 +1400,7 @@ fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>
 ///
 /// THE MUTANT THIS PLANTS is the dangerous one for a narrowed field: a stored index carrying a
 /// spelling the engine does not know. Mapped onto some default variant it would file the page
-/// under a kind it does not have, and a page filed under the wrong kind is still on its slab while
+/// under a kind it does not have, and a block filed under the wrong kind is still on its slab while
 /// nothing looks for it -- silent corruption, not a red test.
 ///
 /// The wire did NOT move for this change: the spelling is still written and read as a string. So
@@ -1454,11 +1454,11 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
 
 /// THE OBJECT [`sample_entry`] BELONGS TO, named once rather than at each encode.
 ///
-/// The stored key is composed from the identity held BESIDE the page, so an arm that encodes one
+/// The stored key is composed from the identity held BESIDE the block, so an arm that encodes one
 /// has to state which object it means. Same characters `sample_entry` puts on the entry.
 const SAMPLE_ENTRY_OBJECT_KEY: &str = "k";
 
-/// One page entry, for the tests that mutate a single field of a real encoding.
+/// One block entry, for the tests that mutate a single field of a real encoding.
 fn sample_entry() -> BlockIndex {
     BlockIndex {
         model_id: StoredModelKind::String,
@@ -1614,7 +1614,7 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
 
 /// THE CONTROL: THE WIRE DID NOT MOVE, SO THE STORED BYTES MUST NOT HAVE.
 ///
-/// Every claim above is about the IN-MEMORY width of a page entry. The mechanism -- a fat pointer
+/// Every claim above is about the IN-MEMORY width of a block entry. The mechanism -- a fat pointer
 /// to a string from a closed set becomes a discriminant, and the string is written as the string
 /// it always was -- predicts that the STORED encoding is byte-for-byte what it was. That is a
 /// place the effect must be ABSENT, and 0.00% is the answer that distinguishes this change from
@@ -2101,13 +2101,13 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
 ///
 /// A design that spells `page_size == 0 indicates page is deleted` can drop the `deleted` bit
 /// entirely. The equivalent here would be `BlockAddress::length() == 0`, and the obvious way for
-/// that to be unavailable is a legitimate zero-length page: `bin/server.rs` says "An empty body
+/// that to be unavailable is a legitimate zero-length block: `bin/server.rs` says "An empty body
 /// still creates a zero-length object so a later GET succeeds", and `address_footprint` carries an
 /// instrument that hunts for a "live zero-length block" -- which is not something one writes for a
 /// state that cannot occur.
 ///
-/// DRIVEN, AND IT REFUTED THAT. An empty string value produces a page whose length is NOT zero:
-/// the block record carries a header, so the shortest live page this route can produce is twelve
+/// DRIVEN, AND IT REFUTED THAT. An empty string value produces a block whose length is NOT zero:
+/// the block record carries a header, so the shortest live block this route can produce is twelve
 /// bytes. The hypothesis that an empty value blocks the tombstone is wrong.
 ///
 /// WHAT THAT DOES AND DOES NOT SETTLE. It bounds ONE route, not the class, and this test says so

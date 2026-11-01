@@ -41,7 +41,7 @@
 //!      it back across threads.
 //!   4. THE FOLD WAS GIVEN THE RECORD. `index_log::probe` says the fold was asked about at least
 //!      one record for this shard and declared NONE of them already reflected, and that it
-//!      APPLIED at least one -- and `note_fold_applied` is called after the page items are
+//!      APPLIED at least one -- and `note_fold_applied` is called after the block items are
 //!      re-attached and the key states are applied, so that is the fold having run
 //!      `apply_key_states` on this shard's records. Rules out the quiet version of a shut door:
 //!      the fold skipping the record and the outcome looking identical.
@@ -124,12 +124,12 @@ fn index_log_files(dir: &std::path::Path) -> Vec<std::path::PathBuf> {
     out
 }
 
-/// `StringSet` for a live page, a `context_nodes` entry planted under the same key as a clone of
+/// `StringSet` for a live block, a `context_nodes` entry planted under the same key as a clone of
 /// that live entry, then `CommonExpire` to arm a deadline -- which is one of the two halves
 /// `delta_key_state_change` fires on, so the capture runs with the entry in place and writes a
 /// blob carrying `context_nodes`.
 ///
-/// `CommonExpire` and not `StringSetEx`: a value-replacing write relocates the string's page and
+/// `CommonExpire` and not `StringSetEx`: a value-replacing write relocates the string's block and
 /// leaves the plant naming a superseded address, which is a second variable.
 fn build_fixture(dir: &std::path::Path, flush_base: bool) {
     let engine = engine_at(dir);
@@ -307,7 +307,7 @@ fn the_shipped_recovery_path_asks_the_fold_about_nothing() {
 /// The fold being REACHED is asserted rather than assumed: the decision list non-empty, every
 /// decision not-reflected (with no base the anchor is 0 and `delta_record_is_reflected_by` opens
 /// with `base_anchor > 0`, so nothing may be skipped), and the applied list non-empty, which
-/// `note_fold_applied` records only after the page items are re-attached and the key states are
+/// `note_fold_applied` records only after the block items are re-attached and the key states are
 /// applied.
 #[test]
 fn the_fold_driven_directly_decides_whether_this_map_arrives() {

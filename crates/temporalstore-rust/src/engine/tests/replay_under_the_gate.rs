@@ -687,12 +687,12 @@ fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from()
 ///
 /// Declaring a component the collector has no arm for is the one combination that loses. The
 /// caller sees `Some(..)` and takes the delta path, the collector falls to `_ => None` and builds
-/// nothing, and the record names NO page for a write that wrote one -- while reporting success and
+/// nothing, and the record names NO block for a write that wrote one -- while reporting success and
 /// looking cheaper than before, because an empty record is small.
 ///
 /// THAT IS NOT HYPOTHETICAL. #2232 added a `FeatureAppend` arm to the first function and there was
 /// no `feature` arm in the second, so every feature append wrote a record naming none of its
-/// pages. The hazard was already written down for the hash pairing, in this module's own failure
+/// blocks. The hazard was already written down for the hash pairing, in this module's own failure
 /// message: the collector "would fall to its `_ => None` arm, build no item, and the write would
 /// never reach the index log". A test of one kind did not stop it being reintroduced for another.
 ///

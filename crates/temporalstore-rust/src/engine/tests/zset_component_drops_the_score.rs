@@ -5,7 +5,7 @@
 //! COLD RELOAD.
 //!
 //! `BlockIndex` was 56 bytes with zero slack asserted; `component: Option<Arc<str>>` is 16 of
-//! those 56. Set and list already collapse to one index entry a page; a zset could not, because
+//! those 56. Set and list already collapse to one index entry a block; a zset could not, because
 //! its component was not a name -- it was the score, `{biased:016x}` then the member in hex. This
 //! change takes the score off the component (`zset_component` is `hex::encode(member)` alone
 //! now), which makes zset collapsible like the others -- collapsing it is a separate, later step,
@@ -338,7 +338,7 @@ fn a_rescore_leaves_exactly_one_member_across_a_cold_reload() {
 ///
 /// `replay_under_the_gate`'s mechanism, reused here rather than re-derived: an `unload_shard` is
 /// what materializes the base index, so a fixture that never unloads leaves the reload no choice
-/// but to replay the WAL through `apply_outcome_item` alone. That is the ONLY path with no page
+/// but to replay the WAL through `apply_outcome_item` alone. That is the ONLY path with no block
 /// read and no index snapshot available to fall back on for the score -- which is exactly why an
 /// earlier, naive attempt at this change lost it here: the component used to carry
 /// `{biased:016x}` and the replay arm decoded the score out of that text; with the score off the

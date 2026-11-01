@@ -21,7 +21,7 @@
 //!     the log piece  shard-1.wal.bin             987,705,371   in 120,568 reads
 //!     the checkpoint manifests                    38,410,321   in 4 reads
 //!     the index log                                8,119,256   in 1,069 reads
-//!     pages, /proc, everything else                    13,390
+//!     blocks, /proc, everything else                    13,390
 //!   the log store's own bytes_read                 30,184,630
 //! ```
 //!
@@ -46,7 +46,7 @@
 //! ```
 //!
 //! **Every in-engine instrument reported that restore as perfectly flat**, because every one of
-//! them counts records handed back, manifests parsed or pages fetched -- and not one of them
+//! them counts records handed back, manifests parsed or blocks fetched -- and not one of them
 //! counts a byte pulled off a log piece.
 //!
 //! ## Two things that make it as bad as it is

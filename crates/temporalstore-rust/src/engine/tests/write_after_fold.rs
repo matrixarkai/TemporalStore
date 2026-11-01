@@ -8,20 +8,20 @@
 //! Two different pieces of code file a container's index entries: the PROJECTION
 //! (`visit_model_live_blocks`, which a load and a compaction re-derive the whole index from) and
 //! the WRITE PATH (`install_element` -> `upsert_bucket_index_block`, which files one entry as each
-//! element is written). Under the one-entry-a-page gate the projection files one entry per PHYSICAL
-//! PAGE carrying no component; the write path files one entry per ELEMENT carrying one.
+//! element is written). Under the one-entry-a-block gate the projection files one entry per PHYSICAL
+//! BLOCK carrying no component; the write path files one entry per ELEMENT carrying one.
 //!
 //! A test that writes, then reloads, cannot see that. A reload re-derives, so it reads the index
 //! back the way the projection wrote it and the write path's filing is simply overwritten --
 //! which is exactly why the store-boundary corpus test in this crate passes while the two routes
 //! disagree, and why five landed steps that only RE-DERIVED could not find it. It takes a WRITE
-//! AFTER A DERIVATION: fold the pages so the projection files one entry, then write again so the
+//! AFTER A DERIVATION: fold the blocks so the projection files one entry, then write again so the
 //! write path files beside it, and compare.
 //!
 //! # THE THREE THINGS ASSERTED, AND WHY COUNTS ALONE WOULD NOT DO
 //!
-//!   1. ONE ENTRY PER DISTINCT PHYSICAL PAGE. Not "N entries", which means the collapse did not
-//!      reach the write path; and the count is checked against the number of distinct page
+//!   1. ONE ENTRY PER DISTINCT PHYSICAL BLOCK. Not "N entries", which means the collapse did not
+//!      reach the write path; and the count is checked against the number of distinct block
 //!      ADDRESSES rather than against a constant, so a fixture that happens to fold differently
 //!      cannot make this vacuous.
 //!
@@ -32,10 +32,10 @@
 //!      number with a structural constant hides which half failed.
 //!   2. EVERY ELEMENT READS BACK, BY MEMBERSHIP AND NOT BY COUNT. This is the arm that catches the
 //!      dangerous repair: filing one entry per element with NO component makes every element of one
-//!      folded page share `(kind, object_key, component, address)`, so they collapse onto one
+//!      folded block share `(kind, object_key, component, address)`, so they collapse onto one
 //!      handle and each write displaces the last. A container answering the right NUMBER of the
 //!      wrong elements must fail here, so the members are compared as a set.
-//!   3. THE WRITTEN KEY MATCHES WHAT A DERIVATION PRODUCES for the same page. `block_ref_key` is
+//!   3. THE WRITTEN KEY MATCHES WHAT A DERIVATION PRODUCES for the same block. `block_ref_key` is
 //!      stored inside the lookup refs, so two routes that spell it differently file a page under a
 //!      handle the other route will never compute -- a durably acknowledged write that reads
 //!      MISSING. This is the arm the two `part4` rebuild-equivalence tests fail on.
@@ -104,7 +104,7 @@ fn add(engine: &TemporalEngine, member: Vec<u8>) {
     assert!(response.status.ok, "write failed: {response:?}");
 }
 
-/// This object's live entries: how many, the distinct physical pages
+/// This object's live entries: how many, the distinct physical blocks
 /// they resolve to, and the written key of each.
 fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(u64, u64, u64)>, Vec<String>) {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -181,14 +181,14 @@ fn rederive(engine: &TemporalEngine) {
     crate::engine::storage_bucket_internals::rebuild_bucket_first_index(1, shard, start, end);
 }
 
-/// THE WRITE PATH AND THE PROJECTION MUST FILE THE SAME ENTRY FOR THE SAME PAGE.
+/// THE WRITE PATH AND THE PROJECTION MUST FILE THE SAME ENTRY FOR THE SAME BLOCK.
 #[test]
 fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = engine_on(dir.path());
     load_on(&engine);
 
-    // ---- Write a batch, then FOLD it, so the projection files one entry for one page. ----
+    // ---- Write a batch, then FOLD it, so the projection files one entry for one block. ----
     for index in 0..FIRST_BATCH {
         add(&engine, member_bytes(index));
     }
@@ -203,7 +203,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     );
 
     // FLOOR: THE FIXTURE ACTUALLY FOLDED. Without this, "one entry per page" is trivially true
-    // because every element is still its own page and the gate is doing nothing.
+    // because every element is still its own block and the gate is doing nothing.
     assert_eq!(
         1,
         folded_blocks.len(),
@@ -216,7 +216,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // second term is structurally zero -- `BlockIndex` has no name to carry -- so pairing it in
     // weakened the assertion rather than strengthening it: a wrong entry count and a constant zero
     // read as one failure, and the zero half could never contribute one. The count stands alone,
-    // compared against the distinct page count asserted just above it rather than against a
+    // compared against the distinct block count asserted just above it rather than against a
     // literal.
     assert_eq!(
         1, folded_live,
@@ -257,9 +257,9 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
          that filed nothing"
     );
 
-    // ---- 1. ONE ENTRY PER DISTINCT PHYSICAL PAGE, NONE NAMING AN ELEMENT. ----
+    // ---- 1. ONE ENTRY PER DISTINCT PHYSICAL BLOCK, NONE NAMING AN ELEMENT. ----
     //
-    // Compared against the number of distinct page addresses rather than a constant, so a fixture
+    // Compared against the number of distinct block addresses rather than a constant, so a fixture
     // that folds differently cannot make this vacuous.
     assert_eq!(
         blocks.len(),
@@ -272,19 +272,19 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // THE `named == 0` ARM IS DELETED, AND ITS SUBJECT IS STILL GUARDED -- by arm 3 below.
     //
     // It asserted that no entry named an element after a write following a derivation, to catch
-    // the write path filing per-element identity while the projection files per-page. An entry has
+    // the write path filing per-element identity while the projection files per-block. An entry has
     // no field for an element name, so this could only pass.
     //
     // WHAT THE ARM WAS REALLY FOR SURVIVES INTACT: the consequence it was watching for is that
     // "the two routes then spell the same page's handle differently", and the WRITTEN KEY
     // comparison further down asserts exactly that, by comparing the write path's keys against a
-    // re-derivation's for the same pages. That arm can still fail, and it fails on the thing that
+    // re-derivation's for the same blocks. That arm can still fail, and it fails on the thing that
     // matters rather than on the mechanism that used to produce it.
 
     // ---- 2. EVERY ELEMENT READS BACK, BY MEMBERSHIP. ----
     //
     // THE ARM THAT CATCHES THE DANGEROUS REPAIR. Filing one entry per ELEMENT with no component
-    // makes every element of one folded page share (kind, object_key, component, address), so they
+    // makes every element of one folded block share (kind, object_key, component, address), so they
     // collapse onto one handle and each write displaces the last -- the 39-of-40 loss, arriving by
     // the write path. A set answering the right COUNT of the wrong members passes a count check
     // and fails this one.
@@ -296,10 +296,10 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
         expected.len()
     );
 
-    // ---- 3. THE WRITTEN KEY MATCHES WHAT A DERIVATION PRODUCES FOR THE SAME PAGE. ----
+    // ---- 3. THE WRITTEN KEY MATCHES WHAT A DERIVATION PRODUCES FOR THE SAME BLOCK. ----
     //
     // `block_ref_key` is stored inside the lookup refs, so two routes that spell it differently
-    // file a page under a handle the other will never compute. Re-derive and compare the keys.
+    // file a block under a handle the other will never compute. Re-derive and compare the keys.
     rederive(&engine);
     let (dlive, dpages, derived_written) = entry_census(&engine);
     println!(
@@ -325,12 +325,12 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     );
 }
 
-/// WHAT SUPERSEDES THE ENTRY NAMING AN ELEMENT'S PREVIOUS PAGE.
+/// WHAT SUPERSEDES THE ENTRY NAMING AN ELEMENT'S PREVIOUS BLOCK.
 ///
 /// The repair for the spelling disagreement is to key the upsert's convergence on the ADDRESS
-/// instead of the component, because under this gate the page is the identity. This measures the
+/// instead of the component, because under this gate the block is the identity. This measures the
 /// case that decides whether that is sufficient on its own: a member REWRITTEN after a fold moves
-/// to a NEW page, so an address-keyed predicate matching only the new address cannot select the
+/// to a NEW block, so an address-keyed predicate matching only the new address cannot select the
 /// entry naming the OLD one. If the current component-keyed convergence is what removes it, the
 /// repair has to be handed the superseded address as well -- and the write path already reads it,
 /// to compute the ordinal.
@@ -355,7 +355,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
         folded_blocks.len()
     );
 
-    // REWRITE a member that is already on the folded page.
+    // REWRITE a member that is already on the folded block.
     add(&engine, member_bytes(0));
     let (live, blocks, _) = entry_census(&engine);
     let durable = durable_members(&engine);
@@ -385,8 +385,8 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
         expected.len()
     );
 
-    // THE MEASUREMENT THE REPAIR TURNS ON. One entry per distinct page means the entry naming the
-    // member's OLD page was superseded. If this holds today, it holds BECAUSE the convergence is
+    // THE MEASUREMENT THE REPAIR TURNS ON. One entry per distinct block means the entry naming the
+    // member's OLD block was superseded. If this holds today, it holds BECAUSE the convergence is
     // component-keyed, and an address-keyed replacement must be given the old address too.
     assert_eq!(
         blocks.len(),
@@ -401,9 +401,9 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
 
 /// A COMPONENT-LESS KIND RELOCATING, WHICH IS WHY THE REPAIR CANNOT BE UNCONDITIONAL.
 ///
-/// `String`, `ControlState` and `ContextNode` all file `component: None` with ONE page per object.
-/// For them the component-keyed convergence is exactly what supersedes a relocated page -- so a
-/// predicate keyed on the address for EVERY kind would leave a live entry naming the dead page on
+/// `String`, `ControlState` and `ContextNode` all file `component: None` with ONE block per object.
+/// For them the component-keyed convergence is exactly what supersedes a relocated block -- so a
+/// predicate keyed on the address for EVERY kind would leave a live entry naming the dead block on
 /// every one of these writes. Measured here so the repair's condition is derived from behaviour
 /// rather than from a list of kind names someone remembers.
 #[test]
@@ -465,7 +465,7 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
     // wrong control for the repair's condition". No entry of any kind can name an element, so the
     // premise holds for every kind by construction and this could only pass. What makes `string`
     // the right control here is the OTHER half, asserted below: it converges on the OBJECT KEY
-    // rather than on the page, so three rewrites leave ONE live entry. That is a number this
+    // rather than on the block, so three rewrites leave ONE live entry. That is a number this
     // fixture can get wrong.
     assert_eq!(
         1, live,
@@ -524,10 +524,10 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
 /// one entry per distinct element removed. The sweep that does it matches on the component of the
 /// entry being filed.
 ///
-/// Under one entry a page, a gated removal files its tombstone with NO component (`engine.rs`'s
+/// Under one entry a block, a gated removal files its tombstone with NO component (`engine.rs`'s
 /// gated removal arm passes `None`). So if the entry being filed also carries no component, the
 /// sweep's predicate matches EVERY tombstone of the object rather than one -- and a re-add of
-/// member Y would clear member X's tombstone. X's tombstone page is what makes X's removal win in
+/// member Y would clear member X's tombstone. X's tombstone block is what makes X's removal win in
 /// `derive_membership`'s fold by append position, so clearing it can bring X BACK.
 ///
 /// That is a resurrection, and presence and absence are different properties: this campaign has a
@@ -537,7 +537,7 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
 /// # WHY IT IS ASSERTED BY MEMBERSHIP AND ACROSS A RELOAD
 ///
 /// By membership because the right COUNT with the wrong members passes a count assertion -- already
-/// caught once in this change. Across a reload because the fold that decides which page wins runs
+/// caught once in this change. Across a reload because the fold that decides which block wins runs
 /// on the way in, so a live engine can answer from state the reload would rebuild differently.
 ///
 /// # AND IT IS FLOORED ON THE SWEEP HAVING SOMETHING TO SWEEP
@@ -564,8 +564,8 @@ fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
         load_on(&engine);
         add(&engine, victim.clone());
         add(&engine, survivor.clone());
-        // Folded, so the two members share a page -- the regime this gate is about. Without it
-        // each member is its own page and the shared tombstone name cannot arise.
+        // Folded, so the two members share a block -- the regime this gate is about. Without it
+        // each member is its own block and the shared tombstone name cannot arise.
         engine
             .compact_shard_blocks(1)
             .expect("the fold round must succeed");
@@ -587,7 +587,7 @@ fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
         engine.unload_shard(1);
     }
 
-    // Its own cache directory, so nothing is answered out of a page the first engine left warm.
+    // Its own cache directory, so nothing is answered out of a block the first engine left warm.
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
@@ -640,13 +640,13 @@ fn a_re_add_after_a_removal_does_not_bring_the_removed_member_back() {
 
 const CROWD: usize = 12;
 
-/// A GATED REMOVAL FROM A FOLDED PAGE: THE MEMBER GOES, EVERY OTHER MEMBER STAYS, ACROSS A RELOAD.
+/// A GATED REMOVAL FROM A FOLDED BLOCK: THE MEMBER GOES, EVERY OTHER MEMBER STAYS, ACROSS A RELOAD.
 ///
 /// # WHY THIS IS WRITTEN BEFORE ANY EXPECTATION IS RESTATED
 ///
 /// The gated removal arm had never executed. While the write path filed each element's name,
 /// `remove_container_element`'s retain matched it, dropped the live entry and took the ungated
-/// path -- so with the gate on, the arm that keeps the page entry beside a tombstone was
+/// path -- so with the gate on, the arm that keeps the block entry beside a tombstone was
 /// unreachable. The keying change files no name, the retain stops matching, and that arm now runs.
 ///
 /// Two existing tests disagree with it about the entry counts. Restating them to match what the
@@ -683,7 +683,7 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
             .compact_shard_blocks(1)
             .expect("the fold round must succeed");
 
-        // FLOOR: THE MEMBERS SHARE ONE PAGE. Without the fold each is its own page, the gated arm
+        // FLOOR: THE MEMBERS SHARE ONE BLOCK. Without the fold each is its own block, the gated arm
         // is not what runs, and this test would be about the ungated path wearing a gated label.
         let (_, folded_blocks, _) = entry_census(&engine);
         assert_eq!(
@@ -783,7 +783,7 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
 
-    // FLOOR: one page, so the gated arm is what runs.
+    // FLOOR: one block, so the gated arm is what runs.
     let (_, folded_blocks, _) = entry_census(&engine);
     assert_eq!(1, folded_blocks.len(), "the fixture did not fold");
 
@@ -835,20 +835,20 @@ fn gated_removals_file_one_tombstone_per_distinct_element_and_do_not_accumulate(
     );
 }
 
-/// THE PAGE AN ELEMENT WAS ALONE ON, which is the half the landing address cannot reach.
+/// THE BLOCK AN ELEMENT WAS ALONE ON, which is the half the landing address cannot reach.
 ///
 /// `a_rewrite_after_a_fold_leaves_one_entry_per_block_today` above measures the OTHER half: a
-/// rewrite off a page SIBLINGS are still on, where the page stays live and its entry must stay
-/// with it. This one is the case that strands an entry. The member is alone on its page, the
-/// rewrite is written to a NEW address, and keyed on the landing page alone the supersede matches
-/// NO existing entry -- so the member's previous entry survives as a LIVE entry over a page
-/// nothing is on any more. Under one entry a page a live entry IS a claim of membership, so that
+/// rewrite off a block SIBLINGS are still on, where the block stays live and its entry must stay
+/// with it. This one is the case that strands an entry. The member is alone on its block, the
+/// rewrite is written to a NEW address, and keyed on the landing block alone the supersede matches
+/// NO existing entry -- so the member's previous entry survives as a LIVE entry over a block
+/// nothing is on any more. Under one entry a block a live entry IS a claim of membership, so that
 /// stale entry is a phantom element: it is what served one element more than had ever been
 /// written on the kind that rewrites in place.
 ///
-/// ASSERTED AS AN EXACT ONE-TO-ONE and not as a floor. `live >= pages` is satisfied by the
+/// ASSERTED AS AN EXACT ONE-TO-ONE and not as a floor. `live >= blocks` is satisfied by the
 /// stranding this is about, and a floor on either count passed once in this campaign over a path
-/// nothing reached -- so the fixture is first shown to have put each member on its own page and to
+/// nothing reached -- so the fixture is first shown to have put each member on its own block and to
 /// have actually MOVED the rewritten one, and only then are the two counts compared.
 ///
 /// THE MUTATION: `RecordedMap::block_an_element_vacates` returning `None` unconditionally, which is
@@ -865,7 +865,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
 
     let before = member_block(&engine, &member_bytes(0));
     let (live_before, blocks_before, _) = entry_census(&engine);
-    // FLOOR 1: each member is on its OWN page, or there is no alone-on-a-page case to rewrite off
+    // FLOOR 1: each member is on its OWN block, or there is no alone-on-a-block case to rewrite off
     // and this test would be measuring the fold arm's situation instead.
     assert_eq!(
         2,
@@ -879,10 +879,10 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
          and the comparison after the rewrite would not be about the rewrite"
     );
 
-    // REWRITE the member that is alone on its page.
+    // REWRITE the member that is alone on its block.
     add(&engine, member_bytes(0));
     let after = member_block(&engine, &member_bytes(0));
-    // FLOOR 2: the rewrite actually RELOCATED. If a rewrite landed back on its own page the
+    // FLOOR 2: the rewrite actually RELOCATED. If a rewrite landed back on its own block the
     // landing key would supersede the entry by itself and there would be nothing here to fix.
     assert_ne!(
         before, after,
@@ -921,10 +921,10 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     // THE ASSERTION UNDER TEST, COMPARED AGAINST THE OTHER SOURCE.
     //
     // `pages` is derived FROM the entries, so `pages.len() == live` can only ever say that no two
-    // entries share a page -- it cannot see a stale entry at all, because a stale entry raises both
+    // entries share a block -- it cannot see a stale entry at all, because a stale entry raises both
     // sides of it. MEASURED: under the mutation that arm read `3 == 3` and passed while the vacated
-    // page was still named. So the live set is compared against the pages the RESIDENT MAP says are
-    // occupied, which is an independent statement of which pages exist.
+    // block was still named. So the live set is compared against the blocks the RESIDENT MAP says are
+    // occupied, which is an independent statement of which blocks exist.
     let occupied = occupied_blocks(&engine);
     assert_eq!(
         occupied, blocks,
@@ -949,10 +949,10 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     );
 }
 
-/// The physical page the durable map currently holds this member on.
+/// The physical block the durable map currently holds this member on.
 ///
 /// READ FROM THE RESIDENT MAP and not from the index, deliberately: the index is the thing under
-/// test here, so taking the before-and-after page from it would compare two values derived from
+/// test here, so taking the before-and-after block from it would compare two values derived from
 /// the same accessor -- a shape that has already passed over broken code in this campaign.
 fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -969,10 +969,10 @@ fn member_block(engine: &TemporalEngine, member: &[u8]) -> (u64, u64, u64) {
     )
 }
 
-/// The distinct physical pages the DURABLE MAP says this object's members are on.
+/// The distinct physical blocks the DURABLE MAP says this object's members are on.
 ///
-/// The independent half of the comparison above. The index's own page set is derived from the
-/// entries being measured, so it cannot witness an entry over an empty page; this is derived from
+/// The independent half of the comparison above. The index's own block set is derived from the
+/// entries being measured, so it cannot witness an entry over an empty block; this is derived from
 /// the members instead.
 fn occupied_blocks(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, u64, u64)> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -1006,7 +1006,7 @@ fn occupied_blocks(engine: &TemporalEngine) -> std::collections::BTreeSet<(u64, 
 ///
 /// SO THE SHAPE THAT REACHES IT IS TWO REMOVALS AND A RE-ADD OF ONE OF THEM. The sweep is entered,
 /// because the re-added element does have a tombstone, and a body that then takes every tombstone
-/// of the object takes the OTHER member's with it -- and that tombstone page is what makes the
+/// of the object takes the OTHER member's with it -- and that tombstone block is what makes the
 /// other removal win the fold by append position, so the other member comes back. That is the
 /// twelve-where-the-invariant-is-eleven shape, in the one sequence that can produce it.
 ///

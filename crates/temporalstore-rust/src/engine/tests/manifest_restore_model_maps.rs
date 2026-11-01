@@ -6,11 +6,11 @@
 //! A manifest carries a serialized `ShardState`. Three of the model maps that
 //! `collect_model_live_block_entries` walks are `skip_serializing` -- `hashes`, `context_events`,
 //! `context_indexes` -- so a freshly decoded manifest index has them EMPTY while its
-//! `bucket_index.bucket_map`, which does serialize, still names every one of their pages.
+//! `bucket_index.bucket_map`, which does serialize, still names every one of their blocks.
 //!
 //! `rebuild_bucket_block_ownership` clears `bucket_map` and repopulates it from the model maps.
 //! Run against a decoded manifest index without first re-deriving the unserialized maps, it
-//! therefore deletes from the index exactly the pages only the index still knew about.
+//! therefore deletes from the index exactly the blocks only the index still knew about.
 //!
 //! `install_bucket_dump_manifest` calls `rebuild_unserialized_model_maps_from_bucket_index` first
 //! and says in a comment why. The default single-barrier recovery arm in `load_shard_with` decodes
@@ -39,7 +39,7 @@ fn readable_hash_fields(engine: &TemporalEngine) -> usize {
 }
 
 /// THE CONTROL. `strings` is NOT `skip_serializing`, so it survives the manifest round trip and
-/// the ownership rebuild re-derives its pages from a map that still has them. If this ever drops
+/// the ownership rebuild re-derives its blocks from a map that still has them. If this ever drops
 /// with the hash count, the fault is the restore in general and not the unserialized maps.
 fn readable_strings(engine: &TemporalEngine) -> usize {
     (0..STRING_KEYS)
@@ -118,7 +118,7 @@ fn a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_inde
     );
     drop(engine);
 
-    // A fresh engine over the SAME pages + index dirs, the way a restart arrives. No base index
+    // A fresh engine over the SAME blocks + index dirs, the way a restart arrives. No base index
     // file was ever materialized (no unload, no compaction), so the base watermark is 0 and the
     // durable manifest above is newer -- which is the arm being measured.
     let restarted =

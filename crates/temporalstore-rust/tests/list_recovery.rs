@@ -3,7 +3,7 @@
 
 //! A list's order must survive a restart.
 //!
-//! Elements are pages named by a sortable sequence component in the bucket index, so recovery
+//! Elements are blocks named by a sortable sequence component in the bucket index, so recovery
 //! rebuilds the in-memory list purely from the index -- including elements pushed on the LEFT,
 //! whose sequences are negative. This drives pushes on both ends, reopens the engine from disk,
 //! and requires the exact order back; then proves pops persist too (a popped element must not

@@ -5,7 +5,7 @@
 //!
 //! Four claims that the rest of this change rests on, each driven here rather than argued in a
 //! comment. They are grouped because they are the same subject seen from two ends: the first two are
-//! why the second page shape costs nothing, and the second two are why a tombstone cannot be
+//! why the second block shape costs nothing, and the second two are why a tombstone cannot be
 //! collected whenever it is convenient.
 //!
 //! # 1. AN EMPTY VALUE IS NOT A TOMBSTONE, AND THE BYTES PROVE IT
@@ -17,20 +17,20 @@
 //! every empty-valued hash field in the store would decode as a removal. So the assertion is on the
 //! bytes and not on the round trip: the two encodings must DIFFER.
 //!
-//! # 2. AND A LIVE SUFFIX PAGE IS THE SAME BYTES IN BOTH SHAPES
+//! # 2. AND A LIVE SUFFIX BLOCK IS THE SAME BYTES IN BOTH SHAPES
 //!
 //! Asserted by rewriting the magic in place and decoding the result as the first shape. That is a
 //! stronger statement than comparing two encoders' lengths, and it is the one that matters for a
-//! store being upgraded: the pages a `set` and a `zset` write are byte-identical across the change
+//! store being upgraded: the blocks a `set` and a `zset` write are byte-identical across the change
 //! apart from one character of magic.
 //!
 //! # 3. THE ORDER IS THE APPEND POSITION, AND THE FOLD HONOURS IT
 //!
-//! Fed the same pages in the wrong order, the derivation must give the same answer -- it sorts by
-//! append position rather than trusting its input. A derivation that happened to be handed pages in
+//! Fed the same blocks in the wrong order, the derivation must give the same answer -- it sorts by
+//! append position rather than trusting its input. A derivation that happened to be handed blocks in
 //! order would pass without sorting at all, so the input here is deliberately reversed.
 //!
-//! # 4. DROPPING A TOMBSTONE WHILE AN OLDER PAGE SURVIVES RESURRECTS ITS ELEMENT
+//! # 4. DROPPING A TOMBSTONE WHILE AN OLDER BLOCK SURVIVES RESURRECTS ITS ELEMENT
 //!
 //! This is the trap, and it is driven as a resurrection that actually happens rather than as a rule
 //! that forbids it. The naive collection rule -- "the fold rewrote these elements, so their
@@ -46,16 +46,16 @@ use crate::engine::container_blocks::{
     ContainerBlockWrite, ElementKeySpelling, CONTAINER_BLOCK_MAGIC, CONTAINER_BLOCK_MAGIC_V2,
 };
 
-/// An address at a chosen append position, which is what orders pages.
+/// An address at a chosen append position, which is what orders blocks.
 ///
-/// The block id and object id are set because a real page carries both, and a fixture that left them
+/// The block id and object id are set because a real block carries both, and a fixture that left them
 /// absent would be exercising a shape the write path does not produce. Neither participates in the
 /// ordering, which is the point being driven.
 fn at(slab: u64, offset: u64, len: u32) -> ElementEntry {
     ElementEntry::from_parts(slab, offset, u64::from(len), Some(0), Some(7))
 }
 
-/// rust-internal: operates on the page codec directly
+/// rust-internal: operates on the block codec directly
 #[test]
 fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
     // EVERY CURSOR IN THE CODEC STARTS AT `MAGIC.len() + 1` and there are two magics. If they were
@@ -88,7 +88,7 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
     assert_eq!(1, differing, "the two magics differ in {differing} bytes, not one");
 }
 
-/// rust-internal: operates on the page codec directly
+/// rust-internal: operates on the block codec directly
 #[test]
 fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     crate::engine::container_blocks::reset_unframed_container_removal_count();
@@ -122,7 +122,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     // THE ZSET FIXTURE HERE WAS STALE AND PASSED ANYWAY, which is why it is called out rather than
     // quietly corrected. It spelled the component `{score:016x}{hex(member)}` -- the spelling zset
     // components had BEFORE the score moved to the WAL outcome's value slot. That string is still
-    // all hex characters, so `hex::decode` accepted it and the page framed, and the arm went green
+    // all hex characters, so `hex::decode` accepted it and the block framed, and the arm went green
     // while exercising a component shape the engine no longer produces: the score prefix was being
     // framed as eight leading bytes of the MEMBER. A fixture whose premise has gone stale can keep
     // passing for the wrong reason, and only the round-trip added below would have caught it.
@@ -144,8 +144,8 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 assert!(items[0].deleted, "{kind}: the tombstone item is not marked removed");
                 // THE ROUND TRIP, AND IT IS THE PROPERTY A SIDE TABLE WOULD OTHERWISE HAVE TO HOLD.
                 //
-                // The tombstone page's single item carries the ELEMENT KEY as its key, so the
-                // element's identity is already stored durably in the page the entry points at.
+                // The tombstone block's single item carries the ELEMENT KEY as its key, so the
+                // element's identity is already stored durably in the block the entry points at.
                 // Asserting the inverse here is what makes that a measured property rather than a
                 // reading of the encoder: whatever `element_key_from_component` put in,
                 // `component_from_element_key` must give back, for every one of the four kinds.
@@ -184,22 +184,22 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     );
 
     // AND NEITHER UNFRAMABLE CASE ABOVE IS REACHABLE THROUGH THE PUBLIC SURFACE, which is what
-    // decides whether the pages can be the only record of a removed element.
+    // decides whether the blocks can be the only record of a removed element.
     //
     // The two that returned `None` are a kind with no element-key spelling (`string`, whose page is
     // its whole object, so no container removal ever asks) and a set component that is not hex. A
     // set component is `hex::encode(member)`, computed by the engine and never by a caller, so a
     // non-hex one cannot arrive from a `SetRemove`. Both are reached here by calling the codec
     // directly with inputs no write path produces. So there is no removal of a container element
-    // that stores no page -- stated as the conclusion it is, because "a side table is redundant
-    // with the page" is only true while that holds.
+    // that stores no block -- stated as the conclusion it is, because "a side table is redundant
+    // with the block" is only true while that holds.
 }
 
-/// rust-internal: drives the page-derived membership fold
+/// rust-internal: drives the block-derived membership fold
 #[test]
 fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_element() {
-    // THE DISTINCTION THE WHOLE DESIGN TURNS ON. A later page that SAYS NOTHING about an element must
-    // leave the earlier page's statement standing; only a page that says REMOVED may overrule it. Get
+    // THE DISTINCTION THE WHOLE DESIGN TURNS ON. A later block that SAYS NOTHING about an element must
+    // leave the earlier block's statement standing; only a block that says REMOVED may overrule it. Get
     // this wrong in the permissive direction and every fold silently empties the containers it did
     // not touch; get it wrong in the strict direction and no removal ever takes effect.
     let member = b"m".to_vec();
@@ -210,7 +210,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&member, &member)],
     );
-    // A LATER page that is perfectly well formed and simply holds a different element.
+    // A LATER block that is perfectly well formed and simply holds a different element.
     let silent = encode_container_block_items(
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::live(&unrelated, &unrelated)],
@@ -285,7 +285,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     );
 }
 
-/// rust-internal: operates on the page codec directly
+/// rust-internal: operates on the block codec directly
 #[test]
 fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
     let key = b"field-with-no-value".to_vec();
@@ -339,11 +339,11 @@ fn an_empty_value_and_a_removal_of_the_same_element_are_different_bytes() {
     }
 }
 
-/// rust-internal: operates on the page codec directly
+/// rust-internal: operates on the block codec directly
 #[test]
 fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
     // A set member: the element key IS the member and so is the value, which is the suffix case --
-    // and the case that covers the two kinds whose pages dominate the store.
+    // and the case that covers the two kinds whose blocks dominate the store.
     let member = b"member-0007".to_vec();
     let block = encode_container_block_items(
         ElementKeySpelling::Hex,
@@ -394,7 +394,7 @@ fn a_live_suffix_block_is_the_same_bytes_under_either_shape() {
     }
 }
 
-/// rust-internal: drives the page-derived membership fold
+/// rust-internal: drives the block-derived membership fold
 #[test]
 fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_them() {
     let member = b"m".to_vec();
@@ -466,7 +466,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
     );
 }
 
-/// rust-internal: drives the page-derived membership fold
+/// rust-internal: drives the block-derived membership fold
 #[test]
 fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     let member = b"m".to_vec();
@@ -481,7 +481,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         ElementKeySpelling::Hex,
         &[ContainerBlockWrite::removed(&member)],
     );
-    // What a fold writes when it rewrites the tombstone's page and DROPS the tombstone: a page
+    // What a fold writes when it rewrites the tombstone's block and DROPS the tombstone: a block
     // holding the round's other element and saying nothing about `m`.
     let folded_without_tombstone = encode_container_block_items(
         ElementKeySpelling::Hex,
@@ -524,8 +524,8 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         "the member is not removed even with its tombstone present, so the fixture is wrong"
     );
 
-    // AFTER THE NAIVE RULE: the round rewrote the tombstone's page and dropped the tombstone, while
-    // the OLDER page was not relocated and still names the member.
+    // AFTER THE NAIVE RULE: the round rewrote the tombstone's block and dropped the tombstone, while
+    // the OLDER block was not relocated and still names the member.
     let after = derive_membership(
         "set",
         vec![older_at.clone(), folded_at.clone()],
@@ -550,13 +550,13 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         "the blocks still record a removal after the tombstone was dropped, which they cannot"
     );
 
-    // AND THE RULE DECLINES EXACTLY THAT ROUND. Three pages in the container, one rewritten.
+    // AND THE RULE DECLINES EXACTLY THAT ROUND. Three blocks in the container, one rewritten.
     assert!(
         !may_drop_tombstones(3, 1, 1),
         "the rule permits dropping a tombstone in a round that rewrote one of three pages, which is \
          the round just shown to resurrect"
     );
-    // Nor when every page is rewritten but into SEVERAL pages: a tombstone dropped into the first
+    // Nor when every block is rewritten but into SEVERAL blocks: a tombstone dropped into the first
     // batch is not seen by the second.
     assert!(
         !may_drop_tombstones(3, 3, 2),
@@ -569,7 +569,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         "the rule forbids dropping a tombstone even when the whole container was rewritten into one \
          page, which would mean tombstones are never collectable at all"
     );
-    // The denominator case: a container with no pages must not read as a total rewrite.
+    // The denominator case: a container with no blocks must not read as a total rewrite.
     assert!(
         !may_drop_tombstones(0, 0, 1),
         "a round over a container with no blocks reads as a total rewrite"

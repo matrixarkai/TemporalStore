@@ -12,7 +12,7 @@
 //! THE HALF THAT WAS ALREADY CHEAP, AND IT IS THE HALF WORTH SAYING FIRST. An absent key never
 //! touches the block store. Not when its bucket is resident, not when its bucket has been released,
 //! and not when its bucket has never existed: 0 block-store reads per lookup in all three arms, at
-//! 500, 2,000 and 8,000 keys. There is no bucket reload, no page read and no manifest consultation
+//! 500, 2,000 and 8,000 keys. There is no bucket reload, no block read and no manifest consultation
 //! behind a "no". That is a clear negative and no plant can falsify it, which is said plainly at
 //! the arm that holds it rather than left to look like a proven claim.
 //!
@@ -288,9 +288,9 @@ impl Work {
 /// How the bucket an absent key routes to is expected to be.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Residency {
-    /// In the bucket map and holding its pages.
+    /// In the bucket map and holding its blocks.
     ResidentBucket,
-    /// In the bucket map, pages released, reloadable.
+    /// In the bucket map, blocks released, reloadable.
     ReleasedBucket,
     /// Not in the bucket map at all.
     NoBucketAtAll,
@@ -593,7 +593,7 @@ fn an_absent_key_whose_bucket_does_not_exist_is_admitted_to_no_cache_tier() {
 /// `execute_read_only_fast_path` -- moves the cache counters and leaves this one at zero, because
 /// `read_block_bytes` is reached only through an address and an absent key has none. So this arm is
 /// a standing negative: it is the assertion that would fail if an absent answer ever started
-/// needing a page, a bucket reload or a dump manifest, and it has nothing to show for being green
+/// needing a block, a bucket reload or a dump manifest, and it has nothing to show for being green
 /// today beyond that it is.
 ///
 /// THE THREE ARMS ARE IN ONE TEST FOR THAT REASON. Splitting an unplantable negative three ways

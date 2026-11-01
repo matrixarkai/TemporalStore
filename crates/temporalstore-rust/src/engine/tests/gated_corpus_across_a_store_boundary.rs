@@ -14,11 +14,11 @@
 //! memory, the model maps are already populated, and a read can be answered from either without
 //! the serialized index ever being consulted. So this module goes through the file: write, then
 //! `unload_shard` -- which materializes the current in-memory index to `shard-{id}.index.json`
-//! before the shard leaves memory -- then DROP THE ENGINE, then open a new one over the same page
+//! before the shard leaves memory -- then DROP THE ENGINE, then open a new one over the same block
 //! and index directories.
 //!
 //! **ITS OWN CACHE DIRECTORY ON THE RELOAD.** Handed the first engine's cache, the second engine
-//! answers out of pages the first left warm and the read proves nothing about what the file holds.
+//! answers out of blocks the first left warm and the read proves nothing about what the file holds.
 //! The reload gets `cache-reloaded`, so every byte it serves came off disk through the index it
 //! just decoded.
 //!
@@ -307,21 +307,21 @@ struct Boundary {
     ///
     /// Without it the cross-version arm is vacuous in the one direction that matters: a reader
     /// that serves everything proves nothing unless the store it opened actually held a
-    /// page-named entry to be misread.
+    /// block-named entry to be misread.
     set_entries_written: usize,
     /// The same census after the reload, which is what the READER derived.
     set_entries_reloaded: usize,
     hash_entries_reloaded: usize,
-    /// The DISTINCT PHYSICAL PAGES the reloaded hash's fields sit on, read from the durable map.
+    /// The DISTINCT PHYSICAL BLOCKS the reloaded hash's fields sit on, read from the durable map.
     ///
     /// The denominator the entry count is compared against, and read from the OTHER source on
-    /// purpose: the index's own page set is derived from the entries being counted, so it cannot
-    /// witness an entry over a page no field is on. This can.
+    /// purpose: the index's own block set is derived from the entries being counted, so it cannot
+    /// witness an entry over a block no field is on. This can.
     hash_blocks_reloaded: usize,
 }
 
 /// Write the corpus under `writer`, fold it, materialize the index, DROP the engine, and open a
-/// new one under `reader` over the same page and index directories.
+/// new one under `reader` over the same block and index directories.
 fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
     let dir = tempfile::tempdir().expect("tempdir");
     let blocks = dir.path().join("blocks");
@@ -332,8 +332,8 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         let engine = engine_on(&dir.path().join("cache"), &blocks, &indexes);
         load_on(&engine);
         write_corpus(&engine);
-        // Folded, because the shape this gate is about is elements SHARING one page. Without the
-        // fold every element is its own page and one entry per page is one entry per element --
+        // Folded, because the shape this gate is about is elements SHARING one block. Without the
+        // fold every element is its own block and one entry per block is one entry per element --
         // the gate would be inert and the arm would pass while testing nothing.
         engine
             .compact_shard_blocks(1)
@@ -346,7 +346,7 @@ fn across_a_store_boundary(writer: &str, reader: &str) -> Boundary {
         drop(engine);
     }
 
-    // ITS OWN CACHE DIRECTORY. Handed the writer's, this engine answers out of pages the writer
+    // ITS OWN CACHE DIRECTORY. Handed the writer's, this engine answers out of blocks the writer
     // left warm and the read says nothing about what the index file holds.
     let reloaded = engine_on(&dir.path().join("cache-reloaded"), &blocks, &indexes);
     load_on(&reloaded);
@@ -399,20 +399,20 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
     );
     // THE CONTROL, ASSERTED, AND IT IS THE OTHER WAY ROUND NOW. This said hash was held OUT of the
     // collapse, so a gated binary had to file one NAMED entry per field, and it asserted
-    // `(ELEMENTS, ELEMENTS)` -- forty entries, forty naming a field. Hash is IN the page-named set,
-    // so the same measurement is the collapse itself: the forty fields fold onto the pages they
+    // `(ELEMENTS, ELEMENTS)` -- forty entries, forty naming a field. Hash is IN the block-named set,
+    // so the same measurement is the collapse itself: the forty fields fold onto the blocks they
     // share and NO entry names a field.
     //
     // STATED AS AN EXACT PAIR AND NOT AS A FLOOR, because the number is the claim. `< ELEMENTS`
     // would be satisfied by an index that filed almost nothing, and `named == 0` alone is
     // satisfied by an index that filed nothing at all -- so the live count is compared against the
-    // DISTINCT PAGES the elements resolve to, which is the denominator the collapse is about, and
+    // DISTINCT BLOCKS the elements resolve to, which is the denominator the collapse is about, and
     // the serving figures below are what say nothing was lost on the way.
     // THE "AND NO ELEMENT NAME" HALF IS GONE FROM THIS PAIR. It was asserted as the tuple
     // `(hash_blocks_reloaded, 0)`, and the second term is structurally zero -- an entry has no
     // element name -- so pairing it in meant a wrong entry count and a constant read as one
     // failure, with only the constant guaranteed. The entry count stands alone and is still
-    // compared against the DISTINCT PAGES the elements resolve to rather than against a literal,
+    // compared against the DISTINCT BLOCKS the elements resolve to rather than against a literal,
     // which is the denominator the collapse is about.
     assert_eq!(
         seen.hash_blocks_reloaded, hash_entries,
@@ -441,7 +441,7 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
         "the reload did not bring the corpus back: {holds:?} of {ELEMENTS} per kind. Every served \
          count above is then a reading of an empty store, not of the projection"
     );
-    // AND THE GATED PROJECTION ACTUALLY RAN. One entry per page means FEWER entries than elements
+    // AND THE GATED PROJECTION ACTUALLY RAN. One entry per block means FEWER entries than elements
     // and none of them naming one; if the set still has forty named entries the writer ran ungated
     // and this arm is the ungated case wearing a gated label.
     assert!(
@@ -475,7 +475,7 @@ fn an_ungated_store_comes_back_whole_under_the_gate() {
     //
     // This asserted `(ELEMENTS, ELEMENTS) == set_entries_written` -- one entry per element, every
     // one of them naming its element. Both halves are unreachable: the projection emits one entry
-    // per distinct page for every container kind, and `BlockIndex` has no field for an element
+    // per distinct block for every container kind, and `BlockIndex` has no field for an element
     // name. So the fixture cannot materialize the pre-collapse store, and an assertion that it did
     // would fail on every run.
     //
@@ -518,7 +518,7 @@ fn an_ungated_store_comes_back_whole_under_the_gate() {
 /// It is kept, restated, because the refutation is the useful half: without it the next person
 /// spends an irreversible stamp bump on a hazard that is not there.
 ///
-/// The expectation was that a page-named entry -- `component: None` -- would be read by a binary
+/// The expectation was that a block-named entry -- `component: None` -- would be read by a binary
 /// without the gate as an element whose name is simply absent, indistinguishable from a legitimate
 /// `None`. There is a branch for exactly that: the set arm of
 /// `reconcile_secondary_views_from_bucket_index` asks
@@ -528,7 +528,7 @@ fn an_ungated_store_comes_back_whole_under_the_gate() {
 /// **It never reaches that branch for the elements, because the index is not a format.** It is a
 /// DERIVED PROJECTION of the durable model maps, re-derived at load. The ungated reader opens a
 /// store whose file holds ONE unnamed entry and comes up with FORTY NAMED ONES, re-filed from
-/// `shard.sets` through the ungated arm of `visit_model_live_blocks`. The page-named entries do
+/// `shard.sets` through the ungated arm of `visit_model_live_blocks`. The block-named entries do
 /// not survive into its view at all, so there is nothing left for it to misread, and it serves
 /// every element.
 ///
@@ -554,7 +554,7 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
     //
     // On the WRITER's census, before any reader could have re-derived it. Without this the arm is
     // vacuous in the direction that matters: a reader that serves everything says nothing unless
-    // the store it opened really held a page-named entry.
+    // the store it opened really held a block-named entry.
     assert!(
         seen.set_entries_written < ELEMENTS,
         "the writer filed {} live set entries for {ELEMENTS} elements, so the index this arm \
@@ -573,9 +573,9 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
     //
     // This asserted the reader "must re-file one NAMED entry per element out of the durable map",
     // as `(ELEMENTS, ELEMENTS)`. That was the UNGATED reader, and there is no longer one: every
-    // reader derives one entry per page and no entry can carry a name. So the claim is not that
+    // reader derives one entry per block and no entry can carry a name. So the claim is not that
     // the reader re-files named entries -- it cannot -- but that re-deriving from the durable maps
-    // reproduces the same collapsed index the writer filed, which is what makes the page-named
+    // reproduces the same collapsed index the writer filed, which is what makes the block-named
     // entries safe to read rather than something to be grandfathered around.
     assert_eq!(
         seen.set_entries_written, seen.set_entries_reloaded,
@@ -622,10 +622,10 @@ fn an_ungated_reader_re_derives_a_gated_store_and_so_needs_no_format_stamp() {
     );
 }
 
-/// The distinct physical pages the DURABLE map says this object's elements are on.
+/// The distinct physical blocks the DURABLE map says this object's elements are on.
 ///
-/// The independent half of the entry-count comparison: the index's own page set is derived from the
-/// entries under test, so it cannot see an entry over a page nothing is on.
+/// The independent half of the entry-count comparison: the index's own block set is derived from the
+/// entries under test, so it cannot see an entry over a block nothing is on.
 fn occupied_blocks(engine: &TemporalEngine, model_id: &str, object_key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");

@@ -304,7 +304,7 @@ impl TemporalEngine {
         // capture below have anything to preserve -- see the single-command execute path, whose
         // guard this mirrors.
         let mut batch_membership_shrank = false;
-        // Some(components) while every mutating command in the batch is a pure page-upsert;
+        // Some(components) while every mutating command in the batch is a pure block-upsert;
         // one non-upsert write downgrades the whole record to snapshot semantics.
         let mut batch_upsert_components: Option<Vec<(&'static str, String, Option<String>)>> =
             Some(Vec::new());
@@ -490,7 +490,7 @@ impl TemporalEngine {
                 }
                 // The same maintenance the single-command path does. An ingest's writes are
                 // split across both paths, which is why covering only the other one removed
-                // exactly half the rebuild work and left the rest: 2404 page visits per add
+                // exactly half the rebuild work and left the rest: 2404 block visits per add
                 // became 1205, and stayed there until this site was covered too.
                 //
                 // Same two guards: every touched key must report that it synced, or the rebuild
@@ -526,11 +526,11 @@ impl TemporalEngine {
                 };
                 if !maintained_bucket_index
                     && !defer_bucket_index_reconstruct()
-                    // A command that writes no page cannot have changed the page index, so a
+                    // A command that writes no block cannot have changed the block index, so a
                     // rebuild after one recomputes what it already held. The single-command path
                     // has always skipped it here; this path did not, so the same command walked
                     // the whole store when it arrived in a batch and nothing when it arrived
-                    // alone -- measured at one visit per page in the shard, per command.
+                    // alone -- measured at one visit per block in the shard, per command.
                     && !command_writes_no_block(&command_for_post_write)
                     && (!command_updates_bucket_index_directly(&command_for_post_write)
                         || shard.bucket_index.bucket_map.is_empty())
@@ -557,16 +557,16 @@ impl TemporalEngine {
         if mutated_any {
             if rebuilt_bucket_index {
                 // The reconstruct on the line above already recomputed every bucket's object
-                // index from its page index, so the sweep's own rebuild would redo that identical
+                // index from its block index, so the sweep's own rebuild would redo that identical
                 // scan. Flags still refresh; only the duplicate scan is dropped.
                 refresh_bucket_runtime_flags_after_reconstruct(shard);
             } else {
                 // Refresh only the buckets this batch disturbed. The full sweep is
-                // O(total pages), so running it per batch left bulk ingest quadratic in the
+                // O(total blocks), so running it per batch left bulk ingest quadratic in the
                 // corpus -- with a smaller constant than the per-write sweep, but the same shape.
                 refresh_pending_bucket_runtime_flags(shard);
             }
-            // Every write records a WAL entry before any page is written. async_storage only
+            // Every write records a WAL entry before any block is written. async_storage only
             // changes whether the commit BLOCKS: sync -> fsync, async (or bulk backfill) ->
             // buffered, no fsync (a fire-and-forget commit).
             //
@@ -588,7 +588,7 @@ impl TemporalEngine {
             let staged_blocks = super::block_in_wal::take_staged();
             // ASKED PER RESULT, not per batch -- see `wal::every_result_can_be_found_again`. This
             // was `sync || !staged_blocks.is_empty()`, which asked a per-result question at BATCH
-            // granularity: one carried page anywhere in the batch answered it for every result in
+            // granularity: one carried block anywhere in the batch answered it for every result in
             // the batch, and a measured batch left 12 of 20 acked results naming a block-store
             // address and nothing else while the rule called the batch recoverable.
             let recoverable =
@@ -630,7 +630,7 @@ impl TemporalEngine {
                     );
                 }
             }
-            // Page/index materialization stays deferred to the background dump in
+            // Block/index materialization stays deferred to the background dump in
             // async and bulk modes (index_log/persist already no-op under bulk).
             if !config.async_storage && !bulk_ingest_mode() {
                 // Anchor the served index to the WAL sequence it reflects (see the
@@ -674,7 +674,7 @@ impl TemporalEngine {
                         }
                     }
                 }
-                // Append the pages this batch changed (O(delta)) to the index-log (advances
+                // Append the blocks this batch changed (O(delta)) to the index-log (advances
                 // the sequence + populates the delta stream). The whole-index base rewrite is
                 // deferred to the next compaction point (see the single-command execute path).
                 let (items, upsert_record) = match batch_upsert_components.as_ref() {
@@ -816,7 +816,7 @@ impl TemporalEngine {
         self.publish_shard_index_snapshot_for_keys(shard_id, Vec::<String>::new())
     }
 
-    /// Republish the named keys' log-resident pages into the block store, and checkpoint the
+    /// Republish the named keys' log-resident blocks into the block store, and checkpoint the
     /// served index when one is due.
     ///
     /// ANSWERS WITH THE SERVED-INDEX BYTES THIS CALL WROTE, which is what it always answered --
@@ -825,7 +825,7 @@ impl TemporalEngine {
     /// interval and for why deferring the checkpoint loses nothing. Zero therefore means "this
     /// call wrote no index", which covers both the publish that found nothing log-resident and
     /// the publish whose checkpoint was deferred; it has never meant "nothing was published", and
-    /// the pages are republished either way before this returns.
+    /// the blocks are republished either way before this returns.
     pub fn publish_shard_index_snapshot_for_keys(
         &self,
         shard_id: ShardId,
@@ -837,10 +837,10 @@ impl TemporalEngine {
         }
 
         impl PublishTarget {
-            /// The OBJECT key of the page, which is the key its routing bucket is derived from.
+            /// The OBJECT key of the block, which is the key its routing bucket is derived from.
             ///
-            /// A hash field's page is filed under the hash's key, not under the field -- the field
-            /// is the page's COMPONENT. Reading the bucket from the field would key the cache under
+            /// A hash field's block is filed under the hash's key, not under the field -- the field
+            /// is the block's COMPONENT. Reading the bucket from the field would key the cache under
             /// a bucket nothing wrote.
             fn object_key(&self) -> &str {
                 match self {
@@ -849,9 +849,9 @@ impl TemporalEngine {
                 }
             }
 
-            /// The ELEMENT of that object, which the comment above already calls the page's
+            /// The ELEMENT of that object, which the comment above already calls the block's
             /// component. It was named there and then thrown away; a read that resolves
-            /// through a log record needs it to pick the right page out of the record.
+            /// through a log record needs it to pick the right block out of the record.
             fn component(&self) -> Option<&str> {
                 match self {
                     PublishTarget::String { .. } => None,
@@ -864,7 +864,7 @@ impl TemporalEngine {
             /// Named here rather than at the read because the two variants ARE the two kinds, so a
             /// `match` at the call site would be this function written out again. The kind is not
             /// recoverable from the key or the component: a `string` and a `hash` may share a key,
-            /// and it is the kind that tells their pages apart.
+            /// and it is the kind that tells their blocks apart.
             fn kind(&self) -> &'static str {
                 match self {
                     PublishTarget::String { .. } => "string",
@@ -977,7 +977,7 @@ impl TemporalEngine {
         let append_records = publish_records
             .iter()
             // `publish_records` owns these bytes and outlives the append, so the store can
-            // borrow them rather than take a copy of every page being published.
+            // borrow them rather than take a copy of every block being published.
             // This republishes a block that already exists, so it keeps the id it already
             // has. A block id is an index inside its object; handing out a fresh one here
             // would give the object two blocks claiming the same position.
@@ -1040,7 +1040,7 @@ impl TemporalEngine {
                         published_object_keys.insert(key.clone());
                         // ONE COPY OF THE CHARACTERS. `into_boxed_str` was a free move of the
                         // caller's buffer, so converting it to a bare `Arc::from` would have
-                        // ADDED an allocation rather than removed one. Take the handle the page
+                        // ADDED an allocation rather than removed one. Take the handle the block
                         // index already holds, and allocate only when it has none.
                         let shared = shard
                             .bucket_index
@@ -1082,7 +1082,7 @@ impl TemporalEngine {
                 }
             }
             // COUNTED BEFORE THE SET IS CONSUMED BY THE LOOP BELOW. These are the keys whose
-            // pages this call actually relocated -- the ones that passed the concurrent-write
+            // blocks this call actually relocated -- the ones that passed the concurrent-write
             // check above -- which is the unit the interval is counted in.
             let published_key_count = published_object_keys.len() as u64;
             for object_key in published_object_keys {

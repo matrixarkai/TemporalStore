@@ -4,7 +4,7 @@
 //! WHAT THE BUCKET NODE'S 96 BYTES ARE SPENT ON, AND WHICH OF THEM THE CONTAINER HEADER IS.
 //!
 //! NINETY-SIX ON THIS BRANCH AND EIGHTY-EIGHT ON MAIN, AND THE DIFFERENCE IS ONE NAMED FIELD. This
-//! module arrived from main written against 88. This branch took the element name off a page index
+//! module arrived from main written against 88. This branch took the element name off a block index
 //! entry, and a removal's record of WHICH element it was about went to the node that holds the
 //! entries: `tombstone_elements`, a `TombstoneElements` of one word. Every figure below is main's
 //! plus that word, because no shape priced here can shed it -- it is eight-aligned, a whole word,
@@ -162,7 +162,7 @@ const WORD: usize = size_of::<u64>();
 // second pin, so the two branches' numbers cannot drift apart silently.
 //
 // THE CAUSE IS `tombstone_elements`, the eleventh field. A container removal records which ELEMENT
-// it was about, and that row left the page index entry for the bucket node that holds it, so the
+// it was about, and that row left the block index entry for the bucket node that holds it, so the
 // node carries `TombstoneElements` -- `Option<Box<Vec<TombstoneElement>>>`, one word through the
 // null niche. Eighty-eight plus that word is ninety-six, and the relation is ASSERTED below rather
 // than left for a reader to infer, so 88-versus-96 reads as a difference with a named cause
@@ -391,7 +391,7 @@ fn every_byte_of_the_node_sums_over_an_instance_and_not_a_table() {
     //
     // AND IT DID NOT, WHICH IS WHY `tombstone_elements` IS NAMED HERE. This pattern listed ten
     // fields and refused to compile on the merge (E0027, "pattern does not mention field") because
-    // this branch carries an eleventh: the per-element rows a removal files, which left the page
+    // this branch carries an eleventh: the per-element rows a removal files, which left the block
     // entry for the node that holds them. That is the guard this module's own header says it is
     // for, firing on exactly the case it was written against.
     let BucketNode {
@@ -498,7 +498,7 @@ fn every_byte_of_the_node_sums_over_an_instance_and_not_a_table() {
 /// one of the three.
 ///
 /// THE FOURTH GROUP IS THE TOMBSTONE ROWS. A container removal records which ELEMENT it was about;
-/// that row left the page index entry for the bucket node that holds it, so the node carries
+/// that row left the block index entry for the bucket node that holds it, so the node carries
 /// `TombstoneElements` -- one word through the null niche.
 ///
 /// AND THE HEADLINE CLAIM IS NARROWED, NOT KEPT. This read "the container is the smallest group",
@@ -870,13 +870,13 @@ fn the_object_containers_are_refused_at_eight_by_the_same_one_niche_rule() {
 ///
 /// MEASURED IN THIS TREE by `engine::tests::routing_range_default::
 /// the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max`, routed keys at one
-/// page a record, on 0..1023:
+/// block a record, on 0..1023:
 ///
-///   *  4,000 records: 1,024 occupied buckets over 4,000 pages. mean 3.9062, min 1, p50 4, p90 6,
-///      p99 7, MAX 8. Buckets holding exactly one page: 54 of 1,024 = 5.273%. Buckets holding more
+///   *  4,000 records: 1,024 occupied buckets over 4,000 blocks. mean 3.9062, min 1, p50 4, p90 6,
+///      p99 7, MAX 8. Buckets holding exactly one block: 54 of 1,024 = 5.273%. Buckets holding more
 ///      than one: 970 of 1,024 = 94.727%.
-///   * 40,000 records: 1,024 occupied buckets over 40,000 pages. mean 39.0625, MIN 29, p50 39,
-///      p90 44, p99 48, MAX 50. Buckets holding exactly one page: 0 of 1,024 = 0.000%. Buckets
+///   * 40,000 records: 1,024 occupied buckets over 40,000 blocks. mean 39.0625, MIN 29, p50 39,
+///      p90 44, p99 48, MAX 50. Buckets holding exactly one block: 0 of 1,024 = 0.000%. Buckets
 ///      holding more than one: 1,024 of 1,024 = 100.000%.
 ///
 /// At ten times the corpus the single-entry bucket is not rare, it is ABSENT, and the NARROWEST
@@ -889,7 +889,7 @@ fn the_object_containers_are_refused_at_eight_by_the_same_one_niche_rule() {
 /// predates the move and is the module that CHOSE 1023; its own constant for the wide arm is
 /// named `OLD_DEFAULT_END_ROUTING_BUCKET` and its docstring says "before the default moved", while
 /// `crate::DEFAULT_END_ROUTING_BUCKET` is 1023. At `u32::MAX` every key lands alone by
-/// construction and the fill is exactly 1.000 page a bucket at every percentile, so a reader of
+/// construction and the fill is exactly 1.000 block a bucket at every percentile, so a reader of
 /// that output concludes the shipped default IS the single-entry case. It is the opposite case.
 /// This test asserts the live constant and the arithmetic that follows from it, so the premise
 /// cannot be read off a stale label.

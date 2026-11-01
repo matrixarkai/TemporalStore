@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A PAGE A VIEW REBUILD CANNOT READ IS COUNTED AND SKIPPED, NOT TURNED INTO AN EMPTY SERIES.
+//! A BLOCK A VIEW REBUILD CANNOT READ IS COUNTED AND SKIPPED, NOT TURNED INTO AN EMPTY SERIES.
 //!
 //! # THE CLAIM
 //!
 //! `insert_timestamped_secondary_view` and `insert_context_event_views` rebuild a
-//! `timestamp -> address` map by READING each page and decoding the points in it. Both began
+//! `timestamp -> address` map by READING each block and decoding the points in it. Both began
 //! `block_store.read(&address).ok()` and ended `.unwrap_or_default()`, so three different outcomes
 //! -- a read that failed, a payload from before the packed format, and a payload that is packed and
 //! corrupt -- all became the SAME empty vector, and the key still got an entry.
@@ -40,8 +40,8 @@
 //! # THE CONTROL, AT ZERO, WITH ITS DENOMINATOR
 //!
 //! A clean load of the same fixture must leave BOTH counters at zero AND must have rebuilt a
-//! non-empty series from a non-zero number of live pages. A control over a store with no pages
-//! reports zero for the wrong reason, so the page count is asserted first -- and the fault arm below
+//! non-empty series from a non-zero number of live blocks. A control over a store with no blocks
+//! reports zero for the wrong reason, so the block count is asserted first -- and the fault arm below
 //! reconciles CLEANLY FIRST on its own fixture, so the before/after pair is the same store rather
 //! than two stores that might differ for some other reason.
 #![allow(clippy::all)]
@@ -103,7 +103,7 @@ fn seed_series(engine: &TemporalEngine, key: &str) {
     }
 }
 
-/// Truncate every file under the store's page directory to zero bytes, so `block_store.read` fails
+/// Truncate every file under the store's block directory to zero bytes, so `block_store.read` fails
 /// for real. Returns how many files it tore, which is a DENOMINATOR: tearing nothing leaves the
 /// fault arm reading a healthy store.
 fn tear_the_blocks(dir: &std::path::Path) -> usize {
@@ -125,7 +125,7 @@ fn tear_the_blocks(dir: &std::path::Path) -> usize {
     torn
 }
 
-/// Live, undeleted pages in the settled index. The DENOMINATOR for every arm: a reconcile over an
+/// Live, undeleted blocks in the settled index. The DENOMINATOR for every arm: a reconcile over an
 /// empty index rebuilds nothing and would make both a clean control and a fault arm look right.
 fn live_blocks(shard: &ShardState) -> usize {
     shard

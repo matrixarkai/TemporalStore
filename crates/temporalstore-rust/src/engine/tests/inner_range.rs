@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE BUCKET A READER GUESSES, AGAINST THE BUCKET THE PAGE IS FILED UNDER.
+//! THE BUCKET A READER GUESSES, AGAINST THE BUCKET THE BLOCK IS FILED UNDER.
 //!
 //! mx#1945 closed by naming a tenth site "no call site can correct": a routing range supplied as a
 //! HARD-CODED LITERAL rather than taken as an argument, invisible to an argument-reading scan. It
@@ -10,7 +10,7 @@
 //!
 //! # THE SPLIT IS PLACES AGAINST ATTRIBUTES, AND ONLY ONE HALF NEEDS A RANGE
 //!
-//! Two of the eight decide WHERE A PAGE IS FILED (`upsert_bucket_index_block_inner`,
+//! Two of the eight decide WHERE A BLOCK IS FILED (`upsert_bucket_index_block_inner`,
 //! `sync_bucket_index_object_blocks_with_mode`). Those genuinely need the shard's range and could
 //! not reach it: they take `&mut ShardState` and a `ShardId`, never `&self`, so
 //! `shard_routing_range` -- which reads the engine's info rows -- is not available. They were NOT
@@ -18,10 +18,10 @@
 //! the shard its own range to carry, and the measurement is inverted rather than deleted; see
 //! `shard_carried_range` and section 5 below.
 //!
-//! FIVE do not decide placement at all. They ATTRIBUTE an already-filed page to a bucket, for a
+//! FIVE do not decide placement at all. They ATTRIBUTE an already-filed block to a bucket, for a
 //! report, for a dump-reuse comparison, or -- once -- to decide whether to DELETE the record. Each
 //! asked "which bucket is this page in?" and answered it with `block_routing_bucket(key, 0,
-//! u32::MAX)`: a hash over the WHOLE range, which is the bucket the page is filed under only when
+//! u32::MAX)`: a hash over the WHOLE range, which is the bucket the block is filed under only when
 //! the shard is loaded on the whole range too.
 //!
 //! **They never needed a range.** `collect_bucket_index_live_block_entries` walks `bucket_map`, so
@@ -40,7 +40,7 @@
 //! longer carries a bucket, so the walk's own filing answers every time.
 //!
 //! `the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote` exercises all five on a
-//! store this build wrote, with its denominator stated: every page reports a filing and attribution
+//! store this build wrote, with its denominator stated: every block reports a filing and attribution
 //! agrees with it, at the operator's range and at the whole keyspace. The control is the same
 //! attribution computed the pre-mx#1949 way, which agrees on NEITHER at the narrow range -- that
 //! disagreement is what says the exercise is reading the filing rather than reading a hash that
@@ -49,14 +49,14 @@
 //! # WHAT mx#1945 LEFT SPLIT, MEASURED
 //!
 //! mx#1945 moved six REBUILD call sites to the shard's own range. The five readers here kept
-//! guessing the whole range. On a store whose pages arrived unrouted -- mx#1942's door, an index
+//! guessing the whole range. On a store whose blocks arrived unrouted -- mx#1942's door, an index
 //! written before the wire ever carried a routing bucket, which is now every index, the slot
 //! having been retired from `BlockAddressWire` -- that split is total:
 //!
 //! ```text
 //!   after the load path's own rebuild on 0..1023:
-//!     200 of 200 pages filed where the NARROW formula puts them
-//!       0 of 200 pages filed where the WIDE   formula puts them
+//!     200 of 200 blocks filed where the NARROW formula puts them
+//!       0 of 200 blocks filed where the WIDE   formula puts them
 //!   the five readers agreed with the filing on   0 of 200
 //!   an eviction round with delete_drop:  4 victims chosen, 0 objects dropped
 //! ```
@@ -172,12 +172,12 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 
 /// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
 ///
-/// A `BlockAddress` does not hold a routing bucket, so "put every page into the state an older index
+/// A `BlockAddress` does not hold a routing bucket, so "put every block into the state an older index
 /// decodes into" and "leave every page alone" are the same operation. The helper is kept because the
 /// round-trip it performs is the assertion that the `rs` key on the wire is inert: it must come back
 /// EQUAL, and `the_older_index_door_is_the_identity` fails if it does not.
 ///
-/// Returns how many pages it round-tripped, so a caller can still assert the fixture was covered.
+/// Returns how many blocks it round-tripped, so a caller can still assert the fixture was covered.
 fn round_trip_every_block_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
@@ -224,7 +224,7 @@ fn the_older_index_door_is_the_identity() {
     );
 }
 
-/// Every bucket that holds at least one page, with the object keys it holds, sorted.
+/// Every bucket that holds at least one block, with the object keys it holds, sorted.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
@@ -243,8 +243,8 @@ fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Ve
     contents
 }
 
-/// What the five readers now compute for each page, and what they computed before: the bucket the
-/// page is FILED under, against the whole-range hash of its key.
+/// What the five readers now compute for each block, and what they computed before: the bucket the
+/// block is FILED under, against the whole-range hash of its key.
 fn reader_attribution(
     shard: &crate::engine::state::ShardState,
 ) -> (usize, usize, usize) {
@@ -292,19 +292,19 @@ fn reader_attribution(
 }
 
 // =============================================================================================
-// 1. THE CONTROL: while every page is routed, nothing moves
+// 1. THE CONTROL: while every block is routed, nothing moves
 // =============================================================================================
 
 /// THE FIVE READERS ANSWER THE FILING ON A STORE THE CURRENT BUILD WROTE.
 ///
-/// THE CONTROL THIS USED TO BE. While a page's address carried its own routing bucket, that bucket
+/// THE CONTROL THIS USED TO BE. While a block's address carried its own routing bucket, that bucket
 /// won and `filed_bucket()` was consulted only where a fallback would otherwise have fired -- so the
 /// old expression and the new one had to be value-identical on a freshly written store, and the
 /// denominator was "every page is routed".
 ///
 /// AN ADDRESS CARRIES NO BUCKET NOW, so there is no old expression to be identical to and no routed
 /// population to assert. What is left is the claim that matters: the walk knows the filing for every
-/// page it returns from the bucket-index arm, and what the readers compute from it IS where the page
+/// block it returns from the bucket-index arm, and what the readers compute from it IS where the block
 /// is. The denominator moves with it -- every entry must report a filing, because an entry that does
 /// not sends the reader to a whole-range hash.
 ///
@@ -383,13 +383,13 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
 
 /// ELEMENT BY ELEMENT, NOT BY COUNT, IN BOTH DIRECTIONS.
 ///
-/// The subject arm is a store whose pages arrived UNROUTED, filed by the load path's own rebuild
+/// The subject arm is a store whose blocks arrived UNROUTED, filed by the load path's own rebuild
 /// on the shard's own range -- which is what mx#1945 made that rebuild pass. The five readers then
 /// hashed each key over the WHOLE range and named a bucket the shard does not hold.
 ///
-/// THE CONTROL IS THE SAME FIXTURE WITH ROUTED ADDRESSES, above: a page whose address carries its
+/// THE CONTROL IS THE SAME FIXTURE WITH ROUTED ADDRESSES, above: a block whose address carries its
 /// own bucket is attributed by that bucket whichever expression is used, so the control must come
-/// out identical and does. The subject arm must differ on every page, and does.
+/// out identical and does. The subject arm must differ on every block, and does.
 #[test]
 fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_under() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -401,7 +401,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
         let mut shards = engine.shards.write().expect("shards lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
         // The door is the identity now -- see `round_trip_every_block_through_the_wire`. It is kept
-        // in the fixture because it asserts that, per page, and because a page that DID change when
+        // in the fixture because it asserts that, per block, and because a block that DID change when
         // its `rs` key came off would make every number below mean something else.
         let round_tripped = round_trip_every_block_through_the_wire(shard);
         // The rebuild the load path runs, with the argument mx#1945 gave it.
@@ -420,8 +420,8 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
 
-    // Element by element: every page is filed where the SHARD'S range puts it, and none where the
-    // whole range does. Both directions asserted, because only one of them loses a page.
+    // Element by element: every block is filed where the SHARD'S range puts it, and none where the
+    // whole range does. Both directions asserted, because only one of them loses a block.
     let mut filed_narrow = 0usize;
     let mut filed_wide = 0usize;
     for (bucket_id, object_keys) in &contents {
@@ -474,9 +474,9 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
 
 /// `apply_storage_eviction` IS NOT ACCOUNTING. IT DELETES RECORDS.
 ///
-/// Its filter asks which bucket each live page is in and keeps the page's object key when that
+/// Its filter asks which bucket each live block is in and keeps the block's object key when that
 /// bucket is one of the round's victims. The victims come from `bucket_storage_summaries`, which
-/// reads `bucket_map` -- so the victim buckets are where pages are FILED. Asking the whole-range
+/// reads `bucket_map` -- so the victim buckets are where blocks are FILED. Asking the whole-range
 /// hash instead names a bucket no victim can be, so the filter matches nothing and the round frees
 /// nothing.
 ///
@@ -501,9 +501,9 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
             "the door covered {round_tripped} of {} keys",
             keys.len()
         );
-        // DENOMINATOR: the reconstruct filed every page inside the shard's own range, which is what
+        // DENOMINATOR: the reconstruct filed every block inside the shard's own range, which is what
         // makes the victim buckets below reachable at all. It used to be "every page is unrouted",
-        // a statement about addresses; the pages are what the round acts on.
+        // a statement about addresses; the blocks are what the round acts on.
         bucket_contents(shard)
             .iter()
             .filter(|(routing_bucket, _)| **routing_bucket <= NARROW_END)
@@ -553,9 +553,9 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
 /// mx#1945's refutation was found this way and cost a record: a whole-shard image installed on a
 /// narrower shard is installed whole or truncated. The claim this test carried was that nothing
 /// moves when a store written on one range is reopened on the other -- every record readable and
-/// every page present.
+/// every block present.
 ///
-/// THAT CLAIM WAS TRUE AND THAT WAS THE PROBLEM. Every record read, and every page sat in a bucket
+/// THAT CLAIM WAS TRUE AND THAT WAS THE PROBLEM. Every record read, and every block sat in a bucket
 /// the reopened shard did not hold -- outside the dump's bucket selection, eviction's victim
 /// sampling, the reclaim floor and the release pass. `routing_range_stamp.rs` records the range a
 /// store was built under and the load now REFUSES when the configured range disagrees, so the state
@@ -567,13 +567,13 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
 /// range it wrote on while the test's name still said "on the other": a pass over a different
 /// population, which is the shape #1962 named and worse than a red.
 ///
-/// The page-preservation claim it protected is still driven where it remains reachable -- the
+/// The block-preservation claim it protected is still driven where it remains reachable -- the
 /// manifest install, which installs a whole-shard image across ranges without going through a load,
 /// in `shard_carried_range::a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range`.
 ///
 /// BOTH DIRECTIONS ARE REFUSED, and widening is not the safe one. Widening leaves every existing
-/// page inside the new range, so it loses nothing -- but the same key's NEXT page routes to
-/// `hash % 4294967296` where its existing pages are at `hash % 1024`, so one object's pages end up
+/// block inside the new range, so it loses nothing -- but the same key's NEXT block routes to
+/// `hash % 4294967296` where its existing blocks are at `hash % 1024`, so one object's blocks end up
 /// in two different buckets, and a bucket is the unit of dumping and of release.
 #[test]
 fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
@@ -624,7 +624,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
         );
 
         // AND THE STORE IS NOT A BRICK -- reopening it on the range it was written on works, and
-        // every record and every page is still there. This is what the old assertions measured,
+        // every record and every block is still there. This is what the old assertions measured,
         // kept over the arm where it is now reachable.
         let status = engine
             .load_shard_with(crate::control::LoadShardRequest {
@@ -681,7 +681,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
 }
 
 // =============================================================================================
-// 5. THE TWO SITES THAT FILED A PAGE UNDER THE WHOLE RANGE -- NOW IN shard_carried_range.rs
+// 5. THE TWO SITES THAT FILED A BLOCK UNDER THE WHOLE RANGE -- NOW IN shard_carried_range.rs
 // =============================================================================================
 //
 // `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range` lived here. It asserted
@@ -692,7 +692,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
 //
 // IT IS NOT DELETED, IT IS INVERTED, and it moved to the change that inverted it:
 // `shard_carried_range::the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range`
-// keeps the same fixture and the same two bucket numbers, asserting the page IS in 398 and is
+// keeps the same fixture and the same two bucket numbers, asserting the block IS in 398 and is
 // NOT in 1,422,005,296 -- and it drives the SECOND site too, which the version here did not.
 
 // =============================================================================================
@@ -707,7 +707,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
 ///
 /// It is still right as written, because NOTHING READS IT AS A PLACEMENT. `resolved_address()` is
 /// the only path from an outcome item's bucket onto an address, and it returns `None` when
-/// `address` is `None`, which it always is here -- a removal wrote no page, so there is none to
+/// `address` is `None`, which it always is here -- a removal wrote no block, so there is none to
 /// name. The replay arm for these items (`apply_outcome_item`, the `deleted` branch) re-derives
 /// the buckets to clear from `object_block_lookup` and never looks at `item.routing_bucket`.
 ///
@@ -784,14 +784,14 @@ fn the_delete_outcomes_routing_bucket_is_a_record_field_no_reader_consults() {
 /// THE MODEL-MAP WALK GENUINELY DOES NOT KNOW THE FILING, AND MUST SAY SO.
 ///
 /// `collect_live_block_entries` has two arms. The bucket-index arm walks `bucket_map` and knows
-/// the filing exactly. The model-map arm -- taken when `bucket_map` is empty -- reads the pages an
+/// the filing exactly. The model-map arm -- taken when `bucket_map` is empty -- reads the blocks an
 /// object owns and has no index to read a filing out of, so every entry it produces must answer
 /// `None` and let the five readers fall back.
 ///
 /// THIS TEST EXISTS BECAUSE A MUTANT SURVIVED. Dropping the `filing_is_known` check, so
 /// `filed_bucket()` always answers `Some(self.filed_routing_bucket)`, passed every other test in
 /// this file: nothing reached the model-map arm. An unconditional accessor would attribute every
-/// page that arm produces to BUCKET 0 -- the field's zero value -- which is a bucket a shard very
+/// block that arm produces to BUCKET 0 -- the field's zero value -- which is a bucket a shard very
 /// often does hold, so it would not even look wrong.
 ///
 /// The DENOMINATOR is asserted first: if the fixture ever stops taking the model-map arm, this
@@ -886,8 +886,8 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
     /// had suppressed, then none).
     /// A FIX REMOVES A SITE FROM THIS LIST ONLY WHEN IT PLACES. mx#1949 wrote that fixing a site
     /// does not shrink this list, and for the five it fixed that is right: they ATTRIBUTE an
-    /// already-filed page, and the literal has to stay behind `filed_bucket()` as the last resort
-    /// for a model-map entry that has no filing to read. The two that PLACE are different. A page
+    /// already-filed block, and the literal has to stay behind `filed_bucket()` as the last resort
+    /// for a model-map entry that has no filing to read. The two that PLACE are different. A block
     /// being filed for the first time has no filing to read, so there is no fallback to put the
     /// literal behind; the range itself had to change. mx#1953 carries it on `ShardState`, and the
     /// two `block_routing_bucket` calls in `storage_bucket_internals.rs` now name
@@ -899,11 +899,11 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
         "engine/storage_reporting.rs :: bucket_for_object x2",
     ];
 
-    /// Of those, the sites that do NOT consult the bucket the page is filed under first.
+    /// Of those, the sites that do NOT consult the bucket the block is filed under first.
     ///
     /// ONE LEFT, and it is the record field no reader consults -- see
     /// `the_delete_outcomes_routing_bucket_is_a_record_field_no_reader_consults`. The two that
-    /// FILE a page left this list by leaving the list above: they read the shard's own range now.
+    /// FILE a block left this list by leaving the list above: they read the shard's own range now.
     /// `shard_carried_range::the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range`
     /// is what holds that, with both buckets named.
     const STILL_GUESSING: &[&str] = &["engine.rs :: block_routing_bucket x1"];
@@ -996,7 +996,7 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
                     }
                     let site = format!("{relative} :: {}", &needle[..needle.len() - 1]);
                     literal_sites.push(site.clone());
-                    // Does this site read where the page is actually filed before falling back?
+                    // Does this site read where the block is actually filed before falling back?
                     // The check is over the call's own expression, which begins at most a few
                     // lines above the door.
                     let window_start = index.saturating_sub(4);

@@ -7,11 +7,11 @@
 //! [`super::the_entry_cannot_name_its_object_by_slot`] refuses a bucket-relative ordinal on Ground
 //! 2 -- the entry is the only durable home of the key's characters -- and
 //! [`super::an_assigned_durable_id_defeats_ground_one_only`] prices an assigned id and finds it
-//! orthogonal to that ground. BOTH WERE ARGUED ABOUT THE PAGE ENTRY, AND THE ENTRY HAS SINCE LOST
+//! orthogonal to that ground. BOTH WERE ARGUED ABOUT THE BLOCK ENTRY, AND THE ENTRY HAS SINCE LOST
 //! THE FIELD: `BlockIndex` is `model_id`, `address`, `dirty`, `deleted` and nothing else,
 //! const-asserted at 24 bytes. So the refusals' subject is gone and their ground has MOVED one
 //! structure outwards, to `ObjectBlockLookup` -- which is keyed by `Arc<str>` and from which
-//! `impl Serialize for CoreIndex` composes every page's written key through
+//! `impl Serialize for CoreIndex` composes every block's written key through
 //! `BlockKeysByPosition::from_lookup`.
 //!
 //! WHICH MAKES THE OPEN QUESTION NARROWER AND ANSWERABLE: if the key's characters are ALREADY held
@@ -37,7 +37,7 @@
 //!     impls are the whole apparatus; there is no block store in this module, so a recovery that
 //!     needed one could not register as a success. That matters because the kinds that refuse are
 //!     precisely the ones whose maps `reconcile_secondary_views_from_bucket_index` restores by
-//!     READING BLOCKS, which is a page read and is also downstream of the index's own page keys.
+//!     READING BLOCKS, which is a block read and is also downstream of the index's own block keys.
 //!
 //! # THE ANSWER, PER KIND
 //!
@@ -94,7 +94,7 @@
 //! `skip_serializing` and there is no second durable map keyed by its object key -- the shape that
 //! saves `context_event` simply does not exist for it. `released_model_kind_is_addressable`'s own
 //! first term says the same thing from the other side: these two maps "are rebuilt FROM the bucket
-//! index on load", so for them the index's stored page key is the only durable home of the
+//! index on load", so for them the index's stored block key is the only durable home of the
 //! characters, and an index that stopped storing characters would leave them nothing. That is
 //! Ground 2, intact, for one kind out of fifteen.
 //!

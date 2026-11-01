@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
-//! What a recovered record actually carries: a command to re-run, an outcome naming a page, or
-//! the page bytes themselves. With the pages wiped, only the last two of those can rebuild a value.
+//! What a recovered record actually carries: a command to re-run, an outcome naming a block, or
+//! the block bytes themselves. With the blocks wiped, only the last two of those can rebuild a value.
 //!
 //!     cargo run --example wal_scan_probe -- <store-root>
 

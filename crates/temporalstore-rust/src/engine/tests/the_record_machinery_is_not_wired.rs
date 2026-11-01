@@ -7,14 +7,14 @@
 //! # THE QUESTION THIS ANSWERS
 //!
 //! `ObjectRecord` exists to collapse the sibling rows an object is named by -- its own doc says so:
-//! the model map, the page lookup, the dirty index and the page index. It carries a `deadline` word
-//! with two tag bits, a `DIRTY` flag, and a page-layout handle for an address that does not fit
+//! the model map, the block lookup, the dirty index and the block index. It carries a `deadline` word
+//! with two tag bits, a `DIRTY` flag, and a block-layout handle for an address that does not fit
 //! inline. So the obvious question is why `expires_at_ms` and `dirty_objects` are still separate
 //! structures.
 //!
 //! The answer was not a design disagreement: nothing in production ever filled any of it. The
 //! constructors that would have set a deadline or a dirty bit had no production caller, the
-//! page-layout side table was touched only from `#[cfg(test)]` code, and the one production path
+//! block-layout side table was touched only from `#[cfg(test)]` code, and the one production path
 //! that builds a slot uses `ObjectSlot::default()`. The representation changed and **the leg that
 //! fills it never moved**.
 //!
@@ -22,7 +22,7 @@
 //! three flag bits that were always zero came off the record, taking it from twenty-four bytes to
 //! sixteen; the three bits retired into `RESERVED`, so a record carrying one is refused as a newer
 //! writer's rather than read with its meaning dropped. What this module still guards is the half
-//! that remains built and unfilled: the two row constructors and the page-layout side table.
+//! that remains built and unfilled: the two row constructors and the block-layout side table.
 //!
 //! The duplication the record was going to remove is therefore still being paid by the structures
 //! that were always paying it -- the bucket-grouped dirty index and the per-key expiry table -- and
@@ -141,7 +141,7 @@ fn the_records_deadline_and_dirty_bit_have_no_production_writer() {
         );
     }
 
-    // The page-layout side table, which the `with_layout` arm needs.
+    // The block-layout side table, which the `with_layout` arm needs.
     let layout_sites: Vec<String> = production_mentions("object_block_layouts")
         .into_iter()
         .filter(|site| !site.contains("engine_storage_state.rs"))

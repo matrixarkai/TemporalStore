@@ -1,28 +1,28 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A GATED REMOVAL STAYS REMOVED, THOUGH THE PAGE STILL STATES THE MEMBER.
+//! A GATED REMOVAL STAYS REMOVED, THOUGH THE BLOCK STILL STATES THE MEMBER.
 //!
 //! # WHY THIS IS DRIVEN RATHER THAN BUILT
 //!
 //! Deletion as a property of the element in the payload is already implemented:
 //! `CONTAINER_BLOCK_MAGIC_V2` writes a `TAG_REMOVED` item per removed element, and
 //! `ContainerBlockItem::deleted` carries it. The module says why in the place a reader would look --
-//! "a removal has to be a WRITTEN ITEM rather than an absence, because a page is never rewritten by
-//! the removal path" -- and records the failure it closed: twelve members folded onto one page, one
-//! removed, the index naming eleven and the page holding twelve, so a membership derived from pages
+//! "a removal has to be a WRITTEN ITEM rather than an absence, because a block is never rewritten by
+//! the removal path" -- and records the failure it closed: twelve members folded onto one block, one
+//! removed, the index naming eleven and the block holding twelve, so a membership derived from blocks
 //! resurrected the removed member.
 //!
-//! So the page format needs nothing, the payload carries its own version in its magic rather than in
+//! So the block format needs nothing, the payload carries its own version in its magic rather than in
 //! `SHARD_INDEX_FORMAT_VERSION`, and no stamp moves. What reading CANNOT answer is whether a removal
 //! survives when the index entry no longer names elements, and that is this test.
 //!
 //! # THE TRAP THIS IS AIMED AT
 //!
 //! `mark_bucket_index_block_deleted` finds the entry to tombstone BY COMPONENT. Under one entry per
-//! page the entry carries none, so the match cannot select it -- the same selection-versus-meaning
+//! block the entry carries none, so the match cannot select it -- the same selection-versus-meaning
 //! shape that produced an orphan at step two and five entries at step five-a. A removal that cannot
-//! find its entry, over a page that still states the member as live, is exactly the arrangement a
+//! find its entry, over a block that still states the member as live, is exactly the arrangement a
 //! resurrection comes out of.
 //!
 //! # PRESENCE AND ABSENCE ARE TWO PROPERTIES
@@ -32,7 +32,7 @@
 //! a removed member. So the arm is three-part and the middle part is the one that matters:
 //!
 //!   1. remove through the REAL surface, not by reaching into the index;
-//!   2. **prove the page still states the member**, so the two sources demonstrably disagree before
+//!   2. **prove the block still states the member**, so the two sources demonstrably disagree before
 //!      the reader is consulted -- otherwise this is an agreement test and can discriminate nothing;
 //!   3. assert the reader sides with the AUTHORITATIVE source.
 //!
@@ -89,7 +89,7 @@ fn resident_members(engine: &TemporalEngine, object_key: &str) -> std::collectio
         .unwrap_or_default()
 }
 
-/// THE OTHER SOURCE: every element key a live page of this object still states as PRESENT.
+/// THE OTHER SOURCE: every element key a live block of this object still states as PRESENT.
 ///
 /// Read off the bytes, so the disagreement below is observed rather than assumed.
 fn components_the_blocks_state(
@@ -186,7 +186,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         }
 
         // THE FOLD IS WHAT MAKES THE SOURCES ABLE TO DISAGREE. Before it each member owns its own
-        // page, so removing one takes its whole page with it and no page is left stating it.
+        // block, so removing one takes its whole block with it and no block is left stating it.
         crate::engine::reset_container_batch_counts();
         engine
             .compact_shard_blocks(1)
@@ -213,7 +213,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
             "\n=== a gated removal ===\n  after remove: {live} live entr(ies), {tombstoned} tombstoned"
         );
 
-        // ---- PART 2: THE PAGE STILL STATES THE MEMBER, so the sources disagree. ----
+        // ---- PART 2: THE BLOCK STILL STATES THE MEMBER, so the sources disagree. ----
         let stated = components_the_blocks_state(&engine, "removal/set");
         assert!(
             stated.contains(&victim_component),
@@ -246,7 +246,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
 
     // ---- AND IT SURVIVES A RELOAD, which is the durable question. ----
     //
-    // Its own cache directory, so nothing is answered out of a page the first engine left warm.
+    // Its own cache directory, so nothing is answered out of a block the first engine left warm.
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),

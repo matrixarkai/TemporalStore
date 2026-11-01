@@ -58,7 +58,7 @@ use crate::engine::persistence::{index_load_path_counts, reset_index_load_path_c
 /// reason that is not the stamp and would make both arms say the wrong thing.
 const PLANTED: &str = "ctx:node:legacy";
 
-/// The key the string write uses, so the base index has a live page whose entry can be cloned.
+/// The key the string write uses, so the base index has a live block whose entry can be cloned.
 const WRITTEN: &str = "stamped";
 
 fn engine_at(dir: &std::path::Path) -> TemporalEngine {
@@ -71,7 +71,7 @@ fn engine_at(dir: &std::path::Path) -> TemporalEngine {
 }
 
 /// Write one string on shard 7 and flush the base index, so there is a real index file with a
-/// real live page in it.
+/// real live block in it.
 fn write_and_flush(engine: &TemporalEngine) {
     engine.load_shard(7);
     let answer = engine.execute(ExecuteRequest {

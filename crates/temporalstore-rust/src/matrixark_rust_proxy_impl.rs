@@ -857,7 +857,7 @@ fn write_lane_response<W: Write>(
     let _ = out.flush();
 }
 
-/// Bytes of request and response handled since the allocator was last asked for pages back.
+/// Bytes of request and response handled since the allocator was last asked for blocks back.
 fn trim_ledger() -> &'static std::sync::atomic::AtomicU64 {
     static LEDGER: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     &LEDGER
@@ -1666,7 +1666,7 @@ fn hgetall_snapshot_contains(key: &str) -> bool {
 /// the key, which is the same as discarding a shard's worth of reads because one field went away.
 /// It showed up as `update` being far slower than `add` on the same subject: an update purges the
 /// superseded version, and every index and record snapshot that purge touched had to be rebuilt
-/// cold by the very next scan -- one page read per member. A `HashDelete` names ONE field, so the
+/// cold by the very next scan -- one block read per member. A `HashDelete` names ONE field, so the
 /// exact post-delete snapshot is the snapshot minus that field.
 fn remove_hgetall_snapshot_fields(key: &str, fields: &[String]) {
     if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
@@ -1703,7 +1703,7 @@ fn update_hgetall_snapshot_fields(key: &str, entries: &[(String, Vec<u8>)]) {
 /// Fetch the payload values at `locations` ("{shard:06}:{field}") through the shard hash
 /// snapshots, in append order (lexical location order = shard, then zero-padded field).
 ///
-/// Reads whole shard hashes via hgetall_map on purpose: HashMultiGet re-reads each field's page
+/// Reads whole shard hashes via hgetall_map on purpose: HashMultiGet re-reads each field's block
 /// uncached on every call (measured ~0.5 ms/field, never warming), while the snapshot is read
 /// once and then kept current by the write runtimes -- the same coherence the shard walk has
 /// always relied on. A location whose field is missing or empty is a stale index entry: the
@@ -1898,7 +1898,7 @@ fn hgetall_shared(
             // An empty read must stay a question, not become an answer: caching it would pin
             // "no data" for a key no write may ever touch again (observed once as a pinned
             // get_all stuck at 0 rows after a cold start until restart). An actually-empty hash
-            // re-reads at map-miss cost, no page reads.
+            // re-reads at map-miss cost, no block reads.
             let decoded = Arc::new(decoded);
             if !decoded.is_empty() {
                 if let Ok(mut cache) = hgetall_snapshot_cache().lock() {
@@ -2223,7 +2223,7 @@ fn type_index_ready_key(record_hash_key: &str) -> String {
 ///
 /// The long shape spells the whole thing out -- `{"key":"<base>:000003","field":"000...014"}` --
 /// and the compact shape is `"3:14"`, shard and offset in decimal. Measured over 300 ingests, the
-/// long shape was 87% of every byte written to a page, because the base is one deployment-wide
+/// long shape was 87% of every byte written to a block, because the base is one deployment-wide
 /// string repeated in every entry and the offset is a twenty-digit rendering of a small number.
 ///
 /// A compact entry is always relative to the reader's own record log, which is the same thing the
@@ -4061,7 +4061,7 @@ fn execute_record_log_request(
             // call (see `VISIBILITY_PUBLISH_INDEX_FLUSH_INTERVAL_DEFAULT`), so a deferred call
             // reports zero index bytes -- and so does a call that found nothing log-resident.
             // Reading "published nothing" out of a zero would be wrong in both cases, because the
-            // pages are republished before the call returns either way; this names what the zero
+            // blocks are republished before the call returns either way; this names what the zero
             // is about.
             output.extra.insert(
                 "matrixark_visibility_index_checkpointed".to_string(),
@@ -4707,7 +4707,7 @@ fn hash_entries_output(
     root: PathBuf,
     inline_json: bool,
 ) -> Result<RecordLogOutput, String> {
-    // Read through the hash snapshot: a raw HashGetAll re-reads every field's page uncached on
+    // Read through the hash snapshot: a raw HashGetAll re-reads every field's block uncached on
     // each call (measured 14.6 ms warm for a 27-field hash), while the snapshot is read once and
     // kept current by the write runtimes -- the same coherence every internal hgetall relies on.
     {
@@ -4951,7 +4951,7 @@ fn system_memory_bytes() -> Option<usize> {
 /// Page-cache capacity for a newly opened engine.
 ///
 /// The old fixed 128 MiB default is smaller than the working set of any store past a few hundred
-/// megabytes, and every page read that misses it pays a second-layer read AND a cache fill. That
+/// megabytes, and every block read that misses it pays a second-layer read AND a cache fill. That
 /// is what made writes look linear in corpus size. Measured on one 260 MB store, the same ingest
 /// took 3 291 ms at 128 MiB, 1 157 ms at 384 MiB and 902 ms at 1 GiB, while that ingest against a
 /// 20 MB store took 173 ms -- so the "linear growth" was mostly the working set crossing a fixed
@@ -5059,7 +5059,7 @@ fn open_engine(request: &RecordLogRequest) -> Result<RecordStore, String> {
         //
         // These were the two named defaults as literals, for the reason `drive_reassignments` in
         // the metaserver states: two sites that default the range differently file the same key's
-        // pages in two different bucket groups. That reason is about the DEFAULT and the comment
+        // blocks in two different bucket groups. That reason is about the DEFAULT and the comment
         // went on to claim "an existing store is honoured on the range it was built on either
         // way", which is not what happens. `engine::routing_range_stamp::decide_routing_range`
         // REFUSES a store whose stamp names a range the request does not, and its message tells
@@ -12132,7 +12132,7 @@ mod tests {
             engine.unload_shard(DEFAULT_SHARD_ID);
         }
 
-        // Phase 2: a fresh engine on the SAME pages/index dirs replays the WAL from scratch. The
+        // Phase 2: a fresh engine on the SAME blocks/index dirs replays the WAL from scratch. The
         // forget tombstones must NOT resurrect alice, and bob must remain.
         clear_native_caches();
         let reopened = forget_engine(dir.path(), "recover");

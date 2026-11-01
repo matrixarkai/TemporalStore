@@ -5,8 +5,8 @@
 //!
 //! # WHY THE TERM CAME OFF THE WRITE PATH
 //!
-//! The minimum is one map lookup per page in the bucket, keyed by the page's object key, and it is
-//! the last per-page pass in bucket maintenance that does not short-circuit. Every reader of the
+//! The minimum is one map lookup per block in the bucket, keyed by the block's object key, and it is
+//! the last per-block pass in bucket maintenance that does not short-circuit. Every reader of the
 //! field it produces is a REPORT or the serializer; real expiry runs off the shard's expiry map and
 //! its deadline-ordered mirror instead, and no expiry, eviction or serving decision consults a
 //! bucket's TTL.
@@ -70,14 +70,14 @@ fn a_bucket_holding_one_block(routing_bucket: u32, object_key: &str) -> BucketNo
     bucket
 }
 
-/// A shard with `buckets` buckets, each holding one page, and an expiry on every one of them.
+/// A shard with `buckets` buckets, each holding one block, and an expiry on every one of them.
 fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
     let mut shard = ShardState::default();
     for routing_bucket in 0..buckets {
         let object_key = format!("expiring-{routing_bucket}");
         let bucket = a_bucket_holding_one_block(routing_bucket, &object_key);
-        // THE PLACED PAGES, READ OUT BEFORE THE BUCKET IS HANDED OVER, so the lookup can be filed
-        // from the same (handle, page) pairs the map keyed them under.
+        // THE PLACED BLOCKS, READ OUT BEFORE THE BUCKET IS HANDED OVER, so the lookup can be filed
+        // from the same (handle, block) pairs the map keyed them under.
         let placed: Vec<(u64, BlockIndex)> = bucket
             .block_index
             .iter()
@@ -86,11 +86,11 @@ fn a_shard_with_expiring_blocks(buckets: u32) -> ShardState {
         shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
         // AND THE LOOKUP IS FILED, AS EVERY PRODUCTION PLACEMENT FILES IT.
         //
-        // The TTL rollup selects pages whose OBJECT is in `expires_at_ms`, and the object a page
-        // belongs to is stated beside the page, not on it. A hand-built index that files nothing
-        // names no page, so the rollup selected nothing and the control below -- "the sweep must
+        // The TTL rollup selects blocks whose OBJECT is in `expires_at_ms`, and the object a block
+        // belongs to is stated beside the block, not on it. A hand-built index that files nothing
+        // names no block, so the rollup selected nothing and the control below -- "the sweep must
         // still compute the minimum" -- failed. That is the fixture being unlike production, not
-        // the rollup being broken: it is the same shape the page-index encoder refuses outright.
+        // the rollup being broken: it is the same shape the block-index encoder refuses outright.
         let key: std::sync::Arc<str> = std::sync::Arc::from(object_key.as_str());
         for (handle, block) in &placed {
             shard

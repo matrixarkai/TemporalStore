@@ -103,15 +103,15 @@ fn table_names(state: &crate::engine::state::ShardState) -> Vec<String> {
 
 /// Take one of the four tables out of a decoded state.
 ///
-/// # THE TWO `objects` TARGETS MUST TAKE THEIR KIND'S PAGES WITH THEM
+/// # THE TWO `objects` TARGETS MUST TAKE THEIR KIND'S BLOCKS WITH THEM
 ///
 /// Each object's block refs live in its `ObjectSlot` now, so removing a kind's inner table removes
-/// the only record of where that kind's pages are. The state left behind is not "a shard without
-/// that table", it is a shard whose pages NOTHING NAMES -- and `serialize_block_index` refuses to
-/// encode one, which is how this test first reported the fold: "a page whose stored key would name
+/// the only record of where that kind's blocks are. The state left behind is not "a shard without
+/// that table", it is a shard whose blocks NOTHING NAMES -- and `serialize_block_index` refuses to
+/// encode one, which is how this test first reported the fold: "a block whose stored key would name
 /// no object". The refusal is right and the fixture was wrong.
 ///
-/// An absent kind table means a shard holding no objects of that kind, which means no pages of
+/// An absent kind table means a shard holding no objects of that kind, which means no blocks of
 /// that kind either. Dropping both is what makes the removal a state a decode could actually
 /// produce, and the test's question -- does the repack bring a table into being -- is unchanged.
 fn remove_pages_of_kind(

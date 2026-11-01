@@ -57,7 +57,7 @@ pub(crate) const BLOCK_RECORD_HEADER_LEN: usize = BLOCK_RECORD_BLOCK_ID_OFFSET +
 /// It was 32 bytes holding a SHA-256, then 32 holding a 4-byte CRC32C padded out, then 8 holding
 /// the CRC32C plus a `C32C` marker that made the field self-describing across formats. With one
 /// format there is nothing to tell apart, so the marker is gone and the field is the checksum.
-/// A page checksum guards against a page that corrupted into something still decodable, not
+/// A block checksum guards against a block that corrupted into something still decodable, not
 /// against a forged one, and CRC32C is the right tool for that.
 pub(super) const BLOCK_RECORD_CHECKSUM_LEN: usize = 4;
 
@@ -343,7 +343,7 @@ pub(super) fn decode_block_record(
     // SO THERE WAS NO ADDRESS-VERSUS-RECORD CROSS-CHECK ON THE ROUTING BUCKET TO LOSE. Its address
     // side is gone with the field, and its record side never existed: no record can be built that
     // makes it fire, which is the strongest statement available about a check. What replaces it is
-    // not in this function -- `validate_bucket_ownership_index_from_entries` compares where a page
+    // not in this function -- `validate_bucket_ownership_index_from_entries` compares where a block
     // is FILED against where its KEY routes, which are two independent answers, and
     // `BucketReleaseRefusal::BlockRoutingMismatch` refuses a release on the same comparison.
     //
@@ -551,7 +551,7 @@ fn parse_block_record_header(
 }
 
 thread_local! {
-    /// One zstd decompression context per thread, reused across page reads.
+    /// One zstd decompression context per thread, reused across block reads.
     ///
     /// Thread-local rather than a shared pool: a decompressor is `&mut` for the duration of a
     /// decompress, so sharing one would serialise every reader behind a lock on a path that is
@@ -644,7 +644,7 @@ fn block_record_checksum_field(payload: &[u8]) -> [u8; BLOCK_RECORD_CHECKSUM_LEN
     crate::checksum::crc32c(payload).to_le_bytes()
 }
 
-/// Verify a page record's payload against its stored CRC32C.
+/// Verify a block record's payload against its stored CRC32C.
 fn verify_block_record_checksum(
     payload: &[u8],
     expected_checksum: &[u8; BLOCK_RECORD_CHECKSUM_LEN],
@@ -682,7 +682,7 @@ pub(super) fn sha256_hex(bytes: &[u8]) -> String {
 /// The digest as the 32 bytes it is, for storing.
 ///
 /// `sha256_hex` remains for the places that want text -- a report, an error message. What it does
-/// not do any more is decide the in-memory representation of every page in the index.
+/// not do any more is decide the in-memory representation of every block in the index.
 pub(super) fn sha256_bytes(bytes: &[u8]) -> [u8; 32] {
     Sha256::digest(bytes).into()
 }
@@ -750,14 +750,14 @@ pub(super) fn summarize_slab(
 /// The scan reads a prefix big enough to hold a header. There is one header size now.
 const BLOCK_RECORD_WIDEST_HEADER_LEN: usize = BLOCK_RECORD_HEADER_LEN;
 
-/// Read buffer for the page-id scan.
+/// Read buffer for the block-id scan.
 ///
 /// Sized so a bufferful spans many records rather than one: at the ~300-byte records the live
 /// store holds, this is ~800 per fill, which is the difference between thousands of reads for a
 /// slab and millions.
 const BLOCK_RECORD_SCAN_BUFFER_BYTES: usize = 256 * 1024;
 
-/// TS_BLOCK_INDEX_CHECKSUMS: recompute and record a hex digest per page record while inspecting.
+/// TS_BLOCK_INDEX_CHECKSUMS: recompute and record a hex digest per block record while inspecting.
 ///
 /// Default OFF. `inspect_slab` runs at every engine open, and this hashes each payload a second
 /// time -- `decode_block_record` has already verified the stored checksum -- then allocates a
@@ -971,7 +971,7 @@ fn record_slab_inspection_error(
     report.first_error = Some(error);
 }
 
-/// The page record format, which there is only one of.
+/// The block record format, which there is only one of.
 #[cfg(test)]
 mod block_record_format_tests {
     use super::*;

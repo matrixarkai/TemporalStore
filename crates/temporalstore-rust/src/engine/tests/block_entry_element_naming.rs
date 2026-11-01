@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! REFUTATION, AND THE ONE THING THAT LIFTS IT. THE PAGE ENTRY COULD NOT STOP NAMING ITS ELEMENT
+//! REFUTATION, AND THE ONE THING THAT LIFTS IT. THE BLOCK ENTRY COULD NOT STOP NAMING ITS ELEMENT
 //! WHILE THE ENTRY WAS THE ONLY PLACE THE NAME WAS WRITTEN.
 //!
 //! # WHAT CHANGED, STATED FIRST BECAUSE THIS MODULE'S HEADLINE MOVED
 //!
 //! This module was opened as a refutation and its stop condition was one sentence: for a hash the
 //! component is not a second copy of the field name, it is the ONLY one. `container_blocks` makes the
-//! page carry its own element key, so there is now a second copy, and the refutation below is
+//! block carry its own element key, so there is now a second copy, and the refutation below is
 //! recorded as HAVING HELD rather than as holding.
 //!
 //! The first test is the one that moved, and it moved in the direction its own failure message named:
@@ -21,10 +21,10 @@
 //! PRECONDITION for the entry dropping it, not the whole of it. The entry's component is still what
 //! `bucket_index_component_block_addresses` walks, still what `HashGetAll` returns as the field name,
 //! and still what the load path derives `shard.hashes` from. Removing it needs the load path to
-//! rebuild those maps out of the pages instead, which is a later stage and is not started here. The
+//! rebuild those maps out of the blocks instead, which is a later stage and is not started here. The
 //! pricing below is the prize for that stage and is kept for it.
 //!
-//! `BlockIndex.component: Option<Arc<str>>` is sixteen bytes on every page entry plus a heap string
+//! `BlockIndex.component: Option<Arc<str>>` is sixteen bytes on every block entry plus a heap string
 //! per element, and #1996 priced that string exactly: `16 + 2n` request bytes for a set member and
 //! `32 + 2n` for a zset member, slope 2.00 per member byte, because `hex::encode` spells two
 //! characters per byte. Those numbers are CITED here and not re-derived.
@@ -33,7 +33,7 @@
 //!
 //!   * #2005 made the delta fold carry element identity through `key_states`, so an element folded
 //!     out of the delta log no longer depends on its component being decodable.
-//!   * #2008 gave a container page a real `BlockAddress::block_id` ordinal instead of the hardcoded
+//!   * #2008 gave a container block a real `BlockAddress::block_id` ordinal instead of the hardcoded
 //!     zero, threaded so header and address are built from one value.
 //!
 //! #2005 names what it unblocks: "a 2-byte element ordinal replacing `component: Option<Arc<str>>`".
@@ -48,7 +48,7 @@
 //! THAT LAST SENTENCE IS WHAT `container_blocks` CHANGED, and only that sentence. Everything else in
 //! the table below still holds: the entry still carries the component, the three spelled kinds still
 //! have a durable map and the hash still has none, and `HashGetAll` still names its fields from the
-//! entry rather than from the page.
+//! entry rather than from the block.
 //!
 //! ```text
 //!     set     set_index_serde    (member bytes, address)            component is a 2nd copy
@@ -75,7 +75,7 @@
 //!                 (field.map(|name| name.to_string()).unwrap_or_default(), value))
 //! ```
 //!
-//! `field` there IS `page.component`. `engine/hash_field_map.rs:46` says so deliberately:
+//! `field` there IS `block.component`. `engine/hash_field_map.rs:46` says so deliberately:
 //! "`HashGetAll` and `HashLen` do not read this map at all, they resolve through
 //! `bucket_index_component_block_addresses`". So a component-less entry does not degrade a hash on
 //! the next reload -- it answers `HashGetAll` with every field named `""` immediately.
@@ -117,8 +117,8 @@
 //!
 //! SO THE STOP CONDITION HAS MOVED RATHER THAN LIFTED. What still holds the component on the entry
 //! is not durability any more: it is that `block_index_handle` HASHES the component, and the
-//! component is the only field in that hash distinguishing two elements of ONE folded page. Drop it
-//! without making the entry per-page and two elements collide on one slot. See the report on #1976
+//! component is the only field in that hash distinguishing two elements of ONE folded block. Drop it
+//! without making the entry per-block and two elements collide on one slot. See the report on #1976
 //! for the enumerated remainder.
 //!
 //! NO PRODUCTION CODE CHANGES IN THIS MODULE. Three tests, each driving a fact rather than quoting
@@ -207,9 +207,9 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 /// It used to assert that the field came back RENAMED: the swapped component became the field name,
 /// because nothing else held it. That was the refutation, and it was correct at the time.
 ///
-/// `container_blocks` puts the element key inside the page. So the index now says `hfield-Z` and the
-/// page still says `hfield-b`, and they disagree. The read funnel resolves the address the index
-/// names and then asks that page for `hfield-Z`, which it does not hold -- so the element answers
+/// `container_blocks` puts the element key inside the block. So the index now says `hfield-Z` and the
+/// block still says `hfield-b`, and they disagree. The read funnel resolves the address the index
+/// names and then asks that block for `hfield-Z`, which it does not hold -- so the element answers
 /// MISSING, and `HashGetAll`'s `filter_map` drops it.
 ///
 /// ## THE THREE OUTCOMES, AND WHY THIS IS THE ONE TO WANT
@@ -220,17 +220,17 @@ fn swap_across_index_files(indexes: &std::path::Path, from: &str, to: &str) -> u
 ///     rejected the element is served under the name the PAGE spells      the index stops mattering
 /// ```
 ///
-/// The third would make the page authoritative for the name, which is a later stage's decision and
+/// The third would make the block authoritative for the name, which is a later stage's decision and
 /// not one to take in passing. Between the first two, the second is the answer this store has
-/// repeatedly chosen: #2013 measured a reader handed "the FIRST page's BYTES rather than answering
+/// repeatedly chosen: #2013 measured a reader handed "the FIRST block's BYTES rather than answering
 /// missing" and called it the defect; #2016 refused to let an absent name become a real one. Serving
-/// bytes under a name their own page contradicts is that same shape. A miss is worse to read and
+/// bytes under a name their own block contradicts is that same shape. A miss is worse to read and
 /// better to trust.
 ///
 /// ## AND IT HAS A COST, WHICH IS ASSERTED HERE RATHER THAN LEFT TO BE FOUND
 ///
-/// `HashLen` counts page-index ENTRIES and `HashGetAll` returns entries whose page will read, so on
-/// a store whose index and pages disagree the two now answer differently. That pair is what #2014
+/// `HashLen` counts block-index ENTRIES and `HashGetAll` returns entries whose block will read, so on
+/// a store whose index and blocks disagree the two now answer differently. That pair is what #2014
 /// guards, and it still agrees on every store this engine writes -- the divergence needs a component
 /// that was edited underneath it, which is exactly what this test does and nothing else does. Both
 /// numbers are asserted below so the cost is recorded rather than discovered later.
@@ -393,9 +393,9 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
 
     // THE FINDING: the swapped name does not become the field's name.
     //
-    // It did not when the name lived on the ENTRY -- the page's own item key contradicted it --
+    // It did not when the name lived on the ENTRY -- the block's own item key contradicted it --
     // and it does not now that the name lives in the durable MAP, which is the stronger version of
-    // the same claim: the element's identity is carried by the page it is written on, so a name
+    // the same claim: the element's identity is carried by the block it is written on, so a name
     // edited anywhere else cannot rename it.
     assert!(
         !names.contains("hfield-Z"),
@@ -422,7 +422,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     }
 
     // AND THE LENGTH ANSWER AND THE LISTING ARE PINNED TO EACH OTHER rather than to a literal.
-    // `HashLen` counts page-index entries and the listing counts entries whose page reads; a
+    // `HashLen` counts block-index entries and the listing counts entries whose block reads; a
     // divergence is the measure of how much the edit cost, and it is asserted as whatever it is
     // only in the sense that it must not exceed the one field that was edited.
     assert_eq!(
@@ -522,7 +522,7 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 // 3. THE PRIZE, PRICED, SO THE NEXT READER DOES NOT SPEND A SESSION ON IT.
 // =================================================================================================
 
-/// The page entry with the component GONE -- not thinned, not an ordinal, removed.
+/// The block entry with the component GONE -- not thinned, not an ordinal, removed.
 ///
 /// Declared rather than asserted about a structure this engine does not have. #1997 reached the same
 /// 48 by holding BOTH names one word each and declined it on soundness; this mirror reaches it by
@@ -687,7 +687,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     //
     // ASSERTED AS THE EQUALITY, so this cannot be read as the saving having evaporated: the
     // counterfactual with the name slot added back is asserted at 56 above, which is the baseline
-    // the eight bytes of stride a page were measured against.
+    // the eight bytes of stride a block were measured against.
     assert_eq!(
         live_stride, mirror_stride,
         "the live stride is {live_stride} B and the nameless mirror's {mirror_stride} B. They must \
@@ -696,7 +696,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     );
     // FORTY-EIGHT, BECAUSE THE BASELINE MOVED WITH THE ENTRY. Adding a name slot back to TODAY'S
     // entry gives forty, and a handle plus forty strides at forty-eight. The sixty-four this
-    // module quoted its eight bytes a page against was that plus the key's own sixteen, which
+    // module quoted its eight bytes a block against was that plus the key's own sixteen, which
     // left on the next leg -- and that baseline is pinned from the types two assertions above.
     assert_eq!(
         48,
@@ -723,17 +723,17 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 // 4. AN ABSENT FIELD NAME IS NOT THE EMPTY FIELD NAME, AND ONLY ONE OF THEM NAMES A FIELD.
 // =================================================================================================
 
-/// A HASH PAGE THAT NAMES NO FIELD IS SKIPPED; A PAGE THAT NAMES THE EMPTY FIELD IS KEPT.
+/// A HASH BLOCK THAT NAMES NO FIELD IS SKIPPED; A BLOCK THAT NAMES THE EMPTY FIELD IS KEPT.
 ///
 /// Both derive arms read `entry.component` to get a hash field name, and both ended
-/// `.unwrap_or_default()` -- so a page entry carrying NO component became a field named `""`. That
+/// `.unwrap_or_default()` -- so a block entry carrying NO component became a field named `""`. That
 /// is not a missing value standing in for itself: an empty hash field name is LEGAL, so the default
 /// manufactures a real, addressable field, which then collides with a genuine empty-named field and
 /// takes its address. The two states this test separates are:
 ///
 /// ```text
 ///     component = Some("")   a genuine field whose name is zero characters    KEEP
-///     component = None       a page that says nothing about which field       SKIP AND COUNT
+///     component = None       a block that says nothing about which field       SKIP AND COUNT
 /// ```
 ///
 /// # WHY THIS ARM AND NOT THE THREE THAT WERE ALREADY CORRECTED
@@ -742,42 +742,42 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 /// map holding what its component re-spells -- which is what lets their comment say "skipping loses
 /// it from the derived view and not from the store". `hashes` is `skip_serializing` (test 2 in this
 /// module drives that off the serializer), so this arm ASSIGNS, there is no durable map behind it,
-/// and a phantom field is the only answer the shard has. For a context node, whose page is filed
+/// and a phantom field is the only answer the shard has. For a context node, whose block is filed
 /// under the single constant `CONTEXT_NODE_FIELD`, the phantom is not merely a wrong name: every
 /// reader that spells `"meta"` back finds nothing and the node reads as ABSENT.
 ///
 /// # THE THREE LEGS, EACH DRIVEN
 ///
-/// A. THE WIRE ADMITS IT. Both structures that can carry a hash page into the derive declare
+/// A. THE WIRE ADMITS IT. Both structures that can carry a hash block into the derive declare
 ///    `component` as an `Option` with `#[serde(default)]`, so an absent component is not a
 ///    corruption -- it is a shape the decoder is specified to accept. Read off the real serde impls
 ///    rather than off the attributes.
-/// B. THE FOLD FILES THE PAGE. This said `fold_delta_block_items` copies `item.component`
-///    straight onto the page entry, so an item that named nothing produced an entry that named
+/// B. THE FOLD FILES THE BLOCK. This said `fold_delta_block_items` copies `item.component`
+///    straight onto the block entry, so an item that named nothing produced an entry that named
 ///    nothing. NEITHER the entry nor the item has that field any more, so what the fold files is
 ///    an entry naming no element BY CONSTRUCTION rather than by copying an absent name. The leg
 ///    still builds the state leg C is about -- it is the real fold, in the real order the load
-///    path runs it -- and the arm picks its planted page out by ADDRESS, which is stricter than
+///    path runs it -- and the arm picks its planted block out by ADDRESS, which is stricter than
 ///    the absence of a name ever was.
 /// C. THE DERIVE IS WHERE IT BECOMES A FIELD. Both arms, over one index holding both states at once.
 ///
 /// # TWO KEYS, BECAUSE ONE KEY CANNOT TELL THE TWO STATES APART DETERMINISTICALLY
 ///
-/// Putting the nameless page on the SAME key as the genuine empty-named field makes the field COUNT
-/// identical either way -- three page entries collapse to two field names with the default and to
+/// Putting the nameless block on the SAME key as the genuine empty-named field makes the field COUNT
+/// identical either way -- three block entries collapse to two field names with the default and to
 /// two without it -- so the only difference is WHICH address won the `""` slot, and that is decided
-/// by the order the page walk happens to emit. A mutation run proved it: the defaulting arm
-/// SURVIVED, because the genuine page happened to be inserted last. So the two states get their own
+/// by the order the block walk happens to emit. A mutation run proved it: the defaulting arm
+/// SURVIVED, because the genuine block happened to be inserted last. So the two states get their own
 /// keys and the discriminator is a count:
 ///
 /// ```text
-///     ef-nameless   one named field + one nameless page   SKIP -> 1 field, no "" key
+///     ef-nameless   one named field + one nameless block   SKIP -> 1 field, no "" key
 ///                                                         DEFAULT -> 2 fields, phantom ""
 ///     ef-empty      one named field + a genuine "" field  both -> 2 fields, "" at its own address
 /// ```
 ///
 /// THE CONTROL is the `string` kind, where `component: None` is the NORMAL and CORRECT state -- it
-/// means the page IS its whole object. The change cannot move it, and the number of string pages the
+/// means the block IS its whole object. The change cannot move it, and the number of string blocks the
 /// derive actually walked is asserted, because a control over nothing reports success.
 ///
 /// rust-internal: drives the engine's own derive over its own index, no external surface
@@ -790,7 +790,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         collect_bucket_index_live_block_entries, stored_model_kind,
     };
 
-    // The key that receives a page naming no field. Its only real field is a named one, so a
+    // The key that receives a block naming no field. Its only real field is a named one, so a
     // phantom `""` shows up as a FIELD COUNT and not as a race for one slot.
     let nameless_key = "ef-nameless";
     // The key that holds a GENUINE empty field name, and nothing nameless.
@@ -800,9 +800,9 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     let named_field = "ef-named";
 
     // ---------------------------------------------------------------------------------------------
-    // LEG A. THE WIRE ADMITS A PAGE THAT NAMES NO FIELD.
+    // LEG A. THE WIRE ADMITS A BLOCK THAT NAMES NO FIELD.
     // ---------------------------------------------------------------------------------------------
-    // The page entry first. `component` is `skip_serializing_if = "Option::is_none"`, so a `None`
+    // The block entry first. `component` is `skip_serializing_if = "Option::is_none"`, so a `None`
     // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
     // STABLE shape rather than as damage.
     let nameless_entry = BlockIndex {
@@ -860,7 +860,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // gone with the drop it detected.
     //
     // SO LEG A'S CLAIM IS NARROWED TO WHAT IT ACTUALLY ESTABLISHES, and both halves are driven:
-    // an ABSENT component is a legal wire shape on both carriers (the page entry writes no key, the
+    // an ABSENT component is a legal wire shape on both carriers (the block entry writes no key, the
     // emptiest legal delta row decodes), and a row that names an element is refused BY ITS KEY. The
     // "the other slots are not shifted" half survives on a row that spells them WITHOUT `"c"`,
     // because "it decoded" alone would be satisfied by garbage.
@@ -930,7 +930,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             },
         );
     }
-    // The control's object, written through the surface that files a component-less page legitimately.
+    // The control's object, written through the surface that files a component-less block legitimately.
     write(
         &engine,
         Command::StringSet {
@@ -985,9 +985,9 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     );
 
     // ---------------------------------------------------------------------------------------------
-    // LEG B. THE FOLD FILES A PAGE THAT NAMES NO FIELD.
+    // LEG B. THE FOLD FILES A BLOCK THAT NAMES NO FIELD.
     // ---------------------------------------------------------------------------------------------
-    // A DISTINCT address -- one slab further on -- so the phantom is traceable to this page and not
+    // A DISTINCT address -- one slab further on -- so the phantom is traceable to this block and not
     // to the real one. The fold is the real one: this is the shape a delta record carrying no
     // component produces on reload.
     let nameless_address = ElementEntry::from_compact_slab_address(
@@ -1013,7 +1013,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         // THE WHOLE POINT USED TO BE THIS FIELD, AND IT IS NOW THE TYPE. The literal stated
         // `component: None` under the note "this item names no field"; the row has no such field,
         // so naming no field is what every item is, by construction rather than by choice. The arm
-        // picks this planted page out by ADDRESS, which is what still distinguishes it.
+        // picks this planted block out by ADDRESS, which is what still distinguishes it.
         object_id: stable_block_object_id(1, "hash", nameless_key),
         // THIS FIXTURE USED TO DISAGREE WITH ITS OWN ADDRESS. `from_compact_slab_address`
         // passes `None` for the block id, so the derivation is `in_log = true` and the literal
@@ -1027,8 +1027,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     let nameless_entries_in_index = {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
-        // `upsert: false` with no covered keys, so the fold ADDS this page and removes nothing --
-        // the genuine pages stay and the nameless one joins them, which is the state under test.
+        // `upsert: false` with no covered keys, so the fold ADDS this block and removes nothing --
+        // the genuine blocks stay and the nameless one joins them, which is the state under test.
         crate::engine::fold_delta_block_items(
             &mut shard.bucket_index,
             &BTreeSet::new(),
@@ -1036,7 +1036,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             false,
         );
         // THE REBUILD THAT STOOD HERE IS GONE, AND SO IS THE CLAIM THAT MADE IT NECESSARY. This
-        // comment read "The fold writes page entries and NOT the object lookup, so without this
+        // comment read "The fold writes block entries and NOT the object lookup, so without this
         // the serving accelerator still describes the pre-fold index" -- which was true when it
         // was written and is not now. `fold_delta_block_items` files what it places and un-files
         // what it drops, and carries a note saying those are ONE obligation; it took that on when
@@ -1046,12 +1046,12 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             .into_iter()
             // SELECTED BY ADDRESS, NOT BY THE ABSENCE OF A NAME.
             //
-            // This filtered `entry.component.is_none()` to pick out the page the fold planted. No
-            // entry names an element, so that predicate is true of EVERY page of the key and the
-            // count came to 2 -- the genuine page and the planted one -- failing with "leg B has
+            // This filtered `entry.component.is_none()` to pick out the block the fold planted. No
+            // entry names an element, so that predicate is true of EVERY block of the key and the
+            // count came to 2 -- the genuine block and the planted one -- failing with "leg B has
             // not built the state leg C is about" when leg B had built it exactly. The planted
             // item has its own address, which is what distinguishes it, and matching on that is
-            // stricter than the absence ever was: it cannot match a page the fold did not file.
+            // stricter than the absence ever was: it cannot match a block the fold did not file.
             .filter(|entry| {
                 entry.kind.as_str() == "hash"
                     && entry.object_key.as_ref() == nameless_key
@@ -1069,10 +1069,10 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     println!("[leg B] the fold filed 1 hash block naming no field, under `{nameless_key}`");
 
     // THE COUNTS, TAKEN BEFORE ANY DERIVE RUNS, as a BEFORE/AFTER pair rather than as an absolute,
-    // because the absolute is a property of the page index this test builds and the claim is about
+    // because the absolute is a property of the block index this test builds and the claim is about
     // the DELTA. Under `container_index_files_one_entry_a_page` the two commands no longer read the
     // same structure -- `HashLen` counts the fields in `shard.hashes`, `HashGetAll` serves the
-    // union of that map and the page index -- so the pair spans BOTH sources the derive touches,
+    // union of that map and the block index -- so the pair spans BOTH sources the derive touches,
     // which is what makes a zero delta worth asserting over a derive that rebuilds one of them.
     let hash_len_before = hash_len_of(&engine, nameless_key);
     let listed_before = hash_entries_of(&engine, nameless_key).len();
@@ -1088,7 +1088,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
 
-        // THE CONTROL'S DENOMINATOR, read before the derive runs: how many string pages this derive
+        // THE CONTROL'S DENOMINATOR, read before the derive runs: how many string blocks this derive
         // will actually walk. A control over an empty set reports success.
         let string_blocks_exercised = collect_bucket_index_live_block_entries(shard)
             .into_iter()
@@ -1121,9 +1121,9 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
 
         // --- THE FINDING IS NOW STRUCTURAL: THE DERIVE CONTRIBUTES NO FIELD NAME AT ALL. ---
         //
-        // This arm asserted that a page naming no field contributed NO field -- that an absent name
+        // This arm asserted that a block naming no field contributed NO field -- that an absent name
         // was SKIPPED rather than defaulted into a real, addressable field called `""`. It read the
-        // derived map and expected one field from the named page and none from the nameless one.
+        // derived map and expected one field from the named block and none from the nameless one.
         //
         // BOTH DERIVES NOW CONTRIBUTE NOTHING, which is a stronger statement than the skip was.
         // They decoded a field name out of `entry.component`; an entry has no component, so there
@@ -1166,7 +1166,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             );
         }
         // The fixture's own addresses stay referenced so this arm still fails to compile if the
-        // page it wrote for the genuine empty-named field stops being built.
+        // block it wrote for the genuine empty-named field stops being built.
         let _ = (named_field, genuine_empty_address.address_word());
 
         // --- THE CONTROL, at 0.00% on a kind whose component is LEGITIMATELY absent. ---
@@ -1230,8 +1230,8 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // the fixture cleared, so the honest count IS zero and the floor could only fail.
     //
     // THE DISCRIMINATOR IS SHARPER WITHOUT IT. `HashLen` reads `shard.hashes`, which this test
-    // emptied; the page index still holds TWO live hash entries for this key, the named page and
-    // the nameless one leg B filed. So `HashLen` answering 0 against 2 indexed pages is positive
+    // emptied; the block index still holds TWO live hash entries for this key, the named block and
+    // the nameless one leg B filed. So `HashLen` answering 0 against 2 indexed blocks is positive
     // proof it reads the MAP and not the index -- which is exactly what this section was built to
     // pin, and what the old floor could only approach. Revert the collapse so `HashLen` counts
     // entries again and it answers 2 against a cleared map, which reddens both halves below.
@@ -1294,7 +1294,7 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
     }
 }
 
-/// THE STORED PAGE HANDLE DECIDES NOTHING THE FOLD FILES, SO CHANGING ITS DERIVATION IS INERT.
+/// THE STORED BLOCK HANDLE DECIDES NOTHING THE FOLD FILES, SO CHANGING ITS DERIVATION IS INERT.
 ///
 /// # THE CLAIM THIS EXISTS TO STOP BEING A CITATION
 ///
@@ -1304,7 +1304,7 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
 /// TWO ROUTES FILL THAT TERM, AND THEY USED TO DISAGREE. `engine::collect_upsert_index_items`
 /// passed the element's own name through; the entry walk in `collect_command_index_items_for`
 /// takes the entry's own key from `state::block_index_written_key`, which passes `None` because
-/// the page entry has no element name left to give it. So one physical page was described by two
+/// the block entry has no element name left to give it. So one physical block was described by two
 /// different handle spellings depending on which emitter produced the row.
 ///
 /// THEY AGREE NOW -- both pass `None` -- AND THIS GUARD IS WHAT MADE CONVERGING THEM SAFE.
@@ -1322,9 +1322,9 @@ fn hash_entries_of(engine: &TemporalEngine, key: &str) -> Vec<(String, Vec<u8>)>
 ///
 /// # WHY THE FOLD IS THE RIGHT SUBJECT AND THE ONLY ONE
 ///
-/// `fold_delta_block_items` is the only thing in the crate that turns index-log items into page
+/// `fold_delta_block_items` is the only thing in the crate that turns index-log items into block
 /// entries, and `BucketNode::insert_block` computes the map's key with `block_index_handle`, from
-/// the page's OWN fields. So the stored handle has no route into the index by construction -- and
+/// the block's OWN fields. So the stored handle has no route into the index by construction -- and
 /// a property that holds by construction is exactly the kind that a later change breaks without
 /// anything failing.
 ///
@@ -1387,7 +1387,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
     );
 
     // What the fold FILED, including the handle the map ALLOCATED -- which is the sharper half of
-    // the claim: the key an entry is filed under is computed from the page, not read off the row.
+    // the claim: the key an entry is filed under is computed from the block, not read off the row.
     let census = |handle: &str| -> Vec<(u32, String, String, u64, u64, u64, bool, u64)> {
         let item = crate::index_log::IndexItem {
             kind: crate::index_log::IndexItemKind::Block,
@@ -1413,7 +1413,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
             for (allocated, block) in bucket.block_index.iter() {
                 rows.push((
                     // FROM THE NODE, WHICH IS WHERE THE BUCKET LIVES. This read
-                    // `page.routing_bucket` until that field left the entry in
+                    // `block.routing_bucket` until that field left the entry in
                     // `65c7fc562`; it is the same number, taken from the structure
                     // that still holds it, so the census row is unchanged. The object
                     // key is the same move one field later.

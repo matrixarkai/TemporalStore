@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE PAGE BIT ANSWERS THE DIRTY-BUCKET QUESTION, so the object-keyed set need not.
+//! THE BLOCK BIT ANSWERS THE DIRTY-BUCKET QUESTION, so the object-keyed set need not.
 //!
 //! # WHAT THIS IS FOR
 //!
@@ -14,14 +14,14 @@
 //! object lookup is empty:
 //!
 //! ```text
-//!   bucket.dirty() || bucket.block_index.values().any(|page| page.dirty)
+//!   bucket.dirty() || bucket.block_index.values().any(|block| block.dirty)
 //! ```
 //!
 //! and it is exact rather than approximate, because `push_object_dirty_onto_its_existing_blocks`
 //! runs at **both** sites that mark an object dirty. The invariant is already pinned elsewhere in
-//! these words: *a mark that does not reach its pages leaves the bucket reading clean.* So every
-//! page of a dirty object carries `page.dirty`, and every bucket holding one of those pages has a
-//! dirty page.
+//! these words: *a mark that does not reach its blocks leaves the bucket reading clean.* So every
+//! block of a dirty object carries `block.dirty`, and every bucket holding one of those blocks has a
+//! dirty block.
 //!
 //! # BUT THAT IS AN ARGUMENT, AND AN ARGUMENT IS NOT A MEASUREMENT
 //!
@@ -60,7 +60,7 @@ fn by_object_set(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
     buckets
 }
 
-/// The dirty buckets, found the way the sibling arm finds them: the bucket's own bit, or any page
+/// The dirty buckets, found the way the sibling arm finds them: the bucket's own bit, or any block
 /// of it carrying one.
 fn by_block_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -123,7 +123,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     // ---- CLEAR DIRTINESS FIRST, then dirty a FEW. Comparing the two methods while every
     // ---- bucket is dirty would agree trivially: both return the whole map, and a method that
     // ---- always answered "all buckets" would pass. The case this arm exists for is a bucket
-    // ---- that is dirty ONLY because a page of some other bucket's object lives in it, and that
+    // ---- that is dirty ONLY because a block of some other bucket's object lives in it, and that
     // ---- case is invisible until most buckets are clean.
     let _dumped = engine.apply_storage_lifecycle(crate::StorageLifecycleRequest {
         shard_id: 1,
@@ -202,7 +202,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
         "every one of the {bucket_count} buckets reads dirty, so both methods return the whole          map and agreeing proves nothing. The dump above was supposed to leave most of them          clean -- check what it actually cleared before trusting the equality below"
     );
 
-    // ---- AND THEY MUST AGREE. This is the whole claim: the page bit is sufficient, so the
+    // ---- AND THEY MUST AGREE. This is the whole claim: the block bit is sufficient, so the
     // ---- object-keyed set is not load-bearing for this question and can be removed.
     assert_eq!(
         via_objects, via_blocks,

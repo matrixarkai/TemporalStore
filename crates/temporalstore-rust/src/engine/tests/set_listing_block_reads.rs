@@ -16,12 +16,12 @@
 //! All three are real and all three are asserted below rather than read off the write arm. A
 //! fourth site was NOT in the claim and is: `set_index_serde` persists the map as
 //! `(member bytes, address)` pairs, so for a set the member reaches durable storage a second time,
-//! in the index snapshot, beside the page that already holds it.
+//! in the index snapshot, beside the block that already holds it.
 //!
 //! # THE MEASUREMENT
 //!
 //! `Command::SetMembers` walks `bucket_index_component_block_addresses(shard, "set", &key)` and
-//! reads ONE PAGE PER MEMBER to build its answer. The pairs it walks carry the component, and a
+//! reads ONE BLOCK PER MEMBER to build its answer. The pairs it walks carry the component, and a
 //! set's component IS `hex::encode(&member)` -- so every member the response returns was already
 //! present, spelled in hex, in the tuple being iterated. `a_set_listing_reads_one_page_per_member`
 //! counts the reads; `every_member_a_set_listing_returns_is_already_spelled_by_its_component`
@@ -30,50 +30,50 @@
 //!
 //! COUNTS, NOT TIMES. A timing ratio on this box reads 485x idle against 11x busy off identical
 //! code, so the instrument is `maintenance_block_read_counts`, the counter inside the one place a
-//! page read past the cache is noted (`note_block_read`).
+//! block read past the cache is noted (`note_block_read`).
 //!
 //! THE CONTROL IS THE ZSET, and it is a control that can fail. A zset's listing answers from
-//! `shard.zsets` and reads no page at all, so it must report 0.00 reads per member WHILE STILL
+//! `shard.zsets` and reads no block at all, so it must report 0.00 reads per member WHILE STILL
 //! RETURNING MEMBERS -- the returned bytes are asserted non-zero, because a listing over an empty
-//! key reads zero pages too and would pass a weaker assertion without exercising anything.
+//! key reads zero blocks too and would pass a weaker assertion without exercising anything.
 //!
-//! # WHAT THE PAGE READ BUYS, WHICH IS THE PART THAT DECIDES IT
+//! # WHAT THE BLOCK READ BUYS, WHICH IS THE PART THAT DECIDES IT
 //!
 //! Two cheaper sources were put to the fixture and both are refused, for different reasons.
 //!
-//! ## Decoding the component instead of reading the page
+//! ## Decoding the component instead of reading the block
 //!
 //! Byte-identical today -- that is the finding of
 //! `every_member_a_set_listing_returns_is_already_spelled_by_its_component`. What it would cost is
 //! not reads but the only validation a component has.
 //!
-//! THE SECOND HALF OF THAT SENTENCE USED TO READ "and nothing re-checks them; today a page that
-//! disagrees with its name is served as the page", and `container_blocks` made it false. A container
-//! page now states which element it holds, and the read funnel asks the page for the element the
-//! index named -- so a page that disagrees with its name is NOT served, it answers missing. The
+//! THE SECOND HALF OF THAT SENTENCE USED TO READ "and nothing re-checks them; today a block that
+//! disagrees with its name is served as the block", and `container_blocks` made it false. A container
+//! block now states which element it holds, and the read funnel asks the block for the element the
+//! index named -- so a block that disagrees with its name is NOT served, it answers missing. The
 //! component and the payload are still written together by one call site, and the check is now on the
 //! element KEY rather than on the value, but a check exists where none did.
 //!
-//! What does not change is the verdict: decoding the component instead of reading the page would
+//! What does not change is the verdict: decoding the component instead of reading the block would
 //! trade an answer storage vouches for against one nothing does, and it would give up the element
 //! check as well as the byte one. It is measured here and not taken.
 //!
 //! ## Serving from `shard.sets`
 //!
-//! The members ARE the keys of that map, resident and ordered, and walking them would read no page.
+//! The members ARE the keys of that map, resident and ordered, and walking them would read no block.
 //! `the_resident_set_map_and_the_live_block_index_are_not_the_same_population` drove why that was
 //! refused: `reconcile_secondary_views_from_bucket_index` installs
 //! `shard.sets = fill_absent_elements(derived, persisted)`, whose documented job is to KEEP EVERY
 //! DURABLE ELEMENT THE DERIVED VIEW COULD NOT PRODUCE, and it kept them without asking whether the
-//! page each named was still there. The map held members the page index did not, and a listing served
+//! block each named was still there. The map held members the block index did not, and a listing served
 //! from it would have returned them. `durable_outranks_derived`'s
 //! `a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored` records the same hazard from
 //! the fold side and states the consequence in as many words: "It would then be served after being
 //! deleted."
 //!
 //! THAT OBJECTION IS ANSWERED and this module's conclusion survives it on other grounds. The merge
-//! asks the live-page question of the persisted map now, so the map cannot over-report. What still
-//! stops a listing is the opposite direction: a live page whose component cannot be decoded is in the
+//! asks the live-block question of the persisted map now, so the map cannot over-report. What still
+//! stops a listing is the opposite direction: a live block whose component cannot be decoded is in the
 //! index and in no map, so a map-served listing would MISS a member -- #1989's case, latent because
 //! nothing writes a non-hex set component. `resident_map_readers` carries that argument and the
 //! per-reader sweep. The 1.00 reads per member measured below are therefore UNBLOCKED rather than
@@ -81,15 +81,15 @@
 //!
 //! # SO NO PRODUCTION CHANGE SHIPS FROM THIS MODULE
 //!
-//! The page read is load-bearing: it is the answer the storage vouches for, and both cheaper
+//! The block read is load-bearing: it is the answer the storage vouches for, and both cheaper
 //! sources are cheaper precisely because they skip that. The three copies are real, the redundancy
-//! is real, and the reads are the price of the one answer that is checked against a page. This
+//! is real, and the reads are the price of the one answer that is checked against a block. This
 //! module is the measurement and the written reason, and it asserts the facts so a later change
 //! that breaks one of them fails the build.
 //!
 //! THE STORE PATH LENGTH is held equal across every arm and asserted equal: it moves allocation
 //! bytes at about six bytes a character, and an arm on a longer temporary directory would read as a
-//! heavier representation. It does not move the page-read COUNTS this module is quoted on, which is
+//! heavier representation. It does not move the block-read COUNTS this module is quoted on, which is
 //! why those are the headline and the bytes are not.
 #![allow(clippy::all)]
 use super::*;
@@ -148,7 +148,7 @@ fn read(engine: &TemporalEngine, command: Command) -> crate::types::CommandRespo
 }
 
 /// A member of exactly `width` bytes, distinct per index, and never all-equal: a fixture whose
-/// members collide would file fewer pages than it wrote and every per-member figure below would be
+/// members collide would file fewer blocks than it wrote and every per-member figure below would be
 /// divided by the wrong denominator.
 fn member_of(width: usize, index: usize) -> Vec<u8> {
     let mut bytes = vec![0u8; width];
@@ -173,15 +173,15 @@ fn members_returned(response: &crate::types::CommandResponse) -> Vec<Vec<u8>> {
     }
 }
 
-/// Page reads past the cache performed by `work`, on this thread.
+/// Block reads past the cache performed by `work`, on this thread.
 
-/// Every member the LIVE PAGES of one set key still state as present, decoded out of the element
-/// key each page item is filed under.
+/// Every member the LIVE BLOCKS of one set key still state as present, decoded out of the element
+/// key each block item is filed under.
 ///
 /// THIS IS THE SOURCE THAT REPLACED THE COMPONENT, and its limit is stated here because one arm in
 /// this module turns on it: the payload is where a member's bytes live now, but it is NOT an
-/// authority on element LIVENESS. A removal writes a tombstone page and leaves the element's
-/// original page live and still stating the element, so this OVER-REPORTS after a removal. For
+/// authority on element LIVENESS. A removal writes a tombstone block and leaves the element's
+/// original block live and still stating the element, so this OVER-REPORTS after a removal. For
 /// "which members does this key hold" the serving path is the authority; for "are the bytes still
 /// there" this is.
 fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8>> {
@@ -237,9 +237,9 @@ fn block_reads_of<T>(work: impl FnOnce() -> T) -> (T, u64) {
 // 1. THE COUNT
 // =================================================================================================
 
-/// ONE PAGE READ PER MEMBER FOR A SET LISTING, AND NONE FOR A ZSET'S.
+/// ONE BLOCK READ PER MEMBER FOR A SET LISTING, AND NONE FOR A ZSET'S.
 ///
-/// The headline. `SetMembers` walks the page index and reads a page per entry; `ZSetRange` answers
+/// The headline. `SetMembers` walks the block index and reads a block per entry; `ZSetRange` answers
 /// out of `shard.zsets` and reads nothing. Both arms return members, and both return-populations
 /// are asserted non-zero, so the zero row is a measured zero and not an unexercised one.
 ///
@@ -355,7 +355,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
                  bytes"
             );
 
-            // THE FINDING, per row: one page read per member for the set.
+            // THE FINDING, per row: one block read per member for the set.
             assert_eq!(
                 population as u64, set_reads,
                 "the set listing for {set_key} performed {set_reads} page reads for {population} \
@@ -380,7 +380,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
         }
     }
 
-    // THE SLOPE ACROSS WIDTH. The page-read count is per MEMBER and not per byte, so it must be
+    // THE SLOPE ACROSS WIDTH. The block-read count is per MEMBER and not per byte, so it must be
     // flat across a 32x width change at a fixed population -- if it moved with width, the cost
     // would be something other than one read an element and the per-member figure would be a
     // coincidence of this fixture's sizes.
@@ -415,7 +415,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
 /// Stated separately so the count above is not read as a per-request figure. `cached_response`
 /// stores the encoded answer under `CacheKey::set_members`, so the second listing of a key reads
 /// nothing. The first is asserted non-zero as this test's own denominator: if the first read no
-/// pages either, the second reading none would say nothing.
+/// blocks either, the second reading none would say nothing.
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
@@ -471,7 +471,7 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 ///
 /// This arm's subject was the third of the three copies in the module doc: `component =
 /// hex::encode(&member)`, sitting beside the address in the walk `SetMembers` performs, so that the
-/// page read recovered bytes the iteration was already holding. The entry stopped naming its
+/// block read recovered bytes the iteration was already holding. The entry stopped naming its
 /// element, and that copy is now STRUCTURALLY UNREPRESENTABLE rather than merely absent.
 /// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
 /// return paths. The old body asked the pair for its name and the `expect` fired.
@@ -496,11 +496,11 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 ///
 /// TWO THINGS, both over sources that still exist and can disagree.
 ///
-/// FIRST, THE MEMBER BYTES ARE STILL RECOVERABLE WITHOUT A PAGE READ -- just not from the index.
-/// They are in the page PAYLOAD, and the two sides of the equality are TWO DIFFERENT FIELDS of it,
+/// FIRST, THE MEMBER BYTES ARE STILL RECOVERABLE WITHOUT A BLOCK READ -- just not from the index.
+/// They are in the block PAYLOAD, and the two sides of the equality are TWO DIFFERENT FIELDS of it,
 /// which is worth naming because the copies being distinct is the whole claim. The left is the
 /// element KEY each item is filed under, decoded by `component_from_element_key`. The right is what
-/// the listing serves, which is the item's stored VALUE -- `derive_membership` folds the pages and
+/// the listing serves, which is the item's stored VALUE -- `derive_membership` folds the blocks and
 /// hands back `derived.live.into_values()`. Both were written by one call site, which is what makes
 /// them a redundancy and not a check.
 ///
@@ -517,16 +517,16 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
 ///     it.
 ///
 /// SECOND, AND THIS IS THE PART THE OLD ARM COULD NOT HAVE STATED: the walk now returns one pair
-/// per PAGE rather than one per element, so after a FOLD it hands back strictly fewer pairs than
+/// per BLOCK rather than one per element, so after a FOLD it hands back strictly fewer pairs than
 /// there are members. Before the collapse those were equal at every width -- which is what made
 /// "the component beside the address already spells the member" sayable at all. A strict inequality
-/// is asserted rather than a magnitude, because the number of pages a fold lands on is a property
+/// is asserted rather than a magnitude, because the number of blocks a fold lands on is a property
 /// of the batcher and moves with the fixture.
 ///
 /// THE DENOMINATOR IS ASSERTED ON BOTH, as it was before: over an empty key every set here is
 /// empty and the equalities would pass while exercising no member.
 ///
-/// rust-internal: reads the engine's own page index and block store over a seeded store
+/// rust-internal: reads the engine's own block index and block store over a seeded store
 #[test]
 fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -672,19 +672,19 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 // 3. WHY THE RESIDENT MAP IS NOT THE CHEAPER SOURCE
 // =================================================================================================
 
-/// THE RESIDENT MAP AND WHAT THE STORE ACTUALLY SERVES ARE NOT ONE POPULATION, AND THE LIVE PAGE
+/// THE RESIDENT MAP AND WHAT THE STORE ACTUALLY SERVES ARE NOT ONE POPULATION, AND THE LIVE BLOCK
 /// INDEX CAN NO LONGER BE ASKED WHICH MEMBERS A SET HOLDS AT ALL.
 ///
 /// # WHY THIS IS RESTATED AND NOT RE-GOLDENED
 ///
 /// This arm compared `shard.sets` against a member population DECODED OUT OF THE COMPONENT each
-/// page is filed under. That population no longer exists.
+/// block is filed under. That population no longer exists.
 /// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on ALL THREE
 /// of its return paths -- the lookup arm, the released arm and the bucket walk -- so the walk hands
-/// back addresses and nothing else. Measured here: resident map 2 member(s), live page index 0.
+/// back addresses and nothing else. Measured here: resident map 2 member(s), live block index 0.
 ///
 /// AND THE DERIVED SIDE OF THIS MERGE IS NOW EMPTY, which is the fact that makes the rest of it
-/// matter. `reconcile_secondary_views_from_bucket_index` builds `derived` from the live page index,
+/// matter. `reconcile_secondary_views_from_bucket_index` builds `derived` from the live block index,
 /// and rebuilding a set's members from there needs the component the entry no longer carries.
 /// Measured by handing the merge an EMPTY persisted map: `shard.sets` came back empty, so nothing
 /// in it came from the derived side. The resident set map is therefore wholly the durable
@@ -693,9 +693,9 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 ///
 /// SO THE COMPARISON IS RE-ATTRIBUTED TO THE SOURCE THAT CAN STILL ANSWER, which is the serving
 /// path. `SMEMBERS` is asked outright, with the shard lock DROPPED first, and its answer is the
-/// population a listing walks. That is not a convenience: the page PAYLOAD cannot stand in for it,
-/// because the payload OVER-REPORTS. Measured on this fixture, the removed member's page is still
-/// live and still states the member as present, with the removal held in a SEPARATE tombstone page
+/// population a listing walks. That is not a convenience: the block PAYLOAD cannot stand in for it,
+/// because the payload OVER-REPORTS. Measured on this fixture, the removed member's block is still
+/// live and still states the member as present, with the removal held in a SEPARATE tombstone block
 /// whose entry is deleted. A population read off the payload therefore returns 2 and agrees with
 /// the resident map, which would make the control below pass and the finding vanish.
 ///
@@ -703,11 +703,11 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
 ///
 /// This assertion has now been turned over twice, and the history is the point. It first read
 /// `in_map.contains(&removed)` -- the merge resurrects. #2017's fix made `fill_absent_elements` ask
-/// of every persisted element the question #2005 asks of every CARRIED one, "is there still a page
+/// of every persisted element the question #2005 asks of every CARRIED one, "is there still a block
 /// at this address?", and the assertion was inverted to `!in_map.contains(&removed)`.
 ///
-/// THAT FIX'S PREMISE WAS ONE PAGE PER ELEMENT, AND THE COLLAPSE REMOVED IT. With one index entry a
-/// page, a page SURVIVES the removal of one of its elements: the address stays live while the
+/// THAT FIX'S PREMISE WAS ONE BLOCK PER ELEMENT, AND THE COLLAPSE REMOVED IT. With one index entry a
+/// block, a block SURVIVES the removal of one of its elements: the address stays live while the
 /// element on it is dead. An address-liveness test therefore stopped being a proxy for
 /// element-liveness at exactly that moment, and the merge resurrects again -- measured at map 2
 /// against a served 1. The assertion is turned back rather than deleted, so that if the merge is
@@ -789,8 +789,8 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
         "the removed member is still listed, so this fixture never removed anything"
     );
 
-    // THE REMOVED MEMBER'S PAGE OUTLIVES ITS ELEMENT, and that is the premise of everything below,
-    // so it is measured rather than asserted from the source. One entry a page means a page cannot
+    // THE REMOVED MEMBER'S BLOCK OUTLIVES ITS ELEMENT, and that is the premise of everything below,
+    // so it is measured rather than asserted from the source. One entry a block means a block cannot
     // be dropped because one of its elements went.
     let payload_population = payload_members(&engine, &key);
     assert!(
@@ -801,7 +801,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     );
 
     // Now put the durable map back as a snapshot predating the removal would, and run the load
-    // path's reconcile over the live page index.
+    // path's reconcile over the live block index.
     let in_map: BTreeSet<Vec<u8>> = {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");

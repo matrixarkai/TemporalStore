@@ -1,11 +1,11 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE TWO WRITERS THAT FILE A PAGE, AND THE RANGE THEY COULD NOT REACH.
+//! THE TWO WRITERS THAT FILE A BLOCK, AND THE RANGE THEY COULD NOT REACH.
 //!
 //! mx#1949 enumerated eight production sites that supply a routing range as a literal, fixed five,
 //! found one right as written, and DECLINED TWO with a price. The two it declined are the only
-//! ones of the eight that decide WHERE A PAGE GOES:
+//! ones of the eight that decide WHERE A BLOCK GOES:
 //!
 //! ```text
 //!   upsert_bucket_index_block_inner            storage_bucket_internals.rs
@@ -15,7 +15,7 @@
 //! It held the defect as a live measurement rather than a wish: `inner-000000` filed in bucket
 //! **1,422,005,296** on a shard holding `0..1023`, its own bucket being 398. That measurement is
 //! not deleted here. It is INVERTED -- the same fixture, the same two numbers, now asserting the
-//! page is in 398 and NOT in 1,422,005,296 -- so the bucket that was wrong is still named in a
+//! block is in 398 and NOT in 1,422,005,296 -- so the bucket that was wrong is still named in a
 //! test that fails if the filing goes back.
 //!
 //! # PLACES, NOT FILTERS -- ESTABLISHED FOR EACH BEFORE ANYTHING CHANGED
@@ -26,14 +26,14 @@
 //!
 //! * `upsert_bucket_index_block_inner` runs over ONE address, supplied by its caller for this
 //!   shard. The bucket it computes is the KEY it inserts under. What it REMOVES first comes from
-//!   `block_refs_for` -- where the object's pages actually are -- or, when the lookup is not
+//!   `block_refs_for` -- where the object's blocks actually are -- or, when the lookup is not
 //!   established, from a sweep of every bucket in the map. Neither consults the computed bucket.
 //! * `sync_bucket_index_object_blocks_with_mode` runs over ONE OBJECT'S address list, likewise
 //!   supplied for this shard. Its removal set is `object_block_refs(kind, object_key)`, or every
 //!   bucket in the map while the lookup is being established. Again: the computed bucket is used
 //!   only to INSERT.
 //!
-//! So narrowing them moves where an unrouted page lands and can drop nothing.
+//! So narrowing them moves where an unrouted block lands and can drop nothing.
 //! `narrowing_the_writers_removes_no_block_that_was_already_filed` drives that rather than reading
 //! it off the source, and `a_store_written_on_one_range_still_reads_back_whole_on_the_other`
 //! drives the cross-range restore in BOTH directions, because both are silent when they fail.
@@ -164,13 +164,13 @@ fn as_an_older_build_wrote_it(address: &ElementEntry) -> ElementEntry {
 
 /// THE DOOR IS NOW A NO-OP, AND THAT IS THE POINT.
 ///
-/// A `BlockAddress` does not hold a routing bucket, so "put every page into the state an older index
+/// A `BlockAddress` does not hold a routing bucket, so "put every block into the state an older index
 /// decodes into" and "leave every page alone" are the same operation. The helper is kept because the
 /// round trip it performs is the assertion that the `rs` key on the wire is inert: it must come back
-/// EQUAL, and a page that changed would mean an index written before the field left decodes to a
+/// EQUAL, and a block that changed would mean an index written before the field left decodes to a
 /// DIFFERENT address -- which is what a migration would be for.
 ///
-/// Returns how many pages it round-tripped, so a caller can still assert the fixture was covered.
+/// Returns how many blocks it round-tripped, so a caller can still assert the fixture was covered.
 fn round_trip_every_block_through_the_wire(
     shard: &mut crate::engine::state::ShardState,
 ) -> usize {
@@ -188,7 +188,7 @@ fn round_trip_every_block_through_the_wire(
     keys.len()
 }
 
-/// Every bucket that holds at least one page, with the object keys it holds, sorted.
+/// Every bucket that holds at least one block, with the object keys it holds, sorted.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();
@@ -296,7 +296,7 @@ fn a_loaded_shard_carries_the_routing_range_it_was_loaded_on() {
 // 2. THE MEASUREMENT, INVERTED
 // =============================================================================================
 
-/// THE TWO SITES THAT FILE A PAGE NOW FILE IT UNDER THE SHARD'S OWN RANGE.
+/// THE TWO SITES THAT FILE A BLOCK NOW FILE IT UNDER THE SHARD'S OWN RANGE.
 ///
 /// This is mx#1949's `the_two_sites_that_file_a_page_still_file_it_under_the_whole_range`, with
 /// the same fixture and the same two buckets named, asserting the opposite. It covers BOTH sites
@@ -391,18 +391,18 @@ fn the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range() {
 }
 
 // =============================================================================================
-// 3. THE CONTROL: while every page is routed, the writers are value-identical
+// 3. THE CONTROL: while every block is routed, the writers are value-identical
 // =============================================================================================
 
 /// THE WRITERS FILE BY THE STAMP, AND THE TWO STAMPS DISAGREE.
 ///
 /// THIS WAS A CONTROL AND IS NOW THE SUBJECT. While an address carried its own routing bucket, that
 /// bucket won and the shard's stamp was consulted only where a fallback would otherwise have fired
-/// -- so a shard stamped `0..1023` and a shard stamped with the whole range filed the same page in
+/// -- so a shard stamped `0..1023` and a shard stamped with the whole range filed the same block in
 /// the same bucket, and the control said so.
 ///
 /// An address carries no bucket. The stamp decides EVERY placement, so the two stamps must file the
-/// same page DIFFERENTLY, and the assertion is inverted. The control that says the comparison can
+/// same block DIFFERENTLY, and the assertion is inverted. The control that says the comparison can
 /// express sameness moves to the same stamp twice.
 ///
 /// Run at BOTH stamps, because "the shard's range IS the whole range" is exactly the condition under
@@ -470,15 +470,15 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
 // 4. DIRECTION: narrowing places, it does not filter
 // =============================================================================================
 
-/// NOT ONE PAGE ALREADY FILED IS REMOVED WHEN THE WRITERS NARROW.
+/// NOT ONE BLOCK ALREADY FILED IS REMOVED WHEN THE WRITERS NARROW.
 ///
 /// mx#1945's refutation is that narrowing a FILTER drops live data -- 0 of 400 surviving. These
 /// two are not filters, and this drives it element by element rather than by count: the whole
-/// bucket-contents map before and after, with the only difference being the one page re-filed.
+/// bucket-contents map before and after, with the only difference being the one block re-filed.
 ///
-/// The shard here is loaded on `0..1023` with its pages made UNROUTED, so the load path's own
-/// rebuild files them on the shard's range; then one page is re-published through each writer.
-/// Every other page must be exactly where it was.
+/// The shard here is loaded on `0..1023` with its blocks made UNROUTED, so the load path's own
+/// rebuild files them on the shard's range; then one block is re-published through each writer.
+/// Every other block must be exactly where it was.
 #[test]
 fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -664,8 +664,8 @@ fn the_routing_range_field_changes_no_serialized_byte() {
 ///
 /// mx#1945 found its refutation this way and it cost a record; mx#1949 re-drove it because a
 /// change that touches filing is silent when it loses something. This one moves where an unrouted
-/// page is filed, which is the same neighbourhood, so it is driven again: every record readable,
-/// every page present, and the buckets counted against the READING shard's range in each
+/// block is filed, which is the same neighbourhood, so it is driven again: every record readable,
+/// every block present, and the buckets counted against the READING shard's range in each
 /// direction.
 ///
 /// The second direction is the one with something to lose -- a store written on the whole range
@@ -676,7 +676,7 @@ fn the_routing_range_field_changes_no_serialized_byte() {
 /// `the_two_sites_that_file_a_block_now_file_it_under_the_shards_own_range` inverted mx#1949's
 /// measurement rather than removing it. It showed that a store written on one range reads back
 /// whole on the other -- true, and the reason the hazard was silent: every record read while every
-/// page sat in a bucket the reopened shard did not hold. `routing_range_stamp.rs` records the range
+/// block sat in a bucket the reopened shard did not hold. `routing_range_stamp.rs` records the range
 /// a store was built under and the load REFUSES when the configured range disagrees.
 ///
 /// REPLACED, NOT RETARGETED. Deleting the stamp to keep the old assertions passing would put both
@@ -774,8 +774,8 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
 /// -- weaker evidence than a test that reads the answer. This reads the answer.
 ///
 /// It is also the path with the most to lose. mx#1945 narrowed this install's REBUILD and dropped
-/// 0 of 400 pages; that rebuild still runs on the whole range and is untouched here. What the
-/// stamp decides is only where the NEXT write files a page. Both are asserted: every page still
+/// 0 of 400 blocks; that rebuild still runs on the whole range and is untouched here. What the
+/// stamp decides is only where the NEXT write files a block. Both are asserted: every block still
 /// present, every record still readable, AND the target carrying `0..1023` rather than the range
 /// the image was written on.
 ///
@@ -806,7 +806,7 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
     let target = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         target_dir.path().join("cache"),
-        // The pages live where the source wrote them; only the index is restored.
+        // The blocks live where the source wrote them; only the index is restored.
         source_dir.path().join("blocks"),
         target_dir.path().join("indexes"),
     );
@@ -1060,7 +1060,7 @@ fn shard_map_insert_sites(lines: &[&str]) -> Vec<String> {
 
 /// THREE FIELDS FOR EIGHT BYTES, NOT SIXTEEN, AND THE STRUCT IS ONE PER SHARD.
 ///
-/// mx#1949 added a field to `LiveBlockEntry` -- one per LIVE PAGE -- took it from 104 to 112, and
+/// mx#1949 added a field to `LiveBlockEntry` -- one per LIVE BLOCK -- took it from 104 to 112, and
 /// paid it back into existing padding rather than widening the bound. This field is on a structure
 /// with ONE INSTANCE PER SHARD, which is the reason `per_item_byte_budget` carries `ShardState` as
 /// a control rather than as a budgeted row: at a count of one, width is not a cost worth trading
@@ -1146,7 +1146,7 @@ fn the_shard_carried_range_costs_eight_bytes_on_a_structure_there_is_one_of() {
 /// the same path; its load-then-install sibling passes because the load stamped first.
 ///
 /// THE RANGE IS NOT GUESSED HERE. It is `shard_routing_range`, the accessor the install's own
-/// `routing_bucket_for_key` already files pages with, and whose documented missing-info default is
+/// `routing_bucket_for_key` already files blocks with, and whose documented missing-info default is
 /// the whole range precisely for "a dump manifest installed before its shard is loaded". So the
 /// stamp states what the install DID rather than what a later reader hopes it did.
 ///

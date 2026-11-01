@@ -8,8 +8,8 @@
 //!
 //! A live object in a shard is currently named by several independent key-addressed structures,
 //! each of which pays its own tree-or-hash node AND its own copy-or-refcount of the object key's
-//! characters. For one plain `string` that is the model map, the page lookup, the dirty index and
-//! the page index; with a deadline it is two more. The width of any one of those rows is not the
+//! characters. For one plain `string` that is the model map, the block lookup, the dirty index and
+//! the block index; with a deadline it is two more. The width of any one of those rows is not the
 //! cost -- the COUNT of them is, because the key copy multiplies by it.
 //!
 //! This type is the single row those collapse into: one address, one deadline, one model id and
@@ -40,7 +40,7 @@
 //! structure, and which one is decided by a TAG BIT, never by the value. That is the same
 //! conclusion [`crate::block_store::ElementEntry`] already reached for its own presence byte, for
 //! the same reason it wrote down: zero is a legal block id, so "zero means absent" would silently
-//! erase a real first page. A deadline of zero and an address word of zero are both legal, so
+//! erase a real first block. A deadline of zero and an address word of zero are both legal, so
 //! neither can carry its own absence.
 //!
 //! The tags are enforced STRUCTURALLY and not by convention. Both words are private and
@@ -83,7 +83,7 @@ use crate::block_store::{
 /// # THE BIT LIST, AND THE TWO THAT ARE NOT IN THE SHAPE THIS FOLLOWS
 ///
 /// Ten of these are the state a consolidated row carries: two tags, four object-level states and
-/// four page-level states. Two more are here because a LOSSLESS conversion needs them, and both
+/// four block-level states. Two more are here because a LOSSLESS conversion needs them, and both
 /// were found by writing the conversion test rather than by reading the layout:
 ///
 ///   * `DEADLINE_PRESENT` (bit 10). One tag bit gives a word two meanings, and this record needs
@@ -106,7 +106,7 @@ use crate::block_store::{
 pub(super) struct RecordFlags(u16);
 
 impl RecordFlags {
-    /// The address word is a handle naming a multi-page layout, not a page address.
+    /// The address word is a handle naming a multi-block layout, not a block address.
     pub(super) const ADDRESS_IS_POINTER: u16 = 1 << 0;
     /// The deadline word is a handle naming a list of per-element deadlines, not one deadline.
     // BIT 1 IS RETIRED, into `RESERVED`. It tagged the deadline word, which this record no
@@ -129,11 +129,11 @@ impl RecordFlags {
     pub(super) const LOADING: u16 = 1 << 4;
     /// The object's bytes are resident.
     pub(super) const IN_MEMORY: u16 = 1 << 5;
-    /// The page named by the address word has unflushed writes.
+    /// The block named by the address word has unflushed writes.
     pub(super) const BLOCK_DIRTY: u16 = 1 << 6;
-    /// The page named by the address word is a tombstone.
+    /// The block named by the address word is a tombstone.
     pub(super) const BLOCK_DELETED: u16 = 1 << 7;
-    /// The page's only durable copy is an operation-log record.
+    /// The block's only durable copy is an operation-log record.
     pub(super) const BLOCK_IN_LOG: u16 = 1 << 8;
     //
     // BIT 9 IS A HOLE, AND IT IS THE RECORD OF A BIT REMOVED AS REDUNDANT.
@@ -152,7 +152,7 @@ impl RecordFlags {
     // BIT 10 IS RETIRED, into `RESERVED`. It said a deadline was present; the record carries no
     // deadline now, and a per-key deadline lives in its own structure where a sweep can walk
     // due keys in DEADLINE order rather than scanning every row to find them.
-    /// The page carries a generation, independently of whether it carries an identity.
+    /// The block carries a generation, independently of whether it carries an identity.
     pub(super) const BLOCK_GENERATION: u16 = 1 << 11;
 
     /// Bits 1, 2, 9, 10 and 12..=15. Set in a decoded record, these mean a writer newer than
@@ -206,7 +206,7 @@ const _: () = assert!(RecordFlags::KNOWN & RecordFlags::RESERVED == 0);
 // THE TWO TAGGED WORDS, AS NAMED ARMS
 // =================================================================================================
 
-/// A handle naming the pages of a multi-page object, held outside the record.
+/// A handle naming the blocks of a multi-block object, held outside the record.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(transparent)]
 pub(super) struct BlockLayoutHandle(u64);
@@ -223,9 +223,9 @@ impl BlockLayoutHandle {
 /// What the address word means. THE TAG DECIDES, NEVER THE VALUE.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum BlockAddress {
-    /// One page, at this address word: the slab in the high half and the offset in the low.
+    /// One block, at this address word: the slab in the high half and the offset in the low.
     One(u64),
-    /// Several pages, in a side layout this handle names.
+    /// Several blocks, in a side layout this handle names.
     Many(BlockLayoutHandle),
 }
 
@@ -233,7 +233,7 @@ pub(super) enum BlockAddress {
 // THE RECORD
 // =================================================================================================
 
-/// One object's whole index row: a deadline, an address, a page size, the state bits and a model.
+/// One object's whole index row: a deadline, an address, a block size, the state bits and a model.
 ///
 /// # THE LAYOUT, AND WHY THE FIELDS ARE IN THIS ORDER
 ///
@@ -390,7 +390,7 @@ impl ObjectRecord {
     ///
     /// # IT PANICS ON THE HANDLE ARM, AND THAT IS DELIBERATE
     ///
-    /// A record whose address word is a handle names a multi-page layout, and there is no single
+    /// A record whose address word is a handle names a multi-block layout, and there is no single
     /// address to hand back -- the layout holds them. Returning a DEFAULT address instead would
     /// resolve the key to slab 0, offset 0, which is a perfectly legal address for a different
     /// block, and a read that followed it would return the wrong bytes with no error anywhere.
@@ -448,7 +448,7 @@ impl ObjectRecord {
     /// back here.
     ///
     /// So the write-back door is this one, and it is narrow BY CONSTRUCTION rather than by a
-    /// caller remembering: it writes the address word, the page size, and the two bits that are
+    /// caller remembering: it writes the address word, the block size, and the two bits that are
     /// part of what an address MEANS (whether an ordinal is present, and whether a generation is).
     /// It cannot reach the deadline word, the deadline tags, `DIRTY`, `INDEX_DIRTY`, `LOADING`,
     /// `IN_MEMORY`, `BLOCK_DIRTY`, `BLOCK_DELETED`, or the model id. A careless caller gets the
@@ -462,7 +462,7 @@ impl ObjectRecord {
         self.set_block_address(BlockAddress::One(address.address_word()));
         // NOT SATURATED. `ElementEntry::length` is a `u32` field and its accessor widens, so a
         // value that does not fit here cannot exist -- and if one ever does, the honest answer is
-        // to say so rather than to record a shorter page than the one that was written. A
+        // to say so rather than to record a shorter block than the one that was written. A
         // saturated length reads as broken; a truncated one reads as a valid shorter block.
         self.block_size = u32::try_from(address.length()).unwrap_or_else(|_| {
             panic!(
@@ -476,15 +476,15 @@ impl ObjectRecord {
         // COUNTED, BECAUSE THE VALUE IS DROPPED HERE AND NOTHING ELSE SAYS SO.
         //
         // The inline arm keeps the ordinal's PRESENCE, set just above, and has no room for its
-        // value -- correct for a single-page object, which has page zero by construction. A
+        // value -- correct for a single-block object, which has block zero by construction. A
         // NONZERO ordinal is therefore silently lost at this line, while the conversion path
         // refuses the same condition by name as `NonZeroBlockOrdinalDoesNotFitInline`. Two halves
         // of one contract disagreeing, and no test fed either path a nonzero ordinal, so nothing
         // could tell.
         //
-        // Not made fatal and not made to skip: the destination for a multi-page object does not
+        // Not made fatal and not made to skip: the destination for a multi-block object does not
         // exist yet, so a fatal refusal would make a recovery path unopenable and a skip would
-        // drop the page's address -- the same loss by another mechanism. See
+        // drop the block's address -- the same loss by another mechanism. See
         // `dropped_nonzero_block_ordinals` for the whole argument, and `try_set_address` for the
         // refusing door the callers move to once such an object has somewhere to go.
         if address.block_id().is_some_and(|block_id| block_id != 0) {
@@ -502,24 +502,24 @@ impl ObjectRecord {
     ///
     /// # WHAT IT REFUSES, AND WHY THE MEASUREMENT CHANGED THE ANSWER
     ///
-    /// An [`ElementEntry`] carries a sixteen-bit page ordinal beside its address word, and the
+    /// An [`ElementEntry`] carries a sixteen-bit block ordinal beside its address word, and the
     /// inline arm has no room for sixteen more bits: twenty-three of twenty-four bytes are spoken
     /// for and two more would push the structure to thirty-two. The first draft of this function
     /// therefore refused EVERY entry carrying an ordinal -- and measured against a real store that
     /// was 400 of 400 live string addresses, which would have sent every object through the
     /// side-allocating arm and made this record cost memory rather than save it.
     ///
-    /// THE ORDINAL'S VALUE IS ZERO FOR A SINGLE-PAGE OBJECT, which is what the measurement
+    /// THE ORDINAL'S VALUE IS ZERO FOR A SINGLE-BLOCK OBJECT, which is what the measurement
     /// actually said: 400 of 400 carried ordinal 0, the largest seen being 0. The ordinal names
-    /// WHICH PAGE of the object this is, so an object with one page has page zero by construction.
+    /// WHICH BLOCK of the object this is, so an object with one block has block zero by construction.
     /// What the inline arm needs is the ordinal's PRESENCE -- a bit it already spends as
     /// `BLOCK_IN_LOG`, since an absent ordinal is exactly what log-residence means -- and not its
     /// value.
     ///
-    /// So a NONZERO ordinal is what is refused, and a nonzero ordinal means a multi-page object,
+    /// So a NONZERO ordinal is what is refused, and a nonzero ordinal means a multi-block object,
     /// which belongs in the layout arm anyway: [`ObjectRecord::from_object_rows_with_layout`]
-    /// holds it exactly. The refusal is an `Err` and not a silent drop, because a dropped page
-    /// ordinal resolves a key to a different page of the same object and reads the wrong bytes
+    /// holds it exactly. The refusal is an `Err` and not a silent drop, because a dropped block
+    /// ordinal resolves a key to a different block of the same object and reads the wrong bytes
     /// with no error anywhere.
     pub(super) fn from_object_rows(
         address: &ElementEntry,
@@ -559,7 +559,7 @@ impl ObjectRecord {
         Ok(record)
     }
 
-    /// The same, for an entry whose page identity the inline arm cannot hold.
+    /// The same, for an entry whose block identity the inline arm cannot hold.
     ///
     /// Returns the record -- whose address word is a HANDLE -- and the layout the handle names.
     /// This arm is lossless for any entry, at the cost of the side allocation the handle points
@@ -652,7 +652,7 @@ impl ObjectRecord {
     }
 }
 
-/// The pages of a multi-page object, named by a record whose address word is a handle.
+/// The blocks of a multi-block object, named by a record whose address word is a handle.
 #[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct BlockLayout {
     #[serde(rename = "blocks", alias = "pages")]
@@ -669,7 +669,7 @@ impl BlockLayout {
     }
 }
 
-/// One page inside a layout: everything the inline arm cannot hold, held exactly.
+/// One block inside a layout: everything the inline arm cannot hold, held exactly.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub(super) struct StoredBlock {
     address: u64,
@@ -683,14 +683,14 @@ pub(super) struct StoredBlock {
 // THE LAYOUTS A HANDLE NAMES
 // =================================================================================================
 
-/// Where the pages of a multi-page object actually live.
+/// Where the blocks of a multi-block object actually live.
 ///
 /// THIS IS THE PIECE WHOSE ABSENCE MADE THE HANDLE ARM DEAD CODE. `BlockAddress::Many` and
 /// `from_object_rows_with_layout` have existed and been tested for some time, and
 /// `RecordFlags::ADDRESS_IS_POINTER` with them -- but every production mention of all three was
 /// inside this file, because a handle is only a number until something maps it to a layout. The
-/// record keeps ONE WORD that is either a page address or a handle; this is what the handle half
-/// points into, so an object's pages hang off the object's own record instead of being filed in a
+/// record keeps ONE WORD that is either a block address or a handle; this is what the handle half
+/// points into, so an object's blocks hang off the object's own record instead of being filed in a
 /// second index keyed by the object key again.
 ///
 /// # HANDLE ZERO IS NEVER A LAYOUT, AND THAT IS LOAD-BEARING
@@ -700,10 +700,10 @@ pub(super) struct StoredBlock {
 /// first slot. So a slot at index `i` backs handle `i + 1` in the low half, and zero resolves to
 /// nothing by construction rather than by a check someone has to remember.
 ///
-/// # A STALE HANDLE FAILS CLOSED RATHER THAN NAMING SOMEONE ELSE'S PAGES
+/// # A STALE HANDLE FAILS CLOSED RATHER THAN NAMING SOMEONE ELSE'S BLOCKS
 ///
 /// Vacated slots are reused, which on its own is the ABA problem: free a layout, allocate another
-/// into the same slot, and the first handle now reads the second object's pages -- silently, and
+/// into the same slot, and the first handle now reads the second object's blocks -- silently, and
 /// as a plausible answer. The high half of the handle therefore carries the slot's GENERATION,
 /// bumped on every removal, so a handle outliving its layout stops resolving instead of resolving
 /// to the wrong thing. A raw pointer cannot express this; a handle can, for the cost of bookkeeping
@@ -829,7 +829,7 @@ pub(super) struct ObjectSlotWire {
 impl From<ObjectSlot> for ObjectSlotWire {
     /// THE REFS DO NOT GO OUT, which is what keeps the fold free of a stamp of its own.
     ///
-    /// They are a derived inversion of the page index: the decode re-files every page it reads, so
+    /// They are a derived inversion of the block index: the decode re-files every block it reads, so
     /// writing them would store a second copy of what `bucket_map` already says and a reload would
     /// have two sources that could disagree. `slot.refs` is dropped here by not being named --
     /// and because this takes the slot BY VALUE, a field added later is dropped silently too,
@@ -857,9 +857,9 @@ impl From<ObjectSlotWire> for ObjectSlot {
             } else {
                 Some(Box::new(wire.e))
             },
-            // NO PAGE REFS FROM THE WIRE. They are not written, and the decode files each page
+            // NO BLOCK REFS FROM THE WIRE. They are not written, and the decode files each block
             // into its object as it reads it -- so a slot that arrived with refs already in it
-            // would be holding a second, older statement of where the pages are.
+            // would be holding a second, older statement of where the blocks are.
             refs: None,
         }
     }
@@ -984,12 +984,12 @@ impl TryFrom<ObjectRecordWire> for ObjectRecord {
 pub(super) enum ObjectRecordRefusal {
     /// A writer newer than this reader set a bit this reader does not understand.
     ReservedFlagBitsSet { bits: u16 },
-    /// The inline arm carries a page ordinal's presence but not a nonzero value. Use the layout
-    /// arm, which is where a multi-page object belongs regardless.
+    /// The inline arm carries a block ordinal's presence but not a nonzero value. Use the layout
+    /// arm, which is where a multi-block object belongs regardless.
     NonZeroBlockOrdinalDoesNotFitInline { block_id: u64 },
-    /// A page identity wider than the sixteen bits the stored form accepts.
+    /// A block identity wider than the sixteen bits the stored form accepts.
     BlockIdentityOutOfRange { block_id: u64 },
-    /// A page longer than the stored size field can name.
+    /// A block longer than the stored size field can name.
     BlockSizeDoesNotFit { length: u64 },
     /// The address word is a handle and no layout was supplied for it.
     LayoutHandleWithNoLayout { handle: BlockLayoutHandle },
@@ -1116,7 +1116,7 @@ pub(super) struct ObjectSlot {
     /// [`OwnedElementTenancy`]. A `pub(super)` field would let any engine module assign the
     /// array directly, and the witness would then be advice rather than a check.
     many: Option<Box<Vec<(u64, ElementEntry)>>>,
-    /// THE PAGES THIS OBJECT'S DATA LIVES IN -- the whole of the fold, and the reason this type
+    /// THE BLOCKS THIS OBJECT'S DATA LIVES IN -- the whole of the fold, and the reason this type
     /// grew.
     ///
     /// It was a second map, `CoreIndex::object_block_lookup`, keyed by the SAME object key this
@@ -1130,16 +1130,16 @@ pub(super) struct ObjectSlot {
     /// `Many(vec![])` -- and `CoreIndex::remove_object_block_lookup_ref` records what that breaks:
     /// `block_refs_for` would answer `Some(&[])` where a caller distinguishes "names nothing" by
     /// `None`, and the re-add after a removal would take the wrong branch and leak a tombstone. A
-    /// row with no page is a NORMAL state here -- the row is installed when the address is
+    /// row with no block is a NORMAL state here -- the row is installed when the address is
     /// written -- so absent and empty must stay distinguishable.
     ///
     /// NOT ON THE WIRE, and that is why the fold owes no stamp of its own. `ObjectSlotWire`
     /// carries the record and the element array; this field is dropped on the way out and arrives
-    /// `None` on the way in, because the decode re-files every page it reads. The stamp this
+    /// `None` on the way in, because the decode re-files every block it reads. The stamp this
     /// change does spend is for the MAP moving under `slot_index`, not for this field.
     ///
     /// PRIVATE, for the reason `many` is: the doors below are the only way in, so a module that
-    /// wants to hand an object a page cannot bypass the bookkeeping that keeps
+    /// wants to hand an object a block cannot bypass the bookkeeping that keeps
     /// `object_component_block_refs` honest.
     refs: Option<crate::engine::state::BlockRefs>,
 }
@@ -1239,24 +1239,24 @@ pub(super) enum OwnedElementTenancy {
 
 
 impl ObjectSlot {
-    /// A slot holding one record, no element array and no pages.
+    /// A slot holding one record, no element array and no blocks.
     pub(super) fn from_record(record: ObjectRecord) -> Self {
         Self { record, many: None, refs: None }
     }
 
-    /// The pages this object's data lives in, or `None` when it names none.
+    /// The blocks this object's data lives in, or `None` when it names none.
     ///
     /// `None` AND `Some(empty)` ARE DIFFERENT and callers rely on it -- see the field's own note.
     pub(super) fn refs(&self) -> Option<&crate::engine::state::BlockRefs> {
         self.refs.as_ref()
     }
 
-    /// The pages, mutably, for the filing and removal doors on `CoreIndex`.
+    /// The blocks, mutably, for the filing and removal doors on `CoreIndex`.
     pub(super) fn refs_mut(&mut self) -> Option<&mut crate::engine::state::BlockRefs> {
         self.refs.as_mut()
     }
 
-    /// File one page under this object, opening its ref set if this is the first.
+    /// File one block under this object, opening its ref set if this is the first.
     ///
     /// Reports whether anything was added, which is what the shard's ref counter is kept from --
     /// the same contract `ObjectBlockLookup::file` has, so the two homes cannot drift on it.
@@ -1270,7 +1270,7 @@ impl ObjectSlot {
         }
     }
 
-    /// Install a whole ref set, for the adoption that moves one object's pages out of the lookup
+    /// Install a whole ref set, for the adoption that moves one object's blocks out of the lookup
     /// and into its row at the moment the row comes into being. Hands back whatever it replaced,
     /// so a caller cannot overwrite a set it did not know was there.
     pub(super) fn replace_refs(
@@ -1370,8 +1370,8 @@ impl From<std::collections::BTreeMap<u64, ElementEntry>> for ObjectSlot {
             } else {
                 Some(Box::new(points))
             },
-            // A SERIES ARRIVING FROM A STORED SHAPE NAMES NO PAGE. This conversion builds a slot
-            // out of decoded points; the pages are filed into it by the decode's own loop, which
+            // A SERIES ARRIVING FROM A STORED SHAPE NAMES NO BLOCK. This conversion builds a slot
+            // out of decoded points; the blocks are filed into it by the decode's own loop, which
             // is the one place that knows which bucket each landed in.
             refs: None,
         }
@@ -1390,7 +1390,7 @@ impl From<std::collections::BTreeMap<u64, ElementEntry>> for ObjectSlot {
 /// lives, and whether that answer comes from an inline arm of the record or from the owned array
 /// is the slot's business and not the caller's.
 impl ObjectSlot {
-    /// Where the object's single page lives. Panics on the handle arm, exactly as the record does
+    /// Where the object's single block lives. Panics on the handle arm, exactly as the record does
     /// and for the record's own stated reason -- see [`ObjectRecord::address`].
     /// The object's uncompressed size as the record knows it, or `None` when it carries no class.
     pub(super) fn logical_size(&self) -> Option<u64> {
@@ -1411,7 +1411,7 @@ impl ObjectSlot {
         self.record.try_address()
     }
 
-    /// Point the slot at a page. Touches only what the record's own setter touches; the owned
+    /// Point the slot at a block. Touches only what the record's own setter touches; the owned
     /// element array is untouched, which is the whole reason it is a separate field.
     pub(super) fn set_address(&mut self, address: &ElementEntry) {
         self.record.set_address(address);
@@ -1544,9 +1544,9 @@ impl ObjectSlot {
     ///
     /// These exist because the string map's value became a slot. Every one of its readers wanted a
     /// part of the address rather than the address itself -- the slab, the offset, the length, the
-    /// page ordinal -- and making each of them write `.address().slab()` would put the same
+    /// block ordinal -- and making each of them write `.address().slab()` would put the same
     /// projection at thirty-odd call sites. `address()` already delegates to the record; these
-    /// delegate one step further, and each panics through `address()` on a multi-page row for the
+    /// delegate one step further, and each panics through `address()` on a multi-block row for the
     /// reason stated there.
     pub(super) fn block_slab_id(&self) -> u64 {
         self.address().block_slab_id()
@@ -1557,12 +1557,12 @@ impl ObjectSlot {
         self.address().offset()
     }
 
-    /// How many bytes the single page covers.
+    /// How many bytes the single block covers.
     pub(super) fn length(&self) -> u64 {
         self.address().length()
     }
 
-    /// Which page of the object this is, or `None` while the block lives in the log.
+    /// Which block of the object this is, or `None` while the block lives in the log.
     pub(super) fn block_id(&self) -> Option<u64> {
         self.address().block_id()
     }
@@ -1622,10 +1622,10 @@ impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
 // THE WRITE-BACK DOOR AND THE ORDINAL IT USED TO DROP IN SILENCE
 // =================================================================================================
 
-/// HOW MANY TIMES THE WRITE-BACK DOOR WAS HANDED A PAGE ORDINAL IT CANNOT HOLD.
+/// HOW MANY TIMES THE WRITE-BACK DOOR WAS HANDED A BLOCK ORDINAL IT CANNOT HOLD.
 ///
-/// `ObjectRecord::set_address` writes the inline arm, which keeps a page ordinal's PRESENCE and
-/// not its value -- correct, and measured: a single-page object has page zero by construction, and
+/// `ObjectRecord::set_address` writes the inline arm, which keeps a block ordinal's PRESENCE and
+/// not its value -- correct, and measured: a single-block object has block zero by construction, and
 /// 400 of 400 live addresses on a real store carried ordinal 0. A nonzero ordinal belongs in the
 /// layout arm.
 ///
@@ -1636,16 +1636,16 @@ impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
 /// # WHY THIS IS A COUNTER AND NOT YET A REFUSAL
 ///
 /// Making `set_address` refuse would be the obvious fix and is the wrong one TODAY, because the
-/// correct destination for a multi-page object does not exist yet -- it arrives with the owned
+/// correct destination for a multi-block object does not exist yet -- it arrives with the owned
 /// element array. That leaves a refusing caller two options and both are worse than the bug:
 ///
 ///   * FATAL turns a recovery path into a store that cannot be opened, which this tree has twice
 ///     established as the worst outcome available on a load path.
-///   * SKIP drops the page's address, which is silent data loss -- the same class as the
+///   * SKIP drops the block's address, which is silent data loss -- the same class as the
 ///     behaviour being fixed, reached by a different mechanism.
 ///
 /// So what ships is OBSERVABILITY: today's behaviour, counted, with the count exposed and asserted
-/// zero. It should never fire, because every map holding a record today is single-page. If it ever
+/// zero. It should never fire, because every map holding a record today is single-block. If it ever
 /// does, we learn before it costs anything, and the counter's call site is where the routing to the
 /// owned array will go.
 ///
@@ -1658,7 +1658,7 @@ impl super::timestamped_series::TimestampedSeriesWrite for ObjectSlot {
 static DROPPED_NONZERO_BLOCK_ORDINALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// How many nonzero page ordinals the write-back door has dropped.
+/// How many nonzero block ordinals the write-back door has dropped.
 pub(crate) fn dropped_nonzero_block_ordinals() -> u64 {
     DROPPED_NONZERO_BLOCK_ORDINALS.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -1669,14 +1669,14 @@ pub(crate) fn reset_dropped_nonzero_block_ordinals() {
 }
 
 impl ObjectRecord {
-    /// Point the record at a page, REFUSING an address the inline arm cannot hold faithfully.
+    /// Point the record at a block, REFUSING an address the inline arm cannot hold faithfully.
     ///
     /// This is [`ObjectRecord::set_address`] with the refusal the conversion path already makes,
     /// by the same named variant, so the two halves of one contract agree. It exists now, ahead of
     /// any caller that can act on it, because a refusal that is unreachable is untestable -- and
     /// the defect this closes survived precisely because nothing ever drove the condition.
     ///
-    /// Callers migrate to this once a multi-page object has a destination. Until then
+    /// Callers migrate to this once a multi-block object has a destination. Until then
     /// `set_address` keeps today's behaviour and counts.
     pub(super) fn try_set_address(
         &mut self,
@@ -1829,7 +1829,7 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
     /// The two sides, per object holding ONE block:
     ///
     ///   TODAY  a `BTreeMap<Arc<str>, BlockRefs>` entry under the kind. The key `Arc` is SHARED
-    ///          with the page index and costs nothing extra here, so the entry is the node slot
+    ///          with the block index and costs nothing extra here, so the entry is the node slot
     ///          plus the 24-byte `BlockRefs` inline in it.
     ///
     ///   MOVED  the record already exists in `objects` for this kind and already holds the key,
@@ -1847,7 +1847,7 @@ mod what_moving_one_kinds_refs_onto_its_record_would_cost {
         let today = node_bytes_per_entry + refs_inline as f64;
 
         // MOVED: one store slot (generation + Option<BlockLayout>, inline in the arena's Vec) plus
-        // one exact-capacity page buffer. The arena's own Vec amortises, so per object it is the
+        // one exact-capacity block buffer. The arena's own Vec amortises, so per object it is the
         // slot inline plus the buffer chunk.
         let slot_inline = 4 + 4 + layout_inline; // generation, padding, the Option<BlockLayout>
         let buffer = chunk(pair * 1);

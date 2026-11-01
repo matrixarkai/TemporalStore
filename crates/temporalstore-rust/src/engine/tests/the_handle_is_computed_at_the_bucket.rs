@@ -51,7 +51,7 @@ fn block(object: &str, component: Option<&str>, slab: u64, offset: u32, length: 
 ///
 /// The pair is the shape every production site now uses: `block_index_handle` and
 /// `BucketNode::insert_block` both take the identity as a PARAMETER, because the entry is losing
-/// its own copy. A fixture handing back bare entries would have to read the key off the page to
+/// its own copy. A fixture handing back bare entries would have to read the key off the block to
 /// call either, which is the one thing this change is removing -- so it hands back what the
 /// callers need.
 ///
@@ -204,7 +204,7 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     for (object_key, entry) in fixture() {
         bucket.insert_block(&object_key, entry, &mut live);
     }
-    // THE THREE OBJECTS `fixture()` WRITES. Two of its four pages are components of the same
+    // THE THREE OBJECTS `fixture()` WRITES. Two of its four blocks are components of the same
     // object, which is why this is a list of three rather than four.
     let written = serde_json::to_value(&crate::engine::state::NodeNamedBy(
         &bucket,

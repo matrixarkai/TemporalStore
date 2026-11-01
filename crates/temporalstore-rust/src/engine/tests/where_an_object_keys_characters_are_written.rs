@@ -32,15 +32,15 @@
 //!
 //! ```text
 //!     objects/string                                     the model map's key          1.000
-//!     slot_index/bucket_map/*/block_index                 the page entry's map key     1.000
+//!     slot_index/bucket_map/*/block_index                 the block entry's map key     1.000
 //!                                                                                     -----
 //!                                                                                     2.000
 //! ```
 //!
 //! AND IT WAS THREE UNTIL THE THIRD HOME WAS CLOSED, WHICH IS THIS MODULE'S OWN PROPOSAL CLOSING.
-//! The third row was `slot_index/bucket_map/*/block_index/*/object_key`, the page entry's own field,
+//! The third row was `slot_index/bucket_map/*/block_index/*/object_key`, the block entry's own field,
 //! at 1.000 per object. The entry stopped writing it at `SHARD_INDEX_FORMAT_VERSION` 27, when the
-//! decoder began parsing the composite key the page is filed under -- and this module is where the
+//! decoder began parsing the composite key the block is filed under -- and this module is where the
 //! removal was CONFIRMED to have landed in the place it said the copy lived: the clause asserting
 //! that term non-zero failed on the first suite run after the change, and it is inverted now, to
 //! assert the entry holds no copy at all. Every surface figure below was taken at three copies and
@@ -93,8 +93,8 @@
 //! # THE COUNT IS MEASURED, NOT READ OFF THE STRUCTURE
 //!
 //! A count derived by reading the serde attributes would be a document that rots, and it would
-//! have been wrong in the case that mattered: the page entry does NOT hold the key -- `BlockIndex`
-//! is `model_id`, `address`, `dirty`, `deleted` and nothing else -- and yet the page entry's
+//! have been wrong in the case that mattered: the block entry does NOT hold the key -- `BlockIndex`
+//! is `model_id`, `address`, `dirty`, `deleted` and nothing else -- and yet the block entry's
 //! WRITTEN form carried `object_key`, injected from beside it by `impl Serialize for CoreIndex`. A
 //! reader auditing the struct would have concluded the characters were not there; they were, twice
 //! over inside the core index alone.
@@ -141,7 +141,7 @@
 //! The per-part counts are asserted to SUM to the count taken on the whole stream, and the per-part
 //! BYTES to sum to the stream plus its punctuation. A decomposition whose last term is "everything
 //! else" can be wrong in every other term and still add up, because the last term absorbs the error
-//! -- so there is no such term here. The split of a page entry into its map KEY and its field is
+//! -- so there is no such term here. The split of a block entry into its map KEY and its field is
 //! taken as a difference between two measured totals rather than by looking at either one's name,
 //! because no walk over a map's values can see what its keys cost.
 //!
@@ -653,7 +653,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         );
     }
 
-    // ---- ONE PAGE INDEX, SPLIT INTO ITS MAP KEYS AND ITS FIELDS BY SUBTRACTION ----
+    // ---- ONE BLOCK INDEX, SPLIT INTO ITS MAP KEYS AND ITS FIELDS BY SUBTRACTION ----
     //
     // THE SPLIT IS A DIFFERENCE BETWEEN TWO MEASURED TOTALS, not a reading of either one's name: a
     // map's instances are its keys' plus its values', and the values are counted directly, so the
@@ -680,9 +680,9 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     let mut node_counts: BTreeMap<usize, usize> = BTreeMap::new();
     let mut block_key_instances = 0usize;
     let mut block_field_instances = 0usize;
-    // THE COMPOSITE AROUND THE CHARACTERS, counted beside them. A page entry is filed under a
+    // THE COMPOSITE AROUND THE CHARACTERS, counted beside them. A block entry is filed under a
     // COMPOSED name -- the kind, the object key and five address terms -- so the key's characters
-    // are only part of what naming the page costs. A change replacing the key with a fixed-width
+    // are only part of what naming the block costs. A change replacing the key with a fixed-width
     // stand-in would move the whole composite, not just the characters inside it, and a report
     // counting only the characters would understate it.
     let mut block_name_bytes = 0usize;
@@ -716,7 +716,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         }
         block_field_instances += in_values;
         block_key_instances += in_whole_map - in_values;
-        // THE CHARACTERS MOVED RATHER THAN LEFT, PER BUCKET. The entry's copy is gone, so a page
+        // THE CHARACTERS MOVED RATHER THAN LEFT, PER BUCKET. The entry's copy is gone, so a block
         // index's whole count must now be its KEYS' count -- asserted here, bucket by bucket,
         // because a total asserted once could be satisfied by some buckets holding a field copy and
         // others holding no key at all.
@@ -749,14 +749,14 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     // AND THIS TERM IS NOW EXACTLY ZERO, WHICH IS A SUBJECT CHANGE AND NOT A RELAXED CLAUSE.
     //
     // It read `block_field_instances > 0` under `each-term-nonzero`, and it FAILED on the first
-    // suite run after the page entry stopped writing its own copy of the object key -- which is
+    // suite run after the block entry stopped writing its own copy of the object key -- which is
     // how the removal was confirmed to have landed where this module says the copy lived. The
     // clause is INVERTED rather than deleted: the term has to be zero now, and a non-zero here
     // would mean the field came back.
     //
     // THE NON-ZERO DISCIPLINE MOVES ONTO THE IDENTITY BESIDE IT. A term asserted zero says nothing
     // about whether the characters are still durable, so the two statements that carry the weight
-    // are that the map KEYS hold them (asserted above) and that the page index's instances are now
+    // are that the map KEYS hold them (asserted above) and that the block index's instances are now
     // ENTIRELY in its keys -- the characters moved, they did not leave the index.
     assert_eq!(
         0, block_field_instances,

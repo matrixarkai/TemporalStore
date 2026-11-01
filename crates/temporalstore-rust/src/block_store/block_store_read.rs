@@ -24,13 +24,13 @@ impl BlockStore {
         let bytes = read.charge(&mut inner.stats);
         let decoded = decode_block_record(&bytes, address)?;
         // `decode_block_record` just verified this payload against the CRC32C stored in the
-        // record envelope, and cross-checked the record header's page id against this address.
+        // record envelope, and cross-checked the record header's block id against this address.
         // It cross-checks NOTHING ELSE: the header carries no object id and no routing bucket, so
         // the two arms that name them cannot match -- read the note in `decode_block_record`
         // before relying on either. A second comparison against a digest carried in the index
-        // added nothing here: the CRC covers corruption of these bytes, and it is the page id and
+        // added nothing here: the CRC covers corruption of these bytes, and it is the block id and
         // the stored-length check, not the CRC, that stand against an entry pointing at the wrong
-        // page.
+        // block.
         let bytes = decoded.payload;
         inner.stats.logical_bytes_read += decoded.logical_len as u64;
         if decoded.compression == BlockRecordCompression::Zstd {

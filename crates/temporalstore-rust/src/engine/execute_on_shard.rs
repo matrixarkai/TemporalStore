@@ -8,12 +8,12 @@ use super::*;
 
 /// THE SERVED-PATH DIVERGENCE COUNTER FOR THE HASH WHOLE-OBJECT READ.
 ///
-/// WHAT IT COUNTS. One increment for each field a served `HashGetAll` found NAMED BY THE PAGE
+/// WHAT IT COUNTS. One increment for each field a served `HashGetAll` found NAMED BY THE BLOCK
 /// INDEX and NOT HELD BY the durable container `shard.hashes`. Per (read, field), so one read of
 /// an object whose container lacks three of its fields counts three.
 ///
 /// WHY ONLY THAT DIRECTION. It is the direction that loses a read once the index stops being
-/// consulted -- which is the whole point of measuring it, because taking `component` off the page
+/// consulted -- which is the whole point of measuring it, because taking `component` off the block
 /// entry is what makes the container load-bearing. The other direction, a field the container
 /// holds that the index does not name, is not a loss: the union in `Command::HashGetAll` already
 /// answers it from the container, and counting it would mix a rescued read in with a threatened
@@ -68,7 +68,7 @@ pub(super) mod hash_read_divergence {
         READS_SERVED.fetch_add(1, Ordering::Relaxed);
     }
 
-    /// One field the page index named and the container did not hold.
+    /// One field the block index named and the container did not hold.
     pub(crate) fn note(object_key: &str, field: &str) {
         let seen = INDEX_NAMED_FIELDS_THE_CONTAINER_LACKED.fetch_add(1, Ordering::Relaxed) + 1;
         if let Ok(mut last) = LAST.lock() {
@@ -272,7 +272,7 @@ fn write_context_node(
         // which exists, and the outcome record's kind, which is not `hash` on purpose.
         // THE CONSTANT, INTERNED ONCE PER SHARD INSTEAD OF COPIED PER NODE. This is
         // the write path the narrow arm of the measurement is about: every context
-        // node in a store files its page under this one four-character name.
+        // node in a store files its block under this one four-character name.
         let field_handle =
             super::state::intern_shared(&mut shard.bucket_index.kind_pool, CONTEXT_NODE_FIELD);
         super::recorded_map::install_element_staged_only::<super::recorded_map::HashKind>(
@@ -326,31 +326,31 @@ fn drop_if_expired(
     }
 }
 
-/// Remove one element of a container, RECORDING THE REMOVAL IN THE PAGES as well as the index.
+/// Remove one element of a container, RECORDING THE REMOVAL IN THE BLOCKS as well as the index.
 ///
 /// # WHY THERE IS A FUNCTION HERE AT ALL
 ///
 /// Seven call sites removed a container element by calling `mark_bucket_index_block_deleted`, which
-/// drops the index entry and stages the outcome. That left the PAGES saying nothing: #2028 drove
-/// what it costs -- a folded page holding twelve members the index named eleven of -- and the reason
-/// is that the page is never rewritten by a removal. So a removal now APPENDS a page that states it,
+/// drops the index entry and stages the outcome. That left the BLOCKS saying nothing: #2028 drove
+/// what it costs -- a folded block holding twelve members the index named eleven of -- and the reason
+/// is that the block is never rewritten by a removal. So a removal now APPENDS a block that states it,
 /// and the seven sites differ in their kind and their component and in nothing else. Spelling the
 /// append at each of them is how the fourth site gets the ordinal wrong.
 ///
 /// Two of the seven are not obviously removals and are the ones this must not miss: a `ZSetAdd` or
 /// `ZSetIncrement` that changes a member's score REMOVES the old `(score, member)` element key and
-/// writes a new one. Leave the old key untombstoned and a page-derived membership holds the member
+/// writes a new one. Leave the old key untombstoned and a block-derived membership holds the member
 /// TWICE, at both scores. `a_rescore_sweeps_its_own_tombstone_because_the_component_no_longer_spells_the_score`
 /// drives that -- and, since the component the removal tombstones and the component the new write
 /// files under are now the same string, also drives the sweep that cleans the tombstone up again
 /// in the same write.
 ///
-/// # WHAT IT DOES WHEN IT CANNOT WRITE THE PAGE
+/// # WHAT IT DOES WHEN IT CANNOT WRITE THE BLOCK
 ///
-/// It removes the element anyway and leaves the pages silent, with the miss counted by
+/// It removes the element anyway and leaves the blocks silent, with the miss counted by
 /// `container_blocks::unframed_container_removal_count` or by [`TOMBSTONE_APPEND_FAILURES`]. That is
 /// the only honest choice: refusing the removal would keep serving an element the caller deleted,
-/// which is worse than a page set that a derivation will decline to install. Both counters are
+/// which is worse than a block set that a derivation will decline to install. Both counters are
 /// floored at zero by the guards, so neither is a tolerance -- they are how a hole announces itself
 /// instead of appearing later as a resurrected member.
 #[allow(clippy::too_many_arguments)]
@@ -370,10 +370,10 @@ pub(super) fn remove_container_element(
     let tombstone = crate::engine::container_blocks::tombstone_block(model_id, component).and_then(
         |block| {
             // THE ORDINAL IS THE ELEMENT'S OWN, exactly as it is on the write path: the element
-            // already has a position in this object and the tombstone is another page AT that
+            // already has a position in this object and the tombstone is another block AT that
             // position, not a new one. Computed before the append because the append stamps it into
             // the record header and onto the address from one value -- `decode_block_record` refuses
-            // a page whose two copies disagree, which is what #2008 threaded this for.
+            // a block whose two copies disagree, which is what #2008 threaded this for.
             let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 model_id,
@@ -408,7 +408,7 @@ pub(super) fn remove_container_element(
     )
 }
 
-/// Gated listings answered from a fold of the pages, and gated listings that DECLINED to.
+/// Gated listings answered from a fold of the blocks, and gated listings that DECLINED to.
 ///
 /// Two counters because a test must be able to tell which path produced an answer. A gated
 /// listing that quietly fell back to the durable map would return the right members and prove
@@ -431,7 +431,7 @@ pub fn reset_gated_listing_counts() {
     GATED_LISTING_DECLINED.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Removals whose tombstone page could not be APPENDED, as distinct from could not be FRAMED.
+/// Removals whose tombstone block could not be APPENDED, as distinct from could not be FRAMED.
 ///
 /// Two counters and not one, because the two say different things about the store: an unframable
 /// removal is a bug in this code's spelling of a kind, and a failed append is the block store
@@ -439,7 +439,7 @@ pub fn reset_gated_listing_counts() {
 static TOMBSTONE_APPEND_FAILURES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// How many removals could not append the page that would have recorded them.
+/// How many removals could not append the block that would have recorded them.
 pub fn tombstone_append_failure_count() -> u64 {
     TOMBSTONE_APPEND_FAILURES.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -639,7 +639,7 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                // ONE COPY OF THE CHARACTERS. The page was filed on the line above, so the
+                // ONE COPY OF THE CHARACTERS. The block was filed on the line above, so the
                     // lookup holds a handle for this object now -- take it rather than allocating a
                     // second copy of the same text. Allocate only when it has none, which is the
                     // shape `stream_batch_methods` already uses for this very map.
@@ -682,7 +682,7 @@ pub(crate) fn execute_on_shard(
                     address.clone(),
                     true,
                 );
-                // ONE COPY OF THE CHARACTERS. The page was filed on the line above, so the
+                // ONE COPY OF THE CHARACTERS. The block was filed on the line above, so the
                     // lookup holds a handle for this object now -- take it rather than allocating a
                     // second copy of the same text. Allocate only when it has none, which is the
                     // shape `stream_batch_methods` already uses for this very map.
@@ -771,7 +771,7 @@ pub(crate) fn execute_on_shard(
                         address.clone(),
                         true,
                     );
-                    // ONE COPY OF THE CHARACTERS. The page was filed on the line above, so the
+                    // ONE COPY OF THE CHARACTERS. The block was filed on the line above, so the
                     // lookup holds a handle for this object now -- take it rather than allocating a
                     // second copy of the same text. Allocate only when it has none, which is the
                     // shape `stream_batch_methods` already uses for this very map.
@@ -910,13 +910,13 @@ pub(crate) fn execute_on_shard(
             // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
-            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            // disagreeing, which `decode_block_record` refuses as a block id mismatch.
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE FIELD, inside the function.
             // `container_block_ordinal` used to find an existing field's position by looking for an
-            // entry filed under that field's component; a page-named entry carries none, so the
+            // entry filed under that field's component; a block-named entry carries none, so the
             // walk fell through to `highest + 1` on every overwrite -- a fresh ordinal, a fresh
-            // address, a fresh page, for a write that should land on the same one. Hash is the one
+            // address, a fresh block, for a write that should land on the same one. Hash is the one
             // container kind that overwrites a field IN PLACE this way.
             //
             // THAT IS ONE BRANCH, NOT TWO, NOW. This arm used to read `shard.hashes` itself under
@@ -978,7 +978,7 @@ pub(crate) fn execute_on_shard(
             }
             cached_response(cache, CacheKey::hash(shard_id, &key, &field), || {
                 CommandResponse::Bytes {
-                    // UNDER ONE ENTRY A PAGE THE INDEX CANNOT NAME THIS FIELD, so the index-only
+                    // UNDER ONE ENTRY A BLOCK THE INDEX CANNOT NAME THIS FIELD, so the index-only
                     // read would answer `None` for a field that is there. `shard.hashes` is
                     // durable (`#[serde(default)]`, see `RecordedMap`'s unconditional
                     // `Serialize`) and already the address `HashMultiGet` reads a field from --
@@ -1052,7 +1052,7 @@ pub(crate) fn execute_on_shard(
                 // WHICH block of this object this element is. Computed BEFORE the append, because
                 // the append stamps the ordinal into the record header AND onto the address it
                 // returns from the same value -- assigning it afterwards would leave the two
-                // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+                // disagreeing, which `decode_block_record` refuses as a block id mismatch.
                 //
                 // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see
                 // `HashSet`'s identical site and `state::container_block_ordinal`.
@@ -1109,7 +1109,7 @@ pub(crate) fn execute_on_shard(
             increment,
         } => {
             remove_if_expired(shard, &key);
-            // UNDER ONE ENTRY A PAGE THE INDEX CANNOT NAME THIS FIELD, so the index-only read
+            // UNDER ONE ENTRY A BLOCK THE INDEX CANNOT NAME THIS FIELD, so the index-only read
             // would miss a present counter through `unwrap_or_default()` and silently restart it
             // at zero -- this is the one HASH surface among the four that WRITES on a miss, so
             // the wrong answer is not just served, it is persisted. `shard.hashes` is durable and
@@ -1140,7 +1140,7 @@ pub(crate) fn execute_on_shard(
             // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
-            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            // disagreeing, which `decode_block_record` refuses as a block id mismatch.
             //
             // AND THE POSITION COMES FROM THE RESIDENT MAP, inside the function -- see `HashSet`'s
             // identical site and `state::container_block_ordinal` for why the index cannot say.
@@ -1204,11 +1204,11 @@ pub(crate) fn execute_on_shard(
             }
             // THE TWO SOURCES THAT NAME THIS OBJECT'S FIELDS, AND WHY THIS READ NOW ASKS BOTH.
             //
-            // The page index has always been the source this read resolves field names from, and
+            // The block index has always been the source this read resolves field names from, and
             // the durable container `shard.hashes` names the same fields from the other side.
             // #2078 set out to prove the container holds every field the fold installs, and it
             // does not prove that: BOTH load-path functions in `storage_bucket_internals` derive a
-            // hash field map by WALKING THE PAGE INDEX and merge it into the container through
+            // hash field map by WALKING THE BLOCK INDEX and merge it into the container through
             // `RecordedHashContainer::reconcile_from_durable` --
             // `rebuild_unserialized_model_maps_from_bucket_index` and
             // `reconcile_secondary_views_from_bucket_index`. So after a reload the container names
@@ -1262,21 +1262,21 @@ pub(crate) fn execute_on_shard(
                 // entry "is the whole-object door's answer for a block that belongs to the object
                 // rather than to an element of it ... It is served exactly as it always was", and
                 // that was survivable only while every hash entry carried a field name. Under one
-                // entry a page NO hash entry carries one, so every page of the object was served as
-                // a field called `""` whose value was the raw page FRAME.
+                // entry a block NO hash entry carries one, so every block of the object was served as
+                // a field called `""` whose value was the raw block FRAME.
                 //
                 // MEASURED, and it is the defect that refused this collapse twice: a two-field hash
                 // answered FOUR entries -- `("f1", ..), ("f3", ..)` and two `("", b"TSCPG2\n...")`
                 // -- which `conformance_oracle_matches_reference_model` reports against the
                 // reference model and `a_command_of_one_type_answers_empty_for_a_key_of_another`
                 // reports as a hash that is not the hash that was written. It also served `hash: 41`
-                // of 40 on a forty-field corpus, which is one phantom per folded page.
+                // of 40 on a forty-field corpus, which is one phantom per folded block.
                 //
                 // AN EMPTY FIELD NAME IS LEGAL, which is exactly why the absent one must not spell
                 // it: defaulting here collides with a genuine `""` field and takes its value. This
                 // is the same `unwrap_or_default()` correction the four derived-view arms already
-                // carry, arriving on the READ path. The field a nameless page holds is named inside
-                // the page's own frame and in `shard.hashes`, and the union below serves it from
+                // carry, arriving on the READ path. The field a nameless block holds is named inside
+                // the block's own frame and in `shard.hashes`, and the union below serves it from
                 // there -- so nothing is lost by skipping, only a name that was never written.
                 let Some(name) = component.as_deref().map(str::to_string) else {
                     continue;
@@ -1338,8 +1338,8 @@ pub(crate) fn execute_on_shard(
                 };
             }
             CommandResponse::Integer {
-                // UNDER ONE ENTRY A PAGE THE INDEX NAMES NO FIELD, so a count of index entries is
-                // THE INDEX NAMES NO FIELD, so a count of index entries is a count of PAGES, not
+                // UNDER ONE ENTRY A BLOCK THE INDEX NAMES NO FIELD, so a count of index entries is
+                // THE INDEX NAMES NO FIELD, so a count of index entries is a count of BLOCKS, not
                 // fields -- a wrong number rather than an empty answer. The resident map is durable
                 // and keyed by field, so it is the count. The entry-counting arm this replaces is
                 // deleted rather than left behind a condition: there is no state in which an entry
@@ -1357,14 +1357,14 @@ pub(crate) fn execute_on_shard(
             // AND "THE MAP FORGOT IT" IS NOT "THE KEYSPACE FORGOT IT". The sentence above is true
             // and it is about ONE SOURCE: `record_exists_exact` ORs the bucket index in beside the
             // resident map, so the resident map going empty does not stop the key answering. A
-            // gated removal keeps the object's live page entry -- correctly, while the page still
+            // gated removal keeps the object's live block entry -- correctly, while the block still
             // holds other members -- and for the LAST member that left the key enumerable with
             // nothing in it across KEYS, SCAN, DBSIZE, EXISTS, TYPE and EXPIRE. The last-element
             // arm in `recorded_map::remove_element` is what empties the second source.
             //
             // THE GENERAL FORM, because this asymmetry has now decided two fixes: a change that
             // touches "the index entry for this object" WITHOUT SAYING WHICH KIND will keep
-            // getting it wrong. A LIVE entry claims a page with members on it; a TOMBSTONE records
+            // getting it wrong. A LIVE entry claims a block with members on it; a TOMBSTONE records
             // that a named element was removed. The first becomes false when the last member goes;
             // the second stays true, and it is what makes the removal win a fold by append
             // position -- so taking it along undoes the removal it records. The gate itself got
@@ -1409,9 +1409,9 @@ pub(crate) fn execute_on_shard(
             //
             // AND THE QUESTION GOES TO THE MAP THAT IS KEYED BY THE MEMBER, inside the function.
             // `container_block_ordinal` used to pick an element's existing position out of the INDEX
-            // by component, which a page-named entry does not carry -- so every rewrite fell
-            // through to `highest + 1` and a member written five times left five pages instead of
-            // overwriting one (measured: two pages and ordinals [0, 1] where one and [0] are
+            // by component, which a block-named entry does not carry -- so every rewrite fell
+            // through to `highest + 1` and a member written five times left five blocks instead of
+            // overwriting one (measured: two blocks and ordinals [0, 1] where one and [0] are
             // right). This arm therefore carried its own `shard.sets` lookup under the gate, with
             // the function called only when the map had no answer.
             //
@@ -1498,7 +1498,7 @@ pub(crate) fn execute_on_shard(
             // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
-            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            // disagreeing, which `decode_block_record` refuses as a block id mismatch.
             let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "zset",
@@ -1866,7 +1866,7 @@ pub(crate) fn execute_on_shard(
             // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
-            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            // disagreeing, which `decode_block_record` refuses as a block id mismatch.
             let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "zset",
@@ -2014,7 +2014,7 @@ pub(crate) fn execute_on_shard(
             // WHICH block of this object this element is. Computed BEFORE the append, because
             // the append stamps the ordinal into the record header AND onto the address it
             // returns from the same value -- assigning it afterwards would leave the two
-            // disagreeing, which `decode_block_record` refuses as a page id mismatch.
+            // disagreeing, which `decode_block_record` refuses as a block id mismatch.
             let block_ordinal = crate::engine::state::container_block_ordinal(
                 shard,
                 "list",
@@ -2212,22 +2212,22 @@ pub(crate) fn execute_on_shard(
                 // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
                 // This was the gated arm of an `if`, and the ungated arm walked the entries and
-                // answered each from the page it named. That walk's own `None` arm said why it
+                // answered each from the block it named. That walk's own `None` arm said why it
                 // cannot work once an entry names no element -- "an entry naming no component can
-                // only be answered by a page that names no element either" -- so with every entry
+                // only be answered by a block that names no element either" -- so with every entry
                 // nameless it dropped every member and the listing returned EMPTY, measured as
                 // `listed=0` against 40. It is deleted rather than left unreachable: an entry
                 // cannot name an element any more, so there is no state in which it would be right.
                 //
                 // Asking the PAYLOAD is the direction that resurrected a removed member once, and
-                // the two things that make it safe are both driven: the tombstone page is REACHABLE
-                // from the index, and `derive_membership` folds every page of the object by
+                // the two things that make it safe are both driven: the tombstone block is REACHABLE
+                // from the index, and `derive_membership` folds every block of the object by
                 // `append_position` with a value and a tombstone as the same kind of statement, so
-                // the later page wins. A hand-rolled loop over the payload lacks exactly that
+                // the later block wins. A hand-rolled loop over the payload lacks exactly that
                 // precedence, which is why one resurrected a member before.
                 //
                 // THE ENUMERATOR IS THE ONE THAT KEEPS TOMBSTONE ENTRIES, because withholding them
-                // would hand the fold only the pages that say "present".
+                // would hand the fold only the blocks that say "present".
                 let routing_bucket =
                     block_routing_bucket(&key, start_routing_bucket, end_routing_bucket);
                 let addresses =
@@ -2256,7 +2256,7 @@ pub(crate) fn execute_on_shard(
                     };
                 }
                 // AN INCOMPLETE DERIVATION MUST NOT BE SERVED, and the reason is not
-                // squeamishness: a page that could not be read may have been the one carrying
+                // squeamishness: a block that could not be read may have been the one carrying
                 // a tombstone, so an incomplete fold can be OVER-complete as easily as under,
                 // and there is no direction to fail safely in. The durable member map is the
                 // authority -- `reconcile_from_durable` treats it as such, and a gated removal
@@ -3835,7 +3835,7 @@ pub(crate) fn execute_on_shard(
                         // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
                         // under the same object key, so they share one allocation instead of minting two.
                         // Taken here rather than before the append on purpose: the handle this borrows has
-                        // to exist already, and the page index is what holds it.
+                        // to exist already, and the block index is what holds it.
                         let stored_key = shard
                             .bucket_index
                             .any_shared_object_key(&*object_key)
@@ -3937,7 +3937,7 @@ pub(crate) fn execute_on_shard(
                         // ONE HANDLE, AND BOTH MAPS TAKE IT. The series map and the time index are filed
                         // under the same object key, so they share one allocation instead of minting two.
                         // Taken here rather than before the append on purpose: the handle this borrows has
-                        // to exist already, and the page index is what holds it.
+                        // to exist already, and the block index is what holds it.
                         let stored_key = shard
                             .bucket_index
                             .any_shared_object_key(&*event_object_key)
@@ -5232,7 +5232,7 @@ pub(super) fn zset_score_string(biased: u64) -> String {
 /// reads the score out of `shard.zsets` and sorts explicitly (`zset_members_in_score_range`,
 /// `zset_ordered_members`), so dropping the score from this string costs that ordering nothing.
 /// What it buys is the thing this change is for: `BlockIndex.component` for a zset entry is now
-/// the same shape as a set's, so zset can collapse to one index entry a page the way set and list
+/// the same shape as a set's, so zset can collapse to one index entry a block the way set and list
 /// already have. The score still rides every write -- see `RecordedKind::outcome_value` and the
 /// WAL outcome's `value` field -- it is simply no longer spelled into this string.
 pub(super) fn zset_component(member: &[u8]) -> String {

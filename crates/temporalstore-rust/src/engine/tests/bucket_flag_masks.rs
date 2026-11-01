@@ -306,8 +306,8 @@ fn flags_of(node: &BucketNode) -> Vec<bool> {
 fn every_flag_state_survives_the_stored_spelling_and_swapped_keys_do_not() {
     for state in 0u8..32 {
         let node = node_in_state(state);
-        // NO PAGES IN THIS FIXTURE, so there is no object to name -- and the empty list is
-        // CHECKED rather than ignored: a page it did not account for would panic.
+        // NO BLOCKS IN THIS FIXTURE, so there is no object to name -- and the empty list is
+        // CHECKED rather than ignored: a block it did not account for would panic.
         let json = serde_json::to_string(&crate::engine::state::NodeNamedBy(&node, &[])).expect("a bucket node serializes");
         let back: BucketNode = serde_json::from_str(&json).expect("a bucket node deserializes");
         assert_eq!(

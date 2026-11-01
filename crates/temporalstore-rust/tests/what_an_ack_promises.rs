@@ -7,28 +7,28 @@
 //! acked value back from exactly three places in the record that acked it:
 //!
 //!   1. an OPERATION to re-run,
-//!   2. a PAGE carried inside the record,
+//!   2. a BLOCK carried inside the record,
 //!   3. a RESULT that states itself -- the bytes, a removal, or a new deadline -- and so needs no
-//!      page at all.
+//!      block at all.
 //!
-//! A result naming only a block-store ADDRESS is none of those three, because the data-page
+//! A result naming only a block-store ADDRESS is none of those three, because the data-block
 //! fdatasync is deferred past the ack: the address can name bytes a power cut left unwritten. So
 //! "what does an ack promise" reduces to a count -- per write shape, how many acked results have
 //! none of the three. This file takes that count in all eight cells and prints it.
 //!
-//! # The three choices, and why the eighth cell is not reachable by a page
+//! # The three choices, and why the eighth cell is not reachable by a block
 //!
 //!   * SEPARATE or BATCHED. These are different appends. A separate write reaches
 //!     `append_for_group_commit`, whose rule is `!staged_blocks.is_empty()` over the single record
 //!     it is writing; a batch asks `wal::every_result_can_be_found_again`, the same question per
 //!     RESULT. The batch rule used to be `sync || !staged_blocks.is_empty()`, which was wrong
-//!     twice over: it asked a per-result question at BATCH granularity, where one carried page
-//!     answers for every result in the batch, and `sync` is not a durability fact about a page at
-//!     all -- it is a fact about the LOG's barrier, which the page fsync is deferred past.
+//!     twice over: it asked a per-result question at BATCH granularity, where one carried block
+//!     answers for every result in the batch, and `sync` is not a durability fact about a block at
+//!     all -- it is a fact about the LOG's barrier, which the block fsync is deferred past.
 //!   * SYNCHRONOUS or ASYNCHRONOUS -- `Config::async_storage`, the per-shard durability choice.
-//!   * A PAGE CARRIED IN THE RECORD, or NO PAGE AT ALL. There is no third option in production:
+//!   * A BLOCK CARRIED IN THE RECORD, or NO BLOCK AT ALL. There is no third option in production:
 //!     every `append_value` call site passes `Some(object_id)`, and `append_value_inner` stages
-//!     unconditionally for those, so a page that reaches a slab is always also in its record. The
+//!     unconditionally for those, so a block that reaches a slab is always also in its record. The
 //!     cell "page in the block store but not in the record" does not exist, and the no-page cell
 //!     is a REMOVAL.
 //!
@@ -36,8 +36,8 @@
 //!
 //! A batch is ONE record carrying many results. A per-record count calls that record covered as
 //! soon as any one of its results is -- which is also the number a batch that lost half its keys
-//! would produce. So each address-only result is matched against the pages its own record carries,
-//! on (object id, element). That match UNDER-matches by design: a page's object id is derived
+//! would produce. So each address-only result is matched against the blocks its own record carries,
+//! on (object id, element). That match UNDER-matches by design: a block's object id is derived
 //! without the element and a timestamped result's with it, so an uncovered count can only ever be
 //! too HIGH. A zero from it is therefore trustworthy, which is the direction a durability claim
 //! needs.
@@ -54,7 +54,7 @@ use temporalstore_rust::{
 ///
 /// `blocks_in_the_record` is the column the durability note on `TS_WAL_DATA_ONLY` did not have. It
 /// counted operations and result values, found zero of each, and concluded there was nothing to
-/// rebuild from -- while the pages were travelling inside those same records the whole time.
+/// rebuild from -- while the blocks were travelling inside those same records the whole time.
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
 struct Carried {
     records: usize,
@@ -69,7 +69,7 @@ struct Carried {
 }
 
 impl Carried {
-    /// Results that state their own outcome, so no page has to survive for them.
+    /// Results that state their own outcome, so no block has to survive for them.
     fn results_stating_themselves(&self) -> usize {
         self.results_carrying_bytes
             + self.results_stating_a_removal
@@ -87,7 +87,7 @@ struct Shape {
     label: &'static str,
     synchronous: bool,
     batched: bool,
-    /// An upsert produces a page, so its record carries one. A removal has no page to carry.
+    /// An upsert produces a block, so its record carries one. A removal has no block to carry.
     upsert: bool,
 }
 
@@ -113,7 +113,7 @@ fn value_of(i: u64) -> Vec<u8> {
 /// The workload each upsert cell runs.
 ///
 /// Mixed on purpose. One command kind makes a whole cell look like whichever path that kind takes,
-/// and these are five different page shapes through the same append: a whole-object value, a hash
+/// and these are five different block shapes through the same append: a whole-object value, a hash
 /// element, a set member, a scored member, and a packed timestamped series.
 fn upsert_workload(base: u64) -> Vec<Command> {
     let mut commands = Vec::new();
@@ -243,7 +243,7 @@ fn carried_since(root: &Path, before: &HashSet<u64>) -> Carried {
                 continue;
             }
             // Nothing in the result says what the value is and there is no operation to re-run,
-            // so the only way back is a page for THIS result inside THIS record.
+            // so the only way back is a block for THIS result inside THIS record.
             let carried = blocks.contains_key(&(item.object_id, item.component.clone()))
                 || blocks.contains_key(&(item.object_id, None));
             if !carried {
@@ -390,7 +390,7 @@ fn no_cell_leaves_an_acked_result_with_no_way_back() {
     let measured = walk();
     // Regime: there are results to be about. A walk whose cells recorded nothing would pass the
     // conclusion below by having nothing to fail on. A SUM rather than a count per cell: while the
-    // batch rule asked whether the batch had staged any page, the asynchronous batched removal cell
+    // batch rule asked whether the batch had staged any block, the asynchronous batched removal cell
     // recorded no results at all -- it took `append_batch_atomic` and wrote the operations
     // instead -- so a per-cell clause here would have had to carve that cell out. It now records
     // twelve, like its synchronous twin, but the sum stays because a cell legitimately CAN record
@@ -401,7 +401,7 @@ fn no_cell_leaves_an_acked_result_with_no_way_back() {
         "the walk recorded no results at all, so a zero below says nothing"
     );
     // THE CONCLUSION, and the one number the durability decision turns on. A result with no
-    // operation to re-run, no page in its record, and nothing stated in itself, names a
+    // operation to re-run, no block in its record, and nothing stated in itself, names a
     // block-store address and nothing else -- and under the single-barrier default that address
     // can be bytes the ack never made durable.
     for (shape, counts) in &measured {
@@ -429,13 +429,13 @@ fn an_upsert_carries_its_block_inside_the_record() {
         "there are four upsert cells, found {}",
         upserts.len()
     );
-    // THE CONCLUSION: the bytes travel in the record, and there are at least as many pages as
+    // THE CONCLUSION: the bytes travel in the record, and there are at least as many blocks as
     // there are results that state nothing but an address. This is the column the durability note
     // omitted, and it is why the recovery suite rebuilds every acked key from the log alone.
     //
     // The regime clause that would belong first here -- "each of these cells recorded an
     // address-only result at all" -- is NOT placed above it, because the same change that empties
-    // the page column empties that one too, and a clause behind an overlapping one can never be
+    // the block column empties that one too, and a clause behind an overlapping one can never be
     // reached by its own plant. It is asserted on its own in
     // `an_upsert_records_results_that_name_only_an_address`.
     for (shape, counts) in &upserts {
@@ -459,9 +459,9 @@ fn an_upsert_records_results_that_name_only_an_address() {
     // one partition, so neither can fail alone.
     let upserts: Vec<&(Shape, Carried)> =
         measured.iter().filter(|(shape, _)| shape.upsert).collect();
-    // What makes the carried page LOAD-BEARING rather than spare. A build whose results all
+    // What makes the carried block LOAD-BEARING rather than spare. A build whose results all
     // carried their own bytes would satisfy `an_upsert_carries_its_block_inside_the_record` without
-    // any page mattering, so that test would stop being about anything.
+    // any block mattering, so that test would stop being about anything.
     for (shape, counts) in &upserts {
         assert!(
             counts.results_naming_only_an_address > 0,
@@ -486,7 +486,7 @@ fn a_removal_carries_no_block() {
         removals.len()
     );
     // These are the cells the limiting rule is about, and this is what makes them so. A removal
-    // cell that carried a page would be an upsert wearing the wrong label, and would satisfy
+    // cell that carried a block would be an upsert wearing the wrong label, and would satisfy
     // `an_operation_or_a_statement_covers_every_record` for the wrong reason.
     for (shape, counts) in &removals {
         assert_eq!(
@@ -506,7 +506,7 @@ fn an_operation_or_a_statement_covers_every_record() {
     // reason given there.
     let removals: Vec<&(Shape, Carried)> =
         measured.iter().filter(|(shape, _)| !shape.upsert).collect();
-    // AN ACCOUNTING IDENTITY, not a threshold. With no page to carry, a removal cell is
+    // AN ACCOUNTING IDENTITY, not a threshold. With no block to carry, a removal cell is
     // recoverable one of exactly two ways: EVERY result states itself, or EVERY record kept its
     // operation. "At least one result states itself" would be a maximum over one member, and a
     // cell that lost eleven of twelve removals would satisfy it.

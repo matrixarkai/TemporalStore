@@ -8,29 +8,29 @@
 //! Under `TS_CONTAINER_ONE_ENTRY_A_PAGE` a removal still appends a tombstone page, and that page
 //! still names the element in its payload -- step six established both. Then
 //! `mark_bucket_index_block_deleted_recording` goes looking for the entry to tombstone **by
-//! component**, and a page-named entry has none. Nothing is selected, nothing is filed, and the
-//! tombstone page ends up **unreachable from the index**.
+//! component**, and a block-named entry has none. Nothing is selected, nothing is filed, and the
+//! tombstone block ends up **unreachable from the index**.
 //!
 //! Step six measured exactly that and recorded it as harmless: `1 live entry, 0 tombstoned`, with
-//! the pages still stating the removed member. It *was* harmless, because the durable map was the
-//! authority and the listing never consulted the pages.
+//! the blocks still stating the removed member. It *was* harmless, because the durable map was the
+//! authority and the listing never consulted the blocks.
 //!
 //! # WHY IT STOPS BEING HARMLESS NOW
 //!
-//! The listing today asks the ENTRIES which members exist and the page only what each one holds,
+//! The listing today asks the ENTRIES which members exist and the block only what each one holds,
 //! and it is written that way because an earlier attempt enumerated the payload instead and
 //! **resurrected a removed member**. Under the gate there are no per-element entries, so a gated
 //! listing has to enumerate the payload -- the direction that failed before. The thing that makes
-//! it safe is `container_membership::derive_membership`, which folds every page of an object by
+//! it safe is `container_membership::derive_membership`, which folds every block of an object by
 //! `append_position`, last writer wins, treating a value and a tombstone as the same kind of
 //! statement. That is the precedence a hand-rolled loop lacks, and it is why that function has no
 //! production callers yet: it was built for this step.
 //!
-//! But a fold can only fold what it is given, and it is given the pages THE INDEX NAMES.
+//! But a fold can only fold what it is given, and it is given the blocks THE INDEX NAMES.
 //!
 //! # UNREACHABLE IS WORSE THAN ABSENT, WHICH IS WHY IT IS ITS OWN TEST
 //!
-//! A tombstone page that does not exist and a tombstone page nothing points at produce the same
+//! A tombstone block that does not exist and a tombstone block nothing points at produce the same
 //! silence, and a reader cannot tell "no removal happened" from "a removal I cannot see". The
 //! second is worse, because the store did everything right -- the bytes are on disk, correct and
 //! decodable -- and the only broken thing is that no entry mentions them.
@@ -38,8 +38,8 @@
 //! # AND `is_complete()` CANNOT CATCH IT
 //!
 //! This is the part worth saying out loud rather than routing around. `DerivedMembership::is_complete`
-//! is false when a page could not be read, could not be decoded, was unframed, or held an item whose
-//! key would not render. **Every one of those is a page the fold TRIED.** An unreachable page is
+//! is false when a block could not be read, could not be decoded, was unframed, or held an item whose
+//! key would not render. **Every one of those is a block the fold TRIED.** An unreachable block is
 //! never tried, so nothing is counted, and the derivation reports itself complete while being wrong.
 //!
 //! So the completeness signal has a hole exactly where this defect lives, and the test asserts
@@ -96,7 +96,7 @@ fn write(engine: &TemporalEngine, command: Command) {
     assert!(response.status.ok, "write failed: {response:?}");
 }
 
-/// Every page address THE INDEX NAMES for this object, live entries and tombstoned alike, with the
+/// Every block address THE INDEX NAMES for this object, live entries and tombstoned alike, with the
 /// two counted separately so the shape of the index is visible and not merely its size.
 fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -123,7 +123,7 @@ fn addresses_the_index_names(engine: &TemporalEngine) -> (Vec<ElementEntry>, usi
     (addresses, live, tombstoned)
 }
 
-/// The live components the PAGES THE INDEX NAMES state, read off the bytes directly.
+/// The live components the BLOCKS THE INDEX NAMES state, read off the bytes directly.
 ///
 /// This is the middle step of the arm: it establishes that the two sources disagree BEFORE any
 /// reader is consulted. Without it this would be an agreement test, and a presence-only guard
@@ -155,7 +155,7 @@ fn components_the_named_blocks_state(engine: &TemporalEngine) -> BTreeSet<String
     stated
 }
 
-/// rust-internal: a gated removal must leave a tombstone page the index actually names
+/// rust-internal: a gated removal must leave a tombstone block the index actually names
 #[test]
 fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -172,8 +172,8 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
         );
     }
 
-    // FOLD FIRST, so the survivors share a page. Before a fold each member owns its own page, so
-    // removing one takes its page with it and there is nothing left to disagree -- the fixture
+    // FOLD FIRST, so the survivors share a block. Before a fold each member owns its own block, so
+    // removing one takes its block with it and there is nothing left to disagree -- the fixture
     // would pass for the wrong reason.
     engine
         .compact_shard_blocks(1)
@@ -194,11 +194,11 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
 
     let (addresses, live_after, tombstoned_after) = addresses_the_index_names(&engine);
 
-    // 2. THE PAGES THE INDEX NAMES STILL STATE THE MEMBER -- the disagreement, observed.
+    // 2. THE BLOCKS THE INDEX NAMES STILL STATE THE MEMBER -- the disagreement, observed.
     let stated = components_the_named_blocks_state(&engine);
 
-    // 3. WHAT A FOLD OF THOSE PAGES CONCLUDES. `derive_membership` owns the ordering and the
-    //    precedence; it is handed exactly the pages the index names, which is the whole question.
+    // 3. WHAT A FOLD OF THOSE BLOCKS CONCLUDES. `derive_membership` owns the ordering and the
+    //    precedence; it is handed exactly the blocks the index names, which is the whole question.
     let store = &engine.block_store;
     let derived = crate::engine::container_membership::derive_membership(
         "set",
@@ -239,7 +239,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     );
 
     // ---- THE HOLE IN THE COMPLETENESS SIGNAL, asserted rather than mentioned ----
-    // `is_complete` is false for a page that was READ and failed. An unreachable page is never
+    // `is_complete` is false for a block that was READ and failed. An unreachable block is never
     // read, so nothing is counted and this stays true even when the answer below is wrong. The
     // assertion is here so the hole is a recorded property and not a remark.
     assert!(

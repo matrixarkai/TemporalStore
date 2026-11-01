@@ -24,7 +24,7 @@
 //! are unbounded counters", which is a claim about their RANGE and not a measurement of it.
 //!
 //! (The node was 192 when this was written and is 184 now: the `BlockAddress` inside the inline
-//! page entry stopped storing a `generation` it could derive. The sequences did not move.)
+//! block entry stopped storing a `generation` it could derive. The sequences did not move.)
 //!
 //! THE ANSWER IS THAT THE THREE THAT REMAIN STAY, at 64 bits, on every key. This module is the
 //! accounting for that, and every row of it is a number rather than a reading of the code.
@@ -450,7 +450,7 @@ struct SeqMirrorLive {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -469,7 +469,7 @@ struct SeqMirrorOneNarrowed {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -488,7 +488,7 @@ struct SeqMirrorTwoNarrowed {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -507,7 +507,7 @@ struct SeqMirrorThreeNarrowed {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -525,7 +525,7 @@ struct SeqMirrorOneRemoved {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -542,7 +542,7 @@ struct SeqMirrorTwoRemoved {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -604,7 +604,7 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
 
     // The two groups, taken from the declaration rather than from a literal.
     //
-    // 152 of eight-aligned field: 160 until the `BlockAddress` inside the inline page entry
+    // 152 of eight-aligned field: 160 until the `BlockAddress` inside the inline block entry
     // merged its slab id and its offset into ONE WORD, which takes a whole word out of the packed
     // group one level in. 160 was itself 168 until `last_dump_sequence` left the node, which took
     // a whole word out of the group directly, and 168 was 176 until that same address stopped
@@ -623,11 +623,11 @@ fn what_narrowing_or_removing_each_sequence_would_make_the_node() {
     // them could be paid. Removing a word does NOT move the tail, which is why it crosses where a
     // narrowing does not -- and MERGING two words into one is the same shape of change, which is
     // why the address merge crosses too and leaves the conclusion above untouched.
-    // 136, not 152: the page entry inside the inline `BlockIndexMap` gave up a sixteen-byte fat
+    // 136, not 152: the block entry inside the inline `BlockIndexMap` gave up a sixteen-byte fat
     // pointer for a one-byte model spelling, and those two words leave the eight-aligned group
     // exactly as the address merge's one word did.
     //
-    // AND THEN 80, NOT 136, SINCE THE PAGE INDEX STOPPED HOLDING THAT ENTRY INLINE AT ALL. Same
+    // AND THEN 80, NOT 136, SINCE THE BLOCK INDEX STOPPED HOLDING THAT ENTRY INLINE AT ALL. Same
     // SHAPE of change as every step before it -- whole words leaving this group, none of them
     // touching the tail -- taken SEVEN times over in one field, because the arm that held a handle
     // plus a whole `BlockIndex` now holds a handle and a pointer.

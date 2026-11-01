@@ -4,7 +4,7 @@
 //! THE THIRD STRUCTURE ON THE OBJECT SIDE OF A BUCKET, AND WHY IT CANNOT BECOME THE SECOND.
 //!
 //! `BucketNode` carries three containers: `object_index` (16 B), `deleted_object_index` (8 B) and
-//! `block_index` (24 B). A design that encoded deletion IN THE PAGE ENTRY would carry only the
+//! `block_index` (24 B). A design that encoded deletion IN THE BLOCK ENTRY would carry only the
 //! first and the last, and `deleted_object_index` sits INSIDE the eight-aligned group, so removing
 //! it moves the node BY ITSELF -- 80 B of eight-aligned field becomes 72, and the node goes
 //! 88 -> 80. That is the cheapest arithmetic on this struct: one field, one step, no side
@@ -15,14 +15,14 @@
 //!
 //! IT HAS TO EXIST, AND THE REASON IS A LIFETIME RATHER THAN A COUNT.
 //!
-//! A per-page `deleted` bit cannot carry this, and NOT because it is missing -- `BlockIndex.deleted`
-//! is already a field of the page entry, so the per-page half of deletion is already recorded. It
-//! cannot carry it because BY THE TIME THE DELETION MATTERS THERE IS NO PAGE LEFT TO CARRY IT. The
-//! delete path retires the pages and keeps the id:
+//! A per-block `deleted` bit cannot carry this, and NOT because it is missing -- `BlockIndex.deleted`
+//! is already a field of the block entry, so the per-block half of deletion is already recorded. It
+//! cannot carry it because BY THE TIME THE DELETION MATTERS THERE IS NO BLOCK LEFT TO CARRY IT. The
+//! delete path retires the blocks and keeps the id:
 //!
 //! ```text
 //!   engine.rs, delete_object_key_from_bucket_index:
-//!     bucket.block_index.retain(.., |_, page| { .. false })   <- the pages are REMOVED
+//!     bucket.block_index.retain(.., |_, block| { .. false })   <- the blocks are REMOVED
 //!     bucket.object_index.extend(deleted_object_ids)          <- the id STAYS
 //!     bucket.deleted_object_index.extend(deleted_object_ids)  <- the tombstone is written
 //! ```
@@ -34,43 +34,43 @@
 //! is an entry nothing would ever read."
 //!
 //! AND THE READER IS NAMED. `object_manager::runtime_report` walks `bucket.object_index` and asks
-//! `bucket.deleted() || bucket.deleted_object_index.contains(object_id)`. For an object whose pages
-//! are gone, `page.deleted` is not reachable -- there is no page -- and `bucket.deleted()` is set
+//! `bucket.deleted() || bucket.deleted_object_index.contains(object_id)`. For an object whose blocks
+//! are gone, `block.deleted` is not reachable -- there is no block -- and `bucket.deleted()` is set
 //! from `bucket.block_index.is_empty()`, so it is FALSE for any bucket still holding another
-//! object's pages. In that state the tombstone set is the ONLY thing that can answer, and the
+//! object's blocks. In that state the tombstone set is the ONLY thing that can answer, and the
 //! figure it answers is published: `delete_marker_object_count`, which
 //! `object_manager_runtime_report` fills from it and `native_persistence_workflow` and
 //! `recovery_sweep_compact` both reach.
 //!
 //! A ZERO-LENGTH SENTINEL IS UNAVAILABLE FOR THE SAME REASON, which is worth stating because it is
 //! the obvious alternative and the obvious refutation of it is the wrong one. Whether a zero-length
-//! block is legitimate in this format does not arise: the sentinel needs a page to sit in, and the
-//! delete has removed the page from `block_index` entirely. The question is not whether the
+//! block is legitimate in this format does not arise: the sentinel needs a block to sit in, and the
+//! delete has removed the block from `block_index` entirely. The question is not whether the
 //! encoding has room for a marker, it is whether there is anything left to mark.
 //!
 //! THE POPULATION, MEASURED HERE, AND THE NUMBER THAT DECIDES IT IS NOT THE BIG ONE. At 4,000
 //! records on `0..1023` with a quarter of the keys deleted, 704 of 1,012 buckets (69.57%) carry a
-//! tombstoned id that no page carries, over 1,000 such ids. But only 19 of those buckets hold the
+//! tombstoned id that no block carries, over 1,000 such ids. But only 19 of those buckets hold the
 //! orphaned id in `object_index`, and those nineteen are the whole of the load-bearing population:
 //! `delete_marker_object_count` reads 19, and removing ONE tombstone takes it to 18.
 //!
 //! A SECOND READING, REPORTED BECAUSE IT IS NOT WHAT THE FIELD'S OWN NOTE IMPLIES. 981 of those
 //! 1,000 tombstoned ids are reachable by NEITHER reader: the id is not in `object_index`, so the
-//! walk that consults the tombstone never reaches it, and no page carries it either. On this
+//! walk that consults the tombstone never reaches it, and no block carries it either. On this
 //! corpus 98.1% of the entries in this field are never read by anything. That is NOT a second
 //! argument for removing the structure -- the nineteen that ARE read cannot be answered any other
 //! way, which is what item 2 drives -- but it says the field is carrying far more than it is asked
 //! about, and the shape of that excess (a rebuild re-attaches the tombstone set while recomputing
-//! `object_index` from live pages only, so the two drift apart) is worth its own look. This module
+//! `object_index` from live blocks only, so the two drift apart) is worth its own look. This module
 //! reports the figure and changes nothing.
 //!
 //! WHAT A PRECONDITION PROXY COST, recorded because it is the failure that reads as a refutation.
-//! A first version of item 2 required the chosen bucket to still hold OTHER pages, as a proxy for
+//! A first version of item 2 required the chosen bucket to still hold OTHER blocks, as a proxy for
 //! "whole-bucket `deleted()` is not what answers". It found NOTHING, and a bare `None` from a
 //! search is indistinguishable from the state not existing. Counting each clause separately said
 //! why in one line: the buckets that hold the orphaned id in `object_index` are exactly the ones
-//! whose page list is now EMPTY, so the proxy excluded the entire population it was meant to
-//! select. The empty-page case is the STRONGER one -- there is no page at all for a per-page bit to
+//! whose block list is now EMPTY, so the proxy excluded the entire population it was meant to
+//! select. The empty-block case is the STRONGER one -- there is no block at all for a per-block bit to
 //! sit in -- and `deleted()` is asserted false on it directly, which is the clause that was
 //! actually wanted. Every clause is counted and printed for that reason.
 //!
@@ -86,7 +86,7 @@
 //!      live mirror as the control, and the reconstruction asserted rather than the total. 88 -> 80.
 //!   2. `a_tombstone_outlives_every_block_that_could_have_carried_it` -- the refutation, DRIVEN. It
 //!      finds a bucket in the state above, ENFORCES that the state is the one described (id held,
-//!      no page carrying it, bucket not itself deleted), then PERTURBS the tombstone away and
+//!      no block carrying it, bucket not itself deleted), then PERTURBS the tombstone away and
 //!      asserts the published count falls by exactly one. The control is the unperturbed report on
 //!      the same shard, so a count that was already wrong cannot read as the edit's doing.
 //!
@@ -127,7 +127,7 @@ struct TombMirrorLive {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -146,7 +146,7 @@ struct TombMirrorNoTombstones {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -168,7 +168,7 @@ struct TombMirrorNarrowedToHandle {
     block_index: BlockIndexMap,
     // CARRIED BY EVERY MIRROR, so the DISTANCES stay the prices: a mirror is the live
     // declaration plus ONE historical difference, and the live node gained this word
-    // when a removal's element name left the page entries.
+    // when a removal's element name left the block entries.
     tombstone_elements: crate::engine::state::TombstoneElements,
 }
 
@@ -246,7 +246,7 @@ fn what_removing_the_tombstone_index_would_make_the_node() {
             offset_of!(BucketNode, block_index),
         ),
         // THE ELEVENTH FIELD, one word, holding the element name of each tombstone this bucket
-        // carries -- which the page ENTRIES stopped carrying. Named in the table rather than
+        // carries -- which the block ENTRIES stopped carrying. Named in the table rather than
         // absorbed into the total, because a reconstruction that adds up to the right number from
         // the wrong field set is how this crate has already got a decomposition wrong.
         (
@@ -390,20 +390,20 @@ fn tomb_load(engine: &TemporalEngine, end_routing_bucket: u32) {
     });
 }
 
-/// A TOMBSTONE OUTLIVES EVERY PAGE THAT COULD HAVE CARRIED IT, so a per-page bit cannot replace it
+/// A TOMBSTONE OUTLIVES EVERY BLOCK THAT COULD HAVE CARRIED IT, so a per-block bit cannot replace it
 /// and the node's eight bytes are not available.
 ///
 /// The state is produced rather than constructed: strings are written and a quarter of them
 /// deleted, which is the only path that writes `deleted_object_index` at all. The delete retires
-/// the pages and keeps the id, so the bucket ends up holding an id in `object_index` with nothing
+/// the blocks and keeps the id, so the bucket ends up holding an id in `object_index` with nothing
 /// in `block_index` carrying it.
 ///
 /// EVERY PRECONDITION IS ENFORCED, NOT PRINTED, because a fixture that failed to reach the state
 /// and one that reached it produce the same output otherwise:
 ///
 ///   * the shard holds buckets at all (denominator);
-///   * at least one bucket holds a tombstoned id with NO page carrying it -- the "outlives" state;
-///   * the chosen bucket still holds OTHER pages, so `bucket.deleted()` is false and cannot be
+///   * at least one bucket holds a tombstoned id with NO block carrying it -- the "outlives" state;
+///   * the chosen bucket still holds OTHER blocks, so `bucket.deleted()` is false and cannot be
 ///     what answers; and
 ///   * the chosen id is in `object_index`, so the walk that reads the tombstone actually reaches it.
 ///
@@ -435,7 +435,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     }
 
     // A quarter deleted, through the single-command delete path, which is the one that retires the
-    // pages and keeps the id.
+    // blocks and keeps the id.
     let mut deleted_keys = 0usize;
     for key in keys.iter().step_by(4) {
         let response = engine.execute(ExecuteRequest {
@@ -521,11 +521,11 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
                 .count();
             // THE DISCRIMINATING BUCKET. What has to be true is that `bucket.deleted()` cannot be
             // what answers -- so that is asserted DIRECTLY rather than inferred from the bucket
-            // still holding other pages. A first version of this required
+            // still holding other blocks. A first version of this required
             // `!block_index.is_empty()` as a proxy for it and found nothing: the buckets that hold
-            // the orphaned id in `object_index` are exactly the ones whose page list is now EMPTY,
-            // so the proxy excluded the entire population it was meant to select. The empty-page
-            // case is the stronger one anyway -- there is no page at all for a per-page bit to sit
+            // the orphaned id in `object_index` are exactly the ones whose block list is now EMPTY,
+            // so the proxy excluded the entire population it was meant to select. The empty-block
+            // case is the stronger one anyway -- there is no block at all for a per-block bit to sit
             // in -- and `deleted()` is false on it regardless, which is the clause that matters.
             if target.is_none() && !bucket.deleted() {
                 if let Some(id) = held {

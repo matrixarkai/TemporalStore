@@ -21,7 +21,7 @@
 //! what this module was built to hold.
 //!
 //! THE SECOND COPY IS GONE. `BlockIndex` has no element-name field -- all four container kinds file
-//! one entry a page -- so there is no text to parse and
+//! one entry a block -- so there is no text to parse and
 //! `rebuild_unserialized_model_maps_from_bucket_index` passes an EMPTY derived view, keeping only
 //! its live-address filter. The four resident maps are durable (`#[serde(default)]`) and are the
 //! sole authority for which elements exist.
@@ -40,11 +40,11 @@
 //!     DESIGN, and that arm carries the three mechanisms that make the state unreachable in
 //!     production rather than merely absent in this fixture.
 //!   * `an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape` -- its length
-//!     boundary is re-attributed to the PAGE, which is where a component still exists.
+//!     boundary is re-attributed to the BLOCK, which is where a component still exists.
 //!
 //! A TEST PROVING A DEFECT UNREACHABLE IS WORTH MORE THAN ONE PROVING IT CURRENTLY ABSENT, which is
 //! why these are restatements and not deletions: each one now fails if an element name returns to
-//! a page index entry, which is the single change that would make the whole defect class reachable
+//! a block index entry, which is the single change that would make the whole defect class reachable
 //! again.
 //!
 //! # WHAT EACH DURABLE MAP HOLDS, AND WHICH KINDS HAVE ONE
@@ -77,7 +77,7 @@
 //! # WHY THE RULE IS NOT THE ONE `control_state` USES
 //!
 //! The `control_state` arm keeps the persisted series wholesale for every key it has, saying why: "the
-//! serialized i64 series is authoritative (the page is a copy of it)". Copying that rule here would be
+//! serialized i64 series is authoritative (the block is a copy of it)". Copying that rule here would be
 //! wrong. `apply_key_states` folds `features` and the control-state maps out of the delta log and NOT
 //! `sets`, `zsets` or `lists`.
 //!
@@ -86,15 +86,15 @@
 //! `apply_key_states` and false of the fold. The fold path also collects the record's
 //! `CARRIED_CONTAINER_FIELDS` -- `set_elements`, `zset_elements`, `list_elements` and `hash_fields`
 //! -- and `fold_carried_container_elements` merges all four into their durable maps, gated on the
-//! pages the finished fold actually left behind. So a folded element of any of those four kinds
+//! blocks the finished fold actually left behind. So a folded element of any of those four kinds
 //! arrives by BOTH routes, and `engine::tests::fold_hash_map_completeness` measures that for hash:
-//! after a fold the durable map and the page index name the same field set, in both directions.
+//! after a fold the durable map and the block index name the same field set, in both directions.
 //!
 //! Naming one function's behaviour as the whole path's is how this was read as "the derived view is
 //! the only path" by three separate documents. Both channels are named here so the next reader has
 //! to meet the second one.
 //!
-//! The rule WAS per ELEMENT: the derived view decided which elements exist and which page backs
+//! The rule WAS per ELEMENT: the derived view decided which elements exist and which block backs
 //! each, because it reflected the fold; the durable map supplied what the name merely re-spelled,
 //! and kept any element the derived view could not produce.
 //!
@@ -103,7 +103,7 @@
 //! exist, which page backs one, or what a name re-spells. The resident map answers all three. What
 //! survives of the rule is its live-address FILTER -- `reconcile_from_durable` is
 //! `fill_absent_elements(derived, persisted, live, refused)`, and the `live` set still drops a
-//! durable element whose page the settled index does not hold. That is the half
+//! durable element whose block the settled index does not hold. That is the half
 //! `length_answer_and_listing_agree` drives from the other side, and it is why the call is not
 //! simply deleted: without it a reload would keep MORE than it should, not less.
 //!
@@ -630,7 +630,7 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
     // hash: a durable map NOW, like the other three. This used to read "no durable map, and none
     // needed -- the component IS the caller's field name", and the second half is still true: the
     // component spells the field name exactly, so a readable name needs no help. What was wrong was
-    // the inference that no help was ever needed, because a hash page can name NO field at all, and
+    // the inference that no help was ever needed, because a hash block can name NO field at all, and
     // then the name spells nothing and the durable map is the only record. That case is driven by
     // `an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field` below.
     for element in 0..members.len() {
@@ -677,7 +677,7 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
 /// AN ELEMENT THE DURABLE MAP DOES NOT HOLD DOES NOT COME BACK, AND THE STATE IS UNREACHABLE.
 ///
 /// INVERTED, AND IT IS THE ARM THIS WHOLE MODULE TURNS ON. It asserted that an element missing from
-/// the durable map "is still derivable" -- recovered BY IDENTITY from the element name on its page
+/// the durable map "is still derivable" -- recovered BY IDENTITY from the element name on its block
 /// index entry -- and a first restatement narrowed that to "the member still comes back, only its
 /// SCORE is now a placeholder". Measured: `fb-two` does not come back at all,
 /// `Bytes { value: None }`. The member half went with the score half, for the same reason and one
@@ -704,7 +704,7 @@ fn all_three_spelled_kinds_and_the_two_without_a_durable_map_survive_a_reload() 
 ///      side.
 ///   3. AN INDEX THAT REALLY CARRIES AN ELEMENT NAME IS REFUSED. `persistence` refuses a stamp
 ///      below `SHARD_INDEX_FORMAT_VERSION` with `<`, and 12 was stamped by the commit that made all
-///      four kinds page-named, so such an index is rebuilt from the WAL rather than decoded. The
+///      four kinds block-named, so such an index is rebuilt from the WAL rather than decoded. The
 ///      argument is set out in full beside that constant.
 ///
 /// WHAT IS ASSERTED, THEREFORE: the element the map kept comes back at its TRUE score (the positive
@@ -719,7 +719,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
 
-    // Two members of one zset, written normally, so both are durable and both have pages.
+    // Two members of one zset, written normally, so both are durable and both have blocks.
     for (element, member) in [b"fb-one".to_vec(), b"fb-two".to_vec()].iter().enumerate() {
         write(
             &engine,
@@ -731,7 +731,7 @@ fn an_element_the_durable_map_does_not_hold_does_not_come_back() {
         );
     }
 
-    // Drop one from the durable map only, leaving its page and its index entry.
+    // Drop one from the durable map only, leaving its block and its index entry.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
@@ -941,8 +941,8 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     // index entry, so `shard.sets` is not a repair of a derived view -- it IS the membership.
     //
     // WHAT MAKES THE ASSERTION WORTH KEEPING is that the two sides of a set are still different
-    // artefacts. `SetMembers` answers from the PAGES, and `SetRemove` is the one command that
-    // consults `shard.sets`. So a member present in the pages and absent from the map is served
+    // artefacts. `SetMembers` answers from the BLOCKS, and `SetRemove` is the one command that
+    // consults `shard.sets`. So a member present in the blocks and absent from the map is served
     // and undeletable -- the same end state the old defect produced, by a different route -- and
     // this is the arm that would show it.
     let removed = read(
@@ -982,7 +982,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     );
 }
 
-/// AN UNNAMED HASH PAGE LOSES NOTHING, BECAUSE THE DURABLE MAP KEEPS THE FIELD.
+/// AN UNNAMED HASH BLOCK LOSES NOTHING, BECAUSE THE DURABLE MAP KEEPS THE FIELD.
 ///
 /// THE ARM THAT CHANGED IS THE ARM THAT HAD NO DRIVEN CASE. The merge was extended to `hashes` on
 /// the claim that its mechanism is now byte-for-byte the other three's, and "closed by construction"
@@ -992,14 +992,14 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
 ///
 /// # RESTATED: THE SHAPE IS NO LONGER PLANTED, BECAUSE IT IS THE ONLY SHAPE THERE IS
 ///
-/// This test used to BLANK the component on one field's page entry and keep a second field's name as
-/// a control -- a named page and a nameless one, side by side. Under one entry a page NO live entry
+/// This test used to BLANK the component on one field's block entry and keep a second field's name as
+/// a control -- a named block and a nameless one, side by side. Under one entry a block NO live entry
 /// of any container kind carries an element name, so there is nothing left to blank: the blanking
 /// loop matched zero entries and the fixture's own floor refused it with `blanked 0, not one`. That
 /// floor is why this reads as a restatement rather than as a test that quietly stopped testing.
 ///
 /// THE CONTROL HAD TO GO WITH IT, AND THAT IS THE HONEST VERSION. `field-0` was the control because
-/// its page still named it, so it arrived through the DERIVED view while `field-1` could only arrive
+/// its block still named it, so it arrived through the DERIVED view while `field-1` could only arrive
 /// from the durable map. Neither is named now, so there is no named/nameless contrast to draw, and
 /// keeping `field-0` as a "control" would be a second copy of the same case wearing the word
 /// control. What replaces it is a DENOMINATOR on the other side of the claim: the index must be
@@ -1075,7 +1075,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         );
         // THE `named == 0` FLOOR IS GONE, AND THE CLAIM IS STRONGER WITHOUT IT.
         //
-        // It read "Under one entry a page none can: if this reddens the collapse has been
+        // It read "Under one entry a block none can: if this reddens the collapse has been
         // reverted". `BlockIndex` has no component field, so an entry naming a field is not a
         // reversion this test could observe -- it is UNREPRESENTABLE, and `engine_storage_state.rs`'s width pin
         // refuses it at const-evaluation. That is what this whole module is for: a divergence
@@ -1147,7 +1147,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
 /// `hex::decode("")` was always `Ok(vec![])`, and the reconcile's arm no longer asks about length
 /// before decoding. This test keeps its ORIGINAL subject, not the boundary that caused it: an
 /// empty zset member must stay reachable and durable through the fold shape that strands an
-/// element with a page in the index but no durable-map entry behind it.
+/// element with a block in the index but no durable-map entry behind it.
 ///
 /// Historically, `zset_component` is `{biased:016x}` followed by `hex::encode(member)`. A member
 /// of zero bytes -- which nothing on the write path rejects -- therefore spelled EXACTLY sixteen
@@ -1188,7 +1188,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
 /// encoding once disagreed about its shortest legal form -- the reconcile refused
 /// `component.len() <= 16` while WAL replay accepted `< 16` -- and that is the class of defect
 /// being guarded. A page still spells its elements, so the boundary is asked of the PAGE: the
-/// object's pages must derive the empty member as a zero-length component, through the engine's own
+/// object's blocks must derive the empty member as a zero-length component, through the engine's own
 /// `container_membership::derive_membership`, which is the door `SetMembers` and `ZSetScore`'s
 /// fold both read. If a length boundary comes back anywhere in that path, the empty member
 /// disappears from the derivation and this fails.
@@ -1240,7 +1240,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
          finding rests on -- re-read `zset_component` before trusting the boundary below"
     );
 
-    // THE BOUNDARY, RE-ATTRIBUTED TO THE PAGES. The pages are where a component still exists, and
+    // THE BOUNDARY, RE-ATTRIBUTED TO THE BLOCKS. The blocks are where a component still exists, and
     // the empty member must appear in their derivation as a zero-length key.
     {
         let addresses = {
@@ -1353,9 +1353,9 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
 /// THE DELTA RECORD CARRIES THE MEMBER BYTES ITS COMPONENT MERELY SPELLS.
 ///
 /// `apply_key_states` folded thirteen maps and `sets`, `zsets`, `lists` and `hashes` were not among
-/// them, while `fold_delta_block_items` DID restore the page items -- so after a fold the bucket
-/// index held pages for elements whose durable-map entry was never written, and the component its
-/// page was filed under was the only copy of the member on that path. It is a DECODABLE copy on this
+/// them, while `fold_delta_block_items` DID restore the block items -- so after a fold the bucket
+/// index held blocks for elements whose durable-map entry was never written, and the component its
+/// block was filed under was the only copy of the member on that path. It is a DECODABLE copy on this
 /// revision, so nothing was lost by it; #1996 had to rewrite a component into an ordinal shape
 /// deliberately to lose one. This is the prerequisite that stops identity depending on that.
 ///
@@ -1564,8 +1564,8 @@ fn a_key_state_blob_that_carries_no_elements_leaves_the_container_maps_untouched
 /// This is the finding, driven at the seam. A blob carrying one zset element and one set element is
 /// folded onto a shard that holds neither, and there is NO component anywhere in the input -- so the
 /// identity that arrives cannot have been decoded from one. That is the property the two blocked
-/// changes need: a 2-byte element ordinal replacing `component: Option<Arc<str>>`, and batched pages
-/// where element identity lives only in the page payload.
+/// changes need: a 2-byte element ordinal replacing `component: Option<Arc<str>>`, and batched blocks
+/// where element identity lives only in the block payload.
 ///
 /// THE MUTANT THIS KILLS is the removal of the four `merge_container_elements` calls from
 /// `apply_key_states`, which is the whole change on the apply side. Without them the maps stay empty
@@ -1583,7 +1583,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
     let engine = engine_on(dir.path());
     load_on(&engine, OPERATOR_END);
 
-    // A real address to carry, taken from a page this store actually wrote.
+    // A real address to carry, taken from a block this store actually wrote.
     write(
         &engine,
         Command::SetAdd {
@@ -1630,7 +1630,7 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 
     // BOTH HALVES, because they do different jobs now: `apply_key_states` restores the thirteen
     // per-key maps (the `features` control below), and `fold_carried_container_elements` restores
-    // the container elements -- the latter only where the page each one names is still there, which
+    // the container elements -- the latter only where the block each one names is still there, which
     // for this seeded address it is.
     super::apply_key_states(shard, &blob);
     super::fold_carried_container_elements(shard, &blob);
@@ -1685,14 +1685,14 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
     );
 }
 
-/// A CARRIED ELEMENT WHOSE PAGE THE FOLD DID NOT LEAVE BEHIND IS NOT RESTORED.
+/// A CARRIED ELEMENT WHOSE BLOCK THE FOLD DID NOT LEAVE BEHIND IS NOT RESTORED.
 ///
 /// This is the test that made the carry's shape what it is, and the first shape of it was wrong.
 /// A fold replays a SUFFIX of the delta log, so ONE fold can both add an element and take it away
 /// again -- add, then remove, between two base-index writes is entirely ordinary. Applying a
 /// record's carried elements as that record was folded put the element into the durable map, and
 /// `fill_absent_elements` -- which keeps every durable element the derived view could not produce,
-/// #1989's rule -- then handed it back after the later record had removed its page. **The element
+/// #1989's rule -- then handed it back after the later record had removed its block. **The element
 /// would be served after being deleted.** Nothing did that before the carry existed, because the
 /// fold never wrote these four maps at all, so this would have been a regression introduced by the
 /// fix.
@@ -1700,19 +1700,19 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 /// THE MERGE ASKS THAT QUESTION OF ITS PERSISTED INPUT TOO NOW, which is a later change and not a
 /// reason to relax this one. `resident_map_readers` carries the argument: the carry and the persisted
 /// map are two inputs to one merge, the carry was applied in the wrong ORDER and the persisted map is
-/// simply OLDER than the page index, and both now answer `live_block_key` against the finished index.
+/// simply OLDER than the block index, and both now answer `live_block_key` against the finished index.
 /// So this test's subject would be stripped downstream if it survived here. It must not survive
 /// here: correctness at this stage is not the same as being cleaned up at the next one.
 ///
 /// AND MATCHING THE RECORD'S TOMBSTONES DOES NOT SUBSTITUTE, which is why the obvious symmetric
 /// half was removed rather than kept. `mark_bucket_index_block_deleted_with` -- which `SetRemove`,
 /// `ZSetRemove`, `ListPop` and `HashDelete` all reach -- is named for a mark it does not make: its
-/// body is a `retain` that DROPS the page. So by the time the delta record is built there is no
+/// body is a `retain` that DROPS the block. So by the time the delta record is built there is no
 /// page left to describe and no `deleted` item is emitted; the removal is spelled as the ABSENCE of
-/// a page under a covered key. A removal half reading tombstones is dead code on every typed
+/// a block under a covered key. A removal half reading tombstones is dead code on every typed
 /// container removal.
 ///
-/// (`collect_command_index_items_for`'s own doc still claims a typed removal "marks its page
+/// (`collect_command_index_items_for`'s own doc still claims a typed removal "marks its block
 /// deleted in the bucket index rather than dropping it, so the item this emits carries
 /// `deleted: true`". That claim does not hold on this revision. Recorded here rather than acted on:
 /// correcting it is not this change's business, but a removal half built on believing it would have
@@ -1720,13 +1720,13 @@ fn the_fold_restores_a_container_element_from_carried_identity_and_not_from_a_co
 ///
 /// # THE EXPERIMENT
 ///
-/// Two carried elements against the same live shard. One names the address of a page that IS in the
-/// bucket index; the other names an address no page holds, which is exactly what a carry left over
-/// from a record whose page a later record removed looks like.
+/// Two carried elements against the same live shard. One names the address of a block that IS in the
+/// bucket index; the other names an address no block holds, which is exactly what a carry left over
+/// from a record whose block a later record removed looks like.
 ///
-///   * The live-page element is restored. THE CONTROL: a filter that rejected everything would
+///   * The live-block element is restored. THE CONTROL: a filter that rejected everything would
 ///     otherwise pass as this finding.
-///   * The absent-page element is NOT restored.
+///   * The absent-block element is NOT restored.
 ///
 /// rust-internal: calls the engine's own fold directly, no external surface
 #[test]
@@ -1752,9 +1752,9 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         .cloned()
         .expect("the seed member has an address");
 
-    // An address no live page holds. Built by changing the length, which is part of what names a
-    // page in the live set, so it is a well-formed address that simply is not in the index -- which
-    // is what a removed page leaves behind in a carry.
+    // An address no live block holds. Built by changing the length, which is part of what names a
+    // block in the live set, so it is a well-formed address that simply is not in the index -- which
+    // is what a removed block leaves behind in a carry.
     let mut absent_address = live_address.clone();
     absent_address.set_length(live_address.length() + 4_096);
 
@@ -1942,22 +1942,22 @@ fn a_container_carry_does_not_clear_the_key_state_it_does_not_name() {
     );
 }
 
-/// WHAT A STAGED HASH PAGE SAYS ABOUT ITS OWN ELEMENT, AND WHAT REPLAY COSTS TO ASK IT.
+/// WHAT A STAGED HASH BLOCK SAYS ABOUT ITS OWN ELEMENT, AND WHAT REPLAY COSTS TO ASK IT.
 ///
 /// A MEASUREMENT ARM. Three things have to be true before the recorded outcome's element name can
-/// be resolved from the page instead of carried, and each of them is a question this prints an
+/// be resolved from the block instead of carried, and each of them is a question this prints an
 /// answer to rather than assuming:
 ///
 ///   1. IS THE NAME PARSEABLE, or merely PRESENT? An earlier probe searched the payload bytes for
-///      the field name as a SUBSTRING and found it in 3 of 3 pages. That is not the same claim: a
+///      the field name as a SUBSTRING and found it in 3 of 3 blocks. That is not the same claim: a
 ///      substring says the information is there, not that there is a defined way to recover it.
-///      This decodes the page through `container_blocks::decode_container_block` and renders the
+///      This decodes the block through `container_blocks::decode_container_block` and renders the
 ///      component back through `component_from_element_key`, which is the only recovery that
 ///      counts.
-///   2. HOW MANY ELEMENTS DOES ONE STAGED PAGE HOLD? If one, the page names the outcome's element
-///      unambiguously. If many, the payload says which elements the PAGE holds and not which one
+///   2. HOW MANY ELEMENTS DOES ONE STAGED BLOCK HOLD? If one, the block names the outcome's element
+///      unambiguously. If many, the payload says which elements the BLOCK holds and not which one
 ///      the OUTCOME is about, and the two are different questions.
-///   3. AND DOES REPLAY ALREADY HAVE THE BYTES? If the page travels inside the record, resolving
+///   3. AND DOES REPLAY ALREADY HAVE THE BYTES? If the block travels inside the record, resolving
 ///      from the payload is a parse. If it does not, it is a BLOCK READ PER RECORD -- and recovery
 ///      time is a product property, so that cost decides whether any of this is worth doing.
 #[test]
@@ -1995,7 +1995,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
         })
         .collect();
 
-    // (3a) DOES THE PAGE TRAVEL IN THE RECORD? Counted against its denominator.
+    // (3a) DOES THE BLOCK TRAVEL IN THE RECORD? Counted against its denominator.
     let outcomes: usize = records.iter().map(|record| record.outcomes.len()).sum();
     let staged: usize = records.iter().map(|record| record.staged_blocks.len()).sum();
     println!(
@@ -2003,7 +2003,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
         records.len()
     );
 
-    // (1) AND (2): decode every staged page and ask it for its elements.
+    // (1) AND (2): decode every staged block and ask it for its elements.
     let mut framed = 0usize;
     let mut not_framed = 0usize;
     let mut corrupt = 0usize;
@@ -2056,7 +2056,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
 
     // (3b) WHAT A COLD REPLAY READS TODAY. The baseline for the whole trade: if this is already
     // nonzero per record, resolving from the payload is free; if it is zero, resolving from the
-    // payload is a new read per record unless the carried page covers it.
+    // payload is a new read per record unless the carried block covers it.
     //
     // THE COUNTER IS PROVED TO MOVE FIRST, because a zero from an instrument that cannot rise is
     // not a measurement -- this tree has a recorded finding that every in-engine counter reported a
@@ -2103,11 +2103,11 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     );
 }
 
-/// WHAT RESOLVING THE ELEMENT FROM THE PAGE COSTS A REPLAY, AND WHAT IT SAVES A RECORD.
+/// WHAT RESOLVING THE ELEMENT FROM THE BLOCK COSTS A REPLAY, AND WHAT IT SAVES A RECORD.
 ///
 /// # WHY THIS ARM DECIDES THE CHANGE RATHER THAN DESCRIBING IT
 ///
-/// Reading the field name off the page means replay has to GET the page. If replay does not already
+/// Reading the field name off the block means replay has to GET the block. If replay does not already
 /// have it, that is one block read per replayed record -- and recovery time is a product property,
 /// so the trade would be bytes on disk against seconds of recovery. This arm is the number that
 /// trade is made on, and it is the read COUNT rather than the wall clock that carries it: a count
@@ -2117,13 +2117,13 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
 ///
 ///   1. THE PRODUCTION PATH COSTS NOTHING, asserted and not merely printed. `block_in_wal::stage`
 ///      is UNCONDITIONAL -- its own doc records that the flag which gated it is gone -- so every
-///      page a write produces travels inside its record and replay has already deserialized it.
+///      block a write produces travels inside its record and replay has already deserialized it.
 ///      The baseline measured on the base before this change was 0 block reads for a cold replay;
 ///      the assertion here is that it is STILL 0, which is the whole of the cost argument.
-///   2. THE FALLBACK IS PRICED ANYWAY, because it is reachable: a record carrying several pages of
-///      ONE key cannot say which page an outcome is about (`StagedBlock` is keyed by object id,
+///   2. THE FALLBACK IS PRICED ANYWAY, because it is reachable: a record carrying several blocks of
+///      ONE key cannot say which block an outcome is about (`StagedBlock` is keyed by object id,
 ///      which is per key and not per element), so those resolve by ADDRESS and pay a read each.
-///      Driven through `install_shared_outcomes_with_blocks` with no carried pages, which is
+///      Driven through `install_shared_outcomes_with_blocks` with no carried blocks, which is
 ///      exactly that arm.
 ///   3. AND WHAT IS SAVED, PER RECORD, WITH BOTH ARMS NAMED. A hash field's component is the
 ///      field name as text; a set member's is HEX, two characters a byte. So the two kinds save
@@ -2179,7 +2179,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
         FIELDS + 1
     );
 
-    // --- (1) THE PRODUCTION PATH: a real cold load, with the records carrying their pages. ---
+    // --- (1) THE PRODUCTION PATH: a real cold load, with the records carrying their blocks. ---
     let replayed = engine_on(source.path());
     let before = replayed.block_store().stats().reads;
     let started = std::time::Instant::now();
@@ -2222,8 +2222,8 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
          arm has stopped firing and every replayed record is paying an I/O"
     );
 
-    // --- (2) THE FALLBACK, PRICED. Same outcomes, no carried pages, so every one resolves by
-    //         reading the address. This is what a multi-page record costs. ---
+    // --- (2) THE FALLBACK, PRICED. Same outcomes, no carried blocks, so every one resolves by
+    //         reading the address. This is what a multi-block record costs. ---
     let outcomes: Vec<crate::wal::WalOutcomeItem> = records
         .iter()
         .flat_map(|record| record.outcomes.iter().cloned())
@@ -2314,39 +2314,39 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
     );
 }
 
-/// THE RECORDED OUTCOME NO LONGER HAS TO CARRY THE ELEMENT NAME, BECAUSE THE PAGE DOES.
+/// THE RECORDED OUTCOME NO LONGER HAS TO CARRY THE ELEMENT NAME, BECAUSE THE BLOCK DOES.
 ///
 /// # WHAT THIS ARM SAYS, AND WHAT IT SAID BEFORE
 ///
 /// It was introduced asserting the OPPOSITE, and that assertion was right about the code it was
 /// written against: `apply_outcome_item`'s hash arm asked the OUTCOME for the field name, so
 /// clearing it refused the load -- `wal_replay_outcome_refused`, "component missing". The same arm
-/// recorded the fact that made this change possible: every carried page payload DOES name its
-/// elements, so the field was dead weight behind a replay path that did not ask the page.
+/// recorded the fact that made this change possible: every carried block payload DOES name its
+/// elements, so the field was dead weight behind a replay path that did not ask the block.
 ///
-/// THE REPLAY PATH NOW ASKS THE PAGE, so the arm keeps its fixture and inverts its claim.
+/// THE REPLAY PATH NOW ASKS THE BLOCK, so the arm keeps its fixture and inverts its claim.
 ///
 /// # IT IS DRIVEN THROUGH THE REAL REPLAY LOOP, AND THAT IS NOT INCIDENTAL
 ///
 /// The first version of this arm drove `install_shared_outcomes_with_blocks`, and it FAILED -- for
 /// a reason that turned out to be a defect in that path rather than in this change, which
 /// `the_shared_install_pairs_carried_blocks_by_object_and_component`
-/// below records in full. The short form: that path pairs a carried page to an outcome by
+/// below records in full. The short form: that path pairs a carried block to an outcome by
 /// `object_id`, which is per (kind, key) and NOT per element, so for a record carrying several
-/// pages of one key it attaches the FIRST page's bytes to every outcome. While the outcome carried
-/// the field name that produced the right names over the wrong bytes; reading the name off the page
+/// blocks of one key it attaches the FIRST block's bytes to every outcome. While the outcome carried
+/// the field name that produced the right names over the wrong bytes; reading the name off the block
 /// turns the same defect into the wrong names. So the arm moved to `load_shard`, which is the path
 /// a restart takes and which does not localise anything.
 ///
 /// # THE CONTROLS, AND WHAT EACH ONE RULES OUT
 ///
 ///   * ZERO RECORDS CARRY AN OPERATION, asserted. A load that restored the fields by RE-EXECUTING
-///     `Command::HashSet` would satisfy the subject while proving nothing about the page, and this
+///     `Command::HashSet` would satisfy the subject while proving nothing about the block, and this
 ///     tree has a recorded finding of exactly that shape.
 ///   * THE UNTOUCHED LOAD IS THE POSITIVE CONTROL. A load that refused everything would satisfy
 ///     the broken-frame arm below and say nothing.
-///   * AND THE FRAME IS BROKEN IN A THIRD ARM, which is what makes the page the SOURCE rather than
-///     a coincidence. If clearing the name leaves the fields coming back AND destroying the page's
+///   * AND THE FRAME IS BROKEN IN A THIRD ARM, which is what makes the block the SOURCE rather than
+///     a coincidence. If clearing the name leaves the fields coming back AND destroying the block's
 ///     frame also leaves them coming back, something else is supplying them.
 #[test]
 fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
@@ -2400,7 +2400,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     // restart -- and then a fresh engine over those directories is loaded.
     let replay = |strip: bool, break_the_frame: bool| -> (bool, String, std::collections::BTreeSet<String>) {
         let into = tempfile::tempdir().unwrap();
-        // The pages are copied so the addresses resolve; the log is rebuilt from the records.
+        // The blocks are copied so the addresses resolve; the log is rebuilt from the records.
         let copy = std::process::Command::new("cp")
             .arg("-a")
             .arg(source.path().join("blocks"))
@@ -2465,7 +2465,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
         "the untouched replay restored {control_fields:?} and the write touched {expected:?}"
     );
 
-    // THE SUBJECT: the element name cleared from every outcome AND every carried page.
+    // THE SUBJECT: the element name cleared from every outcome AND every carried block.
     let (stripped_ok, stripped_status, stripped_fields) = replay(true, false);
     println!("[outcome-name] NO NAME   ok={stripped_ok} fields={stripped_fields:?}");
     assert!(
@@ -2480,7 +2480,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
          touched {expected:?}. Anything short means the page is not being read for every element"
     );
 
-    // AND THE PAGE IS THE SOURCE: break every carried frame and the fields must STOP coming back.
+    // AND THE BLOCK IS THE SOURCE: break every carried frame and the fields must STOP coming back.
     let (broken_ok, broken_status, broken_fields) = replay(true, true);
     println!(
         "[outcome-name] NO FRAME  ok={broken_ok} fields={broken_fields:?} status={broken_status}"
@@ -2506,22 +2506,22 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     );
 }
 
-/// A DEFECT THIS CHANGE EXPOSED AND DID NOT CAUSE: THE SHARED INSTALL PAIRS A PAGE TO AN OUTCOME BY
+/// A DEFECT THIS CHANGE EXPOSED AND DID NOT CAUSE: THE SHARED INSTALL PAIRS A BLOCK TO AN OUTCOME BY
 /// AN ID THAT CANNOT DISCRIMINATE.
 ///
 /// # WHAT IT IS
 ///
 /// `install_shared_outcomes_with_blocks` localises an entry whose addresses belong to another
-/// store: for each outcome whose address does not resolve locally it finds a carried page and
+/// store: for each outcome whose address does not resolve locally it finds a carried block and
 /// appends it here. The find is
 ///
 /// ```text
-///     carried.iter().find(|page| page.object_id == item.object_id)
+///     carried.iter().find(|block| block.object_id == item.object_id)
 /// ```
 ///
 /// and an object id is derived from (kind, key) -- it is NOT per element. `StagedBlock::component`'s
-/// own doc says what that costs, in a measurement predating this arm: "two pages of one key sharing
-/// an id serve 1 of 2 correctly, and the page that loses is handed the FIRST page's BYTES rather
+/// own doc says what that costs, in a measurement predating this arm: "two blocks of one key sharing
+/// an id serve 1 of 2 correctly, and the block that loses is handed the FIRST block's BYTES rather
 /// than answering missing." The pairing has never used the outcome's element name, so this is not
 /// something the element name was protecting.
 ///
@@ -2529,21 +2529,21 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
 ///
 /// Because the fix is a change to a different path with a different shape, and this arm is what
 /// makes it findable. While the outcome carried the field name, the defect produced the RIGHT NAMES
-/// over the WRONG BYTES -- three fields installed, each pointing at the first field's page -- which
-/// is why no existing arm caught it. Reading the name off the page makes the same defect produce
+/// over the WRONG BYTES -- three fields installed, each pointing at the first field's block -- which
+/// is why no existing arm caught it. Reading the name off the block makes the same defect produce
 /// the wrong NAMES, which is louder but no more wrong. Both are corruption and the pairing is the
 /// cause.
 ///
 /// THE FIX IS NOT "PAIR BY THE COMPONENT", which is the obvious move and is the wrong one: it
-/// re-introduces the per-page element name as an addressing key on the very path this campaign is
-/// taking it off. The shape that works is to iterate the CARRIED PAGES rather than the outcomes --
-/// each page names its own elements and, once localised, has its own address -- so no per-page key
+/// re-introduces the per-block element name as an addressing key on the very path this campaign is
+/// taking it off. The shape that works is to iterate the CARRIED BLOCKS rather than the outcomes --
+/// each block names its own elements and, once localised, has its own address -- so no per-block key
 /// is needed on either side. That is a separate change and it is not attempted here.
 ///
 /// # WHAT THIS ARM ASSERTS
 ///
-/// The defect, exactly: a record carrying two pages of ONE key localises both outcomes onto one
-/// page. Asserted as the OBSERVED count rather than as the desired one, with the desired one named
+/// The defect, exactly: a record carrying two blocks of ONE key localises both outcomes onto one
+/// block. Asserted as the OBSERVED count rather than as the desired one, with the desired one named
 /// in the message -- a test that asserted the fix would be red on a tree that does not have it, and
 /// a test that asserted nothing would let the defect change shape unnoticed.
 ///
@@ -2584,7 +2584,7 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_component() {
         .flat_map(|record| record.staged_blocks.iter().cloned())
         .collect();
 
-    // THE PRECONDITION THAT MAKES THIS THE DEFECT'S OWN SHAPE: two pages, two outcomes, ONE object
+    // THE PRECONDITION THAT MAKES THIS THE DEFECT'S OWN SHAPE: two blocks, two outcomes, ONE object
     // id between them. Without this the arm is about some other arrangement.
     assert_eq!(2, outcomes.len(), "the fixture produced {} outcomes", outcomes.len());
     assert_eq!(2, blocks.len(), "the fixture produced {} pages", blocks.len());
@@ -2620,41 +2620,41 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_component() {
     }
 }
 
-/// THE PATH A `--lib` FIXTURE COULD NOT SEE: THE PAGE IS UNREACHABLE AND THE OUTCOME STILL NAMES
+/// THE PATH A `--lib` FIXTURE COULD NOT SEE: THE BLOCK IS UNREACHABLE AND THE OUTCOME STILL NAMES
 /// THE ELEMENT.
 ///
 /// # WHY THIS ARM EXISTS, AND WHAT IT COSTS TO HAVE LEARNED IT THE OTHER WAY
 ///
-/// The container arms were landed on the claim that the page always names the element, measured at
+/// The container arms were landed on the claim that the block always names the element, measured at
 /// "0 block reads, structurally zero, because `block_in_wal::stage` is unconditional". That claim
-/// was measured on records carrying ONE page each, and it is true of them. The proxy binary's
+/// was measured on records carrying ONE block each, and it is true of them. The proxy binary's
 /// `matrixark_publish_visibility_can_target_only_written_keys` then refused a shard load, and the
-/// refusal message named the cause: "address resolved, page UNREADABLE or names nothing, component
+/// refusal message named the cause: "address resolved, block UNREADABLE or names nothing, component
 /// present, 27 chars".
 ///
 /// DRIVEN FROM THE PROXY SUITE RATHER THAN GUESSED, with a temporary print on the fallback arm: 24
 /// of 24 fallbacks were `kind=hash`, `component=Some(27)`, and
 ///
 /// ```text
-///     the record carries several pages of this object, so the carried page cannot be told apart,
+///     the record carries several blocks of this object, so the carried block cannot be told apart,
 ///     and the address is not in the block store
 /// ```
 ///
-/// So BOTH routes to the page failed and NEITHER is about the frame. The pages are framed. A
-/// `HashMultiSet` of several fields of one key carries several pages under one `object_id`, which
+/// So BOTH routes to the block failed and NEITHER is about the frame. The blocks are framed. A
+/// `HashMultiSet` of several fields of one key carries several blocks under one `object_id`, which
 /// cannot tell them apart, and that test runs with async storage so the block the address names was
-/// still buffered. `stage` being unconditional says a page is CARRIED; it says nothing about
+/// still buffered. `stage` being unconditional says a block is CARRIED; it says nothing about
 /// whether it can be told apart from its siblings, or whether the address is readable yet.
 ///
 /// # WHAT THIS ARM DRIVES
 ///
 /// The same shape, in `--lib`, so the path is covered here and not only by a binary's suite: a
-/// multi-field `HashMultiSet` replayed into a store that does NOT have the pages. Both routes fail
+/// multi-field `HashMultiSet` replayed into a store that does NOT have the blocks. Both routes fail
 /// exactly as they did in the wild, and the load must SUCCEED on the outcome's own copy.
 ///
 /// THE COUNTERS ARE WHAT MAKE IT A MEASUREMENT RATHER THAN A PASS. `outcome_element_name_sources`
-/// reports (from the page, from the component, refused for disagreeing), and this asserts the
-/// fallback actually FIRED -- a green arm that silently resolved from the page would be covering
+/// reports (from the block, from the component, refused for disagreeing), and this asserts the
+/// fallback actually FIRED -- a green arm that silently resolved from the block would be covering
 /// nothing. Reset first, because a count read off a process-global without one is a reading.
 ///
 /// rust-internal: drives the replay fallback, no product behaviour changes
@@ -2668,7 +2668,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     let source = tempfile::tempdir().unwrap();
     let engine = engine_on(source.path());
     load_on(&engine, OPERATOR_END);
-    // ONE RECORD, SEVERAL PAGES OF ONE KEY -- which is the shape whose carried pages cannot be told
+    // ONE RECORD, SEVERAL BLOCKS OF ONE KEY -- which is the shape whose carried blocks cannot be told
     // apart. A multi-field set in one command is how the proxy's append produces it.
     write(
         &engine,
@@ -2693,7 +2693,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         })
         .collect();
 
-    // THE PRECONDITION, ASSERTED: some record really does carry several pages under ONE object id.
+    // THE PRECONDITION, ASSERTED: some record really does carry several blocks under ONE object id.
     // Without it this arm is about a shape it does not reproduce.
     let ambiguous = records.iter().any(|record| {
         let mut seen: std::collections::BTreeMap<u64, usize> = std::collections::BTreeMap::new();
@@ -2727,8 +2727,8 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         fields.len()
     );
 
-    // REPLAYED INTO A STORE THAT DOES NOT HAVE THE PAGES. The log is rebuilt from the records and
-    // the page directory is NOT copied, so the address route fails the way async storage makes it
+    // REPLAYED INTO A STORE THAT DOES NOT HAVE THE BLOCKS. The log is rebuilt from the records and
+    // the block directory is NOT copied, so the address route fails the way async storage makes it
     // fail in the wild -- the block is simply not there.
     let into = tempfile::tempdir().unwrap();
     let fresh = engine_on(into.path());
@@ -2791,15 +2791,15 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     );
 }
 
-/// A PAGE AND AN OUTCOME THAT NAME DIFFERENT ELEMENTS IS REFUSED, NOT RESOLVED EITHER WAY.
+/// A BLOCK AND AN OUTCOME THAT NAME DIFFERENT ELEMENTS IS REFUSED, NOT RESOLVED EITHER WAY.
 ///
 /// # WHY THIS IS THE CLAUSE WORTH HAVING
 ///
-/// The fallback above makes the outcome's own name usable when the page cannot be reached. The
-/// danger that creates is the opposite case: a page that IS readable and names something else. That
-/// happens when the page in hand is not the page this outcome is about, which is the `object_id`
-/// pairing defect -- and there, installing the page's name files this element's address under
-/// another element's name, while installing the component's files another page's bytes under this
+/// The fallback above makes the outcome's own name usable when the block cannot be reached. The
+/// danger that creates is the opposite case: a block that IS readable and names something else. That
+/// happens when the block in hand is not the block this outcome is about, which is the `object_id`
+/// pairing defect -- and there, installing the block's name files this element's address under
+/// another element's name, while installing the component's files another block's bytes under this
 /// one. Both are corruption, so neither is chosen.
 ///
 /// DRIVEN BY PLANTING THE DISAGREEMENT, because no fixture produces it on purpose: a real record is
@@ -2836,8 +2836,8 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
 
     let replay = |rename: bool| -> (bool, String, u64) {
         let into = tempfile::tempdir().unwrap();
-        // The pages ARE copied here: this arm is about a page that can be read and disagrees, so
-        // the page has to be reachable or it would exercise the fallback instead.
+        // The blocks ARE copied here: this arm is about a block that can be read and disagrees, so
+        // the block has to be reachable or it would exercise the fallback instead.
         let copied = std::process::Command::new("cp")
             .arg("-a")
             .arg(source.path().join("blocks"))
@@ -2892,7 +2892,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
          outcome do not agree even before anything is planted"
     );
 
-    // THE SUBJECT: the outcome names an element the page does not hold.
+    // THE SUBJECT: the outcome names an element the block does not hold.
     let (renamed_ok, renamed_status, renamed_disagreed) = replay(true);
     println!(
         "[disagree] RENAMED ok={renamed_ok} disagreed={renamed_disagreed} status={renamed_status}"
@@ -2918,14 +2918,14 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
 ///
 /// # WHY THIS ARM EXISTS
 ///
-/// `WalOutcomeItem::component` was refused for the timestamped kinds on the ground that their pages
+/// `WalOutcomeItem::component` was refused for the timestamped kinds on the ground that their blocks
 /// "carry no element-key frame at all" -- `ElementKeySpelling::for_kind` answers `None` for every
-/// one of them -- so the refusal named a PAGE-FORMAT change as the thing that would buy the
+/// one of them -- so the refusal named a BLOCK-FORMAT change as the thing that would buy the
 /// removal. Before building one, three things have to be measured, and two of them can refuse it:
 ///
-///   1. WHETHER THE PAGE ALREADY NAMES ITS ELEMENTS. `encode_feature_block` writes an eight-byte
+///   1. WHETHER THE BLOCK ALREADY NAMES ITS ELEMENTS. `encode_feature_block` writes an eight-byte
 ///      `timestamp_ms` in front of every point, and its own doc says why: "it is what picks one
-///      point out of a page holding several." If that is the element key, no format change is
+///      point out of a block holding several." If that is the element key, no format change is
 ///      needed for the kinds whose component is the timestamp alone, and the frame this arm was
 ///      asked to price does not have to exist.
 ///   2. WHAT THE COMPONENT ACTUALLY COSTS ON DISK, which is NOT its string length. `wal_proto`'s
@@ -2933,9 +2933,9 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
 ///      field, plus an `entry_id` for `context_event` -- so pricing the text would be pricing a
 ///      form that is never written. This encodes real records through the real framer with and
 ///      without the field.
-///   3. WHAT IT WOULD COST A REPLAY TO ASK THE PAGE. A timestamped page is staged with
-///      `component: None`, and a multi-point append chunks into SEVERAL pages under one object id
-///      -- so the carried page cannot be matched to an outcome and the resolver falls back to
+///   3. WHAT IT WOULD COST A REPLAY TO ASK THE BLOCK. A timestamped block is staged with
+///      `component: None`, and a multi-point append chunks into SEVERAL blocks under one object id
+///      -- so the carried block cannot be matched to an outcome and the resolver falls back to
 ///      reading the address. That is one block read per replayed record, which is recovery time,
 ///      and recovery time is a product property.
 ///
@@ -2949,7 +2949,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
 
     const FEATURE_KEY: &str = "tsf-series";
     const POINTS: usize = 64;
-    // Fat values, so the chunker splits the append across several pages -- which is the case that
+    // Fat values, so the chunker splits the append across several blocks -- which is the case that
     // decides the read cost.
     const VALUE_BYTES: usize = 512;
 
@@ -3000,7 +3000,7 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         })
         .collect();
 
-    // (1) DOES THE PAGE ALREADY NAME ITS POINTS? Decoded through the real feature-block decoder,
+    // (1) DOES THE BLOCK ALREADY NAME ITS POINTS? Decoded through the real feature-block decoder,
     // not by searching bytes, because present is not recoverable.
     let mut blocks = 0usize;
     let mut decoded_blocks = 0usize;
@@ -3054,9 +3054,9 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         blocks - decoded_blocks
     );
 
-    // (3) THE READ COST. A carried page can only be matched to an outcome when exactly one of the
-    // record's pages belongs to that outcome's object -- so count the outcomes whose object has
-    // several pages. Each of those is a block read a replay would have to perform.
+    // (3) THE READ COST. A carried block can only be matched to an outcome when exactly one of the
+    // record's blocks belongs to that outcome's object -- so count the outcomes whose object has
+    // several blocks. Each of those is a block read a replay would have to perform.
     let ambiguous = outcomes
         .iter()
         .filter(|item| blocks_by_object.get(&item.object_id).copied().unwrap_or(0) > 1)
@@ -3100,8 +3100,8 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         (f_with - f_without) as f64 / feature_outcomes_here.max(1) as f64
     );
 
-    // AND THE KIND WITH AN IDENTITY, which is the one the page cannot answer for: its component
-    // packs the timeline key AND the event id, and the page carries only the timeline key.
+    // AND THE KIND WITH AN IDENTITY, which is the one the block cannot answer for: its component
+    // packs the timeline key AND the event id, and the block carries only the timeline key.
     let events = tempfile::tempdir().unwrap();
     let event_engine = engine_on(events.path());
     load_on(&event_engine, OPERATOR_END);

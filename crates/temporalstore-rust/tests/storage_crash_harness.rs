@@ -111,16 +111,16 @@ fn storage_crash_harness_reports_corrupt_block_after_process_abort() {
 
     let summary: CrashHarnessSummary =
         serde_json::from_slice(&recovered.stdout).expect("recover output should be JSON");
-    // WHAT THIS TEST IS FOR, which is what its name says: the corrupt page is REPORTED. That is
+    // WHAT THIS TEST IS FOR, which is what its name says: the corrupt block is REPORTED. That is
     // the block of assertions below, and none of it is about what a read answers.
     //
-    // This line used to read `assert_eq!(summary.before_value, None)` -- "a corrupt page is a
-    // read miss". That was true when a load went to the page store for its answers. It is not
+    // This line used to read `assert_eq!(summary.before_value, None)` -- "a corrupt block is a
+    // read miss". That was true when a load went to the block store for its answers. It is not
     // the design any more: reconstruction on the default path is the durable base plus a replay
     // of the WAL tail past its anchor (see the header of `delta_index_log_gc.rs`), and the WAL
-    // here still holds both records, so `before` comes back from the replay while its page stays
+    // here still holds both records, so `before` comes back from the replay while its block stays
     // corrupt and unreadable. The engine is not hiding the damage -- it reports it below -- it is
-    // answering from the log, which is the authority the page only materialises.
+    // answering from the log, which is the authority the block only materialises.
     //
     // The old form was also satisfied by ANY absent answer: a shard that failed to load, a
     // harness whose recover mode did nothing, a key that was never written. A test that passes

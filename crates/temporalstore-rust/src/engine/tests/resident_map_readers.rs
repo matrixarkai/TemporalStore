@@ -5,15 +5,15 @@
 //!
 //! # WHERE THIS STARTS
 //!
-//! #2017 drove that a resident container map can hold an element the live page index says is gone:
+//! #2017 drove that a resident container map can hold an element the live block index says is gone:
 //! after a removal and a reconcile against a snapshot that predates it, `shard.sets` held 2 members
-//! and the live page index held 1. It refused to serve `SMEMBERS` from that map for exactly that
+//! and the live block index held 1. It refused to serve `SMEMBERS` from that map for exactly that
 //! reason, and enumerated the map's OTHER readers without asking any of them anything:
 //!
 //! ```text
 //!     record_exists_exact                 EXISTS / TTL / EXPIRE / PERSIST
 //!     collect_live_block_slab_ids          the reclaim live-slab set
-//!     compact_shard_blocks_relocating      rewrites page addresses in place
+//!     compact_shard_blocks_relocating      rewrites block addresses in place
 //!     collect_upsert_index_items           resolves a member to build its WAL index item
 //!     visit_model_live_blocks              re-renders the component; bucket release and rebuild
 //! ```
@@ -65,29 +65,29 @@
 //! the states differ by a COUNT and not by which address wins a walk, and asks every reader.
 //!
 //! `visit_model_live_blocks` EMITTED THE GHOST. It walks `shard.sets` and re-renders each member's
-//! component, so a resurrected member is emitted as a live page entry with a component naming it.
+//! component, so a resurrected member is emitted as a live block entry with a component naming it.
 //! That feeds `collect_model_live_block_entries`, bucket release and the bucket-index rebuild.
 //!
 //! `collect_live_block_slab_ids` ABSORBED THE GHOST'S SLAB. It walks the model maps directly -- the
 //! comment in `compact_shard_blocks_relocating` says so, as the reason it cannot share the
 //! compaction preamble's walk -- so the ghost's `block_slab_id` joins the reclaim live set and a
-//! slab is held against reclamation for a page nothing can reach. Conservative, so not data loss,
+//! slab is held against reclamation for a block nothing can reach. Conservative, so not data loss,
 //! and real.
 //!
 //! `compact_shard_blocks_relocating` RELOCATED IT, and this is the one the source reads the other
 //! way round until you find the right loop. Its preamble builds `collect_live_block_entries` reports,
 //! and that function dispatches to the BUCKET-INDEX walk whenever the index is non-empty -- which is
-//! what makes it look page-index-bounded. The relocation itself is not those reports. It is
+//! what makes it look block-index-bounded. The relocation itself is not those reports. It is
 //! `for (key, members) in shard.sets.iter_mut()`, one arm per model, handing every address the map
 //! names to `compact_block_addresses` to be read off the old slab, appended to the fresh one and
-//! rewritten in place. So the RESIDENT MAP is compaction's work list: a ghost is a page compaction
+//! rewritten in place. So the RESIDENT MAP is compaction's work list: a ghost is a block compaction
 //! reads, copies onto every slab it ever rolls, and keeps alive for good. The test asserts the
-//! property that makes the loop safe -- every address the maps name is a live page -- over all five
+//! property that makes the loop safe -- every address the maps name is a live block -- over all five
 //! element-bearing models, because the loop has an arm for each.
 //!
 //! `collect_upsert_index_items` WOULD build an item for the ghost -- asked directly with the ghost's
-//! component it resolves the address straight out of `shard.sets` and emits a page item, which on
-//! replay would re-install an index entry for a page that was removed. Nothing asks it: the
+//! component it resolves the address straight out of `shard.sets` and emits a block item, which on
+//! replay would re-install an index entry for a block that was removed. Nothing asks it: the
 //! component list it is driven from comes from `command_upsert_components`, which has arms for the
 //! six ADD/SET commands and none for any removal. `SetRemove`'s component is produced by
 //! `command_removed_component` instead, on the `collect_command_index_items_for` path. LATENT, and
@@ -97,14 +97,14 @@
 //! # WHETHER THE MERGE CAN BE MADE UNABLE TO RESURRECT
 //!
 //! It can, and #2005 already wrote the question. #2005 fixed a resurrection on this same function
-//! by applying the delta fold's carried elements ONCE, after the page index had settled, asking
+//! by applying the delta fold's carried elements ONCE, after the block index had settled, asking
 //! "is there still a page at the address this element was carried with?" -- `live_block_key` over the
 //! finished bucket index. That fix was complete FOR THE CARRY. It left the other input to the same
 //! merge unasked.
 //!
 //! SO THIS IS A DIFFERENT MECHANISM, NOT AN INCOMPLETE FIX, and the distinction is the whole reason
 //! the question was worth asking. #2005's resurrection came from `fold_carried_container_elements`
-//! putting an element into the durable map that a later record's page removal then contradicted --
+//! putting an element into the durable map that a later record's block removal then contradicted --
 //! an input BUILT during the load. #2017's comes from the PERSISTED map itself,
 //! `set_index_serde`'s `(member bytes, address)` pairs, being older than the page index it is merged
 //! with -- an input READ off disk. One is a fold ordering bug and it is fixed; the other is a
@@ -113,15 +113,15 @@
 //!
 //! `fill_absent_elements` now asks #2005's question of the persisted map too. That KEEPS #1989's
 //! element and DROPS #2017's, which is what makes it the right question rather than a narrowing:
-//! #1989's case is a page whose component cannot be decoded, so the derived view cannot name the
-//! element while the page is RIGHT THERE in the index -- live at its address, kept. #2017's case is
-//! a page that is gone from the index -- not live at its address, dropped. The function's stated job,
+//! #1989's case is a block whose component cannot be decoded, so the derived view cannot name the
+//! element while the block is RIGHT THERE in the index -- live at its address, kept. #2017's case is
+//! a block that is gone from the index -- not live at its address, dropped. The function's stated job,
 //! "keep every durable element the derived view could not produce", becomes "keep every durable
-//! element the derived view could not produce AND whose page is still there".
+//! element the derived view could not produce AND whose block is still there".
 //!
 //! A PERSISTED KEY WITH NO SURVIVING ELEMENT NOW GETS NO ENTRY AT ALL. The old body ran
 //! `derived.entry(key).or_default()` before looking at a single element, so a persisted key whose
-//! every page was gone -- and a persisted key holding an empty map -- installed an EMPTY member map
+//! every block was gone -- and a persisted key holding an empty map -- installed an EMPTY member map
 //! under a live key: the same phantom `SetRemove` was leaving, arriving by reload instead. The entry
 //! is created only when an element survives now.
 //!
@@ -139,30 +139,30 @@
 //! `saw_sets` is assigned at the TOP of the set arm, BEFORE the component decode. So it never meant
 //! "at least one set entry decoded" -- `saw_hashes` means that, because #2016 moved it inside its
 //! match for a reason that applies to the one arm with no durable map behind it. `saw_sets == false`
-//! means the settled page index holds NO SET PAGE AT ALL, and the skip then left the deserialized
-//! persisted map standing WHOLE: unfiltered, every stale entry intact. A store whose set pages were
-//! all removed after its last base-index write reloaded with a full resident map and an empty page
+//! means the settled block index holds NO SET BLOCK AT ALL, and the skip then left the deserialized
+//! persisted map standing WHOLE: unfiltered, every stale entry intact. A store whose set blocks were
+//! all removed after its last base-index write reloaded with a full resident map and an empty block
 //! index, which is the over-complete state by the one route the merge never saw.
 //!
 //! The three merges are UNCONDITIONAL now, so the filter answers that arm too. Running them with an
 //! empty derived view is safe for the same reason the filter is safe at all: it drops only an element
-//! whose address matches no live page in the finished index, which trusts the index exactly as far as
+//! whose address matches no live block in the finished index, which trusts the index exactly as far as
 //! this function already trusts it two arms up, where `shard.strings = strings` and
 //! `shard.hashes = hashes` assign the derived view WHOLESALE.
 //! `the_merge_runs_even_when_no_set_block_survived` drives both arms.
 //!
 //! # AND STILL NO SCAN SHIPS, FOR A SMALLER REASON THAN THE ONE THIS OPENED WITH
 //!
-//! The map can no longer hold a member the page index does not, which was #2017's whole objection,
+//! The map can no longer hold a member the block index does not, which was #2017's whole objection,
 //! and every reader above now agrees with the index. It does not follow that `SMEMBERS` can be served
-//! from it, and the residual is in the other direction: a live page whose component cannot be decoded
+//! from it, and the residual is in the other direction: a live block whose component cannot be decoded
 //! is in the index and, unless the persisted map happens to hold it, in NO map -- #1989's case, where
 //! the derived view cannot name the element. A listing served from `shard.sets` would MISS it, and a
 //! listing that under-reports is worse than the reads it saves. Nothing in this engine writes a
 //! non-hex set component, so that is latent, and it is latent on the write path rather than on this
 //! function.
 //!
-//! So the saving #2017 measured -- `SMEMBERS` at 1.00 page reads per member, flat across a 32x width
+//! So the saving #2017 measured -- `SMEMBERS` at 1.00 block reads per member, flat across a 32x width
 //! change, against a `zset` control at 0.00 -- is now UNBLOCKED rather than taken. It is a
 //! serving-path change with its own measurement and its own gate, and it does not belong in a commit
 //! that moves a recovery path. Stated here so the next reader does not have to re-derive whether the
@@ -173,7 +173,7 @@
 //! The `zset` and `list` merges take the same new filter and the same two tests exercise the set
 //! arm only for the reader sweep; `both_inputs_to_the_merge_now_answer_the_same_live_block_question`
 //! covers all three arms for the filter itself. `hashes` has no durable map and no merge, so it has
-//! no persisted input to filter. The page-read saving is quoted from #2017 and not re-derived here.
+//! no persisted input to filter. The block-read saving is quoted from #2017 and not re-derived here.
 #![allow(clippy::all)]
 use super::*;
 use std::collections::{BTreeMap, BTreeSet};
@@ -297,7 +297,7 @@ fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
 /// The members the SERVING PATH answers for one set key -- the population a listing hands back.
 ///
 /// IT REPLACED `page_index_members`, WHICH CANNOT EXIST ANY MORE, and that is recorded here because
-/// two arms in this module turn on it. The old helper decoded members out of the component each page
+/// two arms in this module turn on it. The old helper decoded members out of the component each block
 /// was filed under; the index entry stopped naming its element, so
 /// `bucket_index_component_block_addresses` hardcodes `None` in the pair's first slot on all three
 /// of its return paths and the walk now hands back addresses and nothing else. The helper returned
@@ -305,14 +305,14 @@ fn resident_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
 ///
 /// AND THE DERIVED SIDE OF THE MERGE IS EMPTY, measured by handing `fill_absent_elements` an empty
 /// persisted map and finding `shard.sets` empty afterwards. Rebuilding a set's members from the live
-/// page index needs the component the entry no longer carries, so nothing arrives from that side:
+/// block index needs the component the entry no longer carries, so nothing arrives from that side:
 /// the resident set map is wholly the durable snapshot's, and the address test is the only filter
 /// there is. That is why these arms compare the map against the SERVING path and not against a
 /// second derivation of the same thing.
 ///
-/// AND THE PAGE PAYLOAD IS NOT THE SUBSTITUTE, measured rather than argued: a removal leaves the
-/// element's page live and still stating the element, holding the removal in a SEPARATE tombstone
-/// page, so a payload-derived population OVER-REPORTS and would agree with the resident map -- which
+/// AND THE BLOCK PAYLOAD IS NOT THE SUBSTITUTE, measured rather than argued: a removal leaves the
+/// element's block live and still stating the element, holding the removal in a SEPARATE tombstone
+/// block, so a payload-derived population OVER-REPORTS and would agree with the resident map -- which
 /// would make the controls pass and the finding disappear. The serving path is the authority on
 /// which members a key holds, so it is the one asked. Asking it means the shard lock must be free.
 fn served_members(engine: &TemporalEngine, key: &str) -> BTreeSet<Vec<u8>> {
@@ -657,14 +657,14 @@ fn build_divergence(
 ///
 /// The population each row was compared against came out of the index entry's component. The entry
 /// stopped naming its element, so that read returns NOTHING for every key and the per-row control
-/// fired -- correctly: it says in as many words that this fixture's page index says nothing. The
+/// fired -- correctly: it says in as many words that this fixture's block index says nothing. The
 /// population is re-attributed to the SERVING PATH, which means releasing the shard lock to ask the
 /// command surface, so the readers below run inside a scope and the comparison happens after it.
 ///
 /// # AND THE MERGE RESURRECTS AGAIN, SO TWO ASSERTIONS ARE TURNED OVER RATHER THAN RE-GOLDENED
 ///
 /// #2017's fix made `fill_absent_elements` ask "is there still a page at this address?". Its premise
-/// was ONE PAGE PER ELEMENT, and the collapse removed it: with one index entry a page, a page
+/// was ONE BLOCK PER ELEMENT, and the collapse removed it: with one index entry a block, a block
 /// SURVIVES the removal of one of its elements, so the address stays live while the element on it is
 /// dead. Measured here at ghost map 4 against a served 2.
 ///
@@ -674,10 +674,10 @@ fn build_divergence(
 /// literal, because it is the fixture's number and not the store's.
 ///
 /// AND READER 4'S SAFETY PROPERTY STILL HOLDS, FOR A BETTER REASON THAN BEFORE. Every address the
-/// resident maps name is a live page -- including the resurrected ones, whose pages are live exactly
+/// resident maps name is a live block -- including the resurrected ones, whose blocks are live exactly
 /// because the collapse keeps them. `compact_shard_blocks_relocating` therefore relocates nothing
 /// that is not there, and the hazard reader 2 was asserted against -- re-rendering a component for a
-/// member whose page was REMOVED -- is now unreachable rather than absent.
+/// member whose block was REMOVED -- is now unreachable rather than absent.
 ///
 /// rust-internal: calls the engine's own reconcile and its map readers directly, then the commands
 #[test]
@@ -788,14 +788,14 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         // other model), handing each address to `compact_block_addresses` to be read off the old
         // slab, appended to the fresh one and rewritten IN PLACE. The preamble's
         // `collect_live_block_entries` reports are a different walk and do not bound it. So the map
-        // IS compaction's work list, and a member whose page is gone is a page compaction reads,
+        // IS compaction's work list, and a member whose block is gone is a block compaction reads,
         // copies onto every new slab it rolls, and keeps alive for good.
         //
         // THE PROPERTY THAT MAKES THAT SAFE IS THE ONE ASSERTED BELOW: every address the resident
-        // maps name is a live page in the index. It holds even though the merge resurrects, because
-        // what the merge keeps is precisely the elements whose PAGES are still live -- so the
+        // maps name is a live block in the index. It holds even though the merge resurrects, because
+        // what the merge keeps is precisely the elements whose BLOCKS are still live -- so the
         // resurrection costs a wrong answer only to a reader that trusts the map for MEMBERSHIP,
-        // never a relocation of a page that is not there. Checked over all five element-bearing
+        // never a relocation of a block that is not there. Checked over all five element-bearing
         // models, not just the set arm, because the relocation loop has an arm for each.
         // -----------------------------------------------------------------------------------------
         let live_addresses: BTreeSet<(u64, u64, u64)> = shard
@@ -1019,9 +1019,9 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
     //
     // THE ASSERTION THIS REPLACES IS DELETED WITH ITS REASON. It read `ghost_index_members ==
     // emitted_set_entries` and said a mismatch meant the reader was "re-rendering a component for a
-    // member whose page was removed". Both sides of it are gone: the left was the component-decoded
+    // member whose block was removed". Both sides of it are gone: the left was the component-decoded
     // population, which is now always 0, and the hazard is unreachable rather than absent, because
-    // the pages the resurrected members name are live. Reader 4's `named_but_not_live.is_empty()`
+    // the blocks the resurrected members name are live. Reader 4's `named_but_not_live.is_empty()`
     // asserts that property directly, over all five models instead of one.
     assert!(
         emitted_set_entries >= 1 && emitted_set_entries <= ghost_row.1,
@@ -1041,16 +1041,16 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
 // 3. THE TWO INPUTS TO ONE MERGE, AND WHY #2005's FIX DID NOT COVER BOTH
 // =================================================================================================
 
-/// BOTH INPUTS TO THE MERGE NOW ANSWER THE SAME LIVE-PAGE QUESTION.
+/// BOTH INPUTS TO THE MERGE NOW ANSWER THE SAME LIVE-BLOCK QUESTION.
 ///
 /// #2005 fixed a resurrection on `fill_absent_elements` from the CARRY side: the delta fold's
-/// carried elements are applied once, after the page index settles, and only where a page is still
+/// carried elements are applied once, after the block index settles, and only where a block is still
 /// at the carried address. #2017 reached the same over-complete state through the other input --
-/// the PERSISTED map read off disk, older than the page index it merges with -- which that fix
+/// the PERSISTED map read off disk, older than the block index it merges with -- which that fix
 /// never looked at. Different mechanism, and the reason the second one survived the first fix.
 ///
 /// THE TWO SIDE BY SIDE, one key each, all three merged kinds. Each subject's element has a
-/// FABRICATED address that names no page -- which is what a stale snapshot's entry is, once its page
+/// FABRICATED address that names no block -- which is what a stale snapshot's entry is, once its block
 /// is gone -- and each control's element has its real live address. A subject dropped and a control
 /// kept is the only outcome that distinguishes the filter from either "keep everything" or "keep
 /// nothing".
@@ -1089,18 +1089,18 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&1).expect("shard 1 is loaded");
 
-    // A page address that is in NO bucket: an offset far past anything this fixture wrote, on a
-    // slab id nothing uses. This is the shape of a persisted entry whose page has been removed.
+    // A block address that is in NO bucket: an offset far past anything this fixture wrote, on a
+    // slab id nothing uses. This is the shape of a persisted entry whose block has been removed.
     let live_control_address = shard
         .sets
         .get("s")
         .and_then(|members| members.values().next())
         .cloned()
         .expect("the control set member is in the resident map");
-    // A page address in NO bucket, built off a real one so every field is in range by construction
+    // A block address in NO bucket, built off a real one so every field is in range by construction
     // (`try_from_parts` refuses an out-of-range slab or offset, and a refusal here would read as a
     // test bug rather than as the state being modelled). Only the slab id moves, far past anything
-    // this fixture rolled: this is the shape of a persisted entry whose page has been removed.
+    // this fixture rolled: this is the shape of a persisted entry whose block has been removed.
     let dead_address = ElementEntry::try_from_parts(
         live_control_address.block_slab_id().saturating_add(4_096),
         live_control_address.offset(),
@@ -1173,7 +1173,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
         list_seqs
     );
 
-    // THE CONTROLS, all three: an element whose page IS live survives the merge. This is #1989's
+    // THE CONTROLS, all three: an element whose block IS live survives the merge. This is #1989's
     // rule and the filter must not touch it.
     assert!(
         set_members.contains(&b"set-control".to_vec()),
@@ -1193,7 +1193,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
         "the list control was dropped"
     );
 
-    // THE SUBJECTS: an element whose page is gone is not resurrected.
+    // THE SUBJECTS: an element whose block is gone is not resurrected.
     assert!(
         !set_members.contains(&b"set-subject".to_vec()),
         "`fill_absent_elements` resurrected a set member whose block is in no bucket"
@@ -1209,24 +1209,24 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     println!("  all three subjects dropped, all three controls kept");
 }
 
-/// A BUCKET HOLDING A CONTAINER PAGE IS NEVER RELEASED, WHICH IS WHAT KEEPS THE FILTER FROM LOSING
+/// A BUCKET HOLDING A CONTAINER BLOCK IS NEVER RELEASED, WHICH IS WHAT KEEPS THE FILTER FROM LOSING
 /// DATA.
 ///
 /// This is the one place the filter could have DESTROYED something rather than declined to resurrect
 /// it, so the property it rests on is driven rather than read.
 ///
-/// A RELEASED BUCKET'S PAGES ARE ABSENT FROM `bucket_index.bucket_map` ON PURPOSE while its elements
+/// A RELEASED BUCKET'S BLOCKS ARE ABSENT FROM `bucket_index.bucket_map` ON PURPOSE while its elements
 /// are still live -- that is what a release IS. `collect_bucket_index_live_block_entries` supplements
 /// exactly those back in from the model maps, and says so: "what this returns is what the bucket index
-/// WOULD say if nothing were released". A live-page set built by walking `bucket_map` directly -- the
-/// shape that reads correctly and is wrong -- omits every released page, so if a container page could
+/// WOULD say if nothing were released". A live-block set built by walking `bucket_map` directly -- the
+/// shape that reads correctly and is wrong -- omits every released block, so if a container block could
 /// ever sit in a released bucket, the filter would drop it. Four of the reconcile's six call sites run
 /// on a live shard where a release can already have happened.
 ///
 /// IT CANNOT, AND THE REASON IS AN ALLOW-LIST. `released_model_kind_is_addressable` admits exactly
 /// `string` and `context_node`, and names `set`, `zset` and `list` among the kinds held out: they are
 /// read whole through `bucket_index_component_block_addresses`, which has no point-lookup equivalent,
-/// so a released page of those kinds could not be resolved. A candidate bucket holding one is refused
+/// so a released block of those kinds could not be resolved. A candidate bucket holding one is refused
 /// with `BlockKindNotAddressable`. The allow-list and the three merged kinds are disjoint.
 ///
 /// SO THE FILTER'S LIVE SET IS STILL TAKEN FROM `entries` AND NOT FROM `bucket_map`, because resting
@@ -1259,7 +1259,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         );
     }
     // THE CONTROL's object: a `string`, which the allow-list DOES admit. Several, under keys chosen
-    // to land in buckets of their own, so at least one bucket holds strings and no container page.
+    // to land in buckets of their own, so at least one bucket holds strings and no container block.
     for index in 0..6 {
         run(
             &engine,
@@ -1272,7 +1272,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     // A release refuses a DIRTY bucket -- "at the shipped `eviction_dump_before_evict` false a
     // freshly written bucket is dirty and every candidate is refused on `bucket_dirty`". The index
     // is dumped, then the shard is put in the state a RELOAD leaves it in, which is the state the
-    // actuator is shipped to act on: `load_index_inner` clears the per-bucket and per-page dirty
+    // actuator is shipped to act on: `load_index_inner` clears the per-bucket and per-block dirty
     // flags on the stated ground that reloaded data is durable, hence clean, and then refreshes the
     // runtime flags from the live (empty on load) `dirty_objects` set.
     engine.flush_shard_index(1);
@@ -1289,7 +1289,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
             }
         }
         crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
-        // The bucket the set's pages are filed in, before anything is released.
+        // The bucket the set's blocks are filed in, before anything is released.
         let (start, end) = shard.routing_range();
         let set_bucket = crate::engine::block_routing_bucket("released", start, end);
         let candidates: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
@@ -1328,7 +1328,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         "the release actuator released {released_count} bucket(s), so NOTHING in this fixture can \
          be released and the refusal below says nothing about the set"
     );
-    // THE FINDING: the set's bucket is refused, by KIND, and its pages stay in the index.
+    // THE FINDING: the set's bucket is refused, by KIND, and its blocks stay in the index.
     assert!(
         kind_refusals >= 1,
         "no bucket was refused on `BlockKindNotAddressable`, so the set's bucket was not held back \
@@ -1348,7 +1348,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
          release took some after all"
     );
 
-    // Now the reconcile, on a shard whose page index is deliberately missing the released pages.
+    // Now the reconcile, on a shard whose block index is deliberately missing the released blocks.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard 1 is loaded");
@@ -1389,16 +1389,16 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 /// The three merges were gated on `saw_sets` / `saw_zsets` / `saw_lists`. Each is set at the TOP of
 /// its arm, BEFORE the component decode -- which is what distinguishes them from `saw_hashes`, moved
 /// INSIDE its match by #2016 for a reason that applies to an arm with no durable map behind it. So
-/// `saw_sets == false` never meant "no set entry decoded"; it meant the settled page index held NO
-/// SET PAGE AT ALL, and skipping the merge there left the deserialized persisted map standing WHOLE.
+/// `saw_sets == false` never meant "no set entry decoded"; it meant the settled block index held NO
+/// SET BLOCK AT ALL, and skipping the merge there left the deserialized persisted map standing WHOLE.
 ///
-/// A store whose every set page was removed after its last base-index write therefore reloaded with
-/// a full resident map and an empty page index -- the over-complete state again, reached by the one
+/// A store whose every set block was removed after its last base-index write therefore reloaded with
+/// a full resident map and an empty block index -- the over-complete state again, reached by the one
 /// route the merge never saw, and the one a listing served from `shard.sets` would have fallen
 /// straight through. The merges are unconditional now and the filter answers this arm too.
 ///
 /// BOTH ARMS DRIVEN, and they differ by a COUNT rather than by which arm ran: the subject removes
-/// every set page (no set entry survives, the old skip branch), the control leaves one alive (the
+/// every set block (no set entry survives, the old skip branch), the control leaves one alive (the
 /// old merge branch).
 ///
 /// # THE POPULATION IS NOW THE SERVED ONE, AND THE ARMS NO LONGER AGREE
@@ -1408,11 +1408,11 @@ fn a_bucket_holding_a_container_block_is_never_released() {
 /// why the control's `assert_eq!(1, in_index)` fired. It is re-attributed to the serving path.
 ///
 /// AND THE TWO ARMS COME APART, WHICH IS THE FINDING RATHER THAN A FIXTURE DETAIL. The SUBJECT arm
-/// still proves what this test was opened for: with no set page surviving, the merge runs and the
+/// still proves what this test was opened for: with no set block surviving, the merge runs and the
 /// map does NOT stand whole -- map 0 and served 0, where a skip leaves 3. The CONTROL arm now
-/// DIVERGES, at map 3 against a served 1, because `fill_absent_elements` tests whether a page is
-/// live at the persisted element's ADDRESS and one index entry a page keeps that page alive through
-/// the removal of its element. The #2017 fix's premise was one page per element; the collapse
+/// DIVERGES, at map 3 against a served 1, because `fill_absent_elements` tests whether a block is
+/// live at the persisted element's ADDRESS and one index entry a block keeps that block alive through
+/// the removal of its element. The #2017 fix's premise was one block per element; the collapse
 /// removed it. `set_listing_block_reads` carries the same finding from the other side.
 ///
 /// So the unconditional merge is asserted where it bites -- on the arm that used to skip -- and the
@@ -1501,7 +1501,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
         );
 
         if keep_one_member {
-            // THE CONTROL ARM. One set page survives, so this is the branch that always merged --
+            // THE CONTROL ARM. One set block survives, so this is the branch that always merged --
             // and it is the branch where the address-liveness test now keeps the removed elements.
             assert_eq!(
                 3, in_map,
@@ -1518,7 +1518,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
                  `shard.sets` needs re-deriving rather than re-asserting"
             );
         } else {
-            // THE SUBJECT ARM. No set page survives -- the branch that used to skip the merge, and
+            // THE SUBJECT ARM. No set block survives -- the branch that used to skip the merge, and
             // the one this test exists for. A skip leaves the deserialized map standing WHOLE at 3.
             assert_eq!(
                 0, in_map,

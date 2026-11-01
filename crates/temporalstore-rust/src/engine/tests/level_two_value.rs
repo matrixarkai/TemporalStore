@@ -5,7 +5,7 @@
 //!
 //! # WHAT THIS STEP IS, AND WHAT IT IS NOT
 //!
-//! The resident page entry is being relocated into the model map's level-two position, where it
+//! The resident block entry is being relocated into the model map's level-two position, where it
 //! can be KEY-INDEPENDENT: the object key is the level-one key and the element name is the
 //! level-two key, so the value has to name neither. That relocation is three changes -- the value
 //! becomes a type, the readers stop going to the bucket index, and the entry's remaining fields

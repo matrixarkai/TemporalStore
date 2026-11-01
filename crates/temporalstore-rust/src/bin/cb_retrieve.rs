@@ -63,7 +63,7 @@ fn main() {
     let trace_stages = arg("--trace-stages", "0") == "1";
     // Retrieval probes should measure serving-read latency, not block startup on
     // full page-cache warmup. The decoded serving maps are still rebuilt during
-    // load; cold pages can then warm through read-through or a separate warmer.
+    // load; cold blocks can then warm through read-through or a separate warmer.
     // Only the default moves: an operator who set the variable keeps what they asked for. This
     // used to be a write into the process environment, aimed at an engine built further down.
     let warm_cache_in_background =

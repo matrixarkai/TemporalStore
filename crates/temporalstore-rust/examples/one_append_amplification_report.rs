@@ -77,7 +77,7 @@ enum Shape {
     Outcome,
 }
 
-// Capture the engine's own record: invented object IDs or omitted pages change the cost.
+// Capture the engine's own record: invented object IDs or omitted blocks change the cost.
 fn entry_for(shape: Shape, value: Vec<u8>) -> SharedStoreWalEntry {
     let command = Command::StringSet {
         key: KEY.to_string(),
@@ -167,7 +167,7 @@ async fn one_append(
     let replicator = SharedStoreReplicator::new(cluster, store.clone())
         .with_wal_append_mode(SharedStoreWalAppendMode::ProtobufAppendBlob);
 
-    // Deterministic dense bytes keep page compression from hiding per-byte storage costs.
+    // Deterministic dense bytes keep block compression from hiding per-byte storage costs.
     let mut seed = 0x1234_5678u32;
     let value: Vec<u8> = (0..payload)
         .map(|_| {

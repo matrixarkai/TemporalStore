@@ -122,7 +122,7 @@ fn a_load_that_replays_a_wal_suffix_runs_with_the_serving_gate_shut() {
 /// in the log until the replay underneath puts them back. The gate is what keeps that window from
 /// being served, and nothing in the crate read it on this path.
 ///
-/// Installed into a restore target -- the dump's pages, a fresh index dir, the log -- because a
+/// Installed into a restore target -- the dump's blocks, a fresh index dir, the log -- because a
 /// manifest re-installed onto the shard that minted it is refused as stale by its own index-log
 /// sequence, which is not this window.
 #[test]

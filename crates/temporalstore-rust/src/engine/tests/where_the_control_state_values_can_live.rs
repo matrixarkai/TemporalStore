@@ -6,7 +6,7 @@
 //! `control_state_changes` and `control_state_selection` are two of the twelve maps
 //! `apply_key_state_field` folds (three of thirteen when this was written, before the two change
 //! maps became one). The consolidated map stores an `ObjectSlot`
-//! -- a record plus an element array, both of which describe WHERE PAGES LIVE. These three hold
+//! -- a record plus an element array, both of which describe WHERE BLOCKS LIVE. These three hold
 //! domain values. This file pins what is true of them, so the floor on the goal is recorded with
 //! its evidence rather than asserted in a report.
 //!
@@ -35,13 +35,13 @@
 //!
 //! 4. NONE OF THEM HAS AN OUTER KIND KEY.
 //!    [`none_of_these_maps_has_a_stored_model_kind`] asks `StoredModelKind::from_stored_name`
-//!    rather than reading a list. `control_state` has a variant because its data is PAGES; these
-//!    three have none because they have no pages at all.
+//!    rather than reading a list. `control_state` has a variant because its data is BLOCKS; these
+//!    three have none because they have no blocks at all.
 //!
 //! # THE FLOOR, AND THE ONE STEP OF IT THAT HAS SINCE BEEN TAKEN
 //!
 //! This module was written when `apply_key_state_field` folded THIRTEEN maps. NINE of them have
-//! `ElementEntry` values -- a page address, which is what a slot exists to hold: `features`,
+//! `ElementEntry` values -- a block address, which is what a slot exists to hold: `features`,
 //! `context_nodes`, `context_events`, `context_indexes`, `context_audits`, `context_entities`,
 //! `context_children`, `context_summaries`, `context_compressions`. FOUR did not, and the fourth
 //! was the one no list of the problem had mentioned -- `expires_at_ms`, whose value is a deadline.
@@ -53,7 +53,7 @@
 //! identically, kept mutually exclusive per `(key, bucket)` by `record_change` -- and they are now
 //! one map whose bucket value is `hll::DistinctBucket`. The three that remain outside the slot are:
 //!
-//! | map | value | a page address? |
+//! | map | value | a block address? |
 //! |---|---|---|
 //! | `control_state_changes` | `BTreeMap<u64, DistinctBucket>` | no -- members or a sketch |
 //! | `control_state_selection` | `ControlStateSelectionValue` | no -- time, bytes, kind |
@@ -339,8 +339,8 @@ fn a_bucket_holds_exactly_one_representation() {
 /// 4. NONE OF THE THREE HAS AN OUTER KIND KEY, WHICH IS WHY A SLOT CANNOT ADDRESS THEM.
 ///
 /// Asked of `StoredModelKind::from_stored_name` rather than of a list in a comment. A kind exists
-/// for data whose elements are PAGES; the positive control is `control_state`, whose blocks are
-/// pages and which does have one.
+/// for data whose elements are BLOCKS; the positive control is `control_state`, whose blocks are
+/// blocks and which does have one.
 #[test]
 fn none_of_these_maps_has_a_stored_model_kind() {
     assert!(

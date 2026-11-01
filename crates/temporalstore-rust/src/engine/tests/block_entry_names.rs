@@ -1,9 +1,9 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE THREE NAMES A PAGE ENTRY CARRIES, and whether they are per-page or per-bucket facts.
+//! THE THREE NAMES A BLOCK ENTRY CARRIES, and whether they are per-block or per-bucket facts.
 //!
-//! #1959 ranked `BlockIndex` as the next dominant per-item term -- per PAGE rather than per
+//! #1959 ranked `BlockIndex` as the next dominant per-item term -- per BLOCK rather than per
 //! bucket, and so 52.0x the `BucketNode` total in a container store -- and opened up its 104
 //! bytes: the address was 48, three flag bytes sat inside the alignment rounding, and **the three
 //! names were 48**, the largest group. It called them "the three shared names" and priced holding
@@ -18,16 +18,16 @@
 //!
 //! "SHARED" IS AN ASSUMPTION ABOUT WHERE THE NAMES COME FROM, and this module measures it instead.
 //! The three are `object_key`, `model_id` and `component`. If all three were the same for every
-//! page of a routing bucket, storing them once per page would be pure duplication and the entry
+//! block of a routing bucket, storing them once per block would be pure duplication and the entry
 //! could carry a handle to the bucket's copy. That is the change this module was written to
 //! justify, and it does not survive the measurement.
 //!
 //! WHAT THE COUNTS SAY, over real stores seeded through the engine:
 //!
-//!   * `component` is a PER-PAGE fact, by construction. A container key's fields, members and
-//!     elements are each their own page and they all route to the container key's one bucket; the
-//!     component is the only thing that tells them apart. A bucket of 100 pages holds 100 distinct
-//!     components. Hoisting it would file a hundred hash fields as one page.
+//!   * `component` is a PER-BLOCK fact, by construction. A container key's fields, members and
+//!     elements are each their own block and they all route to the container key's one bucket; the
+//!     component is the only thing that tells them apart. A bucket of 100 blocks holds 100 distinct
+//!     components. Hoisting it would file a hundred hash fields as one block.
 //!   * `object_key` and `model_id` are per-OBJECT facts, and a routing bucket is not an object.
 //!     A bucket is `hash(key) % routing_bucket_count`, so whether one bucket holds one object or
 //!     forty is a property of the SHARD'S CONFIGURED BUCKET RANGE and nothing else. At the range
@@ -38,8 +38,8 @@
 //!
 //! SO THE PREMISE IS CONFIGURATION-DEPENDENT, WHICH IS THE WORST WAY FOR IT TO BE WRONG. A change
 //! that hoisted the names to the node would pass every test on a store built by `load_shard` and
-//! lose pages on a store built by the cluster path -- and it would lose them SILENTLY, because a
-//! page filed under the wrong object name is still on its slab and nothing looks for it. Both
+//! lose blocks on a store built by the cluster path -- and it would lose them SILENTLY, because a
+//! block filed under the wrong object name is still on its slab and nothing looks for it. Both
 //! ranges are measured here, in the same module, so the two cannot be confused again.
 #![allow(clippy::all)]
 use super::*;
@@ -59,7 +59,7 @@ use crate::alloc_probe::Probe;
 // THE INSTRUMENT.
 // ---------------------------------------------------------------------------------------------
 
-/// How many DISTINCT values of each of the three names a routing bucket's pages carry, as bucket
+/// How many DISTINCT values of each of the three names a routing bucket's blocks carry, as bucket
 /// counts keyed by the distinct count.
 ///
 /// A histogram and not a mean for the reason #1959 established: a mean of "1.02 object keys a
@@ -70,10 +70,10 @@ struct NameSpread {
     object_key: BTreeMap<usize, usize>,
     model_id: BTreeMap<usize, usize>,
     component: BTreeMap<usize, usize>,
-    /// Buckets keyed by pages held, so the container case can be asserted reached.
+    /// Buckets keyed by blocks held, so the container case can be asserted reached.
     blocks_held: BTreeMap<usize, usize>,
-    /// Buckets whose every page carries the SAME component, counted separately: a bucket holding
-    /// one page trivially does, and a claim built on those would be vacuous.
+    /// Buckets whose every block carries the SAME component, counted separately: a bucket holding
+    /// one block trivially does, and a claim built on those would be vacuous.
     multi_block_buckets_with_one_component: usize,
     multi_block_buckets: usize,
 }
@@ -133,9 +133,9 @@ impl NameSpread {
     }
 }
 
-/// Walk every bucket of the loaded shard and count distinct names across its pages.
+/// Walk every bucket of the loaded shard and count distinct names across its blocks.
 ///
-/// `component` is counted over the OPTION, so a bucket where some pages have a component and some
+/// `component` is counted over the OPTION, so a bucket where some blocks have a component and some
 /// do not counts two -- which is the honest answer for "could one stored value serve them all".
 fn name_spread(engine: &TemporalEngine) -> NameSpread {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -229,7 +229,7 @@ pub(super) fn seed_routed_keys(engine: &TemporalEngine, strings_n: usize) {
 }
 
 /// Container keys: a hash, a set, a sorted set and a list, each of `members` elements. Every
-/// element is its own page and they all route to the container key's one bucket.
+/// element is its own block and they all route to the container key's one bucket.
 pub(super) fn seed_container_keys(engine: &TemporalEngine, keys: usize, members: usize) {
     let mut commands = Vec::with_capacity(keys * members);
     for k in 0..keys {
@@ -278,7 +278,7 @@ pub(super) fn seed_container_keys(engine: &TemporalEngine, keys: usize, members:
 // THE MEASUREMENT.
 // ---------------------------------------------------------------------------------------------
 
-/// ARE THE THREE NAMES THE SAME FOR EVERY PAGE OF A BUCKET? Counted, at two corpus sizes and over
+/// ARE THE THREE NAMES THE SAME FOR EVERY BLOCK OF A BUCKET? Counted, at two corpus sizes and over
 /// BOTH routing-bucket ranges this engine ships.
 ///
 /// THE STORE PATH LENGTH is held constant across arms and asserted. Counts are immune to it --
@@ -353,10 +353,10 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
         assert!(spread.blocks() > 0, "denominator: no block entries in this arm");
     }
 
-    // --- 1. `component` is a PER-PAGE fact, in both ranges. ---
+    // --- 1. `component` is a PER-BLOCK fact, in both ranges. ---
     //
     // The container arm is where this is visible at all, and the assertion is EQUALITY with the
-    // pages held rather than ">1": a bucket of a hundred pages holding two distinct components
+    // blocks held rather than ">1": a bucket of a hundred blocks holding two distinct components
     // would still refute hoisting, but it would not be the structure this engine actually has.
     for (index, spread) in wide_container.iter().chain(narrow_container.iter()).enumerate() {
         assert_eq!(
@@ -445,17 +445,17 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
 // WHAT THE ENTRY CAN STOP DOING, given that it must keep all three names.
 // ---------------------------------------------------------------------------------------------
 
-/// Distinct ALLOCATIONS of each name behind the pages of one object, counted by pointer.
+/// Distinct ALLOCATIONS of each name behind the blocks of one object, counted by pointer.
 ///
 /// Contents cannot tell one shared allocation from two equal ones; pointers can. This is the same
 /// instrument `part4::the_block_and_the_lookup_point_at_one_object_key` uses, applied across the
-/// pages of ONE OBJECT rather than between one page and the lookup -- which is the axis that test
-/// cannot see, because every object in its fixture has exactly one page.
+/// blocks of ONE OBJECT rather than between one block and the lookup -- which is the axis that test
+/// cannot see, because every object in its fixture has exactly one block.
 #[derive(Debug, Default, Clone)]
 struct KeyAllocationCensus {
-    /// Objects keyed by how many distinct object-key allocations their pages hold.
+    /// Objects keyed by how many distinct object-key allocations their blocks hold.
     object_key: BTreeMap<usize, usize>,
-    /// Objects keyed by how many distinct model-id allocations their pages hold.
+    /// Objects keyed by how many distinct model-id allocations their blocks hold.
     model_id: BTreeMap<usize, usize>,
     objects: usize,
     blocks: usize,
@@ -511,21 +511,21 @@ const ARC_HEADER_BYTES: usize = 16;
 fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    // (model_id, object_key) -> the distinct allocation addresses its pages hold.
+    // (model_id, object_key) -> the distinct allocation addresses its blocks hold.
     let mut by_object: BTreeMap<(String, String), (BTreeSet<usize>, BTreeSet<usize>, usize)> =
         BTreeMap::new();
     // READ THROUGH THE POSITION MAP, AND THE OBJECT-KEY COLUMN IS NOW A STRUCTURAL CONTROL.
     //
-    // This counted the distinct ALLOCATIONS of one object key that its own pages held, and
-    // `surplus_object_key_allocations` was the copies beyond the first. A page entry holds no
-    // key, so there is nothing per page to be a copy OF: the pages of an object are all handed
+    // This counted the distinct ALLOCATIONS of one object key that its own blocks held, and
+    // `surplus_object_key_allocations` was the copies beyond the first. A block entry holds no
+    // key, so there is nothing per block to be a copy OF: the blocks of an object are all handed
     // the one `Arc` their bucket's lookup holds, and the column reads 1 BY CONSTRUCTION.
     //
     // KEPT, FOR THE REASON THE `model_id` COLUMN BESIDE IT IS KEPT -- and the comment there says
     // it first. It is no longer evidence that a sharing pool was consulted; it still
-    // DISCRIMINATES, because a read path that copied the text per page instead of cloning the
+    // DISCRIMINATES, because a read path that copied the text per block instead of cloning the
     // `Arc` would report two here. That is not hypothetical: forty walks in this module tree take
-    // a key per page through this same inversion, and a copy per page would reinstate the exact
+    // a key per block through this same inversion, and a copy per block would reinstate the exact
     // duplication this change removed.
     let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -555,24 +555,24 @@ fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
     census
 }
 
-/// THE PAGES OF ONE OBJECT HOLD ONE ALLOCATION OF ITS KEY.
+/// THE BLOCKS OF ONE OBJECT HOLD ONE ALLOCATION OF ITS KEY.
 ///
-/// `part4::the_block_and_the_lookup_point_at_one_object_key` already asserts that a page and the
-/// object lookup point at one copy. Its fixture is 64 STRING keys -- one page each -- so the
-/// question it asks is only ever asked of a single page, and the axis where the answer differs is
-/// the one it cannot reach: an object with MANY pages, filed one page at a time.
+/// `part4::the_block_and_the_lookup_point_at_one_object_key` already asserts that a block and the
+/// object lookup point at one copy. Its fixture is 64 STRING keys -- one block each -- so the
+/// question it asks is only ever asked of a single block, and the axis where the answer differs is
+/// the one it cannot reach: an object with MANY blocks, filed one block at a time.
 ///
-/// That is the container workload, and it is precisely the workload where #1959 measured the page
-/// entry at 52.0x the node total. A hash of a hundred fields is a hundred pages of ONE object; if
-/// each page's entry built its own `Arc::from(object_key)`, the store would hold a hundred
+/// That is the container workload, and it is precisely the workload where #1959 measured the block
+/// entry at 52.0x the node total. A hash of a hundred fields is a hundred blocks of ONE object; if
+/// each block's entry built its own `Arc::from(object_key)`, the store would hold a hundred
 /// allocations of one short string and ninety-nine of them would carry nothing the first did not.
 ///
 /// Counted by POINTER. Two equal strings are indistinguishable by contents and cost twice as much,
 /// which is the whole reason this is not an equality assertion.
 ///
-/// THE ANTI-VACUITY CHECK IS THE FIXTURE ITSELF: an object with one page trivially holds one
+/// THE ANTI-VACUITY CHECK IS THE FIXTURE ITSELF: an object with one block trivially holds one
 /// allocation, so the assertion is made only after the census is shown to contain objects with
-/// many pages, and the widest is asserted to reach the hundred-page case.
+/// many blocks, and the widest is asserted to reach the hundred-block case.
 #[test]
 #[ignore = "seeds four stores; run by name"]
 fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
@@ -608,7 +608,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
         assert_eq!(path_lengths[0], *length, "the store path length moved between arms");
     }
 
-    // --- The fixture must reach the many-page object, or every claim below is free. ---
+    // --- The fixture must reach the many-block object, or every claim below is free. ---
     for (index, census) in containers.iter().enumerate() {
         assert!(
             census.objects > 0 && census.blocks > 0,
@@ -647,7 +647,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
     // shared regardless would say the same thing here whether or not the pool existed.
     //
     // SINCE THE ENTRY STOPPED HOLDING A STRING FOR IT, this control is structural: the spelling
-    // is a `&'static str` off `model_kind_registry`, so every page of a kind reads the same
+    // is a `&'static str` off `model_kind_registry`, so every block of a kind reads the same
     // address and no allocation exists to be duplicated. It is kept because it still discriminates
     // -- a census that reported two here would mean it is no longer reading the registry's
     // spelling -- but it is no longer evidence about a pool. ---
@@ -724,7 +724,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
         encoded(&block("k", "string", None, 1, 2, u64::MAX, (false, false, true)))
     );
 
-    // A whole index: one bucket, five pages of one object (one with a component) and a second
+    // A whole index: one bucket, five blocks of one object (one with a component) and a second
     // object in the SAME bucket -- the shape a cluster-range shard produces routinely.
     let mut node = BucketNode {
         routing_bucket: 7,
@@ -734,14 +734,14 @@ fn capture_the_stored_spelling_of_a_block_entry() {
         ..BucketNode::default()
     };
     node.object_index.insert(42);
-    // THE IDENTITY IS NAMED BESIDE EACH PAGE RATHER THAN READ OFF IT, which is what the fixture
+    // THE IDENTITY IS NAMED BESIDE EACH BLOCK RATHER THAN READ OFF IT, which is what the fixture
     // now has to do and what every production placement already does.
     //
     // THIS FIXTURE IS WHY THE REFUSAL IS WORTH HAVING. It built a `CoreIndex`, inserted a node
-    // holding six pages, and never filed the object lookup -- so the inversion named no position
+    // holding six blocks, and never filed the object lookup -- so the inversion named no position
     // and every stored key below was composed from the entry's own copy. That was invisible while
     // the entry held one. The encoder refuses it now, with the window named, and the fix is to
-    // file what a placement files: "bucket 7 holds a page whose stored key would name no object
+    // file what a placement files: "bucket 7 holds a block whose stored key would name no object
     // ... the inversion names NO position at all".
     //
     // THE BYTES DID NOT MOVE. `INDEX` below is character-for-character the 1,125 bytes this test
@@ -770,8 +770,8 @@ fn capture_the_stored_spelling_of_a_block_entry() {
 
     let mut index = CoreIndex::default();
     index.bucket_map.insert(7, node);
-    // ONE FILING PER PLACED PAGE, through the same door the engine files through, with the handle
-    // computed from the same terms the map keyed the page under.
+    // ONE FILING PER PLACED BLOCK, through the same door the engine files through, with the handle
+    // computed from the same terms the map keyed the block under.
     for (object_key, entry) in &blocks {
         let handle = crate::engine::state::block_index_handle(object_key, entry);
         index.insert_object_block_lookup(7, handle, object_key, entry);
@@ -787,7 +787,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
                 "        (\"{}\", \"{}\", {}, {}, {}, {}, {}, {}, {}),",
                 named.at(bucket.routing_bucket, *handle),
                 entry.model_id,
-                // The component column is `None` on every row now: an entry names a page. The
+                // The component column is `None` on every row now: an entry names a block. The
                 // column is kept in the printed shape so an existing golden still lines up.
                 "None".to_string(),
                 entry.address.block_slab_id(),
@@ -836,7 +836,7 @@ const ENTRY_OBJECT_KEY_AT_STAMP_26: &str = r#""object_key":"k","#;
 /// And its own copy of the kind, which is the key's leftmost slot.
 const ENTRY_MODEL_ID_AT_STAMP_26: &str = r#""model_id":"string","#;
 
-/// A whole shard index written at `15583789e`: one bucket holding six pages -- five of one object
+/// A whole shard index written at `15583789e`: one bucket holding six blocks -- five of one object
 /// (four plain, one carrying a component and a different kind) and one of a SECOND object in the
 /// same bucket, which is what a cluster-range shard produces routinely.
 /// The routing bucket an index written before this change carries, and what this binary writes in
@@ -864,7 +864,7 @@ const OLD_STORE_INDEX: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"
 /// Byte for byte the text above as it stood before `generation` became derived: `"g":9` beside a
 /// `"pi":4`, and block-ref keys ending `:4:9` to match. This engine has never written that --
 /// every production constructor passed `block_id.or(object_id)` -- but an index that DID carry it
-/// must not be loaded and silently re-keyed, because the generation is hashed into the page
+/// must not be loaded and silently re-keyed, because the generation is hashed into the block
 /// handle and rendered into the key, and those handles are on disk inside the lookup refs.
 const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"7":{"routing_slot":7,"layout":"MultiObject","dirty":false,"deleted":false,"meta_loaded":true,"loading":false,"in_memory":true,"ttl_ms":null,"dirty_generation":3,"last_dump_sequence":11,"object_index":[42],"deleted_object_index":[],"page_index":{"hash:k:f0:1:9:3:4:9":{"object_key":"k","model_id":"hash","component":"f0","address":{"a":4294967305,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":true,"deleted":false,"log_backed":false},"string:k::1:0:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967296,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:1:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967297,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:2:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967298,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:k::1:3:3:4:9":{"object_key":"k","model_id":"string","address":{"a":4294967299,"l":3,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true},"string:other::2:1:5:4:9":{"object_key":"other","model_id":"string","address":{"a":8589934593,"l":5,"pi":4,"oi":42,"rs":7,"g":9},"dirty":false,"deleted":false,"log_backed":true}}}}}"#;
 
@@ -880,7 +880,7 @@ const OLD_STORE_INDEX_WITH_AN_INDEPENDENT_GENERATION: &str = r#"{"bucket_map":{"
 /// stored text unmodified and the round trip would be an equality with itself.
 const REMOVED_KEY: &str = "\"last_dump_sequence\":11,";
 
-/// The element name as a stored row carries it, and the page handle that renders it.
+/// The element name as a stored row carries it, and the block handle that renders it.
 ///
 /// TWO PLACES, BECAUSE `block_index_written_key` RENDERS THE NAME INTO THE MAP KEY as well as the
 /// entry carrying it as a field. A canonicalisation that took only one of them would leave the
@@ -908,7 +908,7 @@ const OLD_STORE_BLOCKS: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, 
 // THE STORED FORMAT, pinned over several shapes.
 // ---------------------------------------------------------------------------------------------
 
-/// A page entry in a named shape, built from the declared types so the golden moves when the
+/// A block entry in a named shape, built from the declared types so the golden moves when the
 /// declaration does rather than going quietly stale.
 /// TWO FLAGS, NOT THREE, AND THE SIGNATURE IS WHAT ENFORCES IT.
 ///
@@ -926,10 +926,10 @@ const OLD_STORE_BLOCKS: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, 
 /// THE LITERAL IS EXHAUSTIVE AND HAS NO `..`, which is what makes it the tripwire the fourth shape
 /// used to be: an element-name field returning to the entry breaks THIS function to compile, before
 /// any golden has a chance to be re-goldened around it.
-/// THE OBJECT THIS FIXTURE'S PAGES BELONG TO, named once rather than at each encode.
+/// THE OBJECT THIS FIXTURE'S BLOCKS BELONG TO, named once rather than at each encode.
 ///
 /// The entry carries its own copy today and will not; what writes the stored key is the identity
-/// held BESIDE the page, so a fixture that encodes one has to state which object it means. This is
+/// held BESIDE the block, so a fixture that encodes one has to state which object it means. This is
 /// the same characters `block_fixture` puts on the entry, and a test comparing the two would be
 /// comparing a constant with itself -- the goldens below are what hold them together.
 pub(super) const BLOCK_FIXTURE_OBJECT_KEY: &str = "k";
@@ -959,7 +959,7 @@ pub(super) fn block_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
 /// over a single shape would pin the branch that omits it and say nothing about the branch that
 /// writes it." There is no branch that writes it. `BlockIndex` has no element-name field, so the
 /// WITH_COMPONENT shape serialized to the same bytes as PLAIN -- the two goldens were one golden
-/// twice, and the control asserting them different (`assert_ne!(plain, with_component)`, "a page
+/// twice, and the control asserting them different (`assert_ne!(plain, with_component)`, "a block
 /// carrying a component must not write the same bytes as one without it") had become a comparison
 /// of a value with itself, asserted unequal.
 ///
@@ -994,7 +994,7 @@ pub(super) fn block_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
 fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
     // THROUGH THE WRAPPER, WHICH NO LONGER TAKES A KEY. `BLOCK_FIXTURE_OBJECT_KEY` was the
     // characters the derive read off the entry and then the characters this fixture injected; the
-    // entry writes neither the object key nor the kind now, so the wrapper takes the page alone and
+    // entry writes neither the object key nor the kind now, so the wrapper takes the block alone and
     // the three goldens below are two keys lighter.
     let plain = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         block: &block_fixture(3, (false, false)),
@@ -1133,12 +1133,12 @@ fn the_stored_spelling_of_a_block_entry_moved_in_exactly_one_slot() {
 /// AN INDEX WRITTEN BEFORE THIS CHANGE, LOADED BY THIS BINARY, COMPARED ELEMENT BY ELEMENT.
 ///
 /// The text below is the shard index a store built at `15583789e` writes for a bucket holding
-/// five pages of one object -- four plain and one carrying a component -- plus a second object in
+/// five blocks of one object -- four plain and one carrying a component -- plus a second object in
 /// the same bucket. It is the bytes, not a paraphrase of them.
 ///
-/// THE DIRECTION THAT MATTERS is the one nothing reports. A reader that cannot find a page does
-/// not fail: the page is still on its slab and nothing looks for it. So the assertion is EQUALITY
-/// of the whole page set, field by field, against what went in -- never that the set is non-empty
+/// THE DIRECTION THAT MATTERS is the one nothing reports. A reader that cannot find a block does
+/// not fail: the block is still on its slab and nothing looks for it. So the assertion is EQUALITY
+/// of the whole block set, field by field, against what went in -- never that the set is non-empty
 /// afterwards.
 ///
 /// AND THE REVERSE IS NO LONGER THE SAME CLAIM, so it is no longer in this name. "An old index
@@ -1193,7 +1193,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
             .iter()
             // THE NINTH COLUMN IS READ NO LONGER, AND THE FIXTURE KEEPS IT ON PURPOSE. It records
             // what the old index STORED, which is the fixture's whole job -- and in some of these
-            // rows what it stored was WRONG: a log-resident flag set on a slab-backed page. That
+            // rows what it stored was WRONG: a log-resident flag set on a slab-backed block. That
             // disagreement was a documented defect. The property is derived from the address now,
             // so there is no stored copy left to round-trip and nothing to compare it against.
             //
@@ -1238,8 +1238,8 @@ fn an_index_written_before_this_change_loads_block_for_block() {
         loaded.len()
     );
     // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
-    // result. This read `loaded.iter().any(|page| page.2.is_some())` -- "no loaded page carries a
-    // component, so the component's stored round trip is untested" -- and no loaded page CAN carry
+    // result. This read `loaded.iter().any(|block| block.2.is_some())` -- "no loaded block carries a
+    // component, so the component's stored round trip is untested" -- and no loaded block CAN carry
     // one, so it could only ever fail. What it was protecting is still worth protecting: that the
     // stored bytes really do contain an element name for the decode to drop. So it is asked of the
     // fixture, in both of the places the name appears in a stored row.
@@ -1277,7 +1277,7 @@ fn an_index_written_before_this_change_loads_block_for_block() {
         bucket.block_index.len()
     );
 
-    // --- The control: a DIFFERENT page set must not compare equal, or the comparison above is
+    // --- The control: a DIFFERENT block set must not compare equal, or the comparison above is
     // reporting sameness it cannot actually detect. ---
     let mut injected = loaded.clone();
     injected[0].5 = injected[0].5.wrapping_add(1);
@@ -1382,7 +1382,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     // AND THE LOG-RESIDENT KEY IS DROPPED FROM THE EXPECTATION, COUNTED BOTH WAYS.
     //
     // THE CLAIM THIS TEST MAKES HAS SPLIT IN TWO, and only the first half is unchanged. An index
-    // written before this change still LOADS page for page -- asserted above, and that is the
+    // written before this change still LOADS block for block -- asserted above, and that is the
     // tolerant decoder doing its job, since the wire struct declines no unknown key. What it no
     // longer does is write back the SAME BYTES: it writes back one key lighter, because the entry
     // shed the flag nothing maintained. That is precisely what the format stamp is spent on.
@@ -1496,7 +1496,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     // fixture is a bare `CoreIndex` holding no object rows. `SHARD_INDEX_FORMAT_VERSION` 30 is
     // what that move cost, and appending it to the EXPECTATION rather than stripping it from the
     // result is deliberate: it keeps this comparison a byte golden over everything else, so a
-    // second key arriving, or a page entry changing, still fails here.
+    // second key arriving, or a block entry changing, still fails here.
     let canonical = canonical
         .strip_suffix('}')
         .map(|head| format!(r#"{head},"objects":{{}}}}"#))
@@ -1524,8 +1524,8 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
 /// The index here is the one above as it stood before `generation` became derived: `"g":9` beside
 /// a `"pi":4`, with block-ref keys ending `:4:9` to match. No production constructor in this
 /// engine emits that combination, but if one ever reached disk, loading it under the derivation
-/// would compute `4` where the writer stored `9` -- and the generation is hashed into the page
-/// handle and rendered into the key, so every page in the bucket would be filed under a name the
+/// would compute `4` where the writer stored `9` -- and the generation is hashed into the block
+/// handle and rendered into the key, so every block in the bucket would be filed under a name the
 /// refs already on disk do not use. That is a lost object, reported by nothing.
 ///
 /// So the load must FAIL, and fail where it can still be understood: at the address, during
@@ -1533,7 +1533,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
 /// failure, because a load that fails for some unrelated reason would pass a bare `is_err`.
 ///
 /// WITH ITS CONTROL, which is the test directly above: the same index with an agreeing generation
-/// loads page for page and rewrites as the same 1,349 bytes. Without that, this test would pass
+/// loads block for block and rewrites as the same 1,349 bytes. Without that, this test would pass
 /// just as well if the loader had stopped accepting any index at all.
 #[test]
 fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
@@ -1583,8 +1583,8 @@ fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
 // MEASURED AND WHY NO VERSION OF IT SURVIVES.
 //
 // `reading_a_name_is_not_slower_when_an_objects_pages_share_one_allocation` timed two stores
-// holding identical text in two REPRESENTATIONS: one where the pages of an object all pointed at
-// one `Arc<str>`, and one where `unshare_object_keys` had given each page its own. Its question
+// holding identical text in two REPRESENTATIONS: one where the blocks of an object all pointed at
+// one `Arc<str>`, and one where `unshare_object_keys` had given each block its own. Its question
 // was whether sharing cost a dependent load on the read path.
 //
 // ITS PREMISE WAS THE FIELD, STATED IN ITS OWN DOC, AND THE DOC HAD BECOME FALSE. It read: "This
@@ -1594,14 +1594,14 @@ fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
 // `unshare_object_keys` cannot be written at all -- there is no field to reseat.
 //
 // WHY IT IS NOT RESTATED AGAINST THE LOOKUP. The question it asked is answerable only where two
-// arms differ, and the surviving store has ONE arm: every page of an object is handed the one
-// allocation its bucket's lookup holds, and an engine that gave each page its own copy is not a
+// arms differ, and the surviving store has ONE arm: every block of an object is handed the one
+// allocation its bucket's lookup holds, and an engine that gave each block its own copy is not a
 // state this tree can reach. Its own guard said what a one-armed comparison is worth -- "this
 // comparison has two identical arms and would report 1.00x whatever the truth is" -- so keeping
 // it with the treatment arm removed is the failure it was built to refuse.
 //
 // AND THE COST IT WAS WATCHING FOR IS NOW A DIFFERENT COST, MEASURED ELSEWHERE. What a reader
-// pays to learn a page's object is no longer a pointer chase through the entry; it is a lookup
+// pays to learn a block's object is no longer a pointer chase through the entry; it is a lookup
 // inversion, built once per walk. `block_identities_in` and `BlockKeysByPosition` carry that price
 // in their own docs, and `the_block_and_the_lookup_point_at_one_object_key` holds the property
 // this A/B's "shared" arm stood for: the identity a reader is handed IS the lookup's allocation
@@ -1610,7 +1610,7 @@ fn an_old_store_whose_generation_disagrees_is_refused_before_the_decode() {
 // `widest_object_key_allocations` and `fold_every_name` went with it; both had this one caller.
 // `key_allocation_census`, which the first wrapped, has three others and stays.
 
-/// BYTES AND ALLOCATIONS PER PAGE, on the counting allocator, at two corpus sizes.
+/// BYTES AND ALLOCATIONS PER BLOCK, on the counting allocator, at two corpus sizes.
 ///
 /// ONE INSTRUMENT for both figures. #1959 found a published decline whose sign was wrong because
 /// it set a `size_of` saving against an allocator cost; nothing here mixes the two.
@@ -1663,8 +1663,8 @@ fn what_a_container_store_charges_the_allocator_a_block() {
 /// A COMPONENT CANNOT CROWD A KIND OUT OF THE POOL THEY SHARE.
 ///
 /// `part4::blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` asserts the PAGE's
-/// half of this: a page entry holds one byte for its kind and reads the registry's `&'static str`
-/// through it, so a page cannot hold a pooled copy at all. Its fixture is 200 strings and 40
+/// half of this: a block entry holds one byte for its kind and reads the registry's `&'static str`
+/// through it, so a block cannot hold a pooled copy at all. Its fixture is 200 strings and 40
 /// hashes whose field is always `"f"` -- ONE component name in the whole store -- so the pool it
 /// would have checked holds three entries against a cap of sixty-four and can never be full. The
 /// failure this test is about needs the pool FULL, and the only thing in this engine that fills it
@@ -1733,7 +1733,7 @@ fn a_container_cannot_fill_the_pool_the_kinds_are_interned_in() {
          their kind; the rest hold a copy, which is the cost the pool exists to remove"
     );
 
-    // And the page's own side of it: one byte, no string, nothing to pool.
+    // And the block's own side of it: one byte, no string, nothing to pool.
     let mut blocks = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         blocks += bucket.block_index.iter().count();
@@ -1796,7 +1796,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         bytes.len()
     );
 
-    // --- CONTROL: it round-trips at the right version, page for page. ---
+    // --- CONTROL: it round-trips at the right version, block for block. ---
     let decoded = decode_index_bytes(&bytes).expect("an index this binary wrote must decode");
     let want = block_tuples(&shard);
     let got = block_tuples(&decoded);
@@ -1807,7 +1807,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     );
     assert_eq!(want, got, "the index did not come back page for page");
 
-    // --- And the control's own control: a DIFFERENT page set must not compare equal. ---
+    // --- And the control's own control: a DIFFERENT block set must not compare equal. ---
     let mut injected = got.clone();
     injected[0].3 = injected[0].3.wrapping_add(1);
     assert_ne!(
@@ -1983,7 +1983,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
     );
 }
 
-/// Every page of a shard as comparable tuples, in a stable order.
+/// Every block of a shard as comparable tuples, in a stable order.
 fn block_tuples(
     shard: &crate::engine::state::ShardState,
 ) -> Vec<(String, String, Option<String>, u64, u64, u64, bool, bool, bool)> {
@@ -2011,17 +2011,17 @@ fn block_tuples(
 
 /// AN OMITTED HANDLE RESTORES WRONG, AND THIS IS WHY THE FORMAT STAMP IS NOT A FORMALITY.
 ///
-/// `index_log::strip_block_ref_key_repeat` OMITS a page's composite handle from the delta whenever
+/// `index_log::strip_block_ref_key_repeat` OMITS a block's composite handle from the delta whenever
 /// the handle is derivable from the item's own parts, and `restore_block_ref_key_repeat` rebuilds it
 /// on the way back in. Both derive it through `block_ref_key_from_parts`, and one of the eight parts
 /// is `address.generation().unwrap_or_default()`.
 ///
-/// `generation` was `block_id.or(object_id)` and is the block id alone. For a BLOCK-RESIDENT page
-/// that is the value it always was. For a WAL-RESIDENT page -- no block id -- it was the object id
+/// `generation` was `block_id.or(object_id)` and is the block id alone. For a BLOCK-RESIDENT block
+/// that is the value it always was. For a WAL-RESIDENT block -- no block id -- it was the object id
 /// and is now `None`, so the eighth part goes from the object id to ZERO.
 ///
 /// So a row ALREADY ON DISK whose handle was omitted because it was derivable under the old rule
-/// now rebuilds to a DIFFERENT handle. The page is then filed and looked up under a key nothing
+/// now rebuilds to a DIFFERENT handle. The block is then filed and looked up under a key nothing
 /// wrote, which resolves a durably acknowledged write to MISSING -- the exact hole `block_in_wal`
 /// exists to close. The declined strip and its wasted allocation are the symptom; this is the
 /// disease, and refusing the load is the only thing standing between the two.
@@ -2033,7 +2033,7 @@ fn an_omitted_block_handle_restores_to_a_different_key_under_the_new_generation_
     const LENGTH: u64 = 512;
     const OBJECT_ID: u64 = 0x0123_4567_89AB_CDEF;
 
-    // A WAL-RESIDENT page: no block id, an object id. This is the shape every container member
+    // A WAL-RESIDENT block: no block id, an object id. This is the shape every container member
     // takes -- `log_backed` is literally `address.block_id().is_none()`.
     let address = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, None, Some(OBJECT_ID));
     assert!(
@@ -2095,24 +2095,24 @@ fn an_omitted_block_handle_restores_to_a_different_key_under_the_new_generation_
 ///
 /// `an_omitted_block_handle_restores_to_a_different_key_under_the_new_generation_rule` above proves
 /// the two derivations DIFFER. That is necessary and it is not sufficient, and on its own it reads
-/// like a migration hazard: a pre-shed writer omitted a page's composite handle because it matched
+/// like a migration hazard: a pre-shed writer omitted a block's composite handle because it matched
 /// the old derivation, the stamp refuses the base snapshot and routes load into the replay path,
 /// and the replay path rebuilds that handle from the NEW derivation. If the rebuilt handle were the
-/// name the page is filed and looked up under, every WAL-resident page in such a record would be
+/// name the block is filed and looked up under, every WAL-resident block in such a record would be
 /// filed under a name nothing ever wrote -- a durably acknowledged write reading MISSING, on
 /// exactly the path the stamp sends load down.
 ///
 /// IT IS NOT, AND THE REASON IS STRUCTURAL. `fold_delta_block_items` is the only thing that turns
-/// index-log items into pages, and it never reads `block_ref_key`. It builds a `BlockIndex` from
+/// index-log items into blocks, and it never reads `block_ref_key`. It builds a `BlockIndex` from
 /// the item's own fields and hands it to `BlockIndexMap::insert`, which ALLOCATES the handle; the
 /// map is keyed by that allocated slot. The record's spelling is rebuilt on the way in and
 /// recomputed again on the way out, and in between nothing consults it. So a changed derivation
-/// cannot misfile a page through this path -- not because the rebuild agrees, but because the
+/// cannot misfile a block through this path -- not because the rebuild agrees, but because the
 /// rebuild is not used.
 ///
 /// TWO FIXTURES, AND THE SECOND IS THE SHARPER ONE. The first has its handle OMITTED, which is
 /// what a pre-shed writer left. The second carries a handle that is not any derivation of
-/// anything. If a page whose handle is outright wrong is still filed and still named, then no
+/// anything. If a block whose handle is outright wrong is still filed and still named, then no
 /// change to the derivation can break serving here, which is a stronger statement than "this
 /// particular change happens to be safe".
 ///
@@ -2281,7 +2281,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
              IS consulted somewhere on this path",
         );
 
-    // The page has to come back INTACT, not merely present: a page filed under the right name
+    // The block has to come back INTACT, not merely present: a block filed under the right name
     // carrying the wrong address would satisfy a presence check and still serve the wrong bytes.
     for (label, block) in [("omitted", omitted_block), ("nonsense", nonsense_block)] {
         assert_eq!(SLAB, block.address.block_slab_id(), "{label}: slab moved");
@@ -2299,8 +2299,8 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
     //
     // BY THE DERIVED ID, NOT THE ONE THE RECORD CARRIED. The first version of this assertion asked
     // for `OBJECT_ID`, the arbitrary value written into the fixture, and it failed -- correctly.
-    // After the fold, `update_bucket_layout` rebuilds each bucket's live object set from the pages
-    // themselves (`page.object_id(shard_id)`), so the derivation wins and a stale or invented id in
+    // After the fold, `update_bucket_layout` rebuilds each bucket's live object set from the blocks
+    // themselves (`block.object_id(shard_id)`), so the derivation wins and a stale or invented id in
     // a stored record cannot survive the load. That is this change's whole premise arriving on the
     // recovery path, and it is worth asserting in both directions.
     let named = folded
@@ -2350,7 +2350,7 @@ pub(super) const UNGATED_STORE_INDEX_AT_STAMP_8: &str = r##"{"index_format_versi
 ///
 /// # THE QUESTION THIS SETTLES
 ///
-/// Removing the element name from a page entry means a store whose entries DO name their elements
+/// Removing the element name from a block entry means a store whose entries DO name their elements
 /// becomes uninterpretable: the named decoder drops a key it has no field for, SILENTLY, so such a
 /// store would decode cleanly into an index whose container entries name nothing. If that index
 /// were then served, every element it names would be lost or mis-served -- which is not a format
@@ -2630,7 +2630,7 @@ fn an_ungated_store_is_refused_before_it_is_served() {
     );
 }
 
-/// The element name a page entry carries, read in the one place that has to change when the field
+/// The element name a block entry carries, read in the one place that has to change when the field
 /// goes.
 ///
 /// A HELPER AND NOT AN INLINE FIELD READ, so that removing `BlockIndex::component` leaves ONE

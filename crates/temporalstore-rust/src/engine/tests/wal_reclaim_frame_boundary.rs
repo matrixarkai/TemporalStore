@@ -655,7 +655,7 @@ fn a_pass_names_which_refusal_term_fired() {
     assert!(!worked.clamped_by_durable_index);
 
     // The block-retention floor, driven on its own. It is the term that stops a reclaim removing
-    // the only copy of a page the served index still points at.
+    // the only copy of a block the served index still points at.
     store.set_block_retention_floor(SHARD, 1);
     let clamped = store
         .gc_before_sequence_unchecked(SHARD, 8)

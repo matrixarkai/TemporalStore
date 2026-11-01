@@ -5,28 +5,28 @@
 //!
 //! `BucketLayoutState` names five shapes and every reader of it is a report string or a counter.
 //! The question this module answers is whether making it select a REPRESENTATION -- one arm
-//! keeping a page inline, another keying its pages on a per-bucket object list so the entry can
+//! keeping a block inline, another keying its blocks on a per-bucket object list so the entry can
 //! carry a one-byte ordinal instead of a name -- would be worth the two representations.
 //!
-//! IT WOULD NOT, AND THE REASON WAS ONE NUMBER: PAGES PER OBJECT WAS 1. THAT NUMBER HAS MOVED.
+//! IT WOULD NOT, AND THE REASON WAS ONE NUMBER: BLOCKS PER OBJECT WAS 1. THAT NUMBER HAS MOVED.
 //!
-//! An object list amortises. It costs a row per object and pays for itself by letting every page
+//! An object list amortises. It costs a row per object and pays for itself by letting every block
 //! of that object carry an ordinal instead of a name. The saving is therefore
 //! `(name - ordinal) * blocks_per_object - row_cost`, and everything depends on
 //! `blocks_per_object` being greater than one.
 //!
-//! IT WAS NOT, AND THAT WAS NOT AN ACCIDENT: a page's object identity was
+//! IT WAS NOT, AND THAT WAS NOT AN ACCIDENT: a block's object identity was
 //! `stable_block_object_id(shard_id, kind, object_key, component)` -- THE COMPONENT WAS IN THE
 //! HASH -- so a hash field, a set member, a list element and a sorted-set member were each an
-//! object of their own holding exactly one page. `MultiBlockObject`, the one arm the proposal is
-//! for, was therefore UNREACHABLE for every component-bearing kind: a bucket holding many pages
+//! object of their own holding exactly one block. `MultiBlockObject`, the one arm the proposal is
+//! for, was therefore UNREACHABLE for every component-bearing kind: a bucket holding many blocks
 //! of one key held many OBJECTS of one key, which classifies `MultiObject`.
 //!
 //! THE COMPONENT HAS SINCE LEFT THE HASH. One key is one object, a container key is `(1 object,
-//! many pages)`, and this module's two findings invert with it -- both are inverted below rather
+//! many blocks)`, and this module's two findings invert with it -- both are inverted below rather
 //! than deleted, keeping their denominators and their controls:
 //!
-//!   * the arm IS reached now, small by bucket share and large by page share, and both numbers
+//!   * the arm IS reached now, small by bucket share and large by block share, and both numbers
 //!     are asserted because either one alone misstates the size;
 //!   * the stored `object_index` IS the list the proposal wanted -- one row per `(kind, key)` --
 //!     so the proposal's real cost, a SECOND durable structure beside it, is no longer a cost.
@@ -36,14 +36,14 @@
 //! select nothing there.
 //!
 //! THE POSITIVE CONTROL IS WHAT MAKES THAT A MEASUREMENT RATHER THAN AN EMPTY FIXTURE. A
-//! component-free kind CAN hold several pages under one object id, and the series kind does: a
+//! component-free kind CAN hold several blocks under one object id, and the series kind does: a
 //! timestamped series is appended under one `(kind, key, None)` identity and spills into more than
 //! one block. If this module reported "no multi-page objects" without reaching one, the report
 //! would be indistinguishable from a fixture that could not produce one -- so the series arm is
-//! seeded, its pages-per-object MAX is asserted above one, and the refutation is stated only for
+//! seeded, its blocks-per-object MAX is asserted above one, and the refutation is stated only for
 //! the kinds where the ceiling is structural.
 //!
-//! THE NULL CONTROL, AT 0.00%. Grouping pages by `object_id` (component IN the hash) and grouping
+//! THE NULL CONTROL, AT 0.00%. Grouping blocks by `object_id` (component IN the hash) and grouping
 //! them by `(model_id, object_key)` (component OUT) must give byte-identical histograms for any
 //! component-free kind, and must diverge for containers. The routed-string arm is that control: it
 //! predicts exactly no difference, and a difference there would mean the two groupings are not
@@ -51,7 +51,7 @@
 //!
 //! EVERY ROW CARRIES ITS OWN DENOMINATOR and the arm rows are asserted to sum to the population,
 //! because a run that wrote nothing reports a beautifully simple store. Percentiles and a MAX,
-//! never a mean: #1959 published 1.98 pages a bucket over a store holding not one bucket with two.
+//! never a mean: #1959 published 1.98 blocks a bucket over a store holding not one bucket with two.
 //!
 //! rust-internal: reads the engine's own bucket index and its own classifier; no product behaviour
 
@@ -136,7 +136,7 @@ fn percentile(sorted: &[usize], fraction: f64) -> usize {
 /// THE REAL KIND MIX, in ONE store, so the arms are measured over a population a deployment could
 /// actually have rather than over three separate single-kind stores.
 ///
-/// Returns the number of pages each kind is expected to contribute, so the denominator is checked
+/// Returns the number of blocks each kind is expected to contribute, so the denominator is checked
 /// against the fixture and not against itself.
 struct SeedCounts {
     strings: usize,
@@ -145,7 +145,7 @@ struct SeedCounts {
 }
 
 fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
-    // Half plain strings: one page each, no component.
+    // Half plain strings: one block each, no component.
     let strings = records / 2;
     run_batch(
         engine,
@@ -157,7 +157,7 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
             .collect(),
     );
 
-    // Two fifths containers, across all four container kinds: one page PER ELEMENT, each element a
+    // Two fifths containers, across all four container kinds: one block PER ELEMENT, each element a
     // component and therefore an object of its own.
     let container_blocks = records * 2 / 5;
     let members = 100usize;
@@ -192,7 +192,7 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
 
     // THE POSITIVE CONTROL. A timestamped series is appended under ONE (kind, key, None) identity
     // and spills into more than one block, so it is the one kind in this engine that can reach a
-    // pages-per-object above one. Without it a null result here would be a fixture artefact.
+    // blocks-per-object above one. Without it a null result here would be a fixture artefact.
     let series_keys = 20usize;
     let series_points = 2_000usize;
     for k in 0..series_keys {
@@ -220,19 +220,19 @@ fn seed_mixed(engine: &TemporalEngine, records: usize) -> SeedCounts {
     SeedCounts { strings, container_blocks, series_keys }
 }
 
-/// Everything read off one store: the arm population by bucket AND by page, and pages-per-object
+/// Everything read off one store: the arm population by bucket AND by block, and blocks-per-object
 /// under the two groupings whose difference is the whole question.
 #[derive(Default)]
 struct Population {
-    /// arm -> (buckets in it, pages held by those buckets)
+    /// arm -> (buckets in it, blocks held by those buckets)
     arms: BTreeMap<&'static str, (usize, usize)>,
     blocks_per_bucket: Vec<usize>,
     objects_per_bucket: Vec<usize>,
-    /// Pages grouped by the engine's own object identity -- component IN the hash.
+    /// Blocks grouped by the engine's own object identity -- component IN the hash.
     by_object_id: BTreeMap<u64, usize>,
-    /// Pages grouped by (kind, key) -- component OUT. What an object list would key on.
+    /// Blocks grouped by (kind, key) -- component OUT. What an object list would key on.
     by_kind_key: BTreeMap<String, usize>,
-    /// Pages grouped by (kind, key) for COMPONENT-FREE pages only: the null control's population.
+    /// Blocks grouped by (kind, key) for COMPONENT-FREE blocks only: the null control's population.
     component_free_by_kind_key: BTreeMap<String, usize>,
     component_free_by_object_id: BTreeMap<u64, usize>,
     total_buckets: usize,
@@ -266,11 +266,11 @@ fn population(engine: &TemporalEngine) -> Population {
         for (handle, entry) in &node.block_index {
             let object_key = named.at(node.routing_bucket, *handle);
             // DERIVED, not read off the address. `blocks_without_object_id` is therefore structurally
-            // zero and is left at zero rather than removed from the shape: every page can name its
+            // zero and is left at zero rather than removed from the shape: every block can name its
             // object now, which is the fact that used to be worth counting.
             let id = entry.object_id(1, object_key);
             *out.by_object_id.entry(id).or_default() += 1;
-            // EVERY page is component-free now -- an entry has no element name -- so this control
+            // EVERY block is component-free now -- an entry has no element name -- so this control
             // group is the whole population rather than a subset of it. Kept because the CONTROL
             // it feeds still has a subject: it compares grouping by the engine's object id against
             // grouping by (kind, key), and those two can still disagree.
@@ -308,7 +308,7 @@ fn report_group(label: &str, groups: &BTreeMap<impl Ord, usize>) -> (usize, usiz
 // `name_pointer_width`, which read the entry's name field; the entry has no name field, so there
 // is no field left to take a width from and the helper has nothing to infer from.
 
-/// For each occupied bucket, the page count of every distinct `(kind, key)` inside it.
+/// For each occupied bucket, the block count of every distinct `(kind, key)` inside it.
 ///
 /// This is the breakdown a per-bucket dispatch would have to be uniform over, and the reason it
 /// cannot be: the object list's win or loss is decided PER KEY and the layout state is PER BUCKET.
@@ -336,7 +336,7 @@ fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
     out
 }
 
-/// THE WIDTH A PAGE ENTRY SPENDS ON A NAME POINTER -- ZERO, AND IT IS READ OFF THE TYPE NOW.
+/// THE WIDTH A BLOCK ENTRY SPENDS ON A NAME POINTER -- ZERO, AND IT IS READ OFF THE TYPE NOW.
 ///
 /// It read `field_width(&entry.object_key)` off a real entry, which is what made it a measurement
 /// rather than a literal. The entry holds no name pointer at all, so there is no field to read and
@@ -349,7 +349,7 @@ fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
 ///
 /// AND WHERE THOSE SIXTEEN BYTES WENT IS NOT NOWHERE: one shared pointer per (kind, object) in
 /// `CoreIndex::object_block_lookup`, which `block_entry_name_pointer`'s surviving allocation arm
-/// prices. A per-PAGE pointer became a per-OBJECT one; this column is the per-page half.
+/// prices. A per-BLOCK pointer became a per-OBJECT one; this column is the per-block half.
 fn name_pointer_width(_engine: &TemporalEngine) -> usize {
     0
 }
@@ -357,8 +357,8 @@ fn name_pointer_width(_engine: &TemporalEngine) -> usize {
 /// THE ARM POPULATION, AND THE ONE NUMBER AN OBJECT LIST AMORTISES OVER.
 ///
 /// Four stores: the real kind mix at two corpus sizes ten times apart, on both routing ranges.
-/// Every arm row carries the bucket count, its share of buckets, the pages those buckets hold and
-/// its share of pages, and both sets of rows are asserted to sum to the store's own totals.
+/// Every arm row carries the bucket count, its share of buckets, the blocks those buckets hold and
+/// its share of blocks, and both sets of rows are asserted to sum to the store's own totals.
 #[test]
 #[ignore = "seeds four mixed stores up to 40,000 records each; run by name"]
 fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_still_absent_at_the_shipped_range()
@@ -397,7 +397,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 seeded.strings, seeded.container_blocks, seeded.series_keys
             );
 
-            // --- THE ARM POPULATION, BY BUCKET AND BY PAGE, EACH WITH ITS DENOMINATOR. ---
+            // --- THE ARM POPULATION, BY BUCKET AND BY BLOCK, EACH WITH ITS DENOMINATOR. ---
             let mut arm_buckets = 0usize;
             let mut arm_blocks = 0usize;
             let mut live_arms = 0usize;
@@ -473,7 +473,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 pop.objects_per_bucket.len()
             );
 
-            // --- PAGES PER OBJECT: THE NUMBER THE OBJECT LIST AMORTISES OVER. ---
+            // --- BLOCKS PER OBJECT: THE NUMBER THE OBJECT LIST AMORTISES OVER. ---
             assert_eq!(
                 pop.blocks_without_object_id, 0,
                 "{records}/{end}: {} blocks carry no object id, so grouping by it would silently merge them under zero",
@@ -521,7 +521,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     );
     println!("\n  store path length held at {first} characters across all {stores} stores");
 
-    // --- THE POSITIVE CONTROL: THE INSTRUMENT CAN SEE A MULTI-PAGE OBJECT. ---
+    // --- THE POSITIVE CONTROL: THE INSTRUMENT CAN SEE A MULTI-BLOCK OBJECT. ---
     assert!(
         series_max_seen > 1,
         "THE FIXTURE NEVER REACHED A MULTI-PAGE OBJECT, so this module cannot tell an engine whose objects hold one block from a fixture that could not make one hold two. The series arm is seeded precisely to reach it and its MAX came back {series_max_seen}"
@@ -534,13 +534,13 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     // THE FINDING, INVERTED BY THE IDENTITY CHANGE, AND THE TWO SHARES SPLIT APART.
     //
     // This used to assert `multi_block_object` stayed under one percent of buckets everywhere,
-    // because `(1 object, many pages)` was unreachable for any component-bearing kind. Since the
+    // because `(1 object, many blocks)` was unreachable for any component-bearing kind. Since the
     // component left the object id a container IS that shape, so the arm is now reached -- and
     // the assertion is not LOOSENED, it is replaced by the pair of numbers the mechanism
     // predicts, which point in opposite directions and together are the honest size:
     //
     //   * by BUCKET share it stays small, because a container is few buckets;
-    //   * by PAGE share it is large, because those few buckets hold most of the pages.
+    //   * by BLOCK share it is large, because those few buckets hold most of the blocks.
     //
     // Either share quoted alone would read as a much bigger or much smaller result than this is.
     assert!(
@@ -578,24 +578,24 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
 
 /// WHAT A PER-BUCKET DISPATCH CAN AND CANNOT CAPTURE, IN BYTES AND IN BRANCHES.
 ///
-/// THE ARITHMETIC, AND IT IS THE WHOLE ARGUMENT. Let a bucket hold `P` pages over `K` distinct
-/// `(kind, key)` objects, and let `W` be the width of the name pointer a page entry spends today,
+/// THE ARITHMETIC, AND IT IS THE WHOLE ARGUMENT. Let a bucket hold `P` blocks over `K` distinct
+/// `(kind, key)` objects, and let `W` be the width of the name pointer a block entry spends today,
 /// READ OFF A REAL ENTRY'S FIELD rather than named at this call site.
 ///
 ///   today                 P * W
 ///   with an object list   K * W  +  P * 1  +  one list header per bucket
 ///
 /// So the list pays for a single key exactly when `p * (W - 1) > W`, i.e. when that key holds at
-/// least TWO pages. At `W = 16` a one-page key LOSES one byte and a hundred-page key saves
+/// least TWO blocks. At `W = 16` a one-block key LOSES one byte and a hundred-block key saves
 /// 1,484. THE DECISION IS THEREFORE PER KEY. `BucketLayoutState` is PER BUCKET.
 ///
 /// THAT WOULD NOT MATTER IF BUCKETS WERE UNIFORM, AND AT THE SHIPPED RANGE THEY ARE NOT. This
-/// test measures how many buckets hold BOTH a one-page key and a multi-page key -- a bucket a
+/// test measures how many buckets hold BOTH a one-block key and a multi-block key -- a bucket a
 /// single representation must be wrong about somewhere -- and prices the SHORTFALL between what a
 /// per-bucket dispatch can capture and what a per-key decision could. That shortfall is the cost of
 /// putting the choice on the layout state, and it is charged here rather than argued.
 ///
-/// THE LIST IS CHARGED PER BUCKET AND DIVIDED BY THAT ARM'S OWN PAGES-PER-OBJECT, never by an
+/// THE LIST IS CHARGED PER BUCKET AND DIVIDED BY THAT ARM'S OWN BLOCKS-PER-OBJECT, never by an
 /// average across arms: that division is what #1997's routed arms failed on.
 ///
 /// rust-internal: arithmetic over the engine's own bucket index; no product behaviour
@@ -605,7 +605,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
 {
     /// A Vec's header, charged once per bucket that grows an object list.
     const LIST_HEADER: usize = std::mem::size_of::<Vec<u8>>();
-    /// The ordinal a page entry would carry instead of a name.
+    /// The ordinal a block entry would carry instead of a name.
     const ORDINAL: usize = std::mem::size_of::<u8>();
 
     let mut any_mixed = false;
@@ -640,7 +640,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             let mut per_bucket_saving: i64 = 0;
             // What a PER-KEY decision could save: each key picks for itself.
             let mut per_key_saving: i64 = 0;
-            // Pages that a per-bucket dispatch is forced to represent the wrong way.
+            // Blocks that a per-bucket dispatch is forced to represent the wrong way.
             let mut blocks_represented_wrongly = 0usize;
 
             for keys in &breakdown {
@@ -676,12 +676,12 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
                 }
                 per_key_saving += today - key_best;
 
-                // Under the bucket's single choice, how many pages sit in the wrong arm.
+                // Under the bucket's single choice, how many blocks sit in the wrong arm.
                 if listed <= today {
-                    // the whole bucket is listed: every one-page key is paying a list row it loses on
+                    // the whole bucket is listed: every one-block key is paying a list row it loses on
                     blocks_represented_wrongly += singles;
                 } else {
-                    // the whole bucket stays inline: every multi-page key's pages keep a fat name
+                    // the whole bucket stays inline: every multi-block key's blocks keep a fat name
                     blocks_represented_wrongly +=
                         keys.iter().filter(|count| **count > 1).copied().sum::<usize>();
                 }
@@ -723,7 +723,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             // --- THE DISPATCH COST, IN PROBE COUNTS AND NOT IN TIME. ---
             // A timing ratio on this box read 485x idle against 11x busy off identical code, so the
             // dispatch is counted rather than timed. Two representations put one discriminant test
-            // on EVERY page lookup and one on every walk; the number of those tests that reach a
+            // on EVERY block lookup and one on every walk; the number of those tests that reach a
             // DIFFERENT representation is what the dispatch buys.
             let arms_present = {
                 let mut seen: std::collections::BTreeSet<&'static str> =
@@ -744,7 +744,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
 
             // THE VACUITY FLOOR, and it is here because a mutant survived without it. The
             // ordering assertion below is one-sided: a per-bucket saving of ZERO satisfies it,
-            // so charging the object list per PAGE instead of per KEY -- which makes the listed
+            // so charging the object list per BLOCK instead of per KEY -- which makes the listed
             // shape never cheaper and the saving identically nothing -- passed a guard whose
             // whole subject is how much the saving is. Both sides must be a real saving, and
             // the captured share must be materially above nothing, before the ordering means
@@ -782,8 +782,8 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
 /// number, and the second structure is not needed because the first one IS it.
 ///
 /// MEASURED, not argued, and guarded in the direction it could pass for nothing: the rows must
-/// EQUAL the distinct keys, and the page count must EXCEED them -- a store whose keys each held
-/// one page would satisfy the first trivially and say nothing at all.
+/// EQUAL the distinct keys, and the block count must EXCEED them -- a store whose keys each held
+/// one block would satisfy the first trivially and say nothing at all.
 ///
 /// rust-internal: reads the engine's own bucket index; no product behaviour
 #[test]
@@ -828,7 +828,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
              {stored_rows} rows, {distinct_keys} keys"
         );
 
-        // NON-VACUITY FIRST. If every key held one page then rows, keys and pages would all be
+        // NON-VACUITY FIRST. If every key held one block then rows, keys and blocks would all be
         // the same number and the equality below would be arithmetic rather than a measurement.
         assert!(
             pop.total_blocks > distinct_keys,
@@ -849,7 +849,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
             "{distinct_object_ids} distinct object ids over {distinct_keys} distinct (kind, key): \
              the identity IS the pair now, so these cannot differ"
         );
-        // And it is now far closer to the KEY count than to the page count -- the mechanism,
+        // And it is now far closer to the KEY count than to the block count -- the mechanism,
         // stated the same way round as before so the two runs stay comparable.
         let to_blocks = (stored_rows as f64 - pop.total_blocks as f64).abs();
         let to_keys = (stored_rows as f64 - distinct_keys as f64).abs();

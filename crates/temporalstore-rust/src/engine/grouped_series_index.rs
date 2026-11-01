@@ -419,8 +419,8 @@ impl GroupedSeriesIndex {
     ///
     /// IT FILES THROUGH [`Self::bucket_of`] RATHER THAN SPELLING THE RANGE, and that is not a way
     /// around `every_site_that_hard_codes_the_whole_routing_range_is_accounted_for`; it is what that
-    /// guard asks for. Its own record says the sites that merely ATTRIBUTE an already-filed page keep
-    /// their literal as a last resort, while the two that PLACE a page left the list by reading the
+    /// guard asks for. Its own record says the sites that merely ATTRIBUTE an already-filed block keep
+    /// their literal as a last resort, while the two that PLACE a block left the list by reading the
     /// shard's carried range instead -- a placed bucket has no filing to fall back to, so the range
     /// itself had to change. This places, so it reads the range this container carries, which
     /// `rebucket` can correct. Spelling `0, u32::MAX` here would have been a bucket no caller could

@@ -21,8 +21,8 @@
 //! and lost; `engine::tests::model_map_container_cost` carries the table.
 //!
 //! WHY THE OCCUPANCY IS ONE, AND WHY THAT IS A PROPERTY OF THE WRITE PATH AND NOT OF A FIXTURE.
-//! `write_context_node` in `execute_on_shard.rs` is the one producer of a context-node page, and it
-//! files that page under the single constant field `CONTEXT_NODE_FIELD` (`"meta"`). Seven readers
+//! `write_context_node` in `execute_on_shard.rs` is the one producer of a context-node block, and it
+//! files that block under the single constant field `CONTEXT_NODE_FIELD` (`"meta"`). Seven readers
 //! spell the same constant back. So every context node in a store is a hash of exactly one field,
 //! and measured at 4,000 and at 40,000 nodes the fields-per-hash histogram was p50 = p90 = p99 =
 //! MAX = 1 with a single distinct occupancy, 100% of keys, at both sizes. The only producer of a
@@ -30,7 +30,7 @@
 //!
 //! THE SHAPE IS THEREFORE BIMODAL IN A REAL STORE that uses both, and a bimodal histogram is a
 //! warning rather than a licence -- the mixed corpus measured a mean of 1.98 fields per hash over a
-//! population containing NO hash holding two, which is the same trap a mean of 1.98 pages per
+//! population containing NO hash holding two, which is the same trap a mean of 1.98 blocks per
 //! bucket set in this engine before. So the verdict was required to hold at BOTH arms, and it does:
 //! the vector is cheaper than the table at every occupancy measured from 1 to 256, by 76.5% at one
 //! field and by 51.4% at sixty-four.
@@ -83,7 +83,7 @@ pub(super) type FieldName = std::sync::Arc<str>;
 /// Below it, slack is the thing being removed; at and above it, the reallocation count is.
 const EXACT_GROWTH_BELOW: usize = 8;
 
-/// The field map of one hash: field name -> the page that holds the field's value, kept sorted by
+/// The field map of one hash: field name -> the block that holds the field's value, kept sorted by
 /// field name.
 ///
 /// The inner vector is PRIVATE. Every reader goes through the methods below, which is what lets the

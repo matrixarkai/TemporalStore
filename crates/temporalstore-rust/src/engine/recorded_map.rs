@@ -224,9 +224,9 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 
 /// Record an element's block and put it in the resident map, in that order, in one call.
 ///
-/// `component` is the element rendered the way the page index names it; `element` is the level-2
+/// `component` is the element rendered the way the block index names it; `element` is the level-2
 /// key. BOTH are taken rather than one derived from the other, because every caller has already
-/// computed the component to derive the block ordinal and the page frame from it, and deriving it
+/// computed the component to derive the block ordinal and the block frame from it, and deriving it
 /// again here would be a second rendering of one identity -- the shape that let a claim about a
 /// hash function be relayed as a claim about a hash path.
 ///
@@ -236,7 +236,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// field, a set member, a zset member or a list position that anything READS on the replay
 /// path". That was true of the code it was written against and is FALSE now, which is why it is
 /// quoted rather than quietly overwritten: `apply_outcome_item`'s four container arms read the
-/// element off the PAGE, live and removed, so nothing on the replay path reads the outcome's
+/// element off the BLOCK, live and removed, so nothing on the replay path reads the outcome's
 /// copy for those kinds any more. What the earlier note got right is the conclusion -- the
 /// parameter stays -- and it got it right for a reason that has since changed, which is exactly
 /// the shape this tree records rather than deletes.
@@ -255,7 +255,7 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 /// `FiledComponent`:
 ///
 ///   1. `WalOutcomeItem::component`. The replay path no longer READS that field for a container
-///      kind -- it reads the page -- so this reader is now the record's own copy rather than
+///      kind -- it reads the block -- so this reader is now the record's own copy rather than
 ///      something a recovery depends on. It is still written, because the field cannot be removed
 ///      while six timestamped kinds read it and its absence is a meaning; the argument is set out
 ///      in full at the field.
@@ -266,10 +266,10 @@ pub(super) struct RecordedObjectRemoval<K: RecordedKind> {
 ///      `engine::tests::write_after_fold::a_re_add_after_a_removal_does_not_bring_the_removed_member_back`
 ///      holds.
 ///
-/// # AND IT COULD BE RESOLVED FROM THE PAGE, WHICH IS EXACTLY WHY IT SHOULD NOT BE
+/// # AND IT COULD BE RESOLVED FROM THE BLOCK, WHICH IS EXACTLY WHY IT SHOULD NOT BE
 ///
 /// The sweep runs on the WRITE path, where the element name is the caller's own input -- already
-/// computed, already in hand, one `&str` away. Decoding the page being written to recover a value
+/// computed, already in hand, one `&str` away. Decoding the block being written to recover a value
 /// the caller passed in would be the same rendering done twice, which is what the paragraph above
 /// this one exists to prevent. The rule that retires a derivable stored field does not reach a
 /// plain argument: nothing here is STORED and nothing is RECONSTRUCTED, so there is no omission to
@@ -294,14 +294,14 @@ pub(super) fn install_element<K: RecordedKind>(
     // COMPUTED BEFORE `value` MOVES INTO THE RECORD BELOW. The only producer of a `Some` today is
     // `ZSetKind`, whose score has nowhere else to ride now that the component does not spell it.
     let outcome_value = K::outcome_value(&value);
-    // WHICH PAGE THIS WRITE REPLACES, ASKED WHILE THE MAP STILL HOLDS THE OLD ANSWER.
+    // WHICH BLOCK THIS WRITE REPLACES, ASKED WHILE THE MAP STILL HOLDS THE OLD ANSWER.
     //
-    // The filer cannot derive this. Under one entry a page an entry carries no element name, so
+    // The filer cannot derive this. Under one entry a block an entry carries no element name, so
     // the only discriminator it has is the address -- and a rewrite lands at a NEW address, so the
     // landing key names no existing entry and the element's previous entry is never superseded.
     // See `AddressedElementMap` for the two measured losses that leaves.
     //
-    // ASKED ONLY WHEN THE ENTRY IS PAGE-NAMED. While an entry names its element the filer's own
+    // ASKED ONLY WHEN THE ENTRY IS BLOCK-NAMED. While an entry names its element the filer's own
     // component-keyed supersede already takes the predecessor, so there is nothing to tell it and
     // nothing to pay for: the ungated path does not reach the scan at all.
     let replaces = if super::storage_bucket_internals::index_entry_names_a_block(K::KIND) {
@@ -375,11 +375,11 @@ pub(super) fn install_element_staged_only<K: RecordedKind>(
     });
 }
 
-/// Tombstone the element's page, clear its bucket-index entry, and drop it from the resident map.
+/// Tombstone the element's block, clear its bucket-index entry, and drop it from the resident map.
 ///
 /// Returns whether anything changed -- the removal's own answer OR the resident drop's. Both are
 /// folded here because every caller OR-ed them into one `mutated` flag, and a removal that found no
-/// page still has to reach the resident map: the resident map is exactly where a stale copy would
+/// block still has to reach the resident map: the resident map is exactly where a stale copy would
 /// survive.
 #[allow(clippy::too_many_arguments)]
 pub(super) fn remove_element<K: RecordedKind>(
@@ -418,8 +418,8 @@ where
     // EXISTENCE HAS TWO SOURCES AND EMPTYING ONE DOES NOT EMPTY THE KEY. `record_exists_exact` ORs
     // the resident map's answer together with the bucket index's, so an object is gone only once
     // BOTH are. The resident removal above is unconditional -- which is why membership is right
-    // under either projection -- but under one entry a page the removal deliberately keeps the live
-    // page entry, on the stated grounds that the page still holds the object's other members.
+    // under either projection -- but under one entry a block the removal deliberately keeps the live
+    // block entry, on the stated grounds that the block still holds the object's other members.
     //
     // That justification is false for the LAST element: there are none. The retained entry then
     // keeps the key enumerable with nothing in it, and KEYS, SCAN, DBSIZE, EXISTS, TYPE and EXPIRE
@@ -432,7 +432,7 @@ where
     if K::resident(shard).get(object_key).is_none() {
         // THE LIVE ENTRIES ONLY. Not `mark_bucket_index_object_deleted`, which takes the tombstones
         // too: one live entry and one tombstone are different facts. The live entry claims this
-        // object has a page with members on it, which is false once the last member goes. The
+        // object has a block with members on it, which is false once the last member goes. The
         // tombstone records that a NAMED element was removed, which stays true and is what makes
         // the removal win a fold by append position -- taking it along would undo the removal it
         // records, and `container_tombstone_entry::a_re_add_clears_the_tombstone_entry_so_churn_on_
@@ -479,7 +479,7 @@ pub(super) trait RemovableElementMap: ElementMap {
 // ---------------------------------------------------------------------------------------------
 
 impl<K: RecordedKind> RecordedMap<K> {
-    /// Move this object's entry onto the shared key handle the page index owns, returning whether
+    /// Move this object's entry onto the shared key handle the block index owns, returning whether
     /// anything moved.
     ///
     /// A DECLARED OPERATION RATHER THAN A `&mut` ACCESSOR. The invariant this module exists to
@@ -492,7 +492,7 @@ impl<K: RecordedKind> RecordedMap<K> {
     /// how many allocations hold that text: before this existed, all four kinds owned their own
     /// copy of a key the adopted maps already shared.
     ///
-    /// Call it AFTER the page is filed. Before that the page index holds no handle to borrow, the
+    /// Call it AFTER the block is filed. Before that the block index holds no handle to borrow, the
     /// caller has nothing to pass, and the entry keeps the copy it minted at its write site --
     /// which is exactly how a wired sharing mechanism went 0 for 40,040 once before.
     pub(super) fn adopt_key(&mut self, object_key: &str, canonical: &ModelKey) -> bool {
@@ -570,16 +570,16 @@ impl<K: RecordedKind> RecordedMap<K> {
         &self.entries
     }
 
-    /// THE PAGE THIS WRITE VACATES, or nothing when it vacates none.
+    /// THE BLOCK THIS WRITE VACATES, or nothing when it vacates none.
     ///
     /// `Some` only when all three hold:
     ///
     ///   * the map already holds `element`, so this is a REWRITE and not a first write;
-    ///   * the address it holds names a DIFFERENT page from the one the write is landing on -- a
-    ///     rewrite that lands back on its own page is superseded through the landing key and needs
+    ///   * the address it holds names a DIFFERENT block from the one the write is landing on -- a
+    ///     rewrite that lands back on its own block is superseded through the landing key and needs
     ///     nothing extra;
-    ///   * and NO OTHER element of the same object is still on the page being left, because an
-    ///     entry under the gate stands for the PAGE and a page with a sibling still on it is still
+    ///   * and NO OTHER element of the same object is still on the block being left, because an
+    ///     entry under the gate stands for the BLOCK and a block with a sibling still on it is still
     ///     live.
     ///
     /// ASKED BEFORE THE MUTATION, which is the only reason it can be asked at all: the caller files
@@ -587,9 +587,9 @@ impl<K: RecordedKind> RecordedMap<K> {
     ///
     /// THE SCAN IS THE SAME ORDER AS WHAT THE FILER ALREADY PAYS. The third test is a
     /// short-circuiting `any` over ONE OBJECT's elements, where `upsert_bucket_index_block_inner`
-    /// already walks the whole BUCKET's pages twice per write -- once to decide whether the object
-    /// still has a page there and once for the tombstone probe. One object's elements are a subset
-    /// of its bucket's pages, so this does not change the order of a container write.
+    /// already walks the whole BUCKET's blocks twice per write -- once to decide whether the object
+    /// still has a block there and once for the tombstone probe. One object's elements are a subset
+    /// of its bucket's blocks, so this does not change the order of a container write.
     pub(super) fn block_an_element_vacates(
         &self,
         object_key: &str,
@@ -710,8 +710,8 @@ impl<K: RecordedKind> RecordedMap<K> {
             ),
         >,
         <K::Elements as ElementMap>::Element: std::hash::Hash + Eq + Clone,
-        // `fill_absent_elements` drops a durable element whose page the settled index does not
-        // hold, and it asks the VALUE for that address -- so the live-page filter needs this too.
+        // `fill_absent_elements` drops a durable element whose block the settled index does not
+        // hold, and it asks the VALUE for that address -- so the live-block filter needs this too.
         <K::Elements as ElementMap>::Value: super::CarriedValue,
     {
         let persisted = std::mem::take(&mut self.entries);
@@ -759,10 +759,10 @@ impl<K: RecordedKind> RecordedMap<K> {
             .unwrap_or(false)
     }
 
-    /// SHARED EXCEPTION 5 -- COMPACTION REWRITES WHERE A PAGE LIVES, NEVER WHICH PAGES LIVE.
+    /// SHARED EXCEPTION 5 -- COMPACTION REWRITES WHERE A BLOCK LIVES, NEVER WHICH BLOCKS LIVE.
     ///
     /// The move is what the compactor records; the address rewrite is bookkeeping that follows it,
-    /// and a record of its own would say a page was installed when none was.
+    /// and a record of its own would say a block was installed when none was.
     ///
     /// Narrowed by the lend: each item yields the object key and an [`ElementValuesMut`], which
     /// lends `&mut` to the VALUES and nothing else -- no insert, no remove, no retain -- so this
@@ -863,14 +863,14 @@ pub(super) trait IterableMutElementMap: ElementMap {
     ) -> impl Iterator<Item = (&Self::Element, &mut Self::Value)>;
 }
 
-/// WHICH PAGE AN ELEMENT IS MOVING OFF, read from the map that is keyed BY THE ELEMENT.
+/// WHICH BLOCK AN ELEMENT IS MOVING OFF, read from the map that is keyed BY THE ELEMENT.
 ///
 /// # WHY THE FILER CANNOT WORK THIS OUT FOR ITSELF
 ///
-/// Under one entry a page an index entry carries NO element name, so the entry a rewrite
+/// Under one entry a block an index entry carries NO element name, so the entry a rewrite
 /// supersedes cannot be picked out by naming the element. Keying the supersede on the address the
-/// write LANDS AT finds the entry over the page it lands on -- which is right for an element
-/// appended to a page that already has an entry, and finds NOTHING AT ALL for an element rewritten
+/// write LANDS AT finds the entry over the block it lands on -- which is right for an element
+/// appended to a block that already has an entry, and finds NOTHING AT ALL for an element rewritten
 /// IN PLACE, because a rewrite is written to a NEW address.
 ///
 /// MEASURED, not reasoned: with the supersede keyed on the landing address alone, a gated hash
@@ -885,9 +885,9 @@ pub(super) trait IterableMutElementMap: ElementMap {
 ///
 /// # AND THE PREVIOUS ADDRESS ALONE IS NOT THE ANSWER
 ///
-/// An entry under the gate stands for a PAGE, not for an element. Retiring the entry over the page
-/// an element vacates is WRONG whenever a SIBLING element of the same object is still on that page:
-/// the page is still live, and its entry is what keeps the siblings reachable. So the question has
+/// An entry under the gate stands for a BLOCK, not for an element. Retiring the entry over the block
+/// an element vacates is WRONG whenever a SIBLING element of the same object is still on that block:
+/// the block is still live, and its entry is what keeps the siblings reachable. So the question has
 /// two halves, and [`AddressedElementMap::any_element_other_than_at`] is the second.
 pub(super) trait AddressedElementMap: ElementMap {
     /// The address this map currently holds for `element`, if it holds the element at all.
@@ -895,7 +895,7 @@ pub(super) trait AddressedElementMap: ElementMap {
 
     /// Whether any element OTHER THAN `skip` currently sits on the page `page` names.
     ///
-    /// Compared by PAGE KEY -- slab, offset and length -- and not by the whole address, because
+    /// Compared by BLOCK KEY -- slab, offset and length -- and not by the whole address, because
     /// that triple is what an index entry's identity is under the gate.
     fn any_element_other_than_at(&self, skip: &Self::Element, block: &ElementEntry) -> bool;
 }
@@ -1216,12 +1216,12 @@ impl AddressedElementMap for super::hash_field_map::HashFieldMap {
     }
 }
 
-/// `sets`, `zsets` and `lists`, through the one bound that tells a level-2 value where its page is.
+/// `sets`, `zsets` and `lists`, through the one bound that tells a level-2 value where its block is.
 ///
 /// `CarriedValue` is already the trait that answers "which address does this value name" -- the
 /// delta fold reads it to decide whether a carried element's block is still there. Reusing it is
-/// what keeps a zset's `(score, page)` from needing an arm of its own here: the pair already
-/// declares which half is the page.
+/// what keeps a zset's `(score, block)` from needing an arm of its own here: the pair already
+/// declares which half is the block.
 impl<E, V> AddressedElementMap for std::collections::BTreeMap<E, V>
 where
     E: Ord + serde::de::DeserializeOwned,

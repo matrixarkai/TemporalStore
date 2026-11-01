@@ -7,21 +7,21 @@ use super::*;
 
 /// How many bytes one compaction round may relocate.
 ///
-/// Compaction used to relocate EVERY live page of every model in one pass, holding the shard
+/// Compaction used to relocate EVERY live block of every model in one pass, holding the shard
 /// write lock throughout, so the stall grew with the store. A bound makes the round's cost a
 /// property of the constant rather than of the corpus.
 ///
-/// Large enough that a store whose live pages fit inside it still compacts in a single round --
+/// Large enough that a store whose live blocks fit inside it still compacts in a single round --
 /// which is every store the suite builds, so the existing assertions about what one compaction
 /// leaves behind are unchanged. A store bigger than this takes several rounds, and each one
-/// relocates pages that have not moved yet rather than re-moving the last round's work.
+/// relocates blocks that have not moved yet rather than re-moving the last round's work.
 pub(super) const COMPACTION_ROUND_BYTES: u64 = 256 * 1024 * 1024;
 
-/// How many page refs one compaction round may relocate.
+/// How many block refs one compaction round may relocate.
 ///
 /// The stall this bounds tracks the NUMBER of refs moved, not their size: measured in release,
-/// a relocation costs ~200 us per ref almost regardless of page size. So a byte budget bounds it
-/// only through average page size, and the same byte constant gives wildly different stalls --
+/// a relocation costs ~200 us per ref almost regardless of block size. So a byte budget bounds it
+/// only through average block size, and the same byte constant gives wildly different stalls --
 /// 256 KiB is ~2,400 refs of 100-byte values but ~64 refs of 4 KiB ones. A ref budget bounds the
 /// stall directly.
 ///
@@ -62,9 +62,9 @@ pub(super) fn compaction_utility_report(
     compaction_utility_report_from_entries(block_store, shard, &collect_live_block_entries(shard))
 }
 
-/// The same report, from live-page entries the caller ALREADY has.
+/// The same report, from live-block entries the caller ALREADY has.
 ///
-/// `collect_live_block_entries` materializes every live page in the shard. The compaction preamble
+/// `collect_live_block_entries` materializes every live block in the shard. The compaction preamble
 /// builds several reports from that same set, so one walk can serve them all; the wrapper above
 /// keeps the old signature for callers with nothing to share.
 pub(super) fn compaction_utility_report_from_entries(
@@ -270,12 +270,12 @@ pub(super) struct CompactionRewriteStats {
     pub(super) rewritten_block_refs: usize,
     pub(super) cold_block_rewrite_refs: usize,
     by_model: BTreeMap<String, ModelCompactionRewriteStats>,
-    /// The slab this round is filling. A page already there does not move.
+    /// The slab this round is filling. A block already there does not move.
     target_block_slab_id: u64,
     /// Bytes this round may still relocate. Saturates at zero, and a round that reaches zero
     /// leaves the rest where it is for the next one.
     budget_bytes: u64,
-    /// Page refs this round may still relocate, the bound that actually tracks the stall.
+    /// Block refs this round may still relocate, the bound that actually tracks the stall.
     /// Same saturating behaviour as `budget_bytes`; whichever runs out first ends the round.
     budget_block_refs: usize,
     pub(super) skipped_by_budget: usize,
@@ -283,27 +283,27 @@ pub(super) struct CompactionRewriteStats {
     /// Bytes this round committed to copying, charged at the same point the byte budget is.
     ///
     /// This is the cost of the round stated in the unit that matters. `rewritten_block_refs`
-    /// counts relocations; a relocation reads a page and appends it verbatim somewhere else, so
+    /// counts relocations; a relocation reads a block and appends it verbatim somewhere else, so
     /// what it actually spends is its LENGTH, and two rounds with the same ref count can differ
     /// by orders of magnitude in what they moved.
     pub(super) relocated_bytes: u64,
-    /// The slabs the caller asked this round to empty, or `None` for every live page.
+    /// The slabs the caller asked this round to empty, or `None` for every live block.
     ///
     /// `None` is what a DIRECT compaction has always meant and still means: the operator RPC
     /// and the on-demand cycle are instructions, not suggestions. `Some` is what the PERIODIC
     /// loop issues, and it names the only slabs a relocation can recover anything for -- the ones
-    /// carrying dead space that objects still hold pages on. A page on any OTHER slab comes out
+    /// carrying dead space that objects still hold blocks on. A block on any OTHER slab comes out
     /// of a relocation byte for byte what it went in as, on a slab that is now the one carrying
     /// the dead space, so moving it recovers nothing and costs a read, an append and a share of
     /// an index record.
     drain_block_slab_ids: Option<BTreeSet<u64>>,
-    /// Pages left where they are because emptying their slab was not asked for.
+    /// Blocks left where they are because emptying their slab was not asked for.
     ///
     /// NOT work left behind, and the distinction is the termination argument: a later round will
     /// not want these either, so this must never keep the round open. That is why
     /// `should_relocate` tests the drain set BEFORE the budget -- charging these to
     /// `skipped_by_budget` would make `left_work_behind` true for ever on any shard with a
-    /// page outside the drain set, and the round would never close.
+    /// block outside the drain set, and the round would never close.
     pub(super) skipped_off_drain_set: usize,
 }
 
@@ -329,11 +329,11 @@ impl CompactionRewriteStats {
         }
     }
 
-    /// The same round, restricted to the pages sitting on `drain_block_slab_ids`.
+    /// The same round, restricted to the blocks sitting on `drain_block_slab_ids`.
     ///
     /// The set comes off the reclaim plan the maintenance round has already built, so asking for
     /// it costs no walk of the shard -- see `compaction_drain_block_slab_ids`. A round built
-    /// this way moves exactly the pages the relocation hint names: the ones whose movement
+    /// this way moves exactly the blocks the relocation hint names: the ones whose movement
     /// empties a slab, and nothing else.
     pub(super) fn for_drain_round(
         target_block_slab_id: u64,
@@ -352,12 +352,12 @@ impl CompactionRewriteStats {
     /// Three reasons not to move one: it is already on the slab this round is filling, which is
     /// how a resumed round avoids redoing its predecessor's work; its slab is not one this round
     /// was asked to empty, so moving it would recover nothing; or the round has spent its budget,
-    /// which is how it stays bounded. The budget is charged BEFORE the page is read, since
+    /// which is how it stays bounded. The budget is charged BEFORE the block is read, since
     /// reading is the expensive half and the length is known from the address.
     ///
-    /// ORDER MATTERS between the last two. A page outside the drain set must not be charged to
+    /// ORDER MATTERS between the last two. A block outside the drain set must not be charged to
     /// `skipped_by_budget`, because that is what `left_work_behind` reads to keep a round
-    /// open for the next one -- and a round kept open by pages nobody will ever want moved never
+    /// open for the next one -- and a round kept open by blocks nobody will ever want moved never
     /// closes.
     pub(super) fn should_relocate(&mut self, address: &ElementEntry) -> bool {
         if address.block_slab_id() == self.target_block_slab_id {
@@ -656,7 +656,7 @@ impl CompactionLayoutIndexRefs for ShardCompactionModelLayoutReport {
 /// Fault seam: make the block read inside a compaction round fail after N relocations.
 ///
 /// The ONLY way a round fails partway in production is `read_block_bytes` returning `None` --
-/// a torn or missing page -- and nothing else in the round can produce that state on demand. The
+/// a torn or missing block -- and nothing else in the round can produce that state on demand. The
 /// resume-anchor behaviour on the partial-failure path is therefore untestable without a seam, so
 /// this is it. Thread-local, because a round runs on its caller's thread and tests that set it
 /// must not reach a round another test is driving.
@@ -679,9 +679,9 @@ fn read_block_bytes_for_compaction(
     block_store: &BlockStore,
     shard_id: ShardId,
     address: &ElementEntry,
-    // WHICH PAGE, which this function could not say and now must. The element stays `None` for the
+    // WHICH BLOCK, which this function could not say and now must. The element stays `None` for the
     // reason spelled out below; what changed is that the OBJECT is stated from the key rather than
-    // recovered from the address, so a relocation cannot read a page it cannot name.
+    // recovered from the address, so a relocation cannot read a block it cannot name.
     identity: BlockIdentity<'_>,
     routing_bucket: Option<u32>,
 ) -> Option<Vec<u8>> {
@@ -695,10 +695,10 @@ fn read_block_bytes_for_compaction(
             FAIL_BLOCK_READ_AFTER.with(|cell| cell.set(Some(remaining - 1)));
         }
     }
-    // `None`, AND THIS IS THE ONE PLACE IN THIS CHANGE THAT PASSES IT WITHOUT THE PAGE BEING
+    // `None`, AND THIS IS THE ONE PLACE IN THIS CHANGE THAT PASSES IT WITHOUT THE BLOCK BEING
     // A WHOLE OBJECT. Compaction walks the model maps, and for the container kinds those maps
     // are keyed by the element's VALUE (a set's member bytes, a zset's member, a list's
-    // sequence) rather than by the component the index filed the page under -- which is a
+    // sequence) rather than by the component the index filed the block under -- which is a
     // rendering of it: `hex::encode(member)` for a set, `{score:016x}` before that hex for a
     // zset, `{:016x}` of the biased sequence for a list. There is no shared renderer to call;
     // each write site spells it out inline. Re-spelling them here would be a second copy of
@@ -706,8 +706,8 @@ fn read_block_bytes_for_compaction(
     // be indistinguishable from this `None` in its effect.
     //
     // WHAT IT COSTS, stated rather than implied: the in-log fallback inside `read_block_bytes`
-    // will not resolve a container ELEMENT page whose only durable copy is still a WAL record,
-    // so compaction cannot relocate that page -- and the round FAILS rather than skipping it.
+    // will not resolve a container ELEMENT block whose only durable copy is still a WAL record,
+    // so compaction cannot relocate that block -- and the round FAILS rather than skipping it.
     // Both callers turn this `None` into `Status::error("block_compaction_failed", ...)` with `?`,
     // which is what CP4 requires: a round that stops partway must propagate, so the consistent
     // partial index is durably committed, or reclaim purges a slab the durable index still names.
@@ -717,30 +717,30 @@ fn read_block_bytes_for_compaction(
     // `part4::partial_compaction_failure_durably_persists_the_consistent_partial_index`, and that
     // misreading has already turned it red once. The bytes are never wrong either way -- what is
     // at stake is whether the failure stays loud.
-    // Whole-object pages, which is every `string` and `control_state`, are unaffected: `None`
+    // Whole-object blocks, which is every `string` and `control_state`, are unaffected: `None`
     // is their actual component.
     read_block_bytes(cache, block_store, shard_id, address, identity, routing_bucket)
 }
 
-/// How many elements one rewritten container page may hold.
+/// How many elements one rewritten container block may hold.
 ///
 /// A cap and not a target: the byte target below is what usually binds, and this stops a container
 /// of tiny elements -- a set of eight-byte members, a hash of counters -- from putting tens of
 /// thousands of them behind one address. Everything behind one address shares a cache entry, a
-/// checksum and a read, so a page that holds the whole container turns every point read into a read
+/// checksum and a read, so a block that holds the whole container turns every point read into a read
 /// of the container.
 ///
 /// 128 because that is the order the comparison design bounds its own delta chain at, and because
 /// the measured saving is nearly all spent by then: `container_blocks`'s ladder puts a set of
-/// eight-byte members at 12 bytes of framing per element at one per page and 3.1 at 128, and the
+/// eight-byte members at 12 bytes of framing per element at one per block and 3.1 at 128, and the
 /// curve between 32 and 128 is worth half a byte.
 pub const CONTAINER_BATCH_ELEMENT_CAP: usize = 128;
 
-/// The byte target a rewritten container page is chunked against.
+/// The byte target a rewritten container block is chunked against.
 ///
 /// The SAME target the timestamped chunker uses (`context_block_target_bytes`), deliberately, so the
 /// engine has one answer to "how big should a page be" rather than two that can drift. A container
-/// page and a packed series page are read by the same block store through the same cache with the
+/// block and a packed series block are read by the same block store through the same cache with the
 /// same record header; nothing about a container makes a different size right, and a second constant
 /// would be a second thing to tune.
 fn container_batch_target_bytes() -> usize {
@@ -761,44 +761,44 @@ pub(super) struct ContainerElementRef<'a> {
     pub(super) address: &'a mut ElementEntry,
 }
 
-/// Rewrite a container's pages as FEWER, LARGER pages that each hold several elements.
+/// Rewrite a container's blocks as FEWER, LARGER blocks that each hold several elements.
 ///
 /// # WHAT THIS CHANGES AND WHAT IT DOES NOT
 ///
-/// It changes the PAGE count and the ENTRY count falls with it. Several elements come to share one
+/// It changes the BLOCK count and the ENTRY count falls with it. Several elements come to share one
 /// address, and `block_index_handle` hashes the model spelling, the object key and that address and
-/// nothing per-element, so entries converge on pages -- `entry_count_versus_block_count`'s
+/// nothing per-element, so entries converge on blocks -- `entry_count_versus_block_count`'s
 /// `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` holds the mechanism and
 /// `container_blocks_are_batched::a_compaction_round_folds_a_containers_pages_and_folds_its_entry_
-/// count_with_them` measures it through a round, 40 entries over 40 pages before and 1 over 1 after.
+/// count_with_them` measures it through a round, 40 entries over 40 blocks before and 1 over 1 after.
 ///
-/// THIS PARAGRAPH SAID THE OPPOSITE AND IT WAS TRUE WHEN IT WAS WRITTEN: "It changes the PAGE count
+/// THIS PARAGRAPH SAID THE OPPOSITE AND IT WAS TRUE WHEN IT WAS WRITTEN: "It changes the BLOCK count
 /// and not the ENTRY count ... `block_index_handle` hashes the component beside the address, so the
-/// page index still holds one entry per element ... The entry count is a later stage's subject."
+/// block index still holds one entry per element ... The entry count is a later stage's subject."
 /// That later stage has landed -- `BlockIndex` has no element-name field -- so the entry count is
 /// this round's subject too.
 ///
-/// Page count is what a load path that reads every page pays, which is why it comes first: a replay
-/// that read a page per element once read 987 MB off a 32 MB log, and the reason that was
-/// affordable anywhere is that the timestamped kinds hold many items per page already.
+/// Block count is what a load path that reads every block pays, which is why it comes first: a replay
+/// that read a block per element once read 987 MB off a 32 MB log, and the reason that was
+/// affordable anywhere is that the timestamped kinds hold many items per block already.
 ///
-/// # ONLY PAGES THIS ROUND WOULD HAVE MOVED ANYWAY
+/// # ONLY BLOCKS THIS ROUND WOULD HAVE MOVED ANYWAY
 ///
 /// `should_relocate` is asked per element and an element it refuses is left where it is, its address
 /// untouched, and is NOT pulled into a batch. So this adds no reads and no writes to a round: it
 /// changes the shape of what a round was already going to rewrite. A round that relocates nothing
 /// batches nothing.
 ///
-/// # AND IT IS THE MIGRATION OFF UNFRAMED PAGES
+/// # AND IT IS THE MIGRATION OFF UNFRAMED BLOCKS
 ///
-/// A page written before `container_blocks` carries a bare value and no element key. Read through the
+/// A block written before `container_blocks` carries a bare value and no element key. Read through the
 /// funnel with its component it hands that value back, and this function writes it into a frame that
 /// names it. So an old store becomes a framed one as it is compacted, without a migration pass of
 /// its own.
 ///
 /// # THE READ THAT MUST NOT BE SILENTLY EMPTY, AND MUST NOT BE SILENTLY SKIPPED EITHER
 ///
-/// An element whose page cannot be read FAILS THE ROUND, which is what `compact_block_addresses`
+/// An element whose block cannot be read FAILS THE ROUND, which is what `compact_block_addresses`
 /// does for the same case and is not what this function did when it was first written. Both halves
 /// of that matter and they are different failures:
 ///
@@ -806,7 +806,7 @@ pub(super) struct ContainerElementRef<'a> {
 ///     and it would read back as PRESENT AND EMPTY -- #1989's shape, and worse than a miss because a
 ///     miss is visible. That is why the read's failure arm is not an `unwrap_or_default`.
 ///   * SKIPPING the element and carrying on would be safe for the element and unsafe for the ROUND.
-///     CP4 is the recorded reason: a round that hits an unreadable page must propagate the error so
+///     CP4 is the recorded reason: a round that hits an unreadable block must propagate the error so
 ///     the handler durably commits the consistent partial index, because a round that returns
 ///     success having quietly left the volatile index advanced past the durable one lets the
 ///     independent reclaim path purge a slab the durable index still names.
@@ -816,7 +816,7 @@ pub(super) struct ContainerElementRef<'a> {
 ///
 /// Whatever was already flushed stays flushed and its addresses stay moved -- that IS the consistent
 /// partial the handler commits. The batch under construction when the read failed is dropped
-/// unwritten, so its elements keep their own pages.
+/// unwritten, so its elements keep their own blocks.
 /// `a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_folding_an_empty_value`
 /// drives it.
 #[allow(clippy::too_many_arguments)]
@@ -825,14 +825,14 @@ pub(super) fn compact_container_blocks_batched<'a>(
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    // THE OBJECT THESE PAGES BELONG TO, and one value for the whole call rather than one per
+    // THE OBJECT THESE BLOCKS BELONG TO, and one value for the whole call rather than one per
     // element -- the shape `compact_feature_block_addresses` already uses, for the same reason: the
     // caller is standing on one object and every element it hands over is an element OF that object.
     // `compact_block_addresses` carries a key per ITEM because its string arm walks a map of many
     // objects; these four arms do not.
     //
     // AND IT IS NOT OPTIONAL, because a [`BlockIdentity`] cannot be built without it. The read below
-    // asks for ONE ELEMENT of a page, and a read handed only a component and no object cannot say
+    // asks for ONE ELEMENT of a block, and a read handed only a component and no object cannot say
     // which object's element it means.
     object_key: &str,
     routing_bucket: u32,
@@ -840,7 +840,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
     rewrite_stats: &mut CompactionRewriteStats,
 ) -> Result<(), Status> {
     let Some(spelling) = super::container_blocks::ElementKeySpelling::for_kind(model_id) else {
-        // Not a kind whose pages name an element, so there is nothing to batch by. Never reached
+        // Not a kind whose blocks name an element, so there is nothing to batch by. Never reached
         // from the arms below, which are the four container kinds; stated rather than asserted
         // because a fifth kind added to those arms should degrade to doing nothing, not panic.
         return Ok(());
@@ -848,7 +848,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
     let target_bytes = container_batch_target_bytes();
 
     // One batch under construction: the items, the addresses that will point at it, and whether any
-    // of its pages was cold. Held as owned bytes because the frame is built from all of them at
+    // of its blocks was cold. Held as owned bytes because the frame is built from all of them at
     // once, after the last one is read.
     let mut items: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
     let mut destinations: Vec<&mut ElementEntry> = Vec::new();
@@ -858,8 +858,8 @@ pub(super) fn compact_container_blocks_batched<'a>(
     let mut blocks_folded = 0usize;
 
     // The object id every element of this object already carries. #2019 made it the OBJECT's rather
-    // than one of its elements, which is what lets one page stand for several elements at all: a
-    // batched page can carry only one object id, and before #2019 that id named one element and
+    // than one of its elements, which is what lets one block stand for several elements at all: a
+    // batched block can carry only one object id, and before #2019 that id named one element and
     // would have been wrong for the rest.
     let mut object_id: Option<u64> = None;
 
@@ -884,7 +884,7 @@ pub(super) fn compact_container_blocks_batched<'a>(
             // THE TERMS, NOT AN ID. The object comes from the key this call is standing on and the
             // element from the component just rendered, so the identity is derived here from both
             // halves rather than recovered from the address -- which is what #2024 made the only
-            // way to name a page, precisely so a relocation cannot read a page it cannot name.
+            // way to name a block, precisely so a relocation cannot read a block it cannot name.
             BlockIdentity::of(shard_id, model_id, object_key, Some(component.as_str())),
             routing_bucket,
         )
@@ -953,15 +953,15 @@ pub(super) fn compact_container_blocks_batched<'a>(
     Ok(())
 }
 
-/// One element's VALUE out of the page its index entry names.
+/// One element's VALUE out of the block its index entry names.
 ///
 /// Through the read funnel WITH THE COMPONENT NAMED IN THE IDENTITY, which is the one thing that
 /// makes this different from `read_block_bytes_for_compaction`: that one builds its identity with
 /// `None` for the component and so gets the whole payload, because until `container_blocks` there was
 /// no renderer to turn a model-map key into a component. There is one now, so this asks for the
-/// element and gets its value whether the stored page is framed or is a bare value from before the
+/// element and gets its value whether the stored block is framed or is a bare value from before the
 /// frame existed -- `select_container_element` answers `NotFramed` for the second and the funnel
-/// hands back the whole page, which for an unframed page IS the element.
+/// hands back the whole block, which for an unframed block IS the element.
 fn read_block_bytes_for_container_element(
     cache: &MultiLayerCache,
     block_store: &BlockStore,
@@ -990,7 +990,7 @@ fn read_block_bytes_for_container_element(
     )
 }
 
-/// Write one batch and point every contributing address at it. Returns how many pages it folded.
+/// Write one batch and point every contributing address at it. Returns how many blocks it folded.
 #[allow(clippy::too_many_arguments)]
 fn flush_container_batch(
     block_store: &BlockStore,
@@ -1012,11 +1012,11 @@ fn flush_container_batch(
         .map(|(key, value)| (key.as_slice(), value.as_slice()))
         .collect();
     let bytes = super::container_blocks::encode_container_block(spelling, &borrowed);
-    // WHICH page of its object this is, and it is the BATCH's ordinal rather than any element's.
+    // WHICH block of its object this is, and it is the BATCH's ordinal rather than any element's.
     // #2008 threaded this so the record header and the address are built from ONE value, because
-    // `decode_block_record` refuses a page whose two copies disagree. A batched page has one
+    // `decode_block_record` refuses a block whose two copies disagree. A batched block has one
     // header and one address, so it has one ordinal, and numbering batches is the only numbering
-    // that stays true when the elements inside them move between pages.
+    // that stays true when the elements inside them move between blocks.
     let ordinal = u32::try_from(batch_ordinal).unwrap_or(u32::MAX);
     let new_address = block_store
         .append_block_of_object(&bytes, object_id, Some(routing_bucket), ordinal)
@@ -1043,7 +1043,7 @@ fn flush_container_batch(
     Ok(folded)
 }
 
-/// Batches written and pages folded into them, so a guard can assert a round actually batched.
+/// Batches written and blocks folded into them, so a guard can assert a round actually batched.
 ///
 /// A COUNTER AND NOT A DERIVED FIGURE. "Pages went down" is measurable from the store, and it is
 /// also what a round that relocated nothing reports, so a test that only looked at the store could
@@ -1058,7 +1058,7 @@ fn note_container_batch_round(batches: usize, blocks_folded: usize) {
     CONTAINER_BLOCKS_FOLDED.fetch_add(blocks_folded as u64, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Batches written and element pages folded into them since the last reset.
+/// Batches written and element blocks folded into them since the last reset.
 pub fn container_batch_counts() -> (u64, u64) {
     (
         CONTAINER_BATCHES_WRITTEN.load(std::sync::atomic::Ordering::Relaxed),
@@ -1073,7 +1073,7 @@ pub fn reset_container_batch_counts() {
 }
 
 /// THE BUCKET AND THE KEY COME IN BESIDE EACH ADDRESS, because compaction reads and re-writes
-/// pages and the read is keyed by both.
+/// blocks and the read is keyed by both.
 ///
 /// The bucket used to come off the address and the key was never carried at all. A compaction round
 /// walks a model map and every entry in that map belongs to one object key, so the caller has both
@@ -1086,7 +1086,7 @@ pub fn reset_container_batch_counts() {
 /// from the key it is iterating, so no arm had to find one it did not have.
 ///
 /// A `Cow` AND NOT A `&str`, FOR ONE ARM. Twelve of the thirteen arms iterate a map whose key IS the
-/// object key and can lend it for the length of the walk. The ENTITY arm cannot: a page there is
+/// object key and can lend it for the length of the walk. The ENTITY arm cannot: a block there is
 /// filed under `context_entity_key(..)`, the collection key with the entity hash appended, which is
 /// COMPOSED per entity and so is a temporary no borrow can outlive. `Cow` lets that arm hand over
 /// the string it already builds -- it has always built one, to derive the bucket -- instead of
@@ -1153,7 +1153,7 @@ pub(super) fn compact_feature_block_addresses(
     cache: &MultiLayerCache,
     shard_id: ShardId,
     model_id: &str,
-    // The object these series pages belong to. One series is one object, so this is one value for
+    // The object these series blocks belong to. One series is one object, so this is one value for
     // the whole call rather than one per address -- which is why it is a parameter here and a term
     // of the iterator item in `compact_block_addresses`.
     object_key: &str,
@@ -1215,7 +1215,7 @@ pub(super) fn compact_feature_block_addresses(
 }
 
 // ---------------------------------------------------------------------------------------------
-// THE RELOCATION HINT: which pages a round would move, and WHY, asked one object at a time.
+// THE RELOCATION HINT: which blocks a round would move, and WHY, asked one object at a time.
 // ---------------------------------------------------------------------------------------------
 
 /// The slabs a relocation round could actually empty.
@@ -1225,18 +1225,18 @@ pub(super) fn compact_feature_block_addresses(
 ///
 ///   - a slab with dead space that objects STILL HOLD BLOCKS ON. Only relocation empties it, so
 ///     it is compaction's job.
-///   - a slab holding nothing but dead space. No object has a page left on it, so there is
+///   - a slab holding nothing but dead space. No object has a block left on it, so there is
 ///     nothing for compaction to relocate; destroying it is the COLLECTOR's job.
 ///
 /// The second is the one a compaction round manufactures FOR ITSELF. A round relocates a slab's
-/// live pages onto a fresh one, and the slab it just emptied stays a reclaim candidate until the
+/// live blocks onto a fresh one, and the slab it just emptied stays a reclaim candidate until the
 /// collector destroys it. `stale_block_pressure` counts candidates without asking which kind they
 /// are, so the round that emptied a slab is the reason the next round runs -- on a shard nobody
 /// is writing to, for ever, each round persisting another index record.
 ///
 /// No threshold here, and no shard-wide question about staleness or density: the three predicates
 /// of that shape were each refused by the suite. This is the drain SET, and what makes a slab a
-/// member of it is that some object still has a page there.
+/// member of it is that some object still has a block there.
 /// WHICH drainable slabs this round should actually point its relocation budget at, in order.
 ///
 /// THE BUDGET IS ALREADY BOUNDED -- `COMPACTION_ROUND_BLOCK_REFS` caps how many block refs one
@@ -1245,7 +1245,7 @@ pub(super) fn compact_feature_block_addresses(
 /// happened to reach them, spread thinly across every holed slab.
 ///
 /// That matters because of what a relocation is worth. A slab's space comes back only when the
-/// slab is emptied COMPLETELY and its file is unlinked; `compact_block_addresses` copies a page's
+/// slab is emptied COMPLETELY and its file is unlinked; `compact_block_addresses` copies a block's
 /// bytes verbatim, so a ref moved off a slab that still holds other refs has bought nothing except
 /// to put those bytes somewhere else. Spreading a fixed budget across many slabs can therefore
 /// finish none of them and reclaim nothing, round after round, while the same budget spent on the
@@ -1312,16 +1312,16 @@ pub fn compaction_drain_block_slab_ids(
 
 /// What a relocation round should move FOR THIS OBJECT, as indexes into `object_blocks`.
 ///
-/// The decision belongs at this granularity and not to the shard. An object's pages are worth
+/// The decision belongs at this granularity and not to the shard. An object's blocks are worth
 /// relocating when they sit on a slab the collector wants emptied, because vacating that slab is
-/// the only thing a relocation achieves for them: `compact_block_addresses` copies a page's bytes
-/// verbatim and appends them elsewhere, so a page that moves off a slab nobody is draining comes
+/// the only thing a relocation achieves for them: `compact_block_addresses` copies a block's bytes
+/// verbatim and appends them elsewhere, so a block that moves off a slab nobody is draining comes
 /// out byte for byte what it went in as, on a slab that is now the one carrying dead space.
 ///
 /// `model_id` is the second half of the question and has no answer to give yet IN THIS TREE, for
-/// the reason just given -- every model's pages are copied verbatim, so no model can improve
-/// itself by being rewritten in place. A model that PACKED several components into one page on
-/// rewrite could, and this is where it says so: it would name its own pages here whether or not
+/// the reason just given -- every model's blocks are copied verbatim, so no model can improve
+/// itself by being rewritten in place. A model that PACKED several components into one block on
+/// rewrite could, and this is where it says so: it would name its own blocks here whether or not
 /// their slab is being drained. The hint carries a per-model tally so the answer stays
 /// attributable when that arrives.
 pub(super) fn compaction_object_block_hint(
@@ -1338,7 +1338,7 @@ pub(super) fn compaction_object_block_hint(
         .collect()
 }
 
-/// The shard's answer, composed from the per-object ones. Walks the live page set once.
+/// The shard's answer, composed from the per-object ones. Walks the live block set once.
 ///
 /// This is the NORMATIVE definition of the hint. The maintenance round does not call it -- it
 /// takes the same number off the reclaim plan it has already built, which costs no walk at all --
@@ -1389,7 +1389,7 @@ pub(super) fn compaction_relocation_hint_per_object(
 /// The same count, off the reclaim plan the maintenance round has already built.
 ///
 /// `live_page_refs` on a candidate is the tally of live page addresses that landed on that slab,
-/// summed over the same live page set `compaction_relocation_hint_per_object` walks -- so summing
+/// summed over the same live block set `compaction_relocation_hint_per_object` walks -- so summing
 /// it over the drain set is the per-object answer, aggregated, for no extra walk of the shard.
 /// The round runs eight of those already; a ninth to ask whether it should run is not a trade
 /// worth making on a loop that ticks every thirty seconds per shard.

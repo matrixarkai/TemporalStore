@@ -567,7 +567,7 @@ fn is_raft_read_command(command: &Command) -> bool {
             | Command::ControlStateQuery { .. }
             | Command::ControlStateDetail { .. }
             // NB: neither ControlStateSetAndGet nor ...WithOptions belongs here. Both MUTATE
-            // (they add `amount` to the series and persist a control-state page --
+            // (they add `amount` to the series and persist a control-state block --
             // execute_on_shard.rs) and the engine's is_write_command classifies both as writes,
             // exactly as the control-state SETANDGET commands are registered as writes.
             // Serving a mutation on the local read path
@@ -601,11 +601,11 @@ fn startup_load_shard_request(shard_id: u64, node_id: u64) -> LoadShardRequest {
         // 4,000 and 40,000 routed records, reporting both allocator columns; the numbers are in
         // `engine/tests/routing_range_default.rs`. 1,023 captures 57.0% of the resident bytes a
         // record on the CHUNK column at 40,000 records against a floor of 59.2% at 255, at a
-        // dump-and-release unit of 50 pages rather than 168.
+        // dump-and-release unit of 50 blocks rather than 168.
         //
         // Only NEW stores get it. An existing store is honoured on the range it was built under --
         // see `engine/routing_range_stamp.rs` -- because reopening a populated store on a different
-        // range leaves every page filed outside the range the shard holds.
+        // range leaves every block filed outside the range the shard holds.
         end_routing_bucket: temporalstore_rust::env_flag::env_number_first(
             temporalstore_rust::END_ROUTING_BUCKET_ENV_NAMES,
             temporalstore_rust::DEFAULT_END_ROUTING_BUCKET,

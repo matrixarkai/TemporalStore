@@ -25,7 +25,7 @@
 //! of BLOCKS PER BUCKET, and blocks per bucket is
 //!
 //! ```text
-//!     records x pages-per-record / bucket-count
+//!     records x blocks-per-record / bucket-count
 //! ```
 //!
 //! -- which contains the RECORD COUNT. A fixed bucket count therefore lands at a different fill
@@ -331,7 +331,7 @@ fn store_path_length(dir: &std::path::Path) -> usize {
 /// THE RANGE SWEEP AS A HISTOGRAM WITH PERCENTILES AND A MAX, AT TWO CORPUS SIZES.
 ///
 /// The question a default has to answer is "how full is a bucket", and the answer is not a
-/// property of the range alone. `records x pages-per-record / bucket-count` contains the record
+/// property of the range alone. `records x blocks-per-record / bucket-count` contains the record
 /// count, so the same candidate range lands at a different fill for every corpus -- and a
 /// candidate chosen at one corpus size is chosen for that size only. This reports the whole
 /// distribution at each of the five arms at each of the two sizes so that the dependence is
@@ -460,7 +460,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
 /// THE FILL A CANDIDATE PRODUCES MOVES WITH THE CORPUS, WHICH IS WHY NO FIXED DEFAULT IS RIGHT.
 ///
 /// THIS IS THE FINDING. The crossover the container shapes have is a property of BLOCKS PER
-/// BUCKET, and blocks per bucket is `records x pages-per-record / bucket-count`. A shipped default
+/// BUCKET, and blocks per bucket is `records x blocks-per-record / bucket-count`. A shipped default
 /// fixes the denominator and nothing else, so the fill it lands at is set by the corpus -- which
 /// the engine does not know when it loads a shard. The same candidate is therefore below the
 /// crossover at one corpus size and above it at another, and this asserts that it genuinely is

@@ -188,7 +188,7 @@ impl SingleNodeMeta {
         }
     }
 
-    /// List shard placement, ordered by shard id and returned a page at a time.
+    /// List shard placement, ordered by shard id and returned a block at a time.
     ///
     /// Servers, proxies, proxy groups, namespaces and tables could all be
     /// listed; shards -- the thing the metaserver exists to place -- could only
@@ -206,10 +206,10 @@ impl SingleNodeMeta {
         // looked up for them. Naming the table that owns a shard used to be
         // done by building that map for every shard in the cluster -- walking
         // every table, over every shard it declares, cloning its namespace and
-        // its name for each -- and then using at most one page of it.
+        // its name for each -- and then using at most one block of it.
         //
         // The map is kept in shard order, so this walks from the cursor rather
-        // than over everything above it: a page costs the page. It used to cost
+        // than over everything above it: a block costs the block. It used to cost
         // the cluster, which made paging through one quadratic.
         let mut block = Vec::new();
         let mut next_after_shard_id = None;
@@ -225,7 +225,7 @@ impl SingleNodeMeta {
                 continue;
             }
             if block.len() == limit {
-                // A full page and at least one more match: hand back where to
+                // A full block and at least one more match: hand back where to
                 // resume rather than silently truncating.
                 next_after_shard_id = block.last().map(|(shard_id, _): &(ShardId, &ShardLocation)| *shard_id);
                 break;
@@ -233,8 +233,8 @@ impl SingleNodeMeta {
             block.push((shard_id, location));
         }
 
-        // The page is sorted and a table's shards are a contiguous range, so
-        // the entries of the page that belong to a table are a slice of it.
+        // The block is sorted and a table's shards are a contiguous range, so
+        // the entries of the block that belong to a table are a slice of it.
         let block_ids = block.iter().map(|(shard_id, _)| *shard_id).collect::<Vec<_>>();
         let mut shard_tables: BTreeMap<ShardId, (String, String)> = BTreeMap::new();
         for table in state.tables.values() {

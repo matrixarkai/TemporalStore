@@ -1005,9 +1005,9 @@ fn an_expired_key_stays_expired_across_load_manifest_install_and_wal_replay() {
 /// THE THREE PROPERTIES, and each is a way the change could be wrong while still being cheap:
 ///
 ///   1. EVERY REMOVED KEY IS NAMED. `delta_record_covered_keys` reads the covered set from the
-///      key-state blobs, and a removed key contributes no page items -- the deletes retained its
-///      pages out of the bucket before this record was built. So a key with no blob is a key the
-///      fold never wipes: it keeps its pages and its deadline, and it comes back alive.
+///      key-state blobs, and a removed key contributes no block items -- the deletes retained its
+///      blocks out of the bucket before this record was built. So a key with no blob is a key the
+///      fold never wipes: it keeps its blocks and its deadline, and it comes back alive.
 ///   2. EACH BLOB IS BARE. A blob carrying only `key` means "this key is in none of the thirteen
 ///      per-key maps", which is what `apply_key_state_field` turns into a removal from each of
 ///      them -- `expires_at_ms` included. A blob captured BEFORE the delete would carry the
@@ -1076,11 +1076,11 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
     );
     let record = records.last().expect("the round appended a record");
 
-    // The record describes the removal with blobs alone. Every page the round's keys had was
+    // The record describes the removal with blobs alone. Every block the round's keys had was
     // retained out of its bucket by the delete, so there is nothing left to name -- and the
     // builder relies on that rather than walking the buckets to rediscover it, which is what
-    // made a large due batch superlinear. If a delete ever starts leaving a page behind, this
-    // fires here instead of the fold silently wiping that page on the next recovery.
+    // made a large due batch superlinear. If a delete ever starts leaving a block behind, this
+    // fires here instead of the fold silently wiping that block on the next recovery.
     assert!(
         record.items.is_empty(),
         "the expiry delta carries {} page items. The round's deletes are supposed to leave no \
@@ -1112,7 +1112,7 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
              comes back alive. Named: {named:?}"
         );
     }
-    // ...and nothing else. A delta that named live keys would wipe their pages on the fold.
+    // ...and nothing else. A delta that named live keys would wipe their blocks on the fold.
     let live_named = named.iter().filter(|key| key.contains("live-")).count();
     assert_eq!(
         live_named, 0,
@@ -1174,12 +1174,12 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
 ///   * `load_index_checked` replays no WAL at all, so the tombstones cannot arrive from there;
 ///   * the CONTROL is the same load with the fold switched off -- `load_index_base_only` over the
 ///     same two files, in the same process -- and it is asserted to come back with those keys
-///     STILL ALIVE, deadline and pages. That is the denominator. A fixture that stopped putting
+///     STILL ALIVE, deadline and blocks. That is the denominator. A fixture that stopped putting
 ///     the keys in the base would make the treatment below vacuous, and this fails there instead.
 ///
 /// THE SHAPE COVERED IS #1633's, which is the shape every expiry round now writes: one record,
-/// NO page items, one bare key-state blob per removed key. The removal is carried entirely by
-/// "this key is in none of the thirteen per-key maps" plus the covered-key page wipe that an
+/// NO block items, one bare key-state blob per removed key. The removal is carried entirely by
+/// "this key is in none of the thirteen per-key maps" plus the covered-key block wipe that an
 /// EMPTY item list against a covered key spells. A fold that applied only page items, or only key
 /// states, would leave half of it behind -- so both halves are asserted, on the same keys.
 #[test]
@@ -1187,7 +1187,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     const LIVE_KEYS: usize = 64;
     const DUE_KEYS: usize = 5;
 
-    /// Pages the index holds for one object key, across every bucket. The page half of the
+    /// Blocks the index holds for one object key, across every bucket. The block half of the
     /// removal, which the key-state blobs say nothing about.
     fn blocks_for(state: &ShardState, key: &str) -> usize {
         let named = super::BlockObjects::of(&state.bucket_index);
@@ -1326,7 +1326,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         );
     }
 
-    // A second engine over the SAME pages and indexes, so both arms below read one set of files.
+    // A second engine over the SAME blocks and indexes, so both arms below read one set of files.
     let reader = TemporalEngine::with_local_dirs(
         1 << 20,
         dir.path().join("cache-control"),
@@ -2170,9 +2170,9 @@ fn a_with_options_deadline_costs_the_due_set_not_the_keyspace() {
 ///
 /// WHY IT IS A SEPARATE FAILURE. A WAL record that carries OUTCOMES is INSTALLED, not re-executed
 /// -- replay applies the recorded outcomes and `continue`s past the command. Both arms write a
-/// control-state page, and the page write stages an outcome, so their records are never empty and
+/// control-state block, and the block write stages an outcome, so their records are never empty and
 /// their commands are never re-run on recovery. Neither arm staged a meta outcome carrying its
-/// deadline. So the page came back and the deadline did not: after any recovery the key was
+/// deadline. So the block came back and the deadline did not: after any recovery the key was
 /// restored with NO deadline at all, permanently, for a caller who asked for one.
 ///
 /// DENOMINATORS, asserted before the claim: the deadline existed before the unload, the base
@@ -2187,7 +2187,7 @@ fn a_with_options_deadline_survives_recovery() {
         shard.expires_at_ms().get(key).copied()
     }
     /// Did replay INSTALL this record's outcome? That is the premise of the whole test -- a
-    /// record with outcomes is installed rather than re-executed -- so the page the write
+    /// record with outcomes is installed rather than re-executed -- so the block the write
     /// produced is the honest denominator. Deliberately NOT `shard.control_state`: that map is
     /// rebuilt from the bucket index by a mechanism with its own separate, pre-existing defect,
     /// and reading it here would make this test fail for a reason that has nothing to do with
@@ -2299,7 +2299,7 @@ fn a_with_options_deadline_survives_recovery() {
 }
 
 /// A key whose deadline has passed must read as GONE from every kind, including the two whose
-/// state no page backs: the seen-set and the token bucket.
+/// state no block backs: the seen-set and the token bucket.
 ///
 /// WHAT IS BEING DEFENDED. A deadline is honoured in two places and both have to agree: the
 /// background sweep, which collects the key eventually, and LAZY EXPIRY on the command path
@@ -2703,8 +2703,8 @@ fn a_lapsed_deadline_hides_a_context_node_from_every_context_read() {
 ///
 /// A CHOKE POINT WOULD BE BETTER, AND IS NOT AVAILABLE HERE. The obvious shape is one
 /// object-read function taking a check-expiry flag that every arm goes through. Ours has no
-/// such funnel: the `Context*` arms index `shard.context_*` directly and then read a page by
-/// ADDRESS, and an address does not know its key, so the page reader cannot consult a
+/// such funnel: the `Context*` arms index `shard.context_*` directly and then read a block by
+/// ADDRESS, and an address does not know its key, so the block reader cannot consult a
 /// deadline. Hoisting the check above the `match` was considered and rejected for two
 /// reasons, both recorded here so it is not re-proposed:
 ///

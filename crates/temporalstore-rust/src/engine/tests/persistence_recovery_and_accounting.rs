@@ -788,7 +788,7 @@ fn bucket_dump_manifest_watermark_tracks_embedded_index_not_wal_tail() {
         "manifest watermark must track the embedded index anchor (1), not the live WAL tail (2)"
     );
 
-    // Fresh engine over the SAME pages+index dirs: load installs the manifest + replays the WAL.
+    // Fresh engine over the SAME blocks+index dirs: load installs the manifest + replays the WAL.
     let reloaded =
         TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &blocks, &indexes);
     reloaded.load_shard(1);
@@ -1416,7 +1416,7 @@ fn storage_merged_dump_load_policy_coordinates_dump_load_replay_and_index_gc() {
         .is_empty());
 
     // The interrupted-install roll-forward phase below spins up a SECOND engine (`restarted`) on
-    // the SAME index dir (WAL) AND pages dir as `engine`, then keeps writing on `engine`. On the
+    // the SAME index dir (WAL) AND blocks dir as `engine`, then keeps writing on `engine`. On the
     // default path the second engine's load folds the served-index delta and reuses the existing
     // block addresses, so the shared block store is not mutated. Base-only single-barrier recovery
     // re-derives blocks by REPLAYING the shared WAL, which rewrites blocks into the shared slab files
@@ -3837,7 +3837,7 @@ fn cross_shard_block_reclaim_retains_another_shards_live_slab() {
     });
     assert!(response.status.ok, "{response:?}");
 
-    // Identify the slab file backing shard B's block (the only .seg under the pages root).
+    // Identify the slab file backing shard B's block (the only .seg under the blocks root).
     let shard_b_slabs = fs::read_dir(&blocks)
         .unwrap()
         .filter_map(Result::ok)
@@ -4278,7 +4278,7 @@ fn corrupt_index_log_delta_refuses_load_rather_than_silently_skipping() {
 /// The same, for the batch path -- which is the one bulk ingest actually runs.
 ///
 /// `batch_execute` swept every bucket once per batch rather than once per write. That is a much
-/// smaller constant than the per-write sweep, but the same `O(total pages)` shape, so a bulk
+/// smaller constant than the per-write sweep, but the same `O(total blocks)` shape, so a bulk
 /// import still paid for the whole corpus on every batch. Measured per BATCH, and the flags are
 /// compared against a full sweep for the same reason as the single-write case: a bucket left
 /// stale-false in `dirty` never gets flushed.
@@ -4533,25 +4533,25 @@ fn bucket_runtime_flags_match_full_sweep() {
 /// # THEY DISAGREE, AND THE SET IS NOT REMOVABLE
 ///
 ///     dirty_objects: 160
-///     pages with dirty=true: 80
-///              in the set but no page flagged dirty: 80
-///              a page flagged dirty but not in the set: 0
-///              in the set with NO live page at all: 80
+///     blocks with dirty=true: 80
+///              in the set but no block flagged dirty: 80
+///              a block flagged dirty but not in the set: 0
+///              in the set with NO live block at all: 80
 ///
 /// Read the last two rows together and the answer is exact. **Nothing is dirty without being in the
 /// set** -- zero the other way -- so the flags are a strict subset and the set is not merely a
-/// cache of them. And **half the set has no live page at all**: this workload's 100 string writes
+/// cache of them. And **half the set has no live block at all**: this workload's 100 string writes
 /// mark both the data object and its `control_state:cpc:*` record, and a control-state record is
-/// not page-backed, so there is no `dirty` flag anywhere that could carry its dirtiness.
+/// not block-backed, so there is no `dirty` flag anywhere that could carry its dirtiness.
 ///
-/// So the set holds exactly what the flags cannot express: dirty objects with no page. Removing it
+/// So the set holds exactly what the flags cannot express: dirty objects with no block. Removing it
 /// would silently lose them, which is a wrong dump rather than a slower one.
 ///
 /// WHAT THE SET STILL COSTS, because "not removable" is not "free". The `String` per record this
 /// doc opens with is no longer the shape: both marking sites read `any_shared_object_key` first and
-/// hand the page index's handle to `insert_shared`, so a key the page index already holds costs a
+/// hand the block index's handle to `insert_shared`, so a key the block index already holds costs a
 /// pointer rather than a second copy of the characters. An ORDERING still defeats that on an
-/// object's first write -- the mark runs before the page is filed, so there is no handle to hand
+/// object's first write -- the mark runs before the block is filed, so there is no handle to hand
 /// over -- which `DirtyObjectIndex::adopt_shared_key` exists to repair afterwards, and which was
 /// measured at 24.0 B/key across 40,040 keys with ZERO of this index's allocations shared while it
 /// went unrepaired. The per-entry cost that remains is the `DirtyKeySet` arm, which is why
@@ -4662,10 +4662,10 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
 //
 // TWO OF THOSE WERE FALSE ON THE BASE COMMIT, 75a25910e, and in OPPOSITE directions -- which is
 // why it is recorded here rather than quietly rewritten. `refs_for(Some("field-0")).is_some()`
-// could not hold: the element name came off the page entry one commit earlier, so every page of
+// could not hold: the element name came off the block entry one commit earlier, so every block of
 // every object filed under one nameless slot and a named query had nothing to find. And
 // `grouped.refs_for(None).is_none()` -- "a hash object has no componentless entry" -- was wrong
-// the other way, because the nameless slot is now exactly where a hash object's pages live.
+// the other way, because the nameless slot is now exactly where a hash object's blocks live.
 //
 // WHY IT IS NOT REWRITTEN. The only claim that survives is "six written fields produce six block
 // refs", and that is a claim about `BlockRefs` accumulating, not about per-component grouping --
@@ -5027,18 +5027,18 @@ fn how_many_times_one_object_key_is_stored() {
             holders += 1;
         }
     }
-    // THE PAGE INDEX IS NO LONGER A HOLDER, AND THAT IS THE FINDING RATHER THAN A GAP IN THE
-    // CENSUS. This walk added one holder and one allocation per PAGE of the sampled object. A
-    // page entry has no key, so there is nothing to insert and nothing to count -- and the
-    // allocation those pages pointed at was the lookup's, which is counted one loop above.
+    // THE BLOCK INDEX IS NO LONGER A HOLDER, AND THAT IS THE FINDING RATHER THAN A GAP IN THE
+    // CENSUS. This walk added one holder and one allocation per BLOCK of the sampled object. A
+    // block entry has no key, so there is nothing to insert and nothing to count -- and the
+    // allocation those blocks pointed at was the lookup's, which is counted one loop above.
     //
-    // IT IS REMOVED RATHER THAN LEFT COUNTING THE LOOKUP'S COPY THROUGH THE PAGES. Reaching the
-    // lookup's `Arc` by walking pages and charging it once per page would report the cost as if
+    // IT IS REMOVED RATHER THAN LEFT COUNTING THE LOOKUP'S COPY THROUGH THE BLOCKS. Reaching the
+    // lookup's `Arc` by walking blocks and charging it once per block would report the cost as if
     // nothing had changed, which is exactly the mistake the `model_id` comment in
     // `blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling` names.
     assert!(holders > 0, "the sampled key was found nowhere; nothing was measured");
-    // AND THE PAGE INDEX IS NOT EMPTY, so the holder above being absent cannot be read as "this
-    // store has no pages". Without this the removal above and an empty fixture look identical.
+    // AND THE BLOCK INDEX IS NOT EMPTY, so the holder above being absent cannot be read as "this
+    // store has no blocks". Without this the removal above and an empty fixture look identical.
     assert!(
         shard
             .bucket_index
@@ -5049,7 +5049,7 @@ fn how_many_times_one_object_key_is_stored() {
     );
 
     let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
-    // STRUCTURALLY ZERO, AND KEPT AS A ROW RATHER THAN DELETED. The page index held one `Arc<str>`
+    // STRUCTURALLY ZERO, AND KEPT AS A ROW RATHER THAN DELETED. The block index held one `Arc<str>`
     // per entry; it holds none, so its contribution to the key text of this store is nothing at
     // all. The row stays in the table because the table is read as "where the key copies live",
     // and a row that has gone to zero is the answer to that question rather than an absence from
@@ -5166,17 +5166,17 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
     // THE CLAIM MOVED FROM THE ENTRY'S COPY TO THE ONE THE READ PATH HANDS OUT, and it is the
     // same claim about the same allocation.
     //
-    // WHAT IT ASSERTED: the `Arc` on the page and the `Arc` in the lookup are ONE allocation, not
+    // WHAT IT ASSERTED: the `Arc` on the block and the `Arc` in the lookup are ONE allocation, not
     // two copies of one string. The entry has no `Arc` now -- so taken literally the claim is
     // true of nothing, and a test that asserted it would pass for free.
     //
-    // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a page is the lookup's own
-    // allocation. Every production reader reaches a page's object through `BlockKeysByPosition`,
+    // WHAT IT ASSERTS INSTEAD: the identity a reader is HANDED for a block is the lookup's own
+    // allocation. Every production reader reaches a block's object through `BlockKeysByPosition`,
     // which is built by inverting the lookup, and `block_identities_in` hands back
     // `Arc::clone` of what it found. A clone shares the buffer, so `as_ptr` must equal
     // `key_ptr`'s -- and if the inversion ever started copying the text instead, this reddens.
     // That is a load-bearing property rather than a curiosity: forty walks in this module tree
-    // take a key per page that way, and a copy per page would put the duplication this change
+    // take a key per block that way, and a copy per block would put the duplication this change
     // removed straight back, one level out.
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut checked = 0usize;
@@ -5715,7 +5715,7 @@ fn the_block_index_still_writes_string_keys() {
 // `part1::the_maintained_block_lookup_matches_a_rebuilt_one` did the same over a whole ingest.
 // Twenty-one defects were caught by that shape across this change.
 //
-// THE REBUILD WALKED THE PAGES AND READ EACH ONE'S KEY, so with the identity off the entry there
+// THE REBUILD WALKED THE BLOCKS AND READ EACH ONE'S KEY, so with the identity off the entry there
 // is nothing to rebuild FROM, and the oracle has one side. `rebuild_object_block_lookup` is
 // deleted in `engine_storage_state.rs` with the reasoning; these three go with it rather than being rewritten to
 // compare the maintained lookup with itself.
@@ -5723,7 +5723,7 @@ fn the_block_index_still_writes_string_keys() {
 // WHAT THE ORACLE BOUGHT, so it outlives the assertions: it is the whole of the evidence that
 // filing-as-you-go leaves the lookup exactly where a whole-shard rebuild would have, which is
 // what licensed removing two rebuild calls from the load path and one from the delete path. The
-// obligation is at the producers now -- every site that places a page files it, every site that
+// obligation is at the producers now -- every site that places a block files it, every site that
 // drops one un-files it, and `fold_delta_block_items` carries the note that those are ONE
 // obligation.
 //
@@ -5894,10 +5894,10 @@ fn every_field_of_a_hash_is_filed_in_the_bucket_index() {
     // THE LOOKUP TAKES NO ELEMENT NAME NOW, AND THE ADDRESS IS STILL WHAT IS CHECKED.
     //
     // This passed `Some(field.as_str())`. `contains_object_block_address` ends with
-    // `&& component.is_none()` -- the old `page.component.as_deref() == component` with the
+    // `&& component.is_none()` -- the old `block.component.as_deref() == component` with the
     // entry's own constant folded in -- so a `Some` can never match and every field read as
     // UNFILED: "field f000 holds an address the bucket index does not have filed", for a field
-    // that was filed. The object's pages are all under its single componentless row, and what is
+    // that was filed. The object's blocks are all under its single componentless row, and what is
     // asserted is unchanged: each field's address is among them, including the overwritten ones
     // whose old filing is stale.
     for (field, address) in fields.iter() {
@@ -6548,14 +6548,14 @@ fn the_index_wire_keys_are_what_they_were() {
             // key and still loads -- the wire struct does not deny unknown fields, so the stored
             // value is read and ignored.
             // "component" is GONE, and it is the key this change removes. `BlockIndex` has no
-            // element-name field: all four container kinds file one entry a page, so an entry
-            // names a page and has nothing to say about which element is on it. The entry went 56
+            // element-name field: all four container kinds file one entry a block, so an entry
+            // names a block and has nothing to say about which element is on it. The entry went 56
             // bytes of field to 40 with it.
             //
             // AND IT OWES NO FORMAT STAMP, which is the part a reader of this list will want and
             // is argued in full beside `SHARD_INDEX_FORMAT_VERSION`. The short form: the load
             // refuses anything stamped below 12 and 12 was stamped BY the commit that made hash
-            // and zset page-named, so every index this binary accepts was written by a binary that
+            // and zset block-named, so every index this binary accepts was written by a binary that
             // filed no element name. The key this list stops expecting is a key no accepted index
             // contains; one that really carries it is stamped 10 or lower and is rebuilt from the
             // WAL.
@@ -6592,12 +6592,12 @@ fn the_index_wire_keys_are_what_they_were() {
             //
             // AND NOTHING ARRIVED IN ITS PLACE, which is the half worth asserting: the entry also
             // GAINED two locating fields absorbed from the index-log row, and both are skipped on
-            // the named side. A resident entry is always a page, and the node already records its
+            // the named side. A resident entry is always a block, and the node already records its
             // own bucket. So neither appears in this list, and this list is what would have caught
             // them if they did.
             "meta_loaded",
             // "model_id" and "object_key" are GONE, and this list has been red since they went.
-            // A page entry used to restate both as named fields; it now reads them back out of
+            // A block entry used to restate both as named fields; it now reads them back out of
             // the composite key it is filed under, which is the key's own second and first slots.
             // That change measured that the key's characters were never read back -- every entry
             // in a 2,000-key index replaced by the decimal of its handle re-encoded to a
@@ -6986,8 +6986,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
         //
         // The paragraph above said "the map holds ONE LIVE entry and TWO TOMBSTONES, three
         // entries". It holds FIVE. A removal reaches the index through a door whose `retain`
-        // matches `component.is_none()`, which a page-named entry cannot satisfy, so it keeps the
-        // live entry over the page its element vacated AND appends a tombstone beside it. Two
+        // matches `component.is_none()`, which a block-named entry cannot satisfy, so it keeps the
+        // live entry over the block its element vacated AND appends a tombstone beside it. Two
         // removals therefore leave THREE live entries and two tombstones.
         //
         // The membership claim is asked of the resident map, which is the authority for which
@@ -7083,7 +7083,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
              than one per removal."
         );
         // THE LIVE COUNT IS FIVE, AND THE RE-ADD DOES NOT BOUND THAT ONE. Three fields are
-        // resident, and the two entries the removals left over the pages their elements vacated are
+        // resident, and the two entries the removals left over the blocks their elements vacated are
         // STILL THERE -- the re-add wrote each field to a NEW address, so it superseded nothing at
         // the old one. This asserted 3 on the belief that a removal replaced its entry; it adds one
         // beside it, and a remove-then-re-add leaves that one behind for good.
@@ -7591,11 +7591,11 @@ fn block_index_identity_string_cardinality() {
     // report the cost as if nothing had changed -- every block still holds one, it just points at
     // a string it does not own.
     let mut model_allocations: HashSet<*const u8> = HashSet::new();
-    // THE OBJECT-KEY HALF IS COUNTED OVER THE LOOKUP AND ITS DENOMINATOR IS OBJECTS, NOT PAGES.
-    // It summed one `len` per PAGE off the entry's own copy. The entry has none; the text lives
+    // THE OBJECT-KEY HALF IS COUNTED OVER THE LOOKUP AND ITS DENOMINATOR IS OBJECTS, NOT BLOCKS.
+    // It summed one `len` per BLOCK off the entry's own copy. The entry has none; the text lives
     // once per (kind, object) in the lookup, so that is what is walked and `objects` is what it
     // is divided by. Both denominators are named at the point each ratio is printed, because a
-    // per-page figure and a per-object figure over the same bytes differ by the pages-per-object
+    // per-block figure and a per-object figure over the same bytes differ by the blocks-per-object
     // of whatever fixture is running.
     let mut distinct_keys: HashSet<&str> = HashSet::new();
     let mut objects = 0usize;
@@ -7673,7 +7673,7 @@ fn block_index_identity_string_cardinality() {
 /// to decide whether an inline single-component shape was worth having. That question is answered
 /// and gone: an object has exactly one slot, the two-level shape it was sizing up is deleted, and
 /// its own anti-vacuity guard had already said so. The guard asserted `single_component > 0 &&
-/// multi_component > 0`, and once the element name came off the page entry every object had one
+/// multi_component > 0`, and once the element name came off the block entry every object had one
 /// component -- so `multi_component` was 0 and this arm was RED on 75a25910e, before the collapse
 /// touched it. Its failure message named the consequence exactly: the occupancy question "would be
 /// decided by construction, not measurement".
@@ -7681,8 +7681,8 @@ fn block_index_identity_string_cardinality() {
 /// # THE AXIS THAT SURVIVES, AND WHY THE MIXED CORPUS STILL EARNS ITS KEEP
 ///
 /// Refs per OBJECT is a real distribution and the corpus still has two sides of it. A string
-/// object holds one page, so its slot holds one ref and takes `BlockRefs::One` inline. An
-/// eight-field hash object holds eight pages that all file under the same slot, so its slot spills
+/// object holds one block, so its slot holds one ref and takes `BlockRefs::One` inline. An
+/// eight-field hash object holds eight blocks that all file under the same slot, so its slot spills
 /// to `BlockRefs::Many`. Both are asserted present before any ratio is read, which is what the
 /// 2,000/200 mix is for -- a corpus of one kind would decide this by construction too.
 #[test]
@@ -7748,7 +7748,7 @@ fn object_block_lookup_refs_per_object_census() {
     //
     // It read `single_component > 0 && multi_component > 0` and refused with "corpus is one-sided
     // (2200 single, 0 multi) -- the occupancy question would be decided by construction, not
-    // measurement". It was right to refuse: once a page entry carried no element name an object
+    // measurement". It was right to refuse: once a block entry carried no element name an object
     // held exactly ONE componentless lookup row whatever its kind, and a mixed corpus could not
     // produce a second shape on that axis.
     //
@@ -7867,7 +7867,7 @@ fn per_record_structure_census() {
         .sum();
     // `component_lookup_keys` WAS HERE AND IT WAS A SECOND COPY OF THE ROW ABOVE. It summed
     // `by_component.len()` per object, which has been exactly 1 per object since the element name
-    // came off the page entry -- so it equalled `block_lookup_keys` by construction and printed
+    // came off the block entry -- so it equalled `block_lookup_keys` by construction and printed
     // 1.00/record beside it. The level it counted is gone; the row goes with it rather than being
     // rewritten into a third spelling of the same number.
     let strings = shard.strings().len();
@@ -7896,11 +7896,11 @@ fn per_record_structure_census() {
     // 14.1 B of it, so knowing WHERE the key copies live says whether interning would pay and
     // which structure to attack first.
     let key_bytes: usize = shard.strings().keys().map(|key| key.len()).sum();
-    // ZERO, AND THE ROW IS KEPT BECAUSE THE TABLE IS A LIST OF PLACES. The page index held one
+    // ZERO, AND THE ROW IS KEPT BECAUSE THE TABLE IS A LIST OF PLACES. The block index held one
     // `Arc<str>` of key text per entry. It holds none: no key, a one-byte kind spelled by a
     // `&'static str`, and no element name. So this structure contributes no heap text, and the
     // whole of its former contribution is the `block_lookup_bytes` row below -- once per object
-    // rather than once per page, which is the saving this change is.
+    // rather than once per block, which is the saving this change is.
     //
     // THE LOOKUP ROW IS FLOORED JUST BELOW, so a zero here cannot be read as "this fixture wrote
     // no keys".
@@ -7922,11 +7922,11 @@ fn per_record_structure_census() {
         .sum();
     // `component_lookup_bytes` WAS HERE AND IT WAS IDENTICALLY ZERO. It summed the length of each
     // entry's component NAME, and every name had been `None` since the element name came off the
-    // page entry -- so the row printed 0.0 into a byte table that ends in "= {:.1}x the key". The
+    // block entry -- so the row printed 0.0 into a byte table that ends in "= {:.1}x the key". The
     // name field is now deleted outright, so there is nothing left to sum. Leaving a hard zero in
     // a measurement table is worse than removing the row.
     let dirty_bytes: usize = shard.dirty_objects.iter().map(str::len).sum();
-    // THE FLOOR THE PAGE-INDEX ROW NEEDS. That row is a structural zero now, and a structural
+    // THE FLOOR THE BLOCK-INDEX ROW NEEDS. That row is a structural zero now, and a structural
     // zero beside an unfloored lookup row is indistinguishable from a fixture that wrote no keys
     // at all -- the table would read "no key text anywhere" and both halves of that would be
     // wrong. This says the text IS held, and says it of the structure that now holds it.
@@ -8304,7 +8304,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         placeholders_seen += before.iter().filter(|slot| slot.is_none()).count();
         let mut rebuilt = bucket.clone();
         // THE IDENTITIES COME FROM THE SHARD, because the rebuild no longer reads them off the
-        // pages. The bucket under test is a CLONE, so the shard is still only borrowed immutably
+        // blocks. The bucket under test is a CLONE, so the shard is still only borrowed immutably
         // here and `block_identities` -- which borrows the whole index -- is available; the
         // production sweeps have to split the two field borrows by hand instead.
         let block_keys = shard.bucket_index.block_identities();
@@ -8359,7 +8359,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
 /// 45% and the one to run in production -- and there are only 1024 buckets. A batch of any size
 /// hashes across essentially all of them, so there is nothing to skip: the targeted path visits
 /// the same blocks as the sweep and the guard correctly hands the work back to the sweep, which is
-/// `O(total pages)` per batch. Bucket maintenance is therefore STILL linear per write there.
+/// `O(total blocks)` per batch. Bucket maintenance is therefore STILL linear per write there.
 ///
 /// Measured end to end at 1023 slots, five equal 40k-record phases: 6.3s -> 14.9s while every
 /// byte written stayed flat (index log 1.02x, WAL 1.01x). At the default range the same run grows
@@ -8452,7 +8452,7 @@ fn bucket_maintenance_is_flat_at_a_narrow_routing_range() {
 /// Bucket maintenance must not make a write cost more as the store grows.
 ///
 /// `update_bucket_layout` rebuilds a bucket's whole object set from `block_index`, and the
-/// per-object dirty-state clear walks every bucket in the shard. Both are `O(pages)` and both sit
+/// per-object dirty-state clear walks every bucket in the shard. Both are `O(blocks)` and both sit
 /// inside loops, so the write path can be quadratic in the corpus while every individual function
 /// still looks cheap.
 ///
@@ -10712,13 +10712,13 @@ fn what_each_command_recorded_describes_everything_it_changed() {
         if !response.status.ok {
             continue;
         }
-        // THE PAGES ARE KEPT ALONGSIDE THE OUTCOMES, which they were not before.
+        // THE BLOCKS ARE KEPT ALONGSIDE THE OUTCOMES, which they were not before.
         //
-        // A record records two things: what the write DID (its outcomes) and the PAGES it produced.
+        // A record records two things: what the write DID (its outcomes) and the BLOCKS it produced.
         // This harness took the first and dropped the second, which was invisible while every
         // outcome carried its own copy of the element name. It is not invisible now:
-        // `apply_outcome_item`'s container arms read the element off the page, so an install handed
-        // outcomes with no pages is handed strictly less than the replay loop has -- and it refused
+        // `apply_outcome_item`'s container arms read the element off the block, so an install handed
+        // outcomes with no blocks is handed strictly less than the replay loop has -- and it refused
         // every hash outcome, which is this harness reporting its own missing half as the product
         // recording nothing.
         //
@@ -13201,7 +13201,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     // Two assertions stood here and BOTH were unfalsifiable. One was
     // `nested_map_entries < flat_map_entries` and the other
     // `nested_map_entries + nested_vec_elements == flat_map_entries`. With one component per
-    // object -- the state since the element name came off the page entry -- `nested_map_entries`,
+    // object -- the state since the element name came off the block entry -- `nested_map_entries`,
     // `nested_vec_elements` and `objects` were all the same number and `flat_map_entries` was
     // twice it, so the pair read `n < 2n` and `n + n == 2n`. Both held for every corpus including
     // an empty one, and the second's message, "none lost", described a bookkeeping step that could
@@ -13946,10 +13946,10 @@ fn what_one_block_costs_to_index() {
             entries += 1;
             // The map key is an inline number now, not a rendered string on the heap.
             ref_key_bytes += 0;
-            // AND NEITHER IS THE OBJECT KEY. This read `page.object_key.len()` and called it
+            // AND NEITHER IS THE OBJECT KEY. This read `block.object_key.len()` and called it
             // "shared with the lookup, so one allocation answers for both holders" -- which was
             // true of the allocation and wrong as a PER-ENTRY charge: it summed the same bytes
-            // once for every page of the object. The entry holds no key now, so the charge is
+            // once for every block of the object. The entry holds no key now, so the charge is
             // zero here and the bytes are attributed once per object where they live, in
             // `the_key_text_lives_in_four_structures`'s lookup row.
             object_key_bytes += 0;
@@ -14208,7 +14208,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
          -- a partial match means some page is filed somewhere its own address does not name"
     );
     // THE SECOND ASSERTION IS GONE RATHER THAN LEFT TO PASS. It read
-    // `object_id_matches_entry == 0 || == pages` over a counter whose increment had already been
+    // `object_id_matches_entry == 0 || == blocks` over a counter whose increment had already been
     // removed with the field, so it was 0 on every run and the disjunction's first arm made it
     // unfailable -- while the row above it printed 0.0%, which a reader would take to mean the ids
     // never agree. They agree by construction now: there is one source for them. An assertion that

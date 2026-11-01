@@ -3,13 +3,13 @@
 
 //! What one storage-manager round costs at two corpus sizes.
 //!
-//! THE RESULT. A round's cost is not flat in the store: it walks the whole live-page set a
+//! THE RESULT. A round's cost is not flat in the store: it walks the whole live-block set a
 //! CONSTANT NUMBER OF TIMES, and that constant is the same at every corpus size measured. Counted
 //! rather than timed, because the box these run on is shared and a stopwatch there measures the
 //! other tenants:
 //!
 //! ```text
-//!   records   live-page entries materialised by ONE round   ratio
+//!   records   live-block entries materialised by ONE round   ratio
 //!     2,000                                        26,000   13.00x
 //!    20,000                                       260,000   13.00x
 //! ```
@@ -54,7 +54,7 @@
 //!
 //! So the round is proportional to the store with a constant of 13, and no stage budget bounds
 //! it: the budgets in this round bound the DUMP (buckets per round), the EXPIRE sweep (buckets per
-//! round) and the readability probe (512 pages), none of which is the walk above. The wall clock
+//! round) and the readability probe (512 blocks), none of which is the walk above. The wall clock
 //! corroborates -- a steady round took 1,352-1,625 ms at 8,000 and 8,117-9,657 ms at 80,000, at
 //! box load 4.7-6.3 -- but the count is the claim, because it came out to the same three
 //! significant figures on every run.
@@ -68,12 +68,12 @@
 //! WHAT THESE TESTS ARE FOR. The ratio is asserted at TWO sizes, so the two failures read
 //! differently: a ratio that changed at both sizes means a walk was added or removed, and a ratio
 //! that differs BETWEEN the sizes means something in the round stopped being proportional to the
-//! store and started being proportional to something else. The second is the one worth a page.
+//! store and started being proportional to something else. The second is the one worth a block.
 #![allow(clippy::all)]
 use super::*;
 use crate::engine::reports::StorageManagerCycleRequest;
 
-/// Live-page entries one steady round materialises, per record in the store.
+/// Live-block entries one steady round materialises, per record in the store.
 ///
 /// Measured, at 4,000 / 8,000 / 80,000 records, on a shard whose dump is delayed -- which is the
 /// ordinary state of a shard written to in batches, see
@@ -141,7 +141,7 @@ fn round_request() -> StorageManagerCycleRequest {
     }
 }
 
-/// Live-page entries one round materialises on this engine, and the round's own report.
+/// Live-block entries one round materialises on this engine, and the round's own report.
 fn walk_volume_of_one_round(
     engine: &TemporalEngine,
 ) -> (u64, crate::engine::reports::StorageManagerCycleReport) {
@@ -234,7 +234,7 @@ fn a_round_walks_the_live_block_set_a_constant_number_of_times() {
     );
 }
 
-/// AN IDLE SHARD STILL WALKS THE WHOLE LIVE-PAGE SET.
+/// AN IDLE SHARD STILL WALKS THE WHOLE LIVE-BLOCK SET.
 ///
 /// The plan's own walk is skipped when no object is dirty. The round's is not. This drains the
 /// dirty set first -- asserted, so the test cannot pass by never reaching the idle state -- then
@@ -449,14 +449,14 @@ fn the_prepare_stage_can_roll_a_slab_and_take_the_block_store_mutex() {
 ///
 /// Two separate facts, asserted separately.
 ///
-/// FLAT: the round's readability probe is bounded per round, so the number of pages it reads off
+/// FLAT: the round's readability probe is bounded per round, so the number of blocks it reads off
 /// the block store does not grow with the store. Measured 512 at 8,000 records and 512 at 80,000.
 /// The assertion is that the two sizes AGREE, not that they equal 512 -- retuning the bound is a
 /// decision someone is allowed to make, and a test that fought it would be guarding the number
 /// rather than the property.
 ///
 /// UNDER A GUARD: all of them. `block_reads_under_guard` equals `block_reads_total`, which means
-/// every page this round reads is read while the thread holds a shard-table guard, so those reads
+/// every block this round reads is read while the thread holds a shard-table guard, so those reads
 /// block every WRITE on the shard for their duration. That is tolerable only because the count is
 /// bounded -- which is why the two halves belong in one test: neither is reassuring alone. The
 /// total is the denominator, and a round that read nothing would satisfy "none under a guard"
@@ -517,9 +517,9 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
     );
 }
 
-/// THE RECOVERY REPORT DERIVES THREE ANSWERS FROM ONE WALK OF THE LIVE-PAGE SET.
+/// THE RECOVERY REPORT DERIVES THREE ANSWERS FROM ONE WALK OF THE LIVE-BLOCK SET.
 ///
-/// `storage_recovery_report_without_boundary_sampled` needs the same live-page set three times:
+/// `storage_recovery_report_without_boundary_sampled` needs the same live-block set three times:
 /// for the addresses its readability probe walks, for the bucket-ownership validation, and for
 /// the object-lifecycle report. It used to walk for each, three whole-store passes of the
 /// thirteen one round makes. It holds ONE shard-table read guard across all three, so they cannot
@@ -528,10 +528,10 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
 /// TWO CLAIMS, asserted in this order.
 ///
 /// SAFETY FIRST, because it is the one that is not checked anywhere else. The three consumers
-/// must still describe the same page set, with a denominator: a report over an empty shard would
+/// must still describe the same block set, with a denominator: a report over an empty shard would
 /// satisfy any agreement. A mutant that feeds one consumer a different set fails here.
 ///
-/// COST SECOND. The call materialises the live-page set ONCE. Asserted as a count rather than a
+/// COST SECOND. The call materialises the live-block set ONCE. Asserted as a count rather than a
 /// time, and as a count of SITES as well as entries -- `1.00x` is also what a call that walked
 /// once and then answered two of the three questions wrongly would report.
 #[test]
@@ -540,7 +540,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = round_engine(dir.path());
-    // SEEDED ACROSS MORE THAN ONE SLAB, deliberately. With every live page in slab 0 the
+    // SEEDED ACROSS MORE THAN ONE SLAB, deliberately. With every live block in slab 0 the
     // slab-id agreement below holds whatever the id is derived from -- a mutant that replaced
     // `entry.address.block_slab_id` with the constant 0 passed. Rolling a slab half way through
     // the seed gives the two sides something to disagree about.
@@ -560,8 +560,8 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
          slab-id agreement below cannot fail"
     );
     // DISJOINT keys, matching `seed_in_batches`' own format. Re-seeding from zero would rewrite
-    // the first half onto the slab just rolled, the old pages would go stale, and every LIVE
-    // page would be in one slab again -- which is the state this fixture exists to avoid.
+    // the first half onto the slab just rolled, the old blocks would go stale, and every LIVE
+    // block would be in one slab again -- which is the state this fixture exists to avoid.
     let mut commands = Vec::new();
     let mut cursor = RECORDS / 2;
     while cursor < RECORDS {
@@ -593,10 +593,10 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
         "the report found no live pages at all, so neither claim below is about anything"
     );
 
-    // ---- SAFETY: the three consumers describe one page set ----------------
+    // ---- SAFETY: the three consumers describe one block set ----------------
     //
     // `total_page_refs` comes from the walk itself; `live_page_refs` is counted by the
-    // object-lifecycle report, which used to do its own walk. They are the same pages.
+    // object-lifecycle report, which used to do its own walk. They are the same blocks.
     assert_eq!(
         report.total_block_refs as u64, report.object_lifecycle.live_block_refs,
         "the readability probe walked {} live pages and the object-lifecycle report counted {}. \
@@ -606,7 +606,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     );
 
     // The per-slab live tallies are built in the same loop as the probe, and the slab id list is
-    // derived from the same entries. Every slab that holds a live page must appear in both.
+    // derived from the same entries. Every slab that holds a live block must appear in both.
     let slabs_from_live_reports = report
         .block_slab_live_reports
         .iter()
@@ -689,12 +689,12 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     );
     // ---- WHAT ONE WALK OF THESE TWO COSTS --------------------------------
     //
-    // More than the page set it hands back, and the difference is not small. A round leaves
+    // More than the block set it hands back, and the difference is not small. A round leaves
     // buckets RELEASED -- 16 of them on this fixture, which is an ordinary storage round and not
-    // a contrived state -- and a released bucket's index holds no pages. So
+    // a contrived state -- and a released bucket's index holds no blocks. So
     // `collect_bucket_index_live_block_entries` walks the index, then walks the WHOLE model-map
-    // page set a second time to supplement the released buckets' pages back in. It materialises
-    // `indexed + every live page` to return `indexed + released`.
+    // block set a second time to supplement the released buckets' blocks back in. It materialises
+    // `indexed + every live block` to return `indexed + released`.
     //
     // Charging the RETURN value, as this counter used to, therefore could not see the second
     // walk at all: it read 2,000 for a call that built 3,984 entries. Both terms are derived
@@ -715,7 +715,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     };
 
     // THE DENOMINATOR for everything below. With nothing released the supplement walk never
-    // runs, one walk costs exactly the page set, and this guard would be measuring a case that
+    // runs, one walk costs exactly the block set, and this guard would be measuring a case that
     // cannot show the cost it exists to name.
     assert!(
         released_buckets > 0,
@@ -756,14 +756,14 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     );
 }
 
-/// WHAT ONE WALK COSTS PER LIVE PAGE, and that folding three into one REMOVED that cost rather
+/// WHAT ONE WALK COSTS PER LIVE BLOCK, and that folding three into one REMOVED that cost rather
 /// than moving it somewhere else in the same function.
 ///
 /// THE OLD CLAIM WAS STALE. "Each walk clones two strings per entry" was true of an earlier
 /// `LiveBlockEntry`; the three text fields are `Arc<str>` now, so a walk copies three pointers
-/// and bumps three refcounts per page and copies no text at all. Pinned as a size below, because
+/// and bumps three refcounts per block and copies no text at all. Pinned as a size below, because
 /// that is the thing that would change if a field went back to `String` -- 24 bytes and a heap
-/// copy per page, per walk, on every periodic round.
+/// copy per block, per walk, on every periodic round.
 ///
 /// THE HOIST DID NOT MOVE THE COST. The old function kept a `Vec<BlockAddress>` for its probe
 /// loop AND built a fresh `Vec<LiveBlockEntry>` inside the ownership validation that followed it,
@@ -783,7 +783,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
     println!("  Arc<str> {arc_str_bytes} B against String {string_bytes} B");
 
     // HALF ONE: the text fields are shared pointers, not owned text. Asserted FIRST because it
-    // is the claim the old note got wrong, and it is what makes a walk cheap per page.
+    // is the claim the old note got wrong, and it is what makes a walk cheap per block.
     assert!(
         arc_str_bytes < string_bytes,
         "an Arc<str> is {arc_str_bytes} B and a String {string_bytes} B; this test's whole \
@@ -800,7 +800,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
          round"
     );
 
-    // HALF TWO: the peak this function holds per live page fell. Ordered after the half above so
+    // HALF TWO: the peak this function holds per live block fell. Ordered after the half above so
     // a mutant that makes entries owned is reported as what it is rather than as a peak change.
     let old_peak_per_block = entry_bytes + address_bytes;
     let new_peak_per_block = entry_bytes;
@@ -818,7 +818,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
 }
 
 // ---------------------------------------------------------------------------------------------
-// WHAT A ROUND READS OF THE LOGS -- a different denominator from the live-page walks above.
+// WHAT A ROUND READS OF THE LOGS -- a different denominator from the live-block walks above.
 // ---------------------------------------------------------------------------------------------
 
 /// Bytes of the write-ahead log this engine has decoded, taken from the counter inside the walk.
@@ -1059,7 +1059,7 @@ fn assert_log_read_regime(cost: &LogReadCost) {
 
 /// A ROUND NO LONGER DECODES EITHER LOG END TO END -- at two corpus sizes, in both regimes.
 ///
-/// The live-page walks measured above are what a round costs in the STORE. This is what it cost in
+/// The live-block walks measured above are what a round costs in the STORE. This is what it cost in
 /// the LOGS, and nothing counted it. The pressure snapshot asked `storage_log_compatibility_report`
 /// and read two byte figures out of it; that report also fills `wal_records` and
 /// `index_log_records`, and each of those is a `record_count()` -- a walk of the whole log that

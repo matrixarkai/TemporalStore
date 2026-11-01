@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHY A PAGE ENTRY CARRIES ITS OBJECT'S KEY BESIDE AN ID DERIVED FROM THAT SAME KEY.
+//! WHY A BLOCK ENTRY CARRIES ITS OBJECT'S KEY BESIDE AN ID DERIVED FROM THAT SAME KEY.
 //!
 //! `BlockIndex` holds `object_key: Arc<str>` and `address: BlockAddress`, and the address holds an
 //! `object_id: u64` computed from the key. That reads like the identity stated twice, and #1974
@@ -10,13 +10,13 @@
 //! refutation is NOT the one the shape suggests.
 //!
 //! THE ID DOES NOT NAME AN OBJECT. It names a TRIPLE: the component is folded into it alongside the
-//! kind and the key, so two pages of one object under different components carry DIFFERENT ids and
-//! no page of a multi-component object shares an id with any other. `address_footprint` recorded
+//! kind and the key, so two blocks of one object under different components carry DIFFERENT ids and
+//! no block of a multi-component object shares an id with any other. `address_footprint` recorded
 //! that as a note about a fixture ("a component is its own object rather than another block") and
-//! `bucket_fill` recorded it as a property of the page handle. Neither drew the consequence, and the
+//! `bucket_fill` recorded it as a property of the block handle. Neither drew the consequence, and the
 //! consequence is what decides this:
 //!
-//!   * A reader that matches a page against a caller's kind AND key AND component could be served
+//!   * A reader that matches a block against a caller's kind AND key AND component could be served
 //!     by the id. The caller holds all three and `ShardState` holds the shard, so the id is
 //!     computable where the comparison happens. Five readers are of that shape.
 //!   * A reader that is COMPONENT-BLIND cannot. `bucket_index_component_block_addresses` is the
@@ -35,7 +35,7 @@
 //! for exactly the same reason. It is pinned here.
 //!
 //! WHAT IS NOT CLAIMED, because it is only a missing parameter. `release_bucket_blocks` compares a
-//! resident page against one derived from the model maps through `released_block_identity`, whose
+//! resident block against one derived from the model maps through `released_block_identity`, whose
 //! own doc excludes `object_id` because "the model map's copy of the same page may not carry it".
 //! That exclusion is real but it is not a pin on the KEY: `derive_released_block_identities` already
 //! takes the shard, so it could compute the id on the derived side and compare on that. The two
@@ -46,7 +46,7 @@
 //!
 //! AND THE FALLBACK SITES PIN NOTHING HERE. Every
 //! `unwrap_or_else(|| stable_block_object_id(..))` reads its key from the model-map walk or from a
-//! command parameter, never from a page entry -- so `reload_released_bucket` does not read this field
+//! command parameter, never from a block entry -- so `reload_released_bucket` does not read this field
 //! at all. Its one mention is a struct-literal WRITE, fed by
 //! `collect_model_live_block_entries_in_bucket`: the model maps supply the characters and reload uses
 //! them to recompute the id. The "needs no hash fallback to answer" precondition on `BucketNode` is
@@ -54,8 +54,8 @@
 //!
 //! WHAT A HANDLE WOULD COST IS MEASURED ELSEWHERE AND STILL DECLINED.
 //! `a_handle_for_the_object_key_pays_only_above_the_measured_break_even` prices a four-byte index
-//! into a shared table at one entry per distinct object against sixteen bytes a page, and the
-//! break-even is 3.38 pages per object: it PAYS on containers at 100 and LOSES on routed keys at 1
+//! into a shared table at one entry per distinct object against sixteen bytes a block, and the
+//! break-even is 3.38 blocks per object: it PAYS on containers at 100 and LOSES on routed keys at 1
 //! and on a mixed store at 1.98. A handle would satisfy every reader here -- keeping the characters
 //! reachable is what a handle does -- so this module refutes REMOVING the field, not interning it.
 #![allow(clippy::all)]
@@ -79,7 +79,7 @@ const FIXTURE_KIND: StoredModelKind = StoredModelKind::Hash;
 /// as a literal at the assertion that checks it.
 const CONTAINER_KEYS: usize = 8;
 const MEMBERS_PER_KEY: usize = 25;
-/// Routed keys for the CONTROL arm, where an object holds exactly one page.
+/// Routed keys for the CONTROL arm, where an object holds exactly one block.
 const ROUTED_KEYS: usize = 200;
 
 // =================================================================================================
@@ -128,7 +128,7 @@ fn ack_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// Hash containers only: one key, `MEMBERS_PER_KEY` fields, each field its own page and its own
+/// Hash containers only: one key, `MEMBERS_PER_KEY` fields, each field its own block and its own
 /// component. The population where the id's granularity and the object's disagree.
 fn seed_hash_containers(engine: &TemporalEngine) {
     let mut commands = Vec::with_capacity(CONTAINER_KEYS * MEMBERS_PER_KEY);
@@ -144,7 +144,7 @@ fn seed_hash_containers(engine: &TemporalEngine) {
     ack_batch(engine, commands);
 }
 
-/// Keys holding exactly one page each: the CONTROL population, where the mechanism predicts no
+/// Keys holding exactly one block each: the CONTROL population, where the mechanism predicts no
 /// effect at all.
 fn seed_routed_strings(engine: &TemporalEngine) {
     ack_batch(
@@ -158,14 +158,14 @@ fn seed_routed_strings(engine: &TemporalEngine) {
     );
 }
 
-/// Every live page in shard 1, as the ids filed under each object key. The denominator for every
+/// Every live block in shard 1, as the ids filed under each object key. The denominator for every
 /// row below.
 fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
-    // THE KEY A PAGE IS FILED UNDER COMES FROM THE LOOKUP BESIDE IT. It is both the grouping
+    // THE KEY A BLOCK IS FILED UNDER COMES FROM THE LOOKUP BESIDE IT. It is both the grouping
     // key below and the argument the id is derived from, so there is exactly one source for it
-    // here where there used to be one source read twice off the page.
+    // here where there used to be one source read twice off the block.
     let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
     let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
@@ -207,9 +207,9 @@ fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockInd
 // 1. THE ID NAMES A TRIPLE, NOT AN OBJECT.
 // =================================================================================================
 
-/// THE ID IS PER (SHARD, KIND, KEY), SO ONE OBJECT KEY HOLDS EXACTLY ONE ID HOWEVER MANY PAGES IT HAS.
+/// THE ID IS PER (SHARD, KIND, KEY), SO ONE OBJECT KEY HOLDS EXACTLY ONE ID HOWEVER MANY BLOCKS IT HAS.
 ///
-/// #1986 recorded the opposite, and this test asserted it: "the object id names a page's triple,
+/// #1986 recorded the opposite, and this test asserted it: "the object id names a block's triple,
 /// not an object". That was a DESCRIPTION OF A DEFECT rather than a property to preserve, and
 /// taking the component out of `stable_block_object_id` is what closes it. The three arms are
 /// INVERTED rather than deleted, so each still names the denominator it reads.
@@ -218,10 +218,10 @@ fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockInd
 ///      the same loop as before -- and the distinct answers counted. It is now ONE. The component
 ///      count is printed beside it and asserted greater than one, so an arm that stopped
 ///      generating components could not report 1 for the wrong reason.
-///   2. OVER A REAL STORE. A hash container's pages are grouped by object key and the ids counted
-///      per key: one key, `MEMBERS_PER_KEY` pages, ONE id.
-///   3. THE CONTROL. A routed string key holds ONE page and its component was already `None`, so
-///      this change is the IDENTITY on it: one page, one id, before and after. That arm asserts
+///   2. OVER A REAL STORE. A hash container's blocks are grouped by object key and the ids counted
+///      per key: one key, `MEMBERS_PER_KEY` blocks, ONE id.
+///   3. THE CONTROL. A routed string key holds ONE block and its component was already `None`, so
+///      this change is the IDENTITY on it: one block, one id, before and after. That arm asserts
 ///      the number it always asserted, which is what makes it a control -- if it moved, the
 ///      collapse above would be something other than the component leaving the hash.
 ///
@@ -298,7 +298,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     // THE PRIZE, READ OFF THE SAME POPULATION: rows in `bucket.object_index` per key.
     //
     // `object_index` holds one entry per DISTINCT object id in the bucket, and #2007 measured it
-    // at 0.9983 rows per page. The count below is what it becomes: one row per key, whatever the
+    // at 0.9983 rows per block. The count below is what it becomes: one row per key, whatever the
     // key's element count.
     let mut keys_holding_many_ids = 0usize;
     let mut blocks_total = 0usize;
@@ -474,7 +474,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
          the key has stopped reaching the stored spelling"
     );
 
-    // --- AND THE HANDLE MOVES WITH IT, which is what keeps the two from naming different pages. ---
+    // --- AND THE HANDLE MOVES WITH IT, which is what keeps the two from naming different blocks. ---
     let handle = crate::engine::state::block_index_handle(&block_key, &block);
     let other_handle = crate::engine::state::block_index_handle(&other_object_key, &other);
     assert_ne!(
@@ -493,7 +493,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
 ///
 /// `bucket_index_component_block_addresses(shard, model_id, object_key)` takes a key and NO
 /// component and returns one pair per component. This drives it over a real container and shows that
-/// the pages it returns resolve to as many distinct ids as there are pages -- so an id-keyed index
+/// the blocks it returns resolve to as many distinct ids as there are blocks -- so an id-keyed index
 /// could not have answered it: the caller would have to know the components in order to compute the
 /// ids, and the components are what it called to find out.
 ///
@@ -531,9 +531,9 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
         // single `None` for every key and the assertion could never pass again.
         //
         // THE CLAIM IS NOT ABANDONED, IT MOVED TO THE TERM THAT STILL CARRIES IT. The reader is
-        // handed a KEY and answers a page per element; what distinguishes those pages is the
+        // handed a KEY and answers a block per element; what distinguishes those blocks is the
         // ADDRESS each one is at, and that is counted here instead. It is a claim this can still
-        // get wrong -- a filing that collapsed two elements onto one page, or a reader that
+        // get wrong -- a filing that collapsed two elements onto one block, or a reader that
         // returned the same address twice, drops this count below the member count -- which is
         // exactly the failure the component set was watching for, observed through the term that
         // still exists.
@@ -541,7 +541,7 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
             .iter()
             .map(|(_, address)| format!("{address:?}"))
             .collect();
-        // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per page -- which is why
+        // THE IDS THESE PAIRS RESOLVE TO. One per KEY now, not one per block -- which is why
         // the loop below counts them rather than the components: the component set is what the
         // reader actually answers with, and the id set is what an id-keyed reader would have.
         let ids: BTreeSet<u64> = pairs

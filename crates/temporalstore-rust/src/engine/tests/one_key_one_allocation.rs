@@ -227,7 +227,7 @@ fn a_key_held_by_several_maps_is_one_allocation() {
     );
 }
 
-/// EVERY ADOPTED CONTEXT MAP HOLDS THE PAGE INDEX'S OWN KEY -- the other half of the invariant,
+/// EVERY ADOPTED CONTEXT MAP HOLDS THE BLOCK INDEX'S OWN KEY -- the other half of the invariant,
 /// and the half the guard above cannot reach.
 ///
 /// # WHY A SECOND TEST AND NOT MORE COMMANDS IN THE FIRST
@@ -242,9 +242,9 @@ fn a_key_held_by_several_maps_is_one_allocation() {
 /// So the invariant has to be stated against the thing they all borrow FROM.
 /// `adopt_object_key_allocations` takes its handle from
 /// `bucket_index.object_block_lookup.any_shared_object_key`, which means a correctly adopted map
-/// does not merely avoid duplicating a SIBLING -- its key IS the page index's allocation. That is
+/// does not merely avoid duplicating a SIBLING -- its key IS the block index's allocation. That is
 /// checkable per map with no sibling needed, and it is strictly stronger: a single-holder map that
-/// mints its own copy duplicates the page index's key, and this catches it where a sibling
+/// mints its own copy duplicates the block index's key, and this catches it where a sibling
 /// comparison would report nothing at all.
 ///
 /// # WHAT THIS CLOSES
@@ -548,9 +548,9 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
     //   `adopt_canonical_key_allocations_in_hashed` and the reload tests answer, not a write-path
     //   one this fixture could ask.
     //
-    // `context_entities`: the write arm files NO page entry under the key this map holds. The map
+    // `context_entities`: the write arm files NO block entry under the key this map holds. The map
     //   is keyed by the node's COLLECTION key (`ctx:entity:{tenant}:{node}`) while the block is
-    //   addressed per entity, so the staged outcome and the stored page entry both carry
+    //   addressed per entity, so the staged outcome and the stored block entry both carry
     //   `ctx:entity:{tenant}:{node}:{entity_hash}`. `any_shared_object_key` on a collection key
     //   therefore answers None, there is no handle to borrow, and -- checked -- no other resident
     //   structure holds that text either, so the minted key is the ONLY copy rather than a second

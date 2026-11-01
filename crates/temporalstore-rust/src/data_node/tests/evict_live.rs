@@ -1408,7 +1408,7 @@ gate_input={} own_index={}  |  shard 2 ({SMALL_KEYS} keys): gate_input={} own_in
 /// Read one seeded key back off an engine and say whether it is the value its key encodes.
 ///
 /// `keyed_value` makes every value a function of its key, so a read resolved through the WRONG
-/// page fails here instead of passing because the length matched.
+/// block fails here instead of passing because the length matched.
 fn reads_back_whole(engine: &TemporalEngine, index: usize) -> Result<(), String> {
     let key = key_of(index);
     let answer = engine.execute(ExecuteRequest {
@@ -1711,8 +1711,8 @@ bound={bound} B over a {resident} B index -> mode={} reason={}, 0 released",
 ///      reports, and what a fixture whose gate never opened reports.
 ///   2  NOTHING WAS DROPPED. `dropped_object_count` counts records DELETED, and it is incremented
 ///      only on the `delete_drop` path -- which `apply_index_resident_bound` never takes. A
-///      non-zero here would mean the round deleted records rather than releasing their pages, so
-///      asserting it zero is the other half of the accounting: pages went, records stayed.
+///      non-zero here would mean the round deleted records rather than releasing their blocks, so
+///      asserting it zero is the other half of the accounting: blocks went, records stayed.
 ///   3  EVERY KEY READS BACK WHOLE, COLD. Both directions -- the mismatch list is empty AND the
 ///      verified count equals the corpus, so a loop that read nothing cannot pass.
 ///   4  AND AGAIN AFTER A RELOAD, on a fresh engine over the same directories, so the answer comes
@@ -2173,7 +2173,7 @@ defaults with the bound zeroed -> mode={} reason=<open>, {} victims taken.",
     );
 }
 
-/// A BOUNDED ROUND AT THE SHIPPED DEFAULTS RELEASES PAGES AND KEEPS EVERY RECORD.
+/// A BOUNDED ROUND AT THE SHIPPED DEFAULTS RELEASES BLOCKS AND KEEPS EVERY RECORD.
 ///
 /// `nothing_acknowledged_is_lost_when_the_bound_releases_and_the_shard_reloads` above proves this
 /// for the bound reached with the stage flag OFF. The flag now ships ON, and that is a different
@@ -2190,7 +2190,7 @@ defaults with the bound zeroed -> mode={} reason=<open>, {} victims taken.",
 ///      inside the `delete_drop` branch, which `apply_index_resident_bound` never takes and which
 ///      ships off. Asserting it POSITIVE would force this fixture onto the arm that deletes
 ///      records, which is the opposite of what is being proved; asserting it ZERO is the other
-///      half of the accounting -- pages went, records stayed.
+///      half of the accounting -- blocks went, records stayed.
 ///   3  EVERY KEY READS BACK WHOLE, COLD, in both directions: the mismatch list empty AND the
 ///      verified count equal to the corpus, so a loop that read nothing cannot pass.
 ///   4  AND AGAIN AFTER A RELOAD, on a fresh engine over the same directories and only after the

@@ -101,10 +101,10 @@ impl BlockStore {
 
     /// MANIFEST-CONFORMANCE FOLD recovery: seed the slab catalog from a folded `SlabCatalogEntry` snapshot
     /// recovered from the index-log MetaItem. Applied on load AFTER the block store has already
-    /// reconciled from durable pages (reconcile stays authoritative for on-disk physical bytes
+    /// reconciled from durable blocks (reconcile stays authoritative for on-disk physical bytes
     /// and diagnostics), so this only RESTORES the catalog fields a pure disk scan cannot infer:
     /// the exact lifecycle state, the creation/update timestamps, the logical byte count, and the
-    /// first/last page-id range. It never deletes a slab reconcile found on disk and never
+    /// first/last block-id range. It never deletes a slab reconcile found on disk and never
     /// downgrades physical bytes below what the slab actually holds -- so it cannot lose durable
     /// state; it is a metadata refinement layered on the lossless disk-derived catalog. Persists
     /// the merged manifest once. Returns whether anything changed.

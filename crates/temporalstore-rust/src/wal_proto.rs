@@ -50,7 +50,7 @@ pub(crate) const RAW_PAYLOAD_MARKER: u8 = 0xB8;
 /// which is 8.61x, and projects to 617 MB off a 698 MB log.
 ///
 /// Compressing the whole SEGMENT instead reaches 22.28x, and is not available here: a log id is a
-/// byte position, page references point at those positions, and a block that has to be inflated
+/// byte position, block references point at those positions, and a block that has to be inflated
 /// before any record inside it can be found does not have them. Per record keeps every record
 /// independently addressable, which is the property the log is built on.
 pub(crate) const COMPRESSED_RAW_PAYLOAD_MARKER: u8 = 0xB9;
@@ -65,7 +65,7 @@ pub(crate) const COMPRESSED_ESCAPED_PAYLOAD_MARKER: u8 = 0xBA;
 /// The zstd level records are compressed at.
 ///
 /// Measured on this path rather than inherited. The comment this replaces said the level matched
-/// the page store's so the two would "make the same trade rather than two unexplained ones" --
+/// the block store's so the two would "make the same trade rather than two unexplained ones" --
 /// which is a good instinct, and was never checked against what a WAL record actually looks like.
 ///
 /// Checked now, on an encoded record whose value is prose, which is what the serving log holds
@@ -81,17 +81,17 @@ pub(crate) const COMPRESSED_ESCAPED_PAYLOAD_MARKER: u8 = 0xBA;
 /// three times level 1 for another fraction of a percent. On a payload of random bytes the three
 /// levels produce byte-IDENTICAL output, so the higher levels buy nothing there at all.
 ///
-/// So: level 1. This is now a different level from the page store's, which the previous comment
-/// was right to want to avoid -- but the two differ in what they compress. A page is large and
+/// So: level 1. This is now a different level from the block store's, which the previous comment
+/// was right to want to avoid -- but the two differ in what they compress. A block is large and
 /// written once; a WAL record is small, written on the commit path, and its compressible part is
 /// the envelope around a value that is usually already dense. A number that was matched for
-/// tidiness is worth less than one that was measured, and if the page store's level is ever
+/// tidiness is worth less than one that was measured, and if the block store's level is ever
 /// measured the same way it may well move too.
 const COMPRESSION_LEVEL: i32 = 1;
 
 /// Below this many bytes a payload is written uncompressed.
 ///
-/// Not a guess: the page store measured this exact question and found a 1-byte floor worse than
+/// Not a guess: the block store measured this exact question and found a 1-byte floor worse than
 /// no compression at all -- the saving stopped while the median write rose, because a tiny
 /// payload costs more to compress than it gives back. 256 is the floor that measurement chose.
 const COMPRESSION_MIN_BYTES: usize = 256;
@@ -160,7 +160,7 @@ thread_local! {
 /// Compress `encoded` if it is worth compressing, returning None when it is not.
 ///
 /// None for a payload under the floor, and None when the compressed form is not actually smaller.
-/// The second check is the page store's: compression that does not pay is written uncompressed
+/// The second check is the block store's: compression that does not pay is written uncompressed
 /// rather than trusted to pay on average.
 fn compress_payload(encoded: &[u8]) -> Option<Vec<u8>> {
     if encoded.len() < COMPRESSION_MIN_BYTES {
@@ -381,7 +381,7 @@ fn address_to_proto(address: &ElementEntry, implied_length: Option<u64>) -> v1::
         checksum: None,
         // In memory the digest is already the 32 bytes this field wants, so there is no
         // transcription left to undo.
-        // The index does not hold a digest; the page envelope carries it.
+        // The index does not hold a digest; the block envelope carries it.
         checksum_raw: None,
     }
 }
@@ -506,7 +506,7 @@ fn item_object_id_to_write(item: &WalOutcomeItem, shard_id: crate::types::ShardI
     // THE COMPONENT USED TO BE RECONSTRUCTED HERE TOO, and it no longer is, because the id no
     // longer takes one. That reconstruction existed only to feed this hash: a numeric component
     // travels as a number and returns as text, so the writer had to rebuild the exact string the
-    // reader would rebuild or the two would derive different ids for the same page and this
+    // reader would rebuild or the two would derive different ids for the same block and this
     // omission would stop being safe. With the component out of the identity the whole round-trip
     // concern is gone -- the kind is the only term left that changes spelling on the wire.
     let kind = kind_code(&item.kind)
@@ -524,7 +524,7 @@ pub(crate) fn item_to_proto(
 ) -> v1::EngineWalItem {
     let block = item.address.as_ref().map(|address| {
         let mut encoded = address_to_proto(address, implied_length);
-        // The item already says this. Repeating it costs a full varint on every item whose page
+        // The item already says this. Repeating it costs a full varint on every item whose block
         // belongs to one object, which is every kind that is not timestamped.
         if encoded.object_id == Some(item.object_id) {
             encoded.object_id = None;
@@ -937,7 +937,7 @@ fn record_parts(record: &WriteAheadLogRecord) -> Result<RecordParts<'_>, String>
         // value one for one. `the_hand_written_item_is_the_same_item` holds the hand-written form
         // against this one -- which the test helper `owned_bytes` still builds -- byte for byte.
         items: Vec::new(),
-        // Written by hand below, from the pages themselves. A staged page is a whole page, and
+        // Written by hand below, from the blocks themselves. A staged block is a whole block, and
         // filling this field copied every one of them before the encoder copied them again.
         staged_blocks: Vec::new(),
     };
@@ -1012,7 +1012,7 @@ pub(crate) fn implied_staged_object_id(record: &WriteAheadLogRecord) -> Option<u
     None
 }
 
-/// Bytes a staged page occupies as a `WalStagedBlock` body.
+/// Bytes a staged block occupies as a `WalStagedBlock` body.
 ///
 /// Deliberately a call to the writer's own measurement rather than a second copy of the rule.
 /// This length reserves the buffer the writer then fills, so if the two ever disagree the record
@@ -1201,8 +1201,8 @@ pub(crate) fn decode(payload: &[u8]) -> Result<WriteAheadLogRecord, String> {
             .into_iter()
             .map(|block| StagedBlock {
                 object_id: block.object_id.or(implied).unwrap_or_default(),
-                // Never defaulted the way the object id is. An absent component MEANS the page is
-                // its whole object, and inventing one would make a string page claim to be an
+                // Never defaulted the way the object id is. An absent component MEANS the block is
+                // its whole object, and inventing one would make a string block claim to be an
                 // element; an absent one on a record written before this field existed means the
                 // same thing that record has always meant.
                 component: block.component.map(std::sync::Arc::from),
@@ -1578,7 +1578,7 @@ mod tests {
     /// Whether building the proto tail copies each outcome value before the encoder copies it.
     ///
     /// `staged_blocks` was taken out of the proto struct for exactly this reason -- the comment in
-    /// `record_parts` says filling it copied every page before the encoder copied them again. The
+    /// `record_parts` says filling it copied every block before the encoder copied them again. The
     /// `items` field is still filled the ordinary way, and every outcome carries an owned value.
     /// If that value is copied, the bytes allocated per append rise with it, one for one.
     #[test]
@@ -1787,7 +1787,7 @@ mod tests {
 
     #[test]
     fn a_payload_under_the_floor_is_left_alone() {
-        // Compressing a tiny payload costs more than it gives back; the page store measured that
+        // Compressing a tiny payload costs more than it gives back; the block store measured that
         // and chose this floor, so the check is that the floor is honoured, not that it is right.
         let tiny = vec![1u8; COMPRESSION_MIN_BYTES - 1];
         assert!(compress_payload(&tiny).is_none());

@@ -3,7 +3,7 @@
 
 //! Integration coverage for the in-memory, coalesced summary-dirty tracking.
 //!
-//! Summary-dirty nodes are no longer persisted as one `ctx:dirty` page per event.
+//! Summary-dirty nodes are no longer persisted as one `ctx:dirty` block per event.
 //! They are tracked in an in-memory, coalescing hashmap keyed by dirty object key so
 //! repeated marks for the same node collapse into a single entry. These tests exercise
 //! the public engine API to prove:

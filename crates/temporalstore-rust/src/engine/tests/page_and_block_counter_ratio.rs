@@ -154,8 +154,8 @@ fn the_block_store_counters_count_calls_and_not_bytes() {
         samples.push(counter_sample("read-ten-cold", &engine));
     }
 
-    // 3. A large object -- four megabytes, far past any single page target -- read cold. One
-    //    store read, not one per page: the counter counts CALLS, not bytes and not extents.
+    // 3. A large object -- four megabytes, far past any single block target -- read cold. One
+    //    store read, not one per block: the counter counts CALLS, not bytes and not extents.
     {
         let engine = counter_engine(&root, "cache-e");
         counter_set(&engine, "large", vec![b'L'; 4 * 1024 * 1024]);

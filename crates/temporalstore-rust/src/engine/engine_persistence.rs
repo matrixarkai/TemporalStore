@@ -296,9 +296,9 @@ impl TemporalEngine {
 
     /// Load ONLY the durable base snapshot (materialized at the last dump/unload), WITHOUT
     /// folding the served-index delta. Used by single-barrier recovery: the delta-log fdatasync
-    /// is deferred, so the delta tail (and the anchor it advances) may reference pages that were
+    /// is deferred, so the delta tail (and the anchor it advances) may reference blocks that were
     /// never fsync'd -- trusting it could skip WAL replay and leave dangling references. The base
-    /// is a durable checkpoint at its own watermark (flush_shard_index fsyncs every page before
+    /// is a durable checkpoint at its own watermark (flush_shard_index fsyncs every block before
     /// advancing that watermark); the WAL tail beyond it is re-derived by replaying each record
     /// exactly once (no delta fold means no double-apply of non-idempotent commands).
     pub(super) fn load_index_base_only(
@@ -358,22 +358,22 @@ impl TemporalEngine {
             }
         };
         // Fold the index-log deltas beyond the base snapshot's anchor into the bucket index
-        // (reconstructing the exact on-disk page layout at the ORIGINAL addresses) and apply
-        // the captured per-key non-page state, BEFORE reconcile. This is what lets a crash
+        // (reconstructing the exact on-disk block layout at the ORIGINAL addresses) and apply
+        // the captured per-key non-block state, BEFORE reconcile. This is what lets a crash
         // reload reconstruct the served index WITHOUT re-executing the WAL -- re-execution
-        // would write fresh pages and relocate them to the active slab, doubling physical
-        // page counts and losing the recorded slab layout.
+        // would write fresh blocks and relocate them to the active slab, doubling physical
+        // block counts and losing the recorded slab layout.
         if fold_deltas {
             self.fold_index_log_deltas(shard_id, &mut shard)?;
         }
         // object_*_lookup is a derived serving accelerator and is no longer persisted -- and it
-        // is MAINTAINED now rather than rebuilt here. The decoder files each page as it decodes,
+        // is MAINTAINED now rather than rebuilt here. The decoder files each block as it decodes,
         // and the delta fold above files what it places and un-files what it drops, so by this
         // line the lookup already describes the index and the whole-shard rebuild that stood here
         // had nothing left to discover.
         //
         // THE DEBUG CROSS-CHECK THAT STOOD HERE IS SPENT WITH ITS SCAFFOLD. It compared the
-        // object lookup against the pages' OWN copies of the identity, and the pages have none;
+        // object lookup against the blocks' OWN copies of the identity, and the blocks have none;
         // `engine_storage_state.rs` carries why a version of it over one source would compare that source with
         // itself. What licensed removing the whole-shard rebuild from this path is that every
         // producer files as it places and un-files as it drops, and that obligation sits at the
@@ -385,8 +385,8 @@ impl TemporalEngine {
         {
             return Ok(None);
         }
-        // Fold disk->memory cache promotion into reconcile's page reads on a warming
-        // load (normal restart): the pages reconcile reads to rebuild the secondary
+        // Fold disk->memory cache promotion into reconcile's block reads on a warming
+        // load (normal restart): the blocks reconcile reads to rebuild the secondary
         // views are promoted into the cache tier in the same pass, so no second warm
         // pass re-reads them under the mutex-serialized block store. Callers that only
         // need the index (e.g. the manifest anchor probe) pass warm_cache=false.
@@ -396,7 +396,7 @@ impl TemporalEngine {
             None
         };
         reconcile_secondary_views_from_bucket_index(&self.block_store, &mut shard, warm);
-        // Reloaded data is durable, hence clean: clear the transient per-page/bucket
+        // Reloaded data is durable, hence clean: clear the transient per-block/bucket
         // dirty flags that were persisted before unload (the durable dirty_generation
         // identity is preserved). refresh_bucket_runtime_flags below then recomputes
         // dirty purely from the live (empty on load) dirty_objects set. This follows
@@ -415,11 +415,11 @@ impl TemporalEngine {
     /// Fold the append-only index-log deltas onto a (possibly empty) base `ShardState`,
     /// reconstructing the served index for the delta path. Only deltas with a WAL anchor
     /// beyond the base snapshot's own anchor are applied -- deltas already captured by the
-    /// base are skipped (their pages may have been relocated/reclaimed by the compaction
-    /// that produced the base). Each delta's page items are re-attached at their ORIGINAL
-    /// addresses (authoritative replace per covered key) and its per-key non-page state is
+    /// base are skipped (their blocks may have been relocated/reclaimed by the compaction
+    /// that produced the base). Each delta's block items are re-attached at their ORIGINAL
+    /// addresses (authoritative replace per covered key) and its per-key non-block state is
     /// applied, then the reconstructed anchor advances so WAL replay re-executes only the
-    /// uncaptured (e.g. async) tail rather than relocating the pages the deltas already pin.
+    /// uncaptured (e.g. async) tail rather than relocating the blocks the deltas already pin.
     fn fold_index_log_deltas(
         &self,
         shard_id: ShardId,
@@ -486,7 +486,7 @@ impl TemporalEngine {
                 apply_key_states(shard, &record.key_states);
                 // The carried container elements are COLLECTED here and applied once the fold has
                 // finished, not folded in as they arrive. A fold replays a suffix of the log, so one
-                // fold can both add an element and take its page away again; applying per record
+                // fold can both add an element and take its block away again; applying per record
                 // would leave the element in the durable map, and `fill_absent_elements` would then
                 // serve it after it was deleted. `fold_carried_container_elements` states the whole
                 // argument, including why matching the record's tombstones does not substitute.
@@ -522,14 +522,14 @@ impl TemporalEngine {
             // THE LOOKUP IS REBUILT BEFORE THE LAYOUT PASS NOW, NOT AFTER IT.
             //
             // The pass below derives each bucket's live object set from the identity held beside
-            // its pages, and the lookup IS that identity -- so it has to describe the index AS
+            // its blocks, and the lookup IS that identity -- so it has to describe the index AS
             // FOLDED. It does: the fold files what it places and un-files what it drops, in that
             // order, so there is no window between the fold and this pass in which a position
-            // names a page that has gone or a page has no position. A whole-shard rebuild stood
+            // names a block that has gone or a block has no position. A whole-shard rebuild stood
             // here to close that window and is no longer closing anything.
             //
             // AND THE DEBUG CROSS-CHECK IS SPENT TOO, for the reason `engine_storage_state.rs` records: it read
-            // the pages' own copies of the identity, which are gone.
+            // the blocks' own copies of the identity, which are gone.
             // THE INVERSION IS HOISTED, AND THE TWO BORROWS ARE SPLIT BY NAMING THE FIELDS. The derive
             // reads the object lookup while this loop holds the bucket map mutably, and both are fields of
             // one index -- so the split has to be written where the places are named, rather than inside a
@@ -541,8 +541,8 @@ impl TemporalEngine {
             for bucket in index.bucket_map.values_mut() {
                 update_bucket_layout(shard_id, bucket, &keys);
             }
-            // AFTER the page index has settled, because this asks of every carried element whether
-            // the fold left a page at its address -- a question only the finished index can answer.
+            // AFTER the block index has settled, because this asks of every carried element whether
+            // the fold left a block at its address -- a question only the finished index can answer.
             fold_carried_container_elements(shard, &carried_container_elements);
             shard.applied_wal_sequence = Some(max_anchor);
         }
@@ -554,9 +554,9 @@ impl TemporalEngine {
     /// which skips per-record persistence). Also refreshes the index-log tail.
     pub fn flush_shard_index(&self, shard_id: ShardId) {
         // Make the chunk's deferred bulk writes durable before publishing the
-        // served index: fsync page slabs + slab manifest, then the WAL. If the
+        // served index: fsync block slabs + slab manifest, then the WAL. If the
         // barrier FAILS, bail without pinning applied_wal_sequence or writing the index:
-        // advancing the durable anchor past pages that never reached disk would suppress
+        // advancing the durable anchor past blocks that never reached disk would suppress
         // their replay on reload -> silent data loss. advances the watermark only after
         // the commit succeeds; the next flush retries.
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
@@ -568,7 +568,7 @@ impl TemporalEngine {
         let (start_routing_bucket, end_routing_bucket) = self.shard_routing_range(shard_id);
         let index_bytes = {
             // Reconstruct everything the per-command bulk path deferred: promote
-            // model-map pages into bucket_index, rebuild the secondary views, refresh
+            // model-map blocks into bucket_index, rebuild the secondary views, refresh
             // runtime flags, then serialize once. Needs a write lock.
             let mut shards = self.shards.write().expect("engine lock poisoned");
             match shards.get_mut(&shard_id) {
@@ -670,7 +670,7 @@ impl TemporalEngine {
     /// MANIFEST-CONFORMANCE FOLD dump: materialize the durable base index, fold the slab catalog
     /// into an index-log anchor (the durable slab catalog, conformance), and
     /// advance the dumped watermark -- the batched, threshold-driven replacement for the per-write
-    /// slab-manifest persist. No-op with the gate off. Ordering is single-barrier safe: pages +
+    /// slab-manifest persist. No-op with the gate off. Ordering is single-barrier safe: blocks +
     /// WAL are fsynced, then the base index is written durably, then the folded anchor is fsync'd,
     /// and only THEN is the dumped watermark advanced. A crash at any earlier point leaves the
     /// watermark unadvanced, so the next cycle re-dumps rather than trusting a partial dump -- the
@@ -696,7 +696,7 @@ impl TemporalEngine {
         {
             return None;
         }
-        // 1. Make deferred data pages + the slab manifest + the WAL durable BEFORE materializing
+        // 1. Make deferred data blocks + the slab manifest + the WAL durable BEFORE materializing
         //    the dump, so nothing the anchor references is un-fsynced. Bail (without advancing the
         //    watermark) if the barrier fails; the next cycle retries.
         if self.block_store.sync_durable().is_err() || self.wal_store.flush(shard_id).is_err() {
@@ -813,9 +813,9 @@ impl TemporalEngine {
         // would read `current - pre_reclaim_length`, saturating to zero until the file regrew
         // past its old size -- silently suspending the cadence right after its first success.
         self.index_log_store.mark_catalog_dumped(shard_id);
-        // Pages at or below the anchor are in the durable base now, so a log id is no longer
+        // Blocks at or below the anchor are in the durable base now, so a log id is no longer
         // the only way to find their bytes. Dropping those entries is what keeps this from
-        // growing with the log -- they cost index bytes, and a dumped page will never need one.
+        // growing with the log -- they cost index bytes, and a dumped block will never need one.
         if let Ok(mut shards) = self.shards.write() {
             if let Some(shard) = shards.get_mut(&shard_id) {
                 shard
@@ -824,7 +824,7 @@ impl TemporalEngine {
             }
         }
         // Pin the WAL floor to the lowest sequence a live block-in-WAL registration still
-        // depends on: such a record holds the ONLY copy of a page the served index points at
+        // depends on: such a record holds the ONLY copy of a block the served index points at
         // (the write was acked off a synthetic address), so truncating it turns an acked write
         // into a MISSING read while the process is still serving.
         let wal_retention_floor =
@@ -1162,7 +1162,7 @@ impl TemporalEngine {
                 // published total.
                 bucket_index_resident_bytes_floor:
                     crate::engine::storage_bucket_internals::bucket_index_node_bytes(state),
-                // The MOVING companion to the floor above: nodes plus per-page entries, the same
+                // The MOVING companion to the floor above: nodes plus per-block entries, the same
                 // quantity the eviction gate reads. Computed here, under the shard lock the stats
                 // path already holds, so the heartbeat does not take it a second time per shard.
                 bucket_index_resident_bytes:

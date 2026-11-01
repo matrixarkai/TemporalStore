@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Index install/recovery + expiry sweep + page compaction methods for TemporalEngine, split from engine.rs.
+//! Index install/recovery + expiry sweep + block compaction methods for TemporalEngine, split from engine.rs.
 use crate::engine::timestamped_series::TimestampedSeries as _;
 use super::*;
 
@@ -156,10 +156,10 @@ enum ExpiryIndexCheckpoint {
 /// The delta record an expiry round writes, built under the shard write guard and appended after
 /// it drops.
 struct ExpiryIndexDelta {
-    /// The page items the record carries. Always empty: the round's deletes leave no page for a
+    /// The block items the record carries. Always empty: the round's deletes leave no block for a
     /// covered key, and an empty list against a covered key is how the fold spells a removal.
     /// Kept as a field because it is what the record's wire shape has, and because a future
-    /// checkpoint that DOES have pages to name would fill it rather than grow a second path.
+    /// checkpoint that DOES have blocks to name would fill it rather than grow a second path.
     items: Vec<crate::index_log::IndexItem>,
     /// One blob per covered key, carrying no map fields: the fold reads an absent field as a
     /// removal, so these are tombstones across every per-key map, `expires_at_ms` included.
@@ -261,10 +261,10 @@ impl TemporalEngine {
     /// The per-slab live/stale tally the reclaim planner reads, without the whole-store scan.
     ///
     /// `storage_reclaim_candidates_from_slab_reports` consumes seven fields off each of these:
-    /// the slab id, its physical bytes and page count, its live page refs and live physical
-    /// bytes, and the two figures derived from those. Not one of them needs the page itself --
-    /// a page's physical size is in the address that names it. The recovery report supplied
-    /// them anyway, and supplied them by reading every live page off the block store to fill
+    /// the slab id, its physical bytes and block count, its live block refs and live physical
+    /// bytes, and the two figures derived from those. Not one of them needs the block itself --
+    /// a block's physical size is in the address that names it. The recovery report supplied
+    /// them anyway, and supplied them by reading every live block off the block store to fill
     /// in `live_logical_bytes`, which the planner never reads.
     ///
     /// The fields that DO require the read -- `live_logical_bytes`, `readable_live_page_refs`,
@@ -296,7 +296,7 @@ impl TemporalEngine {
         //
         // The fallback is not decoration. A shard whose tally has never been derived reports
         // `is_ready() == false`, and an empty tally is indistinguishable from a shard holding no
-        // live pages at all -- which would make every slab look like pure garbage. So an
+        // live blocks at all -- which would make every slab look like pure garbage. So an
         // underived tally costs the old cost rather than producing a confident wrong answer.
         //
         // `live_object_count` and `live_routing_bucket_count` are left at zero on the maintained
@@ -390,22 +390,22 @@ impl TemporalEngine {
 
     /// The object-lifecycle view on its own, without the whole-store scan around it.
     ///
-    /// The recovery report produces this field as a by-product of reading EVERY live page off
+    /// The recovery report produces this field as a by-product of reading EVERY live block off
     /// disk, which is how it counts the readable ones. Two callers on the maintenance path want
     /// nothing else from that report, so they were paying a full-store read to get it -- on a
     /// loop that runs every thirty seconds, for the life of the process.
     ///
-    /// Nothing here reads a page. Every count comes from the shard's own maps, the ownership
+    /// Nothing here reads a block. Every count comes from the shard's own maps, the ownership
     /// validation and the slab reports, which is all the field was ever made of:
     ///
-    /// | at 32,000 live pages | the report | this |
+    /// | at 32,000 live blocks | the report | this |
     /// |---|---|---|
     /// | wall time | ~840 ms | ~45 ms |
-    /// | pages read from the block store | 32,000 | 0 |
+    /// | blocks read from the block store | 32,000 | 0 |
     ///
     /// `object_lifecycle_snapshot_matches_the_recovery_report` holds the two to the same answer,
     /// so a change to either that separates them fails there rather than in a shipped round.
-    /// The snapshot, and the live page count, for the tests that hold it to the report.
+    /// The snapshot, and the live block count, for the tests that hold it to the report.
     #[cfg(test)]
     pub(crate) fn storage_object_lifecycle_snapshot_for_test(
         &self,
@@ -439,7 +439,7 @@ impl TemporalEngine {
         // This used to walk the shard THREE times over identical, immutable state: once inside
         // `validate_shard_block_ownership`, once inside `storage_object_lifecycle_report`, and once
         // in `collect_live_block_addresses`. Each call to `collect_live_block_entries` materializes
-        // every live page in the shard into a fresh Vec, and measured at 4,000 objects this single
+        // every live block in the shard into a fresh Vec, and measured at 4,000 objects this single
         // function accounted for 3.0x the shard -- the largest piece of `apply_storage_lifecycle`,
         // itself 12.0x (`what_each_plan_call_walks`).
         //
@@ -467,7 +467,7 @@ impl TemporalEngine {
             end_routing_bucket,
         );
 
-        // stale_object_ids is the per-slab shortfall of live refs against the slab's own page
+        // stale_object_ids is the per-slab shortfall of live refs against the slab's own block
         // count, summed. An address naming a slab the store has no report for contributes
         // nothing (the report path gives it block_count 0, so its shortfall saturates to 0).
         let mut live_block_refs_by_slab = BTreeMap::<u64, u64>::new();
@@ -504,24 +504,24 @@ impl TemporalEngine {
         self.storage_recovery_report_without_boundary_sampled(shard_id, 0)
     }
 
-    /// The same report, reading at most `readable_probe_limit` live pages this call.
+    /// The same report, reading at most `readable_probe_limit` live blocks this call.
     ///
-    /// The readability check is the only part of this report that reads a page, and it reads
+    /// The readability check is the only part of this report that reads a block, and it reads
     /// EVERY live one: measured at 32,000 records it is 575 ms and 32,000 reads, about a fifth
     /// of a maintenance round, growing with the store.
     ///
     /// The maintenance cycle wants this report for `manifest_chain_issues`, the two dump
-    /// sequences and the two replay sequences -- none of which reads a page. It never consults
+    /// sequences and the two replay sequences -- none of which reads a block. It never consults
     /// `unreadable_page_refs` or `unreadable_page_bytes`, but it does CARRY them in the report it
     /// returns, so simply not filling them in would be a silent lie to whoever reads that report.
     /// Sampling is the honest version: corruption is still found, over rounds rather than all in
     /// one, and `readable_probe_limit` says how much of the store this particular call looked at.
     ///
     /// "Over rounds" needs the sample to MOVE, which is the part that was missing. A bounded
-    /// call read `addresses[0 .. limit]` and began at the front again next round, so the pages
+    /// call read `addresses[0 .. limit]` and began at the front again next round, so the blocks
     /// past the first window were never read by the periodic loop -- on a shard with more live
-    /// pages than the budget, corruption outside that prefix was undiscoverable, in any number
-    /// of rounds, while the report kept saying the pages it had read were fine. A bounded call
+    /// blocks than the budget, corruption outside that prefix was undiscoverable, in any number
+    /// of rounds, while the report kept saying the blocks it had read were fine. A bounded call
     /// now resumes at `recovery_probe_cursors` and wraps, so the rounds together cover the whole
     /// shard; `readable_probe_cursor` on the report says where this one started.
     ///
@@ -559,7 +559,7 @@ impl TemporalEngine {
         let shards = self.shards_read_marked();
         // ONE walk, three consumers, under the guard that is already held.
         //
-        // This function walked the whole live-page set THREE times: here for the addresses it
+        // This function walked the whole live-block set THREE times: here for the addresses it
         // probes, again inside `validate_shard_block_ownership`, again inside
         // `storage_object_lifecycle_report`. `a_round_walks_the_live_block_set_a_constant_number_of_times`
         // counts all three, and they were three of the whole-store passes one periodic
@@ -585,7 +585,7 @@ impl TemporalEngine {
         //
         // A bounded call used to read `addresses[0 .. limit]` and nothing else, every round. The
         // budget made the cost constant; starting from the front every time made the COVERAGE
-        // constant too, so a live page at an index past the budget was never read by the
+        // constant too, so a live block at an index past the budget was never read by the
         // periodic loop at all. The doc above promises corruption is "still found, over rounds
         // rather than all in one", and that promise needs the window to MOVE.
         //
@@ -593,7 +593,7 @@ impl TemporalEngine {
         // calls (`readable_probe_limit == 0`) read everything, so they start at 0 and leave the
         // stored position untouched -- a diagnostic call must not shift the loop's window.
         //
-        // The position is clamped rather than trusted: the live-page vector is rebuilt each
+        // The position is clamped rather than trusted: the live-block vector is rebuilt each
         // round and can shrink (compaction, eviction, expiry), and a stale index past its end
         // would otherwise skip the whole round.
         let probe_window_start = if readable_probe_limit > 0 && total_block_refs > 0 {
@@ -613,7 +613,7 @@ impl TemporalEngine {
             readable_probe_limit.min(total_block_refs)
         };
         // Whether index `position` falls in the window `[start, start + len)` taken modulo the
-        // live-page count. Written as a distance from the start so the wrap needs no second
+        // live-block count. Written as a distance from the start so the wrap needs no second
         // range and no branch on whether the window crosses the end.
         let in_probe_window = |position: usize| -> bool {
             if probe_window_len == 0 {
@@ -693,7 +693,7 @@ impl TemporalEngine {
             // Counted against the shard-table guard. This probe DOES read under the read guard,
             // and unlike the warm-up it is bounded -- `readable_probe_limit` stops the reads
             // while the per-slab tallies above keep going. Routed through the counter so the
-            // measurement covers both of the engine's maintenance page readers and a claim about
+            // measurement covers both of the engine's maintenance block readers and a claim about
             // one of them is made against a total that includes the other.
             match self.read_block_counted(address) {
                 Ok(bytes) => {
@@ -778,7 +778,7 @@ impl TemporalEngine {
         // Hand the next round the position after this window, wrapping at the end.
         //
         // Advanced by the window LENGTH rather than by `probed_page_refs` so a round that found
-        // fewer readable pages than it looked at still moves on. Those are the same number today
+        // fewer readable blocks than it looked at still moves on. Those are the same number today
         // -- every entry in the window is probed -- but tying the advance to a success count is
         // how a sampler gets stuck re-reading the region it is failing on.
         //
@@ -812,7 +812,7 @@ impl TemporalEngine {
             owner_mismatch_block_refs,
             missing_owner_block_refs,
             object_lifecycle,
-            // Against what was PROBED, not against every live page. With a sample budget the
+            // Against what was PROBED, not against every live block. With a sample budget the
             // two differ, and reading it as "every page is readable" when only some were tried
             // is exactly the false assurance this field exists to avoid.
             all_live_blocks_readable: probed_block_refs == readable_block_refs,
@@ -824,7 +824,7 @@ impl TemporalEngine {
 
     /// Hand the block store the per-slab live tally this engine's shards maintain.
     ///
-    /// ONE ENGINE, ONE PAGE STORE, MANY SHARDS -- and two shards' pages can land in the same
+    /// ONE ENGINE, ONE BLOCK STORE, MANY SHARDS -- and two shards' blocks can land in the same
     /// slab, so the figure the store needs is the UNION. Returns how many shards contributed.
     ///
     /// Publishes only when EVERY loaded shard has a derived tally. A partial union would
@@ -832,7 +832,7 @@ impl TemporalEngine {
     /// direction cannot delete anything (the live slab id set gates deletion and is computed
     /// fresh), a figure that is wrong for a reason nobody can see is not worth publishing.
     ///
-    /// Costs SLABS, not pages -- which is the whole point of maintaining the tally.
+    /// Costs SLABS, not blocks -- which is the whole point of maintaining the tally.
     pub fn publish_block_slab_live_bytes(&self) -> usize {
         let shards = self.shards.read().expect("engine lock poisoned");
         if shards.is_empty() {
@@ -947,7 +947,7 @@ impl TemporalEngine {
         }
     }
 
-    /// The maintained tally as this shard holds it: `(block_slab_id, live page refs, live bytes)`.
+    /// The maintained tally as this shard holds it: `(block_slab_id, live block refs, live bytes)`.
     ///
     /// For the guards and the measurements. `None` when the shard is absent or its tally has
     /// never been derived -- the second is not the same as "no live pages" and must not read as
@@ -980,13 +980,13 @@ impl TemporalEngine {
         ids
     }
 
-    /// Union of live page-slab ids across EVERY shard currently loaded into this engine.
+    /// Union of live block-slab ids across EVERY shard currently loaded into this engine.
     ///
     /// One engine owns a single `page_store` shared by all shards it hosts, and the current
-    /// append cursor + slab counter are global, so two shards' pages can land in the same slab.
+    /// append cursor + slab counter are global, so two shards' blocks can land in the same slab.
     /// Any slab referenced by *any* loaded shard is live and must not be reclaimed. A single
     /// shard's live set is therefore an unsafe basis for GC: a slab live only in shard B looks
-    /// stale to shard A's cycle and would be deleted, silently destroying B's committed pages.
+    /// stale to shard A's cycle and would be deleted, silently destroying B's committed blocks.
     /// Reclaim must be driven by this union so a slab referenced by any shard is retained.
     ///
     /// For a single loaded shard this equals `live_block_slab_ids(that_shard)`, so single-shard
@@ -1203,7 +1203,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // WHY THIS ONE IS SAFE TO MOVE AND THE COMPACTOR'S IS NOT. Between the guard
             // dropping and the write landing there is a window in which this checkpoint is
             // stale: a concurrent writer can publish a newer one that this then follows, and a
-            // concurrent storage cycle can see pages these deletes freed, call their slabs
+            // concurrent storage cycle can see blocks these deletes freed, call their slabs
             // stale and reclaim them while the durable index still names them. Both are
             // recoverable HERE and only here, because an expiry IS a logged delete: every key
             // above emitted a `CommonDelete` to the WAL before this point, so a checkpoint that
@@ -1229,7 +1229,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // contributes one key-state blob carrying NO map fields, which the fold reads as "this
             // key is in none of these maps" -- a tombstone in all thirteen, `expires_at_ms`
             // included -- and `delta_record_covered_keys` reads the covered set from those blobs,
-            // so the page wipe reaches the keys even though they contribute no page items.
+            // so the block wipe reaches the keys even though they contribute no block items.
             //
             // SAFETY, AND IT IS THE SAME ARGUMENT #1620 MADE. The anchor must never move AHEAD of
             // the tombstones. The delta carries `applied_wal_sequence` -- the sequence anchored
@@ -1255,20 +1255,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         .into_iter()
                         .collect();
                     ExpiryIndexCheckpoint::Delta(Box::new(ExpiryIndexDelta {
-                        // NO PAGE ITEMS, and that is the whole content of the record's page half.
+                        // NO BLOCK ITEMS, and that is the whole content of the record's block half.
                         //
                         // `mark_bucket_index_object_deleted` has already run for each of these
-                        // keys, and it retains every page carrying the key OUT of every bucket
+                        // keys, and it retains every block carrying the key OUT of every bucket
                         // that holds one -- the buckets come from `object_block_refs` across every
                         // model kind, or from the whole bucket map when the lookup is not
-                        // established. So by the time this record is built there is no page left
+                        // established. So by the time this record is built there is no block left
                         // to describe, and an empty item list against a covered key is exactly
                         // how the fold spells a removal: `fold_delta_block_items` wipes every page
                         // of every covered key and then restores the items carried, which is
                         // none.
                         //
                         // This was `collect_command_index_items_for`, collecting rather than
-                        // asserting -- and it cost: that helper walks the ENTIRE page index of
+                        // asserting -- and it cost: that helper walks the ENTIRE block index of
                         // every bucket the keys hash into, so a round clearing 8,000 due keys
                         // walked a large part of the shard to build a list that is empty by
                         // construction. Measured, it took the per-key cost of a round from
@@ -1276,7 +1276,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                         //
                         // The invariant is not assumed silently: `the_expiry_delta_names_what_
                         // the_round_removed_and_anchors_no_further` asserts the record carries no
-                        // items, so a delete that starts leaving pages behind fails there rather
+                        // items, so a delete that starts leaving blocks behind fails there rather
                         // than quietly wiping them on the next fold.
                         items: Vec::new(),
                         key_states: super::capture_key_states(shard, &delta_keys),
@@ -1341,7 +1341,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                     None,
                     // NOT an upsert. An upsert record replaces each item's own predecessor and
                     // leaves everything else for the key in place, which for a round whose items
-                    // are empty would remove nothing at all. The snapshot shape wipes every page
+                    // are empty would remove nothing at all. The snapshot shape wipes every block
                     // of every covered key and restores only the items carried, which is what
                     // makes an empty item list a deletion.
                     false,
@@ -1414,20 +1414,20 @@ fn expiry_scan_budget(limit: usize) -> usize {
         )
     }
 
-    /// Compact, relocating ONLY the pages that sit on `drain_block_slab_ids`.
+    /// Compact, relocating ONLY the blocks that sit on `drain_block_slab_ids`.
     ///
     /// This is what the PERIODIC loop issues, and it is the round the relocation hint describes.
-    /// `compact_shard_blocks` above relocates every live page, which is what a direct
+    /// `compact_shard_blocks` above relocates every live block, which is what a direct
     /// instruction has always meant -- but for the loop that is far more work than the result
     /// needs. A relocation recovers space only for the slab it VACATES:
-    /// `compact_block_addresses` copies a page's bytes verbatim and appends them elsewhere, so
-    /// a page moved off a slab with no dead space comes out byte for byte what it went in as, on
+    /// `compact_block_addresses` copies a block's bytes verbatim and appends them elsewhere, so
+    /// a block moved off a slab with no dead space comes out byte for byte what it went in as, on
     /// a slab that is now the one carrying the dead space. The live bytes are unchanged and there
     /// is one more emptied slab for the collector to destroy.
     ///
     /// So a single overwritten record anywhere in the shard used to cost a rewrite of the WHOLE
     /// live set, spread over `live_page_refs / COMPACTION_ROUND_BLOCK_REFS` rounds of shard
-    /// write lock, to recover one page. Naming the drain set bounds the work by the size of the
+    /// write lock, to recover one block. Naming the drain set bounds the work by the size of the
     /// holed slabs instead of by the size of the store.
     ///
     /// The set costs no walk: `compaction_drain_block_slab_ids` reads it off the reclaim plan
@@ -1447,13 +1447,13 @@ fn expiry_scan_budget(limit: usize) -> usize {
         )
     }
 
-    /// Compact, relocating at most `budget_bytes` of pages this round.
+    /// Compact, relocating at most `budget_bytes` of blocks this round.
     ///
     /// The budget is a parameter and not only a constant so a test can force MANY rounds over a
-    /// handful of pages. A boundary that only appears once a store passes 256 MiB is a boundary
+    /// handful of blocks. A boundary that only appears once a store passes 256 MiB is a boundary
     /// no test would reach, and the rules that make a bounded round correct -- a round resumes
     /// onto the slab it was filling rather than rolling again, and rounds together still move
-    /// every page -- all live at that boundary.
+    /// every block -- all live at that boundary.
     /// Compact with a byte budget only, leaving the ref count unbounded.
     ///
     /// This is what the byte-budget probe measures and what every existing caller wants: adding
@@ -1501,17 +1501,17 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let Some(shard) = shards.get_mut(&shard_id) else {
             return Err(Status::error("shard_not_loaded", "shard is not loaded"));
         };
-        // ONE walk for the preamble's live-page consumers.
+        // ONE walk for the preamble's live-block consumers.
         //
         // Before any budget is consulted, this stage builds several whole-shard reports, and each
         // one called `collect_live_block_entries` for its own copy -- measured by
         // `what_the_compaction_preamble_walks` as 5.0x the shard. All of them run under the same
         // WRITE lock on an unchanged `&ShardState`, so every read and write on the shard queues
-        // behind the lot. Three of them take the same live-page set and now share one walk.
+        // behind the lot. Three of them take the same live-block set and now share one walk.
         //
         // `object_manager_runtime_report` (2.0x) and `collect_live_block_slab_ids` still walk on
         // their own: the first needs `_from_entries` forms of two nested reports, and the second
-        // walks the model maps directly rather than the live-page set, so it is not the same walk
+        // walks the model maps directly rather than the live-block set, so it is not the same walk
         // and cannot share this one.
         //
         // Order is forced by the last consumer taking the Vec BY VALUE: the two that borrow go
@@ -1551,11 +1551,11 @@ fn expiry_scan_budget(limit: usize) -> usize {
         let bucket_layout_transition_count_before = object_manager_before.layout_transition_count;
         // Start a round, or continue the one a budget cut short.
         //
-        // A round rolls a fresh slab and relocates live pages onto it. Rolling AGAIN while a
-        // round is unfinished would re-move everything the last round moved -- the pages it just
+        // A round rolls a fresh slab and relocates live blocks onto it. Rolling AGAIN while a
+        // round is unfinished would re-move everything the last round moved -- the blocks it just
         // relocated would no longer be on the newest slab -- so a bounded round would shuffle
         // rather than progress. Continuing to fill the same slab is what makes each round move
-        // pages that have not moved yet.
+        // blocks that have not moved yet.
         let resumed = self
             .compaction_rounds
             .read()
@@ -1586,18 +1586,18 @@ fn expiry_scan_budget(limit: usize) -> usize {
             ),
         };
 
-        // Relocate every model's live pages onto the freshly rolled slab. A mid-way failure
-        // (append ENOSPC / an unreadable torn page) is caught below so we can durably commit the
+        // Relocate every model's live blocks onto the freshly rolled slab. A mid-way failure
+        // (append ENOSPC / an unreadable torn block) is caught below so we can durably commit the
         // consistent partial state instead of leaving the volatile index half-advanced but
         // unpersisted -- see the `if let Err(err)` handler after this block for why.
         let relocation_result: Result<(), Status> = (|| {
         // EVERY ARM PAIRS AN ADDRESS WITH ITS KEY'S BUCKET *AND* WITH THE KEY, and the arms that
         // iterated `values_mut()` iterate `iter_mut()` to get both. Nothing new is computed per
-        // PAGE: a bucket is one FNV-1a over the key, and the keyed arms compute it once per key for
-        // however many pages that key owns. The key is LENT rather than copied -- `Cow::Borrowed`
+        // BLOCK: a bucket is one FNV-1a over the key, and the keyed arms compute it once per key for
+        // however many blocks that key owns. The key is LENT rather than copied -- `Cow::Borrowed`
         // everywhere but the entity arm, which composes its key and so owns it -- and it is the same
         // string the bucket beside it was derived from, which is the property that matters: a read
-        // that named a different string would look for a page in a bucket nothing filed it under.
+        // that named a different string would look for a block in a bucket nothing filed it under.
         let bucket_of = |key: &str| {
             block_routing_bucket(key, start_routing_bucket, end_routing_bucket)
         };
@@ -1607,7 +1607,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // the same helper over the same iterator shape, and written back through `set_address`.
         //
         // THE WRITE-BACK MUST GO THROUGH THE SETTER AND NOT BUILD A FRESH ROW. `set_address`
-        // rewrites the page word, the page size and the two page flags and touches nothing else,
+        // rewrites the block word, the block size and the two block flags and touches nothing else,
         // so the deadline, the model id and the dirty bit survive a relocation. A fresh row would
         // drop them, and would not fail today because those fields are still unfilled --
         // `compacting_a_record_keeps_everything_that_is_not_the_address` is the arm that says so.
@@ -1640,7 +1640,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         //
         // `iter_mut()` and not `values_mut()`, because the map's KEY is the element and it is what
         // the frame has to carry -- and it is also what the read's component is rendered from, so
-        // these arms now name the page they read instead of asking for the whole of it.
+        // these arms now name the block they read instead of asking for the whole of it.
         //
         // THE OBJECT KEY GOES IN ONCE PER ARM rather than once per item. `compact_block_addresses`
         // pairs a key with every address because its string arm walks a map of many objects; each of
@@ -1745,7 +1745,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // turns its rebase from mechanical into painful, and buys nothing this call site needs.
         //
         // So addresses are staged out, rewritten by the unchanged function, and written back
-        // through `set_address`, which touches the address word, the page size and the two bits
+        // through `set_address`, which touches the address word, the block size and the two bits
         // that are part of what an address MEANS -- and cannot reach the deadline, the state bits
         // or the model id. Building a fresh record from the rewritten address would drop those,
         // and would not fail today because they are unused; the guard against that is
@@ -1864,7 +1864,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
             )?;
         }
         // THE ENTITY ARM DERIVES ITS BUCKET FROM THE PER-ENTITY KEY, not from the collection key
-        // this map is keyed by: `ContextUpsertEntity` files the page under
+        // this map is keyed by: `ContextUpsertEntity` files the block under
         // `context_entity_key(..)`, which is the collection key with the entity hash appended, and
         // that is the string the bucket comes from. Composing it per entity is what the model-map
         // walk does for the same reason.
@@ -1899,7 +1899,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         })();
         if let Err(err) = relocation_result {
             // A relocation failed partway. The in-memory index is now a CONSISTENT partial
-            // snapshot -- pages already moved point at the fresh durable slab, the rest still point
+            // snapshot -- blocks already moved point at the fresh durable slab, the rest still point
             // at their old slabs -- but it has DIVERGED from the on-disk index, which still
             // references the now-vacated old slabs. Returning here without persisting (the old
             // behavior) let the independent next-cycle reclaim trust this volatile index, see a
@@ -1909,9 +1909,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             // atomically avoids the desync structurally. We instead
             // durably commit the consistent partial: rebuild the secondary views so the serialized
             // index is internally consistent, fsync the relocated bytes so the index never names a
-            // non-durable page, then persist -- leaving volatile == durable so reclaim is safe --
+            // non-durable block, then persist -- leaving volatile == durable so reclaim is safe --
             // and propagate the original error so the caller knows compaction did not fully
-            // complete (a later run retries the not-yet-moved pages).
+            // complete (a later run retries the not-yet-moved blocks).
             rebuild_bucket_first_index(
                 shard_id,
                 shard,
@@ -1934,9 +1934,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 .map_err(|persist| Status::error("block_compaction_failed", persist.to_string()))?;
             let _ = self.index_log_store.append_index_bytes(shard_id, &partial_index_bytes);
             // Keep the round OPEN. A relocation that failed partway left work behind by
-            // definition -- the pages it had not reached yet are still on their old slabs -- and
+            // definition -- the blocks it had not reached yet are still on their old slabs -- and
             // this used to return without recording the anchor, so the next round read
-            // `resumed = None`, rolled a SECOND fresh slab, and re-moved every page this one had
+            // `resumed = None`, rolled a SECOND fresh slab, and re-moved every block this one had
             // already moved. That is exactly the shuffle the note above the resume read exists to
             // rule out, and the failure path was the one way into it. It costs repeated work and
             // one extra slab per failure rather than data loss, which is why it survived.
@@ -2002,9 +2002,9 @@ fn expiry_scan_budget(limit: usize) -> usize {
             .iter()
             .filter(|policy| policy.layout_aware_rewrite_required)
             .count();
-        // Durability barrier BEFORE publishing the base index that names the relocated pages.
+        // Durability barrier BEFORE publishing the base index that names the relocated blocks.
         // Under deferred-fsync modes (bulk / block_wal_single_barrier -> append.rs
-        // defer_data_sync) compaction relocates pages fsync-deferred, so the moved
+        // defer_data_sync) compaction relocates blocks fsync-deferred, so the moved
         // bytes may still be in the page cache. Persisting a base index that references them
         // and crashing before the next barrier would leave dangling references at an un-synced
         // slab (compaction does not advance applied_wal_sequence, so WAL replay does not
@@ -2030,7 +2030,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         // An expiry sweep and a delete_drop eviction both write a WAL tombstone per key before
         // they flush, so a flush that lands late, lands stale, or never lands is re-derived by
         // replay. Compaction deliberately does not advance `applied_wal_sequence` and emits no
-        // record: relocating a page changes only the volatile index and this file. From the
+        // record: relocating a block changes only the volatile index and this file. From the
         // moment the guard drops, `storage_lifecycle_plan` can take its own read lock, derive
         // stale slabs as `page_store.slab_ids()` minus the volatile live set -- which now
         // excludes the slabs this round just vacated -- and reclaim them. Crash in that window

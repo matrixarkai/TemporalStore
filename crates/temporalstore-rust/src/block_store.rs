@@ -377,7 +377,7 @@ impl From<ElementEntry> for BlockAddressWire {
 /// `block_slab_id()`, `offset()`, `from_parts`, `set_block_id`), so nothing outside this file
 /// knows the width. `length` SATURATES rather than truncating -- see `narrow` below. The two halves
 /// of `address` and the `block_id` do NOT saturate, because each of them saturated is a perfectly
-/// plausible name for a DIFFERENT block or page. They are checked and the caller is refused -- see
+/// plausible name for a DIFFERENT block or block. They are checked and the caller is refused -- see
 /// [`BlockAddress::try_from_parts`] and `narrow_block_id`.
 ///
 /// `generation` used to sit here as a seventh field. It is now DERIVED -- see [`BlockAddress::generation`].
@@ -398,7 +398,7 @@ pub struct BlockAddress {
     /// through [`BlockAddress::block_slab_id`] and [`BlockAddress::offset`]; the raw word is
     /// [`BlockAddress::address_word`] and is what the stored form carries.
     ///
-    /// THE SIZE, THE PAGE ORDINAL AND THE STATUS BITS USED TO SIT HERE. They are now explicit
+    /// THE SIZE, THE BLOCK ORDINAL AND THE STATUS BITS USED TO SIT HERE. They are now explicit
     /// fields on [`ElementEntry`], the holder every container stores, and the serde that writes
     /// this word onto the wire lives THERE rather than here -- it has to, because the wire row
     /// spells all four and only the holder has all four in scope.
@@ -512,18 +512,18 @@ pub struct BlockAddress {
 /// eight-aligned group, so the group became 8, the tail stayed 4 + 2 + 1 = 7 and rounded to 8, and
 /// the struct is 16. That is this file's own rule read correctly -- "a narrowing of ONE field
 /// cannot [pay]" is about narrowing, and shedding eight bytes from the aligned group IS a whole
-/// step. `BlockIndex` followed 64 -> 56 and the page-list stride 72 -> 64.
+/// step. `BlockIndex` followed 64 -> 56 and the block-list stride 72 -> 64.
 ///
 /// WHAT IT COST WAS THE STORED SHAPE, AND THE STAMP IS WHAT PAYS FOR IT. `generation` was
-/// `block_id.or(object_id)`; it is now the block id alone. For a BLOCK-RESIDENT page that is the
-/// same value it always was. For a WAL-RESIDENT page -- where the block id is absent -- the
+/// `block_id.or(object_id)`; it is now the block id alone. For a BLOCK-RESIDENT block that is the
+/// same value it always was. For a WAL-RESIDENT block -- where the block id is absent -- the
 /// generation WAS the object id and is now `None`, and `state::block_index_handle` hashes the
 /// generation while `state::block_index_written_key` renders it into the ref key already on disk.
 /// So every WAL-resident ref moves, and that is what the format stamp pays for.
 ///
 /// THE STAMP LEDGER, WRITTEN DOWN HERE BECAUSE A VALUE IN A CONVERSATION IS NOT A LEDGER.
 /// `engine::SHARD_INDEX_FORMAT_VERSION` was 3 when this paragraph was first drafted, and 4 was
-/// RESERVED for this change on that basis. It is not 3 any more: the container-page tombstone took
+/// RESERVED for this change on that basis. It is not 3 any more: the container-block tombstone took
 /// it 3 -> 5, skipping 4 to hold the reservation. That reservation did not survive main moving past
 /// it. This change therefore takes **6**, and the next one takes 7.
 ///
@@ -579,7 +579,7 @@ const _: () = assert!(std::mem::size_of::<BlockAddress>() == 8);
 /// byte of field, which does NOT move, and one plus a whole word, which does.
 ///
 /// SO THIS IS NOT A FOOTPRINT CHANGE AND MUST NOT BE READ AS ONE. It is a change of SHAPE: the
-/// address is one opaque word, and the size, the page ordinal and the status bits are explicit
+/// address is one opaque word, and the size, the block ordinal and the status bits are explicit
 /// fields on the row that holds it instead of private fields inside the address. What that buys
 /// is that each of the four is named where it is used, and can be narrowed, packed or dropped on
 /// its own evidence. What it buys in bytes today is zero, and the row above says so.
@@ -1037,7 +1037,7 @@ pub struct BlockStoreSlabLiveFraction {
     pub live_bytes: u64,
     /// `live_bytes * 10_000 / logical_bytes`, or 0 when the slab has no logical bytes.
     pub live_basis_points: u64,
-    /// `10_000 - live_basis_points`. What the page-GC garbage floor compares against.
+    /// `10_000 - live_basis_points`. What the block-GC garbage floor compares against.
     pub garbage_basis_points: u64,
 }
 
@@ -4589,11 +4589,11 @@ const RETIRED_NAMES: &[&str] = &[
         };
 
         // THE STORED NAMES WHOSE READER TAKES THE SET. Each now emits the BLOCK spelling and must
-        // still ACCEPT the page one, as an EQUALITY rather than a floor -- a floor passes when a
+        // still ACCEPT the block one, as an EQUALITY rather than a floor -- a floor passes when a
         // site is added without its alias, which is the whole failure this exists to catch.
         //
         // THE WRITER MOVED, AND THAT IS WHY THE PAIR READS THIS WAY ROUND. It used to be
-        // (page, block): emit the stored page name, accept the block one. The reader was widened
+        // (block, block): emit the stored block name, accept the block one. The reader was widened
         // first, so every spelling a store on disk can carry is still accepted, and only then did
         // the writer flip -- what any earlier build wrote still loads through the alias, and what
         // this build writes is the canonical spelling. Reversing the pair without reversing the
@@ -4886,7 +4886,7 @@ const RETIRED_NAMES: &[&str] = &[
     #[test]
     fn a_gc_round_that_reclaimed_nothing_does_not_rewrite_the_manifest() {
         // The sibling test above keeps the full manifest re-serialize off the APPEND path. The
-        // page-GC path had no such guard and rewrote it unconditionally, once per round, on a
+        // block-GC path had no such guard and rewrote it unconditionally, once per round, on a
         // stage the periodic loop runs whenever block pressure holds.
         //
         // It is not a cheap write: it serialises every slab, fsyncs the temp file, renames it and
@@ -9599,7 +9599,7 @@ mod shorter_struct_against_an_existing_row {
 ///
 /// # WHY THIS IS A NAMED TYPE AND NOT STILL A BARE ADDRESS
 ///
-/// The resident page entry is being RELOCATED into this position. Today an element of a hash is
+/// The resident block entry is being RELOCATED into this position. Today an element of a hash is
 /// described twice: once by a [`BlockAddress`] in this map, and once by a 56-byte `BlockIndex` in
 /// the bucket index, keyed by a hash of the object key, the model id, the component and five
 /// address terms. The entry here can be KEY-INDEPENDENT -- the object key is the level-one key and
@@ -9643,7 +9643,7 @@ pub struct ElementEntry {
     /// is no I/O-free way to recover it, which is the whole reason it travels with the address
     /// instead of being derived at a read site.
     length: u32,
-    /// WHICH PAGE of the object this is. Sixteen bits because THE ENCODER REFUSES ANYTHING WIDER,
+    /// WHICH BLOCK of the object this is. Sixteen bits because THE ENCODER REFUSES ANYTHING WIDER,
     /// and CHECKED rather than saturated -- see [`ElementEntry::try_from_wire_parts`] and
     /// [`narrow_block_id`]. Held for the same reason as the length: the live filter and
     /// `BlockIndex::log_backed` read it precisely SO THAT they answer with no block read.
@@ -9655,10 +9655,10 @@ pub struct ElementEntry {
     /// byte rather than an accident of it.
     ///
     ///   * ZERO IS A LEGAL BLOCK ID, so "block id 0 means no block id" would silently erase a real
-    ///     first page -- and `block_id()` answering `Some(0)` versus `None` is the difference
+    ///     first block -- and `block_id()` answering `Some(0)` versus `None` is the difference
     ///     between a block that lives in a slab and one that still lives in the log.
     ///   * A GENERATION CAN BE ABSENT WHILE AN IDENTITY IS PRESENT. An index written before the
-    ///     generation existed carries a page id and no generation key anywhere, and has always
+    ///     generation existed carries a block id and no generation key anywhere, and has always
     ///     loaded with `generation() == None`. Deriving presence from the identity would hand it a
     ///     generation it never had and move every key it resolves through, so the PRESENCE comes
     ///     off the wire and only the VALUE is derived. See [`ElementEntry::generation`].

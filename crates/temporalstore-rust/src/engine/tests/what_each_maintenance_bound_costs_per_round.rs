@@ -741,7 +741,7 @@ fn a_capped_dump_throttles_what_index_gc_can_remove() {
 ///
 /// THE SURVEY ITSELF IS ALREADY CONDITIONAL. `storage_lifecycle_methods` builds the plan with
 /// `shard_has_dirty_objects.then(|| self.bucket_storage_summaries(request.shard_id))`, so a round
-/// with an empty dirty index does not survey the live page set at all, and
+/// with an empty dirty index does not survey the live block set at all, and
 /// `live_block_summaries_measured` on the report is false. This asserts that skip is real, and
 /// prints what the idle round charges ANYWAY, per stage, because that residue -- not the survey
 /// -- is what bounds the interval.
@@ -973,7 +973,7 @@ fn the_shipped_byte_ceiling_is_a_spending_bound_in_slab_units() {
 ///
 /// THE COSTS HERE ARE MEASURED, NOT GUESSED, and each is cited where it was measured:
 ///
-///   compaction, ~200 us per relocated block ref, almost independent of page size
+///   compaction, ~200 us per relocated block ref, almost independent of block size
 ///       -- `engine::compaction`'s own note on COMPACTION_ROUND_BLOCK_REFS, which is why that
 ///          bound is denominated in refs rather than bytes
 ///   expiry, ~201.5 us per hot bucket at 20k objects

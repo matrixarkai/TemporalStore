@@ -471,7 +471,7 @@ fn priced_population(census: &ArmCensus, block: &BlockIndex) -> Vec<(&'static st
     });
 
     // THE FOURTH SHAPE, AND IT IS THE OBVIOUS SYNTHESIS OF THE OTHER THREE: drop the arm, but take
-    // the first block EXACTLY rather than a whole growth step. A single-page bucket then pays one
+    // the first block EXACTLY rather than a whole growth step. A single-block bucket then pays one
     // entry instead of four, which is what the boxed arm's advantage over dropping consists of --
     // without a third arm to maintain. What it costs is one extra reallocation on the way up, paid
     // by every bucket that reaches two blocks, which at the shipped range is almost all of them.
@@ -1671,8 +1671,8 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
     // marked stale.
     // The mirror is the entry as it stood before the ADDRESS narrowed; one step took the routing
     // bucket and the block id's upper half, a second took the object id, and a THIRD took the
-    // object IDENTITY -- the pointer naming which object the page belongs to, read from beside the
-    // page now. Asserted exactly, so a
+    // object IDENTITY -- the pointer naming which object the block belongs to, read from beside the
+    // block now. Asserted exactly, so a
     // fourth step fails here rather than widening quietly -- which is what it just did for the
     // third.
     assert_eq!(
@@ -1730,11 +1730,11 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         let census = arm_census(&engine);
         census.assert_denominators(&format!("{label} @ {records}"));
         let block = one_real_block(&engine);
-        // THE MIRROR'S KEY IS NAMED HERE BECAUSE THE PAGE HAS NONE. The mirror models the entry as
+        // THE MIRROR'S KEY IS NAMED HERE BECAUSE THE BLOCK HAS NONE. The mirror models the entry as
         // it was WHEN IT WAS WIDE, and the term it is modelling is a sixteen-byte shared pointer:
         // what the pointer points AT decides nothing about the width or the heap this arm
         // measures, so the fixture names a key of the length a routed key has rather than
-        // pretending to recover the one this page belongs to.
+        // pretending to recover the one this block belongs to.
         let wide_block = MirrorWideEntry {
             object_key: std::sync::Arc::from("mirror-of-a-wide-entry"),
             model_id: block.model_id,

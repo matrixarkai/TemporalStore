@@ -5,7 +5,7 @@
 //!
 //! Rust's `free` hands memory back to the allocator, not to the kernel. On glibc -- what this runs
 //! on, since the only `#[global_allocator]` here is a test-only probe -- freed chunks stay in
-//! per-thread arenas, and the process keeps its resident pages until the heap top happens to be
+//! per-thread arenas, and the process keeps its resident blocks until the heap top happens to be
 //! free or something calls `malloc_trim`.
 //!
 //! Measured in process: dropping 46 MB of live data returned 2.3% of it; one `malloc_trim(0)`
@@ -50,7 +50,7 @@ fn trim() -> bool {
         fn malloc_trim(pad: usize) -> i32;
     }
     // Safe: no arguments derived from Rust memory, no pointers handed over, and the allocator's own
-    // bookkeeping is what it walks. It cannot invalidate a live allocation -- only unused pages go
+    // bookkeeping is what it walks. It cannot invalidate a live allocation -- only unused blocks go
     // back.
     unsafe { malloc_trim(0) != 0 }
 }

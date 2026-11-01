@@ -103,9 +103,9 @@ pub struct SharedStoreWalEntry {
     /// by re-running it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub command: Option<Command>,
-    /// The pages this write produced, carried beside the command that produced them.
+    /// The blocks this write produced, carried beside the command that produced them.
     ///
-    /// A command is not always enough to rebuild what it wrote. A page can be DERIVED state --
+    /// A command is not always enough to rebuild what it wrote. A block can be DERIVED state --
     /// a serialized counter series, a hash map -- and re-executing the command that bumped it
     /// reconstructs it only if every earlier write is also replayed, in order, from a state
     /// that still exists. Locally that is what the engine WAL record carries, for exactly this
@@ -118,8 +118,8 @@ pub struct SharedStoreWalEntry {
     pub staged_blocks: Vec<crate::wal::StagedBlock>,
     /// What this write DID, so a successor can install results instead of re-running operations.
     ///
-    /// Carrying pages was the same idea reached halfway: a page is derived state the command
-    /// cannot rebuild, so the pages travelled beside the command. These finish the thought. A
+    /// Carrying blocks was the same idea reached halfway: a block is derived state the command
+    /// cannot rebuild, so the blocks travelled beside the command. These finish the thought. A
     /// successor that installs them needs no clock of its own, no eviction config from the
     /// original node, and no assumption that re-executing here lands where it landed there.
     ///
@@ -174,7 +174,7 @@ pub struct SharedStoreBlockSlab {
     pub byte_size: u64,
     pub sha256: String,
     // Per-slab SEALED-slab metadata carried so a lazy restore can install complete slab
-    // descriptors (physical/logical bytes + page-id range) BEFORE the first on-demand slab
+    // descriptors (physical/logical bytes + block-id range) BEFORE the first on-demand slab
     // fetch, keeping GC/compaction accounting from under-counting sealed shared slabs between
     // restore and first fetch. All default so older manifests (without these fields) still load;
     // `byte_size` above is the slab's physical byte size.
@@ -202,9 +202,9 @@ pub struct SharedStoreCheckpointManifest {
     pub index_byte_size: u64,
     pub index_sha256: String,
     pub block_slabs: Vec<SharedStoreBlockSlab>,
-    /// Next free block page id at checkpoint time. A lazy restore advances the fresh
-    /// owner's page-id counter past this floor so replayed/new writes never reuse a
-    /// page id that a lazily-fetched checkpoint slab still carries. Defaults to 0 for
+    /// Next free block block id at checkpoint time. A lazy restore advances the fresh
+    /// owner's block-id counter past this floor so replayed/new writes never reuse a
+    /// block id that a lazily-fetched checkpoint slab still carries. Defaults to 0 for
     /// manifests written before this field existed (backward compatible).
     #[serde(default)]
     pub next_block_id: u64,
@@ -466,15 +466,15 @@ struct SharedStoreStagedBlockProto {
     object_id: u64,
     #[prost(bytes = "vec", tag = "2")]
     bytes: Vec<u8>,
-    /// Which element of the object this page holds.
+    /// Which element of the object this block holds.
     ///
     /// The same field `WalStagedBlock` carries in the local log, and for the same reason: a
-    /// frame carries many pages and a reader picks one out by identity. A follower that
-    /// received the pages without their elements would resolve the frame and then serve the
-    /// FIRST page of the object for every element of it -- which is the failure this exists
+    /// frame carries many blocks and a reader picks one out by identity. A follower that
+    /// received the blocks without their elements would resolve the frame and then serve the
+    /// FIRST block of the object for every element of it -- which is the failure this exists
     /// to remove, moved to the reader that has no other copy of the bytes.
     ///
-    /// `optional`, so a frame written for a whole-object page omits it and stays
+    /// `optional`, so a frame written for a whole-object block omits it and stays
     /// byte-identical to one written before this field existed.
     #[prost(string, optional, tag = "3")]
     component: Option<String>,
@@ -1218,12 +1218,12 @@ where
         // R2 single-writer fence: a checkpoint publish is a durable-frontier advance, so a
         // superseded stale owner must be rejected here just as on a WAL append.
         self.enforce_fence(shard_id).await?;
-        // Durability barrier: fsync any bulk-deferred page bytes and persist the slab manifest
+        // Durability barrier: fsync any bulk-deferred block bytes and persist the slab manifest
         // BEFORE capturing the slab set, mirroring the local dump path
-        // (bucket_dump_manifest_methods) which fsyncs pages+WAL before recording slab ids. Without
+        // (bucket_dump_manifest_methods) which fsyncs blocks+WAL before recording slab ids. Without
         // this a relaxed (bulk) writer could enumerate a slab whose tail bytes are not yet on disk,
-        // uploading a torn page or racing a not-yet-durable slab into the checkpoint.
-        // Make the index PORTABLE before exporting it. A page that lives in a WAL record or in
+        // uploading a torn block or racing a not-yet-durable slab into the checkpoint.
+        // Make the index PORTABLE before exporting it. A block that lives in a WAL record or in
         // memory is named by a slab that is not a file, resolvable only through this process's
         // registry -- so an index carrying one names a place the restoring node cannot reach, and
         // that read returns nothing with no error. Materialising them first means the index names
@@ -1246,7 +1246,7 @@ where
             .await?;
 
         // Snapshot the local slab descriptors so each uploaded slab carries its sealed-slab
-        // metadata (logical bytes + page-id range) into the manifest for S3 restore-time install.
+        // metadata (logical bytes + block-id range) into the manifest for S3 restore-time install.
         let slab_by_slab: BTreeMap<u64, _> = block_store
             .slab_descriptors()
             .into_iter()
@@ -1279,8 +1279,8 @@ where
         }
 
         // Completeness barrier: every slab the served index actually references must be covered by
-        // an uploaded slab before the manifest is written, so a restore never resolves a live page
-        // to a slab that is absent from the checkpoint. The synthetic in-memory hot-page slab
+        // an uploaded slab before the manifest is written, so a restore never resolves a live block
+        // to a slab that is absent from the checkpoint. The synthetic in-memory hot-block slab
         // (u64::MAX) is folded into the exported index, not a durable slab, so it is excluded.
         const HOT_BLOCK_SLAB_ID: u64 = u64::MAX;
         for referenced in engine.live_block_slab_ids(shard_id) {
@@ -2396,7 +2396,7 @@ impl SharedSlabSource for SharedPathSlabSource {
 /// [`SharedPathSlabSource`], but resolves each slab to a synchronous networked
 /// GET ([`MatrixObjectHttpStore::get_blocking`]) of the shared object instead of a
 /// local filesystem read, verifying the checkpoint checksum before the block store
-/// caches it. Old (pre-checkpoint) pages therefore *follow the shard across
+/// caches it. Old (pre-checkpoint) blocks therefore *follow the shard across
 /// nodes*: fetched on demand, over the network, at most once each, only when a
 /// read actually needs them — never eagerly at recovery time.
 #[derive(Debug)]
@@ -2510,7 +2510,7 @@ where
         }
         let source = make_source(Arc::clone(&self.object_store), slabs);
         block_store.attach_shared_slab_source(source);
-        // Roll local appends past the checkpoint's slab/page-id range so replayed WAL-tail
+        // Roll local appends past the checkpoint's slab/block-id range so replayed WAL-tail
         // and new writes never overwrite a slab still served lazily from shared storage.
         if !manifest.block_slabs.is_empty() {
             block_store.reserve_lazy_checkpoint_range(max_slab_id, manifest.next_block_id)?;
@@ -2561,7 +2561,7 @@ const REPLAY_APPLY_WINDOW: usize = 256;
 impl SharedStoreReplicator<FileObjectStore> {
     /// Conformance LAZY restore for the shared-filesystem backend: install the served
     /// INDEX and a per-slab shared address map WITHOUT downloading any slab bytes.
-    /// Old (pre-checkpoint) pages are then read lazily through [`SharedPathSlabSource`]
+    /// Old (pre-checkpoint) blocks are then read lazily through [`SharedPathSlabSource`]
     /// on the first read that needs them. See
     /// [`restore_index_and_block_addresses_with`](Self::restore_index_and_block_addresses_with)
     /// for the shared logic.
@@ -2581,7 +2581,7 @@ impl SharedStoreReplicator<FileObjectStore> {
 impl SharedStoreReplicator<MatrixObjectHttpStore> {
     /// Conformance LAZY restore for the *networked* matrixobject backend: install
     /// the served INDEX and a per-slab shared address map WITHOUT downloading any slab
-    /// bytes. Old (pre-checkpoint) pages are then fetched lazily over the network
+    /// bytes. Old (pre-checkpoint) blocks are then fetched lazily over the network
     /// through [`MatrixObjectSlabSource`] on the first read that needs them, so shard
     /// data follows the shard across nodes without an eager full download. See
     /// [`restore_index_and_block_addresses_with`](Self::restore_index_and_block_addresses_with)
@@ -2646,7 +2646,7 @@ impl SharedSlabSource for MatrixObjectLocalSlabSource {
 impl SharedStoreReplicator<crate::matrixobject_store::MatrixObjectObjectStore> {
     /// Conformance LAZY restore for the node-local matrixobject backend: install the
     /// served INDEX and a per-slab shared address map WITHOUT installing any slab
-    /// bytes; old (pre-checkpoint) pages are read lazily out of the local store on the
+    /// bytes; old (pre-checkpoint) blocks are read lazily out of the local store on the
     /// first read that needs them. The same flow the shared-filesystem and networked
     /// backends already run -- it is what lets this backend's recovery replay only the
     /// WAL tail after a checkpoint instead of all history.
@@ -3438,8 +3438,8 @@ fn decode_wal_proto_frame_exact(
             .into_iter()
             .map(|block| crate::wal::StagedBlock {
                 object_id: block.object_id,
-                // Never defaulted: an absent element MEANS a whole-object page, and
-                // inventing one would make a string page claim to be an element.
+                // Never defaulted: an absent element MEANS a whole-object block, and
+                // inventing one would make a string block claim to be an element.
                 component: block.component.map(std::sync::Arc::from),
                 bytes: block.bytes,
             })
@@ -5370,7 +5370,7 @@ mod tests {
     }
 
     // A per-key delete produces a durable WAL tombstone that a fresh engine, replaying the WAL
-    // from scratch on the SAME on-disk pages/index dirs, reconstructs as a MISS -- the delete must
+    // from scratch on the SAME on-disk blocks/index dirs, reconstructs as a MISS -- the delete must
     // never resurrect on recovery (the failure mode a read-time-only soft-delete would hit).
     #[test]
     fn delete_read_miss_survives_wal_replay_recovery() {
@@ -5410,7 +5410,7 @@ mod tests {
         );
         engine.unload_shard(1);
 
-        // Fresh engine, same pages/index dirs, different cache -> genuine WAL-replay recovery.
+        // Fresh engine, same blocks/index dirs, different cache -> genuine WAL-replay recovery.
         let reopened =
             TemporalEngine::with_local_dirs(1 << 20, dir.path().join("cache-b"), &blocks, &indexes);
         reopened.load_shard(1);
@@ -5442,7 +5442,7 @@ mod tests {
         );
     }
 
-    // A delete applied BEFORE the checkpoint rides the published served index/pages: a follower
+    // A delete applied BEFORE the checkpoint rides the published served index/blocks: a follower
     // restoring from shared storage sees the key as a miss without ever replaying a WAL tail.
     #[tokio::test]
     async fn delete_delete_marker_replicates_in_shared_store_base_index() {
@@ -5742,8 +5742,8 @@ mod tests {
                         if let Ok(bytes) = primary.block_store().read(&address) {
                             carried.push(crate::wal::StagedBlock {
                                 object_id: item.object_id,
-                                // The outcome has named its element all along; the PAGE is
-                                // what could not say so, and a read picks the page.
+                                // The outcome has named its element all along; the BLOCK is
+                                // what could not say so, and a read picks the block.
                                 component: item
                                     .component
                                     .as_deref()
@@ -5804,7 +5804,7 @@ mod tests {
 
     /// RESTORATION on the live format, and the constraint it runs into.
     ///
-    /// A restored node takes its index and pages from a checkpoint and everything after it from
+    /// A restored node takes its index and blocks from a checkpoint and everything after it from
     /// the log. On the live format those tail entries carry RESULTS, and this asks whether a
     /// restored node can install them.
     ///
@@ -6077,7 +6077,7 @@ mod tests {
     #[tokio::test]
     async fn s4_publish_checkpoint_covers_every_index_referenced_slab() {
         // S4 completeness barrier: every slab the served index references must be uploaded and
-        // recorded in the manifest before it is written, so a restore never resolves a live page
+        // recorded in the manifest before it is written, so a restore never resolves a live block
         // to a slab absent from the checkpoint.
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
@@ -6112,7 +6112,7 @@ mod tests {
     #[tokio::test]
     async fn s4_publish_checkpoint_rejects_referenced_slab_not_durable() {
         // S4: if the served index references a slab that is NOT present as a durable/uploaded
-        // slab, publish must FAIL rather than write a manifest that would lose those pages.
+        // slab, publish must FAIL rather than write a manifest that would lose those blocks.
         let dir = tempfile::tempdir().unwrap();
         let primary = test_engine(dir.path(), "primary");
         primary.load_shard(1);
@@ -6883,7 +6883,7 @@ mod tests {
     #[tokio::test]
     async fn a_published_entry_keeps_the_blocks_its_write_produced() {
         // A command is not always enough to rebuild what it wrote. If the shared log drops the
-        // pages, a successor replays the command and reconstructs derived state from whatever
+        // blocks, a successor replays the command and reconstructs derived state from whatever
         // it happens to have -- which is not necessarily the bytes that were acked.
         let dir = tempfile::tempdir().unwrap();
         let (_store, replicator) = test_shared_store(dir.path());
@@ -9218,10 +9218,10 @@ mod tests {
                 "temporalstore-shared",
                 StoreOptions {
                     // `segment_size` BECAME `slab_size` AND IS NOW `page_size`, following the
-                    // store dropping its slab tier -- the tiers are chunk > page > fragment.
+                    // store dropping its slab tier -- the tiers are chunk > block > fragment.
                     //
                     // AND THAT LAST STEP IS NOT A RENAME. A slab was its own tier and bore no
-                    // relation to the chunk size; a page sits BELOW a chunk, so the store enforces
+                    // relation to the chunk size; a block sits BELOW a chunk, so the store enforces
                     // `1 <= page_size < chunk_size`. Carrying `16` and `4` across the rename
                     // inverted that and the constructor refused with "page_size must be
                     // 1..chunk_size", which only running it revealed.

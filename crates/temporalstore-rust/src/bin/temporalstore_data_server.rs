@@ -249,7 +249,7 @@ fn main() {
         },
     );
 
-    // Background storage maintenance. Dump, WAL and index-log reclaim, expiry, eviction, page
+    // Background storage maintenance. Dump, WAL and index-log reclaim, expiry, eviction, block
     // GC, compaction and index GC -- the same phases the cycle endpoint runs, run without anyone
     // having to ask for them.
     //
@@ -262,7 +262,7 @@ fn main() {
     //
     // Thirty seconds, where the design being followed loops every thirty MILLISECONDS. That is
     // three orders of magnitude apart and deliberate: their prepare phase does almost nothing,
-    // while ours builds its plan by reading every live page in the shard. One such pass every
+    // while ours builds its plan by reading every live block in the shard. One such pass every
     // thirty seconds is a few milliseconds of work; thirty-three per second would be the
     // dominant cost of running the server. The interval is what makes the survey affordable, and
     // it is the survey that would have to change before this could go faster.
@@ -1353,7 +1353,7 @@ struct PublishShardCheckpointResponse {
 /// Restore the served INDEX + a lazy slab address map (no slab bytes) from the newest
 /// shared checkpoint onto the on-disk base, so a subsequent `load_shard_with` reads the
 /// restored index into memory and the shard serves the followed data immediately. Old
-/// pages are read lazily through the block store's shared read-through on first access.
+/// blocks are read lazily through the block store's shared read-through on first access.
 /// Returns the checkpoint's WAL index (the watermark for the post-load tail replay);
 /// `None` when no shared replicator is configured. This MUST run BEFORE the load so the
 /// load observes the restored index — running it after leaves an empty in-memory shard
@@ -1550,12 +1550,12 @@ fn publish_shard_checkpoint(
             // What the write did travels with it. A successor installs these rather than
             // re-running the command against its own clock and its own config.
             outcomes: record.outcomes.clone(),
-            // The pages the results point at, so a successor can actually READ what it
+            // The blocks the results point at, so a successor can actually READ what it
             // installs. A result names an address in THIS node's block store; a successor has
             // its own, and the checkpoint only covers what was written before it. Without this
             // the successor's index is right and every read of the tail returns nothing.
             //
-            // Empty on the local record for a synchronous write -- that page went to the block
+            // Empty on the local record for a synchronous write -- that block went to the block
             // store rather than into the record -- so they are gathered here.
             staged_blocks: if record.staged_blocks.is_empty() {
                 gather_result_blocks(engine, shard_id, &record.outcomes)
@@ -1894,7 +1894,7 @@ fn local_shard_state_present(dirs: &[&str]) -> bool {
 /// the dedicated durability runtime is safe. In the default **async** mode
 /// `record_write` only enqueues the entry (cheap — a lock + push) and returns;
 /// a background task on the same runtime drains the queue in batches off the
-/// write critical path. The local WAL+page are already durable before the entry
+/// write critical path. The local WAL+block are already durable before the entry
 /// is enqueued, so acknowledgement no longer waits on the matrixobject append.
 ///
 /// With `TS_MATRIXOBJECT_SYNC_FLUSH=1` the writer runs in **sync** mode instead:
@@ -2100,7 +2100,7 @@ fn wire_matrixobject_durability(
 
     if !local_state_present && latest > 0 {
         // S1 checkpoint recovery: restore the served index plus a lazy slab address map from
-        // the latest checkpoint, then replay ONLY the WAL tail after it -- old pages are read
+        // the latest checkpoint, then replay ONLY the WAL tail after it -- old blocks are read
         // out of the store on demand. A store with no checkpoint yet (or a failed restore)
         // falls back to the full replay from 0: the old behavior, correct but O(history).
         let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
@@ -2268,7 +2268,7 @@ fn matrixobject_networked_uri() -> Option<String> {
 
 /// Durable shared-storage sink backed by a NETWORKED matrixobject WAL writer.
 /// Mirrors every accepted write to the networked object store in sync mode (the
-/// local WAL+page are already durable before this runs, so this rides after the
+/// local WAL+block are already durable before this runs, so this rides after the
 /// local commit). Compiles under default features: `MatrixObjectHttpStore` needs
 /// no enterprise crate.
 struct MatrixObjectNetworkedWalSink {
@@ -2310,7 +2310,7 @@ struct MatrixObjectNetworkedDurability {
 /// Wire the NETWORKED matrixobject shared store into the running node so shard data
 /// follows shards across nodes. On a fresh node (`!local_state_present`), restore
 /// the served index + a lazy slab address map from the newest networked checkpoint
-/// and replay only the WAL tail — old pages are then fetched on demand over the
+/// and replay only the WAL tail — old blocks are then fetched on demand over the
 /// network on first access, never eagerly downloaded. When this node already holds
 /// authoritative local state, publish its current state as a networked checkpoint
 /// (index + slabs) so future owners can lazily follow it. Finally, mirror every
@@ -2352,7 +2352,7 @@ fn wire_matrixobject_networked_durability(
     let replicator = Arc::new(SharedStoreReplicator::new(cluster_id, Arc::new(store)));
 
     // Fresh node: rebuild from the networked store via conformance lazy
-    // data-follow (index + address map, then WAL tail; old pages fetched on demand).
+    // data-follow (index + address map, then WAL tail; old blocks fetched on demand).
     if !local_state_present {
         let after_wal_index = match rt.block_on(replicator.restore_index_and_block_addresses(
             shard_id,
@@ -2716,7 +2716,7 @@ struct ServerRaftState {
 ///
 /// Every branch below that cannot produce EVIDENCE answers `Unknown`, and `Unknown` compacts.
 /// That is deliberate and it is the whole risk of the change: the cheap version of this returns
-/// a `bool`, a `bool` has to pick a side for "I cannot tell", and picking `false` switches page
+/// a `bool`, a `bool` has to pick a side for "I cannot tell", and picking `false` switches block
 /// compaction off on every deployment where the question is unanswerable -- which is far more
 /// damage than the waste it was meant to save.
 struct RaftShardLeadership {
@@ -3010,7 +3010,7 @@ mod tests {
         // Regression: a mutating command must never be classified as a raft *read*. Reads are
         // served locally via read_via_server_raft (execute_via_server_raft), which skips the raft
         // log; only non-reads are proposed + replicated. ControlStateSetAndGet MUTATES (adds
-        // `amount` to the series and persists a control-state page) and the engine's
+        // `amount` to the series and persists a control-state block) and the engine's
         // is_write_command treats it as a write -- matching how the
         // control-state SETANDGET family is registered as a write. Classifying it as a read applied the mutation
         // only on the leader and dropped it from the raft log, so followers diverged and the

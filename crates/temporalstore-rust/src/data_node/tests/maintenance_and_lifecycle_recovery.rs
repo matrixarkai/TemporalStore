@@ -439,7 +439,7 @@ fn the_running_scheduler_reaches_every_phase() {
     let options = StorageManagerOptions::default();
     // Pressure of several kinds, so a phase that declines for want of work is distinguishable
     // from one the loop never reaches: volume for the dump threshold, overwrites for stale
-    // pages, deletes for tombstones, and a small cache so memory pressure is reachable.
+    // blocks, deletes for tombstones, and a small cache so memory pressure is reachable.
     let writes = options.min_undumped_wal_records as usize + 256;
     for index in 0..writes {
         engine.execute(ExecuteRequest {
@@ -2213,7 +2213,7 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
 
 #[test]
 fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
-    // The /gc operator RPC must not delete a page slab a durable bucket-dump manifest still
+    // The /gc operator RPC must not delete a block slab a durable bucket-dump manifest still
     // references, even when retain_block_slabs_from_id would sweep it and it is no longer in
     // the resident live set. Deleting it makes the manifest uninstallable and loses data on
     // a lagging follower's replay / snapshot-install. The gated storage-manager cycle blocks
@@ -3390,7 +3390,7 @@ fn what_each_maintenance_stage_costs() {
 #[test]
 fn the_periodic_loop_can_evict_when_the_operator_asks() {
     // Until this stage existed the periodic loop -- the one the server actually starts -- relieved
-    // memory by invalidating cached pages and nothing else. `apply_storage_eviction`, with
+    // memory by invalidating cached blocks and nothing else. `apply_storage_eviction`, with
     // dump-before-evict, delete-drop, a batch limit and a pressure threshold, was reachable ONLY
     // from the on-demand cycle, so eviction could not happen on the running loop at ANY setting.
     let engine = TemporalEngine::default();
@@ -4246,11 +4246,11 @@ fn what_the_index_gc_gate_costs() {
     }
 }
 
-/// How many times does ONE maintenance round materialize EVERY live page? Prints.
+/// How many times does ONE maintenance round materialize EVERY live block? Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib how_many_times_a_round_walks_every_live_block -- --ignored --nocapture
 ///
-/// `collect_live_block_entries` builds a fresh `Vec<LiveBlockEntry>` holding every live page in the
+/// `collect_live_block_entries` builds a fresh `Vec<LiveBlockEntry>` holding every live block in the
 /// shard. It has roughly twenty call sites, and a single periodic round reaches many of them:
 /// `storage_wal_reclaim_plan` (via `bucket_storage_summaries`), `storage_lifecycle_plan`, the
 /// compaction preamble, eviction victim selection, dump-manifest creation. None of them shares a
@@ -4305,7 +4305,7 @@ fn how_many_times_a_round_walks_every_live_block() {
         let round_ms = started.elapsed().as_micros() as f64 / 1000.0;
         let scanned = crate::engine::live_block_scan_entries();
 
-        // Denominators. A shard with no live pages, or a round that walked nothing, would make
+        // Denominators. A shard with no live blocks, or a round that walked nothing, would make
         // the ratio below meaningless rather than zero.
         assert!(live_blocks > 0, "fixture stored no live pages");
         assert!(
@@ -4322,12 +4322,12 @@ materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
     }
 }
 
-/// WHICH stages do the walking? Attributes the round's live-page scan volume per stage. Prints.
+/// WHICH stages do the walking? Attributes the round's live-block scan volume per stage. Prints.
 ///
 ///   cargo test --release -p temporalstore-rust --lib which_stages_walk_every_live_block -- --ignored --nocapture
 ///
 /// `how_many_times_a_round_walks_every_live_block` establishes that one round materializes every
-/// live page ~35x. That number says a fix is worth doing but not where to apply it. This names the
+/// live block ~35x. That number says a fix is worth doing but not where to apply it. This names the
 /// stages, by toggling each one off and diffing the scan counter -- the same subtract-one-stage
 /// shape `what_each_maintenance_stage_costs` uses for time, so the two can be read together.
 ///
@@ -4469,7 +4469,7 @@ time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
 ///
 ///   wal_bytes / wal_seq   WAL              -- persistent bytes and the sequence, so reclaim shows
 ///   idx_bytes             index log        -- file length; the collector should flatten it
-///   slabs / slab_bytes    page/block store -- slab count is the #1565 signal
+///   slabs / slab_bytes    block/block store -- slab count is the #1565 signal
 ///   cache_mem             eviction         -- the only memory the evict gate can see
 ///   bkt_idx               (memory)         -- bucket index entries: never evicted, expect FLAT
 ///   manifests             dump             -- retained manifests; the prune policy should bound
@@ -4590,7 +4590,7 @@ round with no writer is the one to open a thread on."
 
     // WHICH STAGE GROWS THE INDEX LOG? The column above climbs every round on a shard nobody is
     // writing to. `compact_pages` also runs every round on that shard, and compaction relocates
-    // pages and persists the resulting index -- so the obvious suspect is that the index log is
+    // blocks and persists the resulting index -- so the obvious suspect is that the index log is
     // growing because compaction keeps rewriting it, not because anything changed.
     //
     // Obvious is not measured. A second fixture, identical except compaction is OFF, settles it:
@@ -4796,7 +4796,7 @@ fn what_one_round_rebuilds() {
 ///
 /// #1470 said the periodic scheduler reached none of `gc_before_sequence`'s production callers.
 /// That was too strong, and this is the measurement that says so. `run_gc_inner` truncates BOTH
-/// logs and the page-GC stage calls it -- but only when `stale_block_pressure` holds. #1470's
+/// logs and the block-GC stage calls it -- but only when `stale_block_pressure` holds. #1470's
 /// probe wrote 1,512 keys and never deleted, so there were no stale slabs, the gate was false,
 /// and the stage never ran. "Six rounds reclaimed 0" was true for a WRITE-ONLY workload and I
 /// generalised it into "the loop never truncates".
@@ -5103,7 +5103,7 @@ fn what_index_gc_cap_keeps_up() {
 /// records sit above the floor the reclaim computed, so no round cap can touch them.
 ///
 /// The fixture OVERWRITES a fixed key space rather than appending fresh keys. That matters: an
-/// insert-only load leaves no stale pages, so compaction never fires, and a first version of this
+/// insert-only load leaves no stale blocks, so compaction never fires, and a first version of this
 /// probe measured a run where `compact_pages` executed zero times out of eight -- a number that
 /// looked like a clean result and was actually a measurement of nothing. The assertion below is
 /// there so that can never pass silently again.
@@ -5197,14 +5197,14 @@ fn what_the_stage_order_buys() {
 ///   cargo test -p temporalstore-rust --lib what_the_maintained_slab_tally_removes_and_costs \
 ///       -- --nocapture --test-threads=1
 ///
-/// THE COST REMOVED is a whole-shard live-page walk per maintenance round per shard.
+/// THE COST REMOVED is a whole-shard live-block walk per maintenance round per shard.
 /// `storage_reclaim_slab_reports` builds the per-slab live/stale tally the reclaim planner reads,
-/// and it built it by materializing every live page in the shard -- on a loop that ticks every
+/// and it built it by materializing every live block in the shard -- on a loop that ticks every
 /// thirty seconds per shard for the life of the process. Both arms are measured HERE, in ONE
 /// process against ONE corpus, by withholding the tally and asking the same question again:
 /// anything else would be comparing two corpora.
 ///
-/// THE COST ADDED is one map update per page charged or discharged, on the write path. Counted by
+/// THE COST ADDED is one map update per block charged or discharged, on the write path. Counted by
 /// `BLOCK_SLAB_LIVE_CHARGES` rather than timed, because a count is what survives a busy box.
 ///
 /// Durations are deliberately NOT asserted. This box cannot resolve a 15% effect and routinely
@@ -5316,7 +5316,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
         "the walked arm materialized {walked_entries} entries for {live_blocks} live pages, which \
          is fewer than one walk: this arm is not measuring the walk"
     );
-    // The charge is per page written, not per page in the shard: a bounded cost on the write
+    // The charge is per block written, not per block in the shard: a bounded cost on the write
     // path, against an unbounded one on the maintenance loop.
     assert!(
         charges <= (RECORDS as u64).saturating_mul(4),
@@ -5325,7 +5325,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
     );
 }
 
-/// Can the page-GC garbage floor ever exclude a slab IN A RUNNING STORE? It still cannot -- and
+/// Can the block-GC garbage floor ever exclude a slab IN A RUNNING STORE? It still cannot -- and
 /// the reason has moved, which is the whole content of this update.
 ///
 ///   cargo test -p temporalstore-rust --lib can_the_block_gc_garbage_floor_bind \
@@ -5337,15 +5337,15 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
 /// its own used bytes. Every candidate read zero because two filters contradicted each other, not
 /// because anything had been counted.
 ///
-/// THE NEW REASON, which is a measurement. `used_bytes` is now the live page bytes on the slab
+/// THE NEW REASON, which is a measurement. `used_bytes` is now the live block bytes on the slab
 /// itself, from the tally the index maintains on its own mutation path and publishes into the
-/// block store. A collector candidate is a slab that NO LIVE PAGE POINTS AT -- `is_live` gates
+/// block store. A collector candidate is a slab that NO LIVE BLOCK POINTS AT -- `is_live` gates
 /// candidacy, and gates removal again independently -- so its maintained live bytes are genuinely
 /// zero. The figure is real, it is really zero, and the floor still excludes nothing.
 ///
 /// SO THE OBSTACLE IS THE CANDIDATE PREDICATE, NOT THE ARITHMETIC. Nothing offers this floor a
-/// partially-live slab, because a slab holding one live page is not a candidate at all. That is
-/// the same all-or-nothing rule that lets one live page pin a whole slab, and widening it means
+/// partially-live slab, because a slab holding one live block is not a candidate at all. That is
+/// the same all-or-nothing rule that lets one live block pin a whole slab, and widening it means
 /// relocating the survivors first -- a compaction decision with its own measurement.
 /// `a_published_live_tally_makes_used_bytes_mean_live_block_bytes` (block_store.rs) is the other
 /// half: given a 90%-live candidate, the shipped 4,000 bp floor DOES exclude it. The knob is real
@@ -5524,7 +5524,7 @@ fn can_the_block_gc_garbage_floor_bind() {
 /// have been computed too generously. The periodic loop had no such second chance.
 ///
 /// Quarantined slabs are still collected -- `DELAYED_DESTROY_MIN_AGE_MS` is an hour, and the
-/// prepare stage passes `purge_delayed_destroy` whenever page GC is on -- so this trades prompt
+/// prepare stage passes `purge_delayed_destroy` whenever block GC is on -- so this trades prompt
 /// space for recoverability, it does not leak.
 #[test]
 fn the_periodic_reclaim_quarantines_what_it_collects() {
@@ -5595,7 +5595,7 @@ fn the_periodic_reclaim_quarantines_what_it_collects() {
 ///
 /// Evict's position was the more interesting of the two. Expire drops what has died of old age and
 /// evict drops what is merely cold; they are two halves of relieving memory and belong together,
-/// ahead of the stages that rewrite pages. Running evict last meant it chose victims from a state
+/// ahead of the stages that rewrite blocks. Running evict last meant it chose victims from a state
 /// compaction had just churned, and the memory it freed arrived too late to spare any of those
 /// stages work.
 ///
@@ -5687,9 +5687,9 @@ fn the_maintenance_round_runs_its_stages_in_order() {
 ///
 /// `run_gc_inner` opens by calling `invalidate_shard`, which empties the whole shard. But
 /// `reclaim_memory` ALSO passes `invalidate_cache: true` and runs earlier in the round, so on any
-/// round where that stage fires the cache is already gone by the time page GC looks at it. This
+/// round where that stage fires the cache is already gone by the time block GC looks at it. This
 /// prints, per round, which stages ran, how warm the cache was, and what each invalidation
-/// actually removed -- so the size of the page-GC drop is measured rather than assumed.
+/// actually removed -- so the size of the block-GC drop is measured rather than assumed.
 #[test]
 #[ignore]
 fn what_drops_the_shard_cache() {
@@ -5759,8 +5759,8 @@ fn what_drops_the_shard_cache() {
     // Scenario two: reclaim_memory SKIPPED.
     //
     // That stage is pressure-gated. When it fires it invalidates the whole shard itself, which is
-    // why page GC's own drop removes nothing above. The question this scenario answers is what
-    // page GC does on a round where the earlier stage did NOT run and the cache is still warm.
+    // why block GC's own drop removes nothing above. The question this scenario answers is what
+    // block GC does on a round where the earlier stage did NOT run and the cache is still warm.
     eprintln!("  -- with reclaim_memory disabled --");
     let engine = TemporalEngine::default();
     engine.load_shard(1);
@@ -5823,7 +5823,7 @@ fn what_drops_the_shard_cache() {
     }
 }
 
-/// A page-GC round invalidates the slabs it reclaimed, not the whole shard's cache.
+/// A block-GC round invalidates the slabs it reclaimed, not the whole shard's cache.
 ///
 /// `run_gc_inner` opened by calling `invalidate_shard`, which empties every memory, pmem and disk
 /// entry the shard holds. It runs BEFORE the collection, because at that point nothing knows what
@@ -5832,7 +5832,7 @@ fn what_drops_the_shard_cache() {
 ///
 /// `enable_memory_reclaim: false` is load-bearing, not incidental. `reclaim_memory` passes
 /// `invalidate_cache: true` and runs earlier in the round, so when it fires it empties the shard
-/// itself and page GC's drop removes nothing -- measured, zero entries on every round. Two earlier
+/// itself and block GC's drop removes nothing -- measured, zero entries on every round. Two earlier
 /// versions of this guard passed under mutation for exactly that reason: they were watching a
 /// cache that an earlier stage had already emptied. Disabling that stage is what isolates the
 /// behaviour under test. `what_drops_the_shard_cache` prints both arrangements.
@@ -5911,7 +5911,7 @@ fn a_block_gc_round_invalidates_only_what_it_reclaimed() {
     );
 }
 
-/// Does a page-GC round's cost grow with the number of slabs the store holds? Prints.
+/// Does a block-GC round's cost grow with the number of slabs the store holds? Prints.
 ///
 ///   cargo test -p temporalstore-rust --lib what_a_block_gc_round_walks \
 ///       -- --ignored --nocapture --test-threads=1
@@ -5999,14 +5999,14 @@ fn what_a_block_gc_round_walks() {
 /// The ceiling WAS the MODE, and it has moved. In mode `evict_cache` -- which is the only mode a
 /// memory-pressure round takes -- a victim used to be handled by
 /// `cache.invalidate_slot(shard_id, routing_bucket)` and nothing else, so eviction could free
-/// exactly what was CACHED. Once the cached pages of the eligible buckets were gone another batch
+/// exactly what was CACHED. Once the cached blocks of the eligible buckets were gone another batch
 /// freed nothing, `cooldown` was set, and the loop correctly stopped -- below the cached set, with
 /// every bucket node still whole. Raising the budget, changing the sampler or looping harder could
 /// not move it, because the missing piece was neither pacing nor selection but a per-bucket
 /// load-back path: nothing could drop a bucket node and expect to read it again.
 ///
 /// That path exists now -- `release_bucket_blocks` / `reload_released_bucket` -- and `evict_cache`
-/// uses it: a victim is dumped, cleared, and has its page list RELEASED, while the node stays
+/// uses it: a victim is dumped, cleared, and has its block list RELEASED, while the node stays
 /// routable and the next write through it loads the list back from the model maps. The gate counts
 /// the resident bucket index as part of its pressure now, so a round can reduce the thing that
 /// actually grows with the corpus. What this measurement is for has changed with it: the question
@@ -6792,10 +6792,10 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 ///   cargo test -p temporalstore-rust --lib what_a_compaction_round_costs \
 ///       -- --ignored --nocapture --test-threads=1
 ///
-/// #1465 gave compaction a budget of 2,048 page refs a round, and the round CONTINUES on the same
+/// #1465 gave compaction a budget of 2,048 block refs a round, and the round CONTINUES on the same
 /// slab rather than re-rolling, so the work each round does is bounded and makes progress. What
 /// that does not bound is the SCAN: the relocation walks `shard.hashes`, `shard.zsets`,
-/// `shard.lists` and `shard.sets` from the start every round, so a page already sitting on the
+/// `shard.lists` and `shard.sets` from the start every round, so a block already sitting on the
 /// target slab is still visited before being skipped.
 ///
 /// The design being followed bounds the scan too: it walks `page_compaction_max_slots_per_round`
@@ -6815,10 +6815,10 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 ///
 ///   - reclaim dead space inside slabs        (`stale_page_estimate`)
 ///   - consolidate so older slabs become dead (`live_block_slab_count`)
-///   - repack page LAYOUT into shared pages   (neither metric sees this)
+///   - repack block LAYOUT into shared blocks   (neither metric sees this)
 ///
 /// The third is the one that defeats a cheap check: `feature_compaction_rewrites_shared_packed_block_once`
-/// appends feature points that share a packed page and expects compaction to rewrite it once, with
+/// appends feature points that share a packed block and expects compaction to rewrite it once, with
 /// nothing dead and everything on one slab. Any real fix needs a layout signal -- something like the
 /// model layout reports compaction already produces -- not a density number.
 ///
@@ -6831,20 +6831,20 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 ///     auto res = ModelManager::CompactPagesHint(model_id, object_blocks[object_id]);
 ///     if (block_indexes.empty()) { continue; }   // no need compaction
 ///
-/// and a single-page model answers empty unconditionally -- their string model's whole
-/// implementation is `return {};` with the comment "we keep data in single page, so no need do
+/// and a single-block model answers empty unconditionally -- their string model's whole
+/// implementation is `return {};` with the comment "we keep data in single block, so no need do
 /// compaction".
 ///
 /// That is why all three global conditions were refused. There is no shard-wide predicate for
 /// "needs compacting", because two objects in the same shard, on the same slab, with the same
 /// staleness, get different answers depending on their model. It also explains why
 /// `feature_compaction_rewrites_shared_packed_block_once` survives a skip that a string would not:
-/// feature objects are packed across pages and genuinely have something to consolidate.
+/// feature objects are packed across blocks and genuinely have something to consolidate.
 ///
 /// Ours has no such hint. `compact_shard_blocks_with_budgets` walks `strings`, `hashes`, `zsets`,
-/// `lists` and `sets` and relocates every live page, so it rewrites single-page objects that
+/// `lists` and `sets` and relocates every live block, so it rewrites single-block objects that
 /// cannot benefit. Adding the hint is not a small change -- declining to relocate an object leaves
-/// its pages on the old slab, which keeps that slab live and changes what page GC may collect --
+/// its blocks on the old slab, which keeps that slab live and changes what block GC may collect --
 /// but it is the shape the answer has to take, and it is not the shape either attempt above tried.
 ///
 /// This measures the difference the only way that separates them -- run compaction until there is
@@ -6900,7 +6900,7 @@ fn what_a_compaction_round_costs() {
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// `what_a_compaction_round_costs` shows compaction never reaching a fixed point when called
-/// directly: 64 rounds, every one relocating all 2,000 live page refs. The code says why --
+/// directly: 64 rounds, every one relocating all 2,000 live block refs. The code says why --
 /// "a round that relocated everything closes, and the next starts fresh" -- so a completed round
 /// drops its continuation state and the next rolls a FRESH slab and moves everything again.
 ///
@@ -6916,13 +6916,13 @@ fn what_a_compaction_round_costs() {
 ///
 /// MEASURED, and the answer is that this probe CANNOT reach the behaviour: `compact_ran` is false
 /// on every round, with an insert-only fixture and with an overwrite-heavy one alike. The gate
-/// counts stale SLABS, not stale pages, and a couple of thousand small records fit inside one
+/// counts stale SLABS, not stale blocks, and a couple of thousand small records fit inside one
 /// slab -- so no fixture of this size opens it.
 ///
 /// What that establishes: the no-fixed-point behaviour `what_a_compaction_round_costs` measures is
 /// reachable through a DIRECT call -- the on-demand cycle and the operator compact RPC -- and is
 /// NOT demonstrated on the periodic loop. The hypothesis that compaction manufactures the
-/// stale-page pressure that re-triggers compaction is UNPROVEN, not confirmed: reaching it needs a
+/// stale-block pressure that re-triggers compaction is UNPROVEN, not confirmed: reaching it needs a
 /// store spanning several slabs, which this fixture deliberately does not build.
 ///
 /// Left in place because the negative is worth keeping: anyone reading the direct-call numbers
@@ -7079,7 +7079,7 @@ fn the_evict_stage_keeps_going_while_batches_still_help() {
 ///
 /// #1547 measured compaction never reaching a fixed point when called directly, and left one
 /// question open: whether the PERIODIC loop ever gets there. Two fixtures failed to open the
-/// stale-page gate and the answer was recorded as UNPROVEN.
+/// stale-block gate and the answer was recorded as UNPROVEN.
 ///
 /// This builds the condition deliberately instead of hoping for it. The gate wants a stale SLAB
 /// and `stale_block_slab_pressure` is 1, but a slab is a GiB by default, so no fixture of a
@@ -7160,7 +7160,7 @@ fn does_the_periodic_loop_reach_compaction() {
     }
     // Does the collector take away the slab each round leaves behind? If it did, the stale
     // pressure would clear and the next round would have no reason to run. If the count has
-    // climbed with the rounds, compaction is outrunning page GC and that is what sustains it.
+    // climbed with the rounds, compaction is outrunning block GC and that is what sustains it.
     let slabs_at_end = runtime
         .engine()
         .block_store()
@@ -7188,7 +7188,7 @@ fn does_the_periodic_loop_reach_compaction() {
 /// to bound how many a round takes. But the manifest is built around `export_index_bytes(shard_id)`
 /// -- the WHOLE shard index, serialised and hashed -- whatever that list contains.
 ///
-/// The design being followed dumps per slot: `DumpSlotNotInMemory` reads that slot's marked pages
+/// The design being followed dumps per slot: `DumpSlotNotInMemory` reads that slot's marked blocks
 /// and metas out of the index and writes them without materialising the bucket, so a dump of one
 /// slot costs one slot.
 ///
@@ -7319,12 +7319,12 @@ fn what_an_index_gc_round_costs() {
     }
 }
 
-/// What does the page-GC retain floor authorise, round by round? Prints.
+/// What does the block-GC retain floor authorise, round by round? Prints.
 ///
 ///   cargo test -p temporalstore-rust --lib what_the_retain_floor_authorises \
 ///       -- --ignored --nocapture --test-threads=1
 ///
-/// #1563 measured eleven slabs left after ten idle rounds: compaction rolls one a round and page
+/// #1563 measured eleven slabs left after ten idle rounds: compaction rolls one a round and block
 /// GC removes none, so `stale_block_pressure` never closes and compaction re-triggers for ever.
 ///
 /// The floor is the first suspect. The periodic stage computes it as
@@ -7424,21 +7424,21 @@ fn what_the_retain_floor_authorises() {
 ///   cargo test -p temporalstore-rust --lib why_a_stale_slab_below_the_floor_survives \
 ///       -- --ignored --nocapture --test-threads=1
 ///
-/// #1564 measured the page-GC retain floor freezing at 2 while stale slabs climbed to nine and the
+/// #1564 measured the block-GC retain floor freezing at 2 while stale slabs climbed to nine and the
 /// collector removed nothing. The floor freezes because it is `min(stale) + 1`, so it cannot rise
 /// past the oldest stale slab -- but that only explains the freeze if the oldest stale slab is
 /// itself unremovable, and it sits BELOW the floor, which the formula does authorise.
 ///
 /// `gc_slabs_before_with_live_refs_selected` keeps a slab below the floor for exactly two reasons,
 /// and the report names both: it is the CURRENT slab, or it is LIVE. And the periodic stage widens
-/// "live" beyond pages -- `run_gc_inner` adds every slab named by a bucket dump manifest:
+/// "live" beyond blocks -- `run_gc_inner` adds every slab named by a bucket dump manifest:
 ///
 ///     for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
 ///         live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
 ///     }
 ///
-/// So a manifest written before compaction relocated the pages still names the OLD slabs. This
-/// separates the three: live-by-page, live-by-manifest, and current.
+/// So a manifest written before compaction relocated the blocks still names the OLD slabs. This
+/// separates the three: live-by-block, live-by-manifest, and current.
 #[test]
 #[ignore]
 fn why_a_stale_slab_below_the_floor_survives() {
@@ -7525,9 +7525,9 @@ fn why_a_stale_slab_below_the_floor_survives() {
 
 /// An idle shard stops accumulating slabs: the collector keeps pace with compaction.
 ///
-/// The page-GC retain floor is a MIN over the stale slabs, and `run_gc_inner` treats every slab
+/// The block-GC retain floor is a MIN over the stale slabs, and `run_gc_inner` treats every slab
 /// named by a bucket dump manifest as live. So once a dump exists, the slab it names is stale (its
-/// pages have moved) and retained (the manifest needs it) -- and `min` sat on that slab for ever.
+/// blocks have moved) and retained (the manifest needs it) -- and `min` sat on that slab for ever.
 /// The floor never advanced, every slab compaction rolled afterwards was above it, and the store
 /// grew a slab a round on a shard nobody was writing to: measured at eleven slabs after ten rounds,
 /// with the collector removing nothing after the first.
@@ -7565,12 +7565,12 @@ fn an_idle_shard_stops_accumulating_slabs() {
                 },
             });
         }
-        // Roll, then rewrite HALF: the first slab is left holed -- some live pages, some dead --
+        // Roll, then rewrite HALF: the first slab is left holed -- some live blocks, some dead --
         // which is a stale slab for a few hundred records instead of the gigabyte a natural roll
         // would need, and is a slab compaction can still do something about.
         //
         // It used to rewrite ALL of them, leaving the first slab holding nothing live. That is a
-        // slab only the COLLECTOR can act on: no object has a page there, so there is nothing for
+        // slab only the COLLECTOR can act on: no object has a block there, so there is nothing for
         // compaction to relocate off it, and the relocation hint now correctly declines the round.
         // The assertion this test exists for is unchanged; its denominator
         // (`compacted_rounds > 0`) is what stopped being reachable on the old fixture.
@@ -7849,7 +7849,7 @@ fn an_idle_shard_collects_the_slab_compaction_vacated() {
 /// in all twelve, on a shard nobody was touching, and the index log climbed 63 bytes every one of
 /// them -- 693 bytes over eleven rounds, about 181 KB a day per idle shard at a thirty-second
 /// cadence, unbounded. The same fixture with compaction disabled grew by ZERO bytes, which is what
-/// attributes the growth: compaction relocates pages and persists a fresh index record each round,
+/// attributes the growth: compaction relocates blocks and persists a fresh index record each round,
 /// and it kept re-triggering itself because the slab it had just emptied was still a reclaim
 /// candidate, and `stale_block_pressure` counts candidates.
 ///
@@ -7970,15 +7970,15 @@ fn an_idle_shard_stops_growing_its_index_log() {
 ///
 /// The round does not walk the shard to decide whether to compact -- it sums `live_page_refs`
 /// over the reclaim candidates it already built, which costs nothing. The NORMATIVE definition is
-/// the per-object one: for each object, are any of its pages on a slab someone wants emptied?
+/// the per-object one: for each object, are any of its blocks on a slab someone wants emptied?
 /// This holds the cheap form to the normative one, so a change that separates them fails here
 /// rather than in a shipped round.
 ///
 /// It also pins the distinction the whole fix rests on. After compaction has drained the holed
 /// slab, that slab is still a reclaim candidate -- it is nothing but dead space until the
 /// collector destroys it -- so `stale_block_pressure` is still open. The hint is nevertheless
-/// zero, because no object has a page left there. That is the difference between "this shard has
-/// stale pages" and "there is something for compaction to move", and no shard-wide predicate can
+/// zero, because no object has a block left there. That is the difference between "this shard has
+/// stale blocks" and "there is something for compaction to move", and no shard-wide predicate can
 /// express it.
 #[test]
 fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
@@ -8070,7 +8070,7 @@ fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
 /// THAT IS NOT A SECOND DEFECT AND THIS SAYS SO IN COLUMNS. It is ONE bounded relocation still in
 /// progress. A round that spends its ref budget stays open and the next resumes onto the same
 /// destination slab -- which is exactly why the source and destination do not advance -- and the
-/// source slab cannot go stale until the last of its live pages has moved. The peak footprint
+/// source slab cannot go stale until the last of its live blocks has moved. The peak footprint
 /// while that happens is the live set twice over, once on each slab, and it comes back down when
 /// the drain completes and the source is collected.
 ///
@@ -8614,10 +8614,10 @@ fn a_shard_whose_memory_is_index_not_cache_is_no_longer_reported_as_unloaded() {
     // THE FLOOR AND THE PRESSURE READING ARE NOT THE SAME QUANTITY, and must not be.
     //
     // The floor counts NODES, which a release keeps; the pressure reading counts nodes AND the
-    // per-page entries, which a release frees. Gate on the floor and eviction appears to free
+    // per-block entries, which a release frees. Gate on the floor and eviction appears to free
     // nothing, so the gate re-fires for ever; publish only the pressure reading and an operator
     // loses the figure that does not move under maintenance. If these two are ever equal on a
-    // shard with pages, one of them has stopped being what it claims.
+    // shard with blocks, one of them has stopped being what it claims.
     assert!(
         stats.storage.bucket_index_resident_bytes
             > stats.storage.bucket_index_resident_bytes_floor,
@@ -8661,7 +8661,7 @@ fn a_shard_whose_memory_is_index_not_cache_is_no_longer_reported_as_unloaded() {
     );
 
     // `cache_memory_bytes` stays CACHE-ONLY on purpose. It gates `reclaim_memory`, which relieves
-    // memory by invalidating cached pages and cannot touch the index; folding index bytes into it
+    // memory by invalidating cached blocks and cannot touch the index; folding index bytes into it
     // would make that stage fire on a debt it has no way to pay, every round, for ever.
     assert_ne!(
         pressure.cache_memory_bytes, pressure.eviction_memory_pressure_bytes,
@@ -9020,7 +9020,7 @@ eviction_memory_pressure_bytes={})",
 ///
 /// The reads are COLD -- the cache is invalidated after the round -- because the first version of
 /// the release served every warm read and returned `None` for every cold one. And each value is a
-/// function of its key, so a read that resolved through the WRONG page fails here rather than
+/// function of its key, so a read that resolved through the WRONG block fails here rather than
 /// passing on a lucky length.
 #[test]
 fn the_periodic_loop_relieves_index_memory_and_still_serves_every_key() {
@@ -9185,7 +9185,7 @@ fn slabpin_load(engine: &TemporalEngine, shard_id: ShardId) {
     });
 }
 
-/// Big enough that the page lives in a block slab rather than inside its log record. A value small
+/// Big enough that the block lives in a block slab rather than inside its log record. A value small
 /// enough to ride in the log is served from the log whatever the slabs hold, which would make
 /// every count below say nothing about slabs.
 fn slabpin_value(key: &str) -> Vec<u8> {
@@ -9218,7 +9218,7 @@ fn slabpin_reads_back(engine: &TemporalEngine, shard_id: ShardId, key: &str) -> 
         })
 }
 
-/// Install `manifest` into a target holding the shared page slabs and nothing else, and count the
+/// Install `manifest` into a target holding the shared block slabs and nothing else, and count the
 /// two halves separately. NOTHING IS READ BEFORE THE INSTALL: a read answers out of the per-key
 /// response cache, so a probe taken while the shard is still empty caches a MISS for that key and
 /// every read after the install returns it -- which reads exactly like a loss, on both halves at
@@ -9262,12 +9262,12 @@ fn slabpin_restore_counts(
 /// THE durable index for the shard, retention keeps the newest manifest and nothing else, and a
 /// manifest carrying only its own buckets would install a shard missing every bucket it did not
 /// name (measured there: 5/5 named, 0/8 unnamed). It also carries `block_slab_ids`, and that was
-/// only the slabs behind the DUMPED buckets' live page refs.
+/// only the slabs behind the DUMPED buckets' live block refs.
 ///
 /// `block_slab_ids` is the whole of what the collector holds back -- `run_gc_inner` extends its
-/// live slab set with it, `storage_block_gc_dependency_plan` blocks on it, and the page-GC retain
-/// floor steps over it. So a slab holding nothing but UNNAMED-bucket pages was pinned by nothing.
-/// Compaction relocates those pages onto a fresh slab, the old one goes stale, the sweep destroys
+/// live slab set with it, `storage_block_gc_dependency_plan` blocks on it, and the block-GC retain
+/// floor steps over it. So a slab holding nothing but UNNAMED-bucket blocks was pinned by nothing.
+/// Compaction relocates those blocks onto a fresh slab, the old one goes stale, the sweep destroys
 /// it, and the manifest's embedded index still points at it. Neither `validate_bucket_dump_manifest`
 /// nor the install preflight objects, because both filter what they probe down to `bucket_ids`.
 ///
@@ -9321,7 +9321,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         candidate += 1;
     }
 
-    // The unnamed buckets' pages go on the slab the store is filling now.
+    // The unnamed buckets' blocks go on the slab the store is filling now.
     for key in outside_keys.iter() {
         slabpin_write(&engine, SHARD, key);
     }
@@ -9329,8 +9329,8 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         .live_block_slab_ids(SHARD)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    // Roll, so the named bucket's pages land somewhere else. This is what makes a slab holding
-    // ONLY unnamed-bucket pages exist at all.
+    // Roll, so the named bucket's blocks land somewhere else. This is what makes a slab holding
+    // ONLY unnamed-bucket blocks exist at all.
     engine.block_store().roll_slab().expect("roll a fresh slab");
     for key in named_keys.iter() {
         slabpin_write(&engine, SHARD, key);
@@ -9375,7 +9375,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     );
 
     // THE CONTROL, taken before anything is compacted or swept: the same manifest, installed into
-    // a target holding the shared pages and nothing else, restores BOTH halves. Without it a zero
+    // a target holding the shared blocks and nothing else, restores BOTH halves. Without it a zero
     // after the sweep says only that this fixture cannot restore, not that the sweep lost data.
     let control = slabpin_restore_counts(
         "control",
@@ -9396,13 +9396,13 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
 
     // COMPACTION, WITH THE ROUNDS COMPUTED FROM THE BUDGET.
     //
-    // A round relocates at most COMPACTION_ROUND_BLOCK_REFS (2,048) page refs and
+    // A round relocates at most COMPACTION_ROUND_BLOCK_REFS (2,048) block refs and
     // COMPACTION_ROUND_BYTES (256 MiB), then stops and leaves the rest to the next one. So the
     // rounds this fixture needs is ceil(live_page_refs / 2,048), and at IN_NAMED + OUTSIDE = 13
     // refs that is ONE. This runs COMPACTION_ROUNDS of them -- more than the work needs -- and
     // checks `pages_left_by_budget` per round, which is what actually says a round FINISHED.
     // Waiting for a round to relocate nothing never arrives: each round rolls a fresh slab and
-    // moves every live page onto it, so a settled shard still reports a full round's work. That
+    // moves every live block onto it, so a settled shard still reports a full round's work. That
     // is what the periodic path's relocation hint is for, and calling compaction directly does
     // not consult it.
     let live_block_refs = engine
@@ -9702,7 +9702,7 @@ impl LongFootprintRun {
 /// over, once on each slab, and reading that as a trend is the error #1627 documented.
 fn drive_long_footprint_run(records: usize, tail_rounds: usize, inject_age: bool) -> LongFootprintRun {
     // How many rounds does the relocation OWE? One round relocates at most
-    // COMPACTION_ROUND_BLOCK_REFS page refs, and the corpus is about one page ref per record, so
+    // COMPACTION_ROUND_BLOCK_REFS block refs, and the corpus is about one block ref per record, so
     // the drain needs at least records / budget rounds. Doubled and padded, because a round that
     // also has to dump, reclaim and prune does not spend its whole ref budget on relocation.
     let budget_drain_rounds = records.div_ceil(LONG_RUN_COMPACTION_ROUND_BLOCK_REFS);
@@ -10324,7 +10324,7 @@ fn drain_fixture(
         .live_block_slab_ids(1)
         .into_iter()
         .collect::<BTreeSet<_>>();
-    // Hole ONE slab: an overwrite writes a fresh page on the CURRENT slab and leaves the old page
+    // Hole ONE slab: an overwrite writes a fresh block on the CURRENT slab and leaves the old block
     // on batch 0's slab dead. Nothing else in the shard acquires dead space.
     for index in 0..holed_keys {
         let response = engine.execute(ExecuteRequest {
@@ -10347,7 +10347,7 @@ fn drain_fixture(
     (runtime, slabs)
 }
 
-/// A DRAINING round moves the pages on the slabs it was asked to empty, and leaves the rest.
+/// A DRAINING round moves the blocks on the slabs it was asked to empty, and leaves the rest.
 ///
 /// This is the round the periodic loop now issues. The direct form above still relocates
 /// everything -- an operator instruction is not a suggestion -- and the two are measured on the
@@ -10413,7 +10413,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
          was asked to empty ({drain_slabs:?})",
         report.rewritten_block_refs
     );
-    // HALF TWO: it actually DECLINED pages. Without this, moving the drain set and moving
+    // HALF TWO: it actually DECLINED blocks. Without this, moving the drain set and moving
     // everything are indistinguishable here.
     assert!(
         report.blocks_left_off_drain_set > 0,
@@ -10429,7 +10429,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
         report.rewritten_block_refs,
         report.blocks_left_off_drain_set
     );
-    // HALF THREE: declining is not "unfinished". A round kept open by pages nobody will ever want
+    // HALF THREE: declining is not "unfinished". A round kept open by blocks nobody will ever want
     // moved never closes, which is the termination hazard this ordering exists to avoid.
     assert_eq!(
         report.blocks_left_by_budget, 0,
@@ -10475,7 +10475,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     );
 
     // EVERY VALUE STILL READS, on both sides of the selection: the moved half and the declined
-    // half. A selection rule that drops a page reads exactly like one that is simply cheaper.
+    // half. A selection rule that drops a block reads exactly like one that is simply cheaper.
     for index in 0..KEYS_PER_BATCH {
         let expected = if index < HOLED_KEYS {
             vec![b'w'; 320]
@@ -10529,8 +10529,8 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
 /// each needs is arithmetic off the budget, not something to discover by watching for a zero.
 ///
 /// WHY A SECOND SIZE. The amplification grows with the LIVE SET and not with the garbage: a
-/// direct settlement rewrites every live page whatever the hole cost, so ten times the corpus is
-/// ten times the work to recover the same twenty pages, while the draining settlement is the size
+/// direct settlement rewrites every live block whatever the hole cost, so ten times the corpus is
+/// ten times the work to recover the same twenty blocks, while the draining settlement is the size
 /// of the holed slab either way. An 8,000-record reading would not have generalised.
 ///
 /// Both arms build their OWN fixture, so the direct arm is never measuring a shard the draining
@@ -10669,19 +10669,19 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
 /// WHAT A DIRECT ROUND MOVES, MEASURED AGAINST WHAT MOVING IT RECOVERS.
 ///
 /// A relocation recovers space only for the slab it VACATES. `compact_block_addresses` copies a
-/// page's bytes verbatim and appends them elsewhere, so a page moved off a slab with no dead
+/// block's bytes verbatim and appends them elsewhere, so a block moved off a slab with no dead
 /// space comes out byte for byte what it went in as, on a different slab -- and the slab it left
 /// is now entirely dead. Same live bytes, one more emptied slab for the collector to destroy.
 ///
 /// The set worth moving is already named: `compaction_drain_block_slab_ids` is the slabs carrying
-/// dead space that objects still hold pages on, and `compaction_relocatable_block_refs` counts the
-/// pages on them. `compact_shard_blocks` -- the operator RPC, the on-demand cycle and the suite --
-/// does not consult it and relocates every live page, BY INSTRUCTION. This records that, and it
+/// dead space that objects still hold blocks on, and `compaction_relocatable_block_refs` counts the
+/// blocks on them. `compact_shard_blocks` -- the operator RPC, the on-demand cycle and the suite --
+/// does not consult it and relocates every live block, BY INSTRUCTION. This records that, and it
 /// is the control for the draining round below.
 ///
 /// At suite scale the distinction has been invisible, which is why it was never measured: a few
 /// thousand small records fit in ONE slab against the 1 GiB target, so "every live page" and "the
-/// pages on the holed slab" are the same set. The fixture rolls between batches so the shard
+/// blocks on the holed slab" are the same set. The fixture rolls between batches so the shard
 /// spans slabs, and holes exactly one of them.
 #[test]
 fn a_direct_round_relocates_every_live_block_not_only_the_blocks_on_holed_slabs() {
@@ -11167,7 +11167,7 @@ fn run_compaction_rounds_under_role(
     for _ in 0..rounds {
         let engine = runtime.engine();
         for index in 0..batch {
-            // Overwrites a fixed key space, so earlier versions become dead pages. An
+            // Overwrites a fixed key space, so earlier versions become dead blocks. An
             // insert-only load leaves nothing stale and compaction never fires, which would
             // make every number below a measurement of nothing.
             engine.execute(ExecuteRequest {
@@ -11222,7 +11222,7 @@ fn run_compaction_rounds_under_role(
 ///   unknown      -> compacts. The failure mode this change risks: the storage maintenance
 ///                   scheduler is constructed before consensus is, and on a standalone node
 ///                   consensus is never constructed at all. A check that read "I cannot tell"
-///                   as "I am a follower" would switch page compaction off everywhere, which is
+///                   as "I am a follower" would switch block compaction off everywhere, which is
 ///                   far more damage than the waste.
 ///
 /// Mutation-verified, one mutation per half:
@@ -11343,14 +11343,14 @@ fn a_node_that_does_not_lead_a_shard_does_not_rewrite_its_live_set() {
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// Measured against TODAY's compaction, not the one that rewrote the whole live set every round:
-/// since #1687 a round relocates only the pages sitting on the slabs the reclaim plan picked, so
+/// since #1687 a round relocates only the blocks sitting on the slabs the reclaim plan picked, so
 /// these are the post-fix numbers and they are still entirely wasted on a node whose clients
 /// cannot see the layout.
 ///
 /// MEASURED, 16-core WSL box, load average under 5 throughout, a 500-key live set overwritten
 /// by 2,000 writes a round:
 ///
-///     records   rounds   compacted   page refs   bytes relocated   bytes/round
+///     records   rounds   compacted   block refs   bytes relocated   bytes/round
 ///      8,000       4        4/4         2,000         216,000         54,000
 ///     80,000      40       40/40       20,000       2,160,000         54,000
 ///
@@ -11360,9 +11360,9 @@ fn a_node_that_does_not_lead_a_shard_does_not_rewrite_its_live_set() {
 ///
 /// READ THE THIRD COLUMN FIRST. Compaction fired in EVERY round of both runs, on a shard whose
 /// only activity is overwriting the same 500 keys. Since #1687 a round is bounded by the live
-/// pages on the slabs the reclaim plan picked, so its cost is flat in the record count -- but
+/// blocks on the slabs the reclaim plan picked, so its cost is flat in the record count -- but
 /// it recurs for ever, once per scheduler tick, and at the shipped thirty-second interval that
-/// is 54 KB relocated and 500 pages rewritten per shard per tick, about 155 MB a day per idle
+/// is 54 KB relocated and 500 blocks rewritten per shard per tick, about 155 MB a day per idle
 /// shard, plus the index record each round persists. None of it is visible to a client of a
 /// node that leads nothing.
 #[test]
@@ -11424,7 +11424,7 @@ fn what_a_follower_rewrites_per_round() {
 /// the log has nothing.
 ///
 /// async_storage is what makes the served index genuinely partial: the write lands in the WAL
-/// and page/index materialization is deferred to replay, so the index on disk does not contain
+/// and block/index materialization is deferred to replay, so the index on disk does not contain
 /// these records at all.
 ///
 /// The halves are asserted SEPARATELY -- what the reclaim removed, and what survived -- because

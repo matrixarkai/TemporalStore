@@ -3,11 +3,11 @@
 
 //! WHAT A DELETE THAT MARKS IN PLACE WOULD COST, AND WHY NO COMPACTION CAP RESCUES IT.
 //!
-//! #1995 refuted folding `deleted_object_index` into a per-page bit on a LIFETIME argument: by the
-//! time the deletion matters there is no page left to carry the bit, because the delete path
-//! removes the pages and keeps the id. That is correct, and it is a property of OUR delete path
+//! #1995 refuted folding `deleted_object_index` into a per-block bit on a LIFETIME argument: by the
+//! time the deletion matters there is no block left to carry the bit, because the delete path
+//! removes the blocks and keeps the id. That is correct, and it is a property of OUR delete path
 //! rather than a law. A design that MARKED IN PLACE -- kept the entry and set its `deleted` bit --
-//! would have a page to mark, and `BlockIndex.deleted` already exists, beside `dirty` and
+//! would have a block to mark, and `BlockIndex.deleted` already exists, beside `dirty` and
 //! `log_backed`. So the open question was never whether the bit exists. It is what KEEPING THE
 //! ENTRY costs, against a compaction policy rather than in isolation.
 //!
@@ -23,9 +23,9 @@
 //!
 //! So a mark-in-place design breaks even only while a bucket holds fewer than `8/72 = 0.111`
 //! retained deleted entries -- **fewer than one bucket in nine may hold even a single one.** Every
-//! delete of an object with a page produces one. There is no compaction cap that satisfies this
+//! delete of an object with a block produces one. There is no compaction cap that satisfies this
 //! except a cap of ZERO, and a cap of zero is what the engine already implements: it removes the
-//! entry. The comparison design's bounded chain and rewrite-into-the-first-page do not change the
+//! entry. The comparison design's bounded chain and rewrite-into-the-first-block do not change the
 //! sign, because the bound they impose is 128 entries and the break-even bound is a ninth of one.
 //!
 //! WHY THIS IS A WORSE TRADE THAN THE ONE #1995 PRICED, and by how much. #1995 measured retaining
@@ -44,9 +44,9 @@
 //! measurements can be read against each other.
 //!
 //! WHAT IS MEASURED RATHER THAN ASSUMED. The count of entries a mark-in-place delete would retain
-//! is not derived from the delete count: it is the page count each bucket LOSES across the delete,
+//! is not derived from the delete count: it is the block count each bucket LOSES across the delete,
 //! measured by snapshotting `block_index.len()` per bucket before and after. A delete of a key
-//! whose pages were never filed removes nothing and would retain nothing, and that difference is
+//! whose blocks were never filed removes nothing and would retain nothing, and that difference is
 //! exactly the sort of thing an assumed count gets wrong.
 //!
 //! THE CONTROL IS AN ARM, NOT AN ASIDE. A fifth arm deletes NOTHING. The change predicts no
@@ -58,7 +58,7 @@
 //! reason other than this one. The naming defect #1996 recorded beside it -- that
 //! `mark_bucket_index_block_deleted` is named for a mark it does not make -- is real and is
 //! untouched by this: the function's body is a `retain` returning false, and the measurement here
-//! is the reason it should stay one. It also does not price the per-page work a mark-in-place
+//! is the reason it should stay one. It also does not price the per-block work a mark-in-place
 //! design would unblock; that is a separate question with a separate denominator, and the bytes
 //! measured here are the ones that decide THIS change.
 
@@ -79,7 +79,7 @@ fn saving_per_bucket() -> usize {
     size_of::<DeletedObjectIndex>()
 }
 
-/// What KEEPING one deleted page entry costs: the handle plus the entry, as the page map stores the
+/// What KEEPING one deleted block entry costs: the handle plus the entry, as the block map stores the
 /// pair. Read from the tuple so padding is counted the way the container counts it.
 fn cost_per_retained_entry() -> usize {
     size_of::<(u64, BlockIndex)>()
@@ -111,7 +111,7 @@ fn the_break_even_compaction_cap_is_under_one_entry_per_bucket() {
     // The control. These are the widths this module's whole argument rests on.
     assert_eq!(node, 96, "the node moved; every figure in this module's header is stale");
     assert_eq!(saving, 8, "the tombstone field is no longer 8 bytes; re-price the saving");
-    // 24, NOT 40: the entry stopped carrying the IDENTITY of the object its page belongs to, so it
+    // 24, NOT 40: the entry stopped carrying the IDENTITY of the object its block belongs to, so it
     // lost the `Arc<str>` -- two more words -- and the `(u64, BlockIndex)` stride printed above went
     // 48 -> 32 with it. The module's argument is a RATIO, `saving` against `stride`, so it survives
     // the move untouched, and that is worth saying rather than leaving the reader to check: 8
@@ -202,7 +202,7 @@ fn mip_load(engine: &TemporalEngine, end_routing_bucket: u32) {
     });
 }
 
-/// Pages per bucket, as the shard holds them right now.
+/// Blocks per bucket, as the shard holds them right now.
 fn blocks_by_bucket(engine: &TemporalEngine) -> std::collections::BTreeMap<u32, usize> {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&MIP_SHARD).expect("shard is loaded");
@@ -245,18 +245,18 @@ struct Arm {
 /// WHAT A MARK-IN-PLACE DELETE WOULD RETAIN, AND WHAT IT WOULD COST, AT FOUR POINTS AND A CONTROL.
 ///
 /// The state is produced, not constructed. Strings are written and a share of them deleted through
-/// the single-command delete path -- the one that retires the pages and writes the tombstone.
+/// the single-command delete path -- the one that retires the blocks and writes the tombstone.
 ///
 /// EVERY DENOMINATOR IS PRINTED AND ASSERTED, because an arm that wrote nothing, an arm that
-/// deleted nothing and an arm whose deletes found no page all produce "0 entries would be
+/// deleted nothing and an arm whose deletes found no block all produce "0 entries would be
 /// retained", which reads exactly like a cheap design:
 ///
 ///   * records acked (the seed reached the store);
 ///   * keys deleted (the delete path ran);
 ///   * buckets occupied (the denominator every per-bucket figure divides by);
-///   * pages LOST across the delete, per bucket, measured before and after -- the entries a
+///   * blocks LOST across the delete, per bucket, measured before and after -- the entries a
 ///     mark-in-place design would have kept; and
-///   * tombstoned ids actually written, which must be non-zero wherever pages were lost, or the
+///   * tombstoned ids actually written, which must be non-zero wherever blocks were lost, or the
 ///     two halves are not describing the same delete.
 ///
 /// A HISTOGRAM, NEVER A MEAN: p50, p90, p99 and MAX of the per-bucket retained-entry count, with
@@ -339,7 +339,7 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         let blocks_after: usize = after.values().sum();
         let tombs_total: usize = tombs.values().sum();
 
-        // The entries a mark-in-place delete would have KEPT: the pages each bucket lost.
+        // The entries a mark-in-place delete would have KEPT: the blocks each bucket lost.
         let buckets: std::collections::BTreeSet<u32> =
             before.keys().chain(after.keys()).copied().collect();
         let mut retained_per_bucket: Vec<usize> = Vec::new();

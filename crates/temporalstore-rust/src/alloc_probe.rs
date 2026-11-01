@@ -171,23 +171,23 @@ unsafe impl GlobalAlloc for CountingAllocator {
 
 /// What a span of allocation was spent on, in this engine's own terms.
 ///
-/// A PAGE is what a write stores, a SLAB is the file it lands in, a BUCKET is the set of keys a
+/// A BLOCK is what a write stores, a SLAB is the file it lands in, a BUCKET is the set of keys a
 /// routing bucket owns, and an OUTCOME is what a write puts aside for its log record -- the words
 /// this tree already uses for its own parts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord)]
 pub enum AllocClass {
     /// The stored value's own bytes: the block-record payload encode, and the copy the in-memory
-    /// page holds on the asynchronous arm. The largest class by bytes after the log record.
+    /// block holds on the asynchronous arm. The largest class by bytes after the log record.
     BlockBytes,
     /// The copy of those same bytes that the write-ahead record CARRIES, so an ack promises the
-    /// page and not only the command that produced it. Separate from `BlockBytes` because a
+    /// block and not only the command that produced it. Separate from `BlockBytes` because a
     /// durability decision put it there and reclaim is what takes it away again.
     CarriedBlock,
-    /// Appending that page to a slab, minus the payload itself: the record header, the framing,
+    /// Appending that block to a slab, minus the payload itself: the record header, the framing,
     /// the address, and what the block store keeps about where it went.
     SlabAppend,
-    /// The per-routing-bucket page index: the bucket node, its page entries, the object-id set,
-    /// and the object/component lookup that resolves a key to its pages. This is the row a store
+    /// The per-routing-bucket block index: the bucket node, its block entries, the object-id set,
+    /// and the object/component lookup that resolves a key to its blocks. This is the row a store
     /// whose index is outgrowing its data shows it in.
     BucketIndex,
     /// The dirty-object index: which keys a later storage round has to sweep, under which bucket.
@@ -195,12 +195,12 @@ pub enum AllocClass {
     /// sweep that falls behind grows this one and not that one.
     DirtyObjects,
     /// The index outcome a write stages for its log record -- which object, under which kind, and
-    /// where its page landed -- and the buffer those outcomes accumulate in.
+    /// where its block landed -- and the buffer those outcomes accumulate in.
     StagedOutcome,
     /// Encoding the write-ahead record itself. Few allocations and the most bytes of any class:
     /// the record is built as whole buffers, so counting calls alone reports it as nearly free.
     LogRecord,
-    /// The index-log delta a write appends: the items describing the pages it changed, and the
+    /// The index-log delta a write appends: the items describing the blocks it changed, and the
     /// record they are written in.
     IndexLogDelta,
     /// Invalidating the serving cache's entry for a written key. The largest class by allocation
@@ -366,7 +366,7 @@ fn charge_class_free(size: usize) {
 /// Run `work` with everything it allocates charged to `class`.
 ///
 /// The only way to attribute an allocation, and it is called INSIDE the primitive that owns the
-/// sink. Nesting is allowed and the innermost scope wins, which is what lets the carried-page copy
+/// sink. Nesting is allowed and the innermost scope wins, which is what lets the carried-block copy
 /// be told apart from the slab append it happens inside. Entering the same class twice, nested, is
 /// idempotent.
 ///

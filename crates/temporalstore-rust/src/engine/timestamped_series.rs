@@ -6,7 +6,7 @@
 //!
 //! # WHY THIS EXISTS
 //!
-//! Eight resident maps hold `object key -> (timestamp -> page address)`. Four helpers walked and
+//! Eight resident maps hold `object key -> (timestamp -> block address)`. Four helpers walked and
 //! reconciled them, and all four spelled the series out concretely as
 //! `BTreeMap<u64, ElementEntry>`. One of them, the apply path's kind dispatch, handed that single
 //! type out for six different kinds.
@@ -51,7 +51,7 @@ use crate::block_store::ElementEntry;
 use std::borrow::Borrow as _;
 use std::collections::BTreeMap;
 
-/// One object's timestamped page addresses, whatever holds them.
+/// One object's timestamped block addresses, whatever holds them.
 pub(super) trait TimestampedSeries {
     /// How many points this series holds.
     fn len(&self) -> usize;
@@ -306,7 +306,7 @@ where
 // THE OWNED SORTED ARRAY, AND WHY A SECOND REPRESENTATION EARNS ITS PLACE
 // =================================================================================================
 
-/// One object's timestamped page addresses, held as ONE OWNED SORTED ARRAY instead of a B-tree.
+/// One object's timestamped block addresses, held as ONE OWNED SORTED ARRAY instead of a B-tree.
 ///
 /// # WHAT IT REPLACES, AND WHAT THAT COSTS TODAY
 ///

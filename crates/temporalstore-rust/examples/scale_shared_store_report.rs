@@ -18,8 +18,8 @@
 //!
 //! The timings are printed and never asserted, because a timing is a fact about the machine that
 //! produced it. What is asserted is deterministic: bytes per entry, extents per entry, and — added
-//! when this report's own finding was acted on — **page reads per entry on both sides**. Every byte
-//! the store serves comes from a page read, so reads per entry is countable and is exactly where a
+//! when this report's own finding was acted on — **block reads per entry on both sides**. Every byte
+//! the store serves comes from a block read, so reads per entry is countable and is exactly where a
 //! per-operation walk of the log appears.
 //!
 //! That column is what the earlier version of this report was missing. It showed per-entry time
@@ -89,14 +89,14 @@ struct ReplicaWrite {
     capacity_rejected_writes: u64,
 }
 
-/// How many page reads the store has served since it opened.
+/// How many block reads the store has served since it opened.
 ///
 /// # WHY THE REPORT NEEDS A COUNT AND NOT ONLY A CLOCK
 ///
 /// A timing is a fact about the box this runs on, so the assertions at the bottom cannot
 /// be made on microseconds. But the work behind the timing is countable: every byte the
-/// store hands back comes from a page read, and the read cache is asked once per read
-/// whether it has it. Hits plus misses is therefore the number of page reads the whole
+/// store hands back comes from a block read, and the read cache is asked once per read
+/// whether it has it. Hits plus misses is therefore the number of block reads the whole
 /// run performed, and it is exactly as deterministic as the extent count.
 ///
 /// That is what makes "per-entry cost does not grow" assertable here. A per-operation walk
@@ -575,7 +575,7 @@ async fn main() {
     // because they count the RANGE read of the WAL blob, which was correctly indexed all
     // along, and the cost was in LOCATING the range rather than in transferring it.
     //
-    // Page reads are the countable form of that work -- every byte the store serves comes
+    // Block reads are the countable form of that work -- every byte the store serves comes
     // from one, and the read cache is asked once per read -- so reads per entry is
     // deterministic AND sensitive to the thing the timings were reacting to. Two walks were
     // found this way, one per side:

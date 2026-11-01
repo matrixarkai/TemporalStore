@@ -33,7 +33,7 @@
 //! Rewriting every key and rolling leaves each older slab with nothing live on it, every candidate
 //! comes back an orphan with zero live bytes, and nothing is relocatable -- so a fixture built that
 //! way cannot issue a compaction round at all. Halving the rewritten prefix gives each slab a
-//! different amount of dead space while leaving live pages on it, which is the state a compaction
+//! different amount of dead space while leaving live blocks on it, which is the state a compaction
 //! can actually act on. That shape is taken from `reclaiming_space_is_its_own_pass`, which
 //! measured the orphan case first.
 //!
@@ -47,7 +47,7 @@ use crate::types::{Command, ExecuteRequest};
 const KEYS: usize = 400;
 const VALUE_LEN: usize = 1024;
 
-/// Halving prefixes, so each slab keeps live pages while accumulating different dead space.
+/// Halving prefixes, so each slab keeps live blocks while accumulating different dead space.
 const REWRITE_ROUNDS: &[usize] = &[KEYS, KEYS / 2, KEYS / 4, KEYS / 8];
 
 fn key_of(index: usize) -> String {

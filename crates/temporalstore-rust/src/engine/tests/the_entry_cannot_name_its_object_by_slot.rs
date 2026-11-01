@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! CAN A PAGE ENTRY NAME ITS OBJECT BY ITS SLOT IN THE BUCKET'S OBJECT LIST? NO, AND THE TWO
+//! CAN A BLOCK ENTRY NAME ITS OBJECT BY ITS SLOT IN THE BUCKET'S OBJECT LIST? NO, AND THE TWO
 //! GROUNDS ARE INDEPENDENT.
 //!
 //! THE PROPOSAL, AND IT IS THE BEST-SHAPED ONE THIS ROUTE HAS HAD. `BlockIndex::object_key` is an
@@ -50,14 +50,14 @@
 //!
 //!   * DRAFT ONE asserted that a `SetRemove` frees the tombstoned object's slot. It does not: the
 //!     remove path at `storage_bucket_internals.rs:4086` drops an id only when NO ENTRY names it
-//!     -- `block_index.values().any(|page| page.object_id(shard_id) == removed_object_id)`, with
-//!     no `!page.deleted` filter -- so a tombstone holds its slot, which is exactly the invariant
+//!     -- `block_index.values().any(|block| block.object_id(shard_id) == removed_object_id)`, with
+//!     no `!block.deleted` filter -- so a tombstone holds its slot, which is exactly the invariant
 //!     a durable ordinal needs. `reconcile_object_index_with_live_blocks`'s own doc comment had
 //!     said in advance that the load is "the fatal one for anything that stored a slot, and it is
 //!     also the quietest, which is why a test driving a write and finding nothing proves nothing
 //!     here". A write is what draft one drove.
 //!   * DRAFT TWO asserted that the load frees the TOMBSTONE'S slot and leaves the live object's
-//!     alone, since `update_bucket_layout` filters `!page.deleted`. THE CONTROL caught it: the
+//!     alone, since `update_bucket_layout` filters `!block.deleted`. THE CONTROL caught it: the
 //!     live witness moved too. The ground is wider than a tombstone.
 //!   * DRAFT THREE named a RECONSTRUCT as the branch that renumbered it. THE COUNTER caught it:
 //!     `rebuilds +5, reconstructs +0, list_held_an_object_no_block_names +1` -- the load
@@ -86,11 +86,11 @@
 //!
 //!   * `BUCKET_NODE_FIELDS` is thirteen names. `object_index` and `deleted_object_index` are bare
 //!     ids. `block_index` is the `BlockIndex` rows. Nothing else on a node carries text.
-//!   * The block store does not keep a key with a page; `object_key` appears in `block_store.rs`
+//!   * The block store does not keep a key with a block; `object_key` appears in `block_store.rs`
 //!     only in prose about routing.
 //!   * The index-log row DOES carry `object_key` as text -- and it is not a fallback, for two
 //!     reasons that compose. It is WRITTEN FROM THE ENTRY (`collect_command_index_items_for` sets
-//!     `object_key: page.object_key.clone()` at `engine.rs:3328`), so it is downstream of the
+//!     `object_key: block.object_key.clone()` at `engine.rs:3328`), so it is downstream of the
 //!     field rather than independent of it, and the compiler census is the proof of that
 //!     dependency; and `dump_and_reclaim_index_logs_with_min_reclaimable` gives the log back once
 //!     a dump has made the base index authoritative, so it is not durable past a dump either.
@@ -118,9 +118,9 @@
 //! matcher controlled on both sides over the same byte search.
 //!
 //! THE PRECEDENT THAT DOES NOT TRANSFER, and it is worth naming because it is the obvious hope. A
-//! tombstone page already stores its own element key, so "ask what already holds the fact" is the
+//! tombstone block already stores its own element key, so "ask what already holds the fact" is the
 //! right question here. The answer is that nothing does: a tombstone stores a COMPONENT, which is
-//! a different field, and it stores it per page rather than per object.
+//! a different field, and it stores it per block rather than per object.
 //!
 //! # THE READER CENSUS, BY COMPILER AND NOT BY GREP
 //!
@@ -133,7 +133,7 @@
 //! Split by what each site actually wants, and the split is what decides the leg:
 //!
 //!   * 28 sites use the text only AS AN IDENTITY and an ordinal serves them. 14 are
-//!     `&*page.object_key == key` against a caller's `&str`; 6 compare the entry against another
+//!     `&*block.object_key == key` against a caller's `&str`; 6 compare the entry against another
 //!     in-tree row that could carry the ordinal too; 2 are `contains` over a caller's key set;
 //!     1 is `block_index_handle`, which hashes the key to a handle and would hash
 //!     `(routing_bucket, ordinal)` instead -- both terms on the entry; and 5 reach
@@ -154,7 +154,7 @@
 //!
 //! WHAT WOULD REOPEN THIS. Ground 1 is a fixable defect, and the fix is not the one that looks
 //! obvious: the load path would have to preserve positions THROUGH the reconcile -- a live set
-//! taken over every entry rather than every live page, no collapse that can move a surviving id,
+//! taken over every entry rather than every live block, no collapse that can move a surviving id,
 //! and no give-back of trailing positions -- at the cost of an array no longer bounded by the
 //! bucket's live high water mark. Ground 2 is not fixable without a durable ordinal-to-characters
 //! map, which is the second index this leg exists to avoid. So the leg is refused on Ground 2, and
@@ -165,7 +165,7 @@
 //! ordinal-to-characters map and calls it a second index. What
 //! [`super::where_the_characters_are_durable_per_kind`] measures is that no such map has to be
 //! ADDED: the characters are already held durably, per kind, by the model map that kind's objects
-//! live in, recoverable from a decode with no page read. Twelve kinds hand the key back from their
+//! live in, recoverable from a decode with no block read. Twelve kinds hand the key back from their
 //! own map, `context_entity` by composing two durable terms, `context_event` only from the time
 //! index -- with a constructed hole where even that fails -- and `context_index` not at all.
 //!
@@ -693,14 +693,14 @@ fn three_keys_in_one_bucket(prefix: &str) -> (u32, String, String, String) {
 /// DRAFT ONE asserted that a `SetRemove` frees the tombstoned object's slot. It does not, and it
 /// does not for a good reason: the remove path at `storage_bucket_internals.rs:4086` drops an
 /// object from the list only when NO ENTRY in the bucket names it --
-/// `block_index.values().any(|page| page.object_id(shard_id) == removed_object_id)`, with no
-/// `!page.deleted` filter -- so while a tombstone entry is filed, the id and its slot stay. That
+/// `block_index.values().any(|block| block.object_id(shard_id) == removed_object_id)`, with no
+/// `!block.deleted` filter -- so while a tombstone entry is filed, the id and its slot stay. That
 /// is exactly the invariant a durable ordinal needs, and the in-session path already holds it. The
 /// run printed `after the removal: {0: .., 1: ..}`, unchanged, and the assertion failed.
 ///
 /// DRAFT TWO asserted that the LOAD frees the tombstone's slot and leaves the live object's alone,
 /// because `persistence.rs:487` runs `update_bucket_layout` over every bucket and that function
-/// derives its live set as `block_index.values().filter(|page| !page.deleted)`. The first half is
+/// derives its live set as `block_index.values().filter(|block| !block.deleted)`. The first half is
 /// right. The second half is wrong, and the CONTROL is what caught it: the live witness moved from
 /// slot 1 to slot 0 across the same reload.
 ///
@@ -746,7 +746,7 @@ fn no_entrys_slot_survives_an_engine_reload_so_a_stored_ordinal_cannot_name_an_o
         let engine = engine_on(dir.path());
         load_on(&engine, "slot-reuse", 1);
 
-        // ONE MEMBER EACH, so the victim's removal takes its last live page and nothing else.
+        // ONE MEMBER EACH, so the victim's removal takes its last live block and nothing else.
         for key in [&victim, &witness] {
             write(
                 &engine,
@@ -990,7 +990,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     }
 
     // ---------------------------------------------------------------------------------------------
-    // ARM 1 -- WITHIN THE DURABLE NODE SHAPE, ONLY THE PAGE ROWS CARRY TEXT.
+    // ARM 1 -- WITHIN THE DURABLE NODE SHAPE, ONLY THE BLOCK ROWS CARRY TEXT.
     //
     // MEASURED OFF THE SERIALIZED NODE AND NOT OFF THE FIELD LIST, because the field list is prose.
     // It is also not measured off the FILE: the stored index is COMPRESSED -- `shard-1.index.json`
@@ -1011,8 +1011,8 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
         //
         // Naming only the key under test was wrong and the encoder said so on the first run: the
         // forty filler keys route over the same slot space and at least one of them lands here,
-        // so a list of one left a page unaccounted for. That is the hole `NodeNamedBy` exists to
-        // refuse -- the keyless encode used to write a key naming nothing, once per page, and
+        // so a list of one left a block unaccounted for. That is the hole `NodeNamedBy` exists to
+        // refuse -- the keyless encode used to write a key naming nothing, once per block, and
         // return `Ok` -- and it is also why this list is DERIVED rather than written out: a
         // hand-written one goes stale the next time the fixture's key count or slot range moves.
         //
@@ -1119,7 +1119,7 @@ fn the_block_entry_is_the_only_durable_home_of_an_object_keys_characters() {
     // reasons, and only the second is measured here:
     //
     //   * IT IS DOWNSTREAM OF THE FIELD. `collect_command_index_items_for` builds every row from
-    //     the resident entry -- `object_key: page.object_key.clone()` at `engine.rs:3328` -- so a
+    //     the resident entry -- `object_key: block.object_key.clone()` at `engine.rs:3328` -- so a
     //     row cannot hold what the entry does not. That is a COMPILE-TIME dependency and the
     //     compiler census is its proof: replacing the field reddens that construction (E0560).
     //   * IT DOES NOT OUTLIVE A DUMP. `dump_and_reclaim_index_logs_with_min_reclaimable` gives the

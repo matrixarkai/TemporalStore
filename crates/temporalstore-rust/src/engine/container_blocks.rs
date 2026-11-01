@@ -1,27 +1,27 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! A CONTAINER PAGE STATES WHICH ELEMENT IT HOLDS.
+//! A CONTAINER BLOCK STATES WHICH ELEMENT IT HOLDS.
 //!
-//! Until now a container page carried a VALUE and nothing else. Which element of which object that
-//! value belonged to was known only to the page index entry that named it -- `BlockIndex::component`
-//! -- and to the object id folded into the address. The page itself said nothing, so the bytes were
+//! Until now a container block carried a VALUE and nothing else. Which element of which object that
+//! value belonged to was known only to the block index entry that named it -- `BlockIndex::component`
+//! -- and to the object id folded into the address. The block itself said nothing, so the bytes were
 //! only interpretable beside the entry that pointed at them.
 //!
 //! That is the one fact underneath four separate refutations, and it is worth stating plainly
 //! because each of those looked like an independent dead end:
 //!
-//!   * the element name cannot leave the page entry, because for a hash the name IS the element and
+//!   * the element name cannot leave the block entry, because for a hash the name IS the element and
 //!     for a hash the entry is the only place it is written (#2009);
-//!   * the resident maps cannot be rebuilt from anything but the page index, because the index is
-//!     the only thing that names elements (#2016's arms skip an unnamed page for exactly this
+//!   * the resident maps cannot be rebuilt from anything but the block index, because the index is
+//!     the only thing that names elements (#2016's arms skip an unnamed block for exactly this
 //!     reason);
-//!   * pages cannot be batched usefully while the element name is folded into the address the
+//!   * blocks cannot be batched usefully while the element name is folded into the address the
 //!     write returns (#1999);
 //!   * and the resident map cannot become authoritative while it is merged from a snapshot the
 //!     index outranks (#2017).
 //!
-//! All four are downstream of the page not naming its own element. This module is where it starts
+//! All four are downstream of the block not naming its own element. This module is where it starts
 //! to, and on its own it BUYS NOTHING: it costs bytes on every container write and every reader
 //! keeps answering exactly as it did. What it buys is that the element name now exists in a second
 //! place, which is the precondition for it leaving the first.
@@ -44,8 +44,8 @@
 //! ## WHY THE VALUE MAY BE A SUFFIX OF THE KEY, WHICH IS NOT A TRICK
 //!
 //! For a `set` the element key IS the member and the value IS the member -- #2017 measured that
-//! `hex::decode(component)` equalled the page bytes on every one of sixty entries. Writing both
-//! would make a set page carry its member twice, and a stage whose whole justification is that it
+//! `hex::decode(component)` equalled the block bytes on every one of sixty entries. Writing both
+//! would make a set block carry its member twice, and a stage whose whole justification is that it
 //! is a cheap foundation cannot afford to double the one kind where the redundancy was already
 //! measured. For a `zset` the key is an eight-byte score followed by the member, so the value is
 //! the key from byte eight. Both fall out of one rule, which the encoder detects rather than being
@@ -58,12 +58,12 @@
 //!
 //! The obvious alternative was to key each item by the component STRING, so that selecting an
 //! element is a string compare and nothing has to know the kind. Measured on the shapes this store
-//! actually writes, that costs a `set` page 42 bytes over its member and a `zset` page 58, because
+//! actually writes, that costs a `set` block 42 bytes over its member and a `zset` block 58, because
 //! a component is hex and hex is two characters a byte. Carrying the key in its own bytes and one
 //! byte saying how it spells costs 11 and 19. So the spelling byte is not generality for its own
 //! sake; it is what keeps the foundation affordable for the two kinds whose keys are hex.
 //!
-//! It also means `read_block_bytes` needs no new argument. A page asked for one of its elements is
+//! It also means `read_block_bytes` needs no new argument. A block asked for one of its elements is
 //! handed the component it was looked up by, and this module turns that back into key bytes without
 //! being told the kind -- so the twenty-odd call sites of the read funnel are untouched, and no
 //! mechanical signature rewrite goes past the guards that read those call sites.
@@ -71,7 +71,7 @@
 //! ## AND THE SPELLING IS A ROUND TRIP, ASSERTED BOTH WAYS
 //!
 //! [`component_from_element_key`] and [`element_key_from_component`] are inverses, and that is the
-//! whole safety argument for this module: the page's key and the index's component are two
+//! whole safety argument for this module: the block's key and the index's component are two
 //! spellings of one value, so either can be derived from the other and a later stage may delete
 //! whichever it no longer wants to store. If they were merely written consistently at the same
 //! moment by the same call site -- which is how the component and the set payload agree TODAY, and
@@ -94,9 +94,9 @@
 //! No stored format is retired and no version stamp is spent. The magic DISCRIMINATES: a page
 //! written before this module has no magic, [`decode_container_block`] answers `NotFramed`, and the
 //! read funnel hands the bytes back exactly as it always did. That is the same trade
-//! `encode_feature_block` already makes with `TSFPB1\n` against the JSON pages that came before it,
+//! `encode_feature_block` already makes with `TSFPB1\n` against the JSON blocks that came before it,
 //! and it is why this stage does not move `SHARD_INDEX_FORMAT_VERSION` at all: the SHARD INDEX
-//! does not change shape here, and the page payload is self-describing rather than versioned.
+//! does not change shape here, and the block payload is self-describing rather than versioned.
 //! The stamp stood at 2 when this was written and is 5 now, moved by later stages; this stage
 //! is not one of them, and the number above is the one it had then rather than the one to read
 //! off the constant today.
@@ -108,7 +108,7 @@
 
 /// How a key inside a container page spells the component its index entry is filed under.
 ///
-/// One byte in the page, because the page has to be interpretable WITHOUT the entry that names it
+/// One byte in the block, because the block has to be interpretable WITHOUT the entry that names it
 /// -- that is the entire point of the module -- and the kind is not recoverable from the bytes.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(super) enum ElementKeySpelling {
@@ -148,7 +148,7 @@ impl ElementKeySpelling {
     /// object and carries no element key.
     ///
     /// Derived from the kind string the write sites already hold, in ONE place, so a fifth
-    /// container kind cannot be given a page format by accident at a new call site.
+    /// container kind cannot be given a block format by accident at a new call site.
     pub(super) fn for_kind(kind: &str) -> Option<Self> {
         match kind {
             "hash" => Some(ElementKeySpelling::Utf8),
@@ -160,27 +160,27 @@ impl ElementKeySpelling {
     }
 }
 
-/// Seven bytes that say a page payload holds items rather than one value.
+/// Seven bytes that say a block payload holds items rather than one value.
 ///
 /// THE FIRST SHAPE, WHICH STILL READS. Every item in it is present: it has no way to say an element
 /// was removed, which is the whole reason there is a second shape. Kept because stores written by
-/// #2022 and #2027 hold these pages and a reader that could not walk them would lose their
+/// #2022 and #2027 hold these blocks and a reader that could not walk them would lose their
 /// elements -- see [`CONTAINER_BLOCK_MAGIC_V2`] for what changed and what it costs.
 pub(super) const CONTAINER_BLOCK_MAGIC: &[u8] = b"TSCPG1\n";
 
-/// Seven bytes that say a page payload holds items SOME OF WHICH MAY BE REMOVALS.
+/// Seven bytes that say a block payload holds items SOME OF WHICH MAY BE REMOVALS.
 ///
 /// # WHY A SECOND MAGIC AND NOT A FLAG BYTE PER ITEM
 ///
-/// A removal has to be a WRITTEN ITEM rather than an absence, because a page is never rewritten by
-/// the removal path: #2027 folds pages only when a round was already rewriting them, and a folded
-/// page stays live for its other elements. #2028 drove what that costs -- twelve members folded to
-/// one page, one removed, the index naming eleven and the page holding twelve -- so a membership
-/// derived from pages resurrected the removed member. This magic is where the page starts to be
+/// A removal has to be a WRITTEN ITEM rather than an absence, because a block is never rewritten by
+/// the removal path: #2027 folds blocks only when a round was already rewriting them, and a folded
+/// block stays live for its other elements. #2028 drove what that costs -- twelve members folded to
+/// one block, one removed, the index naming eleven and the block holding twelve -- so a membership
+/// derived from blocks resurrected the removed member. This magic is where the block starts to be
 /// able to say otherwise.
 ///
 /// The obvious encoding was a `flags` varint beside every item, which costs ONE BYTE PER ITEM on
-/// every page whether or not anything was ever removed. It does not have to: the item's VALUE TAG
+/// every block whether or not anything was ever removed. It does not have to: the item's VALUE TAG
 /// already has an unused codepoint, and widening its meaning is free.
 ///
 /// ```text
@@ -202,11 +202,11 @@ pub(super) const CONTAINER_BLOCK_MAGIC: &[u8] = b"TSCPG1\n";
 /// item is the same width except where `n - 1` and `n - 2` fall either side of a varint boundary.
 /// `a_live_suffix_block_is_the_same_bytes_under_either_shape` prices both against the first.
 ///
-/// # WHY EVERY NEW PAGE TAKES IT, INCLUDING ONE WITH NO REMOVAL IN IT
+/// # WHY EVERY NEW BLOCK TAKES IT, INCLUDING ONE WITH NO REMOVAL IN IT
 ///
-/// The cheaper-looking alternative is to write v1 while a page has no tombstone and v2 only when it
+/// The cheaper-looking alternative is to write v1 while a block has no tombstone and v2 only when it
 /// does. That makes "a page is v1 if and only if it holds no removal" an invariant, and nothing
-/// would enforce it -- a writer that took the wrong shape for its contents would produce a page
+/// would enforce it -- a writer that took the wrong shape for its contents would produce a block
 /// whose tombstone decodes as an empty live value, which is the resurrection this whole stage
 /// exists to close, reintroduced by a branch. One writer, one shape, and the cost is priced above.
 pub(super) const CONTAINER_BLOCK_MAGIC_V2: &[u8] = b"TSCPG2\n";
@@ -223,7 +223,7 @@ pub(super) enum ContainerBlockShape {
     WithRemovals,
 }
 
-/// One element of a container page: the key that names it, the value it holds, and whether the item
+/// One element of a container block: the key that names it, the value it holds, and whether the item
 /// is the RECORD OF ITS REMOVAL rather than its value.
 ///
 /// A removed item's `value` is EMPTY and carries no information -- the encoder writes no value bytes
@@ -241,12 +241,12 @@ pub(super) struct ContainerBlockItem {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) enum ContainerBlockDecode {
     /// No magic. The payload is one value and the index entry beside it names the element -- which
-    /// is every page written before this module, and every page of a kind that is its whole object.
+    /// is every block written before this module, and every block of a kind that is its whole object.
     NotFramed,
     /// A frame, and these are its items in written order.
     Framed {
         spelling: ElementKeySpelling,
-        /// Which magic it carried. A `LiveOnly` page cannot hold a removal, so a derivation reading
+        /// Which magic it carried. A `LiveOnly` block cannot hold a removal, so a derivation reading
         /// one knows its silence about an element means nothing rather than meaning present.
         shape: ContainerBlockShape,
         items: Vec<ContainerBlockItem>,
@@ -268,9 +268,9 @@ pub(super) enum ContainerElementRead {
     /// this is an answer, and a missing element is a legitimate one.
     Absent,
     /// The frame holds this element's REMOVAL. Distinct from `Absent` because the two are different
-    /// facts and only one of them is durable: `Absent` says this page never mentioned the element,
-    /// so an older page still may; `Removed` says this page states it is gone, which is what makes a
-    /// page-derived membership possible at all. A reader that only wants a value treats both as no
+    /// facts and only one of them is durable: `Absent` says this block never mentioned the element,
+    /// so an older block still may; `Removed` says this block states it is gone, which is what makes a
+    /// block-derived membership possible at all. A reader that only wants a value treats both as no
     /// value, and the read funnel does; a derivation must not, and
     /// `an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_element` drives
     /// exactly that difference.
@@ -336,7 +336,7 @@ fn take_slice<'a>(
     Ok(slice)
 }
 
-/// One item on its way INTO a page: what to write, and whether it is a removal.
+/// One item on its way INTO a block: what to write, and whether it is a removal.
 ///
 /// Borrowed rather than owned because every caller already holds both halves, and a removal holds
 /// no value at all -- `TOMBSTONE_VALUE` is what a caller passes for it, so that "a removal carries
@@ -370,7 +370,7 @@ impl<'a> ContainerBlockWrite<'a> {
     }
 }
 
-/// Write items as a page payload, every one of them live.
+/// Write items as a block payload, every one of them live.
 ///
 /// The shape the four write sites and the fold use: neither produces a removal, so neither should
 /// have to say `false` per item. A removal is written through
@@ -386,7 +386,7 @@ pub(super) fn encode_container_block(
     encode_container_block_items(spelling, &writes)
 }
 
-/// Write items as a page payload, each either live or a removal.
+/// Write items as a block payload, each either live or a removal.
 ///
 /// The suffix detection is ONE candidate and not a search: the only offset at which the value can
 /// be the key's tail is `key.len() - value.len()`, so the check is a single slice comparison. It is
@@ -502,7 +502,7 @@ pub(super) fn decode_container_block(bytes: &[u8]) -> ContainerBlockDecode {
 /// the two lengths are equal, so a third shape spelled differently is a build-time argument rather
 /// than a cursor that reads one byte into the wrong field.
 ///
-/// A PAYLOAD THAT IS EXACTLY THE MAGIC IS A TRUNCATED FRAME, NOT AN UNFRAMED PAGE. This returned
+/// A PAYLOAD THAT IS EXACTLY THE MAGIC IS A TRUNCATED FRAME, NOT AN UNFRAMED BLOCK. This returned
 /// `None` for it -- `bytes.get(..)?` propagating out of the whole function -- so seven bytes that
 /// claim to be a frame were handed back to the caller as a value. It is the same one-character
 /// shape as every other defect this module cites: an answer that cannot be produced being turned
@@ -536,8 +536,8 @@ fn frame_header(
 /// THE TAG IS READ AGAINST THE SHAPE THE MAGIC NAMED, never against a guess. Under the first shape
 /// `1` is an empty inline value and under the second it is a removal, and those are the same three
 /// bytes on disk -- so a decoder that took one meaning for both would either resurrect a removed
-/// element in a new page or invent a removal in an old one. The shape comes from the magic, which is
-/// the only thing on the page that can say.
+/// element in a new block or invent a removal in an old one. The shape comes from the magic, which is
+/// the only thing on the block that can say.
 fn take_item<'a>(
     bytes: &'a [u8],
     cursor: &mut usize,
@@ -558,7 +558,7 @@ fn take_item<'a>(
     }
     if shape == ContainerBlockShape::WithRemovals && tag == TAG_REMOVED {
         // NO VALUE BYTES FOLLOW. The cursor stands after the tag, which is what keeps the
-        // consume-the-payload-exactly property true for a page whose last item is a removal.
+        // consume-the-payload-exactly property true for a block whose last item is a removal.
         return Ok((key, Vec::new(), true));
     }
     let bias = match shape {
@@ -583,9 +583,9 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
     };
     // A ScoreThenMember COMPONENT NO LONGER NAMES A KEY EXACTLY -- the score is gone from it, so
     // `element_key_from_component` can only hand back a key with a PLACEHOLDER in its first eight
-    // bytes, which would miss every page a previous binary wrote with its true score there. So
+    // bytes, which would miss every block a previous binary wrote with its true score there. So
     // this spelling is matched by member suffix, decoded once, rather than by key equality: a
-    // page's own first eight bytes, real score or placeholder alike, are never examined. Every
+    // block's own first eight bytes, real score or placeholder alike, are never examined. Every
     // other spelling keeps the exact-key comparison, which stays correct because none of them
     // dropped anything from what the component spells.
     enum Wanted {
@@ -639,7 +639,7 @@ pub(super) fn select_container_element(bytes: &[u8], component: &str) -> Contain
 ///
 /// Inverse of [`element_key_from_component`]. `None` where the key cannot spell one at all -- a
 /// hash field that is not valid UTF-8, a list word that is not eight bytes -- which is a corrupt
-/// page rather than an absent element, and is reported as such by the caller.
+/// block rather than an absent element, and is reported as such by the caller.
 pub(super) fn component_from_element_key(
     spelling: ElementKeySpelling,
     key: &[u8],
@@ -650,7 +650,7 @@ pub(super) fn component_from_element_key(
         ElementKeySpelling::ScoreThenMember => {
             // THE SCORE IS NO LONGER SPELLED HERE. `BlockIndex.component` is what this render
             // feeds, and the score term was 16 of its bytes with the member carrying the rest --
-            // the one thing stopping zset from collapsing to one index entry a page the way set
+            // the one thing stopping zset from collapsing to one index entry a block the way set
             // and list already have. The resident map (`shard.zsets`) is the score's only copy
             // now; a reader that wants it reads that map, not this string. See
             // `element_key_from_component`'s mirror of this cut for what it costs on the way
@@ -671,7 +671,7 @@ pub(super) fn component_from_element_key(
 /// The page key a component spells.
 ///
 /// Inverse of [`component_from_element_key`]. `None` where the component is not one this spelling
-/// can produce -- which is how a reader asking a set page for a component that is not hex gets
+/// can produce -- which is how a reader asking a set block for a component that is not hex gets
 /// `Absent` rather than a walk.
 pub(super) fn element_key_from_component(
     spelling: ElementKeySpelling,
@@ -683,16 +683,16 @@ pub(super) fn element_key_from_component(
         ElementKeySpelling::ScoreThenMember => {
             // LOSSY BY DESIGN, IN THIS ONE ARM ONLY. The component used to be the score and the
             // member both; it is the member alone now, so this direction cannot recover the score
-            // that named a PRE-EXISTING page -- there is no score left in the input to recover.
+            // that named a PRE-EXISTING block -- there is no score left in the input to recover.
             // What it returns is a validly-shaped key (eight bytes then the member) with a
             // PLACEHOLDER in the first eight, not the true score.
             //
             // THAT IS SAFE, AND HERE IS THE WHOLE ARGUMENT WHY: every caller of this arm either
-            // builds a brand-new page (`encode_single_element_block`, `encode_tombstone_block` --
+            // builds a brand-new block (`encode_single_element_block`, `encode_tombstone_block` --
             // the placeholder is all a fresh write needs, since nothing downstream reads it back)
             // or does not call it at all. `select_container_element` is the one caller that used
             // to call this and compare the result for EXACT equality against a stored key -- which
-            // would have compared this placeholder against a pre-existing page's TRUE score and
+            // would have compared this placeholder against a pre-existing block's TRUE score and
             // missed every one of them after an upgrade -- so it no longer calls this arm: it
             // decodes the member once and compares the key's member suffix only, blind to
             // whatever sits in the first eight bytes, old real score or new placeholder alike.
@@ -713,7 +713,7 @@ pub(super) fn element_key_from_component(
     }
 }
 
-/// Frame ONE element's value as a page payload, which is what every container write does today.
+/// Frame ONE element's value as a block payload, which is what every container write does today.
 ///
 /// Named rather than spelled at each of the seven write sites: the sites differ in which kind they
 /// are and in nothing else, and a site that built the frame itself could pick the wrong spelling
@@ -733,17 +733,17 @@ pub(super) fn encode_single_element_block(
     Some(encode_container_block(spelling, &[(&key, value)]))
 }
 
-/// Writes whose page could not be framed, and which therefore stored a bare value.
+/// Writes whose block could not be framed, and which therefore stored a bare value.
 ///
 /// A bare value still READS correctly -- `decode_container_block` answers `NotFramed` and the read
 /// funnel hands the payload back -- so this is degradation and not data loss, which is exactly why
-/// it needs a counter. An unframed page is invisible to every reader today and will be invisible to
-/// the load path that later rebuilds from pages, at which point its element is simply not there.
+/// it needs a counter. An unframed block is invisible to every reader today and will be invisible to
+/// the load path that later rebuilds from blocks, at which point its element is simply not there.
 /// A guard floors this at zero over a real exercise of all four kinds.
 static UNFRAMED_CONTAINER_WRITES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// How many container writes stored a bare value because their page could not be framed.
+/// How many container writes stored a bare value because their block could not be framed.
 pub fn unframed_container_write_count() -> u64 {
     UNFRAMED_CONTAINER_WRITES.load(std::sync::atomic::Ordering::Relaxed)
 }
@@ -753,7 +753,7 @@ pub fn reset_unframed_container_write_count() {
     UNFRAMED_CONTAINER_WRITES.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// The payload a container write stores: the framed page, or the bare value with the miss counted.
+/// The payload a container write stores: the framed block, or the bare value with the miss counted.
 ///
 /// Owned rather than borrowed because the framed form is a new allocation either way, and a write
 /// site that had to branch on whether it got one would reintroduce the per-site decision this
@@ -768,24 +768,24 @@ pub(super) fn single_element_block(kind: &str, component: &str, value: &[u8]) ->
     }
 }
 
-/// Frame ONE element's REMOVAL as a page payload.
+/// Frame ONE element's REMOVAL as a block payload.
 ///
-/// # WHY A REMOVAL NEEDS A PAGE OF ITS OWN
+/// # WHY A REMOVAL NEEDS A BLOCK OF ITS OWN
 ///
-/// The page holding the element cannot be amended: that is a read-modify-write on the removal path,
+/// The block holding the element cannot be amended: that is a read-modify-write on the removal path,
 /// which is the cost #2027 exists to avoid and the first of the three ways forward #2028 recorded.
-/// So the removal is written the way every other container change is written -- as a new page,
-/// appended -- and it is the LAST page to mention its element, which is what makes it win.
+/// So the removal is written the way every other container change is written -- as a new block,
+/// appended -- and it is the LAST block to mention its element, which is what makes it win.
 ///
 /// # THERE IS NO FALLBACK, AND THAT IS THE DIFFERENCE FROM [`single_element_block`]
 ///
-/// A write whose page cannot be framed stores a bare value and counts the miss: the element's value
-/// is still served, because an unframed page IS its element's value, so the degradation costs
+/// A write whose block cannot be framed stores a bare value and counts the miss: the element's value
+/// is still served, because an unframed block IS its element's value, so the degradation costs
 /// nothing a reader can see. A REMOVAL HAS NO SUCH FORM. Bare bytes cannot say "gone" -- they would
 /// read as a value, and the element would be served its own tombstone -- so a removal that cannot be
 /// framed must write NOTHING and say so, rather than write something that decodes as a resurrection.
 ///
-/// `None` therefore means the caller must not treat the removal as durable in the pages. Every
+/// `None` therefore means the caller must not treat the removal as durable in the blocks. Every
 /// caller counts it; `a_removal_that_cannot_be_framed_is_counted_and_writes_no_block` drives the
 /// count, and the four kinds all frame, so a nonzero count is a defect and not a tolerance.
 pub(super) fn encode_tombstone_block(kind: &str, component: &str) -> Option<Vec<u8>> {
@@ -797,16 +797,16 @@ pub(super) fn encode_tombstone_block(kind: &str, component: &str) -> Option<Vec<
     ))
 }
 
-/// Removals whose page could not be framed, and which therefore recorded NOTHING in the pages.
+/// Removals whose block could not be framed, and which therefore recorded NOTHING in the blocks.
 ///
 /// Counted and not tolerated: unlike an unframed value write this is a real hole -- the element is
-/// gone from the resident map and the live index and the pages do not say so, so a membership
-/// derived from pages would put it back. A guard floors this at zero over a real exercise of all
+/// gone from the resident map and the live index and the blocks do not say so, so a membership
+/// derived from blocks would put it back. A guard floors this at zero over a real exercise of all
 /// four kinds' removals.
 static UNFRAMED_CONTAINER_REMOVALS: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
-/// How many removals stored no tombstone because their page could not be framed.
+/// How many removals stored no tombstone because their block could not be framed.
 pub fn unframed_container_removal_count() -> u64 {
     UNFRAMED_CONTAINER_REMOVALS.load(std::sync::atomic::Ordering::Relaxed)
 }

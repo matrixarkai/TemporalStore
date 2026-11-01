@@ -31,24 +31,24 @@
 //! bought at a fixed tree. A + D against A alone is the number that has been quoted, and it is the
 //! two effects multiplied together with no way to tell which did the work.
 //!
-//! # THE NODE IS PER BUCKET AND THE ENTRY IS PER PAGE
+//! # THE NODE IS PER BUCKET AND THE ENTRY IS PER BLOCK
 //!
 //! At the whole keyspace every key routes to a bucket of its own, so one node per bucket IS one
-//! node per record and its width divides by one. At 1023 a bucket holds tens of pages and the same
+//! node per record and its width divides by one. At 1023 a bucket holds tens of blocks and the same
 //! node divides by the fill. The two structures therefore scale differently with the range, and a
 //! single "bytes per record" line hides it. Both contributions are reported separately.
 //!
 //! # NEVER A MEAN
 //!
-//! Pages per bucket is a histogram with every row printed, percentiles counted off the histogram,
-//! a MAX, and the denominator on the line. A mean of 1.98 pages a bucket was once published for a
+//! Blocks per bucket is a histogram with every row printed, percentiles counted off the histogram,
+//! a MAX, and the denominator on the line. A mean of 1.98 blocks a bucket was once published for a
 //! store containing no bucket holding two.
 //!
 //! # THE CONTROL
 //!
 //! `the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key` is the workload where the
 //! column effect's mechanism predicts NOTHING: routing takes the object key and never the
-//! component, so one key's many component pages sit in one bucket at every range. If the column
+//! component, so one key's many component blocks sit in one bucket at every range. If the column
 //! effect showed up there too, the explanation attributed to it here would be wrong.
 
 #![allow(clippy::all)]
@@ -131,7 +131,7 @@ fn run_batch(engine: &TemporalEngine, commands: Vec<Command>) {
     }
 }
 
-/// The workload every cell is measured over: distinct routed string keys, one page each.
+/// The workload every cell is measured over: distinct routed string keys, one block each.
 fn seed_commands(count: usize) -> (Vec<String>, Vec<Command>) {
     let keys: Vec<String> = (0..count).map(|i| format!("fill-{i:06}")).collect();
     let commands = keys
@@ -204,7 +204,7 @@ impl BlocksPerBucket {
         self.counts.keys().copied().next().unwrap_or_default()
     }
 
-    /// Counted off the histogram, never interpolated: every value this can return is a page count
+    /// Counted off the histogram, never interpolated: every value this can return is a block count
     /// that some bucket actually holds.
     fn percentile(&self, fraction: f64) -> usize {
         let buckets = self.buckets();
@@ -293,7 +293,7 @@ fn blocks_per_bucket(engine: &TemporalEngine) -> BlocksPerBucket {
 }
 
 /// (Empty, One, Many) arm counts over the whole bucket map -- released and empty buckets included,
-/// because a node exists whether or not its bucket holds a page and a node is what the per-bucket
+/// because a node exists whether or not its bucket holds a block and a node is what the per-bucket
 /// contribution is charged on.
 fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -309,7 +309,7 @@ fn block_index_arms(engine: &TemporalEngine) -> (usize, usize, usize) {
     arms
 }
 
-/// Nodes in the bucket map, whether or not their bucket holds a page.
+/// Nodes in the bucket map, whether or not their bucket holds a block.
 fn node_count(engine: &TemporalEngine) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -322,9 +322,9 @@ fn node_count(engine: &TemporalEngine) -> usize {
 
 /// THE WIDTHS AT THIS END, READ WITH `size_of` RATHER THAN QUOTED, AND THE STRIDE BESIDE THEM.
 ///
-/// A struct width is not what memory costs. The page list holds PAIRS, and a pair re-aligns to the
+/// A struct width is not what memory costs. The block list holds PAIRS, and a pair re-aligns to the
 /// wider of its members' alignments and pads to a multiple of it -- so the number that multiplies
-/// by the page count is `size_of::<(u64, BlockIndex)>()` and not `size_of::<BlockIndex>()`. A
+/// by the block count is `size_of::<(u64, BlockIndex)>()` and not `size_of::<BlockIndex>()`. A
 /// narrowing that takes the entry below the next multiple of its alignment buys nothing at all in
 /// the container, and only the stride can say so.
 ///
@@ -478,7 +478,7 @@ impl Cell {
     fn node_bytes_per_record(&self, node_width: usize) -> f64 {
         (self.nodes * node_width) as f64 / self.records as f64
     }
-    /// The per-PAGE structure's share, per record: one container slot per page.
+    /// The per-BLOCK structure's share, per record: one container slot per block.
     fn block_bytes_per_record(&self, stride: usize) -> f64 {
         (self.blocks * stride) as f64 / self.records as f64
     }
@@ -677,7 +677,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
             );
         }
 
-        // The mechanism: narrowing groups keys, so there are fewer nodes for the same pages.
+        // The mechanism: narrowing groups keys, so there are fewer nodes for the same blocks.
         assert!(
             narrow.nodes < wide.nodes,
             "narrowing to 0..{NARROW_END} left {} nodes against the whole keyspace's {}; if the \
@@ -696,7 +696,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
 }
 
 /// THE PER-CELL ARM SPLIT, SEPARATELY, BECAUSE THE ARM A BUCKET SITS IN IS WHAT DECIDES WHETHER
-/// ITS PAGE IS HELD INLINE OR BEHIND A POINTER -- AND THAT IS THE ONE THING THE REQUEST COLUMN
+/// ITS BLOCK IS HELD INLINE OR BEHIND A POINTER -- AND THAT IS THE ONE THING THE REQUEST COLUMN
 /// CANNOT SEE.
 ///
 /// rust-internal: reads the engine's own bucket index, no product behaviour
@@ -743,13 +743,13 @@ fn the_arm_a_bucket_sits_in_at_each_range_and_corpus_size() {
 // THE CONTROL
 // =============================================================================================
 
-/// THE RANGE BUYS NOTHING FOR A STORE WHOSE PAGES SHARE ONE OBJECT KEY -- AGAINST A NOISE BAND
+/// THE RANGE BUYS NOTHING FOR A STORE WHOSE BLOCKS SHARE ONE OBJECT KEY -- AGAINST A NOISE BAND
 /// THIS CONTROL MEASURES FIRST, IN ABBA ORDER.
 ///
 /// The column effect is attributed to one mechanism: the range width is the modulus, so narrowing
 /// it groups distinct OBJECT KEYS into shared buckets and amortises the per-bucket node. This is
 /// the workload where that mechanism predicts NOTHING -- routing takes the object key and never
-/// the component, so one key's many component pages sit in a single bucket at every range.
+/// the component, so one key's many component blocks sit in a single bucket at every range.
 ///
 /// A FIRST DRAFT OF THIS CONTROL COMPARED ONE ARM AGAINST ONE ARM and read -2.95% of request
 /// bytes, with the allocation COUNT apart by 8 in 110,629. Eight allocations cannot carry 189 kB.
@@ -763,7 +763,7 @@ fn the_arm_a_bucket_sits_in_at_each_range_and_corpus_size() {
 /// assertion is that the between-arm shift does not exceed the band the instrument itself showed.
 /// That bound comes from the data.
 ///
-/// THE STRUCTURAL FIGURES ARE HELD TO 0.00% EXACTLY, with no band at all: bucket count, page count
+/// THE STRUCTURAL FIGURES ARE HELD TO 0.00% EXACTLY, with no band at all: bucket count, block count
 /// and widest bucket are counts of what the engine filed, they are not subject to a buffer
 /// quantum, and if the range moved any of them the mechanism this module attributes the column
 /// effect to would be the wrong mechanism.
@@ -779,7 +779,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
     const ABBA: [u32; 4] = [WIDE_END, NARROW_END, NARROW_END, WIDE_END];
 
     let mut arm = 70usize;
-    // (range, buckets, pages, widest, request, chunk, allocations)
+    // (range, buckets, blocks, widest, request, chunk, allocations)
     let mut runs: Vec<(u32, usize, usize, usize, u64, u64, u64)> = Vec::new();
 
     for end_routing_bucket in ABBA {

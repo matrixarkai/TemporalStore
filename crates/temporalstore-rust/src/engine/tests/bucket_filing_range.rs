@@ -238,10 +238,10 @@ fn an_older_index_decodes_to_exactly_the_same_address() {
 /// by element picture a count cannot give.
 fn bucket_contents(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, Vec<String>> {
     // THE POSITION DOOR, AND THIS FILE IS WHERE THAT NEEDS SAYING. One test here MOVES a node
-    // under a bucket its key does not route to, and the object lookup names such a page at the
+    // under a bucket its key does not route to, and the object lookup names such a block at the
     // position it was FILED under rather than the one it now sits in. No caller of this helper is
     // inside that test -- it is called by the five rebuild and adoption arms, each over an index
-    // whose pages sit where they were filed -- and a page this cannot name panics with its handle
+    // whose blocks sit where they were filed -- and a block this cannot name panics with its handle
     // rather than being dropped from a listing that is compared element by element.
     let named = super::BlockObjects::of(&shard.bucket_index);
     let mut contents: BTreeMap<u32, Vec<String>> = BTreeMap::new();

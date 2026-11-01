@@ -78,7 +78,7 @@ const HOUR_MS: &str = "3600000";
 ///
 /// WHAT WENT WRONG. `SET` reaches for `StringSetConditional` and so clears the deadline, which
 /// is right. `GETSET` and `MSET` reached for `StringSet`, which does not touch the expiry
-/// index at all -- it calls `remove_if_expired` and then writes the page. So a caller who
+/// index at all -- it calls `remove_if_expired` and then writes the block. So a caller who
 /// armed a one-minute deadline on a key and then replaced its contents with `GETSET` or `MSET`
 /// got a key that still vanished a minute later, carrying a deadline it never asked to keep
 /// and that nothing in either answer mentions. `GETSET` returned the old value and `MSET`

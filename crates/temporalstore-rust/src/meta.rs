@@ -1175,12 +1175,12 @@ pub struct ShardListEntry {
 pub struct ListShardsResponse {
     pub status: Status,
     pub shards: Vec<ShardListEntry>,
-    /// Set only when the cap cut the page short. Pass it back as
-    /// `after_shard_id` to continue; absent means this was the last page.
+    /// Set only when the cap cut the block short. Pass it back as
+    /// `after_shard_id` to continue; absent means this was the last block.
     pub next_after_shard_id: Option<ShardId>,
 }
 
-/// Default and hard cap on one page of shards.
+/// Default and hard cap on one block of shards.
 ///
 /// Every other list endpoint returns everything, which is fine for servers,
 /// proxies and tables -- there are tens of those. Shards are the one entity
@@ -1695,7 +1695,7 @@ impl MetaState {
 
 #[derive(Debug, Default, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub(crate) struct MetaState {
-    /// Kept in shard order so a page of them is a range rather than a scan
+    /// Kept in shard order so a block of them is a range rather than a scan
     /// of everything above the cursor.
     shards: BTreeMap<ShardId, ShardLocation>,
     servers: BTreeMap<String, ServerMetaInfo>,
@@ -4747,7 +4747,7 @@ mod tests {
     fn a_shard_no_table_claims_is_listed_rather_than_hidden() {
         // Answering "which shards is nothing serving?" is most of the reason to
         // want this listing, so an unclaimed shard must appear, with empty table
-        // fields rather than being dropped from the page.
+        // fields rather than being dropped from the block.
         let meta = placed_shards();
         let response = listed(&meta, ListShardsRequest::default());
         let orphan = response
@@ -4827,7 +4827,7 @@ mod tests {
 
     #[test]
     fn the_last_block_does_not_offer_a_cursor() {
-        // Otherwise a caller loops forever on an empty page.
+        // Otherwise a caller loops forever on an empty block.
         let meta = placed_shards();
         let block = listed(
             &meta,

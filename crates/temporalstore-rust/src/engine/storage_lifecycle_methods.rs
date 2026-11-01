@@ -203,7 +203,7 @@ impl TemporalEngine {
         LIFECYCLE_PLAN_BUILDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // DO NOT WALK THE SHARD TO FIND OUT THERE IS NOTHING TO DO.
         //
-        // `bucket_storage_summaries` materialises every live page in the shard. This call sat at
+        // `bucket_storage_summaries` materialises every live block in the shard. This call sat at
         // the top of the plan unconditionally, so a settled shard that nobody had written to paid
         // a whole-shard walk on every maintenance round, for ever.
         //
@@ -214,7 +214,7 @@ impl TemporalEngine {
         //
         //     "some summary has dirty_object_count > 0"   IFF   "the dirty index is non-empty"
         //
-        // exactly, and the right-hand side is a `BTreeMap::is_empty` that touches no pages. When
+        // exactly, and the right-hand side is a `BTreeMap::is_empty` that touches no blocks. When
         // the index is empty the filter below selects nothing, `dirty_buckets` is empty, and the
         // walk's only remaining product is the report field -- which is why it survived, and why
         // that field is now an `Option` rather than a vector that reads as a measured zero.
@@ -423,13 +423,13 @@ impl TemporalEngine {
         // REFRESH A DUMP THAT STILL NAMES A SLAB COMPACTION HAS EMPTIED.
         //
         // `run_gc_inner` and `storage_block_gc_dependency_plan` both hold back every slab a bucket
-        // dump manifest names, and they are right to: installing that dump READS those pages, so
+        // dump manifest names, and they are right to: installing that dump READS those blocks, so
         // destroying the slab makes the dump uninstallable and a lagging replica unservable.
         // #1565 stopped such a slab freezing the retain FLOOR; it deliberately did not make the
         // slab deletable, and said so.
         //
         // What that leaves is a dead slab standing for ever on an IDLE shard. Compaction copies
-        // the live pages onto a fresh slab, and the newest manifest goes on naming the slab it
+        // the live blocks onto a fresh slab, and the newest manifest goes on naming the slab it
         // emptied -- because a manifest is only ever replaced by a DUMP, a dump is selected from
         // DIRTY buckets, and an idle shard has none. Measured on a settled shard that nobody is
         // writing to, in EVERY settled round, at 8,000 records and again at 80,000:
@@ -451,10 +451,10 @@ impl TemporalEngine {
         // RE-CHECKED after `block_slab_ids` was widened to every slab the manifest's whole-shard
         // index can install, rather than only the dumped buckets'. The argument turns on one
         // premise -- that a fresh dump names LIVE slabs only -- and widening makes that premise
-        // exact rather than weakening it: the widened set is derived from the live page refs of
+        // exact rather than weakening it: the widened set is derived from the live block refs of
         // the index the dump exports, which IS the shard's live slab set at that moment, so every
         // id in it is live by construction. What changes is how often this fires, not whether it
-        // ends: a slab holding nothing but unnamed-bucket pages is now named, so vacating it now
+        // ends: a slab holding nothing but unnamed-bucket blocks is now named, so vacating it now
         // arms this where before it armed nothing and the slab was destroyed under a manifest
         // that needed it. Each firing still replaces the newest manifest with one naming live
         // slabs alone, so it still cannot fire twice for the same vacated slab.
@@ -820,7 +820,7 @@ impl TemporalEngine {
     /// re-select and re-dump them every round. A bucket re-dirtied since the manifest
     /// snapshot (its current derived generation no longer equals the captured one) is
     /// left dirty, so reclaim never advances past an undumped write. The bucket's
-    /// generation is held at the captured (derived) value and its live pages are
+    /// generation is held at the captured (derived) value and its live blocks are
     /// untouched, so bucket_dump_summary_matches_current_generation keeps matching and
     /// WAL/index reclaim gating is unchanged.
     pub(super) fn clear_dumped_bucket_dirty_state(
@@ -978,8 +978,8 @@ impl TemporalEngine {
             // THE LIVE SET AS IT IS NOW, not as it was when the collector quarantined these
             // slabs. The destroy below is irreversible and the two moments are whole rounds
             // apart; between them this same round may have written a dump manifest whose
-            // embedded index installs pages in a slab that was unreferenced when the collector
-            // looked. Assembled exactly as the operator `/gc` path assembles it -- live page
+            // embedded index installs blocks in a slab that was unreferenced when the collector
+            // looked. Assembled exactly as the operator `/gc` path assembles it -- live block
             // refs across every loaded shard, widened by every slab a retained manifest's index
             // can install -- so the two reclaim paths cannot disagree about what is still needed.
             let mut purge_live_block_slab_ids = self.live_block_slab_ids_all_shards();
@@ -1073,7 +1073,7 @@ impl TemporalEngine {
             // ONE walk for all four sampling snapshots.
             //
             // Each of these built its own `collect_live_block_entries` -- a fresh Vec of every live
-            // page in the shard -- and then sorted all of it to take EIGHT samples. Four walks and
+            // block in the shard -- and then sorted all of it to take EIGHT samples. Four walks and
             // four full sorts, for about thirty-two sample rows. `who_walks_the_shard` measured
             // them at 1.0x the shard apiece, 4.0x of `apply_storage_lifecycle`'s 10.0x.
             //
@@ -1830,7 +1830,7 @@ impl TemporalEngine {
     /// Pick victims with a bounded sampled scan instead of enumerating every bucket.
     ///
     /// Reads recency and eligibility straight off the bucket index -- the same signals the full
-    /// scan derives, but without materializing every live page -- and computes byte totals only
+    /// scan derives, but without materializing every live block -- and computes byte totals only
     /// for the buckets actually chosen, which is at most `batch_limit` of them.
     pub(super) fn sampled_eviction_victims(
         &self,
@@ -1999,7 +1999,7 @@ impl TemporalEngine {
             .collect()
     }
 
-    /// Dump and release a shard's resident page lists when THAT SHARD'S OWN index exceeds a bound.
+    /// Dump and release a shard's resident block lists when THAT SHARD'S OWN index exceeds a bound.
     ///
     /// # WHY THIS EXISTS BESIDE `apply_storage_eviction`, AND WHAT MOVED
     ///
@@ -2156,17 +2156,17 @@ impl TemporalEngine {
             // rather than taken from the summary.
             //
             // The summary's `dirty_object_count` counts distinct OBJECTS from the object-keyed
-            // dirty index; the sampled arm counts PAGES whose own `dirty` bit is set. They are not
-            // the same number once an object spans more than one page, and both were being written
+            // dirty index; the sampled arm counts BLOCKS whose own `dirty` bit is set. They are not
+            // the same number once an object spans more than one block, and both were being written
             // into the same field of the same struct and multiplied by 1024 into the same weight.
-            // Measured on a fixture with one six-page object: the sampled arm ranked that bucket at
+            // Measured on a fixture with one six-block object: the sampled arm ranked that bucket at
             // 7,176 and this arm at 2,056 -- 3.5x apart in a sort key, decided only by
-            // `evict_sampled_lru`. Twelve single-page buckets in the same fixture agreed exactly,
-            // which is why a fixture without a multi-page object cannot see this.
+            // `evict_sampled_lru`. Twelve single-block buckets in the same fixture agreed exactly,
+            // which is why a fixture without a multi-block object cannot see this.
             //
-            // Pages is the right quantity here and not merely the shipped one: the weight is a
+            // Blocks is the right quantity here and not merely the shipped one: the weight is a
             // byte estimate added to `physical_bytes`, so it should track the bytes a dump would
-            // write, which pages do and distinct objects do not.
+            // write, which blocks do and distinct objects do not.
             // `the_two_eviction_arms_must_agree_on_what_the_dirty_count_means` is the gate.
             let dirty_blocks_by_bucket: std::collections::HashMap<u32, u64> = {
                 let shards = self.shards.read().expect("engine lock poisoned");
@@ -2197,7 +2197,7 @@ impl TemporalEngine {
                     let cache_memory_bytes =
                         cache.map(|cache| cache.memory_bytes).unwrap_or_default();
                     let cache_disk_bytes = cache.map(|cache| cache.disk_bytes).unwrap_or_default();
-                    // Absent means the bucket holds no node, which holds no dirty page either, so
+                    // Absent means the bucket holds no node, which holds no dirty block either, so
                     // zero is the answer and not a fallback.
                     let dirty_blocks = dirty_blocks_by_bucket
                         .get(&summary.routing_bucket)
@@ -2253,7 +2253,7 @@ impl TemporalEngine {
                     // manifest with this clear; the eviction path created the manifest and left
                     // every bucket marked dirty, so "dump before evict" dumped and then evicted
                     // nothing it had dumped. It also makes the release below possible at all --
-                    // a dirty bucket is refused, because the model maps carry no per-page dirty
+                    // a dirty bucket is refused, because the model maps carry no per-block dirty
                     // bit for a reload to restore.
                     self.clear_dumped_bucket_dirty_state(shard_id, &manifest);
                 }
@@ -2269,10 +2269,10 @@ impl TemporalEngine {
                     cache_disk_bytes_removed.saturating_add(report.disk_bytes_removed);
             }
         }
-        // THE ACTUATOR. `invalidate_slot` above drops cached pages and leaves every `BucketNode`
+        // THE ACTUATOR. `invalidate_slot` above drops cached blocks and leaves every `BucketNode`
         // whole, so the only mode that ever shrank the index was `delete_drop` -- which does it by
-        // DESTROYING data. Releasing a victim's page list shrinks the index without losing
-        // anything: the node stays routable and the next read loads its pages back from the model
+        // DESTROYING data. Releasing a victim's block list shrinks the index without losing
+        // anything: the node stays routable and the next read loads its blocks back from the model
         // maps. Not attempted under `delete_drop`, where the victim's data is about to go.
         let mut release = crate::engine::storage_bucket_internals::BucketReleaseOutcome::default();
         if !delete_drop && !victims.is_empty() {

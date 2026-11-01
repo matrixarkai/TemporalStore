@@ -289,22 +289,22 @@ fn control_api_reads_and_scans_index_log_stream() {
     .expect("shard state re-serializes for assertion");
     // `hashes` IS SERIALIZED NOW, AND THIS COMMENT SAID THE OPPOSITE. It read "`hashes` is
     // deliberately NOT serialized (`skip_serializing`): it is rebuildable from the durable bucket
-    // index on load, and duplicating those page references in every checkpoint is what made large
+    // index on load, and duplicating those block references in every checkpoint is what made large
     // context backfills tens of MB heavier." It carries `#[serde(default)]` -- the element name
-    // came off the page entry, so nothing can rebuild that map from the index and it is the
+    // came off the block entry, so nothing can rebuild that map from the index and it is the
     // durable authority. What is asserted below is unchanged: that the hash write is recorded in
-    // the bucket index with the right page address.
+    // the bucket index with the right block address.
     //
-    // The bucket-index page entries serialize under abbreviated field names on some builds and
+    // The bucket-index block entries serialize under abbreviated field names on some builds and
     // full names on others, so accept either: what is being asserted is that the hash write is
     // recorded with the right page address, not how the fields are spelled.
     //
     // AND THE SELECTOR CANNOT NAME THE FIELD ANY MORE. It matched
-    // `object_key == "h" && component == "f"`, and a page entry has no component slot in the
+    // `object_key == "h" && component == "f"`, and a block entry has no component slot in the
     // served index, so it matched nothing and read "the hash h/f write is recorded in the bucket
-    // index" for a write that was recorded. The object holds exactly ONE field, so its page is
+    // index" for a write that was recorded. The object holds exactly ONE field, so its block is
     // selected by object key alone -- and the count below is what keeps that selection exact
-    // rather than letting it widen to any page of any object.
+    // rather than letting it widen to any block of any object.
     let hash_blocks: Vec<&serde_json::Value> = served["slot_index"]["bucket_map"]
         .as_object()
         .expect("served index carries the bucket map")
@@ -329,7 +329,7 @@ fn control_api_reads_and_scans_index_log_stream() {
     );
     let hash_block = hash_blocks[0];
     // AND NO ELEMENT-NAME SLOT IS WRITTEN, which is the other half of why the selector changed. A
-    // `component` or `c` key on a page entry here would mean the element name has come back to the
+    // `component` or `c` key on a block entry here would mean the element name has come back to the
     // STORED form, which is the thing the width step removed.
     assert!(
         hash_block.get("component").is_none() && hash_block.get("c").is_none(),
@@ -696,13 +696,13 @@ fn recovery_validates_all_timestamped_kv_block_families() {
     let report = engine.storage_recovery_report(1);
     // context_dirty tracking was intentionally moved to an ephemeral in-memory
     // coalesced index (commit 9390d110), so it no longer contributes a persisted
-    // timestamped page: feature 16 (8 feature + 8 sequence, now folded into the
+    // timestamped block: feature 16 (8 feature + 8 sequence, now folded into the
     // feature family) + context_event/index/audit 1 each = 19.
     assert_eq!(report.feature_block_layout.indexed_timestamped_points, 19);
-    // Every page the index points at is a packed page, which is the property this is for and
-    // does not depend on how densely one packs. The count this replaced -- at least ten pages --
-    // moved when the page format did: the same 19 points, asserted just above, now occupy 6 pages
-    // because a point costs about a quarter of what it cost as JSON. Ten LEGACY pages would have
+    // Every block the index points at is a packed block, which is the property this is for and
+    // does not depend on how densely one packs. The count this replaced -- at least ten blocks --
+    // moved when the block format did: the same 19 points, asserted just above, now occupy 6 blocks
+    // because a point costs about a quarter of what it cost as JSON. Ten LEGACY blocks would have
     // satisfied the old assertion; none satisfy this one.
     assert_eq!(
         report.feature_block_layout.packed_timestamped_blocks,
@@ -1045,8 +1045,8 @@ fn control_state_selection_omitted_occur_time_resolves_to_now_like_native() {
 
 #[test]
 fn live_block_slab_ids_includes_control_state_blocks() {
-    // control_state_pages is page-backed; omitting it from the GC live set let a slab holding
-    // only a control-state page be reclaimed while still index-referenced -> DataLoss on read.
+    // control_state_pages is block-backed; omitting it from the GC live set let a slab holding
+    // only a control-state block be reclaimed while still index-referenced -> DataLoss on read.
     let engine = TemporalEngine::default();
     engine.load_shard(1);
     let resp = engine.execute(ExecuteRequest {
@@ -2110,7 +2110,7 @@ fn rebuild_bucket_block_ownership_preserves_dirty_watermarks() {
     // manifest. There is nothing left for the rebuild to carry over, and
     // `the_summary_last_dump_sequence_comes_from_the_manifest_not_from_the_node` is what holds
     // that the surviving figure is the manifest's.
-    // THE BUCKET IS DERIVED FROM THE KEY, not chosen. This fixture used to file the page under
+    // THE BUCKET IS DERIVED FROM THE KEY, not chosen. This fixture used to file the block under
     // bucket 3 by writing `Some(3)` into the ADDRESS and letting the rebuild read it back; the rebuild
     // derives from the object key over the range it is handed now, so a hand-picked bucket id names a
     // bucket the rebuild will not produce. Deriving here asserts the same property -- a watermark
@@ -2186,12 +2186,12 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert_eq!(physical_before_reload.missing_routing_bucket_count, 0);
     assert!(physical_before_reload.bucket_nodes.iter().any(|bucket| {
         bucket.block_ref_count == 2
-            // ONE OBJECT, TWO PAGES. This pinned `object_count == 2` -- two hash fields of one
+            // ONE OBJECT, TWO BLOCKS. This pinned `object_count == 2` -- two hash fields of one
             // key were two OBJECTS, because the id folded the component in. They are two
             // ELEMENTS of one object now, so `object_index` holds one row and the pair
-            // (2 pages, 1 object) is what `classify_bucket_layout` calls `MultiBlockObject`.
-            // The page count beside it is left at 2 deliberately: it is what says the
-            // collapse is of the IDENTITY and not of the pages.
+            // (2 blocks, 1 object) is what `classify_bucket_layout` calls `MultiBlockObject`.
+            // The block count beside it is left at 2 deliberately: it is what says the
+            // collapse is of the IDENTITY and not of the blocks.
             && bucket.object_count == 1
             && bucket.dirty_generation >= 2
             && bucket.block_indexes.iter().all(|block| {
@@ -2236,7 +2236,7 @@ fn bucket_block_ownership_is_first_class_and_survives_reload() {
     assert_eq!(physical_after_reload.block_index_count, 2);
     assert_eq!(physical_after_reload.dirty_bucket_count, 0);
     assert!(physical_after_reload
-    // AND THE COLLAPSED IDENTITY SURVIVES THE RELOAD: still two pages, still one object.
+    // AND THE COLLAPSED IDENTITY SURVIVES THE RELOAD: still two blocks, still one object.
         .bucket_nodes
         .iter()
         .any(|bucket| bucket.block_ref_count == 2 && bucket.object_count == 1));
@@ -2349,7 +2349,7 @@ fn storage_recovery_uses_bucket_index_not_stale_secondary_model_maps() {
         // The slab id is half of one packed word now, so it is planted by rebuilding the address
         // through the checked constructor rather than by assigning a field. Every other part is
         // carried across unchanged, which is what makes this a STALE address and not a new one.
-        // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the page words
+        // THROUGH THE SETTER, because the row is a slot: `set_address` rewrites the block words
         // and leaves the deadline, the model id and the dirty bit alone, which is what makes this
         // a stale ADDRESS rather than a replaced row.
         let planted = ElementEntry::from_parts(
@@ -2636,7 +2636,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
         .next()
         .expect("legacy page index should load");
     // The legacy record's `routing_slot` of 7 is READ AND IGNORED: the address has nowhere to put
-    // it, and where the page IS is the key of the bucket map it was loaded into -- asserted by the
+    // it, and where the block IS is the key of the bucket map it was loaded into -- asserted by the
     // `bucket_map.get(&7)` this test already performs above.
     assert_eq!(
         (block.address.block_slab_id(), block.address.offset()),
@@ -2676,8 +2676,8 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             layout: BucketLayoutState::SingleBlockObject,
             flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
             object_index: [30].into_iter().collect(),
-            // KEYED BY THE IDENTITY WRITTEN BESIDE THE PAGE. These literals used to carry a
-            // stored map key that was then THROWN AWAY and replaced by the page's own copy of
+            // KEYED BY THE IDENTITY WRITTEN BESIDE THE BLOCK. These literals used to carry a
+            // stored map key that was then THROWN AWAY and replaced by the block's own copy of
             // the object key -- so the string said one thing and the index was keyed by another.
             // The object key is simply stated once now, in the position the index is keyed by.
             block_index: [(
@@ -2863,10 +2863,10 @@ fn control_state_set_and_get_with_options_is_idempotent_on_uuid_replay() {
 // shared-corpus: storage_object_page_bucket_parity_surfaces storage_object_hot_cold_reload;
 
 // shared-corpus: storage_object_manager_bucketstore_runtime_authority;
-/// The layout label of a bucket holding NO resident pages, asked once per object-count half.
+/// The layout label of a bucket holding NO resident blocks, asked once per object-count half.
 ///
 /// A released bucket is exactly this shape: release_bucket_blocks empties block_index and keeps
-/// object_index, then relabels with a page count of zero. The one-object half answered
+/// object_index, then relabels with a block count of zero. The one-object half answered
 /// single_object; the two-or-more half answered empty -- the same label a bucket holding
 /// nothing gets, and the label a never-classified bucket defaults to. So a released bucket
 /// carrying seven objects was indistinguishable, in every report that reads this field, from a
@@ -2892,7 +2892,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
         "the two-or-more half must be non-empty, or its assertions say nothing"
     );
 
-    // HALF ONE: a single object, no resident page. This half was already right, and it is the
+    // HALF ONE: a single object, no resident block. This half was already right, and it is the
     // control -- it is what makes the second half's answer a contradiction rather than a policy.
     let single_object_labels: Vec<BucketLayoutState> = single_object_half
         .iter()
@@ -2911,7 +2911,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
         );
     }
 
-    // HALF TWO: two or more objects, no resident page. The objects are still there, so the
+    // HALF TWO: two or more objects, no resident block. The objects are still there, so the
     // label must still say so.
     let many_object_labels: Vec<BucketLayoutState> = many_object_half
         .iter()
@@ -2940,7 +2940,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
     }
 
     // The boundary that keeps the fix from swallowing the genuinely empty case: zero objects
-    // stays empty at every page count, which is what stops this from being "never say empty".
+    // stays empty at every block count, which is what stops this from being "never say empty".
     for block_count in 0..4usize {
         assert_eq!(
             classify_bucket_layout(0, block_count),
@@ -2953,7 +2953,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
 // shared-corpus: storage_object_manager_bucketstore_runtime_authority;
 /// What the mislabel cost downstream: the empty-bucket counter of the runtime report.
 ///
-/// runtime_report counts a bucket as empty from its stored label alone, so a bucket whose pages
+/// runtime_report counts a bucket as empty from its stored label alone, so a bucket whose blocks
 /// were released reported as empty while still holding its objects. This drives the label
 /// through the same classifier the write path uses and then reads the counter, so the number is
 /// the report's own and not a restatement of the classifier.
@@ -2961,7 +2961,7 @@ fn bucket_layout_label_without_blocks_answers_the_object_count_on_both_halves() 
 fn released_multi_object_buckets_are_not_counted_as_empty_buckets() {
     let mut shard = ShardState::default();
 
-    // Three buckets, all with an emptied page index: one genuinely holding nothing, one holding
+    // Three buckets, all with an emptied block index: one genuinely holding nothing, one holding
     // a single object, one holding three. Only the first is empty.
     let fixtures: Vec<(u32, Vec<u64>)> =
         vec![(1, Vec::new()), (2, vec![20]), (3, vec![30, 31, 32])];
@@ -3194,7 +3194,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
     // The two halves of the surface disagreed and so they are asserted APART. The record-framed
     // kinds (Wal, IndexLog) go through `scan_bounded`, which reports an explicit `truncated`
     // flag and so already said "done" when the walk ran out of records. Only the byte-addressed
-    // kinds (Block, Page, Index) were wrong. A single assertion over all five would have read
+    // kinds (Block, Block, Index) were wrong. A single assertion over all five would have read
     // two correct answers and looked like a surface that works.
     let dir = tempfile::tempdir().unwrap();
     let engine = TemporalEngine::with_local_dirs(

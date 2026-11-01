@@ -8,7 +8,7 @@
 //! `docs/temporalstore_page_block_address_contract.md` describes one block tier.
 //! `PublicStorageContract` maps both published address labels to `ElementEntry`.
 //! `BlockIndexNamedBy` carries a `BlockIndexMap`, and `BlockEntryAt` writes its entries.
-//! Older page-named report fields are retained for consumers, not a second storage tier.
+//! Older block-named report fields are retained for consumers, not a second storage tier.
 //! `PublicStorageFeatureShapes` describes report projections rather than Rust field layouts.
 //!
 //! The two names on a published statistic must continue to carry the same measurement.
@@ -21,7 +21,7 @@
 //! every consumer reading the other name is silently wrong. That has happened twice here
 //! already. A committed fixture recorded `page_reads: 4` beside `block_reads: 2` and was
 //! believed for long enough to be copied into six places, and `dirty_object_count` was filled
-//! with PAGES in one eviction arm and OBJECTS in the other, 3.5x apart, inside a sort key.
+//! with BLOCKS in one eviction arm and OBJECTS in the other, 3.5x apart, inside a sort key.
 //!
 //! `page_and_block_counter_ratio` pins the reads and writes pair against nine workloads.
 //! NOTHING pinned the other mirrors. `page_index_entries` and `block_index_entries` are
@@ -206,7 +206,7 @@ fn the_segment_rule_leaves_words_that_merely_contain_the_letters_alone() {
 ///
 /// This is the pair the contract document describes as logical against physical. In this engine
 /// both entries carry the string `ElementEntry`, because one `ElementEntry` is both the address
-/// of a page and the address of the block backing it. If a future change gives the physical
+/// of a block and the address of the block backing it. If a future change gives the physical
 /// half an identity of its own, these two stop being equal and this fails -- which is the point
 /// at which the contract document becomes true of this engine and the rename becomes wrong.
 #[test]
@@ -447,7 +447,7 @@ fn every_page_named_shard_stat_agrees_with_its_block_twin() {
 /// ONCE in this crate, and the occurrence was the header itself. A header that cites
 /// itself is a header that has stopped reading the tree.
 ///
-/// So the three facts are scanned for. If a page-named identity type, a page-named
+/// So the three facts are scanned for. If a block-named identity type, a block-named
 /// identity FIELD or a page SIZE constant is reintroduced, this fails and names the file
 /// and line, instead of a doc comment quietly becoming untrue.
 ///
@@ -467,7 +467,7 @@ fn every_page_named_shard_stat_agrees_with_its_block_twin() {
 fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
     const MIN_FILES: usize = 100;
 
-    /// `struct Page...`, `enum Page...`, `type Page...`, `trait Page...` -- a type whose
+    /// `struct Block...`, `enum Block...`, `type Block...`, `trait Block...` -- a type whose
     /// name BEGINS with the tier word, which is what an identity type would look like.
     fn declares_a_page_named_type(line: &str) -> bool {
         let code = strip_leading_visibility(line);
@@ -673,7 +673,7 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
 /// `DURABLE_NAMES` in `block_store.rs` checks one direction: every listed name must still be
 /// spelled by SOME site outside the list. For this key that check can never go red. The string
 /// `"pages"` has 747 other sites in this crate -- it is also the on-disk directory the block
-/// store lives in (`<data>/pages`, set by `docker/single-node-entrypoint.sh`,
+/// store lives in (`<data>/blocks`, set by `docker/single-node-entrypoint.sh`,
 /// `docker/docker-compose.cloud-api.yml` and `tools/deploy_profile_common.sh`) -- so the
 /// substring survives the serde rename being deleted outright. A registry entry for `pages`
 /// would be a guard that cannot fail, which is worse than no entry: it reads as covered.

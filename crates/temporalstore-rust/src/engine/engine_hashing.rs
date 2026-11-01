@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! Stable object/page hashing + routing-bucket helpers, split from engine.rs.
+//! Stable object/block hashing + routing-bucket helpers, split from engine.rs.
 use super::*;
 
 pub(super) fn routing_bucket_count(start_routing_bucket: u32, end_routing_bucket: u32) -> u32 {
@@ -21,14 +21,14 @@ pub(super) fn bucket_for_object(key: &str, start_routing_bucket: u32, routing_bu
     start_routing_bucket + (stable_object_hash(key) % routing_bucket_count as u64) as u32
 }
 
-/// WHAT DERIVING A PAGE'S BUCKET COSTS, COUNTED, AND ONLY UNDER TEST.
+/// WHAT DERIVING A BLOCK'S BUCKET COSTS, COUNTED, AND ONLY UNDER TEST.
 ///
-/// The read path used to read a page's bucket off its `BlockAddress` and now derives it from the
+/// The read path used to read a block's bucket off its `BlockAddress` and now derives it from the
 /// object key, so what that costs is a number this tree owes rather than an argument. It is a COUNT
 /// and not a timing, because a timing on a shared box moves with whatever is building next door.
 ///
 /// `#[cfg(test)]` DELIBERATELY, which is the one place these counters differ from
-/// `BLOCK_LOOKUP_ENTRIES_EXAMINED`. That one is charged in production because a page lookup is a walk
+/// `BLOCK_LOOKUP_ENTRIES_EXAMINED`. That one is charged in production because a block lookup is a walk
 /// whose length an operator may need to see. This is one FNV-1a pass over a short borrowed string,
 /// and two relaxed atomics per read to measure it would cost more than the thing being measured --
 /// which is itself the answer the counters exist to report. A count does not vary with the build
@@ -69,7 +69,7 @@ pub(super) fn routing_bucket_derivations() -> (u64, u64) {
 /// THE SAME TWO NUMBERS FOR THE OBJECT IDENTITY, WHICH IS THE OTHER HASH A READ PAYS FOR.
 ///
 /// A read already walks its key once to place it in a bucket, and the counters above are what that
-/// costs. Deriving the object identity rather than reading it off the page entry walks the SAME key
+/// costs. Deriving the object identity rather than reading it off the block entry walks the SAME key
 /// a second time, and these are what THAT costs -- so the pair of them is the whole price of the
 /// entry no longer carrying the id, stated as a count of passes and a count of bytes.
 ///
@@ -160,7 +160,7 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
 /// THE IDENTITY OF AN OBJECT, WHICH IS ITS KIND AND ITS KEY AND NOTHING ELSE.
 ///
 /// The component USED to be folded in here, and the consequence was that an object held exactly
-/// one page: a hash of twenty-five fields was twenty-five objects that happened to share a key.
+/// one block: a hash of twenty-five fields was twenty-five objects that happened to share a key.
 /// #1986 recorded the result as "the object id names a page's triple, not an object" -- a
 /// description of this defect, not a property to preserve.
 ///
@@ -171,7 +171,7 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
 ///
 /// The element has not gone anywhere: `BlockIndex::component` is its own serialized field, the
 /// registry key is `(u64, Option<Arc<str>>)` since #2013, and `StagedBlock` carries it. What
-/// changes is only what the ID means -- the object, not the page.
+/// changes is only what the ID means -- the object, not the block.
 pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -> u64 {
     note_object_id_derivation(kind, key);
     let mut hash = FNV1A64_OFFSET_BASIS;
@@ -183,15 +183,15 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
     hash
 }
 
-/// WHICH PAGE A READ WANTS, STATED BY THE CALLER AND NOT READ OFF THE ADDRESS.
+/// WHICH BLOCK A READ WANTS, STATED BY THE CALLER AND NOT READ OFF THE ADDRESS.
 ///
 /// THIS TYPE EXISTS TO MAKE "I CANNOT SAY" A BUILD FAILURE. `engine::read_block_bytes` used to take
 /// the element alone and recover the object from `address.object_id()`, an `Option` it consumed with
 /// `and_then`. That shape is safe for the routing bucket, where an absent value only weakens a cache
-/// key, and it is NOT safe here: `block_in_wal::read_block` serves a page whose only durable copy is
-/// its WAL record, so a reader that cannot name the object does not read a stale page -- it reads
+/// key, and it is NOT safe here: `block_in_wal::read_block` serves a block whose only durable copy is
+/// its WAL record, so a reader that cannot name the object does not read a stale block -- it reads
 /// MISSING for a durably acknowledged write, which is the exact hole `block_in_wal` exists to close.
-/// An `Option<u64>` threaded to the same sites compiles with `None` and loses a page in silence.
+/// An `Option<u64>` threaded to the same sites compiles with `None` and loses a block in silence.
 ///
 /// SO THERE IS NO CONSTRUCTOR THAT TAKES AN ID. [`BlockIdentity::of`] takes the TERMS -- the shard,
 /// the kind and the key -- and derives the identity here. A caller cannot pass an id it computed
@@ -201,10 +201,10 @@ pub(crate) fn stable_block_object_id(shard_id: ShardId, kind: &str, key: &str) -
 /// `Item = (u32, &mut BlockAddress)` "makes the caller say it, and the compiler name any caller
 /// that cannot" -- one level stricter, because the terms rather than the answer are what crosses.
 ///
-/// THE ELEMENT IS PART OF THE IDENTITY, NOT AN OPTION BESIDE IT. `None` means the page IS its whole
+/// THE ELEMENT IS PART OF THE IDENTITY, NOT AN OPTION BESIDE IT. `None` means the block IS its whole
 /// object -- a string, a control state -- and `Some` names the element within it, exactly as
-/// `BlockIndex::component` beside the address does. One WAL record carries many pages and picks one
-/// out of itself by identity, so a read handed only the object answers with the FIRST page of that
+/// `BlockIndex::component` beside the address does. One WAL record carries many blocks and picks one
+/// out of itself by identity, so a read handed only the object answers with the FIRST block of that
 /// object: another element's bytes rather than a miss. Keeping the two halves in one value is what
 /// stops a site passing the object and forgetting the element.
 ///
@@ -234,12 +234,12 @@ impl<'a> BlockIdentity<'a> {
         }
     }
 
-    /// The object this page belongs to.
+    /// The object this block belongs to.
     pub(super) fn object_id(self) -> u64 {
         self.object_id
     }
 
-    /// Which element of that object, or `None` when the page is the whole of it.
+    /// Which element of that object, or `None` when the block is the whole of it.
     pub(super) fn component(self) -> Option<&'a str> {
         self.component
     }

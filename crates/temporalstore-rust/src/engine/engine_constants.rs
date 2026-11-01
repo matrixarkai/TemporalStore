@@ -6,7 +6,7 @@ use std::sync::atomic::AtomicU64;
 pub(super) const FEATURE_ADD_HARD_MAX_SIZE: usize = 100_000;
 pub(super) const FEATURE_BLOCK_MAGIC: &[u8] = b"TSFPG1\n";
 
-/// The byte format. Distinct from the JSON magic so a page written before it still identifies
+/// The byte format. Distinct from the JSON magic so a block written before it still identifies
 /// itself, rather than being read as a length that happens to parse.
 pub(super) const FEATURE_BLOCK_BINARY_MAGIC: &[u8] = b"TSFPB1\n";
 #[cfg(test)]

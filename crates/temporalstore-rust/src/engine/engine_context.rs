@@ -119,7 +119,7 @@ pub(super) fn context_entity_key(tenant_hash: u64, node_hash: u64, entity_hash: 
 
 /// Split a persisted per-entity key back into (collection key, entity hash).
 ///
-/// The index stores entities grouped by node, but the PERSISTED page entry still carries the
+/// The index stores entities grouped by node, but the PERSISTED block entry still carries the
 /// per-entity key `ctx:entity:{tenant}:{node}:{entity_hash}` -- that is what keeps the on-disk
 /// shape identical across this fold in both directions. Load calls this to rebuild the grouping.
 /// Returns None for a key that does not carry a numeric entity hash, so a malformed or
@@ -383,7 +383,7 @@ pub(super) fn context_from_bytes<T: ContextWire>(bytes: &[u8]) -> Option<T> {
     T::decode_context_value(bytes)
 }
 
-/// The bucket a page's own key routes to, on the range this shard is stamped with.
+/// The bucket a block's own key routes to, on the range this shard is stamped with.
 ///
 /// THE ONE SPELLING, so that a reader and the write path that produced the page cannot disagree
 /// about which bucket the page cache is keyed by. Every context loader here reaches it through this
@@ -403,7 +403,7 @@ pub(super) fn read_context_value<T: ContextWire>(
     shard_id: ShardId,
     timeline_key: u64,
     address: &ElementEntry,
-    // Which page, stated by the caller: the timeline series this record sits in. The kind differs
+    // Which block, stated by the caller: the timeline series this record sits in. The kind differs
     // per caller -- a child ref, a summary and a compression event are three kinds over three maps
     // -- and neither the address nor the timeline key names it.
     identity: BlockIdentity<'_>,
@@ -990,7 +990,7 @@ pub(super) fn load_context_node(
         })
         .and_then(|(address, identity)| {
             // Shared, not copied: the bytes are parsed here and dropped, so owning them costs a
-            // page-sized memcpy and an allocation for nothing.
+            // block-sized memcpy and an allocation for nothing.
             super::read_block_shared(
                 cache,
                 block_store,
@@ -1225,8 +1225,8 @@ pub(super) fn traverse_context_tree(
             // first to disappear. That is the opposite of what a store keyed on time should do.
             //
             // This does NOT make the selection relevance-based, and it is worth being plain
-            // about that: scoring a child costs a page read (`load_context_node_vector` reads
-            // the node's page and decodes its vector), so scoring every child of a very wide
+            // about that: scoring a child costs a block read (`load_context_node_vector` reads
+            // the node's block and decodes its vector), so scoring every child of a very wide
             // parent is not affordable, and a cap has to stay. Recency is a better proxy than
             // age, not a substitute for relevance. A parent wide enough for this cut to bind
             // still hides children, which is what the node hierarchy in the issue addresses.

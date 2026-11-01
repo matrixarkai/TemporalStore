@@ -2054,7 +2054,7 @@ pub fn retrieve_context(
     // L1 (ContextQuerySummaries uses 1 = L0, 2 = L1).
     //
     // Only for the candidates the node fetch could not answer for. Each one costs a formatted
-    // object key, a walk of that node's summary series, a page read and the decode of a whole
+    // object key, a walk of that node's summary series, a block read and the decode of a whole
     // ContextSummary -- text and all -- to keep one field, so the list being empty is the point
     // rather than a happy accident.
     fanout_plan.summary_lookup_nodes = summary_lookup_nodes.len();

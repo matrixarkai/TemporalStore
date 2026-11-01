@@ -13,7 +13,7 @@
 //! The ported `IndexItem` addresses an object by `object_id: u32` AND CARRIES NO CHARACTERS AT
 //! ALL -- `the_ported_item_has_no_field_that_can_carry_a_character` walks its protobuf keys and
 //! finds every one of the seven is a varint, so there is no length-delimited field on it in which
-//! a key, an element name or a page handle could ride.
+//! a key, an element name or a block handle could ride.
 //!
 //! A DURABLE NUMERIC OBJECT ID ALREADY EXISTS AND IS ALREADY ON THE LIVE ROW. It is
 //! `object_id: u64` -- `hashing::stable_block_object_id(shard, kind, key)`, an FNV-1a 64 over the
@@ -73,7 +73,7 @@
 //! Eight harvests have landed on the live row since this port was written, each measured at the
 //! site. They are cited rather than re-pinned, because each already has a test beside it:
 //!
-//!   * the page handle is STRIPPED when it is the derivation of the fields beside it -- 43 B of a
+//!   * the block handle is STRIPPED when it is the derivation of the fields beside it -- 43 B of a
 //!     176-B record, "the largest single field in the index log" (`strip_block_ref_key_repeat`);
 //!   * and when it is NOT stripped it goes out as a NUMBER rather than decimal text -- 20 B of a
 //!     161-B item, 12.4%, down to about nine (`block_ref_key_as_number_when_it_is_one`);
@@ -422,7 +422,7 @@ fn a_thirty_two_bit_object_id_collides_long_before_the_sixty_four_bit_one_does()
 
 /// THE ROW'S OBJECT ID LANDS IN A STORED `u64` SET, AND THE TRUNCATION IS NOT A MEMBER OF IT.
 ///
-/// `fold_delta_block_items` is the only thing that turns index-log items into pages. It inserts
+/// `fold_delta_block_items` is the only thing that turns index-log items into blocks. It inserts
 /// `item.object_id` into `BucketNode::object_index`, which is STORED and whose members are
 /// compared for equality against `stable_block_object_id` computed from text elsewhere in the
 /// engine. So narrowing the row's id does not cost a byte of precision, it changes the VALUE a
@@ -549,7 +549,7 @@ fn the_fold_takes_the_bucket_from_the_row_and_not_from_a_default() {
 /// What moved the stamp: `index_log::INDEX_ITEM_SLOTS` went twelve to eleven, the element-name slot
 /// coming off the positional row. WHAT THAT DOES TO THIS MODULE'S ESTIMATE: nothing to the
 /// comparison and one slot to its subject. The costing above is a measurement of this port's
-/// protobuf record against the LIVE positional row -- 550 bytes against 595 for eight page items --
+/// protobuf record against the LIVE positional row -- 550 bytes against 595 for eight block items --
 /// and the live row just lost a slot that encoded as one byte of msgpack nil. So the live side gets
 /// 8 bytes CHEAPER on that fixture and the port's disadvantage WIDENS; the estimate moves in the
 /// direction that makes the conclusion stronger, which is why it stands.
@@ -579,12 +579,12 @@ fn the_stamp_this_adoption_was_costed_against() {
     // unaltered. 29 moves a key in the SERVED index's bucket node, which this module
     // does not cost either: the positional row carries no key names at all.
     //
-    // 27 is a PAGE ENTRY dropping the `object_key` and `model_id` it restated from the key it is
+    // 27 is a BLOCK ENTRY dropping the `object_key` and `model_id` it restated from the key it is
     // filed under. This module costs the POSITIONAL index-log row, and the row is untouched: the
     // entry's two retired keys are the SERVED index's named map, while `IndexItemRow` carries its
     // own `block_ref_key` slot and `block_ref_key_from_parts` is unchanged -- the new
     // `block_ref_key_parts` beside it is an addition with no slot of its own. So the
-    // 550-against-595 comparison for eight page items is untouched.
+    // 550-against-595 comparison for eight block items is untouched.
     // RE-READ AT 23 -> 24, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
     // 24 is `expires_at_ms` joining `u64_ledgers` as a third domain. It was a STORED top-level key
@@ -599,7 +599,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // lose nothing by becoming ordered.
     //
     // This module costs the POSITIONAL index-log row, which carries no struct version, so the
-    // 550-against-595 comparison for eight page items is untouched.
+    // 550-against-595 comparison for eight block items is untouched.
     //
     // RE-READ AT 22 -> 23, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
@@ -616,7 +616,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // map rather than bytes.
     //
     // This module costs the POSITIONAL index-log row, which carries no struct version, so the
-    // 550-against-595 comparison for eight page items is untouched.
+    // 550-against-595 comparison for eight block items is untouched.
     //
     // RE-READ AT 21 -> 22, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
@@ -634,7 +634,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // and the second time a consolidation had to carry it along.
     //
     // This module costs the POSITIONAL index-log row, which carries no struct version, so the
-    // 550-against-595 comparison for eight page items is untouched.
+    // 550-against-595 comparison for eight block items is untouched.
     //
     // RE-READ AT 20 -> 21, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
@@ -648,7 +648,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     //
     // This module costs the POSITIONAL index-log row, which carries no struct version, so
     // `index_log::INDEX_ITEM_SLOTS` and the row's shape are untouched and the 550-against-595
-    // comparison for eight page items is where it was.
+    // comparison for eight block items is where it was.
     //
     // RE-READ AT 19 -> 20, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
@@ -663,7 +663,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     //
     // This module still costs the POSITIONAL index-log row, which carries no struct version, so
     // `index_log::INDEX_ITEM_SLOTS` and the row's shape are untouched and the 550-against-595
-    // comparison for eight page items is where it was.
+    // comparison for eight block items is where it was.
     //
     // RE-READ AT 18 -> 19, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
@@ -673,7 +673,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // so without the bump an index written before the move loads with every feature series EMPTY.
     // This module costs the POSITIONAL index-log row, which carries no struct version at all, so
     // `index_log::INDEX_ITEM_SLOTS` and the row's shape are untouched and the 550-against-595
-    // comparison for eight page items is exactly where it was.
+    // comparison for eight block items is exactly where it was.
     //
     // RE-READ AT 17 -> 18, AS THE MESSAGE ABOVE DEMANDS, AND THE COSTING STILL STANDS.
     //
@@ -682,7 +682,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // index at once, where 17 removed one. Same category as every bump before it: a change to the
     // NAMED SERVED index. This module costs the POSITIONAL index-log row, which carries no struct
     // version at all, so `index_log::INDEX_ITEM_SLOTS` and the row's shape are untouched and the
-    // 550-against-595 comparison for eight page items is exactly where it was.
+    // 550-against-595 comparison for eight block items is exactly where it was.
     //
     // AND THE NOTE BELOW ABOUT "THE NEXT SEVEN" IS ANSWERED RATHER THAN LEFT STANDING: three of
     // those seven landed on ONE bump here, which is the alternative that note named. Four of the
@@ -695,7 +695,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // consolidated map, which REMOVES a key from the stored index. That is the same category as
     // every bump before it -- a change to the NAMED SERVED index -- and this module costs the
     // POSITIONAL index-log row, which carries no struct version at all. `index_log::INDEX_ITEM_SLOTS`
-    // and the row's shape are untouched, so the 550-against-595 comparison for eight page items is
+    // and the row's shape are untouched, so the 550-against-595 comparison for eight block items is
     // exactly where it was.
     //
     // WORTH NOTING FOR THE NEXT SEVEN, since this is the first of eight such moves: each one
@@ -712,7 +712,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // 14 (this very map's value becoming a consolidated record) and 15 (a sketch merge changing a
     // bucket value) -- and this module costs the POSITIONAL index-log row, which carries no struct
     // version at all. Nothing in `index_log::INDEX_ITEM_SLOTS` or the positional row moved, so the
-    // 550-against-595 comparison for eight page items is exactly where it was.
+    // 550-against-595 comparison for eight block items is exactly where it was.
     //
     // AND THE NINE HARVESTS STAY NINE. The element-name slot leaving the row was the ninth and the
     // only format break among them; a slot gaining a wire form in the SERVED index adds nothing to
@@ -733,7 +733,7 @@ fn the_stamp_this_adoption_was_costed_against() {
     // consolidated record. The stamp guards the named served index, and this module costs the
     // POSITIONAL index-log row, which carries no struct version at all -- the module doc above
     // says so, and that is why the slot count is the whole of that row's protection. So the
-    // 550-against-595 comparison for eight page items is untouched by this bump: nothing in
+    // 550-against-595 comparison for eight block items is untouched by this bump: nothing in
     // `index_log::INDEX_ITEM_SLOTS` or the positional row moved, and the port's disadvantage is
     // exactly where it was.
     //

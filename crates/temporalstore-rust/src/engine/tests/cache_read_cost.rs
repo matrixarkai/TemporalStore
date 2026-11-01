@@ -20,8 +20,8 @@
 //! `AllocClass::CacheRead`:
 //!
 //! ```text
-//!   engine.rs              read_block_bytes        cache.get           the page, owned
-//!   engine.rs              read_block_shared       cache.get_shared    the page, shared
+//!   engine.rs              read_block_bytes        cache.get           the block, owned
+//!   engine.rs              read_block_shared       cache.get_shared    the block, shared
 //!   command_validation.rs  cached_response         cache.get           the command answer
 //!   compaction.rs          block_memory_resident   cache.get_memory    a residency probe
 //! ```
@@ -37,7 +37,7 @@
 //! command-answer cache. On a hit it stops there: one cache read. On a miss it calls the source,
 //! which resolves an address and calls `read_block_bytes`, reading the page cache as well. The
 //! tables below report cache reads per serving read so that the two are never confused, and the
-//! measured arms all come out at 1.00 -- a key with no stored answer never reaches a page read,
+//! measured arms all come out at 1.00 -- a key with no stored answer never reaches a block read,
 //! so the absent arm is one cache read too.
 //!
 //! ABSOLUTE QUANTITIES, NEVER A SHARE. Every figure is allocations and bytes per serving read,
@@ -319,8 +319,8 @@ fn what_a_cache_read_costs_on_the_serving_path() {
 /// HOW MUCH OF A SERVING READ THE CLASSES ACCOUNT FOR.
 ///
 /// Before `AllocClass::CacheRead` existed this reconciled to EXACTLY ZERO. All nine classes were
-/// charged inside WRITE primitives -- the page encode, the slab append, the bucket index, the
-/// dirty-object index, the staged outcomes, the log record, the index-log delta, the carried page
+/// charged inside WRITE primitives -- the block encode, the slab append, the bucket index, the
+/// dirty-object index, the staged outcomes, the log record, the index-log delta, the carried block
 /// and the invalidation -- and a read entered none of them, so every allocation a serving read
 /// made landed in the residual and nothing could say what any of it was for. That is a stronger
 /// statement than the 6.0% a replaying restore reconciles to, and it is the reason this class was

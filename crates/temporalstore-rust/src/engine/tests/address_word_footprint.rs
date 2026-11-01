@@ -4,7 +4,7 @@
 //! WHAT A BLOCK ADDRESS COSTS A RECORD, IN BOTH BYTE COLUMNS AND AT BOTH ROUTING RANGES.
 //!
 //! An address exists twice per stored record -- once in the model map a read resolves through,
-//! once inside the page-index entry -- and both live for the life of the shard. So its width
+//! once inside the block-index entry -- and both live for the life of the shard. So its width
 //! multiplies by the record count, and the question "is eight bytes off it worth anything" is
 //! answered by a count, not by arithmetic on one struct.
 //!
@@ -28,7 +28,7 @@
 //!     rather than a fact about the workload. `docs/runtime_tuning.md` tells an operator to set
 //!     `TS_SHARD_END_ROUTING_BUCKET=1023` before the first ingest, and that is the range whose
 //!     numbers describe a store. Both are run and the operator's is named.
-//!   * A HISTOGRAM, NEVER A MEAN. A mean of 1.98 pages a bucket in this tree once contained zero
+//!   * A HISTOGRAM, NEVER A MEAN. A mean of 1.98 blocks a bucket in this tree once contained zero
 //!     buckets holding exactly two. Percentiles, the maximum and the per-bucket counts are
 //!     printed, with the denominator asserted on every row.
 //!   * THE STORE PATH LENGTH HELD CONSTANT. Allocation counts in this engine move at about six

@@ -5,14 +5,14 @@
 //!
 //! # THE HOLE THIS CLOSES
 //!
-//! The projection emits one entry per page under the gate, and that was measured. But it was
+//! The projection emits one entry per block under the gate, and that was measured. But it was
 //! measured by folding first and turning the gate on afterwards, then re-deriving by hand. The
 //! case that was NOT covered is the one that matters operationally: the gate on for the **whole
 //! sweep**.
 //!
 //! It matters because `compact_shard_blocks` calls `rebuild_bucket_first_index` TWICE -- once on
 //! the partial-failure commit path and once at the end of a successful round -- and that is the
-//! fight predicted when this series was planned: compaction folds the pages, then the sweep
+//! fight predicted when this series was planned: compaction folds the blocks, then the sweep
 //! re-derives the index, so a filing change made anywhere else is undone before the sweep returns.
 //!
 //! The prediction after reading those two call sites is that nothing re-explodes, because both are
@@ -24,7 +24,7 @@
 //!
 //! On EACH arm, because one arm reaching the sweep while the other does not is itself the
 //! broken-arm case and a single shared floor cannot see it. And they floor the **reaching of the
-//! path** -- that a fold actually happened and that pages were walked -- never the **value of the
+//! path** -- that a fold actually happened and that blocks were walked -- never the **value of the
 //! result**, because the result under test may legitimately be a small number and a floor on it
 //! would forbid the true answer.
 //!
@@ -70,7 +70,7 @@ fn member_bytes(index: usize) -> Vec<u8> {
     bytes
 }
 
-/// Live pages, live entries, and entries carrying a component, for one set object.
+/// Live blocks, live entries, and entries carrying a component, for one set object.
 fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
@@ -137,7 +137,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     let (blocks, entries, batches, folded) = sweep_once();
     println!("  blocks {blocks}  entries {entries}  batches {batches}  folded {folded}");
 
-    // FLOORS, ON THE REACHING OF THE PATH. `entries == pages` is satisfied by 0 == 0, so a sweep
+    // FLOORS, ON THE REACHING OF THE PATH. `entries == blocks` is satisfied by 0 == 0, so a sweep
     // that lost the object entirely would pass the claim below without these.
     assert!(
         batches > 0 && folded > 0,
@@ -148,9 +148,9 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
         blocks > 0 && entries > 0,
         "{blocks} block(s) and {entries} entr(ies) after the sweep, so the object did not survive it"
     );
-    // AND THE FOLD ACTUALLY SHARED A PAGE, which is what makes one-entry-a-page a smaller number
+    // AND THE FOLD ACTUALLY SHARED A BLOCK, which is what makes one-entry-a-block a smaller number
     // than one-entry-an-element rather than the same number by coincidence. Without this, a
-    // fixture whose members never folded would satisfy `entries == pages` with one of each.
+    // fixture whose members never folded would satisfy `entries == blocks` with one of each.
     assert!(
         blocks < MEMBERS,
         "the {MEMBERS} members resolve to {blocks} page(s) after the sweep, so nothing folded and \

@@ -267,7 +267,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
         expected.difference(&reached).collect::<Vec<_>>()
     );
 
-    // And the point of the whole file: with `control_state` adopting the page index handle, no
+    // And the point of the whole file: with `control_state` adopting the block index handle, no
     // text is stored twice. Before the conversion this was 8 of 16, every raw key.
     let duplicated: Vec<_> = held
         .iter()
@@ -350,7 +350,7 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
 /// of a key its own allocation on the way back in, and something has to put the sharing back.
 ///
 /// For ORDERED maps something does. `adopt_canonical_key_allocations` walks `expires_at_ms` after
-/// the decode and swaps each key for the page index's handle, and that is byte-neutral because a
+/// the decode and swaps each key for the block index's handle, and that is byte-neutral because a
 /// `BTreeMap` rebuilt from its own entries serializes in the same key order.
 ///
 /// For HASHED maps that pass deliberately does nothing, and says so: a `HashMap`'s serialized
@@ -472,11 +472,11 @@ fn distinct_addresses_per_raw_key(
     held.into_iter().map(|(text, addresses)| (text, addresses.len())).collect()
 }
 
-/// HOW MANY ALLOCATIONS OF ONE KEY TEXT THE PAGE INDEX ITSELF HOLDS.
+/// HOW MANY ALLOCATIONS OF ONE KEY TEXT THE BLOCK INDEX ITSELF HOLDS.
 ///
 /// Everything else in this campaign measured the MODEL maps -- the resident maps that answer
-/// reads -- and they now agree on one allocation, taken from the page index. This asks about the
-/// page index itself, which is the thing they all borrow from.
+/// reads -- and they now agree on one allocation, taken from the block index. This asks about the
+/// block index itself, which is the thing they all borrow from.
 ///
 /// `ObjectBlockLookup` is NESTED: `by_model` maps a model kind to a map of object key to refs. The
 /// filing path takes its handle with `shared_object_key(kind, object_key)`, which looks inside
@@ -583,13 +583,13 @@ fn how_many_allocations_the_block_index_itself_holds() {
 
 /// WHAT THE TOMBSTONE PATH FILES INTO THE OBJECT LOOKUP, AND WHAT IT ALLOCATES TO DO IT.
 ///
-/// `insert_container_tombstone_entry` ends by handing a page to `insert_object_block_lookup`:
+/// `insert_container_tombstone_entry` ends by handing a block to `insert_object_block_lookup`:
 ///
-///     .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::from(object_key), &page)
+///     .insert_object_block_lookup(routing_bucket, block_ref_key, &Arc::from(object_key), &block)
 ///
-/// and that page is built, a few lines above, as `BlockIndex { .. deleted: true, .. }`. The first
-/// statement of `insert_object_block_lookup` is `if page.deleted { return; }`, and the reason is
-/// stated on it: a deleted page is never in the object lookup.
+/// and that block is built, a few lines above, as `BlockIndex { .. deleted: true, .. }`. The first
+/// statement of `insert_object_block_lookup` is `if block.deleted { return; }`, and the reason is
+/// stated on it: a deleted block is never in the object lookup.
 ///
 /// So on this path the call can do nothing, while the `Arc::from(object_key)` it is handed is
 /// allocated and dropped -- one allocation and one free per tombstoned container element, for a
@@ -648,7 +648,7 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
     println!("  refs filed under the object, before the delete: {filed_before}");
     println!("  refs filed under the object, after the delete:  {filed_after}");
 
-    // The tombstone's own call cannot add one: its page is `deleted: true` and the callee returns
+    // The tombstone's own call cannot add one: its block is `deleted: true` and the callee returns
     // on that. If this ever grows, the early return stopped being taken and the call is no longer
     // the no-op this reading says it is.
     assert!(
@@ -668,7 +668,7 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
     // `record_tombstone_element` pushes a `TombstoneElement { object_key: Arc::from(object_key),
     // .. }` onto a RESIDENT vector hanging off the bucket, so unlike the no-op above this one
     // keeps what it allocates. The question is whether it had to allocate at all: the object is
-    // still alive here -- a two-field hash with one field left -- so the page index still holds a
+    // still alive here -- a two-field hash with one field left -- so the block index still holds a
     // handle for it.
     //
     // This is measured and printed either way rather than assumed, because the answer depends on

@@ -1,14 +1,14 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! THE GATED LISTING ANSWERS FROM THE PAGES, AND A REMOVED MEMBER STAYS GONE.
+//! THE GATED LISTING ANSWERS FROM THE BLOCKS, AND A REMOVED MEMBER STAYS GONE.
 //!
 //! # WHAT CHANGED AND WHY IT IS THE RISKY DIRECTION
 //!
-//! The ungated listing asks the ENTRIES which members exist and the page only what each one holds.
+//! The ungated listing asks the ENTRIES which members exist and the block only what each one holds.
 //! Its own `None` arm states why that cannot survive this gate: "an entry naming no component can
-//! only be answered by a page that names no element either". Under the gate every entry names no
-//! component and every page IS framed, so that arm drops every member and the listing answered
+//! only be answered by a block that names no element either". Under the gate every entry names no
+//! component and every block IS framed, so that arm drops every member and the listing answered
 //! EMPTY -- measured at `listed=0` against 40 ungated, by two independent fixtures.
 //!
 //! So the gated listing takes identity out of the PAYLOAD. That is the direction that
@@ -17,12 +17,12 @@
 //!
 //! # THE TWO THINGS THAT MAKE IT SAFE, BOTH DRIVEN RATHER THAN ARGUED
 //!
-//!   1. the tombstone page is REACHABLE from the index -- a gated removal files a page-named
+//!   1. the tombstone block is REACHABLE from the index -- a gated removal files a block-named
 //!      tombstone entry beside the live entry, which
 //!      `a_gated_removal_leaves_a_tombstone_block_the_index_can_reach` drives;
-//!   2. `container_membership::derive_membership` owns the ORDERING, folding every page of the
+//!   2. `container_membership::derive_membership` owns the ORDERING, folding every block of the
 //!      object by `append_position` with a value and a tombstone as the same kind of statement, so
-//!      the later page wins. A hand-rolled loop over the payload lacks exactly that precedence,
+//!      the later block wins. A hand-rolled loop over the payload lacks exactly that precedence,
 //!      and that is the loop that resurrected a member.
 //!
 //! # WHY THERE ARE COUNTERS AND NOT JUST A MEMBER LIST
@@ -104,8 +104,8 @@ fn seed_fold_remove(engine: &TemporalEngine) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
             },
         );
     }
-    // FOLD FIRST. Before a fold each member owns its page, so removing one takes its page with it
-    // and the pages never disagree -- the fixture would pass for the wrong reason.
+    // FOLD FIRST. Before a fold each member owns its block, so removing one takes its block with it
+    // and the blocks never disagree -- the fixture would pass for the wrong reason.
     engine
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
@@ -124,7 +124,7 @@ fn seed_fold_remove(engine: &TemporalEngine) -> (BTreeSet<Vec<u8>>, Vec<u8>) {
     (expected, victim)
 }
 
-/// rust-internal: the gated listing folds the pages, and the removed member does not come back
+/// rust-internal: the gated listing folds the blocks, and the removed member does not come back
 #[test]
 fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
     // SEPARATE STORES PER ARM. One shared store would let the second arm read the first's cached
@@ -212,18 +212,18 @@ fn a_gated_listing_folds_the_blocks_and_the_removed_member_stays_gone() {
 
 /// rust-internal: operates on the fold directly, so the decline condition has no reachability doubt
 ///
-/// AN UNFRAMED PAGE MAKES THE FOLD DECLINE RATHER THAN ANSWER SHORT.
+/// AN UNFRAMED BLOCK MAKES THE FOLD DECLINE RATHER THAN ANSWER SHORT.
 ///
 /// # WHY THIS IS THE ONE CASE THE GATED LISTING CANNOT SIMPLY TRUST
 ///
-/// `derive_membership` contributes **nothing** from an unframed page, and it is right not to: the
+/// `derive_membership` contributes **nothing** from an unframed block, and it is right not to: the
 /// frame is what names the element, so a bare value cannot say WHICH member it belongs to. The
 /// entry used to supply that name, and under this gate the entry no longer carries one.
 ///
-/// Meanwhile today's ungated listing hands a bare page's payload back AS the member, resolving it
-/// by the address the entry named. So the same page is a member to one reader and nothing at all to
+/// Meanwhile today's ungated listing hands a bare block's payload back AS the member, resolving it
+/// by the address the entry named. So the same block is a member to one reader and nothing at all to
 /// the other — and a gated listing that folded without checking would answer SHORT by exactly the
-/// number of unframed pages it met, silently.
+/// number of unframed blocks it met, silently.
 ///
 /// That is why the gated branch keys its decline on `is_complete()` and falls back to the durable
 /// map. This test establishes the condition that decline rests on, directly rather than through the
@@ -251,12 +251,12 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     let member = b"member-000".to_vec();
     let component = hex::encode(&member);
 
-    // A real framed page for that member, through the codec rather than hand-assembled.
+    // A real framed block for that member, through the codec rather than hand-assembled.
     let framed = crate::engine::container_blocks::encode_container_block(
         crate::engine::container_blocks::ElementKeySpelling::Hex,
         &[(member.as_slice(), member.as_slice())],
     );
-    // A bare value, which is what a page written before `container_blocks` looks like.
+    // A bare value, which is what a block written before `container_blocks` looks like.
     let bare = b"a bare value from before the frame existed".to_vec();
 
     let framed_at = at(1, 0, framed.len() as u32);
@@ -293,7 +293,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
         with_bare.is_complete()
     );
 
-    // ---- THE CONTROL ARM: a fold of framed pages alone is complete, or the arm below says nothing
+    // ---- THE CONTROL ARM: a fold of framed blocks alone is complete, or the arm below says nothing
     assert_eq!(
         1,
         only_framed.live.len(),
@@ -326,7 +326,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
          listing would serve a membership short by however many it met -- silently, because an \
          unframed page contributes no element and therefore no error either"
     );
-    // AND THE SHORTNESS IS REAL, not merely flagged: the bare page added no member.
+    // AND THE SHORTNESS IS REAL, not merely flagged: the bare block added no member.
     assert_eq!(
         only_framed.live.len(),
         with_bare.live.len(),

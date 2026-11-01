@@ -21,10 +21,10 @@ use crate::engine::object_record::{ObjectRecord, ObjectSlot, OwnedElementTenancy
 use crate::engine::state::ShardState;
 use crate::engine::storage_bucket_internals::StoredModelKind;
 
-/// A slot pointing at a page, built the way production builds one -- through `set_address` rather
+/// A slot pointing at a block, built the way production builds one -- through `set_address` rather
 /// than by hand, so a fixture cannot be the one place the narrow door is bypassed.
 fn slot_at(slab: u64, offset: u64, length: u64) -> ObjectSlot {
-    // ORDINAL PRESENT AND ZERO, which is what a single-page object carries by construction --
+    // ORDINAL PRESENT AND ZERO, which is what a single-block object carries by construction --
     // and what the record's inline arm can hold. The inline arm keeps the ordinal's PRESENCE
     // and not its value, so a fixture passing a nonzero ordinal would not round-trip and the
     // test would be measuring that rather than the pair.
@@ -109,13 +109,13 @@ fn the_control_state_mutators_keep_the_consolidated_map_right_through_removals()
 
     // WHAT THE INLINE ARM DOES WITH A NONZERO ORDINAL, PINNED HERE BECAUSE THE TWO PATHS
     // DISAGREE. The record's inline arm holds the ordinal's PRESENCE and not its value -- correct,
-    // and measured: a single-page object has page zero by construction, and 400 of 400 live
+    // and measured: a single-block object has block zero by construction, and 400 of 400 live
     // addresses carried ordinal 0. The CONVERSION path refuses a nonzero one by name
     // (`NonZeroBlockOrdinalDoesNotFitInline`). `set_address` does not refuse it; it writes the
     // presence bit and drops the value.
     //
-    // That asymmetry is correct today only because the maps holding records are single-page. It
-    // is asserted rather than trusted, so that the day a multi-page object reaches this door the
+    // That asymmetry is correct today only because the maps holding records are single-block. It
+    // is asserted rather than trusted, so that the day a multi-block object reaches this door the
     // behaviour is a stated fact with a test on it rather than a surprise -- and the owned element
     // array is where such an object belongs.
     let nonzero_ordinal =

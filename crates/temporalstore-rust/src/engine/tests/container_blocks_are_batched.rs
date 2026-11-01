@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: Apache-2.0
 // Copyright 2026 MatrixArkAI
 
-//! WHAT A REWRITE COSTS AND WHAT IT FOLDS, WHEN A CONTAINER'S PAGES ARE BATCHED.
+//! WHAT A REWRITE COSTS AND WHAT IT FOLDS, WHEN A CONTAINER'S BLOCKS ARE BATCHED.
 //!
 //! # THE CLAIM
 //!
-//! A container gives every element its own page. `container_blocks` made each of those pages name the
-//! element it holds, which is what lets several of them be folded into one: a page holding many
+//! A container gives every element its own block. `container_blocks` made each of those blocks name the
+//! element it holds, which is what lets several of them be folded into one: a block holding many
 //! elements is only readable if it says which is which.
 //!
 //! This module measures the fold. It is done at COMPACTION and nowhere else, so nothing about the
@@ -17,23 +17,23 @@
 //! # WHAT MOVES AND WHAT DOES NOT, STATED SO THE MEASUREMENT IS NOT READ AS MORE THAN IT IS
 //!
 //! ```text
-//!     pages per container      FALLS -- that is the whole change
+//!     blocks per container      FALLS -- that is the whole change
 //!     index entries per container   FALLS WITH IT, which it did NOT when this module was
 //!                                  written. `BlockIndex` has no element-name field, so
 //!                                  `block_index_handle` is decided by the model spelling, the
-//!                                  object key and the ADDRESS alone. Elements sharing a page
+//!                                  object key and the ADDRESS alone. Elements sharing a block
 //!                                  share an address and therefore a handle, so the index files
-//!                                  ONE entry a page. Measured by the arm below: 40 entries over
-//!                                  40 pages before a round, 1 over 1 after.
+//!                                  ONE entry a block. Measured by the arm below: 40 entries over
+//!                                  40 blocks before a round, 1 over 1 after.
 //!     bytes per element        BARELY MOVES -- measured 12 -> 3 of framing for a set of
 //!                                  eight-byte members, which is a small number of a small number
 //! ```
 //!
 //! THE MIDDLE ROW IS RESTATED BECAUSE IT INVERTED, NOT BECAUSE ITS NUMBER WENT STALE. It read
 //! "UNCHANGED -- `block_index_handle` hashes the component beside the address, so elements sharing
-//! a page still hash to different handles". The field that element name lived on has been removed,
-//! so the term is gone from the handle and two elements on one page hash ALIKE. The entry count is
-//! the PAGE count now, and the row that used to say what the fold did not buy says what it does.
+//! a block still hash to different handles". The field that element name lived on has been removed,
+//! so the term is gone from the handle and two elements on one block hash ALIKE. The entry count is
+//! the BLOCK count now, and the row that used to say what the fold did not buy says what it does.
 //!
 //! `entry_count_versus_block_count`'s
 //! `one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element` drives the mechanism.
@@ -45,7 +45,7 @@
 //!
 //! ## An element could be folded as empty
 //!
-//! The fold reads each element's value out of its page. A read that failed and contributed an empty
+//! The fold reads each element's value out of its block. A read that failed and contributed an empty
 //! value would rewrite a live element as a zero-length one, and it would read back as PRESENT AND
 //! EMPTY -- which is #1989's shape, a member served that should not be. So the read's failure arm is
 //! never an `unwrap_or_default`.
@@ -53,7 +53,7 @@
 //! ## And it could be SKIPPED, which is a different failure and was the first version's
 //!
 //! Leaving the element alone and carrying on is safe for the ELEMENT and unsafe for the ROUND. A
-//! round that hits an unreadable page must propagate, so the partial-failure handler durably commits
+//! round that hits an unreadable block must propagate, so the partial-failure handler durably commits
 //! the consistent partial index -- CP4, and the reason is that a round returning success with the
 //! volatile index advanced past the durable one lets the independent reclaim path purge a slab the
 //! durable index still names. The first version of the fold skipped, the round returned success, and
@@ -67,20 +67,20 @@
 //! ## The fold could lose an element
 //!
 //! Every element is read back after the round, by name, and after a RELOAD as well -- the reload
-//! being the arm that proves the page index and the pages agree once several entries share one
+//! being the arm that proves the block index and the blocks agree once several entries share one
 //! address.
 //!
 //! ## The fold could report success without folding
 //!
 //! "Pages went down" is also what an idle round reports. So the instrument is two counters inside
-//! the fold itself -- batches written and pages folded into them -- and every row asserts both are
+//! the fold itself -- batches written and blocks folded into them -- and every row asserts both are
 //! non-zero before it reads anything else. A round that batched nothing fails here rather than
 //! passing quietly.
 //!
 //! # THE CONTROL, AT ZERO, WITH ITS EXERCISED ROWS ASSERTED
 //!
-//! A `string` key owns one page and one element, so there is nothing to fold and the fold must
-//! report zero batches for it WHILE the round still relocates its page. Both halves are asserted:
+//! A `string` key owns one block and one element, so there is nothing to fold and the fold must
+//! report zero batches for it WHILE the round still relocates its block. Both halves are asserted:
 //! a control over a store where nothing was relocated reports zero for the wrong reason.
 #![allow(clippy::all)]
 use super::*;
@@ -152,9 +152,9 @@ fn bytes_of(width: usize, index: usize) -> Vec<u8> {
     bytes
 }
 
-/// Distinct page addresses, and index entries, this object's live pages resolve to.
+/// Distinct block addresses, and index entries, this object's live blocks resolve to.
 ///
-/// Both off the engine's own page index rather than off the model maps: the index is what a load
+/// Both off the engine's own block index rather than off the model maps: the index is what a load
 /// reads and what `HashLen` counts, and the point of the fold is that the two numbers come apart.
 fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -230,9 +230,9 @@ fn seed(engine: &TemporalEngine, object_key: &str, elements: usize) {
 // 1. THE FOLD, PER KIND, WITH BOTH COUNTERS FLOORED
 // =================================================================================================
 
-/// A COMPACTION ROUND FOLDS A CONTAINER'S PAGES AND FOLDS ITS ENTRY COUNT WITH THEM.
+/// A COMPACTION ROUND FOLDS A CONTAINER'S BLOCKS AND FOLDS ITS ENTRY COUNT WITH THEM.
 ///
-/// The headline. Pages per container before and after, off the engine's own page index, for all four
+/// The headline. Blocks per container before and after, off the engine's own block index, for all four
 /// container kinds, with the string control beside them at zero.
 ///
 /// THE COUNTERS ARE THE DENOMINATOR. "Fewer distinct addresses" is also what a round that relocated
@@ -241,20 +241,20 @@ fn seed(engine: &TemporalEngine, object_key: &str, elements: usize) {
 ///
 /// RESTATED, AND THE CLAIM INVERTED RATHER THAN THE NUMBER CORRECTED. This read "AND LEAVES ITS
 /// ENTRY COUNT ALONE", and that was true of an entry that named its element: the handle hashed the
-/// element name beside the address, so two elements sharing one page hashed to two handles and a
-/// fold moved the page column only. The name is off the entry now, so the handle cannot tell two
-/// elements of one page apart and the entry count IS the page count. The old name is the refuted
+/// element name beside the address, so two elements sharing one block hashed to two handles and a
+/// fold moved the block column only. The name is off the entry now, so the handle cannot tell two
+/// elements of one block apart and the entry count IS the block count. The old name is the refuted
 /// claim, which is why it is not kept beside a relaxed assertion.
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
 fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_them() {
-    // ENTRIES CONVERGE ON PAGES ON EVERY PATH, because there is no longer a path where they do
+    // ENTRIES CONVERGE ON BLOCKS ON EVERY PATH, because there is no longer a path where they do
     // not. This comment read "THE ENTRY COUNT NOT MOVING IS THE UNGATED INVARIANT ... Gated, the
-    // count collapsing to the PAGE count is the whole point", and it named two paths. The
+    // count collapsing to the BLOCK count is the whole point", and it named two paths. The
     // one-entry-a-page flag is retired and the entry has no field for an element name, so the
     // ungated half has no off position to be in: the collapsed shape is the only shape.
-    // `projection_names_a_block` holds entries == pages with none named at occupancies 1, 4 and 40,
+    // `projection_names_a_block` holds entries == blocks with none named at occupancies 1, 4 and 40,
     // and `gated_corpus_across_a_store_boundary` holds it across a reload.
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
@@ -329,23 +329,23 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
             blocks_after < *blocks_before,
             "{kind} holds {blocks_after} blocks where it held {blocks_before}, so nothing folded"
         );
-        // THE ENTRY COUNT FOLDS WITH THE PAGES, AND THAT IS THE ROW THIS ARM EXISTS TO HOLD. It
+        // THE ENTRY COUNT FOLDS WITH THE BLOCKS, AND THAT IS THE ROW THIS ARM EXISTS TO HOLD. It
         // asserted `entries_after == entries_before` for as long as an entry named its element:
-        // two elements sharing one page hashed to two handles, so folding pages left the entry
+        // two elements sharing one block hashed to two handles, so folding blocks left the entry
         // count alone, and this fixture measured 40 before and 40 after. `BlockIndex` has no
         // element-name field now, so `block_index_handle` is the model spelling, the object key
-        // and the ADDRESS -- 40 pages fold to 1 and the 40 entries fold to 1 with them.
+        // and the ADDRESS -- 40 blocks fold to 1 and the 40 entries fold to 1 with them.
         //
         // WHAT THIS IS WORTH, STATED EXACTLY, BECAUSE IT IS LESS THAN IT LOOKS. On this tree the
-        // page fold and the entry fold are the SAME EVENT: there is no field left that could keep
-        // two entries over one folded page, so `blocks_after < blocks_before` above and the
+        // block fold and the entry fold are the SAME EVENT: there is no field left that could keep
+        // two entries over one folded block, so `blocks_after < blocks_before` above and the
         // assertion below cannot part company. It is kept as a TRIPWIRE on the claim that
-        // inverted -- it FAILS on the engine this arm was written against, where the page column
+        // inverted -- it FAILS on the engine this arm was written against, where the block column
         // fell and the entry column did not -- and not as an independent guard.
         //
         // `entries_after == blocks_after` WAS WRITTEN HERE AND THEN DELETED AS VACUOUS, which is
         // recorded because it reads like the stronger assertion. `addresses_and_entries` derives
-        // its PAGE column by deduplicating the very entries it counts for the ENTRY column, so the
+        // its BLOCK column by deduplicating the very entries it counts for the ENTRY column, so the
         // two columns are one measurement and nothing independent could make them disagree.
         //
         // FIVE MUTATIONS WERE DRIVEN LOOKING FOR A SENSITIVITY HERE AND ALL FIVE STAYED GREEN,
@@ -367,7 +367,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     }
     assert_eq!(4, kinds_folded, "every container kind must be covered");
 
-    // THE CONTROL, at zero, and exercised: its page was relocated and it still holds one page.
+    // THE CONTROL, at zero, and exercised: its block was relocated and it still holds one block.
     let (string_blocks_after, string_entries_after) =
         addresses_and_entries(&engine, "string", "folded-string");
     println!(
@@ -386,12 +386,12 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
 ///
 /// The correctness claim. Several elements now share one address, so a reader that resolved an
 /// address and returned its bytes would hand every one of them the same value -- which is #2013's
-/// measured failure ("the page that loses is handed the FIRST page's BYTES rather than answering
+/// measured failure ("the block that loses is handed the FIRST block's BYTES rather than answering
 /// missing"), one level up.
 ///
 /// THE RELOAD IS THE HALF THAT MATTERS. Before it, `shard.hashes` still holds what the writes put
-/// there. After it, the maps are derived from the page index and the values come off the folded
-/// pages, which is the arm a later stage builds on.
+/// there. After it, the maps are derived from the block index and the values come off the folded
+/// blocks, which is the arm a later stage builds on.
 ///
 /// rust-internal: drives the engine's own command surface
 #[test]
@@ -474,14 +474,14 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
              not reading folded pages"
         );
         let (block_count, entry_count) = addresses_and_entries(&engine, "hash", "readback");
-        // THE FLOOR IS ON PAGES BEING SHARED BY ELEMENTS, NOT BY ENTRIES.
+        // THE FLOOR IS ON BLOCKS BEING SHARED BY ELEMENTS, NOT BY ENTRIES.
         //
-        // This read `block_count < entry_count` -- one entry per element, so fewer pages than
-        // entries meant elements were sharing a page. The index files one entry per PAGE now, so
+        // This read `block_count < entry_count` -- one entry per element, so fewer blocks than
+        // entries meant elements were sharing a block. The index files one entry per BLOCK now, so
         // those two counts are equal by construction and the floor could never hold again. The
         // thing this test needs established is unchanged: that the fold really put several
-        // ELEMENTS on one page, which is what makes a selector that ignores the element
-        // distinguishable from a correct one. So the pages are compared against the ELEMENTS
+        // ELEMENTS on one block, which is what makes a selector that ignores the element
+        // distinguishable from a correct one. So the blocks are compared against the ELEMENTS
         // written, which is the other source and the one the floor was always about.
         assert!(
             block_count < FOLDABLE_ELEMENTS,
@@ -499,7 +499,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         );
 
         // Before the reload: the resident maps still hold what the writes put there, so this arm
-        // exercises the read funnel selecting out of a shared page.
+        // exercises the read funnel selecting out of a shared block.
         for (field, value) in &fields {
             match read(
                 &engine,
@@ -520,7 +520,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     }
 
     // AFTER THE RELOAD, on the same files, with its own cache directory so nothing is answered out
-    // of a page the first engine left warm.
+    // of a block the first engine left warm.
     let reloaded = TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
         dir.path().join("cache-reloaded"),
@@ -596,8 +596,8 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     );
     // THE FOURTH KIND, AND IT GUARDS A DIFFERENT THING THAN THE THREE ABOVE.
     //
-    // `ZSetRange` answers out of `shard.zsets` and reads no page, so this cannot show that a
-    // folded zset page is readable -- no production read of a zset reads one. What it shows is
+    // `ZSetRange` answers out of `shard.zsets` and reads no block, so this cannot show that a
+    // folded zset block is readable -- no production read of a zset reads one. What it shows is
     // that every member survived the fold and the reload, which runs on the durable map, the
     // carried elements and the live-address filter. A count first, so a lost member fails here
     // rather than being mistaken for one that merely came back in a different place.
@@ -638,10 +638,10 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     println!("  reloaded: every hash field, set member and list element read back");
 }
 
-/// THE ELEMENT CAP BINDS, SO ONE PAGE NEVER HOLDS A WHOLE LARGE CONTAINER.
+/// THE ELEMENT CAP BINDS, SO ONE BLOCK NEVER HOLDS A WHOLE LARGE CONTAINER.
 ///
-/// A container of more elements than the cap must come out of a round holding MORE THAN ONE page.
-/// Without this, a container of tiny elements would fold to a single page and every point read of it
+/// A container of more elements than the cap must come out of a round holding MORE THAN ONE block.
+/// Without this, a container of tiny elements would fold to a single block and every point read of it
 /// would become a read of the whole container.
 ///
 /// THE FIXTURE IS ABOVE THE CAP BY CONSTRUCTION -- the constant is read from the engine, not
@@ -694,13 +694,13 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
         blocks_after >= smallest_possible,
         "{OVER_CAP_ELEMENTS} elements cannot fit in {blocks_after} blocks of at most {cap}"
     );
-    // THE ENTRY COUNT IS THE PAGE COUNT NOW, WHICH IS THE COLLAPSE AND NOT A DRIFT.
+    // THE ENTRY COUNT IS THE BLOCK COUNT NOW, WHICH IS THE COLLAPSE AND NOT A DRIFT.
     //
     // This asserted `entries_after == OVER_CAP_ELEMENTS` under "the entry count must not move": one
-    // entry per element, whatever the pages did. Every container kind is page-named, so the index
-    // files one entry per distinct PAGE and the count is the page count. Asserted against
+    // entry per element, whatever the blocks did. Every container kind is block-named, so the index
+    // files one entry per distinct BLOCK and the count is the block count. Asserted against
     // `blocks_after` rather than re-goldened to a literal, so the claim is still a relation between
-    // two measured things and a count that drifted from the pages would still fail.
+    // two measured things and a count that drifted from the blocks would still fail.
     assert_eq!(
         blocks_after, entries_after,
         "the index filed {entries_after} entries over {blocks_after} page(s). One entry a page is \
@@ -709,11 +709,11 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     );
 }
 
-/// A CONTAINER ELEMENT WHOSE PAGE CANNOT BE READ FAILS THE ROUND RATHER THAN FOLDING AN EMPTY VALUE.
+/// A CONTAINER ELEMENT WHOSE BLOCK CANNOT BE READ FAILS THE ROUND RATHER THAN FOLDING AN EMPTY VALUE.
 ///
 /// # TWO FAILURES, AND THE FIRST VERSION OF THIS TEST ONLY GUARDED ONE
 ///
-/// The fold reads each element's value out of its page, so an unreadable page has two wrong answers
+/// The fold reads each element's value out of its block, so an unreadable block has two wrong answers
 /// available and they are different:
 ///
 ///   * contribute an EMPTY value and the live element is rewritten as a zero-length one. It reads
@@ -730,7 +730,7 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
 /// commits that consistent partial. All three are asserted below.
 ///
 /// THE SEAM IS THE ONE THE COMPACTION TESTS ALREADY USE (`fail_compaction_block_read_after_for_test`),
-/// so the failure is injected where a torn page would produce it rather than simulated elsewhere.
+/// so the failure is injected where a torn block would produce it rather than simulated elsewhere.
 ///
 /// THE DENOMINATOR: the arm asserts the seam actually fired PARTWAY -- some elements folded and not
 /// all of them -- because a seam that never tripped and a seam that tripped on the first read both
@@ -758,7 +758,7 @@ fn a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_fo
     }
     let before: Vec<(String, Vec<u8>)> = fields.clone();
 
-    // Fail the read a few pages in, so some elements fold and at least one does not.
+    // Fail the read a few blocks in, so some elements fold and at least one does not.
     crate::engine::compaction::fail_compaction_block_read_after_for_test(Some(5));
     crate::engine::reset_container_batch_counts();
     let outcome = engine.compact_shard_blocks(1);
@@ -786,7 +786,7 @@ fn a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_fo
     );
 
     // THE FINDING: every element still answers with the bytes it was written with. An element the
-    // round never reached keeps its own page; one already folded is inside a flushed batch. Neither
+    // round never reached keeps its own block; one already folded is inside a flushed batch. Neither
     // is empty.
     for (field, value) in &before {
         match read(
@@ -817,8 +817,8 @@ fn a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_fo
 ///
 /// A multiplicative PRNG rather than a pattern, and it exists because of what this module measured
 /// first: a fold of forty PATTERNED values reported a 72.6% byte saving, and most of that was not
-/// framing at all. A block record carries a compression codec, and a one-element page of forty bytes
-/// is too small for the compressor to do anything with while a forty-element page of sixteen hundred
+/// framing at all. A block record carries a compression codec, and a one-element block of forty bytes
+/// is too small for the compressor to do anything with while a forty-element block of sixteen hundred
 /// is not. So the first number this test produced was mostly "batching makes compression work",
 /// which is true and is a completely different claim from "the framing amortises".
 fn incompressible_of(width: usize, index: usize) -> Vec<u8> {
@@ -840,8 +840,8 @@ fn incompressible_of(width: usize, index: usize) -> Vec<u8> {
 ///
 /// The first version of it seeded patterned values and reported a 72.6% byte saving for a hash. That
 /// figure is real and it is mostly NOT the framing amortising: a block record carries a compression
-/// codec, a one-element page is too small to compress and a forty-element page is not, so folding
-/// pages together is also what lets the compressor see enough bytes to work on. Reporting that as
+/// codec, a one-element block is too small to compress and a forty-element block is not, so folding
+/// blocks together is also what lets the compressor see enough bytes to work on. Reporting that as
 /// the representation's saving would have credited the frame with a compressor's work.
 ///
 /// So both arms run, on the same kinds at the same element count and the same value width, differing
@@ -850,12 +850,12 @@ fn incompressible_of(width: usize, index: usize) -> Vec<u8> {
 ///   * the COMPRESSIBLE arm is what this fixture reported first, and it is kept because it is what a
 ///     real corpus of similar values looks like;
 ///   * the INCOMPRESSIBLE arm is values from a shift-register PRNG, and its saving is the framing
-///     and the per-page record header and nothing else.
+///     and the per-block record header and nothing else.
 ///
 /// The difference between the two arms is the compressor's share, printed rather than argued.
 ///
-/// BOTH SIDES OF EVERY ROW ARE STORED FACTS -- the summed length of the distinct pages an object
-/// resolves to, before and after, off the engine's own page index. Not a counter, which is what
+/// BOTH SIDES OF EVERY ROW ARE STORED FACTS -- the summed length of the distinct blocks an object
+/// resolves to, before and after, off the engine's own block index. Not a counter, which is what
 /// reported a restore as flat while the kernel saw 6.70x.
 ///
 /// rust-internal: drives the engine's own command surface

@@ -4,13 +4,13 @@
 //! DOES A CONTAINER'S RESIDENT MAP STILL HOLD ITS ELEMENTS AFTER A RELOAD?
 //!
 //! #2054 made `hashes` durable -- `#[serde(default)]` with no `skip_serializing` -- which is what
-//! makes it possible for `HashLen` to answer from the container instead of from the page-index entry
+//! makes it possible for `HashLen` to answer from the container instead of from the block-index entry
 //! count. `HashLen` answers from the entry count today
 //! (`bucket_index_component_block_addresses(..).len()`), and that fact is what closed the batching
 //! route in #1999: an entry that stopped naming an element would silently change what HLEN returns.
 //!
 //! SO THE REROUTE DEPENDS ON A PROPERTY NOBODY HAS ASSERTED IN GENERAL. #2054 drove exactly one
-//! case -- a page entry carrying no component, where only the durable map can supply the element --
+//! case -- a block entry carrying no component, where only the durable map can supply the element --
 //! and asserted both fields present after a reload. That is the mechanism working, not the general
 //! claim that the map's LENGTH is right after a reload for an arbitrary container. This module
 //! asserts the general claim, for the four container kinds, before anything is pointed at it.
@@ -117,7 +117,7 @@ fn map_state(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, Vec<Stri
     }
 }
 
-/// Live page-index entries for one container -- what `HashLen` answers from TODAY.
+/// Live block-index entries for one container -- what `HashLen` answers from TODAY.
 fn live_entries(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard is loaded");
@@ -157,7 +157,7 @@ fn hash_len_served(engine: &TemporalEngine, key: &str) -> i64 {
 /// THE CONTAINER'S RESIDENT MAP STILL HOLDS ITS ELEMENTS AFTER AN UNLOAD AND A RELOAD.
 ///
 /// Four kinds, `ELEMENTS` elements each, the population asserted BEFORE the unload so a failure
-/// afterwards is about the reload. The page-index entry count is printed beside the map length at
+/// afterwards is about the reload. The block-index entry count is printed beside the map length at
 /// both points, because whether those two agree is exactly what decides whether pointing `HashLen` at
 /// the map changes an answer.
 ///
