@@ -3830,7 +3830,29 @@ impl BlockIndexMap {
                 let (handle, block) = blocks.into_iter().next().expect("length is one");
                 *self = BlockIndexMap::One(handle, Box::new(block));
             }
-            _ => {}
+            // THE STEP POLICY, APPLIED ON THE WAY DOWN TOO.
+            //
+            // `reserve_one_more` holds capacity at `len` rounded up to
+            // `BLOCK_LIST_GROWTH_STEP` while a list GROWS. Nothing held it there while a list
+            // SHRANK: `retain` ends in `Vec::retain_mut`, which moves the survivors down and
+            // leaves the buffer at its high-water capacity, and the two arms above normalise
+            // only lengths zero and one. A list that reached sixty-five entries and retained
+            // two kept sixty-five slots for them, and `resident_heap_bytes` charges
+            // `capacity`, not `len` -- so the slack was resident, charged, and unbounded.
+            //
+            // `shrink_to` and not `shrink_to_fit`: fitting exactly would realloc on EVERY
+            // removal and then realloc again on the next insert. Rounding to the same step
+            // the insert side uses costs a reallocation at most once per four removals, which
+            // is the symmetric price of the growth policy rather than a new one.
+            // `what_a_retain_leaves_in_the_block_lists_capacity` measures both sides.
+            _ => {
+                if let BlockIndexMap::Many(blocks) = self {
+                    let want = len.div_ceil(BLOCK_LIST_GROWTH_STEP) * BLOCK_LIST_GROWTH_STEP;
+                    if blocks.capacity() > want {
+                        blocks.shrink_to(want);
+                    }
+                }
+            }
         }
     }
 

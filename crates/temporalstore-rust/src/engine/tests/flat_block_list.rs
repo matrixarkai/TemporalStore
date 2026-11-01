@@ -1202,6 +1202,100 @@ fn the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement() {
     }
 }
 
+/// WHAT A RETAIN LEAVES IN THE LIST'S CAPACITY, against the cap the growth policy claims.
+///
+/// `the_block_list_growth_step_is_what_keeps_the_slack_off_the_measurement` asserts a live list
+/// carries fewer than four unused slots, and `BLOCK_LIST_GROWTH_STEP`'s own doc says stepping by
+/// four "caps the waste at three entries". **BOTH ARE STATEMENTS ABOUT THE GROWTH PATH ONLY.**
+/// `BlockIndexMap::retain` ends in `Vec::retain_mut`, which moves the survivors down and leaves
+/// the buffer at its high-water capacity; the `shrink` that follows normalised only lengths zero
+/// and one. So a list that reached sixty-five entries and retained two kept sixty-five slots,
+/// and `resident_heap_bytes` charges `capacity`, not `len`.
+///
+/// THE MIRROR IS WHAT MAKES THIS A MEASUREMENT AND NOT AN ASSERTION ABOUT ITSELF. The same
+/// population is driven through a bare `Vec` grown by the same step rule and retained the same
+/// way, with no shrink. That arm carries the OLD behaviour, so the saving is the difference
+/// between two measured capacities rather than a figure this test chose.
+///
+/// rust-internal: measures container footprint, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_a_retain_leaves_in_the_block_lists_capacity -- --exact --nocapture
+#[test]
+fn what_a_retain_leaves_in_the_block_lists_capacity() {
+    const STEP: usize = crate::engine::state::BLOCK_LIST_GROWTH_STEP;
+    let entry_bytes = std::mem::size_of::<(u64, BlockIndex)>();
+    println!();
+    println!("  one list, grown then retained down; the entry is {entry_bytes} B");
+    println!(
+        "  {:>6} {:>8} {:>12} {:>12} {:>12} {:>12}",
+        "grown", "kept", "shipped cap", "mirror cap", "slots saved", "B saved"
+    );
+
+    let mut rows = 0usize;
+    let mut worst_shipped_slack = 0usize;
+    let mut total_saved = 0usize;
+    for (grown, kept) in [(65usize, 2usize), (65, 9), (39, 3), (20, 5), (12, 2), (8, 2)] {
+        let (object_key, blocks) = sorted_list(grown);
+        let keep_handles: std::collections::HashSet<u64> =
+            blocks.iter().take(kept).map(|(handle, _)| *handle).collect();
+
+        // --- the shipped structure ---
+        let mut shipped = BlockIndexMap::default();
+        for (_, block) in &blocks {
+            shipped.insert_released(&object_key, block.clone());
+        }
+        let mut live = BlockSlabLiveIndex::default();
+        shipped.retain(&mut live, crate::engine::state::StaleCause::Removed, |handle, _block| {
+            keep_handles.contains(handle)
+        });
+        let (shipped_len, shipped_cap) = match &shipped {
+            BlockIndexMap::Many(entries) => (entries.len(), entries.capacity()),
+            other => panic!("{grown} grown and {kept} kept took the {other:?} arm"),
+        };
+        assert_eq!(kept, shipped_len, "the retain did not keep the {kept} it was asked to");
+
+        // --- THE MIRROR: the same growth rule, the same retain, and no shrink. ---
+        let mut mirror: Vec<(u64, BlockIndex)> = Vec::new();
+        for entry in &blocks {
+            if mirror.len() == mirror.capacity() {
+                let want = (mirror.len() + 1).div_ceil(STEP) * STEP;
+                mirror.reserve_exact(want - mirror.len());
+            }
+            mirror.push(entry.clone());
+        }
+        mirror.retain(|(handle, _)| keep_handles.contains(handle));
+        let mirror_cap = mirror.capacity();
+        assert_eq!(kept, mirror.len(), "the mirror kept a different population");
+
+        let saved_slots = mirror_cap.saturating_sub(shipped_cap);
+        total_saved += saved_slots * entry_bytes;
+        worst_shipped_slack = worst_shipped_slack.max(shipped_cap - shipped_len);
+        println!(
+            "  {grown:>6} {kept:>8} {shipped_cap:>12} {mirror_cap:>12} {saved_slots:>12} {:>12}",
+            saved_slots * entry_bytes
+        );
+        rows += 1;
+    }
+    assert!(rows >= 6, "only {rows} shapes measured");
+
+    // THE CLAIM, ON THE PATH THAT DID NOT HOLD IT. The growth arm asserts this bound for lists
+    // built by pushing; this asserts the SAME bound survives a retain, which is what was new.
+    assert!(
+        worst_shipped_slack < STEP,
+        "after a retain the worst list carried {worst_shipped_slack} unused slots, which is not \
+         below the growth step of {STEP}; capacity is charged by `resident_heap_bytes`, so the \
+         step policy must bound it on the way DOWN as well as up"
+    );
+
+    // AND THE MIRROR MUST ACTUALLY DIFFER, or the bound above is a band around nothing and this
+    // test would keep passing if the shrink were deleted.
+    assert!(
+        total_saved > 0,
+        "the mirror carried the same capacity as the shipped structure at every shape, so this \
+         measured no difference and cannot tell the shrink from its absence"
+    );
+    println!("  the retain-path shrink reclaims {total_saved} B over these six shapes");
+}
 /// The single-block arm holding its entry INLINE, as a MIRROR of the shape that was replaced.
 ///
 /// Built from the same field types the declaration used, so the width below is a statement about
