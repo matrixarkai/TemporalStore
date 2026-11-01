@@ -1893,6 +1893,23 @@ fn wire_fixture(ttl_ms: Option<u64>) -> BucketNode {
 
 /// THE STORED SPELLING OF A BUCKET NODE DID NOT MOVE.
 ///
+/// # THE GOLDEN BELOW WAS RE-CAPTURED FOR THE WRITER FLIP, AND THAT IS NOT THIS TEST'S SUBJECT
+///
+/// The bytes held here said `page_index` where the node now writes `block_index`. That key moved
+/// under the page-to-block writer flip -- a separate, STAMPED change -- and this golden was left
+/// behind by it, so the module read FAILED on main while the advisory lib step reported nothing.
+/// Two tests in this file carried it, six literals between them.
+///
+/// The claim this test makes is about the TTL COUNTDOWN, which is the field its own change
+/// touched, and that claim is untouched: the countdown is still written identically whether it
+/// is held biased in memory or not. A key renamed deliberately elsewhere, with a stamp, is not
+/// a counter-example to it -- so the golden is corrected rather than the subject rewritten.
+///
+/// WHAT THIS SAYS ABOUT THE GUARD. A byte golden is only as current as the last writer that
+/// moved, and nothing here ties the two together: neither of these test names is pinned in CI,
+/// and the suite that would have run them carries `continue-on-error`. So a writer flip can
+/// leave a golden stale and no gate says so. The fix for that is a pinned name, not a comment.
+///
 /// This is the constraint the whole subject runs into, and it is why the accounting above ends
 /// where it does: `BucketNode` is written into the shard index, so its field names ARE a stored
 /// format and a resident-layout change that alters one of them is not a resident-layout change.
@@ -1918,7 +1935,7 @@ fn the_stored_spelling_of_a_bucket_node_did_not_move() {
         "{\"routing_slot\":7,\"layout\":\"SingleBlockObject\",\"dirty\":false,\"deleted\":false,\
          \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
          \"dirty_generation\":3,\"object_index\":[42],\
-         \"deleted_object_index\":[],\"page_index\":{}}",
+         \"deleted_object_index\":[],\"block_index\":{}}",
         with_ttl,
         "the stored spelling of a bucket node moved"
     );
@@ -3694,7 +3711,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
             "{\"routing_slot\":7,\"layout\":\"MultiObject\",\"dirty\":true,\"deleted\":false,\
              \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
              \"dirty_generation\":3,\"last_dump_sequence\":11,\"object_index\":[],\
-             \"deleted_object_index\":[],\"page_index\":{}}",
+             \"deleted_object_index\":[],\"block_index\":{}}",
         ),
         (
             "one object, no tombstone",
@@ -3703,7 +3720,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
             "{\"routing_slot\":7,\"layout\":\"MultiObject\",\"dirty\":true,\"deleted\":false,\
              \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
              \"dirty_generation\":3,\"last_dump_sequence\":11,\"object_index\":[42],\
-             \"deleted_object_index\":[],\"page_index\":{}}",
+             \"deleted_object_index\":[],\"block_index\":{}}",
         ),
         (
             "one object, one tombstone",
@@ -3712,7 +3729,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
             "{\"routing_slot\":7,\"layout\":\"MultiObject\",\"dirty\":true,\"deleted\":false,\
              \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
              \"dirty_generation\":3,\"last_dump_sequence\":11,\"object_index\":[42],\
-             \"deleted_object_index\":[42],\"page_index\":{}}",
+             \"deleted_object_index\":[42],\"block_index\":{}}",
         ),
         (
             "several objects and several tombstones, both ends of the id range",
@@ -3722,7 +3739,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
              \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
              \"dirty_generation\":3,\"last_dump_sequence\":11,\
              \"object_index\":[0,1,7,9,18446744073709551615],\
-             \"deleted_object_index\":[0,18446744073709551615],\"page_index\":{}}",
+             \"deleted_object_index\":[0,18446744073709551615],\"block_index\":{}}",
         ),
         (
             "several objects, no tombstone",
@@ -3731,7 +3748,7 @@ fn the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list(
             "{\"routing_slot\":7,\"layout\":\"MultiObject\",\"dirty\":true,\"deleted\":false,\
              \"meta_loaded\":true,\"loading\":false,\"in_memory\":true,\"ttl_ms\":5000,\
              \"dirty_generation\":3,\"last_dump_sequence\":11,\"object_index\":[100,200,300],\
-             \"deleted_object_index\":[],\"page_index\":{}}",
+             \"deleted_object_index\":[],\"block_index\":{}}",
         ),
     ];
 
