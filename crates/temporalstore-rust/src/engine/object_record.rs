@@ -1202,11 +1202,18 @@ const _: () = assert!(std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>
 ///     declared `#[serde(default)]` with no `skip_serializing`, and for them an empty stored
 ///     image is not a rebuild. It is the rows, gone.
 ///
-/// The owned array has no stored form -- see `many` above, and the test named in the deletion
-/// list below, which measures that rather than restating it. So the second tenancy is not merely
-/// discouraged here, it was UNSPELLABLE: its witness field had an uninhabited type,
-/// which has no values, so there is nothing a call site can put in the hole and the registration
-/// does not compile. Issue #2165.
+/// THE ARRAY NOW HAS A STORED FORM, AND THIS PARAGRAPH USED TO SAY IT DID NOT. It is carried
+/// under `e` of [`ObjectSlotWire`] -- `#[serde(default, skip_serializing_if = "Vec::is_empty")]`,
+/// written by `From<ObjectSlot>` as `slot.many.map(|many| *many).unwrap_or_default()`. The
+/// sentence that stood here ("the owned array has no stored form") was the PREMISE for the
+/// second tenancy being unspellable, so leaving it in place contradicted the variant's own doc
+/// five lines below, which says `DurableOnTheWire` is constructible now. Anyone pricing this
+/// field reads this paragraph first and would have concluded the durable arm is impossible.
+///
+/// So the history, in the right tense: the second tenancy WAS unspellable, because its witness
+/// field had an uninhabited type -- nothing a call site could put in the hole, so the
+/// registration did not compile. Issue #2165. That hole was deleted when the stored form
+/// landed, exactly as its own doc instructed, and both arms are constructible today.
 ///
 /// # WHY A WITNESS, AND NOT A FLAG, A COMMENT OR A LIST OF KINDS
 ///
