@@ -10357,4 +10357,155 @@ mod tests {
             );
         }
     }
+
+/// EVERY WRITE COMMAND STILL ENCODED AS JSON ON THE DURABLE WAL, BY NAME.
+///
+/// `encode_wal_proto_frame` picks per command: a proto mapping if one exists, and otherwise
+/// `serde_json::to_vec`. The JSON arm is not a fallback nobody takes -- it is the arm for every
+/// write command the SDK proto does not model, and until this guard existed nothing said which.
+///
+/// THE SET IS AN INTERSECTION, AND THE OTHER TWO TERMS MATTER. Only writes reach this log:
+/// `data_node::mirror_write` returns early unless `is_write_command` admits the command, so a
+/// read's JSON arm is unreachable here and counting it as work would be counting an arm no caller
+/// can take. Of 99 variants, 51 are writes and 18 are proto-mapped -- but only 10 of those 18 are
+/// writes, which is why the remainder is 41 and not 33.
+///
+/// THE LIST ONLY SHRINKS. Adding a write command without a proto mapping fails this test, and
+/// covering one requires deleting its name here, in the same change. So the work left is visible
+/// in the tree instead of in a plan, and progress cannot be undone quietly.
+const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
+    "BucketTake",
+    "CommonDelete",
+    "CommonPersist",
+    "ContextCompressEvents",
+    "ContextMarkEmbeddingDirty",
+    "ContextMarkSummaryDirty",
+    "ContextResourceBlobAppend",
+    "ContextResourceBlobBegin",
+    "ContextResourceBlobCommit",
+    "ContextResourceBlobPut",
+    "ContextResourceBlobSweep",
+    "ContextSetNodeEmbedding",
+    "ContextUpsertChildRef",
+    "ContextUpsertEntity",
+    "ContextUpsertNode",
+    "ContextUpsertSummary",
+    "ContextWriteCompressionEvent",
+    "ContextWriteEvent",
+    "ContextWriteExtractedEvent",
+    "ContextWriteIndexRef",
+    "ContextWritePackAudit",
+    "ControlStateChangeAdd",
+    "ControlStateIncrementWithOptions",
+    "ControlStateSelectionSet",
+    "ControlStateSet",
+    "ControlStateSetAndGet",
+    "ControlStateSetAndGetWithOptions",
+    "FeatureAppendWithPolicy",
+    "FeatureDelete",
+    "FeatureReplace",
+    "HashDelete",
+    "HashIncrBy",
+    "ListPop",
+    "ListPush",
+    "SeenCheck",
+    "SetRemove",
+    "StringSetConditional",
+    "ZSetAdd",
+    "ZSetIncrBy",
+    "ZSetPop",
+    "ZSetRemove",
+];
+
+#[test]
+fn no_write_command_quietly_joins_the_json_fallback() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let read = |rel: &str| {
+        std::fs::read_to_string(root.join(rel))
+            .unwrap_or_else(|e| panic!("this guard reads {rel}: {e}"))
+    };
+
+    // ---- the enum
+    let types = read("src/command_protocol_types.rs");
+    let enum_body = types
+        .split_once("pub enum Command {")
+        .expect("the Command enum must be in command_protocol_types.rs")
+        .1;
+    let enum_body = &enum_body[..enum_body.find("\n}").expect("the enum must close")];
+    let mut variants: Vec<String> = Vec::new();
+    for line in enum_body.lines() {
+        let t = line.trim();
+        if t.is_empty() || t.starts_with("//") || t.starts_with("#[") || t.starts_with('*') {
+            continue;
+        }
+        let name: String = t.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+        if name.chars().next().is_some_and(|c| c.is_ascii_uppercase()) {
+            variants.push(name);
+        }
+    }
+    variants.sort();
+    variants.dedup();
+
+    // ---- the two classifiers, each read from the function that defines it
+    let named_in = |text: &str, func: &str| -> std::collections::BTreeSet<String> {
+        let Some(after) = text.split_once(&format!("fn {func}")) else {
+            return Default::default();
+        };
+        let body = after.1;
+        let end = body.find("\n}").unwrap_or(body.len());
+        body[..end]
+            .split("Command::")
+            .skip(1)
+            .map(|rest| rest.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect())
+            .collect()
+    };
+    let writes = named_in(&read("src/engine/command_validation.rs"), "is_write_command");
+    let mapped = named_in(&read("src/shared_store.rs"), "command_to_sdk_proto");
+
+    // ---- DENOMINATORS FIRST. A parse that found nothing would make every claim below vacuous,
+    // ---- and this guard reads SOURCE TEXT, which is exactly the thing that silently returns
+    // ---- empty after a refactor moves a function.
+    assert!(
+        variants.len() > 90,
+        "parsed only {} Command variants, so this guard proved nothing",
+        variants.len()
+    );
+    assert!(
+        writes.len() > 40,
+        "parsed only {} write commands from is_write_command, so this guard proved nothing",
+        writes.len()
+    );
+    assert!(
+        mapped.len() > 15,
+        "parsed only {} proto-mapped commands, so this guard proved nothing",
+        mapped.len()
+    );
+
+    let mut json_encoded: Vec<&str> = variants
+        .iter()
+        .filter(|v| writes.contains(*v) && !mapped.contains(*v))
+        .map(String::as_str)
+        .collect();
+    json_encoded.sort_unstable();
+
+    let mut expected: Vec<&str> = COMMANDS_STILL_ENCODED_AS_JSON.to_vec();
+    expected.sort_unstable();
+
+    let new: Vec<&&str> = json_encoded.iter().filter(|v| !expected.contains(v)).collect();
+    let covered: Vec<&&str> = expected.iter().filter(|v| !json_encoded.contains(v)).collect();
+
+    assert!(
+        new.is_empty(),
+        "these write commands are encoded as JSON on the durable WAL and are not listed: {new:?}. \
+         Either give them a proto mapping in `command_to_sdk_proto`, or add them to \
+         COMMANDS_STILL_ENCODED_AS_JSON so the remaining work stays visible."
+    );
+    assert!(
+        covered.is_empty(),
+        "these are listed as JSON-encoded but now reach protobuf: {covered:?}. Delete them from \
+         COMMANDS_STILL_ENCODED_AS_JSON in the same change that covered them -- the list only \
+         shrinks, and leaving a covered command in it hides the progress."
+    );
+}
+
 }
