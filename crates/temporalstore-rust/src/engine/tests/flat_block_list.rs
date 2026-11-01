@@ -982,9 +982,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         let by_bucket: Vec<Vec<(std::sync::Arc<str>, BlockIndex)>> = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
-                &shard.bucket_index.object_block_lookup,
-            );
+            let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
             shard
                 .bucket_index
                 .bucket_map
@@ -1608,9 +1606,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         // STRONGER claim than the field read was, and deliberately: a page the lookup does not
         // name would have been counted under its own copy of the key before, and is refused
         // here -- which is the state `insert_object_block_lookup` exists to rule out.
-        let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
-            &shard.bucket_index.object_block_lookup,
-        );
+        let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
         let mut handles = std::collections::BTreeSet::new();
         let mut total = 0usize;
         let mut object_keys = std::collections::BTreeSet::new();
@@ -1657,9 +1653,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         let (routing_bucket, handle, key) = {
             let shards = engine.shards.read().expect("engine lock poisoned");
             let shard = shards.get(&1).expect("shard is loaded");
-            let keys = crate::engine::state::BlockKeysByPosition::from_lookup(
-                &shard.bucket_index.object_block_lookup,
-            );
+            let keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
             let mut found = None;
             for bucket in shard.bucket_index.bucket_map.values() {
                 if let Some((handle, block)) = bucket.block_index.iter().next() {

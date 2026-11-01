@@ -88,6 +88,17 @@ fn an_index_with_every_field_populated() -> CoreIndex {
     index.kind_pool.insert(Arc::clone(&model));
     index.object_component_block_refs = Some(3);
     index.released_buckets.insert(11);
+    // THE CONSOLIDATED MAP, WHICH IS ON THE WIRE TOO NOW. One row under one kind is enough for
+    // the key-set assertion below; what matters is that the field is not empty, so the control
+    // cannot pass by the field simply having nothing to write.
+    index
+        .objects
+        .entry(crate::engine::storage_bucket_internals::StoredModelKind::String)
+        .or_default()
+        .insert(
+            std::sync::Arc::from("an-object"),
+            crate::engine::object_record::ObjectSlot::default(),
+        );
 
     index
 }
@@ -103,9 +114,14 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     // been told about.
     // ===========================================================================================
     let CoreIndex {
-        // ON THE WIRE -- the only one. Everything a stored index carries from this struct is
-        // inside this field.
+        // ON THE WIRE. The pages themselves.
         bucket_map,
+        // ON THE WIRE, AND THE SECOND ONE RATHER THAN THE ONLY OTHER. It was a TOP-LEVEL key of
+        // the serialized `ShardState` until each object's refs moved into its `ObjectSlot`: the
+        // encoder composes every live page's written key from those refs, and a sibling field of
+        // `bucket_index` is not reachable from it. `SHARD_INDEX_FORMAT_VERSION` 30 is what that
+        // move cost.
+        objects,
         // SKIPPED, `#[serde(skip)]`. Derived per-slab live tallies, seeded wherever the index is
         // rebuilt wholesale.
         block_slab_live,
@@ -121,9 +137,10 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
         released_buckets,
     } = &index;
 
-    // The populated-ness of all six is asserted, so a future edit that empties the fixture turns
-    // the controls below vacuous LOUDLY rather than quietly.
-    assert_eq!(bucket_map.len(), 2, "the on-wire field must be populated");
+    // The populated-ness of all seven is asserted, so a future edit that empties the fixture
+    // turns the controls below vacuous LOUDLY rather than quietly.
+    assert_eq!(bucket_map.len(), 2, "an on-wire field must be populated");
+    assert_eq!(objects.len(), 1, "the other on-wire field must be populated");
     assert!(block_slab_live.is_ready(), "skipped field must be populated");
     assert!(
         object_block_lookup.get("string", "an-object").is_some(),
@@ -138,7 +155,7 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     assert!(!released_buckets.is_empty(), "skipped field must be populated");
 
     // ===========================================================================================
-    // THE WIRE, OBSERVED. One key, and it is the bucket map.
+    // THE WIRE, OBSERVED. Two keys: the pages, and the objects whose slots name them.
     // ===========================================================================================
     let encoded = serde_json::to_value(&index).expect("a core index serializes");
     let object = encoded.as_object().expect("a core index encodes as a map");
@@ -147,8 +164,8 @@ fn every_field_of_the_core_index_declares_whether_it_reaches_the_wire() {
     println!("the core index puts these keys on the wire: {keys:?}");
     assert_eq!(
         keys,
-        vec!["bucket_map"],
-        "exactly one of the six fields reaches the wire; a change here is a change to the \
+        vec!["bucket_map", "objects"],
+        "exactly two of the seven fields reach the wire; a change here is a change to the \
          stored shape and owes the format stamp question"
     );
 }
@@ -761,7 +778,15 @@ fn the_legacy_spelling_of_the_one_wire_field_still_loads_and_an_unknown_one_does
         .clone();
     let buckets = fields
         .remove("bucket_map")
-        .expect("the one wire field is written under its current spelling");
+        .expect("the renamed wire field is written under its current spelling");
+    // `objects` IS ON THE WIRE AND HAS NEVER HAD A SECOND SPELLING, so it is taken out of the set
+    // rather than re-spelled below. It arrived at `SHARD_INDEX_FORMAT_VERSION` 30, moving in from
+    // `ShardState`'s top level under the same name it had there -- and this arm is about the
+    // RENAME of `bucket_map`, which is the only field that has ever had a legacy key. Removing it
+    // here keeps the assertion below meaningful: a THIRD field arriving still fails.
+    fields
+        .remove("objects")
+        .expect("the second wire field is written under its only spelling");
     assert!(
         fields.is_empty(),
         "nothing else is on the wire, so nothing else needs re-spelling here: {:?}",

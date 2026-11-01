@@ -74,13 +74,13 @@ fn absent_tables(state: &crate::engine::state::ShardState) -> std::collections::
     {
         out.insert("side_tables/control_state_counters".to_string());
     }
-    if !state
+    if !state.bucket_index
         .objects
         .contains_key(&crate::engine::storage_bucket_internals::StoredModelKind::String)
     {
         out.insert("objects/string".to_string());
     }
-    if !state
+    if !state.bucket_index
         .objects
         .contains_key(&crate::engine::storage_bucket_internals::StoredModelKind::Feature)
     {
@@ -95,13 +95,43 @@ fn table_names(state: &crate::engine::state::ShardState) -> Vec<String> {
         .side_tables
         .keys()
         .map(|domain| format!("side_tables/{domain:?}"))
-        .chain(state.objects.keys().map(|kind| format!("objects/{kind:?}")))
+        .chain(state.bucket_index.objects.keys().map(|kind| format!("objects/{kind:?}")))
         .collect();
     names.sort();
     names
 }
 
 /// Take one of the four tables out of a decoded state.
+///
+/// # THE TWO `objects` TARGETS MUST TAKE THEIR KIND'S PAGES WITH THEM
+///
+/// Each object's block refs live in its `ObjectSlot` now, so removing a kind's inner table removes
+/// the only record of where that kind's pages are. The state left behind is not "a shard without
+/// that table", it is a shard whose pages NOTHING NAMES -- and `serialize_block_index` refuses to
+/// encode one, which is how this test first reported the fold: "a page whose stored key would name
+/// no object". The refusal is right and the fixture was wrong.
+///
+/// An absent kind table means a shard holding no objects of that kind, which means no pages of
+/// that kind either. Dropping both is what makes the removal a state a decode could actually
+/// produce, and the test's question -- does the repack bring a table into being -- is unchanged.
+fn remove_pages_of_kind(
+    state: &mut crate::engine::state::ShardState,
+    kind: crate::engine::storage_bucket_internals::StoredModelKind,
+) {
+    let crate::engine::state::CoreIndex {
+        bucket_map,
+        block_slab_live,
+        ..
+    } = &mut state.bucket_index;
+    for bucket in bucket_map.values_mut() {
+        bucket.block_index.retain(
+            block_slab_live,
+            crate::engine::state::StaleCause::Overwrite,
+            |_handle, block| block.model_id != kind,
+        );
+    }
+}
+
 fn remove_table(state: &mut crate::engine::state::ShardState, target: &str) {
     match target {
         "side_tables/expiry" => {
@@ -115,14 +145,16 @@ fn remove_table(state: &mut crate::engine::state::ShardState, target: &str) {
                 .remove(&crate::engine::state::SideTable::ControlStateCounters);
         }
         "objects/string" => {
-            state
-                .objects
-                .remove(&crate::engine::storage_bucket_internals::StoredModelKind::String);
+            const KIND: crate::engine::storage_bucket_internals::StoredModelKind =
+                crate::engine::storage_bucket_internals::StoredModelKind::String;
+            state.bucket_index.objects.remove(&KIND);
+            remove_pages_of_kind(state, KIND);
         }
         "objects/feature" => {
-            state
-                .objects
-                .remove(&crate::engine::storage_bucket_internals::StoredModelKind::Feature);
+            const KIND: crate::engine::storage_bucket_internals::StoredModelKind =
+                crate::engine::storage_bucket_internals::StoredModelKind::Feature;
+            state.bucket_index.objects.remove(&KIND);
+            remove_pages_of_kind(state, KIND);
         }
         other => panic!("unknown target {other}"),
     }

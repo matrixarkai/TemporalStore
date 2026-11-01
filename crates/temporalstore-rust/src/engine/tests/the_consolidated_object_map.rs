@@ -187,13 +187,13 @@ fn the_consolidated_outer_map_iterates_in_one_order_whatever_the_insertion_order
     let build = |kinds: &[StoredModelKind]| {
         let mut shard = ShardState::default();
         for (n, kind) in kinds.iter().enumerate() {
-            shard
+            shard.bucket_index
                 .objects
                 .entry(*kind)
                 .or_default()
                 .insert(std::sync::Arc::from(format!("k{n}").as_str()), slot.clone());
         }
-        shard.objects.keys().copied().collect::<Vec<_>>()
+        shard.bucket_index.objects.keys().copied().collect::<Vec<_>>()
     };
 
     let one = build(&forward);

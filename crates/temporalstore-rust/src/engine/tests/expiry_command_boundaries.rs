@@ -66,7 +66,10 @@ fn index_state(engine: &TemporalEngine, key: &str) -> (usize, bool) {
     let shard = shards.get(&1).expect("shard 1 is loaded");
     let bucket = crate::engine::block_routing_bucket(key, 0, u32::MAX);
     (
-        shard.bucket_index.object_block_lookup.len(),
+        // BOTH HOMES. An object's refs live in its slot row where it has one, so counting the
+        // lookup alone reads ZERO for a shard of strings -- which is what this helper did, and the
+        // denominator below went to 0 while the writes were registering perfectly well.
+        shard.bucket_index.objects_naming_pages(),
         shard.bucket_index.bucket_map.contains_key(&bucket),
     )
 }

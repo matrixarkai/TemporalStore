@@ -1044,7 +1044,6 @@ impl TemporalEngine {
                         // index already holds, and allocate only when it has none.
                         let shared = shard
                             .bucket_index
-                            .object_block_lookup
                             .any_shared_object_key(&key);
                         let stored = shared.unwrap_or_else(|| std::sync::Arc::from(key));
                         shard.set_string_address(stored, &published);

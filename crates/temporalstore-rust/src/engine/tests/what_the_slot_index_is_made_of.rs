@@ -332,6 +332,15 @@ const TERMS: &[(&str, Scale, Nature, &str)] = &[
     ("slot_index/field_name", Scale::PerShard, Nature::Envelope, ""),
     ("slot_index/open_brace", Scale::PerShard, Nature::Envelope, ""),
     ("bucket_map/field_name", Scale::PerShard, Nature::Envelope, ""),
+    // `objects` IS THE SECOND KEY OF THE CORE INDEX, and it is charged as ONE subtree rather than
+    // decomposed. This walk is a decomposition of the PAGE index -- what a bucket, a node and an
+    // entry each spend -- and the object rows are a different structure with its own arms
+    // (`ObjectSlotWire`'s record and element array). Charging the subtree whole keeps the part-sum
+    // clause honest without this test growing a second decomposition it would then have to keep
+    // current; `one_record_per_object` is where the row's own bytes are accounted.
+    ("objects/field_name", Scale::PerShard, Nature::Envelope, ""),
+    ("objects/field_tail", Scale::PerShard, Nature::Envelope, ""),
+    ("objects/subtree", Scale::PerShard, Nature::Payload, ""),
     ("bucket_map/field_tail", Scale::PerShard, Nature::Envelope, ""),
     ("bucket_map/open_brace", Scale::PerShard, Nature::Envelope, ""),
     // ---- per-bucket: the map entry, the node envelope and the node's own eleven fields ----
@@ -704,9 +713,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
     // module: this is bookkeeping for a counterfactual, not the redundancy claim. The claim is
     // taken in the other direction -- the key rebuilt from the entry's WRITTEN BYTES -- because a
     // comparison against `block_index_written_key` would be a renderer compared with itself.
-    let identity_keys = crate::engine::state::BlockKeysByPosition::from_lookup(
-        &shard.bucket_index.object_block_lookup,
-    );
+    let identity_keys = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
     let mut handles_by_written_key = BTreeMap::new();
     for node in shard.bucket_index.bucket_map.values() {
         let identities = crate::engine::state::block_identities_in(node, &identity_keys);
@@ -925,19 +932,27 @@ fn walk(reading: &Reading) -> Walked {
 
     let core = slot_index.as_object().expect("the core index writes an object");
     for name in core.keys() {
-        assert_eq!(
-            name, "bucket_map",
+        assert!(
+            name == "bucket_map" || name == "objects",
             "[CLAUSE no-unclassified] the core index writes the key `{name}`, which this \
              decomposition does not name"
         );
     }
     assert_eq!(
         core.len(),
-        1,
+        2,
         "[CLAUSE no-unclassified] the core index writes {} key(s); this walk charges the \
-         punctuation of exactly one",
+         punctuation of exactly two -- `bucket_map` and `objects`, the latter since \
+         `SHARD_INDEX_FORMAT_VERSION` 30 moved the consolidated object map in from the top level",
         core.len()
     );
+    // THE OBJECT ROWS, AS ONE SUBTREE. See the term table on why this is charged whole.
+    let objects = core
+        .get("objects")
+        .expect("the core index writes `objects`");
+    tally.add("objects/field_name", klen("objects") + 1, klen("objects") + 1);
+    tally.add("objects/field_tail", 1, 0);
+    tally.add("objects/subtree", jlen(objects), 0);
     tally.add("bucket_map/field_name", klen("bucket_map") + 1, klen("bucket_map") + 1);
     tally.add("bucket_map/field_tail", 1, 0);
 
@@ -1975,7 +1990,20 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     // THE PER-PAGE CLASS CARRIES THE WHOLE OF IT: 177.015 -> 127.015 B/object, while per-bucket
     // stays at 49.331 and per-shard at 0.004. A step that had moved the per-bucket class would be
     // a step in something other than the page entry.
-    let published = 176.35f64;
+    // 176.35 -> 242.51 WHEN THE CONSOLIDATED OBJECT MAP MOVED UNDER `slot_index`.
+    //
+    // THIS IS NOT THE STORED INDEX GETTING BIGGER, and that distinction is the whole of why the
+    // number is re-goldened rather than treated as a regression. `objects` was a TOP-LEVEL key of
+    // the serialized `ShardState`; it is a field of `CoreIndex` now, written inside `slot_index`,
+    // because the encoder composes every live page's written key from the refs in each object's
+    // slot and cannot reach a sibling field. The same bytes are in the image, one level down -- so
+    // the WHOLE image is unchanged and this figure, which is `slot_index`'s own division, rises by
+    // exactly what the object rows cost. `SHARD_INDEX_FORMAT_VERSION` 30 is what the move paid.
+    //
+    // The step is charged to one term, `objects/subtree`, and deliberately not decomposed: this
+    // walk is a decomposition of the PAGE index, and the object rows are a different structure
+    // with their own arms. `one_record_per_object` is where their bytes are accounted.
+    let published = 242.51f64;
     assert!(
         (division - published).abs() / published < 0.005,
         "[CLAUSE matches-the-published-division] `slot_index` divides to {division:.2} B/object at \

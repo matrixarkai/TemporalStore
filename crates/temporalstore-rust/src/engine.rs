@@ -2901,8 +2901,36 @@ pub(crate) fn visibility_publish_index_flush_interval_from_env() -> u64 {
 /// spent that way deliberately, and the half that would have been silent is the half that is driven
 /// against committed bytes instead.
 ///
+/// # 30: `objects` MOVED UNDER `slot_index`, SO THE INDEX ENCODER CAN REACH IT
+///
+/// The consolidated object map was a TOP-LEVEL key of the serialized `ShardState`. It is a field
+/// of `CoreIndex` now and is written inside `slot_index`. Each object's `BlockRefs` live in its
+/// `ObjectSlot`, and `impl Serialize for CoreIndex` composes every live page's written key from
+/// them -- so the map had to be somewhere that encoder can see. A sibling field of `bucket_index`
+/// is not: `BucketNodeAt` records why, which is that no derive and no `serialize_with` can pass a
+/// sibling down, because both see one field at a time.
+///
+/// WHAT MOVED IS THE PARENT MAP AND NOTHING ELSE. The key is spelled `objects` either way, and
+/// every byte of its value -- `ObjectSlotWire` per object, unchanged, because the refs are skipped
+/// on the wire exactly as the owned element array's absence was. So this is not a re-encoding of
+/// the rows; it is the same rows one level down.
+///
+/// BOTH DIRECTIONS NEED THE STAMP, which is NOT 27's shape:
+///
+///   * A NEW BINARY READING OLD BYTES would find `objects` at the top level, where `CoreIndex`'s
+///     decoder names no arm for it, and `ShardState`'s derive no longer has a field to put it in.
+///     Both halves IGNORE it rather than fail -- so without a stamp an older store decodes
+///     SILENTLY into a shard holding no objects at all, and the first read reports a missing key
+///     rather than a format problem. That is the direction the stamp is really spent on, and it is
+///     the one 27's note says a reader does not expect.
+///   * AN OLD BINARY READING NEW BYTES would find no top-level `objects` and the same silence.
+///
+/// So the refusal is what makes this safe in either direction: `persistence`'s `<` comparison
+/// refuses a lower stamp before anything acts on it, and the refusal falls back to WAL replay,
+/// which rebuilds the map through the ordinary write path.
+///
 /// `SHARD_INDEX_FORMAT_VERSION` 26 and below is what every paragraph below describes.
-pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 29;
+pub(super) const SHARD_INDEX_FORMAT_VERSION: u32 = 30;
 
 /// Serialize a shard index, stamping the current format version.
 ///
@@ -3803,9 +3831,7 @@ fn collect_command_index_items_for(
     // its own copy, so the source is the object lookup inverted by position -- built ONCE here and
     // queried per page, never built per page. `shard` is held immutably throughout, so there is no
     // borrow to split.
-    let identities = crate::engine::state::BlockKeysByPosition::from_lookup(
-        &shard.bucket_index.object_block_lookup,
-    );
+    let identities = crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup);
     let mut items = Vec::new();
     for routing_bucket in buckets {
         let Some(bucket) = shard.bucket_index.bucket_map.get(&routing_bucket) else {
@@ -4812,9 +4838,7 @@ fn fold_delta_block_items(
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
             let names = crate::engine::state::block_identities_in(
                 bucket,
-                &crate::engine::state::BlockKeysByPosition::from_lookup(
-                    &bucket_index.object_block_lookup,
-                ),
+                &crate::engine::state::BlockKeysByPosition::from_parts(&bucket_index.objects, &bucket_index.object_block_lookup),
             );
             let routing_bucket = item.routing_bucket;
             bucket.block_index.retain(
@@ -4854,11 +4878,15 @@ fn fold_delta_block_items(
             bucket_map,
             block_slab_live: live,
             object_block_lookup,
+            // THE OTHER HOME, NAMED IN THE PATTERN. The inversion is built from both now, and a
+            // destructure is what lets it be read while the bucket map is held mutably -- so the
+            // map has to be bound here rather than reached through `bucket_index`.
+            objects,
             ..
         } = &mut *bucket_index;
         // NAMED BEFORE THE MUTATION, for the reason at the upsert arm above. Here the destructure
         // is what lets the inversion be read while the bucket map is held mutably.
-        let identities = crate::engine::state::BlockKeysByPosition::from_lookup(object_block_lookup);
+        let identities = crate::engine::state::BlockKeysByPosition::from_parts(objects, object_block_lookup);
         for (routing_bucket, bucket) in bucket_map.iter_mut() {
             let routing_bucket = *routing_bucket;
             let names = crate::engine::state::block_identities_in(bucket, &identities);
@@ -5660,7 +5688,6 @@ pub(in crate::engine) fn set_expiry(shard: &mut ShardState, key: String, expires
     // has no blocks yet, which is the call that must allocate.
     let existing = shard
         .bucket_index
-        .object_block_lookup
         .any_shared_object_key(&key);
     let shared: std::sync::Arc<str> = existing.unwrap_or_else(|| std::sync::Arc::from(key));
     if let Some(previous) = shard
@@ -5898,9 +5925,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::block_identities_in(
             bucket,
-            &crate::engine::state::BlockKeysByPosition::from_lookup(
-                &shard.bucket_index.object_block_lookup,
-            ),
+            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
         );
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
@@ -5969,7 +5994,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         // AND DROPPING AN ENTRY THE LOOKUP DOES NOT HOLD IS A NO-OP, so the branch is not replaced
         // by a condition -- it is replaced by nothing.
         debug_assert!(
-            !shard.bucket_index.object_block_lookup.is_empty()
+            !shard.bucket_index.names_no_object_pages()
                 || !shard
                     .bucket_index
                     .bucket_map
@@ -5987,7 +6012,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
 }
 
 fn bucket_index_target_buckets_for_object_key(shard: &ShardState, key: &str) -> BTreeSet<u32> {
-    if shard.bucket_index.object_block_lookup.is_empty() {
+    if shard.bucket_index.names_no_object_pages() {
         return shard.bucket_index.bucket_map.keys().copied().collect();
     }
     let mut buckets = BTreeSet::new();
@@ -6158,7 +6183,7 @@ fn mark_bucket_index_block_deleted_recording(
     // refs is the lowest-numbered bucket holding a live page of it, asserted against the walk on
     // every debug run for as long as the pages carried a key to walk by. There is no second source
     // to compare against now, so the claim is spent rather than weakened.
-    let target_buckets = if shard.bucket_index.object_block_lookup.is_empty() {
+    let target_buckets = if shard.bucket_index.names_no_object_pages() {
         shard
             .bucket_index
             .bucket_map
@@ -6186,9 +6211,7 @@ fn mark_bucket_index_block_deleted_recording(
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::block_identities_in(
             bucket,
-            &crate::engine::state::BlockKeysByPosition::from_lookup(
-                &shard.bucket_index.object_block_lookup,
-            ),
+            &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
         );
         bucket.block_index.retain(
             &mut shard.bucket_index.block_slab_live,
@@ -6769,7 +6792,6 @@ fn persist_control_state_block(
         // already holding one.
         let shared = shard
             .bucket_index
-            .object_block_lookup
             .any_shared_object_key(key);
         let stored = shared.unwrap_or_else(|| std::sync::Arc::from(key));
         shard.insert_control_state_block(stored, record.into());
@@ -6948,7 +6970,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     // sites rather than by a type -- there is no door that installs AND files -- and that is filed
     // as its own design change rather than carried by a width step.
     debug_assert!(
-        !shard.bucket_index.object_block_lookup.is_empty()
+        !shard.bucket_index.names_no_object_pages()
             || !shard
                 .bucket_index
                 .bucket_map
@@ -7673,12 +7695,12 @@ fn object_manager_stats(
 ) -> ObjectManagerStats {
     if !shard.bucket_index.bucket_map.is_empty() {
         let (bucket_object_count, bucket_block_ref_count, bucket_dirty_object_count) =
-            if !shard.bucket_index.object_block_lookup.is_empty() {
+            if !shard.bucket_index.names_no_object_pages() {
                 (
                     // The map is keyed by OBJECT now, so its length is the object count directly.
                     // It used to be the length of a second map kept alongside this one, which is
                     // the question that stopped that map from simply being deleted.
-                    shard.bucket_index.object_block_lookup.len(),
+                    shard.bucket_index.objects_naming_pages(),
                     // Maintained incrementally; the walk is the fallback for an index that has
                     // been deserialized but not yet rebuilt. This runs on the heartbeat timer
                     // under the shard read lock, so walking here shows up as write contention.
@@ -7793,7 +7815,7 @@ fn object_manager_stats(
                 .values()
                 .map(|slot| slot.owned_element_count())
                 .sum::<usize>();
-        let dirty_bucket_count = if !shard.bucket_index.object_block_lookup.is_empty() {
+        let dirty_bucket_count = if !shard.bucket_index.names_no_object_pages() {
             // COUNTED BEFORE ANY SET IS BUILT, because in two cases the set cannot change the
             // answer and building it is the whole allocation of this function.
             //

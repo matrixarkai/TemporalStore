@@ -577,6 +577,23 @@ fn walk_bucket_index_strings(
             // was removed, because every name was already `None`.
         }
     }
+    // THE OBJECT MAP IS WHERE THE KEY ALLOCATION LIVES NOW, AND WITHOUT THIS WALK THE CENSUS
+    // REPORTED ZERO FOR IT.
+    //
+    // This walked the lookup alone, which was the only structure keyed by the object key. The
+    // refs are in each object's slot now, so a shard of strings has an EMPTY lookup -- and the
+    // key-character row read 0.0 B/key while every key was still allocated and held. That is the
+    // worst failure mode an instrument has: not a wrong number, a MISSING one, and it flattered
+    // the very change it was measuring by about 32 B/key.
+    //
+    // `seen` dedupes by DATA POINTER across both walks, so a key held by a slot row and by the
+    // lookup is charged once -- which is the same guarantee this walk has always made about the
+    // page entry and the lookup sharing one allocation.
+    for table in bucket_index.objects.values() {
+        for object_key in table.keys() {
+            bytes += arc_str_bytes(seen, object_key);
+        }
+    }
     for (model_id, object_key, _refs) in bucket_index.object_block_lookup.iter() {
         bytes += arc_str_bytes(seen, model_id);
         bytes += arc_str_bytes(seen, object_key);
@@ -2306,14 +2323,32 @@ fn an_integer_addressed_lookup_serves_another_objects_refs() {
 fn census_bytes(shard: &crate::engine::state::ShardState) -> Vec<(&'static str, u64)> {
     let bucket_map = deep_heap_bytes(&shard.bucket_index.bucket_map);
     let lookup = deep_heap_bytes(&shard.bucket_index.object_block_lookup);
+    // THE CONSOLIDATED OBJECT MAP IS A FIELD OF THE INDEX NOW, SO IT HAS TO COME OUT OF THE
+    // REMAINDER OR IT IS CHARGED TWICE.
+    //
+    // `core_rest` is "whatever else `CoreIndex` holds", taken as the whole minus the parts named
+    // above it. `objects` moved in from `ShardState`, so without subtracting it the `strings` row
+    // below and this remainder BOTH carry the string table -- measured as `strings` 74.3 and
+    // `core_rest` 74.3 on a string-only corpus, which inflated the numerator by one whole row and
+    // would have been read as the fold costing nothing.
+    let objects_all = deep_heap_bytes(&shard.bucket_index.objects);
     let core_rest = deep_heap_bytes(&shard.bucket_index)
         .saturating_sub(bucket_map)
-        .saturating_sub(lookup);
+        .saturating_sub(lookup)
+        .saturating_sub(objects_all);
+    // AND THE KINDS THE CENSUS DOES NOT NAME GET A ROW OF THEIR OWN, so the parts still sum to the
+    // whole. `strings` and `features` are slices of `objects`; this is the rest of it.
+    let strings_bytes = deep_heap_bytes(shard.strings());
+    let features_bytes = deep_heap_bytes(shard.features());
+    let objects_other = objects_all
+        .saturating_sub(strings_bytes)
+        .saturating_sub(features_bytes);
     let (arc_bytes, _) = arc_payload_bytes(&shard.bucket_index);
     let (dirty_arc_bytes, _, _) = dirty_arc_payload_bytes(shard);
     vec![
-        ("strings", deep_heap_bytes(shard.strings())),
-        ("features", deep_heap_bytes(shard.features())),
+        ("strings", strings_bytes),
+        ("features", features_bytes),
+        ("objects, the other kinds", objects_other),
         ("hashes", deep_heap_bytes(&shard.hashes)),
         ("bucket_index.bucket_map", bucket_map),
         ("bucket_index.object_block_lookup", lookup),
@@ -8783,8 +8818,17 @@ fn what_persisting_the_event_and_index_series_costs_the_stored_index() {
         );
 
         let with_bytes = crate::engine::encode_index_bytes(shard).len();
-        shard.objects.remove(&StoredModelKind::ContextEvent);
-        shard.objects.remove(&StoredModelKind::ContextIndex);
+        // THE REFS SPILL BEFORE THE TABLE GOES. Each object's refs live in its slot row, so
+        // removing the kind's table takes the only record of where that kind's pages are with it
+        // -- and `serialize_block_index` then REFUSES the index rather than writing a page that
+        // names no object, which is how this arm first reported the fold. Spilling them into the
+        // lookup keeps every page nameable and moves no written byte, because the refs are not
+        // written from either home. The measurement below is unchanged: it is the difference the
+        // ROWS make to the stored image.
+        shard.bucket_index.spill_refs_to_lookup(StoredModelKind::ContextEvent);
+        shard.bucket_index.spill_refs_to_lookup(StoredModelKind::ContextIndex);
+        shard.bucket_index.objects.remove(&StoredModelKind::ContextEvent);
+        shard.bucket_index.objects.remove(&StoredModelKind::ContextIndex);
         let without_bytes = crate::engine::encode_index_bytes(shard).len();
         (
             with_bytes,

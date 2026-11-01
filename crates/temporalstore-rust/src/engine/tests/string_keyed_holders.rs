@@ -533,11 +533,22 @@ fn how_many_allocations_the_block_index_itself_holds() {
     let lookup = &shard.bucket_index.object_block_lookup;
 
     println!();
+    // BOTH HOMES, AND THE CLAIM IS UNCHANGED BY THAT. An object's refs live in its slot row
+    // wherever it has one, so a kind that was in the lookup before the fold is in the consolidated
+    // map now -- and the question here is about the INDEX's allocations of one key text, not about
+    // which structure inside it holds them. Reading one home only made this arm see four kinds
+    // where it expects five and refuse its own premise.
     let mut filed: Vec<(&str, usize)> = Vec::new();
     for kind in KINDS {
-        match lookup.key_ptr(kind, &raw) {
+        let from_lookup = lookup.key_ptr(kind, &raw);
+        let from_slot = crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+            kind,
+        )
+        .and_then(|k| shard.bucket_index.slot_key_ptr(k, &raw));
+        match from_lookup.or(from_slot) {
             Some(ptr) => {
-                println!("  {kind:<16} {:#x}", ptr as usize);
+                let home = if from_lookup.is_some() { "lookup" } else { "slot" };
+                println!("  {kind:<16} {:#x}  ({home})", ptr as usize);
                 filed.push((kind, ptr as usize));
             }
             None => println!("  {kind:<16} (not filed under this kind)"),

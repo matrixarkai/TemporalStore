@@ -387,55 +387,6 @@ pub(super) struct ShardState {
     // explicitly instead of defaulting to it.
     #[serde(default)]
     pub(super) lists: super::recorded_map::RecordedMap<super::recorded_map::ListKind>,
-    // THE COUNTER SERIES ARE DOMAINS OF `side_tables` NOW, behind `control_state()` /
-    // `_mut()` and `feature_values()` / `_mut()` exactly as before. Their stored spellings
-    // -- "control_state" and "feature_values" -- are unchanged; only the object they sit
-    // under is.
-    /// Counter-series blocks, one per control-state object key.
-    ///
-    /// THE VALUE IS A RECORD RATHER THAN A BARE ADDRESS, and this is the first map to hold one.
-    /// A live object was costing several key-addressed structures, each paying its own node AND
-    /// its own copy of the key's characters; the record is the single row those collapse into. It
-    /// carries the address this map always held, plus a deadline slot, state bits and a model id
-    /// that are PRESENT AND UNUSED here -- so the width goes live with no behaviour change, and
-    /// the deadline merge that fills them is a separate change with its own evidence.
-    ///
-    /// READ IT THROUGH `address()`, WRITE IT THROUGH `set_address()`. The second matters: writing
-    /// back by building a fresh record drops the unused slots silently, and would not fail while
-    /// they are unused. See `ObjectRecord::set_address`.
-    ///
-    /// A STORED-FORMAT CHANGE, which is why the format stamp moves with it. An index written
-    /// before this carries a bare address here and is refused by the stamp check rather than
-    /// decoded into the wrong shape; the refusal falls back to replay, and the reconcile rebuilds
-    /// this map from the bucket index.
-    /// THE CONSOLIDATED MAP: one durable structure, keyed kind then object key.
-    ///
-    /// Two levels and not a flat `(kind, key)` map, because a key may hold DIFFERENT KINDS AT
-    /// ONCE. That is measured, not assumed: a string and a hash under the same key both answer
-    /// ok and both read back their own bytes, in either write order. A flat map keyed by the
-    /// object key alone would collide them, and the collision is reachable by any client through
-    /// the public surface. Two levels also keep a per-kind walk at exactly today's cost -- one
-    /// lookup, then iterate the kind -- where a flat map would make every such walk scan every
-    /// kind.
-    ///
-    /// A `BTreeMap` OUTSIDE, FOR ITS ORDER AND NOT ITS SPEED. Seventeen entries at most, so the
-    /// container's lookup cost is irrelevant and the temptation is to reach for a `HashMap`. The
-    /// order is the point: the dump manifest feeds its digest from an iteration key by key and
-    /// recomputes it on restore, so an unordered outer map makes that digest depend on hash
-    /// iteration order and silently invalidates every manifest written before the change. See the
-    /// test that pins it, which is the first thing in the tree asserting that digest is
-    /// order-sensitive at all.
-    ///
-    /// ONE RECORD PER KEY, AND THE COMPILER IS WHAT HOLDS THAT -- see #2165. A per-element
-    /// tenant needs `ObjectSlot`'s owned element array, which has no stored form, so the
-    /// only door that fills it demands a tenancy witness whose durable arm is an uninhabited
-    /// type and cannot be spelled: see [`super::object_record::OwnedElementTenancy`], which
-    /// carries the reasoning and the condition for deleting it.
-    #[serde(default)]
-    pub(super) objects: std::collections::BTreeMap<
-        super::storage_bucket_internals::StoredModelKind,
-        HashMap<ModelKey, super::object_record::ObjectSlot>,
-    >,
 
     /// WHERE A MULTI-PAGE OBJECT'S PAGES LIVE, so they hang off the object's own record.
     ///
@@ -896,6 +847,83 @@ impl ShardState {
 #[derive(Debug, Clone)]
 pub(super) struct CoreIndex {
     pub(super) bucket_map: BucketMap,
+    /// # IT IS HELD HERE, AND NOT ONE LEVEL UP ON `ShardState`, BECAUSE THE ENCODER MUST REACH IT
+    ///
+    /// Each object's `BlockRefs` live in its `ObjectSlot` now, and
+    /// [`BlockKeysByPosition::from_parts`] composes every live page's WRITTEN KEY from them.
+    /// `serialize_block_index` returns `Err` for a page with no identity beside it, so an encoder
+    /// that cannot reach this map does not write a bad index -- it stops the shard dumping. While
+    /// this sat on `ShardState` it was a SIBLING of `bucket_index`, and `BucketNodeAt` states why
+    /// that cannot be bridged: no derive and no `serialize_with` can pass a sibling down, because
+    /// both see one field at a time. Moving the map is what makes the fold expressible at all.
+    ///
+    /// AND IT FIXES THE MUTATION SURFACE FOR FREE. `fold_delta_block_items` files pages through a
+    /// bare `&mut CoreIndex` and has no shard to reach for; with the map here, every door that
+    /// files or drops a ref keeps the borrow it already had.
+    ///
+    /// NO KIND GETS A CARRIER ROW HERE, which is the other half of why the fold is not one
+    /// structure. The four kinds with no row of their own keep their refs in
+    /// [`ObjectBlockLookup`]; a row that existed only to hold refs would change what this map
+    /// CONTAINS, and the dump manifest feeds its digest from an iteration of it key by key -- so a
+    /// phantom row silently invalidates every manifest written before it.
+    ///
+    /// ON THE WIRE UNDER `slot_index` AND NO LONGER AT THE TOP LEVEL, WHICH IS WHAT THE STAMP STEP
+    /// PAYS FOR. The key spelling and every byte of the value are unchanged; only the parent map
+    /// differs. An index written before the step carries `objects` at the top level, where this
+    /// decoder cannot see it, and is refused by `persistence`'s `<` comparison rather than decoded
+    /// into a shard holding no objects at all -- the refusal falls back to WAL replay.
+    ///
+    /// THE DOC BELOW IS THE ONE THIS FIELD CARRIED ON `ShardState`, moved with the declaration
+    /// rather than retyped, so the reasoning for the SHAPE cannot drift from the shape.
+    ///
+    // THE COUNTER SERIES ARE DOMAINS OF `side_tables` NOW, behind `control_state()` /
+    // `_mut()` and `feature_values()` / `_mut()` exactly as before. Their stored spellings
+    // -- "control_state" and "feature_values" -- are unchanged; only the object they sit
+    // under is.
+    /// Counter-series blocks, one per control-state object key.
+    ///
+    /// THE VALUE IS A RECORD RATHER THAN A BARE ADDRESS, and this is the first map to hold one.
+    /// A live object was costing several key-addressed structures, each paying its own node AND
+    /// its own copy of the key's characters; the record is the single row those collapse into. It
+    /// carries the address this map always held, plus a deadline slot, state bits and a model id
+    /// that are PRESENT AND UNUSED here -- so the width goes live with no behaviour change, and
+    /// the deadline merge that fills them is a separate change with its own evidence.
+    ///
+    /// READ IT THROUGH `address()`, WRITE IT THROUGH `set_address()`. The second matters: writing
+    /// back by building a fresh record drops the unused slots silently, and would not fail while
+    /// they are unused. See `ObjectRecord::set_address`.
+    ///
+    /// A STORED-FORMAT CHANGE, which is why the format stamp moves with it. An index written
+    /// before this carries a bare address here and is refused by the stamp check rather than
+    /// decoded into the wrong shape; the refusal falls back to replay, and the reconcile rebuilds
+    /// this map from the bucket index.
+    /// THE CONSOLIDATED MAP: one durable structure, keyed kind then object key.
+    ///
+    /// Two levels and not a flat `(kind, key)` map, because a key may hold DIFFERENT KINDS AT
+    /// ONCE. That is measured, not assumed: a string and a hash under the same key both answer
+    /// ok and both read back their own bytes, in either write order. A flat map keyed by the
+    /// object key alone would collide them, and the collision is reachable by any client through
+    /// the public surface. Two levels also keep a per-kind walk at exactly today's cost -- one
+    /// lookup, then iterate the kind -- where a flat map would make every such walk scan every
+    /// kind.
+    ///
+    /// A `BTreeMap` OUTSIDE, FOR ITS ORDER AND NOT ITS SPEED. Seventeen entries at most, so the
+    /// container's lookup cost is irrelevant and the temptation is to reach for a `HashMap`. The
+    /// order is the point: the dump manifest feeds its digest from an iteration key by key and
+    /// recomputes it on restore, so an unordered outer map makes that digest depend on hash
+    /// iteration order and silently invalidates every manifest written before the change. See the
+    /// test that pins it, which is the first thing in the tree asserting that digest is
+    /// order-sensitive at all.
+    ///
+    /// ONE RECORD PER KEY, AND THE COMPILER IS WHAT HOLDS THAT -- see #2165. A per-element
+    /// tenant needs `ObjectSlot`'s owned element array, which has no stored form, so the
+    /// only door that fills it demands a tenancy witness whose durable arm is an uninhabited
+    /// type and cannot be spelled: see [`super::object_record::OwnedElementTenancy`], which
+    /// carries the reasoning and the condition for deleting it.
+    pub(super) objects: BTreeMap<
+        super::storage_bucket_internals::StoredModelKind,
+        HashMap<ModelKey, super::object_record::ObjectSlot>,
+    >,
     /// Per-slab live block refs and live bytes, maintained by every mutation of the map above.
     ///
     /// HERE, and not one level up on `ShardState`, for two reasons. `fold_delta_block_items` files
@@ -1027,6 +1055,7 @@ impl Default for CoreIndex {
             bucket_map: BucketMap::default(),
             block_slab_live: BlockSlabLiveIndex::default(),
             object_block_lookup: ObjectBlockLookup::default(),
+            objects: BTreeMap::default(),
             kind_pool: std::collections::HashSet::default(),
             object_component_block_refs: Some(0),
             released_buckets: BTreeSet::default(),
@@ -1043,6 +1072,11 @@ enum CoreIndexField {
     BucketMap,
     /// `object_block_lookup`: decoded if a store carries one, never written.
     ObjectBlockLookup,
+    /// `objects`: the consolidated object map, WRITTEN and read back. It was a top-level key of
+    /// `ShardState` until the refs moved into the slot. An index written before that stamp step
+    /// carries it up there, where this decoder cannot see it, and is refused by the stamp rather
+    /// than decoded into a shard holding no objects.
+    Objects,
     /// Everything else, INCLUDING the four fields that are not on the wire at all. Ignored rather
     /// than refused, which is what lets an index written by a newer engine load into an older one.
     Ignore,
@@ -1069,6 +1103,7 @@ impl<'de> Deserialize<'de> for CoreIndexField {
                 Ok(match value {
                     "bucket_map" | "slots" => CoreIndexField::BucketMap,
                     "object_block_lookup" => CoreIndexField::ObjectBlockLookup,
+                    "objects" => CoreIndexField::Objects,
                     _ => CoreIndexField::Ignore,
                 })
             }
@@ -1078,7 +1113,7 @@ impl<'de> Deserialize<'de> for CoreIndexField {
     }
 }
 
-const CORE_INDEX_FIELDS: &[&str] = &["bucket_map", "object_block_lookup"];
+const CORE_INDEX_FIELDS: &[&str] = &["bucket_map", "object_block_lookup", "objects"];
 
 impl<'de> Deserialize<'de> for CoreIndex {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
@@ -1102,6 +1137,12 @@ impl<'de> Deserialize<'de> for CoreIndex {
 
                 let mut buckets: Option<BTreeMap<u32, BucketNodeWithBlockKeys>> = None;
                 let mut stored_lookup: Option<ObjectBlockLookup> = None;
+                let mut stored_objects: Option<
+                    BTreeMap<
+                        super::storage_bucket_internals::StoredModelKind,
+                        HashMap<ModelKey, super::object_record::ObjectSlot>,
+                    >,
+                > = None;
                 while let Some(key) = map.next_key::<CoreIndexField>()? {
                     match key {
                         CoreIndexField::BucketMap => {
@@ -1119,6 +1160,12 @@ impl<'de> Deserialize<'de> for CoreIndex {
                             }
                             stored_lookup = Some(map.next_value()?);
                         }
+                        CoreIndexField::Objects => {
+                            if stored_objects.is_some() {
+                                return Err(M::Error::duplicate_field("objects"));
+                            }
+                            stored_objects = Some(map.next_value()?);
+                        }
                         CoreIndexField::Ignore => {
                             map.next_value::<serde::de::IgnoredAny>()?;
                         }
@@ -1127,6 +1174,13 @@ impl<'de> Deserialize<'de> for CoreIndex {
 
                 let mut index = CoreIndex {
                     object_block_lookup: stored_lookup.unwrap_or_default(),
+                    // THE SLOTS ARE INSTALLED BEFORE THE PAGES ARE FILED, and the order is
+                    // load-bearing rather than tidy: `insert_object_block_lookup` files an
+                    // object's refs INTO its slot for a kind that has rows, and into the lookup
+                    // for a kind that has none. Installed after the filing loop below, every
+                    // decoded page would take the lookup arm and a reload would quietly undo the
+                    // fold -- the figure would regress with every restart and nothing would fail.
+                    objects: stored_objects.unwrap_or_default(),
                     ..CoreIndex::default()
                 };
                 // ZERO BEFORE THE FIRST FILING, not after the last. `insert_object_block_lookup`
@@ -1212,7 +1266,19 @@ pub(super) struct BlockObjectIdentity<'a> {
 }
 
 pub(super) struct BlockKeysByPosition<'a> {
-    by_position: std::collections::HashMap<(u32, u64), (&'a Arc<str>, &'a Arc<str>)>,
+    /// THE KIND AS `&str`, NOT AS `&Arc<str>`, which is what lets both homes fill this.
+    ///
+    /// It was `&'a Arc<str>` while the lookup was the only source, because that is how the lookup
+    /// keys its outer level. A slot's kind is the consolidated map's ONE-BYTE outer key, which has
+    /// no `Arc` to lend -- but `StoredModelKind::as_str` is `&'static str`, and the lookup's own
+    /// `Arc<str>` derefs to `&str`, so the narrower spelling is the one both can supply.
+    ///
+    /// THE TERM IS NOT SPARE. Dropping it compiles everything except
+    /// `collect_bucket_index_live_block_entries`, which derives an object id through
+    /// `hashing::stable_block_object_id(shard_id, model_id, object_key)` -- so the kind is read,
+    /// once, and by the walk whose whole job is to catch a page filed where its key does not
+    /// route.
+    by_position: std::collections::HashMap<(u32, u64), (&'a str, &'a Arc<str>)>,
     /// THE SAME ANSWER WITHOUT THE BUCKET, FOR THE ONE QUESTION POSITION CANNOT ANSWER.
     ///
     /// `by_position` is the right index for every reader that asks "which object is the page at
@@ -1231,7 +1297,7 @@ pub(super) struct BlockKeysByPosition<'a> {
     /// through [`Self::identity_anywhere`], and the doc there says why. A handle is hashed from a
     /// block's identity and its address, so two pages share one only by being the same block --
     /// which is the same assumption `BlockIndexMap` already keys on.
-    by_handle: std::collections::HashMap<u64, (&'a Arc<str>, &'a Arc<str>)>,
+    by_handle: std::collections::HashMap<u64, (&'a str, &'a Arc<str>)>,
 }
 
 impl<'a> BlockKeysByPosition<'a> {
@@ -1243,10 +1309,24 @@ impl<'a> BlockKeysByPosition<'a> {
     /// `bucket_map` mutably, and only the caller can split those two borrows apart by naming the
     /// fields. `CoreIndex::block_identities` cannot be used there for exactly that reason -- it
     /// borrows the whole index.
-    pub(super) fn from_lookup(lookup: &'a ObjectBlockLookup) -> Self {
+    /// BOTH HOMES, BY FIELD AND NOT BY INDEX.
+    ///
+    /// It took the lookup alone while the lookup was the only home. The refs are in the object's
+    /// slot now wherever it has a row, so this walks the consolidated map as well -- and it takes
+    /// the two FIELDS rather than a `&CoreIndex` for the reason the old note gave: the bucket
+    /// rebuild in `storage_bucket_internals` holds `bucket_map` mutably while this inversion is
+    /// alive, and only a caller naming the fields can split those borrows apart. Both fields here
+    /// are disjoint from `bucket_map`, so that still works.
+    pub(super) fn from_parts(
+        objects: &'a BTreeMap<
+            super::storage_bucket_internals::StoredModelKind,
+            HashMap<ModelKey, super::object_record::ObjectSlot>,
+        >,
+        lookup: &'a ObjectBlockLookup,
+    ) -> Self {
         let mut by_position = std::collections::HashMap::new();
         let mut by_handle = std::collections::HashMap::new();
-        for (model_id, object_key, refs) in lookup.iter() {
+        let mut file = |model_id: &'a str, object_key: &'a Arc<str>, refs: &'a BlockRefs| {
             for block_ref in refs.iter() {
                 by_position.insert(
                     (block_ref.routing_bucket, block_ref.block_ref_key),
@@ -1254,6 +1334,18 @@ impl<'a> BlockKeysByPosition<'a> {
                 );
                 by_handle.insert(block_ref.block_ref_key, (model_id, object_key));
             }
+        };
+        // THE SLOT HOME FIRST. `as_str` on the kind is `&'static str`, which outlives `'a`.
+        for (kind, table) in objects {
+            for (object_key, slot) in table {
+                if let Some(refs) = slot.refs() {
+                    file(kind.as_str(), object_key, refs);
+                }
+            }
+        }
+        // THEN THE LOOKUP, for the kinds whose objects hold no slot row.
+        for (model_id, object_key, refs) in lookup.iter() {
+            file(model_id.as_ref(), object_key, refs);
         }
         Self {
             by_position,
@@ -1273,7 +1365,7 @@ impl<'a> BlockKeysByPosition<'a> {
         &self,
         routing_bucket: u32,
         handle: u64,
-    ) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
+    ) -> Option<(&'a str, &'a Arc<str>)> {
         self.by_position.get(&(routing_bucket, handle)).copied()
     }
 
@@ -1337,7 +1429,7 @@ impl<'a> BlockKeysByPosition<'a> {
     /// DELETED PAGES ARE STILL NOT IN IT, for the lookup's own reason:
     /// `insert_object_block_lookup` returns early on one. A caller that must answer for a
     /// tombstone wants [`Self::identity_of`], which knows about the bucket's rows as well.
-    pub(super) fn identity_anywhere(&self, handle: u64) -> Option<(&'a Arc<str>, &'a Arc<str>)> {
+    pub(super) fn identity_anywhere(&self, handle: u64) -> Option<(&'a str, &'a Arc<str>)> {
         self.by_handle.get(&handle).copied()
     }
 }
@@ -1396,8 +1488,8 @@ impl Serialize for CoreIndex {
         // entry's own copy of the identity and this inversion only CONFIRMED it. The key is
         // composed from the inversion now, so a release build without one would write no key at
         // all. The type's own doc prices the pass.
-        let keys = BlockKeysByPosition::from_lookup(&self.object_block_lookup);
-        let mut index = serializer.serialize_struct("CoreIndex", 1)?;
+        let keys = self.block_identities();
+        let mut index = serializer.serialize_struct("CoreIndex", 2)?;
         index.serialize_field(
             "bucket_map",
             &BucketMapAt {
@@ -1405,6 +1497,12 @@ impl Serialize for CoreIndex {
                 keys: &keys,
             },
         )?;
+        // TWO FIELDS NOW, AND THE COUNT IS PART OF THE ENCODING: the served index is msgpack
+        // `with_struct_map`, so `serialize_struct` writes a map header of exactly this length.
+        // `objects` moved in from `ShardState`'s top level so the inversion above can be composed
+        // from it. Same key spelling, same value bytes, different parent map -- which is the whole
+        // of what the `SHARD_INDEX_FORMAT_VERSION` step pays for.
+        index.serialize_field("objects", &self.objects)?;
         index.end()
     }
 }
@@ -4551,8 +4649,15 @@ pub(super) fn block_index_written_key(object_key: &str, block: &BlockIndex) -> S
 ///
 /// # NO FORMAT STAMP IS OWED, AND IT IS CHECKED RATHER THAN ASSUMED
 ///
-/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex` and is rebuilt
-/// by a full bucket walk on load (`persistence`'s two `rebuild_object_block_lookup` calls). An
+/// The field holding this is `#[serde(default, skip_serializing)]` on `CoreIndex`, and what fills
+/// it on load is the DECODE, which files each page as it reads it.
+///
+/// THE TWO `rebuild_object_block_lookup` CALLS THIS PARAGRAPH USED TO NAME ARE GONE WITH THE
+/// FUNCTION, and the correction is made here rather than left standing because this is the
+/// paragraph a later change reads to decide whether it owes a stamp. The rebuild walked the pages
+/// and read each one's key; the key left the entry at `SHARD_INDEX_FORMAT_VERSION` 27, so there
+/// was nothing left to rebuild FROM. The conclusion below is unchanged -- it never rested on
+/// WHICH pass fills the field, only on the field not being written. An
 /// index stamped with the current `SHARD_INDEX_FORMAT_VERSION` cannot carry it, because the writer
 /// skips it; an index stamped lower is refused by `persistence`'s `<` comparison. So the wire
 /// shape below has no reader a stamp could protect. The one observable difference for a
@@ -4599,6 +4704,54 @@ pub(super) struct ObjectBlockLookup {
 ///      ground 1 again. Object keys arrive from the caller, so there is no funnel to hold a
 ///      uniqueness property the way `block_index_handle`'s single emitter holds its own.
 ///      `an_integer_addressed_lookup_serves_another_objects_refs` drives both halves.
+///   4. RELOCATING THE REFS INTO THE SLOT ENTRY IS NEITHER OF THE ABOVE, AND IT HAS SHIPPED.
+///      Each object's refs live in its `ObjectSlot` wherever the object HAS a slot row. This
+///      struct is what remains: the home for the kinds that have none.
+///
+///      WHAT IT BOUGHT, measured by
+///      `index_bytes_per_key::what_folding_the_block_refs_into_the_slot_would_save` before it was
+///      built and by `the_amplification_set_at_two_arms_four_times_apart` after: one per-object
+///      structure instead of two, worth 50.9 B/key at 1,792 keys and 50.9 at 7,168 -- a slope and
+///      not a constant divided by keys. `Option<BlockRefs>` turned out to cost ZERO over the bare
+///      union (a `Vec` pointer's niche is a RANGE, not the single value 0), so the slot is 48 B
+///      and the bucket 65, exactly the width the price assumed.
+///
+///      IT IS NOT GROUND 1, 2 OR 3. The address is still the object KEY, and the identity still
+///      exists -- so nothing above applies. What it cost instead was a
+///      `SHARD_INDEX_FORMAT_VERSION` step, because the consolidated map had to move from a
+///      top-level key of `ShardState` into `CoreIndex`: `impl Serialize for CoreIndex` composes
+///      every live page's written key from the refs, `serialize_block_index` REFUSES a page it
+///      cannot name, and a sibling field of `bucket_index` is unreachable from that encoder --
+///      `BucketNodeAt` says why, which is that no derive and no `serialize_with` can pass a
+///      sibling down.
+///
+///      # WHY THIS STRUCT STILL EXISTS, AND IT IS NOT A LEFTOVER
+///
+///      FOUR LIVE KINDS HAVE NO SLOT ROW TO FOLD INTO, measured over the write path by
+///      `where_an_objects_refs_could_live::where_each_kinds_refs_end_up`: `hash`, `set`, `zset`
+///      and `list` keep their rows in `RecordedMap`, whose value is the object's ELEMENTS and not
+///      an `ObjectSlot`, and `ContextNode` keeps a bare `ElementEntry` in `side_tables`. Giving
+///      them a row here instead would mean a CARRIER row in a durable map whose outer iteration
+///      feeds the dump manifest digest -- a row that exists only to hold refs changes what a
+///      restore validates. So they are served from this struct, and that arm asserts BOTH columns
+///      are populated so neither home can go quietly empty.
+///
+///      # THE TWO HALVES OF THE ROUTING, AND WHY THE SECOND IS NOT OPTIONAL
+///
+///      `insert_object_block_lookup` files into the slot when the object has a row and here when
+///      it does not. That alone would have saved NOTHING on the corpus the published figure uses:
+///      `where_an_objects_refs_could_live::whether_a_slot_row_exists_when_its_page_is_filed`
+///      measures that a first write has no row yet -- the row holds the object's ADDRESS and the
+///      address IS where the page landed, so a first write cannot install the row before filing
+///      the page. Every single-page object would have stayed here while every test passed. The
+///      second half is [`CoreIndex::adopt_refs_into_slot`], called by the door that installs a
+///      row.
+///
+///      BOTH HOMES ARE READ BY [`CoreIndex::object_block_refs`], so a missed adoption door costs
+///      FOOTPRINT and not correctness -- which is the right failure mode and an invisible one,
+///      hence the arm above reporting where each kind's refs actually landed.
+///
+///      `an_integer_addressed_lookup_serves_another_objects_refs` drives both halves of ground 3.
 const _: () = assert!(std::mem::size_of::<(Arc<str>, BlockRefs)>() == 40);
 /// Pinned on its own, because a width pin admits every alignment that divides it.
 const _: () = assert!(std::mem::align_of::<(Arc<str>, BlockRefs)>() == 8);
@@ -7050,6 +7203,13 @@ impl BlockIndex {
     }
 }
 
+/// TEMPORARY PROBE, TEST BUILDS ONLY: per kind, how many page filings found the object's slot row
+/// already present, and how many did not. Deleted once the fold's routing rule is chosen.
+#[cfg(test)]
+pub(super) static FILING_ROW_CENSUS: std::sync::Mutex<
+    Option<std::collections::BTreeMap<&'static str, (u64, u64)>>,
+> = std::sync::Mutex::new(None);
+
 impl CoreIndex {
     /// THE LOOKUP ALREADY DESCRIBES THE PAGES, CHECKED WITHOUT REBUILDING IT.
     ///
@@ -7112,7 +7272,58 @@ impl CoreIndex {
         if block.deleted {
             return;
         }
-        let added = {
+        #[cfg(test)]
+        {
+            let present = self
+                .objects
+                .get(&block.model_id)
+                .is_some_and(|table| table.contains_key(object_key.as_ref()));
+            if let Ok(mut census) = FILING_ROW_CENSUS.lock() {
+                if let Some(census) = census.as_mut() {
+                    let row = census.entry(block.model_id.as_str()).or_insert((0, 0));
+                    if present {
+                        row.0 += 1;
+                    } else {
+                        row.1 += 1;
+                    }
+                }
+            }
+        }
+        let value = BlockLookupRef {
+            routing_bucket,
+            block_ref_key,
+        };
+        // WHERE THIS REF GOES, AND THE RULE IS THE ROW RATHER THAN THE KIND.
+        //
+        // An object with a slot row holds its refs IN that row -- one per-object structure instead
+        // of two, which is the whole saving. An object with no row has nowhere to put them and
+        // they go to the lookup, which is the case for every `hash`, `set`, `zset` and `list`
+        // object, whose rows live in `RecordedMap` and are not `ObjectSlot`s at all.
+        //
+        // KEYED ON THE ROW AND NOT ON A LIST OF KINDS, because the row is the thing that can
+        // actually hold a ref and a hand-kept list of kinds would go stale beside the accessors it
+        // describes. `which_kinds_file_refs_for_an_object_the_slot_map_has_no_row_for` measures
+        // which kinds that puts where.
+        //
+        // AND THE FIRST PAGE OF AN OBJECT ARRIVES BEFORE ITS ROW DOES, measured by
+        // `whether_a_slot_row_exists_when_its_page_is_filed`: a first `StringSet` files its page
+        // and only then installs the address, because the address IS where the page landed. So
+        // this route alone would leave every single-page object in the lookup -- which is why the
+        // door that creates a row ADOPTS what the lookup holds for it. See
+        // `CoreIndex::adopt_refs_into_slot`.
+        let has_row = self
+            .objects
+            .get(&block.model_id)
+            .is_some_and(|table| table.contains_key(object_key.as_ref()));
+        let added = if has_row {
+            // TWO LOOKUPS RATHER THAN ONE, and the borrow checker is why: a `match` whose arm
+            // binds `&mut self.objects` holds that borrow across the other arm, where the lookup
+            // and the kind pool are needed. The second lookup is a hash hit on a table already in
+            // cache, and the alternative is an unsafe or a restructure of the whole door.
+            self.slot_refs_mut(block.model_id.as_str(), object_key.as_ref())
+                .map(|slot| slot.file_ref(value))
+                .unwrap_or(false)
+        } else {
             // The lookup is keyed by the kind's SHARED name, and the block no longer carries one --
             // it carries the one-byte spelling. `kind_pool` is where that shared name already
             // lives: the kinds are a closed set of about fifteen, so only the first block of each
@@ -7121,10 +7332,6 @@ impl CoreIndex {
                 &mut self.kind_pool,
                 block.model_id.as_str(),
             );
-            let value = BlockLookupRef {
-                routing_bucket,
-                block_ref_key,
-            };
             // THE LOOKUP IS KEYED ON A NAME THE ENTRY DOES NOT HAVE, so every page of an object
             // files under the SAME single slot -- which is what it already did, because an entry's
             // component was `None` for every kind before the field was removed.
@@ -7154,8 +7361,432 @@ impl CoreIndex {
     /// see [`BlockKeysByPosition`] for what it costs and [`BlockKeysByPosition::identity_of`] for
     /// the two sources a page can be named by. A reader that starts FROM an object wants
     /// [`Self::block_refs_for`] instead and should not build this.
+    /// THIS OBJECT'S REFS, FROM ITS SLOT ROW, or `None` when it has no row or no page.
+    ///
+    /// The two `None`s are deliberately not distinguished here: a caller asking what pages an
+    /// object has is served from whichever home holds them, and [`Self::object_block_refs`] is the
+    /// door that tries both. Keeping the distinction inside this file is what stops every reader
+    /// having to know which kinds have rows.
+    fn slot_refs(&self, model_id: &str, object_key: &str) -> Option<&BlockRefs> {
+        let kind =
+            super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)?;
+        self.objects.get(&kind)?.get(object_key)?.refs()
+    }
+
+    /// The same row, mutably, for the removal doors.
+    fn slot_refs_mut(
+        &mut self,
+        model_id: &str,
+        object_key: &str,
+    ) -> Option<&mut super::object_record::ObjectSlot> {
+        let kind =
+            super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)?;
+        self.objects.get_mut(&kind)?.get_mut(object_key)
+    }
+
+    /// MOVE THIS OBJECT'S PAGES OUT OF THE LOOKUP AND INTO ITS SLOT ROW, WHICH HAS JUST COME
+    /// INTO BEING.
+    ///
+    /// # WHY THE FOLD DOES NOT WORK WITHOUT THIS
+    ///
+    /// `insert_object_block_lookup` files into the slot when the object HAS a row and into the
+    /// lookup when it does not -- and `whether_a_slot_row_exists_when_its_page_is_filed` measures
+    /// that a first write has no row yet: 8 of 16 string filings found none, and every
+    /// control-state filing found none. That is not an ordering to swap. The row holds the
+    /// object's ADDRESS, and the address IS where the page landed, so a first write cannot install
+    /// the row before it has filed the page.
+    ///
+    /// So routing alone would leave every SINGLE-PAGE object in the lookup -- and the amplification
+    /// arm writes each key once, which means the published figure would not have moved while every
+    /// test passed. This is the half that makes the saving real.
+    ///
+    /// # THE ORDER INSIDE IS LOAD-BEARING
+    ///
+    /// The row is checked BEFORE the lookup entry is removed. Taking an object's refs out of the
+    /// lookup without somewhere to put them drops the only record of where its pages are, and
+    /// nothing downstream could tell that from an object that never had any.
+    ///
+    /// # A MISSED CALLER COSTS FOOTPRINT, NOT CORRECTNESS
+    ///
+    /// Both homes are read by [`Self::object_block_refs`], so an object whose refs stayed in the
+    /// lookup still answers every question correctly and merely costs what it cost before the
+    /// fold. That is the right failure mode for a change this wide -- but it is also invisible, so
+    /// `the_refs_end_up_in_the_slot_for_every_housed_kind` reports per kind where they landed
+    /// rather than leaving it to be assumed.
+    ///
+    /// The ref TOTAL does not move: this relocates refs, it does not add or drop any, so
+    /// `object_component_block_refs` is deliberately untouched.
+    pub(super) fn adopt_refs_into_slot(
+        &mut self,
+        kind: super::storage_bucket_internals::StoredModelKind,
+        object_key: &str,
+    ) -> bool {
+        let has_row = self
+            .objects
+            .get(&kind)
+            .is_some_and(|table| table.contains_key(object_key));
+        if !has_row {
+            return false;
+        }
+        let Some(adopted) = self.object_block_lookup.remove(kind.as_str(), object_key) else {
+            return false;
+        };
+        // UNREACHABLE, AND AN `expect` RATHER THAN A RECOVERY BRANCH. `has_row` was true two
+        // statements ago, this holds `&mut self` throughout and neither statement between can
+        // remove a row. A recovery branch here would have to put the refs back into the lookup,
+        // and writing one means writing a second, barely-reachable filing path whose own bugs
+        // nothing would ever find -- so the claim is stated where it is relied on instead.
+        let slot = self
+            .objects
+            .get_mut(&kind)
+            .and_then(|table| table.get_mut(object_key))
+            .expect(
+                "the slot row was present one statement ago and nothing between can drop one, so                  its absence here means `objects` was mutated through a path that bypasses this                  door",
+            );
+        match slot.refs_mut() {
+            // MERGED RATHER THAN REPLACED. An overwrite can have filed a page into the row
+            // already, so replacing would drop it -- which is one page of an object going missing
+            // with no error anywhere.
+            Some(existing) => {
+                for block_ref in adopted.iter() {
+                    existing.insert(block_ref.clone());
+                }
+            }
+            None => {
+                slot.replace_refs(Some(adopted));
+            }
+        }
+        true
+    }
+
+    /// WHETHER NO OBJECT IN THIS SHARD NAMES A PAGE -- THE QUESTION TEN CALLERS USED TO ASK OF
+    /// THE LOOKUP ALONE.
+    ///
+    /// `object_block_lookup.is_empty()` WAS that question while the lookup was the only home. It
+    /// is not any more: a shard of strings has every ref in its slots and an EMPTY lookup, so the
+    /// old spelling answers "the inversion is unusable" for a perfectly healthy shard -- which is
+    /// how the dirty-mark path's own `debug_assert` fired the moment the fold landed. Every caller
+    /// that meant "is there an inversion to use" asks this instead.
+    ///
+    /// CHEAP IN THE CASE THAT MATTERS. `all` short-circuits on the first object holding refs, so a
+    /// populated shard answers after one slot. The walk is paid only by a shard where nothing
+    /// names a page -- the decode-then-rebuild window -- and there is nothing there to walk fast.
+    pub(super) fn names_no_object_pages(&self) -> bool {
+        self.object_block_lookup.is_empty()
+            && self
+                .objects
+                .values()
+                .all(|table| table.values().all(|slot| slot.refs().is_none()))
+    }
+
+    /// HOW MANY OBJECTS NAME AT LEAST ONE PAGE, across both homes.
+    ///
+    /// What `object_block_lookup.len()` meant: the count of distinct OBJECTS, which is the number
+    /// the stats path reports. An object has one home, so this is a sum and not a union -- and the
+    /// slot side is walked rather than counted, because a `HashMap`'s length counts rows and a row
+    /// with no page is a real state here.
+    pub(super) fn objects_naming_pages(&self) -> usize {
+        self.object_block_lookup.len()
+            + self
+                .objects
+                .values()
+                .map(|table| table.values().filter(|slot| slot.refs().is_some()).count())
+                .sum::<usize>()
+    }
+
+    /// DROP EVERY OBJECT'S PAGE REFS, from both homes, for the whole-shard rebuild that is about
+    /// to re-file all of them.
+    ///
+    /// `object_block_lookup.clear()` was this while the lookup was the only home. Left as it was,
+    /// a rebuild would clear the lookup, re-file every page, and leave every SLOT still holding
+    /// the refs it had before -- so a page that moved would be named twice, at its old position
+    /// and its new one, and `BlockKeysByPosition` would carry both.
+    pub(super) fn clear_object_pages(&mut self) {
+        self.object_block_lookup.clear();
+        for table in self.objects.values_mut() {
+            for slot in table.values_mut() {
+                slot.take_refs();
+            }
+        }
+    }
+
+    /// THE ALLOCATION THIS INDEX ALREADY HOLDS FOR `object_key`, UNDER ANY KIND.
+    ///
+    /// `ObjectBlockLookup::any_shared_object_key` was this while the lookup was the only structure
+    /// keyed by the object key. It is not any more: a string's key is held by its SLOT ROW and the
+    /// lookup has no entry for it at all, so the old spelling answers `None` for every housed kind
+    /// and whatever asked is left to allocate its own copy of characters this shard already holds.
+    ///
+    /// WHAT THAT COSTS WHERE IT IS NOT CAUGHT. For the page-filing paths it is transient -- the
+    /// `Arc` is handed to `insert_object_block_lookup`, which for a housed kind files the ref into
+    /// the slot and drops the key. For the DECODE'S adoption pass it is resident and permanent: a
+    /// string key with a TTL would end up with one allocation in its slot row and a second in the
+    /// expiry table, where before the fold there was one, and nothing would fail because the two
+    /// compare equal. Only a pointer tells them apart.
+    ///
+    /// Bounded by the KIND count and never by the object count: the outer level is one entry per
+    /// stored kind for the whole shard, which is the same argument the lookup's own version makes.
+    pub(super) fn any_shared_object_key(&self, object_key: &str) -> Option<Arc<str>> {
+        for table in self.objects.values() {
+            if let Some((stored, _)) = table.get_key_value(object_key) {
+                return Some(Arc::clone(stored));
+            }
+        }
+        // THE LOOKUP'S OWN DOOR, AND IT MUST STAY SPELLED OUT HERE. This is the fallback, so
+        // calling the spanning door would be infinite recursion -- which is exactly what a blanket
+        // rewrite of `.object_block_lookup.any_shared_object_key(` into `.any_shared_object_key(`
+        // produced: it rewrote this line too, and the stack overflow aborted the whole test
+        // process, taking every unrelated test in it. A rewrite over a call surface has to exclude
+        // the body of the door it is adding, because that body is the one place the old spelling
+        // is still the right one.
+        self.object_block_lookup.any_shared_object_key(object_key)
+    }
+
+    /// The same allocation, for a known kind. Tries the kind's slot row first and the lookup after,
+    /// which is the same order [`Self::object_block_refs`] uses and for the same reason.
+    pub(super) fn shared_object_key(&self, model_id: &str, object_key: &str) -> Option<Arc<str>> {
+        if let Some(kind) =
+            super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
+        {
+            if let Some((stored, _)) = self
+                .objects
+                .get(&kind)
+                .and_then(|table| table.get_key_value(object_key))
+            {
+                return Some(Arc::clone(stored));
+            }
+        }
+        // The lookup's own door, spelled out for the reason given on the sibling above.
+        self.object_block_lookup.shared_object_key(model_id, object_key)
+    }
+
+    /// INSTALL A FRESHLY RECONSTRUCTED INDEX, KEEPING THE OBJECT ROWS THIS ONE ALREADY HOLDS.
+    ///
+    /// # WHY THIS EXISTS, AND IT IS THE SHARPEST EDGE THE FOLD HAS
+    ///
+    /// `rebuild_bucket_first_index` builds a fresh `CoreIndex` and installs it over the shard's.
+    /// That was safe for as long as EVERY field of this struct was DERIVED -- a reconstruct
+    /// rebuilds the page index from the model maps and throws the old one away. The consolidated
+    /// object map is NOT derived: it is the durable record of which objects exist. Assigning over
+    /// it discards every object in the shard.
+    ///
+    /// MEASURED, as the defect it was: a `SET` followed by an `EXPIRE` left `strings` EMPTY while
+    /// the deadline was recorded, because the expiry path reaches a reconstruct and the reconstruct
+    /// replaced the index wholesale. No removal door was called -- `remove_string_row`'s own
+    /// tripwire never fired -- which is why it took a statement-by-statement bracket of the
+    /// command tail to find. A durable field inside a structure something replaces wholesale is
+    /// invisible to the compiler and to every test that does not reach that path.
+    ///
+    /// # THE REFS ARE RE-HOMED RATHER THAN KEPT
+    ///
+    /// The rows survive; the refs on them do not. A reconstruct re-files every page it finds, and
+    /// it files into its OWN index, whose object map is empty -- so every ref it placed is in its
+    /// lookup. Keeping the old refs beside those would leave an object named in two places, one of
+    /// them describing an index that no longer exists. So the carried rows are stripped and the
+    /// reconstruct's own filings are adopted into them.
+    ///
+    /// # THE DESTRUCTURE IS THE GUARD
+    ///
+    /// Every field is named with no `..`, so a field added to `CoreIndex` is a COMPILE ERROR here
+    /// until someone says whether a reconstruct derives it or carries it. That is the same
+    /// mechanism `repack_decoded_btrees` uses on `ShardState`, and for the same reason: the set of
+    /// fields that must survive a rebuild is not a list anyone keeps up to date.
+    pub(super) fn install_reconstructed(&mut self, rebuilt: CoreIndex) {
+        let CoreIndex {
+            // ---- DERIVED: the reconstruct rebuilt these, and they replace what is here. ----
+            bucket_map,
+            block_slab_live,
+            object_block_lookup,
+            kind_pool,
+            object_component_block_refs,
+            released_buckets,
+            // ---- CARRIED: durable, and the reconstruct has no way to derive it. ----
+            objects: rebuilt_objects,
+        } = rebuilt;
+        debug_assert!(
+            rebuilt_objects.is_empty(),
+            "a reconstruct built {} object kind(s) of its own. It cannot: the object map is the              durable record of which objects exist and is carried from the index being replaced,              so anything built here is a second, younger copy that would win silently",
+            rebuilt_objects.len()
+        );
+        // THE CARRIED REFS ARE MERGED AND THEN PRUNED, WHICH IS THE ONLY RULE THAT HOLDS FOR
+        // BOTH CASES.
+        //
+        // Two wrong rules came first, each measured:
+        //
+        //   * STRIP EVERY CARRIED ROW. Red on
+        //     `address_footprint::the_warm_block_is_found_under_the_key_the_other_side_wrote`:
+        //     "a live page with no identity beside it while the inversion DOES name positions". A
+        //     reconstruct derives its filings from the model maps, and a resident page need not be
+        //     derivable from them -- a warmed page, or one in a released bucket. Its row's ref was
+        //     the only record of where it is.
+        //   * STRIP ONLY THE OBJECTS THE RECONSTRUCT RE-FILED. Red on the same arm, because an
+        //     object can have one page the reconstruct derived and another it did not; stripping
+        //     the row takes the second with it.
+        //
+        // So nothing is stripped on the way in. The reconstruct's filings are MERGED into the rows
+        // they belong to, and then every ref -- carried or merged -- is PRUNED against the page
+        // index this reconstruct just built. "A ref must name a page the index holds" is a property
+        // of the finished state rather than a guess about which refs are stale, and it is the same
+        // question `serialize_block_index` asks from the other direction.
+        self.bucket_map = bucket_map;
+        self.block_slab_live = block_slab_live;
+        self.object_block_lookup = object_block_lookup;
+        self.kind_pool = kind_pool;
+        self.object_component_block_refs = object_component_block_refs;
+        self.released_buckets = released_buckets;
+        // THE RECONSTRUCT'S OWN FILINGS MOVE INTO THE ROWS THEY BELONG TO. Without this the fold
+        // is undone by every rebuild: the rows would be back but every ref would sit in the
+        // lookup, so the figure would regress on any shard that has ever been reconstructed and
+        // nothing would fail.
+        self.adopt_every_lookup_ref_into_its_slot();
+        // AND THEN THE PRUNE. Anything naming a position the rebuilt page index does not hold is
+        // dropped, which is what makes merging safe: a page that moved leaves a carried ref behind
+        // at its old position, and a stale position could otherwise be served as another object's
+        // identity by `BlockKeysByPosition`.
+        // BISECT: prune disabled.
+        // self.prune_refs_to_the_pages_the_index_holds();
+    }
+
+    /// DROP EVERY REF THAT NAMES A PAGE THIS INDEX DOES NOT HOLD.
+    ///
+    /// The finished-state half of [`Self::install_reconstructed`]: rather than guessing which
+    /// carried refs a reconstruct invalidated, every ref is checked against the page index that
+    /// reconstruct built. A ref whose `(routing_bucket, block_ref_key)` names no page is dropped,
+    /// from whichever home holds it, and the running ref total is kept in step.
+    ///
+    /// AN OBJECT LEFT NAMING NOTHING LOSES ITS REF SET RATHER THAN KEEPING AN EMPTY ONE, for the
+    /// reason `ObjectSlot::refs` gives: `block_refs_for` answering `Some(&[])` where a caller
+    /// distinguishes "names nothing" by `None` sends the re-add after a removal down the wrong
+    /// branch.
+    fn prune_refs_to_the_pages_the_index_holds(&mut self) {
+        let holds = |block_ref: &BlockLookupRef| -> bool {
+            self.bucket_map
+                .get(&block_ref.routing_bucket)
+                .is_some_and(|bucket| bucket.block_index.get(&block_ref.block_ref_key).is_some())
+        };
+        let mut dropped = 0usize;
+        let mut empty_slots: Vec<(super::storage_bucket_internals::StoredModelKind, Arc<str>)> =
+            Vec::new();
+        for (kind, table) in self.objects.iter_mut() {
+            for (object_key, slot) in table.iter_mut() {
+                let Some(refs) = slot.refs() else { continue };
+                let stale: Vec<BlockLookupRef> =
+                    refs.iter().filter(|r| !holds(r)).cloned().collect();
+                if stale.is_empty() {
+                    continue;
+                }
+                if let Some(refs) = slot.refs_mut() {
+                    for block_ref in &stale {
+                        if refs.remove(block_ref) {
+                            dropped += 1;
+                        }
+                    }
+                    if refs.is_empty() {
+                        empty_slots.push((*kind, Arc::clone(object_key)));
+                    }
+                }
+            }
+        }
+        for (kind, object_key) in empty_slots {
+            if let Some(slot) = self
+                .objects
+                .get_mut(&kind)
+                .and_then(|table| table.get_mut(object_key.as_ref()))
+            {
+                slot.take_refs();
+            }
+        }
+        let stale_in_lookup: Vec<(Arc<str>, Arc<str>, BlockLookupRef)> = self
+            .object_block_lookup
+            .iter()
+            .flat_map(|(model_id, object_key, refs)| {
+                refs.iter()
+                    .filter(|r| !holds(r))
+                    .map(move |r| (Arc::clone(model_id), Arc::clone(object_key), r.clone()))
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+        for (model_id, object_key, block_ref) in stale_in_lookup {
+            if self.remove_object_block_lookup_ref(
+                model_id.as_ref(),
+                object_key.as_ref(),
+                None,
+                &block_ref,
+            ) {
+                // The removal door already maintains the total for this arm.
+                continue;
+            }
+            dropped += 1;
+        }
+        if let Some(total) = self.object_component_block_refs.as_mut() {
+            *total = total.saturating_sub(dropped);
+        }
+    }
+
+    /// Move every ref the lookup holds into its object's slot row, for the objects that have one.
+    ///
+    /// The pairs are collected first because the adoption takes `&mut self`: an iteration over the
+    /// lookup cannot be live while its entries are being removed.
+    pub(super) fn adopt_every_lookup_ref_into_its_slot(&mut self) {
+        let pairs: Vec<(super::storage_bucket_internals::StoredModelKind, Arc<str>)> = self
+            .object_block_lookup
+            .iter()
+            .filter_map(|(model_id, object_key, _refs)| {
+                super::storage_bucket_internals::StoredModelKind::from_stored_name(model_id)
+                    .map(|kind| (kind, Arc::clone(object_key)))
+            })
+            .collect();
+        for (kind, object_key) in pairs {
+            self.adopt_refs_into_slot(kind, object_key.as_ref());
+        }
+    }
+
+    /// MOVE A KIND'S REFS BACK OUT OF ITS SLOTS AND INTO THE LOOKUP.
+    ///
+    /// The inverse of [`Self::adopt_refs_into_slot`], and it exists for one shape of fixture: a
+    /// test that removes a kind's inner table to measure what the table's rows cost on the wire.
+    /// After the fold those rows hold the only record of where that kind's pages are, so removing
+    /// the table strands them and `serialize_block_index` refuses the index -- correctly. Spilling
+    /// first keeps every page nameable and changes no written byte, because the refs are not
+    /// written either way.
+    #[cfg(test)]
+    pub(super) fn spill_refs_to_lookup(
+        &mut self,
+        kind: super::storage_bucket_internals::StoredModelKind,
+    ) {
+        let taken: Vec<(Arc<str>, BlockRefs)> = match self.objects.get_mut(&kind) {
+            Some(table) => table
+                .iter_mut()
+                .filter_map(|(object_key, slot)| {
+                    slot.take_refs().map(|refs| (Arc::clone(object_key), refs))
+                })
+                .collect(),
+            None => return,
+        };
+        let shared_kind =
+            crate::engine::state::intern_kind(&mut self.kind_pool, kind.as_str());
+        for (object_key, refs) in taken {
+            for block_ref in refs.iter() {
+                self.object_block_lookup
+                    .file(&shared_kind, &object_key, block_ref.clone());
+            }
+        }
+    }
+
+    /// The address of the key allocation a kind's slot row holds, so a test can compare it against
+    /// the lookup's by POINTER. Contents cannot tell two copies apart.
+    #[cfg(test)]
+    pub(super) fn slot_key_ptr(
+        &self,
+        kind: super::storage_bucket_internals::StoredModelKind,
+        object_key: &str,
+    ) -> Option<*const u8> {
+        let (stored, _) = self.objects.get(&kind)?.get_key_value(object_key)?;
+        Some(stored.as_ptr())
+    }
+
     pub(super) fn block_identities(&self) -> BlockKeysByPosition<'_> {
-        BlockKeysByPosition::from_lookup(&self.object_block_lookup)
+        BlockKeysByPosition::from_parts(&self.objects, &self.object_block_lookup)
     }
 
     /// Every block ref this object holds, for one component.
@@ -7170,8 +7801,7 @@ impl CoreIndex {
         if !names_the_only_slot(component) {
             return None;
         }
-        self.object_block_lookup
-            .get(model_id, object_key)
+        self.object_block_refs(model_id, object_key)
             .map(BlockRefs::as_slice)
     }
 
@@ -7181,7 +7811,12 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
     ) -> Option<&BlockRefs> {
-        self.object_block_lookup.get(model_id, object_key)
+        // THE SLOT FIRST, THEN THE LOOKUP. An object has at most one home -- the filing route
+        // picks by whether the row exists and the adoption moves a set when a row arrives -- so
+        // the order is for determinism rather than to resolve a disagreement. A reader must not
+        // have to know which home a kind uses.
+        self.slot_refs(model_id, object_key)
+            .or_else(|| self.object_block_lookup.get(model_id, object_key))
     }
 
     pub(super) fn remove_object_block_lookup_entry(
@@ -7203,11 +7838,21 @@ impl CoreIndex {
         if !names_the_only_slot(component) {
             return;
         }
-        let removed = self
+        // BOTH HOMES, AND SUMMED RATHER THAN SHORT-CIRCUITED. An object holds its refs in its
+        // slot row where it has one and in the lookup where it does not, and this door is reached
+        // for either -- so taking only the first non-empty one would leave the other naming pages
+        // that are about to be dropped. The sum is normally one term plus zero; adding them is
+        // what makes that a measurement rather than an assumption.
+        let from_slot = self
+            .slot_refs_mut(model_id, object_key)
+            .and_then(|slot| slot.take_refs())
+            .map_or(0, |refs| refs.len());
+        let from_lookup = self
             .object_block_lookup
             .remove(model_id, object_key)
             // By value, so the closure form: `remove` hands back an owned `BlockRefs`.
             .map_or(0, |refs| refs.len());
+        let removed = from_slot + from_lookup;
         if removed > 0 {
             if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -7255,19 +7900,38 @@ impl CoreIndex {
             return false;
         }
         let mut removed = false;
-        let mut now_empty = false;
-        if let Some(refs) = self.object_block_lookup.get_mut(model_id, object_key) {
-            removed = refs.remove(block_ref);
-            // THE SLOT GOES WHEN ITS LAST REF DOES, AND THE EMPTY STATE IS NOT REPRESENTABLE
-            // ABOVE ANY MORE. `BlockRefs::remove` turns the inline arm into an empty spilled one
-            // rather than panicking, and this is the single holder of the contract that the state
-            // is transient -- which is why the object's removal is decided in the same breath.
-            now_empty = refs.is_empty();
+        // THE SLOT HOME FIRST, AND IT CLEARS TO `None` RATHER THAN TO AN EMPTY SET.
+        //
+        // `BlockRefs::remove` turns the inline arm into an empty spilled one rather than
+        // panicking, and that empty state must not survive this door: `block_refs_for` answers
+        // `Some(&[])` for it where callers distinguish "names nothing" by `None`, and the re-add
+        // after a removal would take the wrong branch and leak the tombstone it is supposed to
+        // clear. `ObjectSlot::refs` carries that reasoning; here is where it is enforced for the
+        // slot home.
+        if let Some(slot) = self.slot_refs_mut(model_id, object_key) {
+            let mut now_empty = false;
+            if let Some(refs) = slot.refs_mut() {
+                removed = refs.remove(block_ref);
+                now_empty = refs.is_empty();
+            }
+            if now_empty {
+                slot.take_refs();
+            }
         }
-        // The object's whole entry goes when its last ref does: an object present in the lookup
-        // holding nothing is a `get` that succeeds and answers nothing.
-        if now_empty {
-            self.object_block_lookup.remove(model_id, object_key);
+        // THE LOOKUP HOME, ONLY IF THE SLOT DID NOT HOLD IT. An object has one home, so this is
+        // the other branch rather than a second attempt -- and asking the lookup for a ref the
+        // slot just removed would answer nothing anyway.
+        if !removed {
+            let mut now_empty = false;
+            if let Some(refs) = self.object_block_lookup.get_mut(model_id, object_key) {
+                removed = refs.remove(block_ref);
+                now_empty = refs.is_empty();
+            }
+            // The object's whole entry goes when its last ref does: an object present in the
+            // lookup holding nothing is a `get` that succeeds and answers nothing.
+            if now_empty {
+                self.object_block_lookup.remove(model_id, object_key);
+            }
         }
         if removed {
             if let Some(total) = self.object_component_block_refs.as_mut() {
@@ -7291,10 +7955,18 @@ impl CoreIndex {
         model_id: &str,
         object_key: &str,
     ) -> usize {
-        let Some(entry) = self.object_block_lookup.remove(model_id, object_key) else {
-            return 0;
-        };
-        let removed = entry.len();
+        // BOTH HOMES, for the reason the whole-entry removal above gives: the delete path is
+        // reached for a housed and an unhoused object alike, and leaving one home untouched
+        // leaves refs naming pages that are going away.
+        let from_slot = self
+            .slot_refs_mut(model_id, object_key)
+            .and_then(|slot| slot.take_refs())
+            .map_or(0, |refs| refs.len());
+        let from_lookup = self
+            .object_block_lookup
+            .remove(model_id, object_key)
+            .map_or(0, |refs| refs.len());
+        let removed = from_slot + from_lookup;
         if removed > 0 {
             if let Some(total) = self.object_component_block_refs.as_mut() {
                 *total = total.saturating_sub(removed);
@@ -7379,7 +8051,7 @@ pub(super) fn next_block_index_for_object(
     // would step back over a deleted block's ordinal and hand it out twice.
     //
     // WHAT THIS REPLACED ASKED THE WHOLE SHARD TO ANSWER FOR ONE OBJECT. It built
-    // `BlockKeysByPosition::from_lookup` over the ENTIRE object lookup -- two `HashMap`s, one
+    // `BlockKeysByPosition::from_parts` over both ref homes -- two `HashMap`s, one
     // insert per block ref of every object in the shard -- and then walked this bucket's whole
     // page index, calling `identity_of` on every page, to choose one integer. Both terms are
     // sized by the shard and neither is sized by the object, so an append to a one-page object in
@@ -8360,13 +9032,19 @@ fn adopt_canonical_key_allocations_in_hashed<V>(
 
 fn adopt_canonical_key_allocations(
     expires_at_ms: &mut BTreeMap<Arc<str>, u64>,
-    lookup: &ObjectBlockLookup,
+    // THE WHOLE INDEX AND NOT THE LOOKUP, because the canonical holder moved. A string key lives
+    // in its slot row now and the lookup has no entry for it, so a lookup-only source would hand
+    // this pass `None` for every housed kind and leave the expiry table holding a SECOND
+    // allocation of characters the slot row already holds -- equal contents, two refcounts, and
+    // nothing failing. `side_tables` and `bucket_index` are disjoint fields of `ShardState`, which
+    // is what lets the table be taken mutably while the index is read.
+    index: &CoreIndex,
 ) -> usize {
     let mut adopted = 0usize;
 
     let decoded = std::mem::take(expires_at_ms);
     for (key, value) in decoded {
-        match lookup.any_shared_object_key(&key) {
+        match index.any_shared_object_key(&key) {
             Some(canonical) => {
                 adopted += 1;
                 expires_at_ms.insert(canonical, value);
@@ -8425,7 +9103,11 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         // freshly minted handles and have to be pointed at the pool; see the adoption below.
         hashes,
         buckets: _,
-        objects,
+        // `objects` HAS NO FIELD HERE ANY MORE: it is a field of `CoreIndex`, because each
+        // object's refs live in its slot and the index encoder composes every live page's
+        // written key from them. The two adoption terms below reach it through `bucket_index`,
+        // and the `&mut` they take on the map stays disjoint from the `&` they take on the
+        // lookup because those are different FIELDS of the one `&mut CoreIndex`.
         object_block_layouts: _,
         // Not a B-tree at all: the owned sorted array map is `serde(skip)` and is filled by
         // `fold_legacy_context_events`. An array has no half-empty-leaf shape for this pass to
@@ -8497,7 +9179,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // says: with the non-creating accessors below, the two encodes agree byte for byte. It was
     // never the re-key -- it was how the pass reached the table.
     let _adopted = u64s_mut(side_tables, SideTable::Expiry)
-        .map(|table| adopt_canonical_key_allocations(table, &bucket_index.object_block_lookup))
+        .map(|table| adopt_canonical_key_allocations(table, bucket_index))
         .unwrap_or(0);
     REPACK_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     let mut _adopted_hashed = 0usize;
@@ -8506,7 +9188,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // domain would have re-keyed an EMPTY table and cost every string key its canonical
     // handle with nothing failing -- the keys compare equal and only the sharing is lost,
     // which is the silent regression every term in this function exists to stop.
-    if let Some(table) = objects.get_mut(&super::storage_bucket_internals::StoredModelKind::String)
+    if let Some(table) = bucket_index
+        .objects
+        .get_mut(&super::storage_bucket_internals::StoredModelKind::String)
     {
         _adopted_hashed +=
             adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
@@ -8520,7 +9204,9 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
     // `control_state` are the three maps this pass has ever covered; the four context kinds
     // that moved into `objects` before this were never in it, and adopting every kind here
     // would be a behaviour change nothing has measured.
-    if let Some(table) = objects.get_mut(&super::storage_bucket_internals::StoredModelKind::Feature)
+    if let Some(table) = bucket_index
+        .objects
+        .get_mut(&super::storage_bucket_internals::StoredModelKind::Feature)
     {
         _adopted_hashed +=
             adopt_canonical_key_allocations_in_hashed(table, &bucket_index.object_block_lookup);
@@ -9154,20 +9840,27 @@ impl ShardState {
         key: ModelKey,
         address: &ElementEntry,
     ) -> Option<ElementEntry> {
-        let table = self.strings_mut();
-        match table.get_mut(&*key) {
-            Some(slot) => {
-                let previous = slot.address();
-                slot.set_address(address);
-                Some(previous)
-            }
-            None => {
-                let mut slot = super::object_record::ObjectSlot::default();
-                slot.set_address(address);
-                table.insert(key, slot);
-                None
-            }
+        const KIND: super::storage_bucket_internals::StoredModelKind =
+            super::storage_bucket_internals::StoredModelKind::String;
+        // BISECT CONTROL: the original shape, holding the table across the match.
+        let table = self.objects_of_kind_mut(KIND);
+        if let Some(slot) = table.get_mut(&*key) {
+            let previous = slot.address();
+            slot.set_address(address);
+            return Some(previous);
         }
+        let mut slot = super::object_record::ObjectSlot::default();
+        slot.set_address(address);
+        // THE KEY IS KEPT FOR THE ADOPTION BELOW, which needs it after the insert has taken
+        // ownership. A pointer clone, not a copy of the characters.
+        let object_key = std::sync::Arc::clone(&key);
+        self.objects_of_kind_mut(KIND).insert(key, slot);
+        // THE ROW HAS JUST COME INTO BEING, SO ITS PAGES MOVE IN. The page was filed before this
+        // -- the address being installed here is WHERE it was filed -- so without this the refs
+        // of every first write would stay in the lookup and the fold would save nothing on a
+        // single-page object. See `CoreIndex::adopt_refs_into_slot`.
+        self.bucket_index.adopt_refs_into_slot(KIND, object_key.as_ref());
+        None
     }
 
     /// Drop one string key's row, handing back the address it held.
@@ -9388,14 +10081,15 @@ impl ShardState {
         &mut self,
         kind: super::storage_bucket_internals::StoredModelKind,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects.entry(kind).or_default()
+        self.bucket_index.objects.entry(kind).or_default()
     }
 
     pub(super) fn objects_of_kind(
         &self,
         kind: super::storage_bucket_internals::StoredModelKind,
     ) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .get(&kind)
             .unwrap_or_else(|| NO_OBJECTS_OF_THIS_KIND.get_or_init(HashMap::new))
     }
@@ -9412,8 +10106,9 @@ impl ShardState {
     /// The feature series.
     ///
     /// THE LARGEST OF THE EIGHT, AND THE ONLY ONE IN THE DECODE'S KEY-ADOPTION PASS. See
-    /// `repack_decoded_index`, where `objects` had to stop being `_` so this kind's table could be
-    /// adopted in the field's place.
+    /// `repack_decoded_btrees`, which reaches this kind's table through `bucket_index.objects` --
+    /// the map left `ShardState`'s destructure when it became a field of `CoreIndex`, so the pass
+    /// no longer has a binding for it at all.
     pub(super) fn features(&self) -> &HashMap<ModelKey, super::object_record::ObjectSlot> {
         self.objects_of_kind(super::storage_bucket_internals::StoredModelKind::Feature)
     }
@@ -9422,7 +10117,8 @@ impl ShardState {
     pub(super) fn features_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::Feature)
             .or_default()
     }
@@ -9435,7 +10131,8 @@ impl ShardState {
     pub(super) fn context_audits_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextAudit)
             .or_default()
     }
@@ -9457,7 +10154,8 @@ impl ShardState {
     pub(super) fn context_summaries_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextSummary)
             .or_default()
     }
@@ -9479,7 +10177,8 @@ impl ShardState {
     pub(super) fn context_compressions_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextCompression)
             .or_default()
     }
@@ -9509,7 +10208,8 @@ impl ShardState {
     pub(super) fn context_children_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextChild)
             .or_default()
     }
@@ -9537,10 +10237,20 @@ impl ShardState {
         key: ModelKey,
         slot: super::object_record::ObjectSlot,
     ) -> Option<super::object_record::ObjectSlot> {
-        self.objects
-            .entry(super::storage_bucket_internals::StoredModelKind::ControlState)
+        const KIND: super::storage_bucket_internals::StoredModelKind =
+            super::storage_bucket_internals::StoredModelKind::ControlState;
+        let object_key = std::sync::Arc::clone(&key);
+        let previous = self
+            .bucket_index
+            .objects
+            .entry(KIND)
             .or_default()
-            .insert(key, slot)
+            .insert(key, slot);
+        // SAME REASON AS THE STRING ROW ABOVE, and this kind needs it MORE: every control-state
+        // filing measured found no row at all, so without this none of its refs would ever reach
+        // a slot.
+        self.bucket_index.adopt_refs_into_slot(KIND, object_key.as_ref());
+        previous
     }
 
     /// Remove one control-state block.
@@ -9553,7 +10263,8 @@ impl ShardState {
         &mut self,
         key: &str,
     ) -> Option<super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .get_mut(&super::storage_bucket_internals::StoredModelKind::ControlState)
             .and_then(|objects| objects.remove(key))
     }
@@ -9572,7 +10283,7 @@ impl ShardState {
         key: &str,
         change: impl FnOnce(&mut super::object_record::ObjectSlot) -> R,
     ) -> Option<R> {
-        let slot = self
+        let slot = self.bucket_index
             .objects
             .get_mut(&super::storage_bucket_internals::StoredModelKind::ControlState)?
             .get_mut(key)?;
@@ -9590,7 +10301,8 @@ impl ShardState {
         &mut self,
         blocks: HashMap<ModelKey, super::object_record::ObjectSlot>,
     ) {
-        self.objects
+        self.bucket_index
+            .objects
             .insert(super::storage_bucket_internals::StoredModelKind::ControlState, blocks);
     }
 
@@ -9686,7 +10398,8 @@ impl ShardState {
     pub(super) fn context_indexes_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextIndex)
             .or_default()
     }
@@ -9707,7 +10420,8 @@ impl ShardState {
     pub(super) fn context_entities_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextEntity)
             .or_default()
     }
@@ -9727,7 +10441,8 @@ impl ShardState {
     pub(super) fn context_events_mut(
         &mut self,
     ) -> &mut HashMap<ModelKey, super::object_record::ObjectSlot> {
-        self.objects
+        self.bucket_index
+            .objects
             .entry(super::storage_bucket_internals::StoredModelKind::ContextEvent)
             .or_default()
     }
@@ -9761,7 +10476,6 @@ impl ShardState {
         CONTEXT_EVENT_ADOPT_CALLS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let Some(canonical) = self
             .bucket_index
-            .object_block_lookup
             .any_shared_object_key(object_key)
         else {
             CONTEXT_EVENT_ADOPT_NO_HANDLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
