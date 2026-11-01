@@ -267,7 +267,9 @@ jobs:
           # It was running in CI NEVER: it is #[ignore]d, and this workflow runs no unfiltered
           # suite, so an ignored guard runs only if its name is pinned AND --ignored is passed.
           for t in \
-            engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters ; do
+            engine::tests::every_published_ratio_is_rederivable::every_published_ratio_is_rederivable_from_published_counters \
+            engine::tests::index_bytes_per_key::every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for \
+            engine::tests::index_bytes_per_key::how_many_holders_a_key_allocation_has_by_kind ; do
             echo "--- $t (ignored) ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
               -- --exact --ignored --test-threads=1 2>&1 | tee /tmp/ratio_gate.log

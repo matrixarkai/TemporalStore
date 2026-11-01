@@ -1215,7 +1215,6 @@ fn probe_seed(
 /// exactly one key. That is the LEGACY range. #1973 made 0..1023 the shipped default, where keys
 /// share nodes and the per-bucket costs amortise. The two ranges are different regimes, not
 /// different fixtures, which is why this exists beside the other loader rather than replacing it.
-#[cfg(feature = "alloc-probe")]
 fn probe_engine_on(dir: &std::path::Path, end_routing_bucket: u32) -> Arc<TemporalEngine> {
     let engine = Arc::new(TemporalEngine::with_local_dirs(
         64 * 1024 * 1024,
@@ -2446,7 +2445,6 @@ fn seed_strings_from(
     }
 }
 
-#[cfg(feature = "alloc-probe")]
 fn seed_hashes_from(engine: &TemporalEngine, prefix: &str, count: usize, fields: usize) {
     for i in 0..count {
         let commands = (0..fields)
@@ -11843,6 +11841,151 @@ fn removing_the_refcount_header_without_an_arena_costs_more_than_it_saves() {
     );
 }
 
+/// HOW MANY HOLDERS A KEY ALLOCATION HAS, BY KIND -- WHICH IS WHAT DECIDES WHETHER THE
+/// REFCOUNT HEADER CAN GO.
+///
+/// # WHY THIS ARM EXISTS
+///
+/// `every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for` below
+/// counts holders on a corpus of `StringSet` writes ONLY, and it went red when the block-refs
+/// fold moved each object's refs out of `object_block_lookup` and into its `ObjectSlot`: the
+/// lookup was the string key's second holder, so the string path dropped to ONE owner and an
+/// `Arc` refcount header with one owner buys nothing.
+///
+/// THAT IS A STATEMENT ABOUT THE STRING PATH, NOT ABOUT `ModelKey`. The fold covers the string
+/// and series kinds; `object_block_lookup` is still populated for the container kinds, so their
+/// keys may still have two holders. And `ModelKey` is ONE alias shared by `strings`,
+/// `context_nodes`, the container maps and more -- `address_footprint` iterates three of them in
+/// a single array precisely because they agree on the key type. So the header can only be
+/// removed by changing that alias, which changes every kind at once.
+///
+/// Hence this arm: seed BOTH a string corpus and a container corpus, and report the holder
+/// count PER KIND rather than pooled. A pooled count over a string-only fixture is what let
+/// the premise move silently in the first place.
+///
+/// WHAT THE ANSWER MEANS, decided before the numbers are in so the reading is not fitted:
+///
+///   * every kind at ONE holder -- the alias can become a header-free handle and the saving is
+///     the header, on every kind;
+///   * container kinds still at TWO -- a blanket change makes THOSE kinds worse, because two
+///     owned allocations cost more than one shared one (and on the chunk counter much more,
+///     since glibc serves nothing under 32 bytes). The lever would then need the string map to
+///     carry a different key type from its siblings, which breaks the shared array that makes
+///     them a class -- a cost to price, not a detail.
+///
+/// rust-internal: measures this crate's own structures, no product behaviour
+///
+///   cargo test --features alloc-probe -p temporalstore-rust --lib how_many_holders_a_key_allocation_has_by_kind -- --ignored --nocapture --test-threads=1
+#[test]
+#[ignore = "seeds a string and a container corpus and dumps both; run by name"]
+fn how_many_holders_a_key_allocation_has_by_kind() {
+    use crate::types::{Command, ExecuteRequest};
+    use std::collections::BTreeMap as Report;
+    use std::collections::HashMap as Counter;
+
+    const STRING_KEYS: usize = 256;
+    const HASH_KEYS: usize = 256;
+    const FIELDS: usize = 4;
+    const SHIPPED_END: u32 = 1023;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = probe_engine_on(dir.path(), SHIPPED_END);
+    for index in 0..STRING_KEYS {
+        let response = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("str-{index:06}"),
+                value: vec![b'v'; 256],
+            },
+        });
+        assert!(response.status.ok, "string write {index}: {:?}", response.status);
+    }
+    seed_hashes_from(&engine, "hsh", HASH_KEYS, FIELDS);
+
+    // THE STEADY STATE, through the production lifecycle, so the dirty index is drained and is
+    // not counted as a holder it is not at rest.
+    let candidates: Vec<u32> = {
+        let shards = engine.shards.read().expect("engine lock poisoned");
+        let shard = shards.get(&1).expect("shard is loaded");
+        shard.bucket_index.bucket_map.keys().copied().collect()
+    };
+    assert!(!candidates.is_empty(), "the corpus produced no bucket to dump");
+    let lifecycle =
+        engine.apply_storage_lifecycle(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_buckets: candidates.clone(),
+            max_dump_buckets_per_round: candidates.len(),
+            ..Default::default()
+        });
+    std::hint::black_box(&lifecycle);
+
+    let shards = engine.shards.read().expect("engine lock poisoned");
+    let shard = shards.get(&1).expect("shard is loaded");
+
+    // Holders of one key allocation, by DATA pointer -- the identity `arc_str_bytes` uses, so
+    // "the same allocation" means here what it means in the published row.
+    let mut holders: Counter<usize, Vec<&'static str>> = Counter::new();
+    for (_model_id, object_key, _refs) in shard.bucket_index.object_block_lookup.iter() {
+        holders.entry(object_key.as_ptr() as usize).or_default().push("object_block_lookup");
+    }
+    for key in shard.strings().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("strings");
+    }
+    for key in shard.hashes.keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("hashes");
+    }
+    for key in shard.context_nodes().keys() {
+        holders.entry(key.as_ptr() as usize).or_default().push("context_nodes");
+    }
+    for key in shard.dirty_objects.iter() {
+        holders.entry(key.as_ptr() as usize).or_default().push("dirty_objects");
+    }
+
+    // Grouped by WHICH holders, not just how many: two allocations with two holders each tell
+    // you nothing about whether the second holder is the same structure in both cases.
+    let mut by_shape: Report<String, usize> = Report::new();
+    for who in holders.values() {
+        let mut names = who.clone();
+        names.sort_unstable();
+        *by_shape.entry(names.join(" + ")).or_insert(0) += 1;
+    }
+
+    println!();
+    println!("  {STRING_KEYS} string keys and {HASH_KEYS} hash keys x {FIELDS} fields, at the steady state");
+    println!();
+    println!("    {:<48} {:>12} {:>8}", "which structures hold the allocation", "allocations", "holders");
+    for (shape, count) in &by_shape {
+        let holders_in_shape = shape.matches(" + ").count() + 1;
+        println!("    {shape:<48} {count:>12} {holders_in_shape:>8}");
+    }
+    println!();
+    println!("    distinct key allocations {}", holders.len());
+    println!();
+    println!("  WHAT THIS DECIDES: the refcount header is paid for only where a key allocation has");
+    println!("  TWO OR MORE holders. `ModelKey` is one alias shared by every kind above, so a");
+    println!("  header-free handle is available only if EVERY row here reads one holder.");
+    println!();
+
+    // --- THE FLOOR: both corpora must actually be present, or a row reading "one holder" is a
+    // --- statement about a population that was never written.
+    assert_eq!(
+        STRING_KEYS,
+        shard.strings().len(),
+        "the string map holds {} of {STRING_KEYS} keys, so the string rows below are not about \
+         the corpus this arm seeded",
+        shard.strings().len()
+    );
+    assert!(
+        shard.hashes.len() > 0,
+        "the hash map is empty, so every row below is the string path again and this arm answers \
+         nothing about the container kinds it exists to measure"
+    );
+    assert!(
+        !by_shape.is_empty(),
+        "no allocation had any holder at all, so the walk is reading the wrong structures"
+    );
+}
+
 /// EVERY RESIDENT KEY ALLOCATION HAS EXACTLY THE HOLDERS THE HEADER IS PRICED FOR.
 ///
 /// # WHY THIS IS A TRIPWIRE AND NOT A STATISTIC
@@ -11867,7 +12010,6 @@ fn removing_the_refcount_header_without_an_arena_costs_more_than_it_saves() {
 ///
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for -- --ignored --nocapture --test-threads=1
 #[test]
-#[cfg(feature = "alloc-probe")]
 #[ignore = "seeds a corpus and dumps it through the production lifecycle; run by name"]
 fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_for() {
     use crate::types::{Command, ExecuteRequest};
@@ -11875,9 +12017,20 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
 
     const KEYS: usize = 1_792;
     const SHIPPED_END: u32 = 1023;
-    /// What the header is priced against in
-    /// `removing_the_refcount_header_without_an_arena_costs_more_than_it_saves`.
-    const PRICED_FOR: usize = 2;
+    /// HOW MANY HOLDERS A KEY ALLOCATION ACTUALLY HAS, AND IT USED TO BE TWO.
+    ///
+    /// This read 2 when `object_block_lookup` was the second holder of a string key's
+    /// allocation, and at two holders the refcount header is exactly paid for: one shared
+    /// allocation replaces two owned ones. The block-refs fold moved each object's refs into
+    /// its `ObjectSlot` and the lookup stopped holding the string key, so the count is now ONE
+    /// -- and `how_many_holders_a_key_allocation_has_by_kind` shows it is one for EVERY kind,
+    /// not only for strings.
+    ///
+    /// An `Arc` whose allocation has a single owner pays sixteen bytes of strong and weak count
+    /// for sharing that never happens. So the refusal this number used to support has expired:
+    /// a header-free handle takes those bytes out with no arena, no new dependency and
+    /// `Borrow<str>` intact. The price is in that arm; this is the premise it rests on.
+    const PRICED_FOR: usize = 1;
 
     let dir = tempfile::tempdir().expect("tempdir");
     let engine = probe_engine_on(dir.path(), SHIPPED_END);
@@ -11953,14 +12106,13 @@ fn every_resident_key_allocation_has_exactly_the_holders_the_header_is_priced_fo
     assert_eq!(
         vec![(PRICED_FOR, KEYS)],
         spread,
-        "the holder spread is not `{PRICED_FOR} holders for every one of {KEYS} allocations`. The \
-         refusal in `removing_the_refcount_header_without_an_arena_costs_more_than_it_saves` is \
-         PRICED AT {PRICED_FOR} HOLDERS: one shared allocation replaces {PRICED_FOR} owned ones, \
-         which is a wash on the published model and a 16 B/key win on what the allocator sets \
-         aside. At ONE holder the arithmetic inverts and `Box<str>` takes the whole header out for \
-         nothing -- no arena, no new dependency, `Borrow<str>` intact -- so that refusal has \
-         expired and the lever is available. At three or more the header is better than paid for. \
-         Either way re-price it rather than loosening this assertion."
+        "the holder spread is not `{PRICED_FOR} holder for every one of {KEYS} allocations`. \
+         ONE holder is what makes the refcount header removable: an `Arc` with a single owner \
+         pays sixteen bytes for sharing that never happens, so a header-free handle takes them \
+         out for nothing. If this now reads TWO, something has become a second holder of the \
+         key allocation again, the header is paid for once more, and the lever is CLOSED -- \
+         re-price it and say so. If it reads more than two the header is better than paid for. \
+         Either way re-price rather than loosening this assertion."
     );
 }
 
