@@ -230,7 +230,10 @@ impl TemporalEngine {
         // dirty-BUCKET question can be asked of the bucket. The short-circuit above is unchanged
         // and still gates on the SET, because it is the thing that decides whether the summaries
         // were materialised at all -- with no summaries the filter selects nothing either way.
-        let (shard_has_dirty_objects, dirty_bucket_nodes) = self
+        // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION, and they are two scalars on the
+        // shard rather than anything derived, so this costs no walk. Taking them here rather than
+        // re-locking below is the whole reason the amplification trigger is free.
+        let (shard_has_dirty_objects, dirty_bucket_nodes, durable_items, live_object_count) = self
             .shards
             .read()
             .expect("engine lock poisoned")
@@ -239,6 +242,8 @@ impl TemporalEngine {
                 (
                     !shard.dirty_objects.is_empty(),
                     crate::engine::storage_reporting::dirty_bucket_nodes(shard),
+                    shard.durable_items,
+                    shard.live_objects_with_logical_size,
                 )
             })
             .unwrap_or_default();
@@ -357,7 +362,35 @@ impl TemporalEngine {
             && undumped_wal_records < request.min_undumped_wal_records;
         let bytes_say_wait = request.min_undumped_wal_bytes == 0
             || undumped_wal_bytes < request.min_undumped_wal_bytes;
-        let dump_delayed = !explicit_buckets && records_say_wait && bytes_say_wait;
+        // AND AMPLIFICATION CAN RELEASE THE DUMP ON ITS OWN, whatever the log thresholds say.
+        //
+        // The thresholds above delay a dump so that several writes to one bucket merge into one
+        // re-serialization, which is worth having. What they cannot do is bound what the delay
+        // COSTS: a workload that overwrites the same objects adds a durable record per write and
+        // retires none of them, so the durable form grows without the undumped log growing with
+        // it, and neither threshold is ever reached. The waste is unbounded and invisible to both.
+        //
+        // `item_space_amplification_ppm` is the figure that sees it -- durable item records over
+        // distinct live objects, both counts, so neither rounds to a slab the way the byte figure
+        // does. A dump resets it to exactly 1.0, which is what makes a fixed bound on it a
+        // TRIGGER rather than a line a climbing number crosses once and never returns below.
+        //
+        // Computed from the two scalars read under the plan's own lock above, so it costs nothing.
+        // A zero denominator is "not established", not "infinitely amplified": an empty shard must
+        // not force a dump every round for ever.
+        let item_space_amplification_ppm = if live_object_count == 0 {
+            0
+        } else {
+            durable_items.saturating_mul(1_000_000) / live_object_count
+        };
+        let amplification_says_dump = crate::engine::reports::DEFAULT_MAX_ITEM_SPACE_AMPLIFICATION_PPM
+            > 0
+            && item_space_amplification_ppm
+                >= crate::engine::reports::DEFAULT_MAX_ITEM_SPACE_AMPLIFICATION_PPM;
+        let dump_delayed = !explicit_buckets
+            && !amplification_says_dump
+            && records_say_wait
+            && bytes_say_wait;
         let mut selected_dump_buckets = if explicit_buckets {
             request.selected_dump_buckets.clone()
         } else if dump_delayed {

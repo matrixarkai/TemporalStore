@@ -3554,6 +3554,26 @@ pub const DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND: usize = 500;
 /// only at or above one slab target, whatever the slab target becomes.
 pub const DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND: u64 = 0;
 
+/// Amplification in ITEMS at which a dump is forced, in parts per million. 2.0x.
+///
+/// `item_space_amplification_ppm` is durable item records over distinct live objects. Its
+/// numerator rises on every write, an overwrite included, because an overwrite adds a record and
+/// leaves the superseded one in the durable form; a dump re-serializes the live set and
+/// `mark_items_dumped` puts the numerator back to the live count, so the figure returns to
+/// EXACTLY 1.0.
+///
+/// THAT EXACTNESS IS WHY A FIXED BOUND WORKS HERE AND NOT ON THE BYTE FIGURE.
+/// `space_amplification_ppm` divides bytes by bytes, its denominator is slab-granular, and it
+/// cannot leave 1.000x -- a bound on it would be a closed gate, the same shape as a budget whose
+/// unit exceeds the budget. A ratio of COUNTS does not round to a slab, and one that resets to
+/// exactly 1.0 can be compared against a constant without the constant drifting out of reach.
+///
+/// 2.0x means: once the durable form holds twice as many item records as there are live objects,
+/// the dump stops waiting for the undumped-log thresholds and runs. Half of what is stored is then
+/// superseded, which is the point at which rewriting the live set costs less than continuing to
+/// carry it. Zero disables the trigger, as zero does on every other bound here.
+pub const DEFAULT_MAX_ITEM_SPACE_AMPLIFICATION_PPM: u64 = 2_000_000;
+
 /// Dirty buckets one round may dump.
 ///
 /// A dump re-serializes a bucket index, so this is the per-round ceiling on the most expensive

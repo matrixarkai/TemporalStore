@@ -439,3 +439,134 @@ fn amplification_counted_in_items_moves_and_a_dump_resets_it() {
          the figure would climb with uptime rather than tracking the store"
     );
 }
+
+/// A DUMP IS FORCED ONCE AMPLIFICATION IN ITEMS REACHES ITS BOUND, whatever the log says.
+///
+/// The undumped-log thresholds delay a dump so several writes to one bucket merge into one
+/// re-serialization. What they cannot do is bound what the delay COSTS. A workload that overwrites
+/// the same objects adds a durable record per write and retires none of them, so the durable form
+/// grows while the undumped log does not, and NEITHER threshold is ever reached. The waste is
+/// unbounded and invisible to both.
+///
+/// `item_space_amplification_ppm` is the figure that sees it, and
+/// `amplification_counted_in_items_moves_and_a_dump_resets_it` beside this one establishes that it
+/// moves and returns to exactly 1.0. This arm is the trigger built on that: at
+/// `DEFAULT_MAX_ITEM_SPACE_AMPLIFICATION_PPM` the dump stops waiting.
+///
+/// BOTH ARMS USE THRESHOLDS THAT SAY WAIT, so amplification is the only thing that can release
+/// the dump and the two arms differ in nothing else. The control comes FIRST and asserts the dump
+/// really is delayed at 1.0x -- without it, "not delayed at 2.0x" is satisfied just as well by a
+/// gate that never delays anything, and the test would be measuring nothing.
+#[test]
+fn a_dump_is_forced_once_item_amplification_reaches_its_bound() {
+    const KEYS: usize = 200;
+    const VALUE_LEN: usize = 704;
+    // Far beyond anything this fixture writes, so both terms of the delay hold throughout.
+    const RECORDS_SAY_WAIT: u64 = 1_000_000;
+    const BYTES_SAY_WAIT: u64 = 1 << 40;
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("pages"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+
+    let write_round = |round: usize| {
+        for index in 0..KEYS {
+            let response = engine.execute(ExecuteRequest {
+                shard_id: 1,
+                command: Command::StringSet {
+                    key: format!("item-{index:06}"),
+                    value: vec![b'v'; VALUE_LEN],
+                },
+            });
+            assert!(
+                response.status.ok,
+                "round {round} write {index}: {:?}",
+                response.status
+            );
+        }
+    };
+    let amplification_ppm = || -> u64 {
+        engine
+            .shard_stats(1)
+            .expect("stats")
+            .storage
+            .item_space_amplification_ppm
+    };
+    // NO explicit buckets: that is the OTHER way past the delay, and naming one here would
+    // release the dump for a reason that has nothing to do with amplification.
+    let plan_while_the_log_says_wait = || {
+        engine.storage_lifecycle_plan(crate::engine::reports::StorageLifecycleRequest {
+            shard_id: 1,
+            selected_dump_buckets: Vec::new(),
+            max_dump_buckets_per_round: 1_000,
+            min_undumped_wal_records: RECORDS_SAY_WAIT,
+            min_undumped_wal_bytes: BYTES_SAY_WAIT,
+            ..Default::default()
+        })
+    };
+
+    let bound = crate::engine::reports::DEFAULT_MAX_ITEM_SPACE_AMPLIFICATION_PPM;
+    assert!(
+        bound > 0,
+        "the trigger is disabled at 0, so this whole arm would assert over a gate that cannot fire"
+    );
+
+    // ---------- CONTROL: written once is 1.0x, and the dump must be DELAYED.
+    write_round(0);
+    let once_ppm = amplification_ppm();
+    assert!(
+        once_ppm < bound,
+        "written once the item ratio is {once_ppm} ppm, already at or above the bound of {bound}. \
+         The control arm cannot show a delay it is not subject to"
+    );
+    let once = plan_while_the_log_says_wait();
+    assert!(
+        once.dump_delayed,
+        "at {once_ppm} ppm, with both log thresholds saying wait and no bucket named, the dump \
+         must be delayed. It was not, so this gate does not delay anything and the arm below \
+         proves nothing: {:?}",
+        once.reasons
+    );
+    assert!(
+        once.selected_dump_buckets.is_empty(),
+        "a delayed round must select no bucket to dump, and selected {:?}",
+        once.selected_dump_buckets
+    );
+
+    // ---------- THE TRIGGER: overwriting every key leaves a superseded record each.
+    write_round(1);
+    let twice_ppm = amplification_ppm();
+    // NON-VACUITY, before the trigger is read as meaning anything.
+    assert!(
+        twice_ppm >= bound,
+        "after overwriting every key the item ratio read {twice_ppm} ppm, below the bound of \
+         {bound}, so the trigger was never armed and what follows measures the delay rather than \
+         the trigger"
+    );
+    let twice = plan_while_the_log_says_wait();
+    assert!(
+        !twice.dump_delayed,
+        "at {twice_ppm} ppm the dump must run although both log thresholds still say wait: that \
+         is the whole point of a bound on a figure the thresholds cannot see. reasons={:?}",
+        twice.reasons
+    );
+    assert!(
+        !twice.selected_dump_buckets.is_empty(),
+        "the round was released but selected no bucket, so nothing would be rewritten and the \
+         amplification would not come down"
+    );
+
+    eprintln!(
+        "  item amplification {:.3}x -> delayed={}   {:.3}x -> delayed={} ({} buckets selected)",
+        once_ppm as f64 / 1e6,
+        once.dump_delayed,
+        twice_ppm as f64 / 1e6,
+        twice.dump_delayed,
+        twice.selected_dump_buckets.len()
+    );
+}
