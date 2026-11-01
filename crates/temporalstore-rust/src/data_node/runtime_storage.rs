@@ -918,11 +918,43 @@ impl DataNodeRuntime {
                 .into_iter()
                 .flat_map(|manifest| manifest.block_slab_ids.into_iter())
                 .collect::<std::collections::BTreeSet<_>>();
+            // THE HIGHEST COLLECTABLE STALE SLAB, NOT THE LOWEST, and this is what lets a
+            // per-round budget mean anything here.
+            //
+            // The predicate downstream is `block_slab_id < retain_from_block_slab_id`
+            // (`block_store_gc.rs`), so a floor of `min + 1` admits EXACTLY ONE slab -- the
+            // lowest -- however many are collectable. Every per-round bound on this stage was
+            // therefore unreachable on this path at every setting: the candidate set could not
+            // exceed one, so `max_destroy_slabs` (500 shipped), the physical-byte ceiling and the
+            // garbage floor had nothing to bound, and `skipped_by_budget_count` could not be
+            // anything but 0.
+            //
+            // MEASURED in `the_block_gc_budget_reaches_the_periodic_loop`: against 6 collectable
+            // slabs, a round bounded at one slab removed 1 and a round with NO bound also removed
+            // 1. A bound that cannot be told from its own absence is not a bound.
+            //
+            // The storage-manager cycle has always taken `max` over its candidates
+            // (`storage_manager_cycle.rs`), so this is the two pipelines agreeing rather than a
+            // new policy.
+            //
+            // WHY `min` WAS HERE, AND WHY `max` DOES NOT BRING THAT BACK. `min` was chosen so one
+            // immovable slab could not freeze the floor: a stale slab named by a durable
+            // bucket-dump manifest is retained for ever, and a `max` over a set containing it
+            // would sit on it. The `filter` above already removes the manifest-pinned slabs from
+            // the set being reduced, so they cannot dictate the ceiling whichever reduction is
+            // used -- the filter is what answers that objection, not the choice of `min`.
+            //
+            // AND RAISING THE FLOOR ONLY WIDENS WHAT IS OFFERED, never what is destroyed.
+            // `gc_slabs_before_with_live_refs_selected` re-checks `!is_current`, `!is_live` and
+            // the published live-bytes tally immediately before each irreversible step, and
+            // `run_gc_inner` puts every slab a retained manifest names into the live set. So a
+            // live, current or manifest-pinned slab below the new floor is refused exactly as it
+            // was before.
             let retain_block_slabs_from_id = lifecycle_plan
                 .stale_block_slab_ids
                 .iter()
                 .filter(|slab_id| !manifest_pinned_block_slab_ids.contains(slab_id))
-                .min()
+                .max()
                 .map(|slab_id| slab_id.saturating_add(1))
                 // Every stale slab is manifest-pinned: nothing to collect this round, and the
                 // floor must not fall back to 0 -- that would read as "retain nothing".
@@ -930,7 +962,7 @@ impl DataNodeRuntime {
                     lifecycle_plan
                         .stale_block_slab_ids
                         .iter()
-                        .min()
+                        .max()
                         .map(|slab_id| slab_id.saturating_add(1))
                 });
             let response = run_gc_inner(
@@ -956,6 +988,18 @@ impl DataNodeRuntime {
                     // shard's cache outright -- memory, pmem and disk tiers alike -- however few
                     // slabs it went on to reclaim. Invalidate what was reclaimed instead.
                     block_gc_invalidate_removed_slabs_only: true,
+                    // THE THREE BOUNDS THIS STAGE RAN WITHOUT. They existed on the cycle request
+                    // and reached `BlockStoreGcPolicy` from there; this request had no field for
+                    // them, so the stage called the policy-free reclaim entries and destroyed
+                    // every eligible slab on every round, at every setting an operator could
+                    // choose. `the_block_gc_budget_reaches_the_periodic_loop` measures a round
+                    // bounded at one slab taking one of several collectable ones.
+                    block_gc_max_destroy_slabs_per_round: options
+                        .block_gc_max_destroy_slabs_per_round,
+                    block_gc_max_destroy_physical_bytes_per_round: options
+                        .block_gc_max_destroy_physical_bytes_per_round,
+                    block_gc_min_slab_garbage_basis_points: options
+                        .block_gc_min_slab_garbage_basis_points,
                 },
             );
             if !response.status.ok {

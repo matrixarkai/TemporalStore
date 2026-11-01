@@ -194,6 +194,9 @@ jobs:
             block_store::tests::a_sub_slab_byte_budget_admits_one_slab_then_yields \
             block_store::tests::policy_gc_plans_and_applies_byte_bounded_destroy \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval \
+            data_node::tests::part3::the_block_gc_budget_reaches_the_periodic_loop \
+            data_node::tests::part3::an_idle_shard_stops_accumulating_slabs \
+            data_node::tests::part3::a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install \
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
