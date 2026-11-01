@@ -13195,21 +13195,28 @@ mod tests {
     /// and printed, with latency beside it, because a fsync saving bought with unbounded write
     /// latency is not a saving anyone asked for.
     ///
-    /// # WHAT FOUR RUNS SHOWED, AND WHICH COLUMN SURVIVES THEM
+    /// # WHAT FIVE RUNS SHOWED, AND WHICH CLAIM SURVIVES THEM
     ///
-    /// fsyncs per write, 8 threads x 24 writes, same tree, four consecutive runs:
+    /// fsyncs per write, 8 threads x 24 writes, same tree, five consecutive runs:
     ///
-    /// | window | run A | run B | run C | run D |
-    /// |---|---|---|---|---|
-    /// | 0 | 0.229 | 0.208 | 0.219 | 0.219 |
-    /// | 200us | 0.203 | 0.182 | 0.172 | 0.182 |
-    /// | 1ms | 0.182 | 0.167 | 0.156 | 0.151 |
-    /// | 5ms | 0.182 | 0.130 | 0.130 | 0.135 |
+    /// | window | A | B | C | D | E |
+    /// |---|---|---|---|---|---|
+    /// | 0 | 0.229 | 0.208 | 0.219 | 0.219 | 0.286 |
+    /// | 200us | 0.203 | 0.182 | 0.172 | 0.182 | 0.302 |
+    /// | 1ms | 0.182 | 0.167 | 0.156 | 0.151 | 0.255 |
+    /// | 5ms | 0.182 | 0.130 | 0.130 | 0.135 | 0.255 |
     ///
-    /// MONOTONE IN ALL FOUR, -20% to -41% at the widest. That is the reproducible result and
-    /// is what the assertion below rests on.
+    /// WHAT SURVIVES: the widest window took fewer barriers than the timer-less arm in ALL
+    /// FIVE, by 11% to 41%. That endpoint comparison is the only thing asserted below.
     ///
-    /// THE WALL COLUMN DID NOT SURVIVE: the timer-less arm alone ranged 64, 348, 93 and 77 ms
+    /// WHAT DOES NOT SURVIVE: the sweep is NOT monotone. Run E put 200us WORSE than zero
+    /// (0.302 against 0.286), and 5ms never beat 1ms in any run. So this does not say a wider
+    /// window is always better -- only that >= 1ms reliably beats no window, and that there is
+    /// nothing past 1ms to buy. An earlier version of this note claimed MONOTONICITY off the
+    /// first four runs; the fifth refuted it. The assertion was narrowed to the endpoints
+    /// rather than the table being re-run until it agreed, which is the temptation here.
+    ///
+    /// THE WALL COLUMN DID NOT SURVIVE: across five runs the timer-less arm alone ranged 64 to 348 ms
     /// for identical work, and one run reported the WIDEST window as 48% FASTER. So no latency
     /// figure is claimed from it -- the cost is stated structurally instead (at most one window
     /// per uncovered barrier, pinned deterministically next door). A loaded machine is the
@@ -13330,7 +13337,7 @@ mod tests {
             "    the wall column above is INDICATIVE ONLY and is not a latency measurement:"
         );
         println!(
-            "    across four runs the timer-less arm alone ranged 64-348 ms for the same 192"
+            "    across five runs the timer-less arm alone ranged 64-348 ms for the same 192"
         );
         println!(
             "    writes, so it is dominated by what else the machine is doing. The window's"
