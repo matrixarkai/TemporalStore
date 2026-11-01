@@ -58,7 +58,7 @@ const KEY: &str = "amp-key";
 
 /// The cluster id the sweep runs under, and a much longer one used to show the envelope no longer
 /// depends on it. These differ by 40 characters.
-/// What the C++ store was measured to put on disk for one operation, and the payload that
+/// What the design this one follows was measured to put on disk for one operation, and the payload that
 /// measurement carried. Both come from a disk measurement of one of its hash operations:
 /// about 158.6 B written per operation over a payload of about 144 B.
 ///
@@ -410,7 +410,7 @@ async fn report(shape: Shape, options: &StoreOptions) {
         "    replicated/user models copied blob bytes; allocator and disk overhead are excluded"
     );
 
-    // ---- AND THE ENVELOPE IS THE WHOLE OF THE DISTANCE TO THE C++ STORE. Their cost has the
+    // ---- AND THE ENVELOPE IS THE WHOLE OF THE DISTANCE TO THE DESIGN BEING FOLLOWED. Its cost has
     // ---- same shape as ours -- one payload plus a constant -- so the two lines differ only in
     // ---- their intercepts, and the ratio either of them quotes is mostly its own intercept
     // ---- divided by the payload it was quoted at. Both are evaluated here at THEIR payload
@@ -418,11 +418,11 @@ async fn report(shape: Shape, options: &StoreOptions) {
     let their_env = THEIR_BYTES_PER_OP - THEIR_PAYLOAD_BYTES;
     assert!(
         THEIR_PAYLOAD_BYTES < THEIR_BYTES_PER_OP,
-        "the C++ figures say a {THEIR_PAYLOAD_BYTES:.0} B payload costs {THEIR_BYTES_PER_OP:.1} B \
+        "the measured figures say a {THEIR_PAYLOAD_BYTES:.0} B payload costs {THEIR_BYTES_PER_OP:.1} B \
          on disk, which leaves it no envelope at all -- one of the two numbers was misread"
     );
     println!();
-    println!("  AGAINST THE C++ STORE, BOTH LINES EVALUATED AT THE SAME PAYLOAD");
+    println!("  AGAINST THE DESIGN BEING FOLLOWED, BOTH LINES AT THE SAME PAYLOAD");
     println!();
     println!(
         "    their envelope  {their_env:>6.1} B   upper bound, from {THEIR_BYTES_PER_OP:.1} B/op \
@@ -478,7 +478,7 @@ over a {THEIR_PAYLOAD_BYTES:.0} B payload"
     };
     assert!(
         matched < matched_ceiling,
-        "at a {THEIR_PAYLOAD_BYTES:.0} B payload one append costs {matched:.3}x what the C++ store \
+        "at a {THEIR_PAYLOAD_BYTES:.0} B payload one append costs {matched:.3}x what the design followed \
          was measured to cost, over the {matched_ceiling:.2}x ceiling for {shape:?}. Both marginal \
          rates are one payload, so the whole of this is our {blob_env:.1} B envelope against their \
          {their_env:.1} B -- re-price the log frame and the sidecar field by field before raising \
