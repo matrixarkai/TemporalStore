@@ -270,6 +270,7 @@ jobs:
             engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency \
             engine::tests::index_bytes_per_key::what_the_one_word_handle_costs_in_the_allocation \
             engine::tests::flat_block_list::what_a_retain_leaves_in_the_block_lists_capacity \
+            engine::tests::flat_block_list::what_the_published_arm_cannot_see_in_container_capacity \
             engine::tests::flat_block_list::what_the_slots_owned_element_headroom_costs \
             engine::tests::where_an_objects_refs_could_live::whether_a_niche_can_take_the_refs_union_to_sixteen \
             engine::tests::part4::maintained_component_block_ref_total_matches_the_walk \

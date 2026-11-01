@@ -1961,6 +1961,15 @@ impl ObjectSlots {
         self.filled.truncate_to(self.ids.len().div_ceil(64));
     }
 
+    /// Length and capacity of the slot array, for the same reason as the block list's.
+    ///
+    /// `insert` grows `ids` with `Vec::push`, which DOUBLES, and `drop_trailing_placeholders`
+    /// shortens it with `Vec::pop`, which lowers the length and leaves the capacity.
+    /// `what_a_slot_array_costs_under_churn` bounds the LENGTH and says nothing about the
+    /// buffer holding it.
+    fn ids_len_and_capacity(&self) -> (usize, usize) {
+        (self.ids.len(), self.ids.capacity())
+    }
     fn into_ids(self) -> Vec<u64> {
         let filled = self.filled;
         self.ids
@@ -1972,6 +1981,16 @@ impl ObjectSlots {
     }
 }
 
+impl ObjectIndex {
+    /// Length and capacity of the slot array, for a probe that must see what a clone cannot.
+    pub(super) fn slots_len_and_capacity(&self) -> (usize, usize) {
+        match self {
+            ObjectIndex::Many(slots) => slots.ids_len_and_capacity(),
+            // `One` holds its id inline in the enum and `Empty` holds nothing.
+            _ => (0, 0),
+        }
+    }
+}
 pub(super) enum ObjectIndexIter<'a> {
     Empty,
     One(std::iter::Once<&'a u64>),
@@ -3936,6 +3955,18 @@ impl BlockIndexMap {
         }
     }
 
+    /// Length and capacity of the list arm, for a probe that must see what a CLONE cannot.
+    ///
+    /// `Vec::clone` takes exactly `len` capacity, so the clone-based census this crate's
+    /// published amplification arm uses cannot see reserved capacity at all -- while
+    /// `resident_heap_bytes` charges it. Read-only: nothing here changes a buffer.
+    pub(super) fn list_len_and_capacity(&self) -> (usize, usize) {
+        match self {
+            BlockIndexMap::Many(blocks) => (blocks.len(), blocks.capacity()),
+            // Neither other arm owns a growable buffer, so neither can carry slack.
+            _ => (0, 0),
+        }
+    }
     /// Whether this bucket holds no blocks.
     ///
     /// READS THE LENGTH, NOT THE DISCRIMINANT. `Empty` and `Many(vec![])` are both "no blocks", and
