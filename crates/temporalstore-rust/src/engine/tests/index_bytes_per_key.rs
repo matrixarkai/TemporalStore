@@ -11863,10 +11863,39 @@ fn removing_the_refcount_header_without_an_arena_costs_more_than_it_saves() {
 /// count PER KIND rather than pooled. A pooled count over a string-only fixture is what let
 /// the premise move silently in the first place.
 ///
-/// WHAT THE ANSWER MEANS, decided before the numbers are in so the reading is not fitted:
+/// # WHAT THIS WALK DOES NOT COVER, AND WHY THAT MATTERS MORE THAN WHAT IT DOES
 ///
-///   * every kind at ONE holder -- the alias can become a header-free handle and the saving is
-///     the header, on every kind;
+/// IT WALKS FIVE STRUCTURES. `engine_storage_state.rs` declares SIXTY-SEVEN `ModelKey`-keyed
+/// maps. This one reaches `strings`, `hashes`, `object_block_lookup`, `context_nodes` and
+/// `dirty_objects`, and never touches `seen`, `buckets`, `control_state_selection`,
+/// `context_event_timeline`, the `u64_ledgers` or the rest.
+///
+/// SO A ONE-HOLDER READING HERE IS NOT A ONE-HOLDER READING FOR `ModelKey`. I drew that
+/// conclusion once and it was wrong: the header can only be removed if EVERY holder of a key
+/// allocation has been counted, and this fixture drives `StringSet` and `HashSet` only, so the
+/// paths that put one key into several maps at once are not exercised at all.
+///
+/// AND THE TREE ALREADY CONTRADICTS THE GENERAL CLAIM. `recorded_map.rs` says of its own
+/// `entries: HashMap<ModelKey, _>`: "All four kinds were measured holding their OWN copy of a
+/// key text four other maps had already agreed on -- eight holders of one text reporting FIVE
+/// allocations, at 8 of 8 keys", in
+/// `which_string_keyed_holders_duplicate_a_key_another_map_holds`. `adopt_key` exists to
+/// produce that sharing, and `object_record.rs` says "The key `Arc` is SHARED" outright. On
+/// those paths the refcount header is paid for exactly as the original refusal said, and
+/// removing it would make them WORSE.
+///
+/// WHAT IT WOULD TAKE to settle the premise: widen this walk to every `ModelKey`-keyed
+/// structure, with a fixture that drives the commands putting one key into several of them.
+/// That is a measurement, not a refactor. For scale, flipping the alias to a header-free
+/// handle produces 113 errors in `--lib` alone, and the alias is not even the whole surface --
+/// `object_block_lookup`, `by_key`, `expires_at_ms` and `filing_by_object_key` spell
+/// `Arc<str>` literally, so flipping `ModelKey` strands them.
+///
+/// WHAT THE ANSWER MEANS FOR THE FIVE STRUCTURES BELOW, decided before the numbers are in so
+/// the reading is not fitted:
+///
+///   * one holder in all five -- a NECESSARY condition for a header-free handle, and not a
+///     sufficient one: the other sixty-two have to be counted before the header can go;
 ///   * container kinds still at TWO -- a blanket change makes THOSE kinds worse, because two
 ///     owned allocations cost more than one shared one (and on the chunk counter much more,
 ///     since glibc serves nothing under 32 bytes). The lever would then need the string map to
@@ -11961,7 +11990,11 @@ fn how_many_holders_a_key_allocation_has_by_kind() {
     println!();
     println!("    distinct key allocations {}", holders.len());
     println!();
-    println!("  WHAT THIS DECIDES: the refcount header is paid for only where a key allocation has");
+    println!("  WHAT THIS DECIDES, AND WHAT IT DOES NOT: the header is paid for wherever a key");
+    println!("  allocation has TWO OR MORE holders. These are FIVE of the sixty-seven");
+    println!("  ModelKey-keyed maps, so one holder here is necessary and NOT sufficient --");
+    println!("  which_string_keyed_holders_duplicate_a_key_another_map_holds reports eight");
+    println!("  holders over five allocations on a path this fixture does not drive.");
     println!("  TWO OR MORE holders. `ModelKey` is one alias shared by every kind above, so a");
     println!("  header-free handle is available only if EVERY row here reads one holder.");
     println!();
