@@ -21702,3 +21702,123 @@ fn raft_snapshot_slab_retention_is_decided_by_a_log_sequence_not_a_slab_id() {
         "NON-VACUITY: at least one reading must differ from block-everything, or this test cannot distinguish the predicate from the literal true"
     );
 }
+
+/// The index-GC byte threshold is compared against the bytes that can be REMOVED, not against the
+/// size of the whole log.
+///
+/// A log is worth sweeping when enough of it is garbage, and a large log that is nearly all live
+/// has none to give. The removable-share trigger already says "enough of the records"; the byte
+/// threshold says "enough bytes to pay for the rewrite", and that has to be a count of the bytes
+/// the sweep would drop. Measured against the whole log, a 1.13 MB log that is 60% removable
+/// (about 0.68 MB) cleared a 1 MiB threshold and was swept for less than the threshold named.
+///
+/// TWO LOGS, one each side of the line, at the same removable share: the small one is past the
+/// threshold in total bytes and under it in removable bytes, which is the case the two readings
+/// disagree on; the large one is past it both ways. A threshold set to the measured figure fires,
+/// and one byte more does not.
+#[test]
+fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
+    struct RollingThreshold;
+    impl Drop for RollingThreshold {
+        fn drop(&mut self) {
+            crate::index_log::set_index_log_segment_bytes_for_test(None);
+        }
+    }
+
+    let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
+    for (records, expect_fires) in [(6_000usize, false), (18_000usize, true)] {
+        let _rolling = RollingThreshold;
+        crate::index_log::set_index_log_segment_bytes_for_test(Some(
+            crate::index_log::DEFAULT_INDEX_LOG_SEGMENT_BYTES,
+        ));
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let store = engine.index_log_store();
+        for value in 0..records {
+            store
+                .append_json(
+                    1,
+                    format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                )
+                .expect("index-log append");
+        }
+        let floor = (records * 6 / 10) as u64;
+        let log_bytes = store.log_len_bytes(1);
+        let probe = |threshold: u64, dry_run: bool| {
+            engine.storage_index_gc_report(
+                &crate::engine::reports::StorageLifecyclePlan {
+                    shard_id: 1,
+                    ..crate::engine::reports::StorageLifecyclePlan::default()
+                },
+                &crate::engine::reports::StorageWalReclaimPlan {
+                    shard_id: 1,
+                    safe_to_reclaim: true,
+                    retain_from_index_log_sequence: floor,
+                    ..crate::engine::reports::StorageWalReclaimPlan::default()
+                },
+                None,
+                &crate::engine::reports::StorageManagerCycleRequest {
+                    shard_id: 1,
+                    dry_run,
+                    index_gc_index_log_bytes_threshold: threshold,
+                    ..crate::engine::reports::StorageManagerCycleRequest::default()
+                },
+            )
+        };
+
+        let measured = probe(threshold, true);
+        let removable = measured.removable_bytes_before;
+        println!(
+            "  {records:>6} records: log {log_bytes} B, removable {removable} B, share {} bp, \
+             threshold {threshold} B -> fires {}",
+            measured.usage_ratio_basis_points, measured.threshold_triggered
+        );
+
+        // DENOMINATORS. The whole log is past the threshold in BOTH arms, and the share trigger is
+        // met in both, so the only thing that can separate them is the bytes removable.
+        assert!(
+            log_bytes >= threshold,
+            "{records} records wrote {log_bytes} B, under the {threshold} B threshold: the cheap \
+             size test would skip before the comparison this test is about"
+        );
+        assert!(
+            measured.usage_ratio_triggered,
+            "{records} records: the removable-share trigger must be met in both arms, or the \
+             share and not the bytes is what separates them ({} bp)",
+            measured.usage_ratio_basis_points
+        );
+        assert!(
+            removable > 0 && removable < measured.bytes_before,
+            "removable bytes must be a part of the log: {removable} of {} B",
+            measured.bytes_before
+        );
+
+        assert_eq!(
+            measured.threshold_triggered, expect_fires,
+            "{records} records: {removable} removable bytes of a {log_bytes} B log against a \
+             {threshold} B threshold"
+        );
+        assert!(
+            probe(removable, true).threshold_triggered,
+            "a threshold equal to the removable bytes ({removable} B) must fire"
+        );
+        assert!(
+            !probe(removable + 1, true).threshold_triggered,
+            "a threshold one byte over the removable bytes ({removable} B) must not fire"
+        );
+
+        // AND THE DECISION IS THE ONE THAT ACTS. A round that is not a dry run reports the same
+        // reason the comparison gives, and sweeps exactly when the comparison fires.
+        let real = probe(threshold, false);
+        assert_eq!(
+            real.applied, expect_fires,
+            "{records} records: the sweep ran or declined against the comparison: {real:?}"
+        );
+        if !expect_fires {
+            assert_eq!(
+                real.skipped_reason, "index-log byte threshold not reached",
+                "{records} records: declined for the wrong reason"
+            );
+        }
+    }
+}

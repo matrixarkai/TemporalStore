@@ -1279,9 +1279,9 @@ fn default_storage_manager_min_undumped_wal_records() -> u64 {
 
 /// Durable write-ahead log bytes that release the dump on their own.
 ///
-/// 96 MiB, against the 128 MB the design being followed waits for. Lower because this engine runs
-/// on a box with a measured capacity wall near a 400 MB store, so a log allowed to reach an
-/// eighth of that before anything reclaims it is a large share of the budget for one file.
+/// 128 MiB. A log allowed to reach that size before anything reclaims it is a large share of the
+/// budget on a box with a measured capacity wall near a 400 MB store, which is why the record
+/// threshold beside this one exists: whichever is reached first releases the dump.
 ///
 /// It bounds what the record threshold cannot: a thousand records says nothing about how many
 /// bytes they are. Whichever threshold is reached first releases the dump.

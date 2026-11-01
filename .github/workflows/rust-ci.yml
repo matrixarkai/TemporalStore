@@ -198,6 +198,7 @@ jobs:
             index_log::index_log_sweep_bound::the_default_entry_budget_belongs_to_the_path_that_runs_when_asked \
             data_node::tests::part3::an_idle_shard_stops_accumulating_slabs \
             data_node::tests::part3::a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install \
+            engine::tests::part4::the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log \
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \

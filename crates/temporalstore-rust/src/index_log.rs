@@ -2428,6 +2428,12 @@ pub struct IndexLogGateSummary {
     pub records: usize,
     /// How many of them sit below the floor.
     pub removable_records: usize,
+    /// The on-disk bytes those records occupy. For a sealed piece this is its length scaled by
+    /// the share of its records below the floor, which is exact for a piece wholly below the
+    /// floor and for one wholly above it, and an even-spread estimate for the one the floor
+    /// falls inside. For the piece being written it is the sum of the frames actually decoded.
+    #[serde(default)]
+    pub removable_bytes: u64,
     /// Files the log is in, the one being written included. This is what the gate now costs.
     pub pieces: usize,
     /// How many of those were answered from the NAME alone -- every sealed one.
@@ -3684,6 +3690,13 @@ impl LocalIndexLogStore {
                 summary.removable_records = summary
                     .removable_records
                     .saturating_add(removable as usize);
+                if held > 0 {
+                    let share = (metadata.len() as u128).saturating_mul(removable as u128)
+                        / held as u128;
+                    summary.removable_bytes = summary
+                        .removable_bytes
+                        .saturating_add(u64::try_from(share).unwrap_or(u64::MAX));
+                }
                 continue;
             }
             let Ok(file) = open_index_log_read(&path, &mut tally) else {
@@ -3707,6 +3720,8 @@ impl LocalIndexLogStore {
                 if let Ok(head) = decode_index_payload::<IndexRecordHead>(&payload) {
                     if head.sequence < retain_from_sequence {
                         summary.removable_records += 1;
+                        summary.removable_bytes =
+                            summary.removable_bytes.saturating_add(frame_bytes as u64);
                     }
                 }
             }
@@ -7017,6 +7032,36 @@ mod tests {
                 "the gate's byte count must be the log's on-disk length ({written} B) and must \
                  not be under what the records themselves occupy ({scanned_bytes} B), got {}",
                 gate.bytes
+            );
+
+            // THE BYTES THE REMOVABLE RECORDS OCCUPY, which is what the index-GC byte threshold
+            // is compared against. Checked against the same records read one by one: the names
+            // scale a sealed piece's length by its removable share, so the answer may differ
+            // from the true sum by how unevenly record sizes fall across the one piece the
+            // floor lands in, and by per-record framing -- both small against the whole.
+            let scanned_removable_bytes = store
+                .scan(7, 0, u64::MAX, u64::MAX)
+                .unwrap()
+                .iter()
+                .filter(|(_, raw)| {
+                    crate::log_framing::decode_line(raw)
+                        .ok()
+                        .and_then(|payload| decode_index_payload::<IndexRecordHead>(payload).ok())
+                        .is_some_and(|head| head.sequence < floor)
+                })
+                .map(|(_, raw)| raw.len() as u64)
+                .sum::<u64>();
+            assert!(
+                gate.removable_bytes > 0 && gate.removable_bytes < gate.bytes,
+                "a floor at 60% must leave some bytes removable and some not: {} of {} B",
+                gate.removable_bytes,
+                gate.bytes
+            );
+            let tolerance = piece + scanned_removable_bytes / 20;
+            assert!(
+                gate.removable_bytes.abs_diff(scanned_removable_bytes) <= tolerance,
+                "removable bytes from the names ({}) must agree with the records read one by one                  ({scanned_removable_bytes}) to within {tolerance} B",
+                gate.removable_bytes
             );
 
             // COST. What it decoded is the piece being written, and nothing else.
