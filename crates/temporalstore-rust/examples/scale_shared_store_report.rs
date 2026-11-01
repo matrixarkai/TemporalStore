@@ -71,6 +71,22 @@ struct Round {
     append_micros: u128,
     append_chunk_reads: u64,
     replays: Vec<NodeReplay>,
+    replicas: Vec<ReplicaWrite>,
+}
+
+/// What ONE replica of the shared store holds and was written, after a round.
+///
+/// Per replica and never summed into the table, for the same reason the read side is
+/// per node: a sum hides the one replica that took a different number of writes, and a
+/// star write is only a star if every point of it got the same work.
+struct ReplicaWrite {
+    index: usize,
+    physical_bytes: u64,
+    write_count: u64,
+    write_bytes: u64,
+    discard_ranges: u64,
+    discard_bytes: u64,
+    capacity_rejected_writes: u64,
 }
 
 /// How many page reads the store has served since it opened.
@@ -201,6 +217,32 @@ async fn round(entries: usize, options: &StoreOptions) -> Round {
         });
     }
 
+    // ---- AND WHAT EACH REPLICA TOOK. Read through the store's own per-replica
+    // ---- accessors rather than derived from the blob figure: `physical/user` below is
+    // ---- blob x replica_count, which ASSUMES every replica stored the same thing.
+    // ---- These numbers are what says whether it did.
+    let replicas = {
+        let inner = store.inner();
+        let guard = inner.lock().expect("store lock poisoned");
+        let physical = guard.chunk_replica_physical_bytes();
+        let writes = guard.chunk_replica_physical_write_count();
+        let write_bytes = guard.chunk_replica_physical_write_bytes();
+        let discard_ranges = guard.chunk_replica_physical_discard_ranges();
+        let discard_bytes = guard.chunk_replica_physical_discard_bytes();
+        let rejected = guard.chunk_replica_capacity_rejected_writes();
+        (0..physical.len())
+            .map(|index| ReplicaWrite {
+                index,
+                physical_bytes: physical[index],
+                write_count: writes[index],
+                write_bytes: write_bytes[index],
+                discard_ranges: discard_ranges[index],
+                discard_bytes: discard_bytes[index],
+                capacity_rejected_writes: rejected[index],
+            })
+            .collect::<Vec<_>>()
+    };
+
     Round {
         entries,
         user_bytes,
@@ -210,6 +252,7 @@ async fn round(entries: usize, options: &StoreOptions) -> Round {
         append_micros,
         append_chunk_reads,
         replays,
+        replicas,
     }
 }
 
@@ -337,6 +380,100 @@ async fn main() {
                 n.micros as f64 / r.entries as f64,
             );
         }
+    }
+
+    println!();
+    println!("  THE REPLICATION, per replica and never averaged");
+    println!();
+    println!("    entries   replica   physical KiB   writes   write KiB   writes/entry   bytes/user   discards");
+    for r in &rounds {
+        for replica in &r.replicas {
+            println!(
+                "    {:>7}   {:>7}   {:>12.1}   {:>6}   {:>9.1}   {:>12.3}   {:>9.3}   {:>8}",
+                r.entries,
+                replica.index,
+                replica.physical_bytes as f64 / 1024.0,
+                replica.write_count,
+                replica.write_bytes as f64 / 1024.0,
+                replica.write_count as f64 / r.entries as f64,
+                replica.physical_bytes as f64 / r.user_bytes as f64,
+                replica.discard_ranges,
+            );
+        }
+    }
+    println!();
+    // ---- A STAR WRITE IS ONLY A STAR IF EVERY POINT TOOK THE SAME WORK, and
+    // ---- `physical/user` in the write table is blob x replica_count, which ASSUMES that.
+    // ---- These are the assertions that make the assumption a statement.
+    for r in &rounds {
+        assert!(
+            r.replicas.len() >= 2,
+            "a replication table needs more than one replica, and this round has {}",
+            r.replicas.len()
+        );
+        let first = &r.replicas[0];
+        for replica in &r.replicas[1..] {
+            assert_eq!(
+                replica.write_count, first.write_count,
+                "replica {} took {} writes where replica {} took {} at {} entries -- a star \
+                 write that is not a star",
+                replica.index, replica.write_count, first.index, first.write_count, r.entries
+            );
+            assert_eq!(
+                replica.physical_bytes, first.physical_bytes,
+                "replica {} holds {} bytes where replica {} holds {} at {} entries",
+                replica.index, replica.physical_bytes, first.index, first.physical_bytes, r.entries
+            );
+            assert_eq!(
+                replica.write_bytes, first.write_bytes,
+                "replica {} was written {} bytes where replica {} was written {} at {} entries",
+                replica.index, replica.write_bytes, first.index, first.write_bytes, r.entries
+            );
+        }
+        // Not vacuous: a round that wrote nothing would satisfy every equality above.
+        assert!(
+            first.write_count > 0 && first.physical_bytes > 0,
+            "the replicas should have been written to, and replica 0 shows {} writes over {} \
+             bytes",
+            first.write_count,
+            first.physical_bytes
+        );
+        // Nothing was refused for capacity, and nothing was discarded: an append-only log
+        // stales nothing, so a discard here would mean something else ran.
+        for replica in &r.replicas {
+            assert_eq!(
+                replica.capacity_rejected_writes, 0,
+                "replica {} refused {} writes for capacity",
+                replica.index, replica.capacity_rejected_writes
+            );
+            assert_eq!(
+                replica.discard_ranges, 0,
+                "replica {} holds {} discarded ranges, and an append-only log stales nothing",
+                replica.index, replica.discard_ranges
+            );
+        }
+    }
+    // AND THE FAN-OUT IS WHAT THE WRITE TABLE CLAIMS. `physical/user` is printed as
+    // blob x replica_count; this checks it against what the replicas actually hold, so the
+    // published amplification figure cannot drift from the store's own counters.
+    for r in &rounds {
+        let held: u64 = r.replicas.iter().map(|replica| replica.physical_bytes).sum();
+        let claimed = r.blob_bytes * r.replicas.len() as u64;
+        let drift = held.abs_diff(claimed) as f64 / claimed as f64;
+        println!(
+            "    fan-out at {:>5} entries: replicas hold {held} B, blob x {} = {claimed} B,              drift {:.4}%",
+            r.entries,
+            r.replicas.len(),
+            drift * 100.0
+        );
+        assert!(
+            drift < 0.02,
+            "the published physical/user is blob x {} = {claimed} B and the replicas hold \
+             {held} B, {:.2}% apart at {} entries -- one of the two is wrong",
+            r.replicas.len(),
+            drift * 100.0,
+            r.entries
+        );
     }
 
     println!();
