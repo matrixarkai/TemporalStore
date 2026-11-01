@@ -428,6 +428,8 @@ mod bucket_dirty_share_under_dumps;
 mod model_map_container_cost;
 #[path = "tests/container_block_ordinal.rs"]
 mod container_block_ordinal;
+#[path = "tests/what_a_new_container_element_scans.rs"]
+mod what_a_new_container_element_scans;
 #[path = "tests/block_entry_element_naming.rs"]
 mod block_entry_element_naming;
 #[path = "tests/index_resident_truth.rs"]
