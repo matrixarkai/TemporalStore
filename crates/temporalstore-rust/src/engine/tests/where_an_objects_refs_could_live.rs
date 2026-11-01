@@ -339,6 +339,126 @@ fn whether_a_slot_row_exists_when_its_page_is_filed() {
     );
 }
 
+/// WHETHER A NICHE CAN TAKE THE REFS UNION TO SIXTEEN, AND WHAT THE `Option` DOES TO THAT.
+///
+/// `BlockRefs` is 24 B and `what_the_folded_slot_weighs` pins the slot at
+/// `16 + 8 + size_of::<Option<BlockRefs>>()`, so eight bytes off the union is eight off every
+/// object slot -- the `strings` row is the largest on the resident index. Boxing the wide arm
+/// alone measures ZERO, because the union is sized by the INLINE arm: `BlockLookupRef` is a
+/// `u32` beside a `u64`, twelve bytes of field in sixteen, every bit pattern valid. **Padding
+/// is not a niche** -- rustc puts a discriminant in forbidden VALUES, not in spare bytes.
+///
+/// SO THE ONLY ROUTE TO SIXTEEN IS A FORBIDDEN VALUE IN THE INLINE ARM, and the obvious
+/// candidate is `block_ref_key: NonZeroU64`. THE ARITHMETIC THAT DECIDES IT, which is why this
+/// arm exists rather than a paragraph: a two-arm union needs ONE spare value for its own tag,
+/// and the shipped field is an `Option`, which needs a SECOND. `NonZeroU64` forbids exactly
+/// one value. If that is the whole budget then `Option<union>` spills back to 24 and the slot
+/// never moves, so the saving at the home that matters is zero even though the union itself
+/// shrank.
+///
+/// THE THREE-ARM SHAPE IS THE ESCAPE THAT LOOKS FREE: fold the `Option`'s `None` into the
+/// union so only one tag is needed. That still wants two spare values for three arms, so it is
+/// measured rather than assumed.
+///
+/// THE CONTROL is the same two shapes with a PLAIN `u64`. Without it, a reading of 24
+/// everywhere cannot tell "the niche bought nothing" from "this probe cannot see a niche".
+///
+/// rust-internal: measures this crate's own layout, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib whether_a_niche_can_take_the_refs_union_to_sixteen -- --exact --nocapture
+#[test]
+fn whether_a_niche_can_take_the_refs_union_to_sixteen() {
+    use crate::engine::state::{BlockLookupRef, BlockRefs};
+    use std::mem::size_of;
+
+    // --- the candidate: a forbidden value in the inline arm ---
+    #[allow(dead_code)]
+    struct NicheRef {
+        routing_bucket: u32,
+        block_ref_key: std::num::NonZeroU64,
+    }
+    #[allow(dead_code)]
+    enum NicheTwoArm {
+        One(NicheRef),
+        Many(Box<[NicheRef]>),
+    }
+    #[allow(dead_code)]
+    enum NicheThreeArm {
+        Absent,
+        One(NicheRef),
+        Many(Box<[NicheRef]>),
+    }
+
+    // --- THE CONTROL: identical shapes, plain `u64`, so a flat 24 is interpretable ---
+    #[allow(dead_code)]
+    struct PlainRef {
+        routing_bucket: u32,
+        block_ref_key: u64,
+    }
+    #[allow(dead_code)]
+    enum PlainTwoArm {
+        One(PlainRef),
+        Many(Box<[PlainRef]>),
+    }
+
+    println!();
+    println!("  {:<42} {:>6} {:>14}", "shape", "B", "as an Option");
+    for (name, bare, wrapped) in [
+        ("BlockRefs (ships)", size_of::<BlockRefs>(), size_of::<Option<BlockRefs>>()),
+        ("PlainTwoArm, Box<[T]>, no niche (control)", size_of::<PlainTwoArm>(), size_of::<Option<PlainTwoArm>>()),
+        ("NicheTwoArm, NonZeroU64 key", size_of::<NicheTwoArm>(), size_of::<Option<NicheTwoArm>>()),
+        ("NicheThreeArm, None folded in", size_of::<NicheThreeArm>(), size_of::<Option<NicheThreeArm>>()),
+    ] {
+        println!("  {name:<42} {bare:>6} {wrapped:>14}");
+    }
+
+    // The niche must not change the FIELD width, or the comparison is between two different
+    // structures rather than two layouts of one.
+    assert_eq!(
+        size_of::<BlockLookupRef>(),
+        size_of::<NicheRef>(),
+        "the mirror ref is not the same width as the shipped one, so nothing below compares"
+    );
+    // THE CONTROL MUST SHOW NO SAVING, or a niche reading of 16 proves nothing.
+    assert_eq!(
+        size_of::<BlockRefs>(),
+        size_of::<PlainTwoArm>(),
+        "boxing the wide arm WITHOUT a niche changed the union's width; the control that makes \
+         a niche reading interpretable does not hold"
+    );
+
+    // --- WHAT THE SLOT WOULD DO, which is the only home that pays ---
+    let slot_today = 16 + 8 + size_of::<Option<BlockRefs>>();
+    let slot_two = 16 + 8 + size_of::<Option<NicheTwoArm>>();
+    let slot_three = 16 + 8 + size_of::<NicheThreeArm>();
+    println!();
+    println!("  the slot is 16 + 8 + whatever holds the refs:");
+    println!("    ships                       {slot_today} B");
+    println!("    NonZeroU64 + Option         {slot_two} B");
+    println!("    NonZeroU64, None folded in  {slot_three} B");
+    println!();
+    println!(
+        "  a bucket of (Arc<str>, slot) + 1 control byte: {} today, {} folded",
+        16 + slot_today + 1,
+        16 + slot_three + 1
+    );
+
+    // THE VERDICT, PINNED EITHER WAY. This is not an assertion that the lever is dead; it is an
+    // assertion that the TABLE above is what the compiler says. If a future rustc gives a
+    // multi-value niche to one of these shapes, this fails and the lever is reopened with a
+    // measurement rather than discovered by someone re-deriving it.
+    assert_eq!(
+        24,
+        size_of::<BlockRefs>(),
+        "the shipped union moved; every figure here is relative to it"
+    );
+    assert!(
+        slot_two >= slot_today || slot_three < slot_today,
+        "the niche shapes measured {slot_two} and {slot_three} against the shipped {slot_today}; \
+         if either is genuinely smaller the refusal recorded beside this arm is stale and the \
+         eight-bytes-an-object lever is available"
+    );
+}
 /// WHAT THE FOLDED SLOT ACTUALLY WEIGHS, AND WHAT THE `Option` COSTS OVER THE UNION.
 ///
 /// The fold was priced against a bare `BlockRefs` at 24 B, giving a 48-byte entry and 51.0 B/key.
