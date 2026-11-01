@@ -1348,7 +1348,7 @@ pub struct BlockStoreSlabDescriptor {
     /// two cannot diverge, `reconcile_slab_manifest_with_disk` normalises this one from the map
     /// key on every open, and `a_slab_descriptor_carries_the_same_number_twice` fails if they
     /// ever do.
-    #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
+    #[serde(rename = "band_id", alias = "stored_slab_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
     #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
@@ -1455,7 +1455,7 @@ pub struct BlockStoreSlabSummary {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct BlockStoreSlabUsage {
-    #[serde(rename = "band_id", alias = "extent_id", alias = "zone_id")]
+    #[serde(rename = "band_id", alias = "stored_slab_id", alias = "extent_id", alias = "zone_id")]
     pub stored_slab_id: u64,
     #[serde(rename = "block_segment_id", alias = "page_segment_id")]
     pub block_slab_id: u64,
@@ -1677,7 +1677,7 @@ struct BlockStoreSlabManifest {
     /// binary reads, and the descriptor's `band_id` carries no `#[serde(default)]`, so a manifest
     /// written under new keys is unreadable to it rather than merely unfamiliar.
     /// `a_folded_manifest_still_writes_the_keys_on_disk` pins both keys.
-    #[serde(rename = "bands", alias = "extents", alias = "zones")]
+    #[serde(rename = "bands", alias = "slabs", alias = "extents", alias = "zones")]
     slabs: Vec<BlockStoreSlabDescriptor>,
 }
 

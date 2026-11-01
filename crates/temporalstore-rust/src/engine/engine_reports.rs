@@ -741,7 +741,7 @@ pub struct StoragePhysicalBlockIndex {
     pub block_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub object_id: Option<u64>,
-    #[serde(rename = "zone_id", default, skip_serializing_if = "Option::is_none")]
+    #[serde(rename = "zone_id", alias = "stored_slab_id", default, skip_serializing_if = "Option::is_none")]
     pub stored_slab_id: Option<u64>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub checksum: Option<String>,
@@ -2152,7 +2152,7 @@ pub fn default_storage_gc_snapshot() -> StorageGcSnapshot {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StoragePageAddressSample {
     pub shard_id: u64,
-    #[serde(rename = "zone_id")]
+    #[serde(rename = "zone_id", alias = "stored_slab_id")]
     pub stored_slab_id: u64,
     #[serde(alias = "segment_id")]
     pub slab_id: u64,
@@ -2166,7 +2166,7 @@ pub struct StoragePageAddressSample {
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageBlockAddressSample {
     pub shard_id: u64,
-    #[serde(rename = "zone_id")]
+    #[serde(rename = "zone_id", alias = "stored_slab_id")]
     pub stored_slab_id: u64,
     pub block_id: u64,
     pub offset: u64,
@@ -2188,7 +2188,7 @@ pub struct StoragePageIndexEntrySample {
 pub struct StorageBlockIndexEntrySample {
     pub page_address: StoragePageAddressSample,
     pub block_address: StorageBlockAddressSample,
-    #[serde(rename = "band")]
+    #[serde(rename = "band", alias = "stored_slab_id")]
     pub stored_slab_id: u64,
     pub checksum: String,
     pub generation: u64,
@@ -2268,7 +2268,7 @@ pub fn default_storage_index_snapshot() -> StorageIndexSnapshot {
 /// slab's block range and reclaim state. Two shapes over one entity, not two levels -- "zone"
 /// and "band" were both older names for a slab, and the wire still uses them.
 pub struct StorageSlabUsageSample {
-    #[serde(rename = "zone_id")]
+    #[serde(rename = "zone_id", alias = "stored_slab_id")]
     pub stored_slab_id: u64,
     pub total_bytes: u64,
     pub used_bytes: u64,
@@ -2294,7 +2294,7 @@ pub struct StorageSlabSample {
     /// The same number as [`Self::slab_id`], always -- see
     /// [`crate::block_store::BlockStoreSlabDescriptor::stored_slab_id`]. Kept because it
     /// serializes, under the older key, and the compat corpora carry it.
-    #[serde(rename = "band")]
+    #[serde(rename = "band", alias = "stored_slab_id")]
     pub stored_slab_id: u64,
     pub start_offset: u64,
     pub sealed: bool,
@@ -2303,7 +2303,7 @@ pub struct StorageSlabSample {
 
 #[derive(Debug, Default, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct StorageSlabSlabSample {
-    #[serde(rename = "band")]
+    #[serde(rename = "band", alias = "stored_slab_id")]
     pub stored_slab_id: u64,
     pub block_range: Vec<u64>,
     pub reclaim_state: String,
@@ -2347,7 +2347,7 @@ pub struct StorageTopologySnapshot {
     pub append_log_replay_records: u64,
     pub append_log_reclaimed_records: u64,
     #[serde(default)]
-    #[serde(rename = "storage_zone_samples")]
+    #[serde(rename = "storage_zone_samples", alias = "storage_slab_usage_samples")]
     pub storage_slab_usage_samples: Vec<StorageSlabUsageSample>,
     #[serde(default)]
     pub stream_samples: Vec<StorageStreamSample>,
