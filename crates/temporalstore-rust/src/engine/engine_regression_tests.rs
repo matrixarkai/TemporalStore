@@ -136,7 +136,7 @@ impl BlockObjects {
 pub(super) fn blocks_with_identity(
     index: &crate::engine::state::CoreIndex,
 ) -> Vec<(u32, u64, std::sync::Arc<str>, &crate::engine::state::BlockIndex)> {
-    let keys = crate::engine::state::BlockKeysByPosition::from_lookup(&index.object_block_lookup);
+    let keys = crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
     let mut out = Vec::new();
     for bucket in index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
@@ -288,6 +288,8 @@ mod shard_carried_range;
 mod shard_carried_identity;
 #[path = "tests/index_bytes_per_key.rs"]
 mod index_bytes_per_key;
+#[path = "tests/where_an_objects_refs_could_live.rs"]
+mod where_an_objects_refs_could_live;
 #[path = "tests/sibling_handles.rs"]
 mod sibling_handles;
 #[path = "tests/level_two_value.rs"]

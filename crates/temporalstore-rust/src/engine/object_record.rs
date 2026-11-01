@@ -827,6 +827,13 @@ pub(super) struct ObjectSlotWire {
 }
 
 impl From<ObjectSlot> for ObjectSlotWire {
+    /// THE REFS DO NOT GO OUT, which is what keeps the fold free of a stamp of its own.
+    ///
+    /// They are a derived inversion of the page index: the decode re-files every page it reads, so
+    /// writing them would store a second copy of what `bucket_map` already says and a reload would
+    /// have two sources that could disagree. `slot.refs` is dropped here by not being named --
+    /// and because this takes the slot BY VALUE, a field added later is dropped silently too,
+    /// which is exactly what `ObjectSlotWire`'s own key set is asserted against.
     fn from(slot: ObjectSlot) -> Self {
         Self {
             r: slot.record,
@@ -850,6 +857,10 @@ impl From<ObjectSlotWire> for ObjectSlot {
             } else {
                 Some(Box::new(wire.e))
             },
+            // NO PAGE REFS FROM THE WIRE. They are not written, and the decode files each page
+            // into its object as it reads it -- so a slot that arrived with refs already in it
+            // would be holding a second, older statement of where the pages are.
+            refs: None,
         }
     }
 }
@@ -1105,16 +1116,62 @@ pub(super) struct ObjectSlot {
     /// [`OwnedElementTenancy`]. A `pub(super)` field would let any engine module assign the
     /// array directly, and the witness would then be advice rather than a check.
     many: Option<Box<Vec<(u64, ElementEntry)>>>,
+    /// THE PAGES THIS OBJECT'S DATA LIVES IN -- the whole of the fold, and the reason this type
+    /// grew.
+    ///
+    /// It was a second map, `CoreIndex::object_block_lookup`, keyed by the SAME object key this
+    /// slot is already filed under: measured at 78.4 B/key to hold 40 bytes of payload, against
+    /// 46.9 B/key for the slot map holding this slot. One per-object structure instead of two is
+    /// worth 51.0 B/key marginal, measured at two corpus sizes 4.0x apart by
+    /// `index_bytes_per_key::what_folding_the_block_refs_into_the_slot_would_save`.
+    ///
+    /// `Option` AND NOT A BARE `BlockRefs`, WHICH COSTS PART OF THAT SAVING AND IS NOT OPTIONAL.
+    /// `BlockRefs` has no empty arm, so "this object names no page" would have to be spelled
+    /// `Many(vec![])` -- and `CoreIndex::remove_object_block_lookup_ref` records what that breaks:
+    /// `block_refs_for` would answer `Some(&[])` where a caller distinguishes "names nothing" by
+    /// `None`, and the re-add after a removal would take the wrong branch and leak a tombstone. A
+    /// row with no page is a NORMAL state here -- the row is installed when the address is
+    /// written -- so absent and empty must stay distinguishable.
+    ///
+    /// NOT ON THE WIRE, and that is why the fold owes no stamp of its own. `ObjectSlotWire`
+    /// carries the record and the element array; this field is dropped on the way out and arrives
+    /// `None` on the way in, because the decode re-files every page it reads. The stamp this
+    /// change does spend is for the MAP moving under `slot_index`, not for this field.
+    ///
+    /// PRIVATE, for the reason `many` is: the doors below are the only way in, so a module that
+    /// wants to hand an object a page cannot bypass the bookkeeping that keeps
+    /// `object_component_block_refs` honest.
+    refs: Option<crate::engine::state::BlockRefs>,
 }
 
 /// THE WIDTH, PINNED AS ITS OWN EQUALITY, for the same reason the record's is: an inequality
 /// against a neighbour passes at every width.
 ///
-/// 24, NOT 32: the record lost its deadline word, so the slot that wraps it lost the same eight
-/// bytes. The arithmetic is the record's 16 plus the eight the optional owned array costs, which is
-/// the claim the assertion below this one makes at the site that makes it.
-const _: () = assert!(std::mem::size_of::<ObjectSlot>() == 24);
+/// THE ARITHMETIC AND THEN THE LITERAL, in that order, because only the first survives a change
+/// to a part. The record's 16, plus the eight the optional owned array costs, plus whatever the
+/// optional refs cost -- and the fold's whole saving is a function of that last term, so it is
+/// pinned on its own below rather than folded into a single number nobody can take apart.
+const _: () = assert!(
+    std::mem::size_of::<ObjectSlot>()
+        == std::mem::size_of::<ObjectRecord>()
+            + std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>()
+            + std::mem::size_of::<Option<crate::engine::state::BlockRefs>>()
+);
 const _: () = assert!(std::mem::align_of::<ObjectSlot>() == 8);
+
+/// WHAT THE OPTION COSTS OVER THE UNION IT WRAPS, pinned because the fold's measured 51.0 B/key
+/// assumed a BARE `BlockRefs` at 24 and this is the term that says whether that held.
+///
+/// `BlockRefs` is 24 with a 24-byte `Many(Vec<_>)` arm, so its own discriminant already lives in
+/// the `Vec` pointer's niche -- and `NonNull`'s niche is the single value 0, which the `One` arm
+/// takes. If no further niche is available the `Option` costs a word and the slot is 56 rather
+/// than 48, which turns the 51.0 into about 43. Asserted rather than described, so the figure in
+/// the PR body cannot drift from the layout the compiler actually chose.
+const _: () = assert!(std::mem::size_of::<crate::engine::state::BlockRefs>() == 24);
+const _: () = assert!(std::mem::size_of::<ObjectSlot>() == 24 + OPTION_REFS_WIDTH);
+/// The one number this file states twice, so the two asserts above cannot disagree about it.
+const OPTION_REFS_WIDTH: usize =
+    std::mem::size_of::<Option<crate::engine::state::BlockRefs>>();
 
 /// THE RECORD IS UNCHANGED BY ITS OWN NEIGHBOUR. Restated here rather than left to the record's
 /// own asserts, because the whole argument for this shape is that wrapping the record did not cost
@@ -1122,14 +1179,11 @@ const _: () = assert!(std::mem::align_of::<ObjectSlot>() == 8);
 const _: () = assert!(std::mem::size_of::<ObjectRecord>() == 16);
 const _: () = assert!(std::mem::align_of::<ObjectRecord>() == 8);
 
-/// THE SLOT IS THE RECORD PLUS ONE POINTER AND NOTHING ELSE -- no padding, no tag word. If a
-/// future field lands between them this steps and says so, rather than hiding inside a width that
-/// happened to stay put.
-const _: () = assert!(
-    std::mem::size_of::<ObjectSlot>()
-        == std::mem::size_of::<ObjectRecord>()
-            + std::mem::size_of::<Option<Box<Vec<(u64, ElementEntry)>>>>()
-);
+// THE OLD "RECORD PLUS ONE POINTER AND NOTHING ELSE" PIN IS GONE, AND DELIBERATELY NOT WEAKENED.
+// It asserted the slot was exactly the record plus the optional array, which is what made a third
+// field impossible to add without saying so here. A third field has now been added on purpose, so
+// the claim is FALSE rather than merely out of date -- and the replacement is the arithmetic pin
+// above, which still names every term and so still fails if a FOURTH one lands.
 
 /// AND THE OWNING POINTER IS THIN. `Box<[T]>` is a fat pointer at sixteen bytes and would make the
 /// slot forty; this asserts the eight the shape depends on, so a change of payload type that
@@ -1185,9 +1239,50 @@ pub(super) enum OwnedElementTenancy {
 
 
 impl ObjectSlot {
-    /// A slot holding one record and no element array.
+    /// A slot holding one record, no element array and no pages.
     pub(super) fn from_record(record: ObjectRecord) -> Self {
-        Self { record, many: None }
+        Self { record, many: None, refs: None }
+    }
+
+    /// The pages this object's data lives in, or `None` when it names none.
+    ///
+    /// `None` AND `Some(empty)` ARE DIFFERENT and callers rely on it -- see the field's own note.
+    pub(super) fn refs(&self) -> Option<&crate::engine::state::BlockRefs> {
+        self.refs.as_ref()
+    }
+
+    /// The pages, mutably, for the filing and removal doors on `CoreIndex`.
+    pub(super) fn refs_mut(&mut self) -> Option<&mut crate::engine::state::BlockRefs> {
+        self.refs.as_mut()
+    }
+
+    /// File one page under this object, opening its ref set if this is the first.
+    ///
+    /// Reports whether anything was added, which is what the shard's ref counter is kept from --
+    /// the same contract `ObjectBlockLookup::file` has, so the two homes cannot drift on it.
+    pub(super) fn file_ref(&mut self, value: crate::engine::state::BlockLookupRef) -> bool {
+        match self.refs.as_mut() {
+            Some(refs) => refs.insert(value),
+            None => {
+                self.refs = Some(crate::engine::state::BlockRefs::One(value));
+                true
+            }
+        }
+    }
+
+    /// Install a whole ref set, for the adoption that moves one object's pages out of the lookup
+    /// and into its row at the moment the row comes into being. Hands back whatever it replaced,
+    /// so a caller cannot overwrite a set it did not know was there.
+    pub(super) fn replace_refs(
+        &mut self,
+        refs: Option<crate::engine::state::BlockRefs>,
+    ) -> Option<crate::engine::state::BlockRefs> {
+        std::mem::replace(&mut self.refs, refs)
+    }
+
+    /// Drop this object's ref set, handing it back so the caller can count what went.
+    pub(super) fn take_refs(&mut self) -> Option<crate::engine::state::BlockRefs> {
+        self.refs.take()
     }
 
     /// The record, by value. It is `Copy`, which is the point of keeping the payload outside it.
@@ -1275,6 +1370,10 @@ impl From<std::collections::BTreeMap<u64, ElementEntry>> for ObjectSlot {
             } else {
                 Some(Box::new(points))
             },
+            // A SERIES ARRIVING FROM A STORED SHAPE NAMES NO PAGE. This conversion builds a slot
+            // out of decoded points; the pages are filed into it by the decode's own loop, which
+            // is the one place that knows which bucket each landed in.
+            refs: None,
         }
     }
 }

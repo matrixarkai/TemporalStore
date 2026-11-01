@@ -2098,7 +2098,6 @@ impl TemporalEngine {
                 );
                 let stored_key = shard
                     .bucket_index
-                    .object_block_lookup
                     .any_shared_object_key(item.object_key.as_str())
                     .unwrap_or_else(|| std::sync::Arc::from(item.object_key.as_str()));
                 shard.set_string_address(stored_key, &address);
@@ -2355,7 +2354,6 @@ impl TemporalEngine {
                     // to exist already, and the page index is what holds it.
                     let stored_key = shard
                         .bucket_index
-                        .object_block_lookup
                         .any_shared_object_key(&*item.object_key)
                         .unwrap_or_else(|| std::sync::Arc::from(&*item.object_key));
                     let live = super::timestamped_series::set_point_and_collect_live(
@@ -2652,7 +2650,6 @@ impl TemporalEngine {
                 if let Some(shard) = shards.get_mut(&shard_id) {
                     let stored_key = shard
                         .bucket_index
-                        .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &durable);

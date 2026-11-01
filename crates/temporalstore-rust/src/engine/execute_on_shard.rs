@@ -645,7 +645,6 @@ pub(crate) fn execute_on_shard(
                     // shape `stream_batch_methods` already uses for this very map.
                     let stored_key = shard
                         .bucket_index
-                        .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &address);
@@ -689,7 +688,6 @@ pub(crate) fn execute_on_shard(
                     // shape `stream_batch_methods` already uses for this very map.
                     let stored_key = shard
                         .bucket_index
-                        .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &address);
@@ -779,7 +777,6 @@ pub(crate) fn execute_on_shard(
                     // shape `stream_batch_methods` already uses for this very map.
                     let stored_key = shard
                         .bucket_index
-                        .object_block_lookup
                         .any_shared_object_key(key.as_str())
                         .unwrap_or_else(|| std::sync::Arc::from(key.as_str()));
                     shard.set_string_address(stored_key, &address);
@@ -3841,7 +3838,6 @@ pub(crate) fn execute_on_shard(
                         // to exist already, and the page index is what holds it.
                         let stored_key = shard
                             .bucket_index
-                            .object_block_lookup
                             .any_shared_object_key(&*object_key)
                             .unwrap_or_else(|| std::sync::Arc::from(&*object_key));
                         // THE NON-COLLECTING DOOR. This called `set_point_and_collect_live`
@@ -3944,7 +3940,6 @@ pub(crate) fn execute_on_shard(
                         // to exist already, and the page index is what holds it.
                         let stored_key = shard
                             .bucket_index
-                            .object_block_lookup
                             .any_shared_object_key(&*event_object_key)
                             .unwrap_or_else(|| std::sync::Arc::from(&*event_object_key));
                         // THE NON-COLLECTING DOOR. This called `set_point_and_collect_live`

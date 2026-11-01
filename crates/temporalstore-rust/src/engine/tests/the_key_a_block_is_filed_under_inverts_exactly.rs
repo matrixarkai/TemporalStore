@@ -283,12 +283,27 @@ impl Seeded {
         let json = serde_json::to_vec(shard).expect("the index must serialize as JSON");
         let value: serde_json::Value =
             serde_json::to_value(shard).expect("the index must serialize as a value");
-        let slot_index_stream = value
-            .as_object()
-            .expect("a shard value is an object")
-            .get("slot_index")
-            .map(|entry| "slot_index".len() + 2 + 1 + jlen(entry))
-            .expect("the core index is written under `slot_index`");
+        // THE PAGE INDEX, WITH THE OBJECT ROWS TAKEN BACK OUT.
+        //
+        // `objects` moved INTO `slot_index` at `SHARD_INDEX_FORMAT_VERSION` 30 -- it was a
+        // top-level key of the shard before that. This surface is compared against a BEFORE figure
+        // taken while it was, so counting the object rows here compares two different quantities:
+        // the arm's own subtraction underflowed, which is how the move announced itself. Taking
+        // them out keeps the comparison about what it claims to be about, the bytes a page entry
+        // spends restating the key it is filed under.
+        let slot_index_stream = {
+            let entry = value
+                .as_object()
+                .expect("a shard value is an object")
+                .get("slot_index")
+                .expect("the core index is written under `slot_index`");
+            let object_rows = entry
+                .as_object()
+                .and_then(|core| core.get("objects"))
+                .map(|rows| "objects".len() + 2 + 1 + jlen(rows))
+                .unwrap_or(0);
+            ("slot_index".len() + 2 + 1 + jlen(entry)).saturating_sub(object_rows)
+        };
         Surfaces {
             objects: self.objects,
             blocks,
