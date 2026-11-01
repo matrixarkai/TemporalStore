@@ -857,7 +857,7 @@ impl TemporalEngine {
             return Err(Status::error(
                 "slot_dump_block_segment_mismatch",
                 format!(
-                    "slot dump page segment ids {manifest_block_slab_ids:?} do not match the live refs of the index it installs {index_block_slab_ids:?}"
+                    "slot dump block segment ids {manifest_block_slab_ids:?} do not match the live refs of the index it installs {index_block_slab_ids:?}"
                 ),
             ));
         }
@@ -881,7 +881,7 @@ impl TemporalEngine {
             return Err(Status::error(
                 "slot_dump_unreadable_block_refs",
                 format!(
-                    "slot dump has {unreadable_block_refs} unreadable page refs covering {unreadable_block_bytes} bytes"
+                    "slot dump has {unreadable_block_refs} unreadable block refs covering {unreadable_block_bytes} bytes"
                 ),
             ));
         }

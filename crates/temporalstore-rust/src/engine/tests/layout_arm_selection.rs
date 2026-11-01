@@ -389,7 +389,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                 format!("0..{end}")
             };
             println!(
-                "\n{records} records of the real kind mix on {width}: {} buckets, {} pages",
+                "\n{records} records of the real kind mix on {width}: {} buckets, {} blocks",
                 pop.total_buckets, pop.total_blocks
             );
             println!(
@@ -419,7 +419,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
                     blocks as f64 * 100.0 / pop.total_blocks as f64
                 };
                 println!(
-                    "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {blocks:>8} pages ({block_share:>7.3}% of {})",
+                    "    {arm:<22} {buckets:>7} buckets ({bucket_share:>7.3}% of {})  {blocks:>8} blocks ({block_share:>7.3}% of {})",
                     pop.total_buckets, pop.total_blocks
                 );
                 if arm == "multi_block_object" {
@@ -524,10 +524,10 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     // --- THE POSITIVE CONTROL: THE INSTRUMENT CAN SEE A MULTI-BLOCK OBJECT. ---
     assert!(
         series_max_seen > 1,
-        "THE FIXTURE NEVER REACHED A MULTI-PAGE OBJECT, so this module cannot tell an engine whose objects hold one block from a fixture that could not make one hold two. The series arm is seeded precisely to reach it and its MAX came back {series_max_seen}"
+        "THE FIXTURE NEVER REACHED A MULTI-BLOCK OBJECT, so this module cannot tell an engine whose objects hold one block from a fixture that could not make one hold two. The series arm is seeded precisely to reach it and its MAX came back {series_max_seen}"
     );
     println!(
-        "  POSITIVE CONTROL: a component-free (series) object reaches {series_max_seen} blocks, so pages-per-object above one IS observable by this instrument"
+        "  POSITIVE CONTROL: a component-free (series) object reaches {series_max_seen} blocks, so blocks-per-object above one IS observable by this instrument"
     );
 
     // --- THE FINDING, ON THE ARM THE PROPOSAL IS FOR. ---
@@ -568,7 +568,7 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
         "at 40,000 records on the shipped range {live} layout arms are populated. The finding is stated on exactly ONE being live, which is what makes a five-way dispatch select nothing there"
     );
     println!(
-        "\n  THE ARM: `multi_block_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of BUCKETS and {widest_block_share_of_multi_block_object:.3}% of PAGES, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
+        "\n  THE ARM: `multi_block_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of BUCKETS and {widest_block_share_of_multi_block_object:.3}% of BLOCKS, and is still EXACTLY ABSENT at 40,000 records on the shipped range, where {live} of {} arms is populated at all.",
         EVERY_ARM.len()
     );
     println!(
@@ -692,10 +692,10 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
             }
 
             println!(
-                "\n{records} records of the real kind mix on {width}: {total_buckets} occupied buckets, {total_blocks} pages, name pointer {name_width} B read off the field"
+                "\n{records} records of the real kind mix on {width}: {total_buckets} occupied buckets, {total_blocks} blocks, name pointer {name_width} B read off the field"
             );
             println!(
-                "    buckets holding BOTH a one-page key and a multi-page key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} blocks ({:.3}% of {total_blocks})",
+                "    buckets holding BOTH a one-block key and a multi-block key: {mixed_buckets} ({:.3}% of {total_buckets}); they hold {blocks_in_mixed_buckets} blocks ({:.3}% of {total_blocks})",
                 mixed_buckets as f64 * 100.0 / total_buckets as f64,
                 blocks_in_mixed_buckets as f64 * 100.0 / total_blocks as f64
             );
@@ -766,7 +766,7 @@ fn a_per_bucket_dispatch_cannot_separate_the_keys_the_object_list_wins_on_from_t
 
     assert!(
         any_mixed,
-        "NO STORE HELD A MIXED BUCKET, so this test cannot tell a uniform population from a fixture that could not produce a mixed one. The mix seeds one-page string keys beside hundred-page container keys precisely to produce them"
+        "NO STORE HELD A MIXED BUCKET, so this test cannot tell a uniform population from a fixture that could not produce a mixed one. The mix seeds one-block string keys beside hundred-block container keys precisely to produce them"
     );
 }
 
@@ -810,7 +810,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         let distinct_object_ids = pop.by_object_id.len();
 
         println!(
-            "\n{records} records on 0..{end}: {} pages",
+            "\n{records} records on 0..{end}: {} blocks",
             pop.total_blocks
         );
         println!(
@@ -832,7 +832,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         // the same number and the equality below would be arithmetic rather than a measurement.
         assert!(
             pop.total_blocks > distinct_keys,
-            "DENOMINATOR: {} pages over {distinct_keys} distinct (kind, key). A store whose keys \
+            "DENOMINATOR: {} blocks over {distinct_keys} distinct (kind, key). A store whose keys \
              each held one block satisfies every assertion below while measuring nothing",
             pop.total_blocks
         );
@@ -855,7 +855,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         let to_keys = (stored_rows as f64 - distinct_keys as f64).abs();
         assert!(
             to_keys < to_blocks,
-            "the stored object_index row count {stored_rows} is closer to the page count {} than \
+            "the stored object_index row count {stored_rows} is closer to the block count {} than \
              to the distinct-key count {distinct_keys}; the claim that it is keyed per key does \
              not hold here",
             pop.total_blocks

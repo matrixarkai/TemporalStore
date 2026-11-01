@@ -334,13 +334,13 @@ impl Surfaces {
         let per_bucket = self.blocks as f64 / self.buckets as f64;
         assert!(
             per_bucket >= REGIME_FLOOR_BLOCKS_PER_BUCKET,
-            "[CLAUSE amortised-regime] the fixture holds {per_bucket:.3} page(s) a bucket, under \
+            "[CLAUSE amortised-regime] the fixture holds {per_bucket:.3} block(s) a bucket, under \
              the {REGIME_FLOOR_BLOCKS_PER_BUCKET} this regime is defined by -- every per-object \
              figure below would be dominated by the per-bucket class instead of amortising it"
         );
         assert_eq!(
             self.objects, self.blocks,
-            "[CLAUSE amortised-regime] the fixture holds {} page(s) for {} object(s); a string \
+            "[CLAUSE amortised-regime] the fixture holds {} block(s) for {} object(s); a string \
              object is one block here, and a figure divided by objects over a corpus where it is \
              not would not be a per-block figure at all",
             self.blocks, self.objects
@@ -351,7 +351,7 @@ impl Surfaces {
         self.assert_amortised_regime();
         let n = self.objects as f64;
         println!(
-            "\n=== {label} :: {} keys, {} objects, {} buckets, {:.3} pages/bucket ===",
+            "\n=== {label} :: {} keys, {} objects, {} buckets, {:.3} blocks/bucket ===",
             self.shape.label(),
             self.objects,
             self.buckets,
@@ -459,7 +459,7 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
         assert_eq!(
             HEADLINE_KEYS,
             blocks.len(),
-            "[CLAUSE every-page-inverts] the walk reached {} page(s) of {HEADLINE_KEYS}; a \
+            "[CLAUSE every-block-inverts] the walk reached {} block(s) of {HEADLINE_KEYS}; a \
              reconstruction claim over a subset is not the claim this change needs",
             blocks.len()
         );
@@ -467,10 +467,10 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
         for (_, _, object_key, block) in &blocks {
             let key = crate::engine::state::block_index_written_key(object_key, block);
             let parts = crate::index_log::block_ref_key_parts(&key)
-                .unwrap_or_else(|error| panic!("[CLAUSE every-page-inverts] {error}"));
+                .unwrap_or_else(|error| panic!("[CLAUSE every-block-inverts] {error}"));
             assert_eq!(
                 &**object_key, parts.object_key,
-                "[CLAUSE every-page-inverts] the object key read back out of {key:?} is \
+                "[CLAUSE every-block-inverts] the object key read back out of {key:?} is \
                  {:?} and the encoder was handed {:?}",
                 parts.object_key, &**object_key
             );
@@ -479,14 +479,14 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
                 crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                     parts.kind
                 ),
-                "[CLAUSE every-page-inverts] the kind read back out of {key:?} is {:?} and the \
+                "[CLAUSE every-block-inverts] the kind read back out of {key:?} is {:?} and the \
                  block holds {:?}",
                 parts.kind,
                 block.model_id.as_str()
             );
             assert_eq!(
                 "", parts.component,
-                "[CLAUSE every-page-inverts] the component slot of {key:?} holds {:?}; the \
+                "[CLAUSE every-block-inverts] the component slot of {key:?} holds {:?}; the \
                  renderer passes a literal `None`, so a non-empty slot means the key was composed \
                  by something else",
                 parts.component
@@ -494,37 +494,37 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
             assert_eq!(
                 block.address.block_slab_id(),
                 parts.block_slab_id,
-                "[CLAUSE every-page-inverts] the slab id slot of {key:?} disagrees with the address"
+                "[CLAUSE every-block-inverts] the slab id slot of {key:?} disagrees with the address"
             );
             assert_eq!(
                 block.address.offset(),
                 parts.offset,
-                "[CLAUSE every-page-inverts] the offset slot of {key:?} disagrees with the address"
+                "[CLAUSE every-block-inverts] the offset slot of {key:?} disagrees with the address"
             );
             assert_eq!(
                 block.address.length(),
                 parts.length,
-                "[CLAUSE every-page-inverts] the length slot of {key:?} disagrees with the address"
+                "[CLAUSE every-block-inverts] the length slot of {key:?} disagrees with the address"
             );
             assert_eq!(
                 block.address.block_id().unwrap_or_default(),
                 parts.block_id,
-                "[CLAUSE every-page-inverts] the block id slot of {key:?} disagrees with the address"
+                "[CLAUSE every-block-inverts] the block id slot of {key:?} disagrees with the address"
             );
             assert_eq!(
                 block.address.generation().unwrap_or_default(),
                 parts.generation,
-                "[CLAUSE every-page-inverts] the generation slot of {key:?} disagrees with the \
+                "[CLAUSE every-block-inverts] the generation slot of {key:?} disagrees with the \
                  address"
             );
             checked += 1;
         }
         assert_eq!(
             HEADLINE_KEYS, checked,
-            "[CLAUSE every-page-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
+            "[CLAUSE every-block-inverts] {checked} block(s) were compared rather than {HEADLINE_KEYS}"
         );
         println!(
-            "[every-page-inverts] {shape:?}: {checked} page(s), object key and kind read back out \
+            "[every-block-inverts] {shape:?}: {checked} block(s), object key and kind read back out \
              of the key and equal to what the encoder was handed on every one"
         );
 
@@ -538,7 +538,7 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
             .expect("the doctored key is still an eight-slot composite");
         assert_ne!(
             &**object_key, doctored_parts.object_key,
-            "[CLAUSE every-page-inverts] a one-character change to an object key did not change \
+            "[CLAUSE every-block-inverts] a one-character change to an object key did not change \
              what the parse reads back, so the 8,000 equalities above are equalities this \
              instrument cannot distinguish from inequalities"
         );
@@ -787,7 +787,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     for (at, (want, got)) in expected.iter().zip(rebuilt.iter()).enumerate() {
         assert_eq!(
             want, got,
-            "[CLAUSE old-bytes-rebuild-exactly] page {at} came back with the identity {got:?} \
+            "[CLAUSE old-bytes-rebuild-exactly] block {at} came back with the identity {got:?} \
              where the stored entry spelled {want:?} -- a reconstruction that disagrees with what \
              the old binary wrote is data loss wearing an optimisation's clothes"
         );
@@ -805,7 +805,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     // ---- AND THE COMPONENT-BEARING KEY IS THE CASE THIS FIXTURE EXISTS FOR ----
     assert!(
         bytes.contains("hash:ungated/hash:f0:0:0:27:0:0"),
-        "[CLAUSE old-bytes-carry-the-fields] the fixture carries no element-named page key, so the \
+        "[CLAUSE old-bytes-carry-the-fields] the fixture carries no element-named block key, so the \
          split that could have read an object key short is not exercised"
     );
     let named = crate::index_log::block_ref_key_parts("hash:ungated/hash:f0:0:0:27:0:0")
@@ -881,7 +881,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     assert_eq!(
         Some(0),
         first_block_in_a_slab.block_id(),
-        "[CLAUSE presence-is-not-in-the-key] the slab-backed fixture is not the FIRST page, so the \
+        "[CLAUSE presence-is-not-in-the-key] the slab-backed fixture is not the FIRST block, so the \
          collision this arm is about is not the one being measured"
     );
     assert_eq!(
@@ -927,7 +927,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     }
     assert_eq!(
         keys[0], keys[1],
-        "[CLAUSE presence-is-not-in-the-key] a log-resident address and the first page of an \
+        "[CLAUSE presence-is-not-in-the-key] a log-resident address and the first block of an \
          object in a slab render DIFFERENT keys, so the block-id presence bit IS recoverable from \
          the key and `address` could be reconstructed after all -- which would make this whole \
          arm, and the decision to keep the field, wrong"
@@ -1273,7 +1273,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         assert_eq!(
             OBJECTS,
             identities_before.len(),
-            "[CLAUSE reload-reads-everything] the writer held {} page identity(ies) for {OBJECTS} \
+            "[CLAUSE reload-reads-everything] the writer held {} block identity(ies) for {OBJECTS} \
              object(s), so the comparison after the reload is not over the corpus",
             identities_before.len()
         );
@@ -1342,13 +1342,13 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
             );
         }
         println!(
-            "[the-decode-rebuilds-every-identity] {} page identity(ies) came straight out of the \
+            "[the-decode-rebuilds-every-identity] {} block identity(ies) came straight out of the \
              decode",
             at_the_decode.len()
         );
         assert_eq!(
             identities_before, at_the_decode,
-            "[CLAUSE the-decode-rebuilds-every-identity] a page came out of the DECODE under a \
+            "[CLAUSE the-decode-rebuilds-every-identity] a block came out of the DECODE under a \
              different object key or kind than the writer held. The identity is read back out of \
              the stored key now, so this is the reconstruction being wrong -- and it is read here \
              rather than off the live index after a load, because the load's rebuild passes \
@@ -1399,14 +1399,14 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         assert_eq!(
             identities_before.len(),
             after.len(),
-            "[CLAUSE reload-rebuilds-every-identity] {} page identity(ies) were written and {} came \
+            "[CLAUSE reload-rebuilds-every-identity] {} block identity(ies) were written and {} came \
              back",
             identities_before.len(),
             after.len()
         );
         assert_eq!(
             identities_before, after,
-            "[CLAUSE reload-rebuilds-every-identity] a page came back under a different object key \
+            "[CLAUSE reload-rebuilds-every-identity] a block came back under a different object key \
              or a different kind than the writer held -- the identity is reconstructed from the \
              stored key now, so a disagreement here is the reconstruction being wrong"
         );

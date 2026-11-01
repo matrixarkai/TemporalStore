@@ -113,7 +113,7 @@ fn both_sources(
     };
     assert!(
         !addresses.is_empty(),
-        "DENOMINATOR: no page entries at all for {key}, so the derived side below would be empty \
+        "DENOMINATOR: no block entries at all for {key}, so the derived side below would be empty \
          for a reason that has nothing to do with what the fold restored"
     );
     let derived = crate::engine::container_membership::derive_membership("hash", addresses, |address| {
@@ -121,7 +121,7 @@ fn both_sources(
     });
     assert!(
         derived.is_complete(),
-        "the derivation from the pages is incomplete ({} failure(s)), so its agreement with the \
+        "the derivation from the blocks is incomplete ({} failure(s)), so its agreement with the \
          durable map would be luck: {} read, {} undecodable, {} unframed, {} unrenderable",
         derived.failures(),
         derived.read_failures,
@@ -212,7 +212,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     assert_eq!(
         FIELDS,
         derived.len(),
-        "the pages derive {} live field(s) after the fold rather than {FIELDS}, so the fold did not \
+        "the blocks derive {} live field(s) after the fold rather than {FIELDS}, so the fold did not \
          install what this fixture is about and the comparison below would be vacuous",
         derived.len(),
     );
@@ -221,7 +221,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     let missing: Vec<&String> = derived.difference(&durable).collect();
     assert!(
         missing.is_empty(),
-        "{} field(s) the pages derive are ABSENT from the durable map: {missing:?}. With the \
+        "{} field(s) the blocks derive are ABSENT from the durable map: {missing:?}. With the \
          element name off the entry this is the shape that loses data -- the map is the only place \
          a reader can get a field name from, and a field the blocks hold and the map does not is one \
          `HashGetAll` cannot name.",
@@ -230,7 +230,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     let extra: Vec<&String> = durable.difference(&derived).collect();
     assert!(
         extra.is_empty(),
-        "{} field(s) the durable map holds are NOT named by any live page: {extra:?}. The fold \
+        "{} field(s) the durable map holds are NOT named by any live block: {extra:?}. The fold \
          restored an element whose block it did not leave behind, which is a resurrection.",
         extra.len(),
     );
@@ -395,7 +395,7 @@ fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
     assert_eq!(
         2,
         derived.len(),
-        "the pages derive {} live field(s) rather than the 2 that survived, so this fixture is not \
+        "the blocks derive {} live field(s) rather than the 2 that survived, so this fixture is not \
          exercising a removal",
         derived.len(),
     );
@@ -405,7 +405,7 @@ fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
     );
     assert!(
         !durable.contains("field-1"),
-        "field-1 is in the durable map and is NOT derived from any page: the merge restored an \
+        "field-1 is in the durable map and is NOT derived from any block: the merge restored an \
          element whose block the fold removed. That is the resurrection the `live` gate exists to \
          prevent, and it is the defect the other test's `extra` assertion would report.",
     );
@@ -491,7 +491,7 @@ fn every_hash_install_path_reports_a_touched_element_and_only_a_removal_does_not
         println!("[census] {name:<14} reports {} touched element(s)", touched.len());
         assert!(
             !touched.is_empty(),
-            "{name} installs a hash page and reports NO touched element, so its field reaches the \
+            "{name} installs a hash block and reports NO touched element, so its field reaches the \
              block index and never the durable map -- which is the gap that makes removing \
              `component` lose data",
         );

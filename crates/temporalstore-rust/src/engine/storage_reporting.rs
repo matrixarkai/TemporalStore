@@ -716,7 +716,7 @@ pub(super) fn object_manager_runtime_report_from_entries(
             "runtime owns block refs in the first-class slot index".to_string(),
             "runtime tracks dirty generations and dirty routing slots in SlotNode".to_string(),
             "runtime validates owner refs before reporting ready".to_string(),
-            "runtime tracks hot/cold/tombstone object state and object-page ownership transitions"
+            "runtime tracks hot/cold/tombstone object state and object-block ownership transitions"
                 .to_string(),
         ],
         ..ObjectManagerRuntimeReport::default()
@@ -1220,7 +1220,7 @@ pub(super) fn storage_feature_block_layout_report(
                                 kind,
                                 key,
                                 &address,
-                                "legacy timestamped value page shared by multiple timestamps",
+                                "legacy timestamped value block shared by multiple timestamps",
                             ));
                             family.corrupt_blocks = family.corrupt_blocks.saturating_add(1);
                         }

@@ -28,7 +28,7 @@ pub enum SharedStoreReplicationError {
     ObjectStore(#[from] ObjectStoreError),
     #[error("io error: {0}")]
     Io(#[from] std::io::Error),
-    #[error("page store error: {0}")]
+    #[error("block store error: {0}")]
     BlockStore(#[from] BlockStoreError),
     #[error("json error: {0}")]
     Json(#[from] serde_json::Error),
@@ -49,7 +49,7 @@ pub enum SharedStoreReplicationError {
     #[error("no shared-store checkpoint found for shard {0}")]
     CheckpointNotFound(ShardId),
     #[error(
-        "checkpoint for shard {shard_id} references live slab {block_slab_id} that was not uploaded; refusing to publish a manifest that would lose durable pages"
+        "checkpoint for shard {shard_id} references live slab {block_slab_id} that was not uploaded; refusing to publish a manifest that would lose durable blocks"
     )]
     CheckpointSlabNotDurable {
         shard_id: ShardId,

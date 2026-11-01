@@ -145,7 +145,7 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
     for kind in container_kinds {
         assert!(
             index_entry_names_a_block(kind.as_str()),
-            "{} does not converge on the page, so it files one entry per ELEMENT -- and with no \
+            "{} does not converge on the block, so it files one entry per ELEMENT -- and with no \
              element name on the entry its elements on a shared block collide onto one handle, \
              which is the loss the test above measures",
             kind.as_str()
@@ -157,7 +157,7 @@ fn every_container_kind_converges_on_the_block_so_no_object_files_two_entries_at
     // shared block for two of its entries to sit on.
     assert!(
         !index_entry_names_a_block(crate::engine::ModelKind::String.as_str()),
-        "`string` answered page-named. It holds one page per object and converges on the object \
+        "`string` answered block-named. It holds one block per object and converges on the object \
          key, so if it answers true this predicate is not distinguishing anything and the \
          assertions above are satisfied by a function that always says yes"
     );

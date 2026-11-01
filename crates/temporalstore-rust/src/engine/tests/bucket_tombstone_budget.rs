@@ -550,13 +550,13 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     println!("  buckets in the map                                         {buckets_total}");
     println!("  buckets carrying any tombstone                              {buckets_with_tombstone}");
     println!(
-        "  buckets carrying a tombstoned id with NO page to carry it   {buckets_outliving} \
+        "  buckets carrying a tombstoned id with NO block to carry it   {buckets_outliving} \
          ({:.2}% of buckets)",
         100.0 * buckets_outliving as f64 / buckets_total.max(1) as f64
     );
     println!("  such ids in total                                          {ids_outliving}");
     println!("\n  of those {buckets_outliving} buckets, how many satisfy each further clause:");
-    println!("    still hold OTHER pages (block_index non-empty)             {buckets_outliving_with_blocks}");
+    println!("    still hold OTHER blocks (block_index non-empty)             {buckets_outliving_with_blocks}");
     println!("    are NOT themselves marked deleted                          {buckets_outliving_not_deleted}");
     println!("    hold the orphaned id in object_index                        {buckets_outliving_in_object_index}");
     println!(
@@ -639,7 +639,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
                     block.object_id(1, named.at(routing_bucket, **handle)) == object_id
                 })
                 .count(),
-            "a page in bucket {routing_bucket} still carries object {object_id}, so a per-page \
+            "a block in bucket {routing_bucket} still carries object {object_id}, so a per-block \
              `deleted` bit COULD have carried this deletion and this is not the state the module \
              is about"
         );

@@ -437,7 +437,7 @@ fn a_frame_decodes_to_the_items_it_was_built_from() {
                 assert_eq!(
                     crate::engine::container_blocks::ContainerBlockShape::WithRemovals,
                     shape,
-                    "a page written today takes the shape that CAN say an element was removed, \
+                    "a block written today takes the shape that CAN say an element was removed, \
                      whether or not this one does -- see CONTAINER_BLOCK_MAGIC_V2 on why there is \
                      one writer and not a branch on the contents"
                 );
@@ -535,10 +535,10 @@ fn a_value_that_is_the_keys_tail_is_stored_once() {
 #[test]
 fn the_framing_cost_of_naming_an_element_differs_by_kind() {
     let widths = [8usize, 16, 32, 64, 256];
-    println!("\n=== bytes a page pays to name its own element ===");
+    println!("\n=== bytes a block pays to name its own element ===");
     println!(
         "  {:>6}  {:>6}  {:>9}  {:>7}  {:>7}  {:>8}  {:>10}  {:>10}",
-        "kind", "width", "bare page", "framed", "cost", "cost %", "2nd item", "at 128"
+        "kind", "width", "bare block", "framed", "cost", "cost %", "2nd item", "at 128"
     );
     let mut rows = 0usize;
     let mut worst_share = 0.0_f64;
@@ -1110,7 +1110,7 @@ fn every_container_kind_reads_back_the_value_it_wrote_through_a_framed_block() {
                 );
                 framed_kinds += 1;
             }
-            other => panic!("{kind} did not store a framed page: {other:?}"),
+            other => panic!("{kind} did not store a framed block: {other:?}"),
         }
     }
     assert_eq!(
@@ -1151,7 +1151,7 @@ fn a_framed_block_reads_back_after_a_reload() {
     let blocks = dir.path().join("blocks");
     let indexes = dir.path().join("indexes");
     println!(
-        "\n=== framed pages across a reload ===\n  store path {} characters",
+        "\n=== framed blocks across a reload ===\n  store path {} characters",
         dir.path().as_os_str().len()
     );
 
@@ -1280,7 +1280,7 @@ fn a_framed_block_reads_back_after_a_reload() {
     for member in &members {
         assert!(
             listed.contains(member),
-            "the reloaded set lost a member of {} bytes -- and a set listing reads ONE PAGE PER \
+            "the reloaded set lost a member of {} bytes -- and a set listing reads ONE BLOCK PER \
              MEMBER, so this is the arm that reads a framed block off storage",
             member.len()
         );
@@ -1407,7 +1407,7 @@ fn a_block_written_without_a_frame_still_reads_through_the_funnel() {
         "reading an unframed block was scored as a corrupt frame"
     );
     println!(
-        "\n=== both shapes in one store ===\n  unframed page {} bytes read back exactly; framed page beside it still answers",
+        "\n=== both shapes in one store ===\n  unframed block {} bytes read back exactly; framed block beside it still answers",
         legacy_value.len()
     );
 }

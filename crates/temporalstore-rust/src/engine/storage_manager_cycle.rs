@@ -374,7 +374,7 @@ impl TemporalEngine {
             enabled: true,
             applied: true,
             skipped: false,
-            reason: "lifecycle plan, page-GC dependency plan and the pressure snapshot"
+            reason: "lifecycle plan, block-GC dependency plan and the pressure snapshot"
                 .to_string(),
             ..StorageManagerStageReport::default()
         });
@@ -427,7 +427,7 @@ impl TemporalEngine {
             applied: request.enable_prepare && !request.dry_run,
             skipped: !request.enable_prepare,
             reason: if request.enable_prepare {
-                "prepared storage lifecycle pressure view and index/page-store metadata".to_string()
+                "prepared storage lifecycle pressure view and index/block-store metadata".to_string()
             } else {
                 "prepare disabled".to_string()
             },
@@ -1302,7 +1302,7 @@ impl TemporalEngine {
             reason: if live_block_summaries_measured {
                 "reported slot/block/cache pressure metrics for the completed cycle".to_string()
             } else {
-                "no slot was dirty, so the round did not walk the live pages: the slot and page \
+                "no slot was dirty, so the round did not walk the live blocks: the slot and block \
 counts on this stage are NOT MEASURED and read 0, they are not a measurement of zero"
                     .to_string()
             },

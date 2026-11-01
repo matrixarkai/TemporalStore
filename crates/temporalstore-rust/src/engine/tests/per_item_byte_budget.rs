@@ -1049,7 +1049,7 @@ fn what_the_per_item_structures_cost_at_two_corpus_sizes() {
         );
         assert!(
             counts.block_index_entries > 0,
-            "denominator: no page-index entries, so the structure this module is about is absent"
+            "denominator: no block-index entries, so the structure this module is about is absent"
         );
         assert!(
             counts.object_block_refs > 0 && counts.block_lookup_refs > 0,
@@ -1403,7 +1403,7 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
         .expect("block_index is a field of BucketNode");
     assert!(
         block.size * 2 < size,
-        "the page index is {} of {size} bytes. It is supposed to be well under half the structure \
+        "the block index is {} of {size} bytes. It is supposed to be well under half the structure \
          now that its single-block arm holds a pointer rather than a whole entry; if it is over half \
          again, the inline entry has come back or another payload has joined it",
         block.size
@@ -1700,7 +1700,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         ("the packed-flag mirror, which must equal the live shape", packed),
         ("with the two transient log claims hoisted out", hoisted),
         ("with the block entry held INLINE again (before)", inline_block),
-        ("with a single-page arm re-added, behind a pointer", boxed),
+        ("with a single-block arm re-added, behind a pointer", boxed),
     ] {
         println!(
             "  {:<44} {:>5} {:>+9}",
@@ -1725,7 +1725,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     // so all of them lost the same 72 bytes and not one DIFFERENCE below moved.
     assert_eq!(
         120, wide_ttl,
-        "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
+        "the shape before #1958 was 208 bytes, 200 once the address inside the inline block entry \
          shed its derived generation, 192 once the node stopped carrying a per-bucket \
          last_dump_sequence, 184 once that address merged its two slab coordinates, 168 once the \
          block entry's model spelling became one byte, and 112 once the block index stopped holding \
@@ -1821,7 +1821,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     assert_eq!(
         inline_block - live,
         size_of::<MirrorInlineBlockIndexMap>() - size_of::<BlockIndexMap>(),
-        "the node's saving must be exactly the page index's: it is {} B against the index's {} B, \
+        "the node's saving must be exactly the block index's: it is {} B against the index's {} B, \
          so something other than the arm moved between these two mirrors",
         inline_block - live,
         size_of::<MirrorInlineBlockIndexMap>() - size_of::<BlockIndexMap>()
@@ -1841,7 +1841,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     );
     assert_eq!(
         live, boxed,
-        "re-adding a boxed single-page arm reads as {boxed} B against the shipped {live} B. \
+        "re-adding a boxed single-block arm reads as {boxed} B against the shipped {live} B. \
          Measured, the two lay out identically -- the third arm's tag rides the same niche -- and if \
          they have separated then boxing has started to cost or save width on its own and this row \
          is no longer describing why the two were decided on the heap instead"
@@ -1858,7 +1858,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         size_of::<BlockIndex>()
     );
     println!(
-        "  the page entry is {} B and its derived chunk FLOOR is \
+        "  the block entry is {} B and its derived chunk FLOOR is \
          {ALLOCATOR_CHUNK_FOR_A_BLOCK_ENTRY} B; what a chunk holding one actually costs is READ from \
          the allocator in `inline_arm_trade.rs`, over the real bucket population, rather than \
          assumed here -- a carried chunk figure is how a published byte table in this campaign got \
@@ -3126,14 +3126,14 @@ fn what_the_object_side_of_the_bucket_node_costs() {
             block_arms.iter().sum::<usize>()
         );
         println!(
-            "  NEXT TERM -- the page index: {} B of field x {buckets} = {block_spine} B, plus \
+            "  NEXT TERM -- the block index: {} B of field x {buckets} = {block_spine} B, plus \
              {block_heap} B on the heap ({:.2} B/bucket), {:.1}% of the node's width",
             size_of::<BlockIndexMap>(),
             block_heap as f64 / buckets as f64,
             100.0 * size_of::<BlockIndexMap>() as f64 / size_of::<BucketNode>() as f64
         );
         println!(
-            "    its arms: {} buckets hold no page, {} hold exactly one (inline), {block_multi} \
+            "    its arms: {} buckets hold no block, {} hold exactly one (inline), {block_multi} \
              hold several (a map) -- {:.2}% on the map arm",
             block_arms[0],
             block_arms[1],
@@ -4022,7 +4022,7 @@ fn a_bucket_nodes_tombstone_rows_survive_the_wire() {
             crate::engine::storage_bucket_internals::stored_model_kind("set"),
             "6d2d31"
         ),
-        "the reloaded node cannot answer which page this element's tombstone is on, which is the \
+        "the reloaded node cannot answer which block this element's tombstone is on, which is the \
          question a re-add asks to clear it"
     );
 }

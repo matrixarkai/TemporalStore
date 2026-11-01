@@ -187,7 +187,7 @@ fn round_trip_every_block_through_the_wire(
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
-            "page {key} changed when its `rs` key was removed from the wire. The address holds no \
+            "block {key} changed when its `rs` key was removed from the wire. The address holds no \
              routing bucket, so the key is inert and this round trip has to be the identity -- if \
              it is not, an index written before the field left decodes to a DIFFERENT address and \
              this change needs a migration."
@@ -330,7 +330,7 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
         assert_eq!(
             filed,
             keys.len(),
-            "0..{end_routing_bucket}: {filed} of {} live pages report which bucket they are filed \
+            "0..{end_routing_bucket}: {filed} of {} live blocks report which bucket they are filed \
              in. All of them must: the bucket-index arm of the walk has the map key in hand, and an \
              entry that does not report it sends all five readers to a hash over the WHOLE \
              keyspace -- which on this shard names a bucket it does not hold.",
@@ -346,7 +346,7 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
         );
         assert_eq!(
             now, total,
-            "0..{end_routing_bucket}: {now} of {total} pages are attributed to the bucket they are \
+            "0..{end_routing_bucket}: {now} of {total} blocks are attributed to the bucket they are \
              filed under. The walk hands every reader the map key it was iterating, so all of them \
              must be."
         );
@@ -371,7 +371,7 @@ fn the_five_readers_answer_the_filing_on_a_store_the_current_build_wrote() {
             );
         }
         println!(
-            "  0..{end_routing_bucket}: {total} pages, {filed} reporting a filing, attribution \
+            "  0..{end_routing_bucket}: {total} blocks, {filed} reporting a filing, attribution \
              agrees {now}/{total} now and {before}/{total} under the pre-mx#1949 expression"
         );
     }
@@ -434,7 +434,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
             }
             assert!(
                 *bucket_id <= NARROW_END,
-                "page {key} is filed in bucket {bucket_id}, which a shard loaded on 0..{NARROW_END} \
+                "block {key} is filed in bucket {bucket_id}, which a shard loaded on 0..{NARROW_END} \
                  does not hold"
             );
         }
@@ -447,7 +447,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     );
     assert_eq!(
         filed_wide, 0,
-        "{filed_wide} pages are filed where the WHOLE range puts them, on a shard that holds \
+        "{filed_wide} blocks are filed where the WHOLE range puts them, on a shard that holds \
          0..{NARROW_END}"
     );
 
@@ -457,7 +457,7 @@ fn a_reader_attributes_a_reconstructed_block_to_the_bucket_it_is_actually_filed_
     println!("    readers agree with the filing, OLD expression: {before} of {total}");
     assert_eq!(
         now, total,
-        "the five readers must attribute every page to the bucket it is filed under; they agree \
+        "the five readers must attribute every block to the bucket it is filed under; they agree \
          on {now} of {total}"
     );
     assert_eq!(
@@ -513,7 +513,7 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
     assert_eq!(
         filed_in_range,
         keys.len(),
-        "{filed_in_range} of {} pages are filed inside 0..{NARROW_END}; below that this round \
+        "{filed_in_range} of {} blocks are filed inside 0..{NARROW_END}; below that this round \
          cannot reach them and the numbers below say nothing",
         keys.len()
     );
@@ -612,7 +612,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
         );
         assert!(
             !status.ok,
-            "wrote on 0..{wrote_on} and opened on 0..{read_on}: the load succeeded. Every page is \
+            "wrote on 0..{wrote_on} and opened on 0..{read_on}: the load succeeded. Every block is \
              filed under the range it was WRITTEN on and nothing re-files it, so this load has to \
              be refused"
         );
@@ -656,7 +656,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other_in_both_directions() {
             (blocks, outside)
         };
         println!(
-            "  reopened on 0..{wrote_on}: {readable}/{} records, {blocks} pages, {outside} buckets \
+            "  reopened on 0..{wrote_on}: {readable}/{} records, {blocks} blocks, {outside} buckets \
              outside the range",
             keys.len()
         );
@@ -1092,7 +1092,7 @@ fn every_site_that_hard_codes_the_whole_routing_range_is_accounted_for() {
     expected_guessing.sort();
     assert_eq!(
         observed_guessing, expected_guessing,
-        "the set of literal-range sites that do NOT consult the bucket the page is filed under \
+        "the set of literal-range sites that do NOT consult the bucket the block is filed under \
          has moved.\n\
          If you FIXED one -- made it read `filed_routing_bucket` before falling back -- delete it \
          from STILL_GUESSING, and check that \

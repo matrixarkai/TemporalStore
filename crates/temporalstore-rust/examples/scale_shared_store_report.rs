@@ -595,7 +595,7 @@ async fn main() {
         let now = append_reads_per_entry(r);
         assert!(
             now <= first_append_reads.max(1.0) * 1.5,
-            "page reads per append grew from {first_append_reads:.3} at {} entries to \
+            "block reads per append grew from {first_append_reads:.3} at {} entries to \
              {now:.3} at {} -- an append that reads more as the object grows is reading the \
              object back, which is O(n) per append and quadratic over the log",
             rounds[0].entries,
@@ -616,7 +616,7 @@ async fn main() {
         let now = replay_reads_per_entry(r);
         assert!(
             now <= first_replay_reads * 1.5,
-            "page reads per replayed entry grew from {first_replay_reads:.3} at {} entries to \
+            "block reads per replayed entry grew from {first_replay_reads:.3} at {} entries to \
              {now:.3} at {} -- a replay that reads more per entry as the log grows is walking \
              the log rather than indexing into it",
             rounds[0].entries,
@@ -659,7 +659,7 @@ async fn main() {
              last.replays.iter().map(|n| n.micros).max().unwrap_or(0) as f64 / last.entries as f64);
     println!();
     println!("    WHAT IS STILL NOT FLAT, AND WHAT THESE COUNTS CANNOT SEE. Replay per entry no longer");
-    println!("    tracks the corpus; APPEND STILL DOES, and the page-read columns above are blind to");
+    println!("    tracks the corpus; APPEND STILL DOES, and the block-read columns above are blind to");
     println!("    it because the remaining work does no reading at all. Measured by instruction count");
     println!("    (callgrind, deterministic where a timing here is not): per-append instructions still");
     println!("    double when the corpus doubles -- 374k at 200 entries, 623k at 400, 1,251k at 800.");
@@ -667,7 +667,7 @@ async fn main() {
     println!("    chunk mutation batch builds a replica status whose `physical_bytes` and");
     println!("    `discarded_bytes` fold over EVERY block the replica holds, and begin also exports a");
     println!("    whole-state undo snapshot. Raising the chunk tier to 64 MiB changes it by 2.7%, so it");
-    println!("    is page-count and not chunk-count; raising the block tier to 1 MiB makes it 16x worse,");
+    println!("    is block-count and not chunk-count; raising the block tier to 1 MiB makes it 16x worse,");
     println!("    because then each append re-checksums one growing block instead of folding over many.");
     println!("    Flat appends need that bookkeeping to be maintained rather than recomputed. Until it");
     println!("    is, read the asserted counts for what they say and nothing more.");

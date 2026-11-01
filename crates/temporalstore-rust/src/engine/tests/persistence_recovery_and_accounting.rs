@@ -5304,7 +5304,7 @@ fn a_block_whose_address_carries_no_object_id_still_reports_one() {
             );
         }
     }
-    assert_eq!(seen, 1, "the page must be in the index, or nothing was tested");
+    assert_eq!(seen, 1, "the block must be in the index, or nothing was tested");
 }
 
 /// Deleting an object costs a bounded number of allocations, not one per block examined.
@@ -5362,7 +5362,7 @@ fn deleting_an_object_does_not_allocate_per_block_scanned() {
     let growth = wide.saturating_sub(narrow);
     assert!(
         growth < 180,
-        "deleting scanned 180 more blocks and allocated {growth} more times          ({narrow} at 20 fields, {wide} at 200) -- that is per-page allocation"
+        "deleting scanned 180 more blocks and allocated {growth} more times          ({narrow} at 20 fields, {wide} at 200) -- that is per-block allocation"
     );
 }
 
@@ -5458,14 +5458,14 @@ fn installing_the_same_block_twice_replaces_it() {
     let first = map.insert(&object_key, block(), &mut live);
     let second = map.insert(&object_key, block(), &mut live);
 
-    assert_eq!(first, second, "the same page must land on the same handle");
+    assert_eq!(first, second, "the same block must land on the same handle");
     assert_eq!(map.len(), 1, "installing it twice must not add a second entry");
 
     // A block differing in one identity field is a different block and keeps its own slot.
     let mut moved = block();
     moved.address = ElementEntry::from_parts(1, 64, 4, Some(1), Some(30));
     let third = map.insert(&object_key, moved, &mut live);
-    assert_ne!(first, third, "a page at another offset is not the same page");
+    assert_ne!(first, third, "a block at another offset is not the same block");
     assert_eq!(map.len(), 2);
 
     // The tally follows the same rule the map does. Installing the same block twice charges it
@@ -5711,7 +5711,7 @@ fn the_block_index_still_writes_string_keys() {
         .expect("the write must produce a block");
 
     // In memory: a handle, not text.
-    let (handle, block) = bucket.block_index.iter().next().expect("one page");
+    let (handle, block) = bucket.block_index.iter().next().expect("one block");
     assert!(*handle > 0, "the map assigns a handle");
 
     // On the wire: the same rendered key it always wrote, rebuilt from the block AND the identity
@@ -6940,7 +6940,7 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // shipped routing range almost none does.
         assert!(
             matches!(bucket.block_index, BlockIndexMap::One(..)),
-            "a bucket holding one block must take the single-page arm; it holds {} block(s)",
+            "a bucket holding one block must take the single-block arm; it holds {} block(s)",
             bucket.block_index.len()
         );
     }
@@ -7511,7 +7511,7 @@ fn what_a_write_costs_across_every_subsystem() {
         );
 
         println!(
-            "  AMP value {value_len:>5}B | user {user_bytes:>9} B | pages {blocks:>9} B ({:>5.2}x) \
+            "  AMP value {value_len:>5}B | user {user_bytes:>9} B | blocks {blocks:>9} B ({:>5.2}x) \
              | index {indexes:>9} B ({:>5.2}x) | total {total:>9} B ({:>5.2}x)",
             blocks as f64 / user_bytes as f64,
             indexes as f64 / user_bytes as f64,
@@ -7976,7 +7976,7 @@ fn per_record_structure_census() {
     // wrong. This says the text IS held, and says it of the structure that now holds it.
     assert!(
         block_lookup_bytes > 0,
-        "the object lookup holds no key text over {RECORDS} records, so the zero in the page-index          row below cannot be read as a saving"
+        "the object lookup holds no key text over {RECORDS} records, so the zero in the block-index          row below cannot be read as a saving"
     );
     let total_string_bytes =
         key_bytes + block_index_bytes + block_lookup_bytes + dirty_bytes;
@@ -8200,7 +8200,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
     assert!(walked > 0, "workload produced no component block refs to compare");
     assert_eq!(
         maintained, walked,
-        "maintained component page-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
+        "maintained component block-ref total drifted from the walk it replaces:          {maintained} vs {walked}"
     );
     println!("
   component block refs: maintained {maintained} == walked {walked}
@@ -8624,7 +8624,7 @@ fn sampled_eviction_scan_volume_does_not_grow_with_the_store() {
     let (large_sampled, large_victims) = scan_volume_for(1600, true);
 
     println!(
-        "\n  full-scan   200 pages -> {small_full:>6} live-page entries scanned\n  \
+        "\n  full-scan   200 blocks -> {small_full:>6} live-block entries scanned\n  \
          full-scan  1600 blocks -> {large_full:>6} live-block entries scanned\n  \
          sampled     200 blocks -> {small_sampled:>6} live-block entries scanned ({small_victims} victims)\n  \
          sampled    1600 blocks -> {large_sampled:>6} live-block entries scanned ({large_victims} victims)\n"
@@ -13241,7 +13241,7 @@ fn nesting_the_block_lookups_saved_what_it_measured() {
     let saved = 100.0 * (flat_keys - nested_keys) as f64 / flat_keys as f64;
     assert!(
         saved > 40.0,
-        "nesting saved {saved:.1}% of the page-lookup key bytes; it measured 50.5% before it \
+        "nesting saved {saved:.1}% of the block-lookup key bytes; it measured 50.5% before it \
          shipped, and anything near zero means the object key is being stored twice again"
     );
     // ENTRY COUNT, STATED DIRECTLY RATHER THAN THROUGH AN ACCOUNTING IDENTITY.
@@ -13937,7 +13937,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     // Report rather than assert a direction: the point is to learn which world this is, and a
     // wrong guess baked into an assertion would just move the mistake into the test.
     println!(
-        "  => context pages {} the bucket index",
+        "  => context blocks {} the bucket index",
         if context_blocks_in_index > 0 { "DO reach" } else { "do NOT reach" }
     );
 }
@@ -14252,7 +14252,7 @@ fn which_parts_of_a_block_address_restate_their_surroundings() {
     // not an optimisation opportunity, and it would be silently averaged away by the percentages.
     assert!(
         routing_matches_bucket == 0 || routing_matches_bucket == blocks,
-        "address.routing_slot agrees with its bucket on {routing_matches_bucket} of {blocks} pages \
+        "address.routing_slot agrees with its bucket on {routing_matches_bucket} of {blocks} blocks \
          -- a partial match means some block is filed somewhere its own address does not name"
     );
     // THE SECOND ASSERTION IS GONE RATHER THAN LEFT TO PASS. It read
@@ -14402,7 +14402,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
     // maintenance is missing shows up on the first line, by name.
     assert!(
         missing_after_ingest.is_empty(),
-        "{} pages exist after a rebuild that the ingest did not put in the index -- those kinds \
+        "{} blocks exist after a rebuild that the ingest did not put in the index -- those kinds \
          are not being maintained: {:?}",
         missing_after_ingest.len(),
         kind_of(&missing_after_ingest, &rebuilt)
@@ -16029,7 +16029,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
     let after = snapshot(&engine);
     assert_eq!(
         before, after,
-        "an exempted command changed the page index -- the rebuild exemption in \
+        "an exempted command changed the block index -- the rebuild exemption in \
          `command_writes_no_page` is no longer safe for it"
     );
 }
@@ -16127,7 +16127,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     assert_eq!(
         index_before,
         block_rows(&engine),
-        "a batched no-page command changed the block index, so skipping the rebuild after it          leaves the index stale"
+        "a batched no-block command changed the block index, so skipping the rebuild after it          leaves the index stale"
     );
 
     // The positive control, and it is not optional: both assertions below are `== 0`, and zero is
@@ -16146,16 +16146,16 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
     assert!(control.status.ok, "{:?}", control.status);
     assert!(
         control_visits > 0,
-        "the page-visit counter reported nothing for a command that does rebuild, so the zeroes          below would mean nothing"
+        "the block-visit counter reported nothing for a command that does rebuild, so the zeroes          below would mean nothing"
     );
 
     assert_eq!(
         alone_visits, 0,
-        "the single-command path stopped exempting a no-page command"
+        "the single-command path stopped exempting a no-block command"
     );
     assert_eq!(
         batch_visits, 0,
-        "a no-page command rebuilt the whole index because it arrived in a batch: {batch_visits}          block visits against {alone_visits} for the same command sent alone"
+        "a no-block command rebuilt the whole index because it arrived in a batch: {batch_visits}          block visits against {alone_visits} for the same command sent alone"
     );
 }
 
@@ -19028,7 +19028,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert_eq!(
         maintained_refs,
         engine.live_block_count_for_test(1) as u64,
-        "the maintained page-ref total disagrees with the live block count"
+        "the maintained block-ref total disagrees with the live block count"
     );
     assert!(maintained_refs >= KEYS as u64, "{maintained_refs} blocks counted for {KEYS} keys");
 
@@ -19111,7 +19111,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert!(after_release.slabs_compared > 0, "{after_release:?}");
     assert!(
         after_release.is_clean(),
-        "a release discharged pages that are still live -- the model maps still hold them and \
+        "a release discharged blocks that are still live -- the model maps still hold them and \
          the walk still counts them: {after_release:?}"
     );
 
@@ -19129,7 +19129,7 @@ fn the_maintained_slab_live_tally_matches_the_walk() {
     assert!(after_reload.slabs_compared > 0, "{after_reload:?}");
     assert!(
         after_reload.is_clean(),
-        "a reload charged pages that were never discharged, double-counting {reloaded} buckets: \
+        "a reload charged blocks that were never discharged, double-counting {reloaded} buckets: \
          {after_reload:?}"
     );
 }
@@ -19231,7 +19231,7 @@ fn a_released_bucket_serves_every_key_it_held() {
         engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
         released_buckets > 0 && released_blocks > 0,
-        "nothing was released ({released_buckets} buckets / {released_blocks} pages, \
+        "nothing was released ({released_buckets} buckets / {released_blocks} blocks, \
          {refused} refused), so the read-back below is not about a released bucket"
     );
     assert_eq!(
@@ -19531,7 +19531,7 @@ fn a_delete_against_a_released_bucket_settles_its_object_count() {
         engine.release_all_releasable_bucket_index_blocks(1);
     assert!(
         released_buckets > 0 && released_blocks > 0,
-        "nothing was released ({released_buckets} buckets / {released_blocks} pages), so every \
+        "nothing was released ({released_buckets} buckets / {released_blocks} blocks), so every \
          delete below takes the resident path and this test measures nothing"
     );
 
@@ -21079,7 +21079,7 @@ fn the_bounded_readability_probe_reaches_a_block_outside_its_first_window() {
     let exhaustive = engine.storage_recovery_report_without_boundary_sampled(1, 0);
     assert!(
         !exhaustive.unreadable_block_refs.is_empty(),
-        "flipping a byte in slab {target} produced no unreadable page, so the rounds below could \
+        "flipping a byte in slab {target} produced no unreadable block, so the rounds below could \
 never find one and would pass for the wrong reason",
     );
 
@@ -21089,7 +21089,7 @@ never find one and would pass for the wrong reason",
     let first = engine.storage_recovery_report_without_boundary_sampled(1, budget);
     assert!(
         first.total_block_refs > budget,
-        "the fixture holds {} live pages and the budget is {budget}; one window covers the whole \
+        "the fixture holds {} live blocks and the budget is {budget}; one window covers the whole \
 shard, so this test cannot distinguish a moving window from a fixed one",
         first.total_block_refs,
     );
@@ -21107,7 +21107,7 @@ shard, so this test cannot distinguish a moving window from a fixed one",
     // the first round and says nothing about the window moving.
     assert!(
         first.unreadable_block_refs.is_empty(),
-        "the first window already read the corrupt page in slab {target}, so a later round \
+        "the first window already read the corrupt block in slab {target}, so a later round \
 finding it would prove nothing about coverage. Plant it somewhere the first {budget} live blocks \
 do not reach.",
     );
@@ -21132,7 +21132,7 @@ do not reach.",
         assert_eq!(
             *probed,
             budget,
-            "round {} read {probed} pages against a budget of {budget}. Coverage must come from \
+            "round {} read {probed} blocks against a budget of {budget}. Coverage must come from \
 MOVING the window, not from widening it -- the per-round cost is what the bound protects.",
             index + 1,
         );
@@ -21140,7 +21140,7 @@ MOVING the window, not from widening it -- the per-round cost is what the bound 
 
     // HALF TWO: the sweep reaches the planted block.
     let found_at = found_at.unwrap_or_else(|| panic!(
-        "after {cap} bounded rounds over a shard of {} live pages ({rounds_to_cover} rounds' \
+        "after {cap} bounded rounds over a shard of {} live blocks ({rounds_to_cover} rounds' \
 worth of windows at {budget} a round), the probe never read the corrupt block in slab {target} \
 -- an exhaustive call finds it immediately. That is the probe re-reading its first window every \
 round instead of advancing through the shard.",
@@ -21148,7 +21148,7 @@ round instead of advancing through the shard.",
     ));
     assert!(
         found_at <= rounds_to_cover + 1,
-        "the probe took {found_at} rounds to reach a page that {rounds_to_cover} rounds of \
+        "the probe took {found_at} rounds to reach a block that {rounds_to_cover} rounds of \
 windows should cover",
     );
 }
@@ -21214,7 +21214,7 @@ fn the_readability_probe_window_advances_by_its_budget_at_both_corpus_sizes() {
     // And the arms must actually differ in size, or this measured one corpus twice.
     assert!(
         large_total > small_total * 4,
-        "the two arms hold {small_total} and {large_total} live pages; they are too close to say \
+        "the two arms hold {small_total} and {large_total} live blocks; they are too close to say \
 anything about scale",
     );
 
@@ -21222,12 +21222,12 @@ anything about scale",
     let expected_cursors = vec![0, budget, 2 * budget];
     assert_eq!(
         small_cursors, expected_cursors,
-        "at {small_total} live pages the window sat at {small_cursors:?}; it must advance by the \
+        "at {small_total} live blocks the window sat at {small_cursors:?}; it must advance by the \
 budget each round, not restart at the front",
     );
     assert_eq!(
         large_cursors, expected_cursors,
-        "at {large_total} live pages the window sat at {large_cursors:?}; it must advance by the \
+        "at {large_total} live blocks the window sat at {large_cursors:?}; it must advance by the \
 budget each round, not restart at the front",
     );
 
@@ -21241,7 +21241,7 @@ budget each round, not restart at the front",
     assert_eq!(
         large_probed,
         vec![budget; 3],
-        "large arm ({large_total} live pages) read {large_probed:?} pages a round against a \
+        "large arm ({large_total} live blocks) read {large_probed:?} blocks a round against a \
 budget of {budget}. A bounded probe's cost must not grow with the store.",
     );
 }
@@ -21324,7 +21324,7 @@ fn a_block_with_no_routing_bucket_is_summarised_inside_the_shards_own_range() {
         .count();
     assert_eq!(
         filed, blocks_before,
-        "{filed} of {blocks_before} live pages report a filing; the walk under test credits a page \
+        "{filed} of {blocks_before} live blocks report a filing; the walk under test credits a block \
 that does not to a bucket derived over the WHOLE keyspace, which this shard does not hold",
     );
 

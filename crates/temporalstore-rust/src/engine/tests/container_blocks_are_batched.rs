@@ -258,7 +258,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     // and `gated_corpus_across_a_store_boundary` holds it across a reload.
     let dir = tempfile::tempdir().expect("tempdir");
     println!(
-        "\n=== pages and entries per container, before and after one round ===\n  store path {} characters",
+        "\n=== blocks and entries per container, before and after one round ===\n  store path {} characters",
         dir.path().as_os_str().len()
     );
     let engine = engine_on(dir.path());
@@ -275,7 +275,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     for (kind, blocks, entries) in &before {
         assert_eq!(
             FOLDABLE_ELEMENTS, *blocks,
-            "{kind} started with {blocks} pages for {FOLDABLE_ELEMENTS} elements, so the fixture is \
+            "{kind} started with {blocks} blocks for {FOLDABLE_ELEMENTS} elements, so the fixture is \
              not the one-block-per-element shape this test folds"
         );
         assert_eq!(FOLDABLE_ELEMENTS, *entries);
@@ -306,7 +306,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     );
     assert!(
         report.rewritten_block_refs > 0,
-        "the round relocated {} page refs, so the control's zero would be a zero for the wrong \
+        "the round relocated {} block refs, so the control's zero would be a zero for the wrong \
          reason",
         report.rewritten_block_refs
     );
@@ -316,7 +316,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     );
     println!(
         "  {:>6}  {:>12}  {:>11}  {:>13}  {:>12}",
-        "kind", "pages before", "blocks after", "entries before", "entries after"
+        "kind", "blocks before", "blocks after", "entries before", "entries after"
     );
 
     let mut kinds_folded = 0usize;
@@ -377,7 +377,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
     assert_eq!(
         (1, 1),
         (string_blocks_after, string_entries_after),
-        "the string control moved, and a string owns one page and one element so there is nothing \
+        "the string control moved, and a string owns one block and one element so there is nothing \
          for a fold to win"
     );
 }
@@ -470,7 +470,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         let (batches, folded) = crate::engine::container_batch_counts();
         assert!(
             batches > 0 && folded > 0,
-            "the round wrote {batches} batches folding {folded} pages, so the read-backs below are \
+            "the round wrote {batches} batches folding {folded} blocks, so the read-backs below are \
              not reading folded blocks"
         );
         let (block_count, entry_count) = addresses_and_entries(&engine, "hash", "readback");
@@ -485,17 +485,17 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         // written, which is the other source and the one the floor was always about.
         assert!(
             block_count < FOLDABLE_ELEMENTS,
-            "the hash holds {block_count} pages for {FOLDABLE_ELEMENTS} elements, so no page is \
+            "the hash holds {block_count} blocks for {FOLDABLE_ELEMENTS} elements, so no block is \
              shared and this test cannot distinguish a correct selector from one that ignores the \
              element"
         );
         assert_eq!(
             block_count, entry_count,
-            "the index filed {entry_count} entries over {block_count} page(s); one entry a page is \
+            "the index filed {entry_count} entries over {block_count} block(s); one entry a block is \
              what the collapse means, and a mismatch here is a stale or missing entry"
         );
         println!(
-            "\n=== read back after the fold ===\n  hash: {entry_count} entries over {block_count} pages, {batches} batches, {folded} folded"
+            "\n=== read back after the fold ===\n  hash: {entry_count} entries over {block_count} blocks, {batches} batches, {folded} folded"
         );
 
         // Before the reload: the resident maps still hold what the writes put there, so this arm
@@ -575,7 +575,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
     for member in &members {
         assert!(
             listed.contains(member),
-            "the reloaded set lost a member; a set listing reads a page per entry, so this is the \
+            "the reloaded set lost a member; a set listing reads a block per entry, so this is the \
              arm that reads every folded block"
         );
     }
@@ -678,7 +678,7 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
 
     let cap = crate::engine::CONTAINER_BATCH_ELEMENT_CAP;
     println!(
-        "\n=== the element cap ===\n  cap {cap}, elements {OVER_CAP_ELEMENTS}: {blocks_before} pages -> {blocks_after}, {batches} batches, {folded} folded"
+        "\n=== the element cap ===\n  cap {cap}, elements {OVER_CAP_ELEMENTS}: {blocks_before} blocks -> {blocks_after}, {batches} batches, {folded} folded"
     );
     assert!(
         batches > 0 && folded > 0,
@@ -686,7 +686,7 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     );
     assert!(
         blocks_after > 1,
-        "{OVER_CAP_ELEMENTS} elements folded into {blocks_after} page(s) against a cap of {cap}, so \
+        "{OVER_CAP_ELEMENTS} elements folded into {blocks_after} block(s) against a cap of {cap}, so \
          the cap did not bind and one block holds the whole container"
     );
     let smallest_possible = (OVER_CAP_ELEMENTS + cap - 1) / cap;
@@ -703,7 +703,7 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     // two measured things and a count that drifted from the blocks would still fail.
     assert_eq!(
         blocks_after, entries_after,
-        "the index filed {entries_after} entries over {blocks_after} page(s). One entry a page is \
+        "the index filed {entries_after} entries over {blocks_after} block(s). One entry a block is \
          what the collapse means: more entries than blocks is a stale entry over a dead block, and \
          fewer means a block nothing names"
     );
@@ -765,7 +765,7 @@ fn a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_fo
     crate::engine::compaction::fail_compaction_block_read_after_for_test(None);
     let (batches, folded) = crate::engine::container_batch_counts();
     println!(
-        "\n=== a page the fold cannot read ===\n  round outcome err={}, {batches} batches, {folded} folded",
+        "\n=== a block the fold cannot read ===\n  round outcome err={}, {batches} batches, {folded} folded",
         outcome.is_err()
     );
 
@@ -773,7 +773,7 @@ fn a_container_element_whose_block_cannot_be_read_fails_the_round_rather_than_fo
     // of this function got wrong.
     assert!(
         outcome.is_err(),
-        "the round returned {outcome:?} after a live page could not be read. A round that succeeds \
+        "the round returned {outcome:?} after a live block could not be read. A round that succeeds \
          with the volatile index advanced past the durable one is how reclaim comes to purge a slab \
          the durable index still names (CP4)"
     );

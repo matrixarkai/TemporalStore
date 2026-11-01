@@ -4849,7 +4849,7 @@ fn where_a_record_is_kept() {
     println!("  A structure at 1.00 per record holds every record; one at 0.00 holds none of");
     println!("  them and is not where the memory goes. Anything the six entries' worth is made");
     println!("  of that does NOT appear above lives outside ShardState -- the bucket index and");
-    println!("  the page-address maps beneath it are the next place to look.");
+    println!("  the block-address maps beneath it are the next place to look.");
 
     assert_eq!(shard.strings().len(), RECORDS, "every write should be in strings");
 }
@@ -4896,7 +4896,7 @@ fn how_many_map_entries_is_one_record() {
     let address = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings().values().next().map(|slot| slot.address()).expect("a written page")
+        shard.strings().values().next().map(|slot| slot.address()).expect("a written block")
     };
 
     // The floor: the same key and the same address, in a map of their own.
@@ -7233,7 +7233,7 @@ fn what_resizing_a_shard_map_costs() {
     let address = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("loaded shard");
-        shard.strings().values().next().map(|slot| slot.address()).expect("a written page")
+        shard.strings().values().next().map(|slot| slot.address()).expect("a written block")
     };
 
     // Just past a 7/8 boundary, so the incremental build pays for a resize the pre-sized one skips.
@@ -7421,7 +7421,7 @@ fn what_grows_outside_the_shard_index() {
         per
     };
     let slab_per = row("slab descriptors", small_slab_descriptors, large_slab_descriptors);
-    row("page slabs", small_slabs, large_slabs);
+    row("block slabs", small_slabs, large_slabs);
     row("index entries", small_strings, large_strings);
 
     println!();
@@ -7930,7 +7930,7 @@ fn fingerprinting_does_not_scale_with_the_manifest_count() {
     );
     assert!(
         few_volume > 0 && many_volume > 0,
-        "the plan scanned no live pages, so this measures nothing: {few_volume} then {many_volume}",
+        "the plan scanned no live blocks, so this measures nothing: {few_volume} then {many_volume}",
     );
 
     // The 8-manifest shard also holds 4x the records, so its per-plan walk is legitimately
@@ -7992,7 +7992,7 @@ fn the_object_lifecycle_snapshot_walks_the_shard_once() {
         .sum();
     // Denominator: with no live blocks every walk count is 0 and the equality below would hold
     // for a shard that stored nothing.
-    assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
+    assert!(live_blocks > 0, "fixture stored no live blocks, so this measures nothing");
 
     crate::engine::reset_live_block_scan_entries();
     let report = engine.storage_object_lifecycle_snapshot(1);
@@ -8007,7 +8007,7 @@ fn the_object_lifecycle_snapshot_walks_the_shard_once() {
 
     assert_eq!(
         walked, live_blocks,
-        "storage_object_lifecycle_snapshot materialized {walked} live-page entries for a shard \
+        "storage_object_lifecycle_snapshot materialized {walked} live-block entries for a shard \
 holding {live_blocks} live blocks -- that is {:.1} walks, and it should be exactly one. Its three \
 consumers (ownership validation, the lifecycle report, the per-slab ref counts) share one walk; \
 if a fourth consumer was added, give it the slice rather than its own scan.",
@@ -8078,7 +8078,7 @@ fn what_apply_storage_lifecycle_walks() {
     };
 
     let (baseline, live_blocks) = walks_for(all_on());
-    assert!(live_blocks > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live blocks");
     assert!(baseline > 0, "apply_storage_lifecycle walked nothing; this attributes nothing");
     eprintln!(
         "  [apply-lc] everything on                        {baseline:>8} entries = {:>5.1}x the shard \
@@ -8170,7 +8170,7 @@ fn a_compaction_round_shares_one_walk_across_its_live_block_consumers() {
         .iter()
         .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
+    assert!(live_blocks > 0, "fixture stored no live blocks, so this measures nothing");
 
     crate::engine::reset_live_block_scan_entries();
     crate::engine::reset_live_block_scan_sites();
@@ -8487,12 +8487,12 @@ fn the_cache_warmup_reads_blocks_after_the_shard_guard_drops() {
     let (shipped, shipped_warmed) = measured_cache_warmup(&shipped_engine);
 
     eprintln!(
-        "[cache warmup] under the guard: {} of {} page read(s) under the guard, \
+        "[cache warmup] under the guard: {} of {} block read(s) under the guard, \
 {control_warmed} block refs warmed",
         control.block_reads_under_guard, control.block_reads_total,
     );
     eprintln!(
-        "[cache warmup] shipped:         {} of {} page read(s) under the guard, \
+        "[cache warmup] shipped:         {} of {} block read(s) under the guard, \
 {shipped_warmed} block refs warmed",
         shipped.block_reads_under_guard, shipped.block_reads_total,
     );
@@ -8501,7 +8501,7 @@ fn the_cache_warmup_reads_blocks_after_the_shard_guard_drops() {
     // cached, satisfies "no read under the guard" by never reaching a read.
     assert!(
         control_warmed > 0 && shipped_warmed > 0,
-        "an arm warmed no page refs ({control_warmed} / {shipped_warmed}), so the loop below the \
+        "an arm warmed no block refs ({control_warmed} / {shipped_warmed}), so the loop below the \
 guard never ran and nothing here is measuring the warm-up",
     );
     assert_eq!(
@@ -8510,7 +8510,7 @@ guard never ran and nothing here is measuring the warm-up",
     );
     assert!(
         control.block_reads_total > 0 && shipped.block_reads_total > 0,
-        "an arm read no pages off the block store at all ({} / {}), so the fixture was already \
+        "an arm read no blocks off the block store at all ({} / {}), so the fixture was already \
 cached and neither arm is a subject for the claim below",
         control.block_reads_total,
         shipped.block_reads_total,
@@ -8524,7 +8524,7 @@ cached and neither arm is a subject for the claim below",
     // POSITIVE CONTROL: the counter can see a read inside the region, because here is one.
     assert_eq!(
         control.block_reads_under_guard, control.block_reads_total,
-        "the control arm reads every page inside the guarded region and the counter saw {} of \
+        "the control arm reads every block inside the guarded region and the counter saw {} of \
 {}. The measurement is broken, not the code under it: the assertion below would pass against an \
 engine that had stopped counting entirely",
         control.block_reads_under_guard, control.block_reads_total,
@@ -8533,7 +8533,7 @@ engine that had stopped counting entirely",
     // THE ASSERTION THE REGION CHANGE MADE.
     assert_eq!(
         shipped.block_reads_under_guard, 0,
-        "the cache warm-up read {} of {} pages off the block store while still holding the \
+        "the cache warm-up read {} of {} blocks off the block store while still holding the \
 shard-table read guard. A read guard excludes every writer, so a warm of the whole shard stops \
 all writes on it for the length of the I/O -- and the warm-up has no per-round budget, so that \
 length grows with the store. Collect the addresses under the guard, drop it, then read: \
@@ -8591,7 +8591,7 @@ fn the_compaction_flush_stays_inside_its_write_guard() {
     let counts = crate::engine::index_encode_counts();
 
     eprintln!(
-        "[compaction flush] {} encode(s) / {} bytes under the guard, {} / {} total, {} page refs \
+        "[compaction flush] {} encode(s) / {} bytes under the guard, {} / {} total, {} block refs \
 rewritten",
         counts.encodes_under_guard,
         counts.encode_bytes_under_guard,
@@ -8661,7 +8661,7 @@ fn what_the_compaction_preamble_walks() {
         .iter()
         .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_blocks > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live blocks");
 
     let shards = engine.shards.read().expect("engine lock poisoned");
     let shard = shards.get(&1).expect("shard 1 is loaded");
@@ -9010,7 +9010,7 @@ fn one_call_walks_the_live_blocks_a_known_number_of_times() {
         .map(|summary| summary.block_ref_count as u64)
         .sum();
     // Denominator: with no live blocks every walk materializes nothing and any multiple holds.
-    assert!(live_blocks > 0, "fixture stored no live pages, so this measures nothing");
+    assert!(live_blocks > 0, "fixture stored no live blocks, so this measures nothing");
 
     crate::engine::reset_live_block_scan_entries();
     crate::engine::reset_live_block_scan_sites();
@@ -9035,7 +9035,7 @@ fn one_call_walks_the_live_blocks_a_known_number_of_times() {
             })
             .collect::<String>();
         panic!(
-            "one `apply_storage_lifecycle` walked the live pages {multiple}x, expected \
+            "one `apply_storage_lifecycle` walked the live blocks {multiple}x, expected \
 {EXPECTED_MULTIPLE}x ({walked} entries for {live_blocks} live blocks). Per site:{breakdown}\n  Higher means a new walk was added -- pass it the slice the call already has. Lower means one was \
 removed -- lower EXPECTED_MULTIPLE and name it in the commit. Three of the seven are irreducible \
 and the doc above says why; do not file the constant down without reading it."
@@ -9085,7 +9085,7 @@ fn who_walks_the_shard() {
         .iter()
         .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_blocks > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live blocks");
 
     crate::engine::reset_live_block_scan_entries();
     crate::engine::reset_live_block_scan_sites();
@@ -9172,7 +9172,7 @@ fn what_each_plan_call_walks() {
         .iter()
         .map(|summary| summary.block_ref_count as u64)
         .sum();
-    assert!(live_blocks > 0, "fixture stored no live pages");
+    assert!(live_blocks > 0, "fixture stored no live blocks");
 
     let lifecycle_request = || crate::engine::reports::StorageLifecycleRequest {
         shard_id: 1,
@@ -10559,7 +10559,7 @@ fn an_idle_round_does_not_walk_the_live_blocks_to_populate_a_report() {
     for measurement in [&small, &large] {
         assert_eq!(
             measurement.idle_multiple, EXPECTED_IDLE_MULTIPLE,
-            "{} records, IDLE round: walked the live pages {}x, expected {EXPECTED_IDLE_MULTIPLE}x \
+            "{} records, IDLE round: walked the live blocks {}x, expected {EXPECTED_IDLE_MULTIPLE}x \
 ({} live blocks). Per site:{}\n  An idle round must not walk the shard to fill a report field. \
 Higher means a walk came back; lower means one more was removed -- lower the constant and name it.",
             measurement.records,
@@ -10571,7 +10571,7 @@ Higher means a walk came back; lower means one more was removed -- lower the con
     for measurement in [&small, &large] {
         assert_eq!(
             measurement.dirty_multiple, EXPECTED_DIRTY_MULTIPLE,
-            "{} records, ONE DIRTY BUCKET: walked the live pages {}x, expected \
+            "{} records, ONE DIRTY BUCKET: walked the live blocks {}x, expected \
 {EXPECTED_DIRTY_MULTIPLE}x ({} live blocks). Per site:{}\n  A round with work must still take its \
 walks. If this fell to the idle number, the conditional is firing when it must not, and a plan \
 that did not look is being reported as a plan that found nothing.",
@@ -10658,7 +10658,7 @@ taken on a shard that still has work to do. Nothing below is evidence until this
         .sum();
     assert!(
         live_blocks > 0,
-        "{records} records: the shard holds no live pages, so every walk materialises nothing and \
+        "{records} records: the shard holds no live blocks, so every walk materialises nothing and \
 any walk count holds vacuously"
     );
     let dirty_now: u64 = summaries
@@ -10789,7 +10789,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
         .sum();
     assert!(
         live_blocks > RELOCATIONS_BEFORE_FAILURE,
-        "fixture holds {live_blocks} live page refs, which is not more than the \
+        "fixture holds {live_blocks} live block refs, which is not more than the \
          {RELOCATIONS_BEFORE_FAILURE} relocations the round is told to survive -- the round \
          would not fail PARTWAY and this test would prove nothing",
     );
@@ -10863,7 +10863,7 @@ fn a_compaction_round_that_fails_partway_keeps_its_resume_anchor() {
     assert_eq!(
         second_round.rewritten_block_refs,
         live_blocks - RELOCATIONS_BEFORE_FAILURE,
-        "round two relocated {} of {live_blocks} live page refs; resuming should have moved only \
+        "round two relocated {} of {live_blocks} live block refs; resuming should have moved only \
          the {} round one never reached, and re-moving all {live_blocks} means it rolled fresh",
         second_round.rewritten_block_refs,
         live_blocks - RELOCATIONS_BEFORE_FAILURE,

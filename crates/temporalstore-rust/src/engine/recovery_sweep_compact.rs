@@ -2109,7 +2109,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
                 "stale block density is removed from the compacted live set".to_string(),
                 "slot layout transition counts and states are reported after compaction"
                     .to_string(),
-                "per-model policies expose tombstone density, stale-page density, object-page packing, and cold-page rewrite eligibility".to_string(),
+                "per-model policies expose tombstone density, stale-block density, object-block packing, and cold-block rewrite eligibility".to_string(),
                 "stale segments left behind by moved indexes are reported as reclaimable".to_string(),
             ],
             model_layout_compaction_blockers,

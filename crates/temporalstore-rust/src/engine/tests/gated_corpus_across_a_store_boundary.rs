@@ -416,7 +416,7 @@ fn a_gated_corpus_comes_back_whole_across_a_store_boundary_for_all_four_kinds() 
     // which is the denominator the collapse is about.
     assert_eq!(
         seen.hash_blocks_reloaded, hash_entries,
-        "a GATED reader filed {hash_entries} live hash entries over {} distinct page(s). One entry \
+        "a GATED reader filed {hash_entries} live hash entries over {} distinct block(s). One entry \
          per block is what the collapse means, and more entries than blocks is a stale entry over a \
          dead block",
         seen.hash_blocks_reloaded

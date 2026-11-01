@@ -329,7 +329,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
     }
 
     println!(
-        "  derived from the shard's own id on {checked} live page entries across \
+        "  derived from the shard's own id on {checked} live block entries across \
          {shards_with_blocks} shards ({without_stored_id} not held by their bucket's object index), \
          {} differed",
         differed.len()
@@ -338,7 +338,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
     // --- DENOMINATORS. A zero-entry walk satisfies the emptiness assertion below. ---
     assert!(
         checked >= 100,
-        "the walk compared {checked} page entries; the fixture writes {} records of two kinds on \
+        "the walk compared {checked} block entries; the fixture writes {} records of two kinds on \
          {} shards, so below 100 it is not reading the block index and `differed` is empty for the \
          wrong reason",
         RECORDS,
@@ -347,7 +347,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
     assert_eq!(
         SHARD_IDS.len(),
         shards_with_blocks,
-        "only {shards_with_blocks} of {} shards contributed a page entry, so the derivation was \
+        "only {shards_with_blocks} of {} shards contributed a block entry, so the derivation was \
          never exercised on the other shards' ids -- which is where a wrong id shows up",
         SHARD_IDS.len()
     );
@@ -363,7 +363,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
 
     assert!(
         differed.is_empty(),
-        "{} of {checked} live page entries derive an object id from the shard's OWN carried id \
+        "{} of {checked} live block entries derive an object id from the shard's OWN carried id \
          that differs from the one the write path stored: {:?}. Either the carried id is not the \
          shard the engine routed those writes to, or the derivation is no longer the identity the \
          write path uses.",

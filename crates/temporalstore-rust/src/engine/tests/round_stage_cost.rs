@@ -324,7 +324,7 @@ fn measure(records: usize, pending: usize) -> RoundCost {
     // zero, and the whole table below would be the first of those wearing the second's clothes.
     assert!(
         whole_call.live_block_entries > 0,
-        "{records} records / {pending} pending: the round materialised no live-page entry at all"
+        "{records} records / {pending} pending: the round materialised no live-block entry at all"
     );
     let slabs = report.plan.live_block_slab_ids.len();
     RoundCost {
@@ -499,13 +499,13 @@ fn a_round_costs_the_whole_store_stage_by_stage() {
         );
         assert!(
             seen >= rows,
-            "the stage rows claim {rows} live-page entries at the {label} size and the \
+            "the stage rows claim {rows} live-block entries at the {label} size and the \
              independent counter saw {seen}. Rows exceeding it would mean the round walked on \
              another thread, which this measurement is not built to read"
         );
         assert_eq!(
             seen, rows,
-            "{} live-page entries were walked inside the round and charged to no stage at the \
+            "{} live-block entries were walked inside the round and charged to no stage at the \
              {label} size. That is a whole-store cost with no stage to its name: give it a stage, \
              or record here which part of the round makes it",
             seen - rows,
@@ -516,7 +516,7 @@ fn a_round_costs_the_whole_store_stage_by_stage() {
     let round_per_record = large.total_entries() as f64 / large.store_records as f64;
     assert!(
         (round_per_record - per_record as f64).abs() < 0.2,
-        "one round walked the live page set {round_per_record:.3} times at {LARGE} records, not \
+        "one round walked the live block set {round_per_record:.3} times at {LARGE} records, not \
          the {per_record} its stages sum to"
     );
 }
@@ -592,7 +592,7 @@ fn a_round_with_a_fixed_amount_of_work_waiting_still_costs_the_whole_store() {
     );
     assert!(
         (work_growth - store_growth).abs() < 0.3,
-        "retiring one record cost {per_work_small:.3} live-page entries on a {}-record store and \
+        "retiring one record cost {per_work_small:.3} live-block entries on a {}-record store and \
          {per_work_large:.3} on a {}-record one: {work_growth:.3}x against a store {store_growth:.3}x \
          larger. Those two tracking each other is the finding -- the price of doing a fixed amount \
          of maintenance rises linearly with everything the shard is holding",

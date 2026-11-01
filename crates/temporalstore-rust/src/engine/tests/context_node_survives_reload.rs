@@ -446,7 +446,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
             .get("orphan-dead-page")
             .map(|fields| fields.get("meta").is_some())
             .unwrap_or(false),
-        "the dead-page control was not installed, so it cannot test the filter"
+        "the dead-block control was not installed, so it cannot test the filter"
     );
     crate::engine::storage_bucket_internals::rebuild_unserialized_model_maps_from_bucket_index(
         shard,
@@ -456,7 +456,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
         .get("orphan-dead-page")
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
-    println!("[orphan] dead-page control after the reconcile: {dead_after} (must be false)");
+    println!("[orphan] dead-block control after the reconcile: {dead_after} (must be false)");
     assert!(
         !dead_after,
         "THE LIVE FILTER NEVER FIRES: an element pointing at a block nothing holds also survived,          so the first result above cannot be read as `the block was live`"
@@ -524,10 +524,10 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         );
         assert!(
             !kept.map(|f| f.get("on-dead-page").is_some()).unwrap_or(false),
-            "hashes: THE FILTER IS INERT -- an element on a page nothing holds was kept too, so the \
+            "hashes: THE FILTER IS INERT -- an element on a block nothing holds was kept too, so the \
              line above proves nothing about liveness"
         );
-        assert_eq!(1, refused, "hashes: exactly the dead-page element should be refused");
+        assert_eq!(1, refused, "hashes: exactly the dead-block element should be refused");
     }
 
     // SETS -- a B-tree keyed by member bytes, the kind the per-element collapse is being built on.
@@ -558,7 +558,7 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
             !kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
             "sets: THE FILTER IS INERT for this kind"
         );
-        assert_eq!(1, refused, "sets: exactly the dead-page member should be refused");
+        assert_eq!(1, refused, "sets: exactly the dead-block member should be refused");
     }
 
     // ZSETS -- a B-tree keyed by member bytes whose VALUE carries the score beside the address.
@@ -585,14 +585,14 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         );
         assert!(
             kept.map(|m| m.contains_key(b"on-live-page".as_slice())).unwrap_or(false),
-            "zsets: an unnamed member on a live page was dropped -- note the address is reached \
+            "zsets: an unnamed member on a live block was dropped -- note the address is reached \
              through the VALUE here, so this also checks `CarriedValue` for the pair"
         );
         assert!(
             !kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
             "zsets: THE FILTER IS INERT for this kind"
         );
-        assert_eq!(1, refused, "zsets: exactly the dead-page member should be refused");
+        assert_eq!(1, refused, "zsets: exactly the dead-block member should be refused");
     }
 
     // LISTS -- a B-tree keyed by an `i64` sequence rather than by bytes.
@@ -623,11 +623,11 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
             !kept.map(|m| m.contains_key(&2)).unwrap_or(false),
             "lists: THE FILTER IS INERT for this kind"
         );
-        assert_eq!(1, refused, "lists: exactly the dead-page sequence should be refused");
+        assert_eq!(1, refused, "lists: exactly the dead-block sequence should be refused");
     }
 
     println!(
-        "[per-kind] so for all four kinds the refusal is decided by the PAGE and not by whether \
+        "[per-kind] so for all four kinds the refusal is decided by the BLOCK and not by whether \
          the index names the element. The end-to-end path is measured for hashes only; for the \
          other three this is the deciding function, and the full path following suit is an \
          inference from shared generic code"

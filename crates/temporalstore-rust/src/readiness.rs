@@ -1386,7 +1386,7 @@ mod tests {
             "stream-backed band runtime",
             "mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop",
             "orphan block detection",
-            "missing/stale page-reference detection",
+            "missing/stale block-reference detection",
             "corrupt block/index/wal/snapshot evidence",
             "follower-cursor safe GC",
             "cache pressure/refill",

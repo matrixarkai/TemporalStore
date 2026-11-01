@@ -138,7 +138,7 @@ impl TemporalEngine {
                         attempted: true,
                         applied: false,
                         evidence: vec![
-                            "compaction phase attempted live-page rewrite and model-layout/tombstone validation".to_string(),
+                            "compaction phase attempted live-block rewrite and model-layout/tombstone validation".to_string(),
                         ],
                         blockers: vec![err.message],
                     });
@@ -488,10 +488,10 @@ impl TemporalEngine {
             logical_bytes_written: stats.logical_bytes_written,
             compressed_records_written: stats.compressed_records_written,
             compatibility_gaps: vec![
-                "compatibility mode is migration-only; direct mixed mixed-format page-header serving is not supported"
+                "compatibility mode is migration-only; direct mixed mixed-format block-header serving is not supported"
                     .to_string(),
                 "binary protobuf page header reader and writer are not implemented".to_string(),
-                "slot/page layout and page-id allocation are not byte-compatible".to_string(),
+                "slot/block layout and block-id allocation are not byte-compatible".to_string(),
                 "golden page conversion/replay suite is required before migration".to_string(),
             ],
         }

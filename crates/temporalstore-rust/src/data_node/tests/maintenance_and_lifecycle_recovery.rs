@@ -4307,14 +4307,14 @@ fn how_many_times_a_round_walks_every_live_block() {
 
         // Denominators. A shard with no live blocks, or a round that walked nothing, would make
         // the ratio below meaningless rather than zero.
-        assert!(live_blocks > 0, "fixture stored no live pages");
+        assert!(live_blocks > 0, "fixture stored no live blocks");
         assert!(
             scanned > 0,
-            "the round materialized no live-page entries, so it never reached the stages this measures",
+            "the round materialized no live-block entries, so it never reached the stages this measures",
         );
 
         eprintln!(
-            "  [walks] {records:>6} records, {live_blocks:>6} live pages -> round {round_ms:>8.1} ms \
+            "  [walks] {records:>6} records, {live_blocks:>6} live blocks -> round {round_ms:>8.1} ms \
 materialized {scanned:>8} live-block entries = {:>5.1}x the shard, stages {:?}",
             scanned as f64 / live_blocks as f64,
             report.executed_stages,
@@ -4395,7 +4395,7 @@ fn which_stages_walk_every_live_block() {
 time(s) and the WAL reclaim plan {wal_builds} time(s); each walks the shard"
         );
         eprintln!(
-            "  [stage-scan] {objects:>6} objects, everything on -> {all_on:>9} live-page entries \
+            "  [stage-scan] {objects:>6} objects, everything on -> {all_on:>9} live-block entries \
 = {:>5.1}x the shard, stages {stages:?}",
             all_on as f64 / objects as f64,
         );
@@ -5243,7 +5243,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
         .len() as u64;
 
     // THE DENOMINATORS, before any ratio is taken.
-    assert!(live_blocks > 0, "no live pages, so nothing below measures anything");
+    assert!(live_blocks > 0, "no live blocks, so nothing below measures anything");
     assert!(slabs > 0, "no slabs in the tally: {slabs}");
 
     // ARM A: the tally withheld, so the report falls back to the walk.
@@ -5313,7 +5313,7 @@ fn what_the_maintained_slab_tally_removes_and_costs() {
     );
     assert!(
         walked_entries >= live_blocks,
-        "the walked arm materialized {walked_entries} entries for {live_blocks} live pages, which \
+        "the walked arm materialized {walked_entries} entries for {live_blocks} live blocks, which \
          is fewer than one walk: this arm is not measuring the walk"
     );
     // The charge is per block written, not per block in the shard: a bounded cost on the write
@@ -5451,7 +5451,7 @@ fn can_the_block_gc_garbage_floor_bind() {
     for candidate in plan.candidates.iter() {
         assert_eq!(
             candidate.used_bytes, 0,
-            "a collector candidate is a slab no live page points at, so its MAINTAINED live bytes \
+            "a collector candidate is a slab no live block points at, so its MAINTAINED live bytes \
              are zero -- counted, not inferred from two filters contradicting each other: \
              {candidate:?}"
         );
@@ -8046,7 +8046,7 @@ fn the_relocation_hint_agrees_with_the_plan_it_is_taken_from() {
     );
     assert_eq!(
         hint_after.relocatable_block_refs, 0,
-        "the shard was drained and nobody wrote to it, so no object should have a page on a slab \
+        "the shard was drained and nobody wrote to it, so no object should have a block on a slab \
          worth emptying: {hint_after:?}"
     );
     assert!(
@@ -9413,7 +9413,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     let rounds_needed = live_block_refs.div_ceil(2_048).max(1) as usize;
     assert!(
         COMPACTION_ROUNDS > rounds_needed,
-        "the fixture holds {live_block_refs} live page refs, which needs {rounds_needed} \
+        "the fixture holds {live_block_refs} live block refs, which needs {rounds_needed} \
          compaction round(s); running only {COMPACTION_ROUNDS} would leave blocks behind, and a \
          short run looks exactly like a settled one"
     );
@@ -9535,7 +9535,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         .collect::<Vec<_>>();
     assert!(
         destroyed.is_empty(),
-        "the sweep destroyed {destroyed:?}, slabs holding nothing but unnamed-bucket pages that \
+        "the sweep destroyed {destroyed:?}, slabs holding nothing but unnamed-bucket blocks that \
          the manifest's whole-shard index still points at (manifest names {:?}, store holds \
          {remaining:?})",
         manifest.block_slab_ids
@@ -10393,12 +10393,12 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     );
     assert!(
         relocatable > 0,
-        "no object holds a page on the holed slab, so the round below has nothing to drain: \
+        "no object holds a block on the holed slab, so the round below has nothing to drain: \
          {plan:?}"
     );
     assert!(
         live_block_refs > relocatable * 2,
-        "the shard holds {live_block_refs} live page refs and {relocatable} of them are on the \
+        "the shard holds {live_block_refs} live block refs and {relocatable} of them are on the \
          holed slab; without a wide margin, draining and relocating everything are the same act"
     );
 
@@ -10409,7 +10409,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     // HALF ONE: it moved the drain set, all of it, and nothing else.
     assert_eq!(
         report.rewritten_block_refs as u64, relocatable,
-        "the draining round moved {} page refs where the plan named {relocatable} on the slabs it \
+        "the draining round moved {} block refs where the plan named {relocatable} on the slabs it \
          was asked to empty ({drain_slabs:?})",
         report.rewritten_block_refs
     );
@@ -10417,7 +10417,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     // everything are indistinguishable here.
     assert!(
         report.blocks_left_off_drain_set > 0,
-        "the round declined no pages at all, so it cannot be shown to have selected anything: it \
+        "the round declined no blocks at all, so it cannot be shown to have selected anything: it \
          moved {} of {live_block_refs} live refs",
         report.rewritten_block_refs
     );
@@ -10433,7 +10433,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
     // moved never closes, which is the termination hazard this ordering exists to avoid.
     assert_eq!(
         report.blocks_left_by_budget, 0,
-        "the round reports {} pages left for want of budget after declining {} off the drain set \
+        "the round reports {} blocks left for want of budget after declining {} off the drain set \
          -- the two are being counted together, and a round that reports unfinished for ever \
          re-runs for ever",
         report.blocks_left_by_budget, report.blocks_left_off_drain_set
@@ -10470,7 +10470,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
         crate::engine::compaction_relocatable_block_refs(&plan_after.reclaim_candidates);
     assert_eq!(
         relocatable_after, 0,
-        "after draining the only holed slab, {relocatable_after} page refs still sit on a slab \
+        "after draining the only holed slab, {relocatable_after} block refs still sit on a slab \
          someone wants emptied, so the loop would compact again on an idle shard: {plan_after:?}"
     );
 
@@ -10718,12 +10718,12 @@ fn a_direct_round_relocates_every_live_block_not_only_the_blocks_on_holed_slabs(
     );
     assert!(
         relocatable > 0,
-        "no object holds a page on the holed slab, so the round below has nothing to drain and \
+        "no object holds a block on the holed slab, so the round below has nothing to drain and \
          what it reports is about an idle compactor: {plan:?}"
     );
     assert!(
         live_block_refs > relocatable,
-        "the shard holds {live_block_refs} live page refs and {relocatable} of them are on the \
+        "the shard holds {live_block_refs} live block refs and {relocatable} of them are on the \
          holed slab; with those equal, relocating everything and draining the holed slab are the \
          same act"
     );
@@ -10742,19 +10742,19 @@ fn a_direct_round_relocates_every_live_block_not_only_the_blocks_on_holed_slabs(
     // going to zero.
     assert!(
         report.rewritten_block_refs as u64 >= live_block_refs,
-        "the direct form is documented to relocate every live page: it moved {} of \
+        "the direct form is documented to relocate every live block: it moved {} of \
          {live_block_refs}",
         report.rewritten_block_refs
     );
     assert_eq!(
         report.blocks_left_off_drain_set, 0,
-        "a direct round declines nothing -- it was given no drain set -- yet it left {} pages \
+        "a direct round declines nothing -- it was given no drain set -- yet it left {} blocks \
          off one",
         report.blocks_left_off_drain_set
     );
     assert!(
         report.rewritten_block_refs as u64 > relocatable * 2,
-        "the round moved {} page refs where {relocatable} sit on the only slab that carries dead \
+        "the round moved {} block refs where {relocatable} sit on the only slab that carries dead \
          space, across {} slabs. Equal counts would mean it is already moving just the drain set",
         report.rewritten_block_refs,
         slabs_before.len()
@@ -10821,7 +10821,7 @@ fn the_periodic_round_drains_the_holed_slab_and_leaves_the_dense_ones() {
         .expect("the round reported running compaction, so it must carry its report");
     assert_eq!(
         compaction.compacted_objects as u64, relocatable,
-        "the periodic round moved {} page refs where the plan named {relocatable} on the slab it \
+        "the periodic round moved {} block refs where the plan named {relocatable} on the slab it \
          wanted emptied -- the loop is still issuing a whole-shard relocation",
         compaction.compacted_objects
     );

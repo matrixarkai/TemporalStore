@@ -313,14 +313,14 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
         assert_eq!(
             MEMBERS_PER_KEY,
             ids.len(),
-            "{object_key} holds {} pages, not the {MEMBERS_PER_KEY} the seed wrote -- the container \
+            "{object_key} holds {} blocks, not the {MEMBERS_PER_KEY} the seed wrote -- the container \
              population was not reached",
             ids.len()
         );
         assert_eq!(
             1,
             distinct.len(),
-            "{object_key}'s {} pages carry {} distinct ids, not 1. Every page of one object is an \
+            "{object_key}'s {} blocks carry {} distinct ids, not 1. Every block of one object is an \
              ELEMENT of it and they are supposed to share the object's id; if they do not, the \
              component is still reaching the hash",
             ids.len(),
@@ -339,7 +339,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
         by_key.len()
     );
     println!(
-        "  TOTAL pages={blocks_total} object-index rows={ids_total} ({:.4} rows per page, was \
+        "  TOTAL blocks={blocks_total} object-index rows={ids_total} ({:.4} rows per block, was \
          1.0000 when the id named the block)",
         ids_total as f64 / blocks_total as f64
     );
@@ -352,7 +352,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     );
     assert!(
         blocks_total > ids_total,
-        "DENOMINATOR: {blocks_total} pages and {ids_total} rows. A fixture whose keys held one page \
+        "DENOMINATOR: {blocks_total} blocks and {ids_total} rows. A fixture whose keys held one block \
          each would satisfy every assertion above while measuring nothing"
     );
 
@@ -375,7 +375,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
         .count();
     let share = 100.0 * control_many as f64 / control_keys.len().max(1) as f64;
     println!(
-        "\n=== CONTROL: {ROUTED_KEYS} routed string keys, one page each ===\n  keys={} \
+        "\n=== CONTROL: {ROUTED_KEYS} routed string keys, one block each ===\n  keys={} \
          keys holding more than one id={control_many} ({share:.2}%)",
         control_keys.len()
     );
@@ -388,7 +388,7 @@ fn the_block_id_names_an_object_so_one_object_key_holds_exactly_one_id() {
     );
     assert_eq!(
         0, control_many,
-        "{control_many} routed keys hold more than one id. A routed key is one page and its \
+        "{control_many} routed keys hold more than one id. A routed key is one block and its \
          component was already `None`, so removing the component from the id is the IDENTITY on \
          this population -- this count was zero before the change and must still be zero, or \
          the collapse measured above is not the component leaving the hash"
@@ -418,7 +418,7 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     let object_key = "container";
     let (block_key, block) = entry_named(object_key, Some("body"));
     let written = crate::engine::state::block_index_written_key(&block_key, &block);
-    println!("\n=== the written key of one page ===\n  {written}");
+    println!("\n=== the written key of one block ===\n  {written}");
 
     // --- THE PRECONDITION FOR SPLITTING IT, ENFORCED RATHER THAN PRINTED. ---
     assert!(
@@ -467,10 +467,10 @@ fn the_written_key_of_a_block_spells_its_object_key_so_an_id_cannot_render_it() 
     let (other_object_key, other) = entry_named(other_key, Some("body"));
     let other_written =
         crate::engine::state::block_index_written_key(&other_object_key, &other);
-    println!("  the same page under {other_key:?}\n  {other_written}");
+    println!("  the same block under {other_key:?}\n  {other_written}");
     assert_ne!(
         written, other_written,
-        "two pages at the SAME address under different object keys render the same written key, so \
+        "two blocks at the SAME address under different object keys render the same written key, so \
          the key has stopped reaching the stored spelling"
     );
 
@@ -570,7 +570,7 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
         assert_eq!(
             1,
             ids.len(),
-            "{object_key}'s {} pages resolve to {} distinct ids, not 1. Every page of one key is \
+            "{object_key}'s {} blocks resolve to {} distinct ids, not 1. Every block of one key is \
              an element of one object now",
             pairs.len(),
             ids.len()
@@ -578,7 +578,7 @@ fn the_whole_object_read_path_asks_for_every_component_of_one_key() {
         assert_eq!(
             MEMBERS_PER_KEY,
             separators.len(),
-            "{object_key} answered {} distinct ADDRESSES for {} pages. The address is what \
+            "{object_key} answered {} distinct ADDRESSES for {} blocks. The address is what \
              separates the elements of this answer now -- if these collapsed, the reader would \
              have no way to tell one element of the answer from another",
             separators.len(),
@@ -662,7 +662,7 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
         ("dirty", field_width(&sample.dirty), offset_of!(BlockIndex, dirty)),
         ("deleted", field_width(&sample.deleted), offset_of!(BlockIndex, deleted)),
     ];
-    println!("\n=== the page entry, field by field at its REAL offset ===");
+    println!("\n=== the block entry, field by field at its REAL offset ===");
     for (name, width, offset) in &widths {
         println!("  {name:<12} {width:>3} B at offset {offset:>3}");
     }

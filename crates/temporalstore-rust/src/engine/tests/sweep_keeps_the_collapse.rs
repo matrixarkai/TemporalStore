@@ -141,7 +141,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     // that lost the object entirely would pass the claim below without these.
     assert!(
         batches > 0 && folded > 0,
-        "the sweep wrote {batches} batch(es) folding {folded} page(s), so it never reached the \
+        "the sweep wrote {batches} batch(es) folding {folded} block(s), so it never reached the \
          fold and the numbers above say nothing about what a sweep leaves behind"
     );
     assert!(
@@ -153,7 +153,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     // fixture whose members never folded would satisfy `entries == blocks` with one of each.
     assert!(
         blocks < MEMBERS,
-        "the {MEMBERS} members resolve to {blocks} page(s) after the sweep, so nothing folded and \
+        "the {MEMBERS} members resolve to {blocks} block(s) after the sweep, so nothing folded and \
          `entries == blocks` below would hold with or without the collapse"
     );
 
@@ -162,7 +162,7 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     // re-derivation, because the re-derivation is the same projection.
     assert_eq!(
         blocks, entries,
-        "the sweep left {entries} entries for {blocks} page(s). A sweep calls \
+        "the sweep left {entries} entries for {blocks} block(s). A sweep calls \
          `rebuild_bucket_first_index` twice, so if the rebuild re-derived one entry per element \
          the collapse would be undone before the sweep returned -- which is exactly the fight this \
          test exists to rule out"
@@ -174,5 +174,5 @@ fn a_whole_sweep_leaves_the_collapsed_entries_collapsed() {
     // could only ever read zero. It is enforced by `engine_storage_state.rs`'s pin instead --
     // `size_of::<BlockIndex>() == 40` with `!= 39 && != 41` and a field sum equal to the width, so
     // re-adding a name fails const-evaluation rather than being counted here.
-    println!("  => entries after the sweep: {entries} for {blocks} page(s)");
+    println!("  => entries after the sweep: {entries} for {blocks} block(s)");
 }

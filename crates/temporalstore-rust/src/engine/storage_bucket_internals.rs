@@ -2007,7 +2007,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             let Some(beside) = beside else {
                 debug_assert!(
                     identities.names_no_position(),
-                    "bucket {} holds a page the index cannot name at any position while the \
+                    "bucket {} holds a block the index cannot name at any position while the \
                      lookup DOES name positions, so this walk is dropping a row outside the one \
                      window that explains it",
                     bucket.routing_bucket
@@ -4806,7 +4806,7 @@ pub(super) fn insert_container_tombstone_entry(
     // doing, and anything it catches is a defect.
     debug_assert!(
         component.is_some(),
-        "a tombstone entry with no element to name leaves a deleted page nothing beside it can \
+        "a tombstone entry with no element to name leaves a deleted block nothing beside it can \
          identify, so no rebuild can refile it and no dump can compose a key for it"
     );
     let Some(named_element) = component else {
@@ -5966,7 +5966,7 @@ pub(super) fn update_bucket_layout(
     } else {
         debug_assert!(
             keys.names_no_position(),
-            "bucket {routing_bucket} holds {live_blocks_with_no_identity} live page(s) with no \
+            "bucket {routing_bucket} holds {live_blocks_with_no_identity} live block(s) with no \
              identity beside them while the inversion DOES name positions, so this is not the \
              decode-then-rebuild window and the object list is being left alone for the wrong \
              reason"
@@ -6085,7 +6085,7 @@ pub(super) fn repair_object_index_against_its_blocks(
         let held_now: BTreeSet<u64> = bucket.object_index.iter().copied().collect();
         debug_assert_eq!(
             held_now, live_object_ids,
-            "bucket {}: after the repair the object list says {:?} where its own live pages name \
+            "bucket {}: after the repair the object list says {:?} where its own live blocks name \
              {:?}",
             bucket.routing_bucket, held_now, live_object_ids
         );
@@ -7546,7 +7546,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // durable map still lists. The same sentence `fold_carried_container_elements` prints for
         // the other input to this merge.
         eprintln!(
-            "reconcile: {resurrections_refused} persisted container element(s) named a page the \
+            "reconcile: {resurrections_refused} persisted container element(s) named a block the \
              finished index does not hold and were not restored, over {} live block(s)",
             live_blocks_by_address.len()
         );
@@ -7557,7 +7557,7 @@ pub(super) fn reconcile_secondary_views_from_bucket_index(
         // `.unwrap_or_default()` inside a helper, with no counter and no message, on the only copy
         // two kinds have.
         eprintln!(
-            "reconcile: {block_read_failures} page(s) could not be read and {block_decode_failures} \
+            "reconcile: {block_read_failures} block(s) could not be read and {block_decode_failures} \
              could not be decoded while rebuilding the timestamped views; neither contributed an \
              empty series"
         );
@@ -8087,7 +8087,7 @@ mod released_supplement_guards {
         assert_eq!(
             from_the_model_maps.len(),
             1,
-            "the model-map arm produced {} pages; if it produces none this control measures \
+            "the model-map arm produced {} blocks; if it produces none this control measures \
              nothing",
             from_the_model_maps.len(),
         );
@@ -8143,7 +8143,7 @@ mod released_supplement_guards {
                 .expect("node kept")
                 .block_index
                 .is_empty(),
-            "bucket 7 still holds its pages in the index, so they come from the index arm and \
+            "bucket 7 still holds its blocks in the index, so they come from the index arm and \
              not from the supplement this test is about",
         );
 
@@ -8187,12 +8187,12 @@ mod released_supplement_guards {
         assert_eq!(outcome.released_buckets, vec![7], "{outcome:?}");
 
         let entries = collect_live_block_entries(&shard);
-        assert_eq!(entries.len(), 1, "the supplement returned {} pages", entries.len());
+        assert_eq!(entries.len(), 1, "the supplement returned {} blocks", entries.len());
         for entry in &entries {
             assert_eq!(
                 entry.filed_bucket(),
                 Some(7),
-                "a supplemented page that reports no filing sends every one of the five readers to \
+                "a supplemented block that reports no filing sends every one of the five readers to \
                  `bucket_for_object(key, 0, u32::MAX)`, which on a shard loaded on a narrow range \
                  names a bucket it does not hold. This walk is the only answer now.",
             );
@@ -8494,7 +8494,7 @@ mod release_refusal_guards {
         assert_eq!(
             held.block_id(),
             Some(0),
-            "this module's page ordinal must be the zero a single-page object has by \
+            "this module's block ordinal must be the zero a single-block object has by \
              construction: `ObjectRecord::from_object_rows` refuses a nonzero one by name as \
              NonZeroBlockOrdinalDoesNotFitInline, and the write-back door drops its value",
         );
@@ -8859,7 +8859,7 @@ mod release_walk_scale {
         assert_eq!(
             distinct.len(),
             landed.len(),
-            "{} of {} keys collided into a shared bucket, so the fixture no longer holds one page \
+            "{} of {} keys collided into a shared bucket, so the fixture no longer holds one block \
              per bucket",
             landed.len() - distinct.len(),
             landed.len(),
@@ -8908,7 +8908,7 @@ mod release_walk_scale {
             released_buckets, 4,
             "the four victims must have been released, or there was nothing to derive for",
         );
-        assert_eq!(released_blocks, 4, "one page per victim");
+        assert_eq!(released_blocks, 4, "one block per victim");
         assert!(
             live_blocks > released_blocks,
             "the store must hold more than the victims, or the claim below is untestable; \
@@ -8916,7 +8916,7 @@ mod release_walk_scale {
         );
         assert_eq!(
             materialized, 4,
-            "the derivation must materialize the four victims' pages; it materialized \
+            "the derivation must materialize the four victims' blocks; it materialized \
              {materialized} out of {live_blocks} live in the store",
         );
     }
@@ -8959,7 +8959,7 @@ mod release_walk_scale {
         );
         assert_eq!(
             small, large,
-            "releasing four buckets materialized {small} entries out of {small_live} live pages \
+            "releasing four buckets materialized {small} entries out of {small_live} live blocks \
              and {large} out of {large_live}; the release must cost the victims, not the store",
         );
     }
@@ -9012,7 +9012,7 @@ mod release_walk_scale {
         );
         assert_eq!(
             small, large,
-            "reloading one bucket materialized {small} entries out of {small_live} live pages and \
+            "reloading one bucket materialized {small} entries out of {small_live} live blocks and \
              {large} out of {large_live}; a reload must cost the bucket, not the store",
         );
     }
@@ -9060,7 +9060,7 @@ mod live_block_scan_coverage {
         assert_eq!(
             distinct.len(),
             landed.len(),
-            "the fixture's keys collided into a shared bucket, so it no longer holds one page per \
+            "the fixture's keys collided into a shared bucket, so it no longer holds one block per \
              bucket",
         );
         (shard, landed)
@@ -9081,7 +9081,7 @@ mod live_block_scan_coverage {
         assert_eq!(
             shard.bucket_index.bucket_map.len(),
             BUCKETS as usize,
-            "the pages must occupy more than one bucket, or a bucket-scoped walk and a \
+            "the blocks must occupy more than one bucket, or a bucket-scoped walk and a \
              whole-shard walk would materialize the same thing",
         );
         assert!(BUCKETS > 1, "a single-bucket fixture cannot express the defect");
@@ -9156,7 +9156,7 @@ mod live_block_scan_coverage {
 
         // DENOMINATOR: the release must have emptied exactly one bucket's index, or the second
         // walk below never runs and this guard measures nothing.
-        assert_eq!(live_blocks, BUCKETS as usize, "the model maps keep every page");
+        assert_eq!(live_blocks, BUCKETS as usize, "the model maps keep every block");
         assert_eq!(
             indexed_blocks,
             live_blocks - 1,
@@ -9180,7 +9180,7 @@ mod live_block_scan_coverage {
         assert_eq!(
             counted,
             (indexed_blocks + live_blocks) as u64,
-            "with one bucket released the wrapper materialized {indexed_blocks} indexed pages \
+            "with one bucket released the wrapper materialized {indexed_blocks} indexed blocks \
              and then the whole {live_blocks}-block shard again, and the counter saw {counted}",
         );
     }
@@ -9212,7 +9212,7 @@ mod live_block_scan_coverage {
         // VACUITY FLOOR on the measured denominator, not on the constants.
         assert!(
             large_returned > small_returned,
-            "the two stores must differ in pages returned, got {small_returned} and \
+            "the two stores must differ in blocks returned, got {small_returned} and \
              {large_returned}",
         );
         assert!(
@@ -9223,13 +9223,13 @@ mod live_block_scan_coverage {
         assert_eq!(
             small_charged,
             (2 * small_returned - 1) as u64,
-            "at {small_returned} live pages the walk materializes the indexed pages and the \
+            "at {small_returned} live blocks the walk materializes the indexed blocks and the \
              whole shard; it charged {small_charged}",
         );
         assert_eq!(
             large_charged,
             (2 * large_returned - 1) as u64,
-            "at {large_returned} live pages the walk materializes the indexed pages and the \
+            "at {large_returned} live blocks the walk materializes the indexed blocks and the \
              whole shard; it charged {large_charged}",
         );
 
@@ -9386,7 +9386,7 @@ mod model_kind_registry_guards {
         );
         assert!(
             emitted.len() >= ModelKind::ALL.len(),
-            "the walk emitted {} distinct kinds over a shard holding one page in every map, and \
+            "the walk emitted {} distinct kinds over a shard holding one block in every map, and \
              the registry declares {}; with fewer the equality below can hold while both sides \
              have shrunk",
             emitted.len(),
@@ -9531,7 +9531,7 @@ mod model_kind_registry_guards {
                 .report_code();
             assert!(
                 codes.iter().all(|code| *code == expected),
-                "a `{name}` page packs as {codes:?}, not {expected}; 0 is the byte an empty \
+                "a `{name}` block packs as {codes:?}, not {expected}; 0 is the byte an empty \
                  bucket writes and is what this kind used to get",
             );
         }
@@ -9543,7 +9543,7 @@ mod model_kind_registry_guards {
             .collect();
         assert!(
             zeroes.is_empty(),
-            "these kinds still pack as 0, which is the byte that means the bucket names no page: \
+            "these kinds still pack as 0, which is the byte that means the bucket names no block: \
              {zeroes:?}",
         );
     }

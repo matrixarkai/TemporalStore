@@ -384,7 +384,7 @@ fn measure(records: usize, backlog: usize) -> RoundCost {
     // zero, and every row below would be the first wearing the second's clothes.
     assert!(
         whole_call_entries > 0,
-        "{records} records / {backlog} backlog: the round materialised no live-page entry at all"
+        "{records} records / {backlog} backlog: the round materialised no live-block entry at all"
     );
     let slabs = report.plan.live_block_slab_ids.len();
     println!(

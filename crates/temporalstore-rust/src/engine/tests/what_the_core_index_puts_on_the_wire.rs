@@ -362,7 +362,7 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
         .get("block_index")
         .and_then(serde_json::Value::as_object)
         .expect("a node writes its block index as a map");
-    assert_eq!(block_index.len(), 1, "one page was inserted");
+    assert_eq!(block_index.len(), 1, "one block was inserted");
     let (stored_key, entry) = block_index.iter().next().expect("one entry");
     let entry = entry
         .as_object()
@@ -379,7 +379,7 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     assert_eq!(
         vec!["address", "deleted", "dirty"],
         members,
-        "the stored member set of a page entry moved; it is three at \
+        "the stored member set of a block entry moved; it is three at \
          `SHARD_INDEX_FORMAT_VERSION` 27 and the arity is part of the encoding, so a member \
          arriving or leaving owes another stamp step"
     );
@@ -584,7 +584,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     );
     assert_eq!(
         held, filed,
-        "every live page the decoded map holds must be named by the decoded lookup, at the same \
+        "every live block the decoded map holds must be named by the decoded lookup, at the same \
          handle"
     );
 

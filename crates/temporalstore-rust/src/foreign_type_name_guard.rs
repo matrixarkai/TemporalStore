@@ -103,7 +103,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
     ),
     (
         "MultiPageObject",
-        "Our word for a stored unit is BLOCK, not page: `ElementEntry`, `block_size`, \
+        "Our word for a stored unit is BLOCK, not block: `ElementEntry`, `block_size`, \
          `block_in_log`, and `page_segment_id` was renamed to `block_slab_id`. A new CamelCase \
          `*Block*` type name is therefore a copy rather than a coinage. Our own layout policies \
          spell this concept `single_block_object` and `component_block_object`, in snake_case, and \

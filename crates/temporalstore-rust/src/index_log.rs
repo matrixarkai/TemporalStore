@@ -2020,7 +2020,7 @@ impl std::fmt::Display for BlockRefKeyUnparsable {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         write!(
             f,
-            "the stored page key {:?} is not a block-ref key: {}. A page's identity is read back \
+            "the stored block key {:?} is not a block-ref key: {}. A block's identity is read back \
              out of the name it is filed under, so a key this cannot invert is an index that \
              names no object -- refused here so the caller replays its log rather than serving a \
              block filed under a guess",
@@ -6577,7 +6577,7 @@ mod tests {
             // it would have produced a handle derived against an empty key.
             let handles: Vec<String> =
                 read[0].items.iter().map(|item| item.block_ref_key.clone()).collect();
-            assert_eq!(handles, expected_handles, "{label}: page handles did not round-trip");
+            assert_eq!(handles, expected_handles, "{label}: block handles did not round-trip");
 
             let distinct = expected.iter().collect::<std::collections::BTreeSet<_>>().len();
             let hoisted = read[0].shared_object_key.is_some();

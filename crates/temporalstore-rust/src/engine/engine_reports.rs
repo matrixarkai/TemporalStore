@@ -2812,19 +2812,19 @@ pub fn default_storage_index_contract(
     );
     contract.insert(
         "slot_index".to_string(),
-        contract_text("slot -> object/page refs"),
+        contract_text("slot -> object/block refs"),
     );
     contract.insert(
         "object_index_entry".to_string(),
-        contract_text("{model/table/object_key} -> current page chain"),
+        contract_text("{model/table/object_key} -> current block chain"),
     );
     contract.insert(
         "page_index".to_string(),
-        contract_text("logical timestamp/key ranges -> page addresses"),
+        contract_text("logical timestamp/key ranges -> block addresses"),
     );
     contract.insert(
         "block_index".to_string(),
-        contract_text("page addresses -> physical durable locations"),
+        contract_text("block addresses -> physical durable locations"),
     );
     contract.insert(
         "required_behaviors".to_string(),

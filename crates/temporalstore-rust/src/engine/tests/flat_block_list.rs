@@ -265,7 +265,7 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
             assert_eq!(
                 indexed,
                 keys.len(),
-                "{records}/{range}: the index holds {indexed} pages for {} written keys, so the \
+                "{records}/{range}: the index holds {indexed} blocks for {} written keys, so the \
                  distribution above is not this fixture's",
                 keys.len()
             );
@@ -295,10 +295,10 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
     }
     assert!(
         narrow_reached_many > 0 && widest_seen >= 2,
-        "no multi-page list was built at either corpus size; every figure above would be vacuous"
+        "no multi-block list was built at either corpus size; every figure above would be vacuous"
     );
     println!(
-        "  the widest page list seen across both corpus sizes on 0..{NARROW_END} holds \
+        "  the widest block list seen across both corpus sizes on 0..{NARROW_END} holds \
          {widest_seen} blocks"
     );
 }
@@ -508,8 +508,8 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         live.tally(5).block_refs
     );
     let again = index.insert(&only_key, only.clone(), &mut live);
-    assert_eq!(first, again, "the same page took two different handles");
-    assert_eq!(1, index.len(), "a rewrite on the One arm filed {} pages", index.len());
+    assert_eq!(first, again, "the same block took two different handles");
+    assert_eq!(1, index.len(), "a rewrite on the One arm filed {} blocks", index.len());
     assert!(
         matches!(index, BlockIndexMap::One(..)),
         "a rewrite on the One arm spilled the bucket onto a list"
@@ -517,7 +517,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
     assert_eq!(
         1,
         live.tally(5).block_refs,
-        "one page filed TWICE left {} live ref(s) on its slab. The replace branch must report the \
+        "one block filed TWICE left {} live ref(s) on its slab. The replace branch must report the \
          address it displaced so the tally can discharge it; a branch that reports none charges \
          without discharging and the store believes it holds twice the blocks it does",
         live.tally(5).block_refs
@@ -525,7 +525,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
     assert_eq!(
         only.address.length(),
         live.tally(5).bytes,
-        "one page filed twice left {} live bytes on its slab against the page's own {}; the \
+        "one block filed twice left {} live bytes on its slab against the block's own {}; the \
          displaced address was not discharged",
         live.tally(5).bytes,
         only.address.length()
@@ -545,7 +545,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         for (object_key, entry) in &blocks {
             index.insert(object_key, entry.clone(), &mut live);
         }
-        assert_eq!(length, index.len(), "the fixture filed the wrong number of pages");
+        assert_eq!(length, index.len(), "the fixture filed the wrong number of blocks");
         assert!(
             matches!(index, BlockIndexMap::Many(_)),
             "a list of {length} did not reach the Many arm"
@@ -555,7 +555,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         assert_eq!(
             length,
             index.len(),
-            "re-filing a page at length {length} grew the list to {}; the list is holding the \
+            "re-filing a block at length {length} grew the list to {}; the list is holding the \
              same block twice",
             index.len()
         );
@@ -581,7 +581,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         assert_eq!(
             length as u64,
             live.tally(9).block_refs,
-            "a list of {length} with one page re-filed holds {} live ref(s) on its slab, not \
+            "a list of {length} with one block re-filed holds {} live ref(s) on its slab, not \
              {length}; the overwrite charged the new address without discharging the one it displaced",
             live.tally(9).block_refs
         );
@@ -619,7 +619,7 @@ fn replacing_a_block_discharges_the_address_it_displaced() {
     let after = live.tally(4);
     assert_eq!(
         before, after,
-        "re-filing the same page moved the live tally from {before:?} to {after:?}; a replace is \
+        "re-filing the same block moved the live tally from {before:?} to {after:?}; a replace is \
          supposed to discharge exactly what it displaces"
     );
 }
@@ -791,7 +791,7 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
     // AND THE MARGIN AT THE MEASURED p50, which is the number the decision actually rests on.
     let (walk_39, bisect_39) = at_thirty_nine.expect("the table covers the measured p50 of 39");
     println!(
-        "  at the measured p50 of 39 pages a bucket: walk {walk_39:.3} entries a hit, bisection \
+        "  at the measured p50 of 39 blocks a bucket: walk {walk_39:.3} entries a hit, bisection \
          {bisect_39:.3} -- {:.2}x",
         walk_39 / bisect_39
     );
@@ -822,7 +822,7 @@ fn the_walk_and_the_bisection_cross_over_where_the_measurement_says() {
     });
     assert_eq!(
         through_the_bisection, through_the_door,
-        "the shipped lookup charged {through_the_door} entries over 39 pages and the bisection \
+        "the shipped lookup charged {through_the_door} entries over 39 blocks and the bisection \
          charged {through_the_bisection}; production is not running the strategy this test picked"
     );
     assert_ne!(
@@ -1009,7 +1009,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         assert_eq!(
             blocks,
             keys.len(),
-            "{records}: the index holds {blocks} pages for {} written keys, so the per-record \
+            "{records}: the index holds {blocks} blocks for {} written keys, so the per-record \
              divisor below is not the fixture's",
             keys.len()
         );
@@ -1480,7 +1480,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     listed.insert_released(&object_key, single.clone());
     assert!(
         matches!(listed, BlockIndexMap::One(..)),
-        "one page did not take the single-page arm, so this comparison is not about the arm that \
+        "one block did not take the single-block arm, so this comparison is not about the arm that \
          shipped"
     );
     let (inline_bytes, inline_chunk, inline_allocs) = span_counts_both(|| {
@@ -1501,7 +1501,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
          {inline_allocs} alloc(s)"
     );
     println!(
-        "  the same page in the SHIPPED boxed arm: {listed_bytes} B asked / {listed_chunk} B served \
+        "  the same block in the SHIPPED boxed arm: {listed_bytes} B asked / {listed_chunk} B served \
          in {listed_allocs} alloc(s)"
     );
     assert_eq!(
@@ -1610,7 +1610,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
         100.0 * crossover
     );
     println!(
-        "  MEASURED single-page fractions: 100.000% on the whole keyspace at both corpus sizes; \
+        "  MEASURED single-block fractions: 100.000% on the whole keyspace at both corpus sizes; \
          4.510% at 4,000 records and 0.000% at 40,000 on 0..{NARROW_END} -- and 1023 is the SHIPPED \
          default since #1973. See `inline_arm_trade.rs` for the histogram and for dropping the arm \
          altogether priced beside these two."
@@ -1632,7 +1632,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     const WORST_SHIPPED_SINGLE_BLOCK_FRACTION: f64 = 0.04510;
     assert!(
         crossover > WORST_SHIPPED_SINGLE_BLOCK_FRACTION,
-        "the inline entry pays for itself in bytes below {:.3}% single-page occupancy, and the \
+        "the inline entry pays for itself in bytes below {:.3}% single-block occupancy, and the \
          shipped routing range measures {:.3}% at its worst corpus size. On this reading boxing \
          the entry is a LOSS at the default the operator runs, and the change should be reconsidered",
         100.0 * crossover,
@@ -1715,7 +1715,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
         serde_json::to_vec(&crate::engine::state::BlockIndexNamedBy(&injected, &["bag"])).expect("the block index serializes");
     assert_ne!(
         written, with_injection,
-        "altering one page of twenty-four left the written bytes unchanged; this comparison \
+        "altering one block of twenty-four left the written bytes unchanged; this comparison \
          cannot see a change and its passing above means nothing"
     );
 }
@@ -1779,7 +1779,7 @@ fn a_read_examines_entries_only_where_a_block_list_exists() {
     let (narrow_examined, narrow_served) = charged[&NARROW_END];
     assert_eq!(
         0, wide_examined,
-        "on the whole keyspace every bucket holds its page inline and no list is walked, yet the \
+        "on the whole keyspace every bucket holds its block inline and no list is walked, yet the \
          counter charged {wide_examined} entries; it is counting something else"
     );
     assert!(
@@ -1848,7 +1848,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
 
     assert_eq!(
         total, distinct,
-        "the index walks {total} entries but only {distinct} distinct handles; {} page(s) are \
+        "the index walks {total} entries but only {distinct} distinct handles; {} block(s) are \
          filed twice",
         total - distinct
     );
@@ -1912,7 +1912,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
     assert_eq!(
         total - 1,
         after,
-        "a planted removal of the page for {planted} moved the count from {total} to {after}; the \
+        "a planted removal of the block for {planted} moved the count from {total} to {after}; the \
          residual instrument cannot see a lost block and its zero above says nothing"
     );
     println!("  the planted loss of one block for {planted} was recovered exactly");

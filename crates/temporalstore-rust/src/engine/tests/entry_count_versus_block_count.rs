@@ -301,7 +301,7 @@ fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> 
 fn projected_entries_per_object(elements_per_object: usize, elements_per_block: usize) -> usize {
     assert!(
         elements_per_block > 0,
-        "a page holding no elements is not a batching scheme, and the division below would be \
+        "a block holding no elements is not a batching scheme, and the division below would be \
          undefined"
     );
     elements_per_object.div_ceil(elements_per_block)
@@ -431,7 +431,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                     let (entries, blocks) = entries_and_blocks(&engine, kind, key);
                     assert!(
                         entries > 0,
-                        "denominator: kind {kind} key {key} holds no live page entry at \
+                        "denominator: kind {kind} key {key} holds no live block entry at \
                          0..{end_routing_bucket} with {elements} elements, so every figure taken \
                          from it below is a zero presented as a measurement"
                     );
@@ -463,7 +463,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         assert_eq!(
                             block_hist.max(),
                             elements,
-                            "{kind} holds fewer distinct pages than elements, so something \
+                            "{kind} holds fewer distinct blocks than elements, so something \
                              already batches it and this module's premise is stale for it"
                         );
                     }
@@ -480,7 +480,7 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
                         assert_eq!(
                             entry_hist.max(),
                             block_hist.max(),
-                            "the series entry count is not its page count, so the deduplication \
+                            "the series entry count is not its block count, so the deduplication \
                              in `sync_bucket_index_object_blocks_with_mode` is not what is being \
                              measured here"
                         );
@@ -630,7 +630,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     assert_eq!(
         block_index_handle(&first_key, &first),
         block_index_handle(&second_key, &second),
-        "two entries over one page hashed to two handles, so something per-element is back in \
+        "two entries over one block hashed to two handles, so something per-element is back in \
          `block_index_handle` and the entry count is no longer the block count"
     );
 
@@ -651,7 +651,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     assert_ne!(
         block_index_handle(&first_key, &first),
         block_index_handle(&elsewhere_key, &elsewhere),
-        "two distinct pages hashed alike, so the handle no longer names the address and a lookup \
+        "two distinct blocks hashed alike, so the handle no longer names the address and a lookup \
          would serve one block's bytes for the other"
     );
     let mut live_two = BlockSlabLiveIndex::default();
@@ -687,7 +687,7 @@ fn one_block_is_one_entry_because_the_handle_can_no_longer_name_an_element() {
     println!("one block, offered twice     -> {} entry", index.len());
     println!("two blocks, one object       -> {} entries", index_two.len());
     println!("one block shape, two objects -> {} entries", index_three.len());
-    println!("so the entry count is the PAGE count, per object");
+    println!("so the entry count is the BLOCK count, per object");
 }
 
 // =================================================================================================
@@ -801,7 +801,7 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
             .count();
         assert_eq!(
             entries, 1,
-            "{kind} key {key} must hold exactly one live page entry -- it holds {entries}, so the \
+            "{kind} key {key} must hold exactly one live block entry -- it holds {entries}, so the \
              one-entry-a-block shape this module contrasts against is not what is on this revision"
         );
     }
@@ -920,7 +920,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         );
         assert!(
             lengths.iter().all(|length| *length == lengths[0]),
-            "the field pages are not all one width, so a single 'today' column cannot stand for \
+            "the field blocks are not all one width, so a single 'today' column cannot stand for \
              them: {lengths:?} -- the fixture's field names are padded to one width for exactly \
              this reason, because a block states its own element and so its length includes that \
              element's name"
@@ -955,7 +955,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         other => panic!("expected Bytes from a hash field read, got {other:?}"),
     }
 
-    println!("one field page today: {today_block_bytes} B for a {VALUE_WIDTH} B value");
+    println!("one field block today: {today_block_bytes} B for a {VALUE_WIDTH} B value");
     println!("  batch   block bytes   bytes fetched per single-element read   amplification");
 
     let mut ratios: Vec<(usize, f64)> = Vec::new();
@@ -989,7 +989,7 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
         }
         assert!(
             *amplification > 1.0,
-            "a batch of {batch} encodes to no more than one element page, so there is no read \
+            "a batch of {batch} encodes to no more than one element block, so there is no read \
              amplification to report and this test is not measuring the trade it claims: \
              {amplification:.2}x"
         );
@@ -1221,7 +1221,7 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
     );
     assert_eq!(
         reported, hash_entries as i64,
-        "HashLen's answer is not the page-index entry count, so batching would not change it and \
+        "HashLen's answer is not the block-index entry count, so batching would not change it and \
          this test is not pinning what it claims"
     );
 
@@ -1239,7 +1239,7 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
     };
     assert_eq!(
         returned, hash_entries,
-        "HashGetAll returned {returned} entries over {hash_entries} page-index entries"
+        "HashGetAll returned {returned} entries over {hash_entries} block-index entries"
     );
 
     // READER 3: SMEMBERS yields one member per entry, each from its own block.
@@ -1256,7 +1256,7 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
     };
     assert_eq!(
         returned, set_entries,
-        "SetMembers returned {returned} members over {set_entries} page-index entries"
+        "SetMembers returned {returned} members over {set_entries} block-index entries"
     );
 
     // THE CONTROL: the zset holds the same entry shape and reaches this door for nothing, so its
@@ -1277,7 +1277,7 @@ fn three_readers_take_the_block_index_entry_count_for_the_element_count() {
         "ZSetCard answered {reported_zset} for {LARGE_ELEMENTS} members"
     );
 
-    println!("HLEN        -> {reported} (page-index entries: {hash_entries})  <- returns the count");
+    println!("HLEN        -> {reported} (block-index entries: {hash_entries})  <- returns the count");
     println!("HGETALL     -> {hash_entries} block reads, one an entry");
     println!("SMEMBERS    -> {set_entries} block reads, one an entry");
     println!("ZCARD       -> {reported_zset} from the durable map, reaching the block index for nothing");

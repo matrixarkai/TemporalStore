@@ -582,7 +582,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
     assert_eq!(
         entities.keys,
         entities.unfiled,
-        "{} of `context_entities`'s {} keys now HAVE a page entry, so the reason it is excused -- \
+        "{} of `context_entities`'s {} keys now HAVE a block entry, so the reason it is excused -- \
          that the block is addressed per entity while the map is keyed per collection -- has \
          stopped being true. It can borrow now, so move it into the checked set.",
         entities.keys - entities.unfiled,
@@ -633,7 +633,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
         .collect();
     assert!(
         unfiled.is_empty(),
-        "these maps hold keys with no page entry, so the adoption had no handle to take and this \
+        "these maps hold keys with no block entry, so the adoption had no handle to take and this \
          run proves nothing about them: {unfiled:?}. A map that CANNOT borrow belongs in \
          NOT_REACHABLE with the reason, not in the checked set reporting a pass."
     );
@@ -643,7 +643,7 @@ fn every_adopted_context_map_holds_the_block_index_own_key() {
         minted
             .iter()
             .all(|(name, _)| NOT_REACHABLE.contains(name)),
-        "{} keys are a SECOND copy of characters the page index already holds -- the map's key and \
+        "{} keys are a SECOND copy of characters the block index already holds -- the map's key and \
          the block index's handle report different addresses for the same text: {:?}. A map keyed \
          by a `ModelKey` must take its handle from \
          `object_block_lookup::any_shared_object_key`, which is what \

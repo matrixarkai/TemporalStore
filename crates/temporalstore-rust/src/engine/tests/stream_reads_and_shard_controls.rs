@@ -707,7 +707,7 @@ fn recovery_validates_all_timestamped_kv_block_families() {
     assert_eq!(
         report.feature_block_layout.packed_timestamped_blocks,
         report.feature_block_layout.unique_timestamped_block_refs,
-        "pages landed as: {} packed, {} legacy, {} corrupt, {} unique refs; first corrupt: {:?}",
+        "blocks landed as: {} packed, {} legacy, {} corrupt, {} unique refs; first corrupt: {:?}",
         report.feature_block_layout.packed_timestamped_blocks,
         report.feature_block_layout.legacy_timestamped_value_blocks,
         report.feature_block_layout.corrupt_packed_feature_blocks.len(),
@@ -720,7 +720,7 @@ fn recovery_validates_all_timestamped_kv_block_families() {
     );
     assert_eq!(
         report.feature_block_layout.legacy_timestamped_value_blocks, 0,
-        "a legacy single-value page survived where a packed one was expected"
+        "a legacy single-value block survived where a packed one was expected"
     );
     assert!(
         report
@@ -1061,7 +1061,7 @@ fn live_block_slab_ids_includes_control_state_blocks() {
     assert!(resp.status.ok, "{:?}", resp.status);
     assert!(
         !engine.live_block_slab_ids(1).is_empty(),
-        "the control-state page's slab must be in the GC live set, else GC can reclaim a slab \
+        "the control-state block's slab must be in the GC live set, else GC can reclaim a slab \
          still referenced by control_state_pages"
     );
 }
@@ -2634,7 +2634,7 @@ fn core_index_loads_legacy_bucket_page_field_names() {
         .block_index
         .values()
         .next()
-        .expect("legacy page index should load");
+        .expect("legacy block index should load");
     // The legacy record's `routing_slot` of 7 is READ AND IGNORED: the address has nowhere to put
     // it, and where the block IS is the key of the bucket map it was loaded into -- asserted by the
     // `bucket_map.get(&7)` this test already performs above.
@@ -3308,7 +3308,7 @@ fn a_scan_past_the_end_of_a_stream_says_it_is_done() {
     );
     assert!(
         block_past.end_of_stream,
-        "a page scan returned {} records at offset {PAST} and said end_of_stream={}, so a \
+        "a block scan returned {} records at offset {PAST} and said end_of_stream={}, so a \
          caller walking `while !end_of_stream` could never advance past it",
         block_past.records.len(),
         block_past.end_of_stream

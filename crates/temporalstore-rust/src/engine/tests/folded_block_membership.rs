@@ -121,7 +121,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     let (batches, folded) = crate::engine::container_batch_counts();
     assert!(
         batches > 0 && folded > 0,
-        "nothing folded ({batches} batches, {folded} pages), so this fixture is not in the state it \
+        "nothing folded ({batches} batches, {folded} blocks), so this fixture is not in the state it \
          claims to be asking about"
     );
 
@@ -203,7 +203,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
 
     assert!(
         tombstone_entries > 0,
-        "DENOMINATOR: the removal left no tombstone entry, so there is no page for the derivation to \
+        "DENOMINATOR: the removal left no tombstone entry, so there is no block for the derivation to \
          read the removal out of and any agreement below would be an agreement about nothing"
     );
     assert!(live_entries > 0, "DENOMINATOR: no live entries for this object");
@@ -227,7 +227,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         derived.removed.len()
     );
     println!(
-        "  the removed member: held by the resident map = {}, derived live from the pages = {}, \
+        "  the removed member: held by the resident map = {}, derived live from the blocks = {}, \
          NAMED REMOVED by the blocks = {}",
         served.contains(&victim),
         derived.live.contains_key(&victim_component),
@@ -276,7 +276,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     // THE INVERTED CONSTRAINT. This is the assertion whose flip is the result.
     assert!(
         derived.removed.contains(&victim_component),
-        "THE PAGES DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
+        "THE BLOCKS DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
          block stays live for its other elements and nothing rewrote it, so the removed member is \
          still in it and a block-derived membership resurrects it. Either the removal did not append \
          a tombstone block, or the entry that kept that block reachable was dropped, or the derivation \
@@ -284,7 +284,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     );
     assert!(
         !derived.live.contains_key(&victim_component),
-        "the pages derive the removed member as LIVE as well as removed, so the tombstone did not \
+        "the blocks derive the removed member as LIVE as well as removed, so the tombstone did not \
          outrank the block it supersedes -- which is an ORDERING failure, not a missing tombstone"
     );
 

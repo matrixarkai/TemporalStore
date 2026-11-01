@@ -230,7 +230,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     );
     assert!(
         !addresses.is_empty(),
-        "the index names no page at all for this object, so the fold below is handed nothing and \
+        "the index names no block at all for this object, so the fold below is handed nothing and \
          its answer would be empty for a reason that has nothing to do with the removal"
     );
     assert!(
@@ -256,7 +256,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     // ---- THE PROPERTY UNDER TEST ----
     assert!(
         !derived.live.contains_key(&victim_component),
-        "A MEMBERSHIP FOLDED FROM THE PAGES THE INDEX NAMES STILL HOLDS THE REMOVED MEMBER.\n\
+        "A MEMBERSHIP FOLDED FROM THE BLOCKS THE INDEX NAMES STILL HOLDS THE REMOVED MEMBER.\n\
          The removal appended a tombstone block that names the element, but \
          `mark_bucket_index_block_deleted_recording` selects the entry to tombstone BY COMPONENT \
          and a block-named entry has none -- so nothing was filed and the tombstone block is \
@@ -267,7 +267,7 @@ fn a_gated_removal_leaves_a_tombstone_block_the_index_can_reach() {
     );
     assert!(
         derived.removed.contains(&victim_component),
-        "the fold does not name the victim as removed either, so the pages the index reaches say \
+        "the fold does not name the victim as removed either, so the blocks the index reaches say \
          nothing about it at all -- which is the silence a reader cannot tell from 'no removal'"
     );
 }

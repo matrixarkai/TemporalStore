@@ -438,7 +438,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 let seen = walk(&engine);
                 assert_eq!(
                     seen.blocks, seeded as u64,
-                    "{shape:?}/{records}/{end_routing_bucket}: the index holds {} pages for a seed \
+                    "{shape:?}/{records}/{end_routing_bucket}: the index holds {} blocks for a seed \
                      of {seeded}, so the per-record divisor below is not this fixture's",
                     seen.blocks
                 );
@@ -453,7 +453,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                     "whole keyspace"
                 };
                 println!(
-                    "\n== {shape:?}, {records} pages on {range} ==\n  buckets {} (Empty {} / One \
+                    "\n== {shape:?}, {records} blocks on {range} ==\n  buckets {} (Empty {} / One \
                      {} / Many {}), blocks {}, list len {} vs capacity {} (p50 {}, p90 {}, MAX {}, \
                      {} lists)",
                     seen.buckets,
@@ -504,11 +504,11 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                      not the index being free"
                 );
                 println!(
-                    "  whole report {reported} B (nodes {} + pages {shipped_block_term})",
+                    "  whole report {reported} B (nodes {} + blocks {shipped_block_term})",
                     seen.node_inline_request()
                 );
                 println!(
-                    "  PAGE TERM shipped {shipped_block_term} B | walked at capacity {} B | \
+                    "  BLOCK TERM shipped {shipped_block_term} B | walked at capacity {} B | \
                      allocator returned {freed_bytes} B in {frees} frees",
                     seen.block_heap_request
                 );
@@ -556,7 +556,7 @@ fn the_resident_index_report_is_measured_against_the_allocator() {
                 // error nobody measured -- which is the state this module exists to leave behind.
                 assert_eq!(
                     seen.block_heap_request, freed_bytes,
-                    "{shape:?}/{records}/{end_routing_bucket}: the walk accounts for {} B of page \
+                    "{shape:?}/{records}/{end_routing_bucket}: the walk accounts for {} B of block \
                      index and the allocator returned {freed_bytes} B. The fixed report ships this \
                      walk, so a difference here is the shipped figure's error and not the test's",
                     seen.block_heap_request
@@ -680,7 +680,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
     assert_eq!(
         pair_stride,
         std::mem::size_of::<u64>() as u64 + entry_width,
-        "the page list's element is {pair_stride} B where its handle ({} B) and its entry \
+        "the block list's element is {pair_stride} B where its handle ({} B) and its entry \
          ({entry_width} B) add to {}. The stride has acquired padding the report's arithmetic \
          does not model",
         std::mem::size_of::<u64>(),
@@ -694,14 +694,14 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
     );
     assert!(
         seen.arm_one > 0 && seen.arm_many > 0,
-        "the fixture holds {} single-page buckets and {} lists; the reconstruction needs both \
+        "the fixture holds {} single-block buckets and {} lists; the reconstruction needs both \
          terms exercised or one of them is asserted to be zero",
         seen.arm_one,
         seen.arm_many
     );
     assert!(
         seen.list_capacity > seen.list_len,
-        "the page lists hold {} entries in a capacity of {}. With no slack the capacity term is \
+        "the block lists hold {} entries in a capacity of {}. With no slack the capacity term is \
          indistinguishable from a length term and this guard cannot tell which the report used",
         seen.list_len,
         seen.list_capacity
@@ -730,7 +730,7 @@ fn the_resident_index_report_reconstructs_from_the_widths_the_containers_declare
     );
     assert!(
         old_arithmetic < reported,
-        "charging every page one ENTRY width answers {old_arithmetic} B against the published \
+        "charging every block one ENTRY width answers {old_arithmetic} B against the published \
          {reported} B. On a store holding lists those cannot be equal, so the report has gone back \
          to reading a block count"
     );
@@ -807,10 +807,10 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_bloc
     load_on(&engine, WIDE_END);
     let keys = seed_routed(&engine, SMALL);
     let seen = walk(&engine);
-    assert_eq!(seen.blocks, keys.len() as u64, "the fixture's page population moved");
+    assert_eq!(seen.blocks, keys.len() as u64, "the fixture's block population moved");
     assert_eq!(
         seen.arm_one, seen.buckets,
-        "{} of {} buckets are single-page. This control is only a control while the whole \
+        "{} of {} buckets are single-block. This control is only a control while the whole \
          keyspace gives every key a bucket of its own; if that has changed the change under test \
          CAN move this figure and a 0.00% reading here means nothing",
         seen.arm_one, seen.buckets
@@ -829,7 +829,7 @@ fn the_index_report_does_not_move_on_the_range_where_every_bucket_is_single_bloc
     );
     assert!(
         block_term > 0 && seen.buckets * node_width > 0,
-        "the control exercised a node term of {} B and a page term of {block_term} B; a control \
+        "the control exercised a node term of {} B and a block term of {block_term} B; a control \
          that reads zero bytes reports no movement because there was nothing to move",
         seen.buckets * node_width
     );
@@ -873,14 +873,14 @@ fn the_published_floor_is_the_node_term_of_the_published_total() {
     assert_eq!(
         total - floor,
         seen.block_heap_request,
-        "the published total less the published floor is {} B, where the page indexes hold {} B. \
+        "the published total less the published floor is {} B, where the block indexes hold {} B. \
          The floor has stopped being the total's own node term",
         total - floor,
         seen.block_heap_request
     );
     assert!(
         total > floor,
-        "the total {total} B does not exceed the floor {floor} B, so the page term is zero and \
+        "the total {total} B does not exceed the floor {floor} B, so the block term is zero and \
          this store exercises nothing the floor does not"
     );
 }

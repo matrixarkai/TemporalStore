@@ -432,7 +432,7 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
     assert_eq!(
         stride_now,
         size_of::<u64>() + entry_total,
-        "the stride is not a handle plus an entry, so the page list is not the shape this \
+        "the stride is not a handle plus an entry, so the block list is not the shape this \
          measurement prices"
     );
     // THE ORDINAL LANDS EXACTLY WHERE THE ENTRY ALREADY IS, which is why this is an equality and
@@ -462,7 +462,7 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
          this number and must be recomputed"
     );
     println!(
-        "  VERDICT: the arithmetic is SPENT -- {saving} bytes a page, because the sixteen it \
+        "  VERDICT: the arithmetic is SPENT -- {saving} bytes a block, because the sixteen it \
          priced were taken by the identity leaving the entry. The u8 adds nothing to the u16 and \
          the u16 adds nothing to today. What follows is why the route was refused on identity \
          grounds that never depended on the width."
@@ -533,7 +533,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
 
     assert!(
         blocks_seen > 0 && rows_seen > 0,
-        "DENOMINATOR: {blocks_seen} pages and {rows_seen} rows walked. A store that filed nothing \
+        "DENOMINATOR: {blocks_seen} blocks and {rows_seen} rows walked. A store that filed nothing \
          would satisfy every assertion below while observing nothing"
     );
     assert_eq!(
@@ -836,7 +836,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     );
     assert_eq!(
         string_blocks, ROUTED_KEYS,
-        "CONTROL NOT EXERCISED: {string_blocks} string pages, not {ROUTED_KEYS}. A control that \
+        "CONTROL NOT EXERCISED: {string_blocks} string blocks, not {ROUTED_KEYS}. A control that \
          read nothing reports no movement for the wrong reason"
     );
     assert!(
@@ -845,7 +845,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     );
     assert!(
         hash_blocks > hash_rows,
-        "DENOMINATOR: {hash_blocks} pages and {hash_rows} rows on the container arm. A fixture \
+        "DENOMINATOR: {hash_blocks} blocks and {hash_rows} rows on the container arm. A fixture \
          whose keys held one block each would measure nothing"
     );
 
@@ -854,13 +854,13 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // collapse does not reopen the route.
     assert_eq!(
         string_rows, string_blocks,
-        "the control holds {string_rows} rows for {string_blocks} pages. #2019 was the identity on \
+        "the control holds {string_rows} rows for {string_blocks} blocks. #2019 was the identity on \
          this arm, so one row per block is what it must still hold; if this has moved, the route IS \
          reopened and this module's verdict needs remeasuring"
     );
     assert!(
         string_net <= 0.0,
-        "the control's CEILING is {string_net:+.4} B/page, above zero. Only the name pointer is \
+        "the control's CEILING is {string_net:+.4} B/block, above zero. Only the name pointer is \
          charged here, so a positive ceiling would mean the arm could pay once the list's \
          allocation is charged too -- which is the opposite of what the standing +8.11 to +9.10 \
          measures"
@@ -886,13 +886,13 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     // still pass.
     assert!(
         hash_net <= 0.0,
-        "the container arm's ceiling is {hash_net:+.4} B/page against a {saving} B/page stride \
+        "the container arm's ceiling is {hash_net:+.4} B/block against a {saving} B/block stride \
          saving. With nothing left to save, the only thing this expression can report is the \
          list's own row cost as a negative -- a positive here would mean the saving is back"
     );
 
     println!(
-        "  VERDICT: container ceiling {hash_net:+.2} B/page, CONTROL routed ceiling \
+        "  VERDICT: container ceiling {hash_net:+.2} B/block, CONTROL routed ceiling \
          {string_net:+.2} B/block over {string_blocks} blocks and {string_rows} rows. #2019 collapsed \
          the container arm's rows/block by 25x and did NOT move the routed arm, whose ceiling is \
          zero before the list's allocation is charged at all -- so step 1b stays refuted."
@@ -925,13 +925,13 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     assert_eq!(
         percentile(&per_key, 50.0),
         1,
-        "p50 pages per key is not 1 on a fixture that is {ROUTED_KEYS} single-page keys beside \
+        "p50 blocks per key is not 1 on a fixture that is {ROUTED_KEYS} single-block keys beside \
          {CONTAINER_KEYS} containers, so the caveat this module repeats would be wrong"
     );
     assert_eq!(
         per_key.last().copied().unwrap_or(0),
         MEMBERS_PER_KEY,
-        "MAX pages per key is not {MEMBERS_PER_KEY}: the container arm is what makes the effect \
+        "MAX blocks per key is not {MEMBERS_PER_KEY}: the container arm is what makes the effect \
          visible and it is not in this sample"
     );
     assert!(

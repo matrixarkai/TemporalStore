@@ -303,7 +303,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     // and that is asserted member by member rather than by a count.
     assert_eq!(
         3, live,
-        "{live} live entries after removing one of three. One entry a page means the live count is \
+        "{live} live entries after removing one of three. One entry a block means the live count is \
          the BLOCK count, which a removal does not reduce -- if this is 2 the removal has started \
          retiring the vacated block's entry, which is the footprint fix the doc describes, and the \
          comment above it should be read rather than this number adjusted"
@@ -502,7 +502,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     // above says exactly that, and the two assertions here are its two halves.
     assert_eq!(
         MEMBERS, live_after,
-        "{live_after} live entries where {MEMBERS} pages were written. A removal retains the page \
+        "{live_after} live entries where {MEMBERS} blocks were written. A removal retains the block \
          entry, so the live count must not fall -- if it has, the vacated block's entry is being \
          retired and this module's cost figure needs remeasuring rather than this number adjusting"
     );
@@ -523,7 +523,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     assert_eq!(
         MEMBERS + REMOVED,
         live_after + tombstoned_after,
-        "the total entry count is {} where {MEMBERS} pages were written and {REMOVED} removed. A \
+        "the total entry count is {} where {MEMBERS} blocks were written and {REMOVED} removed. A \
          removal adds a tombstone rather than replacing an entry, so the cost is exactly one entry \
          per removed element and the total must be their sum",
         live_after + tombstoned_after
@@ -574,7 +574,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
         )
     };
     println!(
-        "  after a fold round ({batches} batches, {folded} pages folded): {live_folded} live + \
+        "  after a fold round ({batches} batches, {folded} blocks folded): {live_folded} live + \
          {tombstoned_folded} tombstone; {refiled} tombstone(s) carried across the rebuild"
     );
     println!(
@@ -583,7 +583,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     );
     assert!(
         batches > 0 && folded > 0,
-        "DENOMINATOR: the round folded nothing ({batches} batches, {folded} pages), so it says \
+        "DENOMINATOR: the round folded nothing ({batches} batches, {folded} blocks), so it says \
          nothing about what a round does to a tombstone"
     );
     assert!(
@@ -649,13 +649,13 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     };
     assert!(
         live_blocks_folded < MEMBERS - REMOVED,
-        "DENOMINATOR: the survivors resolve to {live_blocks_folded} live page(s) for {} members, so \
+        "DENOMINATOR: the survivors resolve to {live_blocks_folded} live block(s) for {} members, so \
          nothing folded and 'one entry a block' is the same number as one entry an element here",
         MEMBERS - REMOVED
     );
     assert_eq!(
         live_blocks_folded, live_folded,
-        "the rebuild produced {live_folded} live entries over {live_blocks_folded} live page(s). It \
+        "the rebuild produced {live_folded} live entries over {live_blocks_folded} live block(s). It \
          emits at most one per distinct block, so these must agree -- more means the stale entries a \
          removal left over its vacated blocks survived the round, which is the retained-entry cost \
          this module prices and which the round is what clears"
@@ -1003,7 +1003,7 @@ fn a_removed_member_does_not_make_its_object_deleted() {
 
     assert!(
         !object.deleted,
-        "ONE REMOVED MEMBER MADE THE WHOLE OBJECT READ AS DELETED. `object.deleted |= page.deleted` \
+        "ONE REMOVED MEMBER MADE THE WHOLE OBJECT READ AS DELETED. `object.deleted |= block.deleted` \
          said it from a single block, which was right while the only writer of that flag deleted an \
          object's blocks together and is wrong the moment one removed member carries it."
     );

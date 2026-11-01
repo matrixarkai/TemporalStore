@@ -380,7 +380,7 @@ fn release_everything(engine: &TemporalEngine) {
         engine.release_all_releasable_bucket_index_blocks(SHARD);
     assert!(
         released_buckets > 0 && released_blocks > 0,
-        "nothing was released ({released_buckets} buckets / {released_blocks} pages, {refused} \
+        "nothing was released ({released_buckets} buckets / {released_blocks} blocks, {refused} \
          refused), so what follows is not about a released bucket"
     );
     let resident_blocks: usize = {
@@ -396,7 +396,7 @@ fn release_everything(engine: &TemporalEngine) {
     };
     assert_eq!(
         0, resident_blocks,
-        "{released_blocks} pages were reported released but {resident_blocks} are still filed, so \
+        "{released_blocks} blocks were reported released but {resident_blocks} are still filed, so \
          the release reported a number and dropped nothing"
     );
 }

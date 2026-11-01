@@ -279,7 +279,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     let only_framed = derive_membership("set", vec![framed_at.clone()], read());
     let with_bare = derive_membership("set", vec![framed_at.clone(), bare_at.clone()], read());
 
-    println!("\n=== the fold, with and without an unframed page ===");
+    println!("\n=== the fold, with and without an unframed block ===");
     println!(
         "  framed only : live={} unframed={} complete={}",
         only_framed.live.len(),
@@ -297,7 +297,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     assert_eq!(
         1,
         only_framed.live.len(),
-        "the framed-only fold found {} live element(s), so this fixture's framed page is not \
+        "the framed-only fold found {} live element(s), so this fixture's framed block is not \
          being walked and neither column below is attributable",
         only_framed.live.len()
     );
@@ -306,10 +306,10 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
         "the framed-only fold does not name the member, so the codec and the fold disagree about \
          the spelling and nothing here is about unframed blocks"
     );
-    assert_eq!(0, only_framed.unframed, "the framed page was counted unframed");
+    assert_eq!(0, only_framed.unframed, "the framed block was counted unframed");
     assert!(
         only_framed.is_complete(),
-        "a fold of framed pages alone reports itself incomplete, so `is_complete` is false for a \
+        "a fold of framed blocks alone reports itself incomplete, so `is_complete` is false for a \
          reason that has nothing to do with the bare block added below"
     );
 
@@ -321,7 +321,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     );
     assert!(
         !with_bare.is_complete(),
-        "A FOLD THAT MET AN UNFRAMED PAGE REPORTS ITSELF COMPLETE. The gated listing keys its \
+        "A FOLD THAT MET AN UNFRAMED BLOCK REPORTS ITSELF COMPLETE. The gated listing keys its \
          decline on exactly this, so if `is_complete()` stops noticing an unframed block the \
          listing would serve a membership short by however many it met -- silently, because an \
          unframed block contributes no element and therefore no error either"
@@ -330,7 +330,7 @@ fn an_unframed_block_makes_the_fold_decline_rather_than_answer_short() {
     assert_eq!(
         only_framed.live.len(),
         with_bare.live.len(),
-        "the bare page contributed {} extra live element(s). It cannot name an element, so it must \
+        "the bare block contributed {} extra live element(s). It cannot name an element, so it must \
          contribute none -- and that is precisely why the fold has to decline rather than answer",
         with_bare.live.len() - only_framed.live.len()
     );

@@ -1774,7 +1774,7 @@ fn nothing_acknowledged_is_lost_when_the_bound_releases_and_the_shard_reloads() 
         // --- 2. AND NOTHING WAS DROPPED. ---
         assert_eq!(
             dropped_total, 0,
-            "the bound's rounds deleted {dropped_total} records. This arm releases pages; only the \
+            "the bound's rounds deleted {dropped_total} records. This arm releases blocks; only the \
              `delete_drop` path deletes, and `apply_index_resident_bound` does not take it"
         );
 
@@ -2276,7 +2276,7 @@ fn the_shipped_defaults_release_blocks_and_keep_every_record_when_the_bound_is_c
         // --- 2. AND NOTHING WAS DROPPED. ---
         assert_eq!(
             dropped_total, 0,
-            "the bound's rounds deleted {dropped_total} records. This arm releases pages; only the \
+            "the bound's rounds deleted {dropped_total} records. This arm releases blocks; only the \
              `delete_drop` branch deletes, it ships off, and `apply_index_resident_bound` does not \
              take it"
         );
@@ -2684,7 +2684,7 @@ fn a_round_that_skips_a_band_in_use_keeps_every_acknowledged_record() {
         // --- 2. AND DROPPED NOTHING. ---
         assert_eq!(
             dropped_total, 0,
-            "the rounds deleted {dropped_total} records. Relieving memory releases pages; only \
+            "the rounds deleted {dropped_total} records. Relieving memory releases blocks; only \
              the retired `delete_drop` branch deletes, and this arm does not take it"
         );
 

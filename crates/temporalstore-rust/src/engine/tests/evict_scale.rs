@@ -386,7 +386,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     let victim_slabs = slabs_spanned_by(&engine, &victims);
 
     println!(
-        "  fixture: {GUARD_LARGE} records -> {buckets} buckets, live pages by slab {by_slab:?}, \
+        "  fixture: {GUARD_LARGE} records -> {buckets} buckets, live blocks by slab {by_slab:?}, \
          {} victims spanning slabs {victim_slabs:?}",
         victims.len()
     );
@@ -398,7 +398,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     );
     assert!(
         by_slab.len() > 1,
-        "the fixture produced {} block slab(s) holding live pages; a single-slab store cannot \
+        "the fixture produced {} block slab(s) holding live blocks; a single-slab store cannot \
          show that a selection spans slabs, and the mid-seed roll is there to prevent exactly \
          this: {by_slab:?}",
         by_slab.len()
@@ -406,7 +406,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     for (slab, blocks) in &by_slab {
         assert!(
             *blocks > 0,
-            "slab {slab} holds {blocks} live pages; a slab counted from the directory rather than \
+            "slab {slab} holds {blocks} live blocks; a slab counted from the directory rather than \
              from its records would pass here on an empty file"
         );
     }
@@ -441,7 +441,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     );
     assert_ne!(
         victim_slabs, scan_order_slabs,
-        "the round took the pages a scan-ordered selection would take ({victim_slabs:?}); the \
+        "the round took the blocks a scan-ordered selection would take ({victim_slabs:?}); the \
          victims have to be chosen by recency, and in this fixture recency is write time"
     );
     let newest_victim_slab = victim_slabs
@@ -1517,7 +1517,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
     let releasing = one_round(&engine, GUARD_SMALL, BATCH, true);
 
     println!(
-        "  canary: corpus {GUARD_SMALL} + {PLANTED_MARKERS} markers -> {live_blocks} live pages; \
+        "  canary: corpus {GUARD_SMALL} + {PLANTED_MARKERS} markers -> {live_blocks} live blocks; \
          releasing round visited {} addresses, ran {} derivation(s), released {} block(s)",
         releasing.model_visits, releasing.derivations, releasing.released_blocks
     );
@@ -1525,7 +1525,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
     assert_eq!(
         live_blocks,
         (GUARD_SMALL + PLANTED_MARKERS) as u64,
-        "the fixture holds {live_blocks} live model-map pages, not the {} it was asked for; the \
+        "the fixture holds {live_blocks} live model-map blocks, not the {} it was asked for; the \
          planted markers are what makes the visit denominator recoverable and they are not all \
          there",
         GUARD_SMALL + PLANTED_MARKERS
@@ -1550,7 +1550,7 @@ fn the_release_visit_counter_can_see_a_walk_and_recovers_its_planted_markers() {
     );
     assert_eq!(
         releasing.model_visits, live_blocks,
-        "the round visited {} model-map addresses against {live_blocks} live pages. The identity \
+        "the round visited {} model-map addresses against {live_blocks} live blocks. The identity \
          is EXACT and deliberately not a tolerance: one pass over the maps, so a second pass \
          added later shows up as a whole extra store rather than inside a margin",
         releasing.model_visits
@@ -1686,7 +1686,7 @@ fn a_round_that_refuses_every_candidate_no_longer_walks_the_model_maps() {
         );
         assert_eq!(
             cost.model_visits, live,
-            "{records} records: the CONTROL arm visited {} addresses against {live} live pages. \
+            "{records} records: the CONTROL arm visited {} addresses against {live} live blocks. \
              Exact identity, not a tolerance",
             cost.model_visits
         );
@@ -2013,7 +2013,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             assert_eq!(
                 bucket.block_index.len(),
                 before,
-                "bucket {routing_bucket} was refused but now holds {} resident pages against \
+                "bucket {routing_bucket} was refused but now holds {} resident blocks against \
                  {before} before the release. EQUAL, not merely non-zero: a bucket that kept one \
                  of its two blocks would pass a presence check",
                 bucket.block_index.len()

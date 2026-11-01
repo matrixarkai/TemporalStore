@@ -740,7 +740,7 @@ const fn narrow(value: u64) -> u32 {
 const fn narrow_block_id(value: u64) -> u16 {
     if value > MAX_ADDRESSABLE_BLOCK_ID {
         panic!(
-            "block id does not fit the block id field: truncating it would name a different page \
+            "block id does not fit the block id field: truncating it would name a different block \
              of the same object"
         );
     }
@@ -4921,7 +4921,7 @@ const RETIRED_NAMES: &[&str] = &[
         let after = std::fs::metadata(&manifest).unwrap().modified().unwrap();
         assert_eq!(
             before, after,
-            "a page-GC round that reclaimed nothing rewrote the slab manifest"
+            "a block-GC round that reclaimed nothing rewrote the slab manifest"
         );
     }
 

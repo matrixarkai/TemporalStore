@@ -180,7 +180,7 @@ fn round_trip_every_block_through_the_wire(
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
-            "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
+            "block {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
         shard.set_string_address(key.as_str().into(), &older);
@@ -243,7 +243,7 @@ fn the_measured_key_still_hashes_to_the_two_buckets_the_measurement_names() {
     );
     assert!(
         wide > NARROW_END,
-        "the whole-range bucket {wide} is inside 0..{NARROW_END}, so a page filed there is not \
+        "the whole-range bucket {wide} is inside 0..{NARROW_END}, so a block filed there is not \
          actually outside the shard and every assertion in this file passes for the wrong reason"
     );
 }
@@ -449,7 +449,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
     // differ, and the buckets the wide stamp names must be ones the narrow shard does not hold.
     assert_ne!(
         filings[0], filings[1],
-        "the two writers filed the same pages into the same buckets under a 0..{NARROW_END} stamp \
+        "the two writers filed the same blocks into the same buckets under a 0..{NARROW_END} stamp \
          and a 0..{WIDE_END} one. The stamp is the only input to the placement now, so this would \
          mean the writers are not reading it."
     );
@@ -461,7 +461,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
     );
     assert!(
         wide_outside > 0,
-        "the WIDE stamp filed every page inside 0..{NARROW_END} as well, so the two stamps cannot \
+        "the WIDE stamp filed every block inside 0..{NARROW_END} as well, so the two stamps cannot \
          be told apart by where they put a block and the inequality above is measuring noise"
     );
 }
@@ -509,7 +509,7 @@ fn narrowing_the_writers_removes_no_block_that_was_already_filed() {
     assert_eq!(
         0,
         buckets_outside(&before, 0, NARROW_END),
-        "the fixture starts with pages outside the shard's range, so this measures the rebuild \
+        "the fixture starts with blocks outside the shard's range, so this measures the rebuild \
          rather than the writers"
     );
 
@@ -735,7 +735,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
         let contents = bucket_contents(shard);
         let outside = buckets_outside(&contents, 0, write_end);
         println!(
-            "  reopened on 0..{write_end}: {recovered}/{RECORDS} records, {} pages, {outside} \
+            "  reopened on 0..{write_end}: {recovered}/{RECORDS} records, {} blocks, {outside} \
              buckets outside the range, stamp {:?}",
             block_total(&contents),
             shard.routing_range()
@@ -1209,7 +1209,7 @@ fn a_manifest_install_records_the_range_it_filed_under() {
             unloaded_stamp.start_routing_bucket,
             unloaded_stamp.end_routing_bucket
         ),
-        "the install filed pages under {filed:?} and stamped \
+        "the install filed blocks under {filed:?} and stamped \
          {}..{}; a stamp naming a range other than the one the blocks were filed under is worse \
          than no stamp at all",
         unloaded_stamp.start_routing_bucket,

@@ -923,7 +923,7 @@ fn the_common_bucket_does_not_hold_one_entry_at_the_range_that_ships() {
     let shipped_buckets = SHIPPED_END as f64 + 1.0;
     let old_buckets = OLD_END as f64 + 1.0;
 
-    println!("\n=== entries a bucket holds, by routing range, at one page a record ===");
+    println!("\n=== entries a bucket holds, by routing range, at one block a record ===");
     println!("  {:<34} {:>12} {:>14} {:>16}", "range", "buckets", "4,000 recs", "40,000 recs");
     for (label, buckets) in
         [("0..1023 (ships today)", shipped_buckets), ("0..u32::MAX (the old default)", old_buckets)]

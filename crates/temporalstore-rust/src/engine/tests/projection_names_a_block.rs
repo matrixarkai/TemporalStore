@@ -206,7 +206,7 @@ fn what_the_projection_emits_per_object_and_that_re_deriving_twice_does_not_move
         // between absences.
         assert!(
             first_blocks > 0 && first_entries > 0,
-            "occupancy {occupancy}: the first re-derivation left {first_blocks} page(s) and \
+            "occupancy {occupancy}: the first re-derivation left {first_blocks} block(s) and \
              {first_entries} entr(ies), so every comparison below holds over nothing"
         );
 

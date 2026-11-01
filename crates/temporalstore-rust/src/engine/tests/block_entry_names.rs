@@ -127,7 +127,7 @@ impl NameSpread {
             }
         }
         println!(
-            "  multi-page buckets = {}, of which all-one-component = {}",
+            "  multi-block buckets = {}, of which all-one-component = {}",
             self.multi_block_buckets, self.multi_block_buckets_with_one_component
         );
     }
@@ -361,14 +361,14 @@ fn the_three_names_in_a_block_entry_are_per_object_and_a_bucket_is_not_an_object
     for (index, spread) in wide_container.iter().chain(narrow_container.iter()).enumerate() {
         assert_eq!(
             0, spread.multi_block_buckets_with_one_component,
-            "container arm {index}: {} multi-page buckets hold ONE distinct component; every page \
+            "container arm {index}: {} multi-block buckets hold ONE distinct component; every block \
              of a container is a distinct field, member or element, so a bucket whose blocks shared \
              a component would mean the component had stopped telling blocks apart",
             spread.multi_block_buckets_with_one_component
         );
         assert!(
             spread.multi_block_buckets > 0,
-            "container arm {index}: no bucket holds more than one page, so this arm cannot say \
+            "container arm {index}: no bucket holds more than one block, so this arm cannot say \
              anything about whether a name is shared ACROSS blocks -- it would be vacuous"
         );
         assert!(
@@ -616,7 +616,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
         );
         assert!(
             census.blocks / census.objects >= 100,
-            "container arm {index}: {} pages over {} objects; this arm exists to hold objects of \
+            "container arm {index}: {} blocks over {} objects; this arm exists to hold objects of \
              a hundred blocks and it does not reach them",
             census.blocks,
             census.objects
@@ -628,7 +628,7 @@ fn the_blocks_of_one_object_hold_one_allocation_of_its_object_key() {
         assert_eq!(
             1,
             KeyAllocationCensus::widest(&census.object_key),
-            "arm {index}: an object's pages hold up to {} distinct allocations of one object key; \
+            "arm {index}: an object's blocks hold up to {} distinct allocations of one object key; \
              {} surplus copies across {} blocks, {} B",
             KeyAllocationCensus::widest(&census.object_key),
             census.surplus_object_key_allocations,
@@ -779,7 +779,7 @@ fn capture_the_stored_spelling_of_a_block_entry() {
     let text = serde_json::to_string(&index).unwrap();
     println!("INDEX_LEN      = {}", text.len());
     println!("INDEX          = {text}");
-    println!("PAGES ----------------------------------------------------------");
+    println!("BLOCKS ----------------------------------------------------------");
     let named = super::BlockObjects::of(&index);
     for bucket in index.bucket_map.values() {
         for (handle, entry) in bucket.block_index.iter() {
@@ -1228,13 +1228,13 @@ fn an_index_written_before_this_change_loads_block_for_block() {
         loaded.len()
     );
     for (index_of, (want, got)) in expected.iter().zip(loaded.iter()).enumerate() {
-        assert_eq!(want, got, "page {index_of} came back different");
+        assert_eq!(want, got, "block {index_of} came back different");
     }
 
     // --- Anti-vacuity: the fixture has to hold the shapes the claim is about. ---
     assert!(
         loaded.len() >= 5,
-        "the fixture holds {} blocks; it is supposed to hold a multi-page object",
+        "the fixture holds {} blocks; it is supposed to hold a multi-block object",
         loaded.len()
     );
     // THE DERIVATION ABOVE MUST HAVE SOMETHING TO DERIVE, asserted on the SOURCE rather than on the
@@ -1255,24 +1255,24 @@ fn an_index_written_before_this_change_loads_block_for_block() {
     );
     assert!(
         OLD_STORE_INDEX.contains(STORED_NAMED_HANDLE),
-        "the stored index text carries no element-named page handle, so the key shape this arm is \
+        "the stored index text carries no element-named block handle, so the key shape this arm is \
          about is not being exercised"
     );
     // AND NOTHING THAT LOADED CARRIES ONE, which is the other half of the same statement: the
     // decode is tolerant of the key and drops it rather than failing or keeping it.
     assert!(
         loaded.iter().all(|block| block.2.is_none()),
-        "a loaded page carries an element name; the entry has no field for one, so this would mean \
+        "a loaded block carries an element name; the entry has no field for one, so this would mean \
          the field has come back"
     );
     assert!(
         loaded.iter().filter(|block| block.0 == "k").count() > 1,
-        "no object in the fixture holds more than one page, so the axis this change is about is \
+        "no object in the fixture holds more than one block, so the axis this change is about is \
          not covered by this golden"
     );
     assert!(
         bucket.block_index.len() > 1,
-        "the stored bucket holds {} page(s); a single-page bucket would exercise only the inline \
+        "the stored bucket holds {} block(s); a single-block bucket would exercise only the inline \
          arm and say nothing about the map arm",
         bucket.block_index.len()
     );
@@ -1327,7 +1327,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     let stored_bucket_keys = without_the_removed_key.matches(STORED_ROUTING_BUCKET).count();
     assert_eq!(
         6, stored_bucket_keys,
-        "the fixture must carry a stored routing bucket on each of its six page entries, or the \
+        "the fixture must carry a stored routing bucket on each of its six block entries, or the \
          canonicalisation below is not reporting what happens to one"
     );
     let canonical = without_the_removed_key.replace(STORED_ROUTING_BUCKET, EMPTY_ROUTING_BUCKET);
@@ -1339,7 +1339,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     let stored_object_id_count = canonical.matches(STORED_OBJECT_ID).count();
     assert_eq!(
         6, stored_object_id_count,
-        "the fixture must carry a stored object id on each of its six page entries, or the \
+        "the fixture must carry a stored object id on each of its six block entries, or the \
          canonicalisation below is not reporting what happens to one"
     );
     let canonical = canonical.replace(STORED_OBJECT_ID, EMPTIED_OBJECT_ID);
@@ -1394,7 +1394,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
         + canonical.matches(STORED_LOG_RESIDENT_FALSE).count();
     assert_eq!(
         6, log_resident_keys,
-        "the fixture must carry a stored log-resident flag on each of its six page entries, or \
+        "the fixture must carry a stored log-resident flag on each of its six block entries, or \
          the canonicalisation below is not reporting what happens to one"
     );
     let canonical = canonical
@@ -1451,7 +1451,7 @@ fn an_index_written_before_this_change_is_written_back_without_the_key_the_entry
     assert_eq!(
         1,
         canonical.matches(BLOCK_NAMED_HANDLE).count(),
-        "and it must be rewritten to the page-named handle this binary renders"
+        "and it must be rewritten to the block-named handle this binary renders"
     );
 
     // AND THE SIXTH DIFFERENCE: THE ENTRY NO LONGER WRITES THE OBJECT KEY OR THE KIND.
@@ -1640,7 +1640,7 @@ fn what_a_container_store_charges_the_allocator_a_block() {
             census.objects
         );
         println!(
-            "\n=== {label} (store path {path_length} chars) ===\n  pages={} objects={}\n  \
+            "\n=== {label} (store path {path_length} chars) ===\n  blocks={} objects={}\n  \
              alloc calls={} ({:.4} a block)\n  alloc bytes={} ({:.2} B a block)\n  widest object-key \
              allocation count={}",
             census.blocks,
@@ -1653,7 +1653,7 @@ fn what_a_container_store_charges_the_allocator_a_block() {
         );
         assert!(
             counts.allocs > 0,
-            "the probe reported zero allocations for a seed of {} pages, which reads as a path \
+            "the probe reported zero allocations for a seed of {} blocks, which reads as a path \
              that does not allocate",
             census.blocks
         );
@@ -1805,7 +1805,7 @@ fn a_store_stamped_with_the_wrong_struct_version_is_refused_before_it_is_decoded
         "the fixture holds {} blocks; too few to tell a correct decode from an empty one",
         want.len()
     );
-    assert_eq!(want, got, "the index did not come back page for page");
+    assert_eq!(want, got, "the index did not come back block for block");
 
     // --- And the control's own control: a DIFFERENT block set must not compare equal. ---
     let mut injected = got.clone();
@@ -2265,7 +2265,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         .map(|(_, _, _, block)| *block)
         .unwrap_or_else(|| {
             panic!(
-                "THE OMITTED-HANDLE PAGE IS MISSING AFTER THE FOLD. If this ever fires, the \
+                "THE OMITTED-HANDLE BLOCK IS MISSING AFTER THE FOLD. If this ever fires, the \
                  rebuilt composite handle HAS become the name the block is filed under, and this \
                  change needs a migration for records already on disk -- a stamp cannot cover it, \
                  because the stamp is what routes load down this path. {} block(s) came back.",
@@ -2277,7 +2277,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         .find(|(_, _, object_key, _)| object_key.as_ref() == WRONG_KEY)
         .map(|(_, _, _, block)| *block)
         .expect(
-            "the page whose stored handle is not any derivation is missing, so the stored handle \
+            "the block whose stored handle is not any derivation is missing, so the stored handle \
              IS consulted somewhere on this path",
         );
 
@@ -2311,7 +2311,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
     let derived_id = crate::engine::hashing::stable_block_object_id(SHARD, KIND, KEY);
     assert!(
         named.object_index.contains(&derived_id),
-        "the bucket's object index does not name the page by its DERIVED id, so a per-object read \
+        "the bucket's object index does not name the block by its DERIVED id, so a per-object read \
          would not reach the block even though the block is filed"
     );
     assert_ne!(

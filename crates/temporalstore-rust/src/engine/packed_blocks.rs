@@ -817,14 +817,14 @@ mod single_point_chunking_tests {
         // 2. Two small points still share one block -- so the early return is not what produced
         //    the single chunk above, and this test can tell the two apart.
         let together = chunk_timestamped_kv_points(vec![point(1, 8), point(2, 8)]);
-        assert_eq!(together.len(), 1, "two small points share a page");
+        assert_eq!(together.len(), 1, "two small points share a block");
         assert_eq!(together[0].len(), 2, "and both are in it");
 
         // 3. Two points too big to share DO split, which is the behaviour the short circuit must
         //    not have disabled for the multi-point path.
         let target = context_block_target_bytes();
         let split = chunk_timestamped_kv_points(vec![point(1, target), point(2, target)]);
-        assert_eq!(split.len(), 2, "two oversized points must not share a page");
+        assert_eq!(split.len(), 2, "two oversized points must not share a block");
         assert_eq!(split[0][0].timestamp_ms, 1, "order is preserved across the split");
         assert_eq!(split[1][0].timestamp_ms, 2, "order is preserved across the split");
     }

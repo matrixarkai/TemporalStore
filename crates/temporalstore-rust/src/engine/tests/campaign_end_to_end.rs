@@ -224,7 +224,7 @@ impl BlocksPerBucket {
 
     fn line(&self, label: &str) {
         println!(
-            "    {label:<40} buckets {:>6} pages {:>6} | mean {:>8.3} min {:>4} p50 {:>4} \
+            "    {label:<40} buckets {:>6} blocks {:>6} | mean {:>8.3} min {:>4} p50 {:>4} \
              p90 {:>4} p99 {:>4} MAX {:>4}",
             self.buckets(),
             self.blocks(),
@@ -249,7 +249,7 @@ impl BlocksPerBucket {
         );
         if self.counts.len() > 24 {
             println!(
-                "        {} distinct page counts; printing the sixteen widest and the sixteen \
+                "        {} distinct block counts; printing the sixteen widest and the sixteen \
                  narrowest over a denominator of {buckets}",
                 self.counts.len()
             );
@@ -350,7 +350,7 @@ fn the_widths_and_the_container_stride_at_this_end_of_the_campaign() {
         align_of::<BucketNode>()
     );
     println!(
-        "  BlockIndex      {entry:>4} B  (align {})   PER PAGE",
+        "  BlockIndex      {entry:>4} B  (align {})   PER BLOCK",
         align_of::<BlockIndex>()
     );
     println!(
@@ -358,12 +358,12 @@ fn the_widths_and_the_container_stride_at_this_end_of_the_campaign() {
         align_of::<BlockIndexMap>()
     );
     println!(
-        "  ElementEntry    {address:>4} B  (align {})   PER PAGE, inside the entry",
+        "  ElementEntry    {address:>4} B  (align {})   PER BLOCK, inside the entry",
         align_of::<crate::ElementEntry>()
     );
     println!("CONTAINER STRIDE");
     println!(
-        "  (u64, BlockIndex) {stride:>4} B  (align {})  <- THIS is what multiplies by the page \
+        "  (u64, BlockIndex) {stride:>4} B  (align {})  <- THIS is what multiplies by the block \
          count, not {entry}",
         align_of::<(u64, BlockIndex)>()
     );
@@ -512,7 +512,7 @@ fn measure_cell(arm: usize, records: usize, end_routing_bucket: u32) -> (Cell, B
     let nodes = node_count(&engine);
     assert!(
         hist.blocks() >= records,
-        "the cell on 0..{end_routing_bucket} at {records} records filed {} pages; the fixture did \
+        "the cell on 0..{end_routing_bucket} at {records} records filed {} blocks; the fixture did \
          not reach the population it claims",
         hist.blocks()
     );
@@ -687,7 +687,7 @@ fn the_four_cells_of_the_campaign_on_one_instrument_at_two_corpus_sizes() {
         );
         assert_eq!(
             wide.blocks, narrow.blocks,
-            "the two ranges filed {} and {} pages for the same {records} records; the range is \
+            "the two ranges filed {} and {} blocks for the same {records} records; the range is \
              supposed to move where a block is filed and never how many there are, and a row \
              comparison over two different block counts is not one",
             wide.blocks, narrow.blocks
@@ -799,7 +799,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         let counts = probe.stop();
         let hist = blocks_per_bucket(&engine);
         println!(
-            "  run {} on {:<12} buckets {:>4} pages {:>6} MAX {:>6} | request {:>10} B chunk \
+            "  run {} on {:<12} buckets {:>4} blocks {:>6} MAX {:>6} | request {:>10} B chunk \
              {:>10} B allocations {:>8}",
             runs.len() + 1,
             range_label(end_routing_bucket),
@@ -847,7 +847,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         assert_eq!(
             first,
             (run.1, run.2, run.3),
-            "run {} on 0..{} filed {} buckets / {} pages / widest {} against run 1's {:?}; \
+            "run {} on 0..{} filed {} buckets / {} blocks / widest {} against run 1's {:?}; \
              routing takes the object key and never the component, so the range cannot split one \
              key -- if it did here, the mechanism the column effect is attributed to is not the \
              mechanism",
@@ -860,7 +860,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         );
     }
     println!(
-        "  CONTROL structure: every one of the {} arms filed {:?} (buckets, pages, widest) -- \
+        "  CONTROL structure: every one of the {} arms filed {:?} (buckets, blocks, widest) -- \
          0.00%, exactly, with no band",
         runs.len(),
         first
@@ -899,7 +899,7 @@ fn the_range_buys_nothing_for_a_store_whose_blocks_share_one_object_key() {
         );
         assert!(
             between.abs() <= band.max(0.000_1),
-            "on a store whose pages all share one object key the range moved {label} by \
+            "on a store whose blocks all share one object key the range moved {label} by \
              {between:+.4}%, which is OUTSIDE the {band:.4}% band two runs of the SAME range \
              showed. A shift larger than the instrument's own spread on a workload where the \
              range can group nothing is a second channel, and the column effect measured in this \

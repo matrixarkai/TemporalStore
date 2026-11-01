@@ -108,7 +108,7 @@ fn folded_set(object_key: &str) -> (TemporalEngine, tempfile::TempDir) {
     let (batches, folded) = crate::engine::container_batch_counts();
     assert!(
         batches > 0 && folded > 0,
-        "the fixture folded nothing: {batches} batch(es), {folded} page(s). Every arm below rests \
+        "the fixture folded nothing: {batches} batch(es), {folded} block(s). Every arm below rests \
          on the members sharing a block, so this is not a fixture detail."
     );
     (engine, dir)
@@ -311,7 +311,7 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     let (engine, _dir) = folded_set("listing/whole");
     let (blocks, live, tombstoned) = block_and_entry_counts(&engine, "listing/whole");
     println!(
-        "[presence] {blocks} distinct page(s), {live} live entr(ies), {tombstoned} tombstoned, \
+        "[presence] {blocks} distinct block(s), {live} live entr(ies), {tombstoned} tombstoned, \
          for {MEMBERS} members"
     );
     // RE-ATTRIBUTED, BECAUSE `blocks < live` BECAME UNREACHABLE RATHER THAN FALSE. All four
@@ -329,13 +329,13 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     assert_eq!(
         MEMBERS,
         stated.len(),
-        "the live pages state {} member(s), not the {MEMBERS} written, so the payload side of the \
+        "the live blocks state {} member(s), not the {MEMBERS} written, so the payload side of the \
          comparison below is not this whole set",
         stated.len()
     );
     assert!(
         blocks < stated.len(),
-        "the members did not come to share a page: {blocks} page(s) stating {} member(s), so \
+        "the members did not come to share a block: {blocks} block(s) stating {} member(s), so \
          nothing here is exercising a block read that used to happen several times",
         stated.len()
     );
@@ -377,7 +377,7 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
 
     let (blocks, live, tombstoned) = block_and_entry_counts(&engine, "listing/removed");
     println!(
-        "[absence] after fold+remove: {blocks} live page(s), {live} live entr(ies), \
+        "[absence] after fold+remove: {blocks} live block(s), {live} live entr(ies), \
          {tombstoned} tombstoned"
     );
 
@@ -386,7 +386,7 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
     let victim_component = hex::encode(&victim);
     assert!(
         stated.contains(&victim_component),
-        "the pages no longer state the removed member as present, so the payload and the entries \
+        "the blocks no longer state the removed member as present, so the payload and the entries \
          AGREE and this arm cannot tell a payload-enumerating reader from an entry-driven one. \
          The removal has to land after the fold for the folded block to still carry it."
     );
@@ -395,7 +395,7 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
     let listed = listed_members(&engine, "listing/removed");
     assert!(
         !listed.contains(&victim),
-        "the listing returned a member that was removed. Its page still states it as live, so a \
+        "the listing returned a member that was removed. Its block still states it as live, so a \
          reader enumerating the payload answers exactly this way -- which is the defect this arm \
          exists for, and the reason identity stays with the entries"
     );
@@ -445,7 +445,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     let (blocks_before, live_before, _) = block_and_entry_counts(&engine, "listing/one-name-gone");
     assert_eq!(
         1, live_before,
-        "the folded object holds {live_before} live entr(ies) over {blocks_before} page(s). One \
+        "the folded object holds {live_before} live entr(ies) over {blocks_before} block(s). One \
          entry a block is what makes a whole-block un-naming the only one available, and this arm \
          is built on it"
     );
@@ -466,7 +466,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     assert_eq!(
         (0usize, 0usize),
         (blocks, live),
-        "dropping this object's one entry left {blocks} page(s) and {live} live entr(ies). The \
+        "dropping this object's one entry left {blocks} block(s) and {live} live entr(ies). The \
          un-naming is supposed to take a whole block's worth of names with it, because there is one \
          entry a block -- if this ever reads (1, 39) the partial un-naming is representable again \
          and the arm this one replaced should come back"
@@ -477,7 +477,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     assert_eq!(
         MEMBERS,
         stated.len(),
-        "the captured pages state {} member(s) after the entry was dropped, not the {MEMBERS} \
+        "the captured blocks state {} member(s) after the entry was dropped, not the {MEMBERS} \
          written. The empty listing below has to be the entries' doing; if the payload went with \
          the name this arm cannot tell an entry-driven reader from a payload-driven one",
         stated.len()
@@ -494,7 +494,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
         listed.len()
     );
     println!(
-        "[source] the object's one entry dropped -> {} member(s) listed, while the captured pages \
+        "[source] the object's one entry dropped -> {} member(s) listed, while the captured blocks \
          still state {} -- identity is the entries'",
         listed.len(),
         stated.len()
@@ -590,21 +590,21 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
     let folded = reads_by_arm[1].1;
     assert!(
         unfolded > 0 && folded > 0,
-        "an arm read no pages at all ({unfolded} unfolded, {folded} folded), so the comparison is \
+        "an arm read no blocks at all ({unfolded} unfolded, {folded} folded), so the comparison is \
          between two unexercised arms"
     );
     assert_eq!(
         MEMBERS as u64, unfolded,
-        "the unfolded arm read {unfolded} pages for {MEMBERS} members; one per member is the shape \
+        "the unfolded arm read {unfolded} blocks for {MEMBERS} members; one per member is the shape \
          this listing has when every member owns its own block"
     );
     assert!(
         folded < unfolded,
-        "the folded arm read {folded} pages against {unfolded} unfolded, so decoding each page \
+        "the folded arm read {folded} blocks against {unfolded} unfolded, so decoding each block \
          once bought nothing"
     );
     println!(
-        "  => the fold takes the listing from {unfolded} page reads to {folded} for the same \
+        "  => the fold takes the listing from {unfolded} block reads to {folded} for the same \
          {MEMBERS} members"
     );
 }

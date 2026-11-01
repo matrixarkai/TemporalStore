@@ -701,7 +701,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         let in_values: usize = blocks.values().map(|entry| reading.instances_in(entry)).sum();
         assert!(
             in_whole_map >= in_values,
-            "[CLAUSE part-sum] a page index holds {in_whole_map} instance(s) while its entries \
+            "[CLAUSE part-sum] a block index holds {in_whole_map} instance(s) while its entries \
              alone hold {in_values}, so the map's own serialization is not its keys plus its \
              values and the subtraction below is not a split"
         );
@@ -722,7 +722,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         // others holding no key at all.
         assert_eq!(
             in_whole_map, in_whole_map - in_values,
-            "[CLAUSE the-entry-holds-no-copy] a page index holds {in_whole_map} key instance(s) of \
+            "[CLAUSE the-entry-holds-no-copy] a block index holds {in_whole_map} key instance(s) of \
              which {in_values} are inside its ENTRIES, so this bucket's entries still carry a copy \
              of the object key"
         );
@@ -734,16 +734,16 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
         println!("  {count:>12} {nodes:>14}");
     }
     println!(
-        "  page-entry MAP KEYS       {block_key_instances:>8} instance(s), {:.3} per object",
+        "  block-entry MAP KEYS       {block_key_instances:>8} instance(s), {:.3} per object",
         block_key_instances as f64 / reading.keys as f64
     );
     println!(
-        "  page-entry `object_key`   {block_field_instances:>8} instance(s), {:.3} per object",
+        "  block-entry `object_key`   {block_field_instances:>8} instance(s), {:.3} per object",
         block_field_instances as f64 / reading.keys as f64
     );
     assert!(
         block_key_instances > 0,
-        "[CLAUSE each-term-nonzero] the page-entry map keys hold no key characters, so this term \
+        "[CLAUSE each-term-nonzero] the block-entry map keys hold no key characters, so this term \
          is a zero that would have been absorbed into another"
     );
     // AND THIS TERM IS NOW EXACTLY ZERO, WHICH IS A SUBJECT CHANGE AND NOT A RELAXED CLAUSE.
@@ -760,13 +760,13 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     // ENTIRELY in its keys -- the characters moved, they did not leave the index.
     assert_eq!(
         0, block_field_instances,
-        "[CLAUSE the-entry-holds-no-copy] the page entries hold {block_field_instances} instance(s) \
+        "[CLAUSE the-entry-holds-no-copy] the block entries hold {block_field_instances} instance(s) \
          of an object key's characters. `object_key` left the entry at \
          `SHARD_INDEX_FORMAT_VERSION` 27 because the composite key the entry is filed under \
          already spells it, so a copy on the entry means the field has come back"
     );
     println!(
-        "  page-entry names          {block_name_bytes:>8} B in all, {:.2} B/object as written",
+        "  block-entry names          {block_name_bytes:>8} B in all, {:.2} B/object as written",
         block_name_bytes as f64 / reading.keys as f64
     );
     println!(
@@ -776,7 +776,7 @@ fn where_an_object_keys_characters_are_written_in_the_durable_index() {
     );
     assert!(
         block_name_key_chars > 0 && block_name_key_chars < block_name_bytes,
-        "[CLAUSE each-term-nonzero] the page-entry names are {block_name_bytes} B of which \
+        "[CLAUSE each-term-nonzero] the block-entry names are {block_name_bytes} B of which \
          {block_name_key_chars} B are key characters -- a share of none says the composite does not \
          name the object, a share of all says it names nothing else, and neither matches a \
          composed name"

@@ -885,7 +885,7 @@ fn compare_element_by_element(
     );
     assert_eq!(
         leader_refs, peer_refs,
-        "{where_}: the peer holds {peer_refs} live page refs against the leader's {leader_refs}. \
+        "{where_}: the peer holds {peer_refs} live block refs against the leader's {leader_refs}. \
          An element the peer has and the leader does not cannot be found by asking for the \
          leader's keys, and this is where it shows"
     );

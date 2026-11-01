@@ -140,7 +140,7 @@ fn what_a_cache_key_costs() {
 
     let (physical_heap, physical_allocs) = heap_and_allocs(&physical);
     let block_total = struct_bytes + physical_heap;
-    println!("  THE PAGE KEY AGAINST ITS INFORMATION CONTENT");
+    println!("  THE BLOCK KEY AGAINST ITS INFORMATION CONTENT");
     println!("    carried as integers     {BLOCK_INFORMATION_BYTES:>5} B   shard+slab+offset+length+bucket, no allocation");
     println!("    carried as it is        {block_total:>5} B   struct {struct_bytes} + heap {physical_heap}");
     println!(
@@ -162,7 +162,7 @@ fn what_a_cache_key_costs() {
     // ---- bucket, offset and length are not known until the block is placed.
     assert!(
         matches!(physical.selector, Cow::Owned(_)),
-        "the page key's selector is borrowed, which would mean the bucket/offset/length triple had \
+        "the block key's selector is borrowed, which would mean the bucket/offset/length triple had \
          become a fixed set of literals -- re-read `page_selector` before trusting the byte \
          figures above"
     );
@@ -175,7 +175,7 @@ fn what_a_cache_key_costs() {
         .expect("a block record_key is the segment prefix plus digits");
     assert!(
         slab_digits.parse::<u64>().is_ok(),
-        "the page record_key's tail {slab_digits:?} is not a u64, so it carries something other \
+        "the block record_key's tail {slab_digits:?} is not a u64, so it carries something other \
          than a slab id and the comparison above measures the wrong thing"
     );
     let parts: Vec<&str> = physical
@@ -184,7 +184,7 @@ fn what_a_cache_key_costs() {
         .expect("a block selector starts with the slot prefix")
         .split(':')
         .collect();
-    assert_eq!(parts.len(), 3, "the page selector {:?} did not split into bucket:offset:length", &*physical.selector);
+    assert_eq!(parts.len(), 3, "the block selector {:?} did not split into bucket:offset:length", &*physical.selector);
     for part in &parts {
         assert!(
             part.parse::<u64>().is_ok(),

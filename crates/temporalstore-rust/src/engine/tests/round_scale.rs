@@ -182,7 +182,7 @@ fn steady_walks_per_record(records: usize, batch: usize) -> u64 {
     );
     assert!(
         entries > 0,
-        "{records} records: the round materialised no live-page entries at all, so this \
+        "{records} records: the round materialised no live-block entries at all, so this \
          measures nothing"
     );
     assert_eq!(
@@ -492,27 +492,27 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
     // THE DENOMINATOR, before either claim below.
     assert!(
         small_total > 0 && large_total > 0,
-        "the round read no pages at either size ({small_total}, {large_total}), so neither the \
+        "the round read no blocks at either size ({small_total}, {large_total}), so neither the \
          flatness claim nor the guard claim below has anything to be about"
     );
 
     assert_eq!(
         small_total, large_total,
-        "one round read {small_total} pages at {SMALL} records and {large_total} at {LARGE}. The \
+        "one round read {small_total} blocks at {SMALL} records and {large_total} at {LARGE}. The \
          round's block reads are bounded per round, so a size-dependent count means a whole-store \
          read has come back into the round"
     );
 
     assert_eq!(
         small_guarded, small_total,
-        "at {SMALL} records {small_guarded} of {small_total} page reads happened under a shard \
+        "at {SMALL} records {small_guarded} of {small_total} block reads happened under a shard \
          guard. The two are expected to be EQUAL -- this test records WHERE the round's reads \
          happen, so a change that moved some of them out from under the guard should update this \
          deliberately rather than leave the round described wrongly"
     );
     assert_eq!(
         large_guarded, large_total,
-        "at {LARGE} records {large_guarded} of {large_total} page reads happened under a shard \
+        "at {LARGE} records {large_guarded} of {large_total} block reads happened under a shard \
          guard"
     );
 }
@@ -556,7 +556,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
             .stages
             .iter()
             .any(|stage| stage.stage == "prepare" && stage.prepared_block_slab_id.is_some()),
-        "the fixture did not roll a slab, so every live page is still in one slab and the \
+        "the fixture did not roll a slab, so every live block is still in one slab and the \
          slab-id agreement below cannot fail"
     );
     // DISJOINT keys, matching `seed_in_batches`' own format. Re-seeding from zero would rewrite
@@ -590,7 +590,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // THE DENOMINATOR, before either claim.
     assert!(
         report.total_block_refs > 0,
-        "the report found no live pages at all, so neither claim below is about anything"
+        "the report found no live blocks at all, so neither claim below is about anything"
     );
 
     // ---- SAFETY: the three consumers describe one block set ----------------
@@ -599,7 +599,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // object-lifecycle report, which used to do its own walk. They are the same blocks.
     assert_eq!(
         report.total_block_refs as u64, report.object_lifecycle.live_block_refs,
-        "the readability probe walked {} live pages and the object-lifecycle report counted {}. \
+        "the readability probe walked {} live blocks and the object-lifecycle report counted {}. \
          Both describe the live-block set of one shard under one read guard, so a difference \
          means one of them is being derived from something other than the blocks the other saw",
         report.total_block_refs, report.object_lifecycle.live_block_refs
@@ -620,7 +620,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
         .collect::<std::collections::BTreeSet<_>>();
     assert!(
         slabs_from_id_list.len() > 1,
-        "the live pages sit in {} slab(s). With one slab the agreement below holds however the \
+        "the live blocks sit in {} slab(s). With one slab the agreement below holds however the \
          slab id is derived, which is exactly how a constant-id defect passed this test once",
         slabs_from_id_list.len()
     );
@@ -657,7 +657,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     // entries to the second would be a silent answer change on an empty index, so removing the
     // second pass is its own change with its own measurement.
     println!(
-        "  storage_recovery_report_without_boundary over {RECORDS} records: {entries} live-page \
+        "  storage_recovery_report_without_boundary over {RECORDS} records: {entries} live-block \
          entries from {} site(s) = {}x the store",
         sites.len(),
         entries / RECORDS as u64
@@ -668,7 +668,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     assert_eq!(
         sites.len(),
         2,
-        "the recovery report walked the live-page set from {} call sites, not 2: {sites:?}. The \
+        "the recovery report walked the live-block set from {} call sites, not 2: {sites:?}. The \
          two are the hoisted probe/ownership/lifecycle walk and the feature-block layout \
          report's own walk; a third means a pass has come back",
         sites.len()
@@ -731,7 +731,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
 
     let charges = sites.values().copied().collect::<Vec<_>>();
     println!(
-        "    one walk charged {} to return {} ({indexed_blocks} indexed + a whole {}-page \
+        "    one walk charged {} to return {} ({indexed_blocks} indexed + a whole {}-block \
          re-walk), {released_buckets} bucket(s) released",
         charges[0], report.total_block_refs, report.total_block_refs
     );
@@ -794,7 +794,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
     let text_field_bytes = 3 * arc_str_bytes;
     assert!(
         entry_bytes <= text_field_bytes + address_bytes + 8,
-        "a live-page entry is {entry_bytes} B against {text_field_bytes} B of shared text \
+        "a live-block entry is {entry_bytes} B against {text_field_bytes} B of shared text \
          pointers, {address_bytes} B of address and a few flags. Bigger than that means a field \
          is carrying owned text, which is a heap copy per live block PER WALK on every periodic \
          round"
@@ -805,13 +805,13 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
     let old_peak_per_block = entry_bytes + address_bytes;
     let new_peak_per_block = entry_bytes;
     println!(
-        "  recovery report peak per live page: {old_peak_per_block} B -> {new_peak_per_block} B, \
+        "  recovery report peak per live block: {old_peak_per_block} B -> {new_peak_per_block} B, \
          {} B/block of address vector no longer built beside the entries",
         old_peak_per_block - new_peak_per_block
     );
     assert!(
         new_peak_per_block < old_peak_per_block,
-        "the hoist holds {new_peak_per_block} B per live page where the three-walk version held \
+        "the hoist holds {new_peak_per_block} B per live block where the three-walk version held \
          {old_peak_per_block} B. If these are equal the address vector is still being built and \
          the cost was moved rather than removed"
     );
