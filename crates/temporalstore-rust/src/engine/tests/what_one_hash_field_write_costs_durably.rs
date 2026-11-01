@@ -33,10 +33,58 @@
 //!
 //! A durable append costs about ONE BLOCK on the device whatever the record holds, so a stream
 //! writing 90 bytes per op with one fsync per op is not cheaper than one writing 400 bytes per op
-//! in a shared flush. `syncs` and `flushes` per op are therefore reported beside the bytes --
-//! without them a reader would conclude that shrinking the record is the lever, which is the
-//! mistake already recorded for the raft WAL, where batching took 9.95x to 1.00x and shrinking the
-//! record unbatched bought nothing.
+//! in a shared flush. `syncs` per op is therefore reported beside the bytes.
+//!
+//! # AND IT IS SWEPT OVER CONCURRENCY, WHICH IS THE PART THAT CHANGES THE CONCLUSION
+//!
+//! A single-threaded fixture records **1.00 fsync per write**, and one row cannot say whether that
+//! is the store or the fixture: the group commit on this path is driven by CONCURRENCY rather than
+//! by a timer, so a lone writer has nothing to share a flush with. The question is what happens
+//! when there IS something.
+//!
+//! Measured, writers each writing their own hash key so the reading is about flush sharing and not
+//! about contention on one object. TWO RUNS, because a timing-dependent sweep read once is a
+//! single sample and this tree has already had a monotonicity claim refuted by its fifth run:
+//!
+//! ```text
+//!   writers  each   run A   run B   1/N if flushes were shared
+//!   1        24     1.000   1.000   1.000
+//!   2        24     1.000   1.000   0.500
+//!   4        24     0.854   0.812   0.250
+//!   8        24     0.844   0.672   0.125
+//!   16       24     0.862   0.703   0.062
+//!   8        200    0.946   0.859   0.125
+//! ```
+//!
+//! **THE PER-ROW FIGURES MOVE BY UP TO A QUARTER BETWEEN RUNS, SO NO SINGLE ONE OF THEM IS A
+//! RESULT.** What survives both runs is the ENDPOINT comparison, and it is not close: sixteen
+//! writers would cost 0.06 fsyncs per write if each flush carried the whole set, and they cost
+//! 0.70 to 0.86 -- an order of magnitude above that floor, in both runs, at every concurrency past
+//! one. Two writers share nothing at all in either run. And lengthening each writer's run moves
+//! the figure the WRONG way (0.86 to 0.95 at two hundred writes each), which is the opposite of
+//! what a window that fills with work would do.
+//!
+//! That endpoint gap is what the assertion below pins, deliberately: a clause on any single row,
+//! or on "more writers is better", would be riding a quantity that moves 25% between runs.
+//!
+//! So on this path **the barrier is per write, and concurrency does not amortise it.** Whether
+//! that is deliberate -- an ack that waits for its own fsync is a durability choice, not a defect
+//! -- is a separate question this arm does not settle. What it does settle is the ORDERING: the
+//! device pays about one barrier per write at every concurrency, so the 220.5 B envelope is behind
+//! that barrier and not in front of it.
+//!
+//! # THIS DISAGREES WITH A RECORDED FIGURE AND THE DISAGREEMENT IS NOT RESOLVED HERE
+//!
+//! A previous measurement of the WAL's commit-delay knob reported **0.229 fsyncs per write at
+//! eight threads of twenty-four writes** -- the same shape as the row above that reads 0.844 --
+//! and concluded that batching was already done and should not be re-proposed. Both readings are
+//! real; they are not of the same path. That one drove the WAL store more directly, while this one
+//! goes through `engine.execute` for a hash field write, which is the path a client actually takes.
+//!
+//! **Do not average them and do not quote either as "the" figure.** If the barrier can be shared
+//! at 0.229 somewhere in this tree, then the gap between that and 0.844 is a property of the
+//! command path and is worth exactly the attention the envelope was about to get. That is the next
+//! question, and it is named here rather than guessed at.
 //!
 //! # THE FIXTURE IS TWENTY FIELDS, DELIBERATELY
 //!
@@ -161,6 +209,48 @@ fn price_one_hash(fields: usize) -> PerWrite {
     }
 }
 
+/// Fsyncs per write with `threads` writers going at once, each on its own hash key.
+///
+/// SEPARATE KEYS so the writers are not serialised behind one object, which would make this a
+/// measurement of lock contention rather than of flush sharing. The question is only how many
+/// device barriers the same number of writes costs when they overlap.
+fn syncs_per_write_at(threads: usize, each: usize) -> f64 {
+    use crate::types::{Command, ExecuteRequest};
+
+    let dir = tempfile::tempdir().expect("tempdir");
+    let engine = std::sync::Arc::new(TemporalEngine::with_local_dirs(
+        64 * 1024 * 1024,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    ));
+    engine.load_shard(1);
+
+    let before = engine.wal_store.stats(1);
+    let mut handles = Vec::new();
+    for thread in 0..threads {
+        let engine = std::sync::Arc::clone(&engine);
+        handles.push(std::thread::spawn(move || {
+            for i in 0..each {
+                let response = engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashSet {
+                        key: format!("hash-{thread:02}"),
+                        field: format!("f{i:04}"),
+                        value: vec![b'v'; 8],
+                    },
+                });
+                assert!(response.status.ok, "thread {thread} write {i}: {:?}", response.status);
+            }
+        }));
+    }
+    for handle in handles {
+        handle.join().expect("a writer thread panicked");
+    }
+    let after = engine.wal_store.stats(1);
+    (after.syncs - before.syncs) as f64 / (threads * each) as f64
+}
+
 #[test]
 fn what_one_hash_field_write_costs_durably() {
     /// The shape the original figure's workload uses, and small enough that the quadratic sibling
@@ -233,11 +323,72 @@ fn what_one_hash_field_write_costs_durably() {
         100.0 * shape.block_bytes / shape.total(),
         100.0 * shape.index_bytes / shape.total(),
     );
+    // ---------------------------------------------------------------------------------------------
+    // THE FSYNC READING NEEDS A SECOND CONCURRENCY OR IT SAYS THE OPPOSITE OF THE TRUTH.
+    //
+    // One writer records 1.00 fsync per write, from which the natural conclusion is that the
+    // envelope is irrelevant until writes share a flush. The group commit is driven by CONCURRENCY
+    // rather than by a timer, so a lone writer has nothing to batch with and 1.00 is the FIXTURE's
+    // number. Eight writers share flushes and the figure collapses -- which is what says batching
+    // is already done and the envelope is the live lever.
+    // ---------------------------------------------------------------------------------------------
+    const WRITERS: usize = 8;
+    const EACH: usize = 24;
+    println!("  --- FSYNCS PER WRITE, SWEPT OVER CONCURRENCY ---");
+    println!("  SWEEP writers  each  fsyncs/write  vs 1/N");
+    for (w, e) in [(1, EACH), (2, EACH), (4, EACH), (8, EACH), (16, EACH), (8, 200)] {
+        let v = syncs_per_write_at(w, e);
+        println!(
+            "  SWEEP {w:>7} {e:>5} {v:>13.3} {:>8.3}",
+            1.0 / w as f64
+        );
+    }
+    let alone = syncs_per_write_at(1, EACH);
+    let together = syncs_per_write_at(WRITERS, EACH);
+
+    println!("  --- FSYNCS PER WRITE, AT TWO CONCURRENCIES ---");
+    println!("  1 writer   {alone:>6.3} fsyncs per write");
+    println!("  {WRITERS} writers  {together:>6.3} fsyncs per write");
+    let if_shared = 1.0 / WRITERS as f64;
     println!(
-        "  and {:.2} fsyncs per write, so the DEVICE pays about one block per write whatever the \
-         {:.1} B record holds -- batching is the lever ahead of the envelope",
-        shape.wal_syncs,
+        "  if each flush carried the whole set, {WRITERS} writers would cost {if_shared:.3}; they \
+         cost {together:.3}, which is {:.1}x that floor",
+        together / if_shared.max(f64::MIN_POSITIVE),
+    );
+    println!(
+        "  so the barrier is PER WRITE at every concurrency, and the {:.1} B envelope ({:.0}% of \
+         it the index entry) sits BEHIND that barrier, not in front of it",
         shape.total(),
+        100.0 * shape.index_bytes / shape.total(),
+    );
+    println!();
+
+    // --- NON-VACUITY FIRST: a concurrency that recorded no fsyncs measures no durability cost.
+    assert!(
+        alone > 0.0 && together > 0.0,
+        "a concurrency recorded no fsyncs at all ({alone:.3} alone, {together:.3} together), so \
+         neither row is a measurement of durability cost"
+    );
+
+    // --- THE SHAPE, PINNED AS THE FINDING RATHER THAN AS A DIRECTION. Concurrency does NOT
+    // --- amortise the barrier here: eight writers stay far above the 1/8 a shared flush would
+    // --- cost. Asserting "together < alone" instead would pass on a 1.2x improvement and read as
+    // --- though batching worked, which is how this arm first stated it and why the sweep exists.
+    // ---
+    // --- IF THIS EVER FAILS, BATCHING LANDED ON THIS PATH. That is good news and the clause is
+    // --- what will say so: delete it, and move the envelope to the front of the queue, because
+    // --- the barrier will no longer be what a write pays for.
+    const SHARED_FLUSH_FLOOR_SLACK: f64 = 2.0;
+    assert!(
+        together > if_shared * SHARED_FLUSH_FLOOR_SLACK,
+        "{WRITERS} concurrent writers cost {together:.3} fsyncs per write, within {:.1}x of the \
+         {if_shared:.3} a fully shared flush would cost. That means the barrier IS being amortised \
+         across concurrent writes on this path -- which contradicts the sweep this arm was built \
+         on, and inverts its conclusion: the {:.1} B envelope, {:.0}% of it the index entry, \
+         becomes the lever instead of the barrier. Re-read the sweep rows before changing anything.",
+        SHARED_FLUSH_FLOOR_SLACK,
+        shape.total(),
+        100.0 * shape.index_bytes / shape.total()
     );
     // ---------------------------------------------------------------------------------------------
     // THE ON-DISK COLUMN IS NOT A PER-WRITE COST, AND THE CROSS IS WHAT SHOWS IT.
