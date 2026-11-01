@@ -2841,11 +2841,46 @@ fn bucket_dump_manifest_rejects_object_lifecycle_mismatch() {
         // key the manifest's index holds changes the id the install DERIVES for it, which is the
         // same disagreement this test has always been about, reached through a mechanism that still
         // exists. Without this the install gate would be tested by planting a value nothing reads.
-        let address = restored
-            .take_string_address("lifecycle")
-            .expect("manifest string address");
+        // THE WHOLE ROW MOVES, NOT JUST ITS ADDRESS, AND THE DIFFERENCE IS WHETHER THE INDEX
+        // STILL ENCODES.
+        //
+        // This took the address out and installed it under a new key. Since the fold, an object's
+        // block refs live INSIDE its slot row for this kind, so taking the row took the refs with
+        // it and installing a bare address created a row that names no blocks. Nothing then named
+        // the object's block in either home, and `serialize_block_index` refuses an index whose
+        // block has no identity beside it -- correctly, since it cannot compose a stored key. The
+        // encode below failed with "this index is not writable ... the inversion names NO position
+        // at all", which is the refusal doing its job on a state this test had no intention of
+        // building.
+        //
+        // THE REFS STAY WHERE THE BUCKET INDEX HAS THEM WHILE THE MODEL MAP IS RENAMED, AND THAT
+        // DISAGREEMENT IS THE SUBJECT.
+        //
+        // `validate_bucket_dump_manifest` derives the lifecycle TWICE -- once from the bucket index
+        // and once from the model maps -- and rejects when either disagrees with the manifest. This
+        // test plants a disagreement in the MODEL-MAP derivation: the renamed key derives an object
+        // id the bucket index does not know, so that derivation counts the object as not live while
+        // the manifest recorded it as live.
+        //
+        // Before the fold, taking the address out and installing it under a new key did that for
+        // free, because the refs lived in `object_block_lookup` keyed by the OLD name and stayed
+        // there. Since the fold a string's refs live inside its slot row, so moving the row moves
+        // them -- both derivations then agree on the new id, agree with the manifest, and the gate
+        // correctly finds nothing wrong. Simply moving the slot makes this arm assert a rejection
+        // that should not happen.
+        //
+        // So the refs are spilled back to the lookup FIRST, under the key they are still filed
+        // under, and only the row is renamed. That reconstructs exactly the state this arm has
+        // always been about and keeps the index writable, since the lookup still names the block.
+        restored.bucket_index.spill_refs_to_lookup(
+            crate::engine::storage_bucket_internals::StoredModelKind::String,
+        );
+        let slot = restored
+            .remove_string_row("lifecycle")
+            .expect("manifest string row");
         restored
-            .set_string_address("lifecycle-renamed-to-move-its-derived-id".into(), &address);
+            .strings_mut()
+            .insert("lifecycle-renamed-to-move-its-derived-id".into(), slot);
         reused_owner.index_bytes = crate::engine::encode_index_bytes(&restored);
         reused_owner.index_sha256 = sha256_hex_bytes(&reused_owner.index_bytes);
         reused_owner.dump_generation_id = bucket_dump_generation_id(&reused_owner);
@@ -7723,21 +7758,30 @@ fn object_block_lookup_refs_per_object_census() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
-    let lookup = &shard.bucket_index.object_block_lookup;
-
+    // BOTH HOMES, AND THIS ARM IS WHY THE DOOR FOR THAT EXISTS.
+    //
+    // It read `object_block_lookup` alone. The block-refs fold moved the string kinds' refs into
+    // their own slot rows and left the container kinds in the lookup, so a walk of the lookup sees
+    // only the hashes -- and this corpus is built as 2,000 strings at one ref and 200 hashes at
+    // eight precisely to be two-sided. Reading one home made it `0 single-ref, 200 multi-ref`, and
+    // the anti-vacuity gate below caught it, which is the only reason it was loud.
+    //
+    // The census is about the SHAPE of an object's ref set, which does not depend on which home
+    // holds it. `every_object_with_refs` is the walk that does not have to know there are two.
     let mut single_ref_object = 0usize;
     let mut multi_ref_object = 0usize;
     let mut refs_total = 0usize;
-    for entry in lookup.values() {
-        let held = entry.len();
+    let mut objects = 0usize;
+    for (_kind, _object_key, refs) in shard.bucket_index.every_object_with_refs() {
+        let held = refs.len();
         if held == 1 {
             single_ref_object += 1;
         } else {
             multi_ref_object += 1;
         }
         refs_total += held;
+        objects += 1;
     }
-    let objects = lookup.len();
 
     // Anti-vacuity, asserted before any ratio is read: an empty or one-sided corpus would make
     // every claim below true for free.
@@ -8139,11 +8183,15 @@ fn maintained_component_block_ref_total_matches_the_walk() {
 
     let shards = engine.shards.read().expect("shards lock poisoned");
     let shard = shards.get(&1).expect("shard 1 loaded");
+    // BOTH HOMES. The maintained total counts every ref the index holds; a walk of
+    // `object_block_lookup` alone counts only the kinds whose refs stayed there after the fold,
+    // which read 140 against a maintained 262 -- a 1.87x "drift" that was the walk being partial
+    // and not the tally being wrong. The comparison is only meaningful when both sides cover the
+    // same population.
     let walked: usize = shard
         .bucket_index
-        .object_block_lookup
-        .values()
-        .map(crate::engine::state::BlockRefs::len)
+        .every_object_with_refs()
+        .map(|(_kind, _object_key, refs)| refs.len())
         .sum();
     let maintained = shard
         .bucket_index
