@@ -697,3 +697,5 @@ mod what_the_slot_index_floor_is;
 mod what_each_maintenance_bound_costs_per_round;
 #[path = "tests/what_one_hash_field_write_costs_durably.rs"]
 mod what_one_hash_field_write_costs_durably;
+#[path = "tests/a_windowed_aggregate_must_be_current_and_bounded.rs"]
+mod a_windowed_aggregate_must_be_current_and_bounded;

@@ -67,21 +67,68 @@ fn coarsest_fit(cursor: u64, hi: u64) -> (u8, u64) {
     chosen
 }
 
+/// How many steps the middle loop below would take over `[mid_lo, mid_hi)`.
+///
+/// The loop climbs to the coarsest aligned level and descends again, so the count is the span in
+/// coarsest buckets plus the bounded climb at each end: at most 59 one-second steps to reach a
+/// minute boundary, 59 one-minute steps to reach an hour, and 23 one-hour steps to reach a day,
+/// twice. The exact figure does not matter -- this only has to be an UPPER BOUND, because it is
+/// compared against the cost of the alternative and both answers are exact.
+fn tiling_steps(mid_lo: u64, mid_hi: u64) -> u64 {
+    let coarsest = LEVEL_WIDTHS_MS[LEVEL_WIDTHS_MS.len() - 1];
+    (mid_hi - mid_lo) / coarsest + 2 * (59 + 59 + 23)
+}
+
 fn range_sum(cells: &BTreeMap<CellKey, i64>, series: &BTreeMap<u64, i64>, start_ms: u64, end_ms: u64) -> i64 {
     if start_ms > end_ms {
         return 0;
     }
-    let e = end_ms.saturating_add(1); // exclusive upper bound
+    // CLAMP TO THE DATA BEFORE TILING. THIS IS NOT AN OPTIMISATION.
+    //
+    // The middle loop below walks TILING POSITIONS, not cells: it steps `cursor` by at most one
+    // day from one end of the window to the other and asks the cell map at every stop. Positions
+    // outside the series' own extent cannot change the ANSWER -- `cells.get` returns `None` there
+    // and adds nothing -- but they do change the WALK. An unbounded window, which a client may
+    // simply ask for by passing `u64::MAX` as the end, puts `mid_hi` at about 1.8e19, so the loop
+    // takes on the order of 2e11 steps with a map lookup each: one query occupies the shard for
+    // hours. This primitive is shared, so the control-state counter path carried it too.
+    //
+    // Narrowing the window to the first and last instant actually present cannot change the sum,
+    // because every instant outside that span is absent from the series AND from every cell.
+    let (Some((&first, _)), Some((&last, _))) = (series.iter().next(), series.iter().next_back())
+    else {
+        return 0;
+    };
+    if start_ms > last || end_ms < first {
+        return 0;
+    }
+    let start_ms = start_ms.max(first);
+    let end_ms = end_ms.min(last);
     let w0 = FINEST_WIDTH_MS;
     let mid_lo = start_ms.div_ceil(w0) * w0; // first whole-second boundary >= start
-    let mid_hi = (e / w0) * w0; // last whole-second boundary <= end+1
-    if mid_lo >= mid_hi {
-        // window smaller than one finest bucket: raw scan
-        return series.range(start_ms..e).map(|(_, v)| *v).sum();
+    // `end_ms + 1` is the exclusive upper bound the cells tile against. It saturates only when the
+    // series really does hold a point at `u64::MAX`, and the right edge below is INCLUSIVE of
+    // `end_ms` so that point is still counted -- the exclusive `..e` spelling it replaced dropped
+    // it, which the clamp above makes reachable where before it needed the caller to ask for it.
+    let mid_hi = (end_ms.saturating_add(1) / w0) * w0; // last whole-second boundary <= end+1
+    // A RAW SCAN IS SOMETIMES THE CHEAPER EXACT ANSWER, and the clamp alone is not a bound.
+    //
+    // A series holding two points a century apart has a span no clamp shrinks: the tiling then
+    // costs the span while a scan costs the two points. Both are exact, so take whichever is
+    // smaller. This is also the only remaining defence if a single out-of-range instant ever
+    // reaches the series, which would otherwise restore the whole walk above.
+    if mid_lo >= mid_hi || tiling_steps(mid_lo, mid_hi) > series.len() as u64 {
+        return series.range(start_ms..=end_ms).map(|(_, v)| *v).sum();
     }
     let mut sum: i64 = 0;
     sum += series.range(start_ms..mid_lo).map(|(_, v)| *v).sum::<i64>(); // left sub-second edge
-    sum += series.range(mid_hi..e).map(|(_, v)| *v).sum::<i64>(); // right sub-second edge
+    // RIGHT SUB-SECOND EDGE, INCLUSIVE AND THEREFORE GUARDED. `mid_hi` is `end_ms + 1` whenever
+    // the window ends on a whole second, and `BTreeMap::range` PANICS on an inclusive range whose
+    // start exceeds its end -- so the emptiness that the old exclusive `mid_hi..e` expressed by
+    // construction has to be asked for here.
+    if mid_hi <= end_ms {
+        sum += series.range(mid_hi..=end_ms).map(|(_, v)| *v).sum::<i64>();
+    }
     let mut cursor = mid_lo; // middle covered by coarsest cells
     while cursor < mid_hi {
         let (level, width) = coarsest_fit(cursor, mid_hi);

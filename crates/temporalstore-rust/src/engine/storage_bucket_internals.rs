@@ -5457,6 +5457,35 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     dirty: bool,
     replace_existing: bool,
 ) {
+    // THE FEATURE NUMERIC VIEW DIES HERE, AND IT IS HERE BECAUSE THIS IS THE CHOKE POINT.
+    //
+    // `feature_values` is a derived numeric view of a feature series, folded once and then served
+    // by the rollup ladder. Its own staleness test compares the view's LENGTH against the series'
+    // length, and nothing on the write path invalidated it, so a length test was standing in for
+    // "did the contents change". It cannot see two changes that matter:
+    //
+    //   * an append that REPLACES the value at an instant already present -- same length;
+    //   * an append of P points to a series AT ITS BOUND, which trims P -- same length, and
+    //     **that is the steady state of every bounded series**, which is what a bound is for.
+    //
+    // So a long sequence at its bound served the sum it held the first time it was ever queried,
+    // for as long as it stayed at its bound. A wrong answer, not a slow one.
+    //
+    // WHY THE INVALIDATION IS HERE RATHER THAN IN THE FOUR WRITE ARMS. Every feature write arm --
+    // append, append-with-policy, replace-range, sequence-add -- finishes by publishing its blocks
+    // through this function, as does the apply path that replays them. Four call sites is four
+    // chances for the fifth arm to forget, and a forgotten one is a wrong answer served quickly,
+    // which is the defect being removed. One site that every writer must pass cannot be forgotten.
+    //
+    // THE COST IS A REBUILD PER WRITTEN KEY, AND IT IS THE RIGHT TRADE ONLY BECAUSE IT IS EXACT.
+    // Dropping the view costs the next aggregate query on that key a fold of the retained series,
+    // which is what the ungated path pays anyway; the ladder still wins on repeated queries with
+    // no write between them. Keeping the win on write-then-query means MAINTAINING the view from
+    // the values the write already holds, which is the sibling counter path's design and a
+    // separate change -- it has to be right at every arm, and this does not.
+    if dirty && kind == "feature" {
+        super::control_rollup::feature_forget(shard, object_key);
+    }
     let mut touched_buckets = BTreeSet::new();
     let mut removed_any = false;
     // Read before the first `&mut` borrow of the index below, and for the same reason as the
