@@ -804,7 +804,7 @@ dependencies = [
 [[package]]
 name = "matrixraft"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixRaft.git?rev=8fa64923fd819c4ed23635a75749c53d31702c03#8fa64923fd819c4ed23635a75749c53d31702c03"
+source = "git+https://github.com/matrixarkai/MatrixRaft.git?rev=a894a016f10a38fd3fd21ecbde9cb27367247476#a894a016f10a38fd3fd21ecbde9cb27367247476"
 dependencies = [
  "serde",
  "serde_json",
