@@ -18577,9 +18577,20 @@ fn a_compaction_round_stops_at_the_block_ref_budget() {
 fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
     // `zone` was the older name for a slab, and `zones` is keyed by `band_id`
     // (storage_bucket_internals.rs) -- so the aggregate is the SLAB level reported under an old
-    // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not, because
-    // the compat corpora pin "zone_id" 31 times and "storage_zone_samples" twice, and Python
-    // readers use those names.
+    // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not.
+    //
+    // THE REASON IS THE CORPUS COUNT, AND IT IS NOW CHECKED RATHER THAN STATED. The committed
+    // corpora are the record of what older builds emitted, so a name they carry cannot stop being
+    // emitted without making the comparison meaningless. The test applied across the block
+    // campaign was exactly this count: `page_index` scored ZERO and could therefore move, and
+    // these names score 31 and 2 and therefore cannot. A comment cannot notice when its own
+    // premise expires, so the count is asserted below.
+    //
+    // AN EARLIER VERSION OF THIS NOTE ALSO CITED PYTHON READERS, AND THAT CLAIM IS NOT CHECKABLE
+    // HERE. This repository holds three `.py` files and none mentions either name -- which
+    // neither supports the claim nor refutes it, because a consumer outside this tree would be
+    // invisible either way. An absence claim does not survive a tree you cannot see all of, so
+    // the refusal rests on the term that can be counted instead.
     //
     // This asserts the pinning directly. A rename that dropped the #[serde(rename = ...)] would
     // compile, pass every type-level test, and silently change the exported shape.
@@ -18614,6 +18625,59 @@ fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
         serde_json::from_str(r#"{"zone_id":9,"total_bytes":1,"used_bytes":1,"stale_bytes":0,"slabs":[]}"#)
             .expect("an old-name payload must still decode");
     assert_eq!(decoded.stored_slab_id, 9);
+
+    // AND THE CANONICAL NAME MUST DECODE TOO, which is the whole point of widening the readers
+    // and was the one thing here that nothing asserted. Found by PLANTING: dropping one
+    // `alias = "stored_slab_id"` left every assertion above passing, so the aliases were about to
+    // ship undefended. A serde `rename` REPLACES the accepted name rather than adding to it, so
+    // without an alias the canonical spelling is refused -- and this is the direction that has to
+    // work before any writer could ever move.
+    let canonical: crate::engine::reports::StorageSlabUsageSample = serde_json::from_str(
+        r#"{"stored_slab_id":11,"total_bytes":2,"used_bytes":1,"stale_bytes":1,"slabs":[4]}"#,
+    )
+    .expect("the canonical spelling must decode: the readers are widened before any writer moves");
+    assert_eq!(canonical.stored_slab_id, 11);
+    assert_eq!(canonical.slabs, vec![4]);
+
+    // AND THE COLLECTION'S OWN RETIRED SPELLING, which is `segments` and NOT `zones`.
+    //
+    // THIS TYPE'S ACCEPTED SET IS NARROWER THAN THE STORE'S, and assuming otherwise is how the
+    // first version of these assertions failed: it asserted `band_id`, `extent_id`, `bands`,
+    // `extents` and `zones` decode here, because the slab manifest in `block_store` accepts all
+    // of those. This report type never did -- it takes `zone_id`/`stored_slab_id` for the id and
+    // `slabs`/`segments` for the collection, and nothing else. Two types in one rename chain do
+    // not share an accepted set, so each one's is asserted against ITS OWN declaration.
+    let retired_collection: crate::engine::reports::StorageSlabUsageSample = serde_json::from_str(
+        r#"{"zone_id":5,"total_bytes":0,"used_bytes":0,"stale_bytes":0,"segments":[7]}"#,
+    )
+    .expect("the collection's retired `segments` spelling must still decode");
+    assert_eq!(retired_collection.slabs, vec![7]);
+
+    // THE PREMISE, EXECUTED. If the corpora ever stop carrying these names, the reason this test
+    // refuses the rename has expired and the refusal should be reconsidered -- deliberately, by
+    // whoever regenerates them, rather than left standing on a stale sentence.
+    let compat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../compat");
+    let mut zone_id = 0usize;
+    let mut samples = 0usize;
+    let mut files = 0usize;
+    for entry in std::fs::read_dir(&compat).expect("the compat corpora directory must exist") {
+        let path = entry.expect("a corpus entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("json") {
+            continue;
+        }
+        let text = std::fs::read_to_string(&path).expect("a corpus file must be readable");
+        files += 1;
+        zone_id += text.matches("\"zone_id\"").count();
+        samples += text.matches("\"storage_zone_samples\"").count();
+    }
+    assert!(
+        files > 0,
+        "no corpus files were read from {compat:?}, so this check proved nothing -- a count of          zero from an empty walk looks exactly like a count of zero from a regenerated corpus"
+    );
+    assert!(
+        zone_id > 0 && samples > 0,
+        "the corpora no longer pin these wire names (zone_id {zone_id}, storage_zone_samples          {samples} across {files} files), which is the premise this test's refusal rests on.          Either the corpora were regenerated without them -- in which case decide the rename          deliberately rather than inheriting this assertion -- or the walk is reading the wrong          directory."
+    );
 }
 
 #[test]
