@@ -12028,22 +12028,49 @@ fn the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency() {
     );
 }
 
-/// THE WIDTHS THE `strings` ROW TURNS ON, SO THE `46.9 -> 37.7` ARITHMETIC CANNOT GO STALE.
+/// THE WIDTHS THE `strings` ROW TURNS ON, SO THE `74.3 -> 65.1` ARITHMETIC CANNOT GO STALE.
 ///
 /// A one-word handle in place of the `Arc<str>` fat pointer takes the `strings` bucket from
-/// `(16 + 24) + 1 = 41` bytes to `(8 + 24) + 1 = 33`. At 2,048 buckets holding 1,792 keys -- the
-/// phase the published figure is measured at -- that is `46.9 -> 37.7 B/key`. The arithmetic is
+/// `(16 + 48) + 1 = 65` bytes to `(8 + 48) + 1 = 57`. At 2,048 buckets holding 1,792 keys -- the
+/// phase the published figure is measured at -- that is `74.3 -> 65.1 B/key`. The arithmetic is
 /// only as good as the two tuple widths, so they are pinned rather than quoted.
+///
+/// # THESE PINS WENT RED ON MAIN, AND THE WAY THEY DID IS THE REASON THEY ARE WORTH HAVING
+///
+/// They read 40 and 32, against an `ObjectSlot` of 24. The fold of each object's block refs into
+/// its slot (#2453) took the slot to **48**, so the two tuples became 64 and 56 and both pins
+/// panicked at compile time -- in a TEST target, so `cargo check --lib` stayed green and
+/// `--all-targets` did not.
+///
+/// NEITHER CHANGE COULD HAVE SEEN IT. This arm arrived in #2431 and the fold in #2453, each
+/// checked against a main without the other, and both merged the same day. A width pin in one
+/// change and a width step in another is the one collision a per-PR check cannot catch, because
+/// each side is correct alone. The pins did their job: they failed loudly the moment the two met,
+/// which is better than the `46.9 -> 37.7` arithmetic above quietly describing a slot that had
+/// grown by twenty-four bytes.
+///
+/// WHAT THE STEP DID AND DID NOT CHANGE. The SAVING is unchanged -- eight bytes a bucket, the
+/// difference between a fat pointer and a word, which is what this arm is about. What moved is the
+/// BASE it is subtracted from, because the slot beside the key got wider. So the figures are
+/// re-derived rather than re-goldened: 65 and 57 bytes a bucket, 74.3 and 65.1 B/key at the
+/// measured phase, and `the_amplification_set_at_two_arms_four_times_apart` reads that same 74.3
+/// for the `strings` row.
 ///
 /// THIS IS THE OTHER HALF OF THE KEY-CHARACTER QUESTION, AND IT IS NOT THE 32.0 ROW. The 32.0 row
 /// is the allocation; this is the slot. Both are gated on the same raw-entry table, because the
 /// one-word handle cannot `Borrow<str>` either.
 const _: () = assert!(
-    std::mem::size_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 40
+    std::mem::size_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 64
 );
 /// The one-word-handle arm. Eight bytes narrower, which is the whole of the `strings` saving.
 const _: () =
-    assert!(std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>() == 32);
+    assert!(std::mem::size_of::<(u64, crate::engine::object_record::ObjectSlot)>() == 56);
+/// AND THE SLOT'S OWN WIDTH, NAMED HERE RATHER THAN LEFT IMPLICIT IN THE TWO TUPLES ABOVE.
+///
+/// Both pins above are `key + slot`, so a step in EITHER term moves them and neither says which.
+/// `object_record` pins the slot at its own site as the sum of its three fields; this states the
+/// number this arm's arithmetic depends on, so the next collision of this kind names itself.
+const _: () = assert!(std::mem::size_of::<crate::engine::object_record::ObjectSlot>() == 48);
 /// Pinned on its own, because a width pin admits every alignment that divides it.
 const _: () = assert!(
     std::mem::align_of::<(std::sync::Arc<str>, crate::engine::object_record::ObjectSlot)>() == 8
