@@ -12260,6 +12260,117 @@ const _: () = assert!(
         == 8 + std::mem::size_of::<crate::engine::object_record::ObjectSlot>()
 );
 
+/// WHAT THE ONE-WORD HANDLE COSTS ON THE SIDE NOBODY PRICED: THE LENGTH HAS TO GO SOMEWHERE.
+///
+/// The pins above establish the GROSS saving and are correct: a one-word handle is eight bytes
+/// narrower than an `Arc<str>` fat pointer, so the `strings` bucket goes from `(16 + SLOT) + 1`
+/// to `(8 + SLOT) + 1`. The doc beside them calls that "the whole of what this row turns on".
+/// **It is the whole of the saving and not the whole of the trade.**
+///
+/// `Arc<str>` is a FAT pointer: the data address and the length. The allocation holds the two
+/// refcounts and the characters, which is what `arc_str_bytes` charges as `16 + len` rounded to
+/// a word. A one-word OWNING handle still has to know how long its string is, and the pointer
+/// no longer carries it -- so the length moves INTO the allocation, which becomes
+/// `24 + len`. Eight bytes leave the bucket and eight bytes arrive in the allocation.
+///
+/// # THE TWO MULTIPLIERS ARE DIFFERENT, AND THAT IS THE ENTIRE RESULT
+///
+/// They do not cancel exactly, because the two terms are paid per DIFFERENT thing:
+///
+///   * the bucket is paid once per BUCKET, and hashbrown holds 7/8 load, so the published
+///     1,792-key phase has 2,048 of them -- a multiplier of 2048/1792 = 1.143;
+///   * the allocation is paid once per KEY, because the key text is SHARED: eight holders over
+///     one allocation, asserted by `which_string_keyed_holders_duplicate_a_key_another_map_holds`
+///     and the reason the 32.0 B/key row is one allocation and not eight.
+///
+/// So the net saving is `8 x 1.143 - 8 x 1.000`, and all that survives is the table's own slack
+/// factor. The gross figure overstates the lever by about eight times.
+///
+/// # WHAT THIS DOES AND DOES NOT REFUSE
+///
+/// It refuses the THIN OWNING HANDLE on arithmetic, independently of the raw-entry-table gate
+/// the pins above rest on. That gate is about an eight-byte arena SPAN, which cannot hash,
+/// compare or `Borrow<str>` without the arena; a thin owning pointer CAN do all three, since it
+/// owns its characters and reads its length from the allocation. So the two designs fail for
+/// different reasons and the doc above conflates them: the span needs a table it does not have,
+/// and the thin pointer has nowhere free to put the length. Pricing the arena span is
+/// `what_an_arena_for_the_key_characters_would_save`'s job and its span table is the same
+/// shape of cost.
+///
+/// It does NOT refuse a handle that gets its length for free -- a global length side table, a
+/// bounded inline length stolen from spare bits, or an interning scheme where the length is
+/// implied. If one of those lands, this arm's assertion fails and says to re-price.
+///
+/// rust-internal: measures this crate's own layout, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_the_one_word_handle_costs_in_the_allocation -- --exact --nocapture
+#[test]
+fn what_the_one_word_handle_costs_in_the_allocation() {
+    use crate::engine::object_record::ObjectSlot;
+    use std::mem::size_of;
+    use std::sync::Arc;
+
+    /// The published 1,792-key phase, which is 7/8 of 2,048 so the table is exactly full.
+    const KEYS: usize = 1_792;
+    const BUCKETS: usize = 2_048;
+
+    // The gross saving, taken as a DIFFERENCE off the live types rather than as a literal.
+    let fat_bucket = size_of::<(Arc<str>, ObjectSlot)>() + 1;
+    let thin_bucket = size_of::<(u64, ObjectSlot)>() + 1;
+    let per_bucket = fat_bucket - thin_bucket;
+
+    // The cost, from the allocation model this file already charges the 32.0 row with:
+    // `arc_str_bytes` is `16 + len` rounded up to a word. A thin owning handle needs the length
+    // in the allocation too, so `24 + len`. Both round the same way, so the delta is exact.
+    let fat_alloc = size_of::<usize>() * 2;
+    let thin_alloc = size_of::<usize>() * 3;
+    let per_alloc = thin_alloc - fat_alloc;
+
+    let saved = per_bucket as f64 * BUCKETS as f64 / KEYS as f64;
+    let cost = per_alloc as f64 * KEYS as f64 / KEYS as f64;
+    let net = saved - cost;
+
+    println!();
+    println!("  one-word handle, both sides, at the published {KEYS}-key phase");
+    println!("    bucket  {fat_bucket} B -> {thin_bucket} B   = -{per_bucket} B per bucket");
+    println!("    alloc   {fat_alloc} B -> {thin_alloc} B header = +{per_alloc} B per key allocation");
+    println!("    {BUCKETS} buckets / {KEYS} keys = {:.3} buckets a key", BUCKETS as f64 / KEYS as f64);
+    println!("    one SHARED allocation a key (eight holders, one allocation)");
+    println!("    GROSS saving {saved:.2} B/key      cost {cost:.2} B/key");
+    println!("    NET          {net:.2} B/key");
+
+    // THE SHAPE OF THE CLAIM: both terms must be the same width, or the cancellation below is a
+    // coincidence of two numbers rather than one word moving from the pointer to the allocation.
+    assert_eq!(
+        per_bucket, per_alloc,
+        "the handle narrows the bucket by {per_bucket} B and widens the allocation by \
+         {per_alloc} B; if those differ, the length is not simply moving and this arithmetic \
+         does not describe the trade"
+    );
+    assert_eq!(
+        size_of::<usize>(),
+        8,
+        "this arithmetic assumes a 64-bit word for the refcounts and the length"
+    );
+
+    // THE REFUSAL. The gross figure is a real saving and the net is what the row actually gains.
+    // Quoting the gross as the lever overstates it by the table's slack factor alone.
+    assert!(
+        net < 2.0,
+        "the one-word handle now nets {net:.2} B/key, not the under-2 this refusal rests on. \
+         Something has changed about where the length lives or how many buckets a key costs, \
+         and the `strings` row should be re-priced with the eight-bytes-a-bucket figure no \
+         longer standing alone"
+    );
+    // AND THE GROSS MUST STILL BE THE EIGHT THE PINS ABOVE ASSERT, or this arm is measuring a
+    // different change from the one they describe.
+    assert_eq!(8, per_bucket, "the gross per-bucket saving moved; the pins above disagree");
+    assert!(
+        saved > 4.0 * net,
+        "the gross {saved:.2} is no longer much larger than the net {net:.2}, so the warning \
+         this arm exists to carry -- do not quote the gross as the lever -- no longer applies"
+    );
+}
 /// THE PUBLISHED `strings` FIGURE FOLLOWS FROM THE SLOT'S WIDTH, SO IT IS DERIVED AND CHECKED
 /// HERE RATHER THAN RE-MEASURED BY HAND.
 ///
