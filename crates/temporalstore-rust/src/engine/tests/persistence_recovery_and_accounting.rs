@@ -18622,7 +18622,7 @@ fn a_compaction_round_stops_at_the_block_ref_budget() {
 }
 
 #[test]
-fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
+fn the_slab_usage_sample_emits_the_canonical_name_and_reads_every_retired_one() {
     // `zone` was the older name for a slab, and `zones` is keyed by `band_id`
     // (storage_bucket_internals.rs) -- so the aggregate is the SLAB level reported under an old
     // name, not a separate level. The Rust identifiers moved to slab; the WIRE must not.
@@ -18651,21 +18651,28 @@ fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
     };
     let encoded = serde_json::to_value(&sample).expect("serialize");
     assert!(
-        encoded.get("zone_id").is_some(),
-        "the stored slab id must still go out as zone_id: {encoded}"
+        encoded.get("stored_slab_id").is_some(),
+        "the stored slab id must now go out under its own canonical name: {encoded}"
     );
-    assert!(
-        encoded.get("band_id").is_none(),
-        "band_id must NOT appear on the wire -- that would be a format change: {encoded}"
-    );
+    for retired in ["zone_id", "band_id", "band", "extent_id"] {
+        assert!(
+            encoded.get(retired).is_none(),
+            "{retired} must not appear on the wire any more -- one name per field is what serde \
+             writes, and two would mean a second field claimed this one's key: {encoded}"
+        );
+    }
 
     // And the collection it sits in keeps its own wire name.
     let mut snapshot = crate::engine::reports::StorageTopologySnapshot::default();
     snapshot.storage_slab_usage_samples = vec![sample];
     let encoded = serde_json::to_value(&snapshot).expect("serialize");
     assert!(
-        encoded.get("storage_zone_samples").is_some(),
-        "the collection must still go out as storage_zone_samples: {encoded}"
+        encoded.get("storage_slab_usage_samples").is_some(),
+        "the collection must now go out under its own canonical name: {encoded}"
+    );
+    assert!(
+        encoded.get("storage_zone_samples").is_none(),
+        "and not under the retired one as well: {encoded}"
     );
 
     // Reading back what the old name produced must still work, which is what a stored corpus is.
@@ -18701,30 +18708,49 @@ fn the_slab_usage_sample_still_serializes_under_its_zone_wire_names() {
     .expect("the collection's retired `segments` spelling must still decode");
     assert_eq!(retired_collection.slabs, vec![7]);
 
-    // THE PREMISE, EXECUTED. If the corpora ever stop carrying these names, the reason this test
-    // refuses the rename has expired and the refusal should be reconsidered -- deliberately, by
-    // whoever regenerates them, rather than left standing on a stale sentence.
-    let compat = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../compat");
-    let mut zone_id = 0usize;
-    let mut samples = 0usize;
-    let mut files = 0usize;
-    for entry in std::fs::read_dir(&compat).expect("the compat corpora directory must exist") {
-        let path = entry.expect("a corpus entry").path();
-        if path.extension().and_then(|e| e.to_str()) != Some("json") {
-            continue;
+    // THE PREMISE, EXECUTED -- AND IT IS NOW THE OPPOSITE PREMISE.
+    //
+    // This walk used to assert the corpora PIN these names, which was the reason the flip above
+    // was refused. It counted `compat/*.json` wholesale, and that is what made it wrong: six of
+    // the nine files there are referenced by no test, harness or workflow, and every occurrence of
+    // `zone_id` and `storage_zone_samples` is in one of them. A count over files nothing reads is
+    // not a constraint, it is a number.
+    //
+    // So the walk now reads only the corpora something consumes, and asserts they are still SILENT
+    // on these names. If a live corpus ever gains one, a reader has started depending on it and
+    // this flip has to be reconsidered -- which is a question that can still change, unlike the
+    // one the old walk asked.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../..");
+    let live = [
+        "compat/unified_temporalstore_cases.json",
+        "compat/storage_migration_corpus.json",
+        "compat/storage_unified_case_report_pair.json",
+    ];
+    let mut read = 0usize;
+    let mut found: Vec<String> = Vec::new();
+    for name in live {
+        let path = root.join(name);
+        let text = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("a live corpus must be readable: {path:?}: {e}"));
+        read += 1;
+        for retired in ["\"zone_id\"", "\"storage_zone_samples\""] {
+            if text.contains(retired) {
+                found.push(format!("{name} carries {retired}"));
+            }
         }
-        let text = std::fs::read_to_string(&path).expect("a corpus file must be readable");
-        files += 1;
-        zone_id += text.matches("\"zone_id\"").count();
-        samples += text.matches("\"storage_zone_samples\"").count();
     }
-    assert!(
-        files > 0,
-        "no corpus files were read from {compat:?}, so this check proved nothing -- a count of          zero from an empty walk looks exactly like a count of zero from a regenerated corpus"
+    // DENOMINATOR FIRST: a silent result from reading nothing looks exactly like a silent corpus.
+    assert_eq!(
+        read,
+        live.len(),
+        "every live corpus must have been read, or this check proved nothing"
     );
     assert!(
-        zone_id > 0 && samples > 0,
-        "the corpora no longer pin these wire names (zone_id {zone_id}, storage_zone_samples          {samples} across {files} files), which is the premise this test's refusal rests on.          Either the corpora were regenerated without them -- in which case decide the rename          deliberately rather than inheriting this assertion -- or the walk is reading the wrong          directory."
+        found.is_empty(),
+        "a corpus something actually reads now carries a retired slab name ({found:?}). That is \
+         the premise this flip rested on: the live corpora were silent on these names, so moving \
+         the emitted name could not break a stored-bytes comparison. Decide the emitted name \
+         deliberately rather than inheriting this assertion."
     );
 }
 
