@@ -58,7 +58,7 @@ fn main() {
     println!("  carrying a COMMAND to re-run          {with_command}");
     println!("  carrying OUTCOMES                     {with_outcomes}  ({outcome_items} items)");
     println!("     of those items, carrying a VALUE   {outcomes_carrying_a_value}");
-    println!("  carrying STAGED PAGES                 {with_staged_blocks}  ({staged_block_bytes} bytes)");
+    println!("  carrying STAGED BLOCKS                 {with_staged_blocks}  ({staged_block_bytes} bytes)");
     println!("  undecodable                           {undecodable}");
     println!();
     println!("With the blocks wiped, a value can only come back from a command to re-run, an");

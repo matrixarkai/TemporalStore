@@ -4261,7 +4261,7 @@ impl StoredBlockEntry {
                     // the refusal and not about which door raised it, so the phrase they match on
                     // is kept rather than those guards being loosened.
                     format!(
-                        "no stored model kind for model id {:?}, read back out of the stored page \
+                        "no stored model kind for model id {:?}, read back out of the stored block \
                          key {key:?}. The kind is that key's leftmost field and the block's own \
                          copy of it is gone, so there is nothing else to read it from -- and \
                          mapping it onto a kind it does not have would file the block under the \
@@ -4395,7 +4395,7 @@ where
         // identity comes from.
         let Some(beside) = keys.identity_of(node, *handle, block) else {
             return Err(S::Error::custom(format!(
-                "bucket {} holds a page whose stored key would name no object, so this index is \
+                "bucket {} holds a block whose stored key would name no object, so this index is \
                  not writable: deleted={}, and the inversion {}",
                 node.routing_bucket,
                 block.deleted,
@@ -10924,7 +10924,7 @@ mod a_records_blocks_can_live_on_the_shard_beside_the_record {
         let b = serde_json::to_vec(&with).expect("encoding a shard failed");
         assert_ne!(
             a, b,
-            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-page record's blocks are"
+            "a filed layout did NOT change the stored bytes, so the field is skipped again and a              reload would drop where a multi-block record's blocks are"
         );
 
         let back: ShardState =

@@ -287,7 +287,7 @@ fn the_committed_case_fixture_records_the_ratio_the_engine_produces() {
                     read_pairs += 1;
                     assert_eq!(
                         page, block,
-                        "{half}/{}: page_reads {page} beside block_reads {block}; they are \
+                        "{half}/{}: page_reads {block} beside block_reads {block}; they are \
                          one BlockStore counter and cannot differ (ratio {})",
                         case["name"], counter_ratio(page, block),
                     );
@@ -298,7 +298,7 @@ fn the_committed_case_fixture_records_the_ratio_the_engine_produces() {
                     write_pairs += 1;
                     assert_eq!(
                         page, block,
-                        "{half}/{}: page_writes {page} beside block_writes {block}; they are \
+                        "{half}/{}: page_writes {block} beside block_writes {block}; they are \
                          one BlockStore counter and cannot differ (ratio {})",
                         case["name"], counter_ratio(page, block),
                     );

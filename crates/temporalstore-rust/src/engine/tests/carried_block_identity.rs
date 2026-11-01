@@ -284,7 +284,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
         "the two blocks must differ or serving one for the other is undetectable"
     );
 
-    println!("\n=== read_block over one record carrying two pages of one key ===");
+    println!("\n=== read_block over one record carrying two blocks of one key ===");
     println!("  identity                          blocks  correct  wrong bytes  missing");
 
     // THE PRODUCT'S OWN IDENTITY, since the component left `stable_block_object_id`. It was
@@ -376,7 +376,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
     assert_eq!(
         (results[0].1, results[0].2, results[0].3),
         (2, 0, 0),
-        "CONTROL FAILED: two distinct ids served {} of 2 pages correctly ({} wrong bytes, {} \
+        "CONTROL FAILED: two distinct ids served {} of 2 blocks correctly ({} wrong bytes, {} \
          missing). Until this arm is 2/0/0 the arms below attribute nothing to the change",
         results[0].1,
         results[0].2,
@@ -385,7 +385,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
     assert_eq!(
         (results[1].1, results[1].2, results[1].3),
         (2, 0, 0),
-        "THE DELIVERABLE FAILED: a component-free id served {} of 2 pages correctly ({} wrong \
+        "THE DELIVERABLE FAILED: a component-free id served {} of 2 blocks correctly ({} wrong \
          bytes, {} missing). The record carries `component` on each block and `read_block` takes \
          one, so both blocks must be reachable",
         results[1].1,
@@ -395,7 +395,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
     assert_eq!(
         (results[2].1, results[2].2, results[2].3),
         (1, 1, 0),
-        "NEGATIVE CONTROL FAILED: two pages sharing BOTH terms served {}/{}/{} rather than \
+        "NEGATIVE CONTROL FAILED: two blocks sharing BOTH terms served {}/{}/{} rather than \
          1/1/0. They are genuinely indistinguishable, so the discriminator must not separate \
          them -- if it does, the second arm above is passing for some other reason",
         results[2].1,
@@ -403,7 +403,7 @@ fn two_carried_blocks_of_one_key_each_serve_their_own_bytes_under_a_component_fr
         results[2].3
     );
     println!(
-        "  VERDICT: 2/2 under a component-free id (was 1/2 with the first page's bytes served for \
+        "  VERDICT: 2/2 under a component-free id (was 1/2 with the first block's bytes served for \
          the second), while two genuinely identical blocks still collapse to 1/2."
     );
 }
@@ -439,14 +439,14 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     seed_hash_containers(&engine);
     seed_routed_strings(&engine);
 
-    println!("\n=== pages per identity, grouped two ways ===");
+    println!("\n=== blocks per identity, grouped two ways ===");
     println!("  kind    grouped by        blocks  groups  p50  p90  p99  MAX  unreachable   share");
     let mut rows: Vec<(&str, &str, usize, usize)> = Vec::new();
     for kind in ["hash", "string"] {
         let blocks = live_blocks(&engine, kind);
         assert!(
             !blocks.is_empty(),
-            "DENOMINATOR: no {kind} pages were exercised, so every share below is 0.00% for the \
+            "DENOMINATOR: no {kind} blocks were exercised, so every share below is 0.00% for the \
              wrong reason"
         );
         for grouping in ["id alone", "id + element"] {
@@ -497,7 +497,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     assert_eq!(
         hash_id_only,
         CONTAINER_KEYS * (MEMBERS_PER_KEY - 1),
-        "grouped on the id alone the hash arm loses {hash_id_only} pages, not {} -- one survivor \
+        "grouped on the id alone the hash arm loses {hash_id_only} blocks, not {} -- one survivor \
          per key",
         CONTAINER_KEYS * (MEMBERS_PER_KEY - 1)
     );
@@ -506,7 +506,7 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     let (_, hash_with_element) = find("hash", "id + element");
     assert_eq!(
         hash_with_element, 0,
-        "with the element beside the id, {hash_with_element} of {hash_blocks} hash pages are still \
+        "with the element beside the id, {hash_with_element} of {hash_blocks} hash blocks are still \
          unreachable. Every block of this fixture is a distinct field of a hash, so every group \
          must hold exactly one block"
     );
@@ -521,12 +521,12 @@ fn the_element_beside_the_id_makes_every_block_of_a_batch_reachable() {
     assert_eq!(
         (string_id_only, string_with_element),
         (0, 0),
-        "the control lost ({string_id_only}, {string_with_element}) of {string_blocks} pages under \
+        "the control lost ({string_id_only}, {string_with_element}) of {string_blocks} blocks under \
          the two groupings. A kind whose component is already `None` cannot be moved by putting \
          the component into the key, so both must be zero"
     );
     println!(
-        "  CONTROL: string, {string_blocks} pages exercised, 0 unreachable under BOTH groupings, \
+        "  CONTROL: string, {string_blocks} blocks exercised, 0 unreachable under BOTH groupings, \
          0.00%.\n  VERDICT: 96.00% -> 0.00% unreachable for hash; the control does not move."
     );
 }
@@ -602,14 +602,14 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
         (resident, with_ordinal, durable)
     };
 
-    println!("\n=== can the READ side see a page ordinal? ===");
+    println!("\n=== can the READ side see a block ordinal? ===");
     println!("  hash blocks, WAL-resident            {resident}");
     println!("  ...of which carry an ordinal        {with_ordinal}");
     println!("  hash blocks with a durable address   {durable}");
 
     assert!(
         resident > 0,
-        "NOT EXERCISED: {resident} WAL-resident hash pages, so \"none carry an ordinal\" would be \
+        "NOT EXERCISED: {resident} WAL-resident hash blocks, so \"none carry an ordinal\" would be \
          true of an empty set. {durable} blocks took the durable arm instead"
     );
     assert_eq!(
@@ -694,7 +694,7 @@ fn what_an_element_named_block_adds_to_the_record() {
         crate::raft::wal_proto::staged_block_body_len(&block_of(0, component, payload), None)
     }
 
-    println!("\n=== what the element identity adds to a carried page ===");
+    println!("\n=== what the element identity adds to a carried block ===");
     println!("  blocks  element        wire B/block  chunk B   disk bare  disk named  disk B/block   share");
     let mut wire_rows: Vec<(&str, i64)> = Vec::new();
     let mut disk_rows: Vec<(usize, &str, f64)> = Vec::new();
@@ -713,7 +713,7 @@ fn what_an_element_named_block_adds_to_the_record() {
             );
             assert!(
                 bare > 0 && named > 0,
-                "NOT EXERCISED: encoded {bare} and {named} bytes at {blocks} pages; a zero-byte \
+                "NOT EXERCISED: encoded {bare} and {named} bytes at {blocks} blocks; a zero-byte \
                  encode reports every delta below as +0.00%"
             );
             wire_rows.push((label, wire));
@@ -727,7 +727,7 @@ fn what_an_element_named_block_adds_to_the_record() {
         if label.starts_with("CONTROL") {
             assert_eq!(
                 *wire, 0,
-                "the control's WIRE cost moved by {wire} B/page. A page whose component is `None` \
+                "the control's WIRE cost moved by {wire} B/block. A block whose component is `None` \
                  skips the field entirely"
             );
         }
@@ -736,7 +736,7 @@ fn what_an_element_named_block_adds_to_the_record() {
         if label.starts_with("CONTROL") {
             assert_eq!(
                 *per_block, 0.0,
-                "the control's DISK cost moved by {per_block:.2} B/page at {blocks} pages. A record \
+                "the control's DISK cost moved by {per_block:.2} B/block at {blocks} blocks. A record \
                  carrying no components must be byte-identical to one written before this field"
             );
         }
@@ -751,13 +751,13 @@ fn what_an_element_named_block_adds_to_the_record() {
         .collect();
     assert_eq!(
         named_wire[0], named_wire[1],
-        "the element field costs {} wire bytes per page at one corpus size and {} at the other. \
+        "the element field costs {} wire bytes per block at one corpus size and {} at the other. \
          It is a per-block field",
         named_wire[0], named_wire[1]
     );
     assert!(
         named_wire[0] > 0,
-        "the element field reported {} wire bytes per page. This change makes records BIGGER; a \
+        "the element field reported {} wire bytes per block. This change makes records BIGGER; a \
          non-positive figure means the encoder is not writing the field at all",
         named_wire[0]
     );
@@ -779,19 +779,19 @@ fn what_an_element_named_block_adds_to_the_record() {
     );
     assert!(
         large < small,
-        "the disk cost was {small:.2} B/page at 25 pages and {large:.2} at 200. The element name \
+        "the disk cost was {small:.2} B/block at 25 blocks and {large:.2} at 200. The element name \
          repeats across a record's blocks and a compressor removes repetition, so the larger \
          record must pay LESS per block -- if it does not, the payload is no longer compressing \
          and this figure is measuring something else"
     );
     assert!(
         large < named_wire[0] as f64,
-        "the disk cost per page ({large:.2}) is not below the wire cost ({}), so the record is \
+        "the disk cost per block ({large:.2}) is not below the wire cost ({}), so the record is \
          not being compressed and the two figures are measuring the same thing",
         named_wire[0]
     );
     println!(
-        "  VERDICT: a two-character element name costs {} bytes on the WIRE per carried page, \
+        "  VERDICT: a two-character element name costs {} bytes on the WIRE per carried block, \
          identical at both corpus sizes, and {small:.2} -> {large:.2} B/block ON DISK as the record \
          grows from 25 blocks to 200. The control is unchanged on both.",
         named_wire[0]
@@ -831,7 +831,7 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
     let (bare_allocs, bare_bytes) = measure(None);
     let (named_allocs, named_bytes) = measure(Some("f7"));
 
-    println!("\n=== carried_block allocations for {BLOCKS} staged pages ===");
+    println!("\n=== carried_block allocations for {BLOCKS} staged blocks ===");
     println!("  element          allocs   bytes   allocs/block   B/block");
     for (label, allocs, bytes) in [
         ("CONTROL: none", bare_allocs, bare_bytes),
@@ -846,18 +846,18 @@ fn what_an_element_named_block_allocates_when_it_is_staged() {
 
     assert!(
         bare_allocs >= BLOCKS as u64,
-        "NOT EXERCISED: {bare_allocs} allocations for {BLOCKS} staged pages; the page copy alone is \
+        "NOT EXERCISED: {bare_allocs} allocations for {BLOCKS} staged blocks; the block copy alone is \
          one each, so a smaller figure means the staging did not run"
     );
     assert!(
         named_allocs > bare_allocs,
-        "naming the element added {} allocations over {BLOCKS} pages. An `Arc<str>` from a `&str` \
+        "naming the element added {} allocations over {BLOCKS} blocks. An `Arc<str>` from a `&str` \
          copies the characters, so it cannot be free -- a zero here means the field is not being \
          filled",
         named_allocs as i64 - bare_allocs as i64
     );
     println!(
-        "  VERDICT: +{:.2} allocations and +{:.2} bytes per carried page for a two-character \
+        "  VERDICT: +{:.2} allocations and +{:.2} bytes per carried block for a two-character \
          element name.",
         (named_allocs - bare_allocs) as f64 / BLOCKS as f64,
         (named_bytes - bare_bytes) as f64 / BLOCKS as f64
@@ -906,7 +906,7 @@ fn how_many_blocks_one_record_carries() {
     }
     sizes.sort();
 
-    println!("\n=== pages per record, over the whole seeded log ===");
+    println!("\n=== blocks per record, over the whole seeded log ===");
     println!("  records carrying blocks  blocks  p50  p90  p99  MAX  records with >1 block");
     let multi = sizes.iter().filter(|size| **size > 1).count();
     assert!(
@@ -923,7 +923,7 @@ fn how_many_blocks_one_record_carries() {
     );
     assert!(
         multi > 0,
-        "every one of {} records carries exactly one page, so no record in this fixture has two \
+        "every one of {} records carries exactly one block, so no record in this fixture has two \
          blocks to tell apart and the finding this module is about cannot arise in it",
         sizes.len()
     );
@@ -933,7 +933,7 @@ fn how_many_blocks_one_record_carries() {
         sizes.last().copied().unwrap_or(0)
     );
     println!(
-        "  VERDICT: {multi} of {} page-carrying records hold more than one block, MAX {}.",
+        "  VERDICT: {multi} of {} block-carrying records hold more than one block, MAX {}.",
         sizes.len(),
         sizes.last().copied().unwrap_or(0)
     );
@@ -1000,12 +1000,12 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
     );
     let decoded = decode_wal_line(&encoded).expect("the record decodes");
 
-    println!("\n=== every carried page round-trips, bytes AND element ===");
+    println!("\n=== every carried block round-trips, bytes AND element ===");
     println!("  block  element        bytes in  bytes out  element out");
     assert_eq!(
         decoded.staged_blocks.len(),
         blocks.len(),
-        "the record carried {} pages in and {} out. This change may only ADD to what a record \
+        "the record carried {} blocks in and {} out. This change may only ADD to what a record \
          says; a block that does not come back is the refusal condition",
         blocks.len(),
         decoded.staged_blocks.len()
@@ -1020,12 +1020,12 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
         );
         assert_eq!(
             before.bytes, after.bytes,
-            "page {i}'s BYTES did not survive the round trip. That is the guarantee this record \
+            "block {i}'s BYTES did not survive the round trip. That is the guarantee this record \
              exists to make and nothing about naming its element may touch it"
         );
         assert_eq!(
             before.component, after.component,
-            "page {i}'s element came back as {:?} rather than {:?}. `Some(\"\")` and `None` are \
+            "block {i}'s element came back as {:?} rather than {:?}. `Some(\"\")` and `None` are \
              different blocks, and an encoder that merges them re-creates the ambiguity this \
              change removes",
             after.component.as_deref(),
@@ -1147,7 +1147,7 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
         println!("  {key:<10} {blocks:>5}  {:>15}", recovered.len());
         assert!(
             blocks > 0,
-            "DENOMINATOR: key {key} holds no live page entries after the reload, so a full set of \
+            "DENOMINATOR: key {key} holds no live block entries after the reload, so a full set of \
              recovered names below would be saying nothing about blocks"
         );
         assert_eq!(

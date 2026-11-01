@@ -1008,14 +1008,14 @@ impl std::fmt::Display for ObjectRecordRefusal {
             ),
             Self::NonZeroBlockOrdinalDoesNotFitInline { block_id } => write!(
                 f,
-                "NonZeroBlockOrdinalDoesNotFitInline: page ordinal {block_id} has no room in the \
+                "NonZeroBlockOrdinalDoesNotFitInline: block ordinal {block_id} has no room in the \
                  inline arm's twenty-four bytes, which carry the ordinal's presence and an implied \
                  value of zero; a nonzero ordinal is a multi-block object and belongs in the layout \
                  arm"
             ),
             Self::BlockIdentityOutOfRange { block_id } => write!(
                 f,
-                "BlockIdentityOutOfRange: page identity {block_id} is wider than the stored form \
+                "BlockIdentityOutOfRange: block identity {block_id} is wider than the stored form \
                  accepts; truncating it would name a different block of the same object"
             ),
             Self::BlockSizeDoesNotFit { length } => write!(

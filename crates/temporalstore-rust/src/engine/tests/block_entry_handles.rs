@@ -272,7 +272,7 @@ impl BlocksPerObject {
             self.blocks
         );
         for (name, map) in [
-            ("pages per OBJECT", &self.histogram),
+            ("blocks per OBJECT", &self.histogram),
             ("components per OBJECT", &self.components_per_object),
             ("components per BUCKET", &self.components_per_bucket),
         ] {
@@ -432,7 +432,7 @@ fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
         assert_eq!(
             1,
             BlocksPerObject::max(&measured.histogram),
-            "{label}: a routed-key object is supposed to hold exactly one page and the widest \
+            "{label}: a routed-key object is supposed to hold exactly one block and the widest \
              holds {}",
             BlocksPerObject::max(&measured.histogram)
         );
@@ -440,7 +440,7 @@ fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
     for (label, _, measured) in arms.iter().filter(|(l, _, _)| l.starts_with("containers")) {
         assert!(
             BlocksPerObject::percentile(&measured.histogram, 0.50) >= 100,
-            "{label}: the container arm exists to hold objects of a hundred pages and its p50 is \
+            "{label}: the container arm exists to hold objects of a hundred blocks and its p50 is \
              {}",
             BlocksPerObject::percentile(&measured.histogram, 0.50)
         );
@@ -473,7 +473,7 @@ fn the_blocks_of_one_object_are_two_populations_at_both_routing_ranges() {
         compared += 1;
         assert_eq!(
             measured.histogram, other.histogram,
-            "{label}: the pages-per-OBJECT histogram differs between the whole keyspace and \
+            "{label}: the blocks-per-OBJECT histogram differs between the whole keyspace and \
              0..=1023. An object's blocks route to its own key's bucket, so this distribution \
              cannot depend on how many buckets exist -- if it does, one of the two arms is not \
              measuring what it says"
@@ -704,7 +704,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     }
 
     println!(
-        "\n=== A HANDLE FOR object_key: 16 B a page saved against one table entry per object ===\n\
+        "\n=== A HANDLE FOR object_key: 16 B a block saved against one table entry per object ===\n\
            store path length {} characters; table = Vec<Arc<str>> + HashMap<Arc<str>, u32>",
         path_lengths[0]
     );
@@ -756,13 +756,13 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     for (label, cost, _) in &routed {
         assert_eq!(
             cost.entries, cost.blocks,
-            "{label}: a routed key is one page per object, so the table is supposed to hold one \
+            "{label}: a routed key is one block per object, so the table is supposed to hold one \
              entry per block -- {} entries over {} blocks",
             cost.entries, cost.blocks
         );
         assert!(
             cost.resident_per_block() > ENTRY_BYTES_A_HANDLE_SAVES as f64,
-            "{label}: the table holds {:.2} B a page against {} B saved, so a handle is supposed \
+            "{label}: the table holds {:.2} B a block against {} B saved, so a handle is supposed \
              to LOSE on this population and it does not",
             cost.resident_per_block(),
             ENTRY_BYTES_A_HANDLE_SAVES
@@ -771,14 +771,14 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     for (label, cost, _) in &containers {
         assert!(
             cost.entries * 50 < cost.blocks,
-            "{label}: a container object holds a hundred pages, so the table is supposed to hold \
+            "{label}: a container object holds a hundred blocks, so the table is supposed to hold \
              far fewer entries than blocks -- {} entries over {} blocks",
             cost.entries,
             cost.blocks
         );
         assert!(
             cost.resident_per_block() < ENTRY_BYTES_A_HANDLE_SAVES as f64,
-            "{label}: the table holds {:.2} B a page against {} B saved, so a handle is supposed \
+            "{label}: the table holds {:.2} B a block against {} B saved, so a handle is supposed \
              to PAY on this population and it does not",
             cost.resident_per_block(),
             ENTRY_BYTES_A_HANDLE_SAVES
@@ -810,7 +810,7 @@ fn a_handle_for_the_object_key_pays_only_above_the_measured_break_even() {
     );
     assert!(
         break_even > 1.0,
-        "the break-even came out at {break_even:.2} pages per object, at or below one. That would \
+        "the break-even came out at {break_even:.2} blocks per object, at or below one. That would \
          mean a table entry is cheaper than the pointer it replaces even for a single-block object, \
          and this whole verdict would be the other way round"
     );
@@ -870,7 +870,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
 
     const SAVED: f64 = ENTRY_BYTES_A_HANDLE_SAVES as f64;
     println!(
-        "\n=== A HANDLE FOR component: {SAVED} B a page saved against one table entry per \
+        "\n=== A HANDLE FOR component: {SAVED} B a block saved against one table entry per \
            DISTINCT COMPONENT ===\n  store path length {} characters",
         path_lengths[0]
     );
@@ -911,7 +911,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
     for (label, cost, _) in &schema {
         assert!(
             cost.entries_per_block() < 0.5,
-            "{label}: {} distinct components over {} pages. This arm exists to hold a REPEATED \
+            "{label}: {} distinct components over {} blocks. This arm exists to hold a REPEATED \
              schema -- the same hundred field names across forty objects -- so distinct names are \
              supposed to be far fewer than blocks",
             cost.entries,
@@ -919,7 +919,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
         );
         assert!(
             cost.resident_per_block() < SAVED,
-            "{label}: the table holds {:.2} B a page against {SAVED} B saved, so a handle is \
+            "{label}: the table holds {:.2} B a block against {SAVED} B saved, so a handle is \
              supposed to PAY where the names repeat",
             cost.resident_per_block()
         );
@@ -929,7 +929,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
     for (label, cost, _) in &content {
         assert!(
             cost.entries_per_block() > 0.9,
-            "{label}: {} distinct components over {} pages. This arm exists to hold names that do \
+            "{label}: {} distinct components over {} blocks. This arm exists to hold names that do \
              NOT repeat -- one container whose two thousand members are all distinct -- so the \
              table is supposed to hold about one entry per block",
             cost.entries,
@@ -937,7 +937,7 @@ fn a_handle_for_the_component_costs_a_table_entry_per_block() {
         );
         assert!(
             cost.resident_per_block() > SAVED,
-            "{label}: the table holds {:.2} B a page against {SAVED} B saved, so a handle is \
+            "{label}: the table holds {:.2} B a block against {SAVED} B saved, so a handle is \
              supposed to LOSE where every name is distinct",
             cost.resident_per_block()
         );
@@ -1161,14 +1161,14 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     assert_ne!(
         8 + size_of::<BlockIndex>(),
         arm,
-        "the page index is {arm} B, which is a handle plus a whole entry again -- the inline arm has \
+        "the block index is {arm} B, which is a handle plus a whole entry again -- the inline arm has \
          come back and every bucket in the map is paying the entry's width whether it holds one block \
          or fifty"
     );
     assert_eq!(
         size_of::<Vec<(u64, BlockIndex)>>(),
         arm,
-        "the page index is {arm} B against its own page list's {} B; it is supposed to be exactly \
+        "the block index is {arm} B against its own block list's {} B; it is supposed to be exactly \
          that header, with both other arms riding pointer niches",
         size_of::<Vec<(u64, BlockIndex)>>()
     );
@@ -1183,12 +1183,12 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // representation and not an accident of two numbers meeting.
     assert!(
         arm < size_of::<u64>() + size_of::<BlockIndex>(),
-        "the page index is {arm} B and a handle plus one entry is {} B; the index must be too \
+        "the block index is {arm} B and a handle plus one entry is {} B; the index must be too \
          narrow to hold one inline, or the entry is back in the node",
         size_of::<u64>() + size_of::<BlockIndex>()
     );
     println!(
-        "  BlockIndexMap {arm} B (a bare page-list header -- INDEPENDENT of the entry's width now), \
+        "  BlockIndexMap {arm} B (a bare block-list header -- INDEPENDENT of the entry's width now), \
          BucketNode {} B. The sixteen bytes measured above are banked on the HEAP: in every boxed \
          arm and every list element, not in the node.",
         size_of::<crate::engine::state::BucketNode>()
@@ -1314,7 +1314,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     println!("  refusals by term: {:?}", outcome.refusals);
     assert!(
         outcome.released_blocks > 0,
-        "the release emptied no page list, so the reload below re-derives nothing and every \
+        "the release emptied no block list, so the reload below re-derives nothing and every \
          assertion after it is free. {} candidates were offered; the terms they failed on are \
          {:?}",
         candidates.len(),
@@ -1358,7 +1358,7 @@ fn a_released_bucket_reloads_every_name_element_by_element() {
     for (index, (left, right)) in before.iter().zip(after.iter()).enumerate() {
         assert_eq!(
             left, right,
-            "page {index} came back with different names: before {left:?}, after {right:?}. A \
+            "block {index} came back with different names: before {left:?}, after {right:?}. A \
              count would have passed this"
         );
         compared += 1;
@@ -2182,18 +2182,18 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     // --- THE MEASURED FACT, which refutes the hypothesis this test was written for. ---
     assert!(
         empty_length > 0,
-        "an empty value produced a page of length {empty_length}. This test exists because a \
+        "an empty value produced a block of length {empty_length}. This test exists because a \
          zero-length LIVE block would block the `length == 0` tombstone encoding, and the empty \
          write is the route most likely to produce one -- if it ever does, the tombstone is \
          unavailable and `deleted` must keep its bit"
     );
     assert_eq!(
         0, zero_length_live,
-        "{zero_length_live} live pages carry length 0. On this route none should: the block record \
+        "{zero_length_live} live blocks carry length 0. On this route none should: the block record \
          carries a header. A live zero-length block here means the tombstone encoding is blocked"
     );
     println!(
-        "  FINDING: the shortest live page this route produces is {empty_length} B, so an empty \
+        "  FINDING: the shortest live block this route produces is {empty_length} B, so an empty \
          value does NOT block a `length == 0` tombstone. That bounds one route, not the class -- \
          `address_footprint::the_capacity_ceilings_each_narrowing_would_impose` asks it over a \
          wide fixture, and `length` lives in `ElementEntry`, which another thread owns."

@@ -227,7 +227,7 @@ impl BlocksPerBucket {
     /// readable without ever reporting a mean in place of a count.
     fn report(&self, label: &str) {
         println!(
-            "{label}: {} buckets, {} blocks, mean {:.4}, single-page {:.5}, widest {}, multi-page {}",
+            "{label}: {} buckets, {} blocks, mean {:.4}, single-block {:.5}, widest {}, multi-block {}",
             self.buckets(),
             self.blocks(),
             self.mean(),
@@ -374,7 +374,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
             assert_eq!(
                 hist.blocks(),
                 keys.len(),
-                "{records}/{end_routing_bucket}: the index holds {} pages for {} written keys; \
+                "{records}/{end_routing_bucket}: the index holds {} blocks for {} written keys; \
                  the histogram below is not over the fixture",
                 hist.blocks(),
                 keys.len()
@@ -398,7 +398,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
         // THE WIDE ARM REPRODUCES #1959. One key, one bucket, essentially no collision.
         assert!(
             wide.single_block_fraction() > 0.99,
-            "on the whole keyspace {records} routed keys gave a single-page fraction of {:.5}; \
+            "on the whole keyspace {records} routed keys gave a single-block fraction of {:.5}; \
              #1959 measured 0.99900 and this arm is meant to reproduce it",
             wide.single_block_fraction()
         );
@@ -422,20 +422,20 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
         // THE ANTI-CONSTANT ASSERTION.
         assert!(
             narrow.multi_block() > 0,
-            "the narrow arm at {records} records reached no bucket holding more than one page, so \
+            "the narrow arm at {records} records reached no bucket holding more than one block, so \
              it cannot tell a correct `BlockIndexMap` from a constant answering `One`"
         );
 
         // AND THE FILL IS THE FINDING. The same keys, the same workload, the same engine.
         assert!(
             narrow.single_block_fraction() < 0.25,
-            "the narrow arm at {records} records is {:.5} single-page; if a production-range shard \
+            "the narrow arm at {records} records is {:.5} single-block; if a production-range shard \
              were still single-block-dominated then #1959's reading would hold at both widths and \
              the range would not be the lever",
             narrow.single_block_fraction()
         );
         println!(
-            "  {records} routed keys: whole keyspace {:.4} pages a bucket over {} buckets, \
+            "  {records} routed keys: whole keyspace {:.4} blocks a bucket over {} buckets, \
              0..{NARROW_END} {:.4} over {} -- a factor of {:.1} on the bucket count",
             wide.mean(),
             wide.buckets(),
@@ -460,7 +460,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
     );
     assert!(
         narrow_large.mean() > narrow_small.mean() * 5.0,
-        "on 0..{NARROW_END} a tenfold corpus moved the pages a bucket holds from {:.4} only to \
+        "on 0..{NARROW_END} a tenfold corpus moved the blocks a bucket holds from {:.4} only to \
          {:.4}; the bucket count is capped by the range, so the fill is what must grow",
         narrow_small.mean(),
         narrow_large.mean()
@@ -587,7 +587,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
             .collect();
         assert!(
             split.is_empty(),
-            "{} container keys had pages in more than one bucket on 0..{end_routing_bucket} \
+            "{} container keys had blocks in more than one bucket on 0..{end_routing_bucket} \
              ({:?}); a container is one object key and one object key is one bucket at any range",
             split.len(),
             &split[..split.len().min(5)]
@@ -604,13 +604,13 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
         assert_eq!(
             hist.counts.get(&1).copied().unwrap_or_default(),
             0,
-            "a container store on 0..{end_routing_bucket} produced a single-page bucket; every \
+            "a container store on 0..{end_routing_bucket} produced a single-block bucket; every \
              field is its own block under one key, so none is possible"
         );
         assert_eq!(
             hist.widest(),
             MEMBERS,
-            "the widest bucket on 0..{end_routing_bucket} holds {} pages, not the {MEMBERS} \
+            "the widest bucket on 0..{end_routing_bucket} holds {} blocks, not the {MEMBERS} \
              fields a container was written with",
             hist.widest()
         );
@@ -720,7 +720,7 @@ fn the_narrow_range_holds_the_same_blocks_the_wide_one_does_bucket_for_bucket() 
     let narrow = handle_sets.get(&NARROW_END).expect("narrow handles");
     assert_eq!(
         wide, narrow,
-        "the whole-keyspace store holds {} page handles and the 0..{NARROW_END} store holds {}; \
+        "the whole-keyspace store holds {} block handles and the 0..{NARROW_END} store holds {}; \
          {} are in one and not the other. The range regroups blocks; it must not change which \
          blocks exist",
         wide.len(),
@@ -814,7 +814,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
         assert_eq!(
             handles_after,
             handles_before,
-            "{direction} from 0..{from_end} to 0..{to_end}: {} page handles went in and {} came \
+            "{direction} from 0..{from_end} to 0..{to_end}: {} block handles went in and {} came \
              back; {} are in one and not the other",
             handles_before.len(),
             handles_after.len(),
@@ -879,7 +879,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
             assert_eq!(
                 blocks_outside,
                 RECORDS,
-                "{direction} from 0..{from_end} to 0..{to_end}: {blocks_outside} of {RECORDS} pages \
+                "{direction} from 0..{from_end} to 0..{to_end}: {blocks_outside} of {RECORDS} blocks \
                  came back filed above the shard's end, not all of them. The engine does not \
                  re-file a block whose address carries an explicit bucket, so either every block is \
                  outside or the write path has stopped stamping one -- a partial count means the \
@@ -1046,7 +1046,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
             assert_eq!(
                 blocks,
                 keys.len(),
-                "{records}/{end_routing_bucket}: the map holds {blocks} pages for {} keys, so the \
+                "{records}/{end_routing_bucket}: the map holds {blocks} blocks for {} keys, so the \
                  per-block divisor below is not the fixture's",
                 keys.len()
             );
@@ -1107,7 +1107,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
 
         assert_eq!(
             wide.blocks, narrow.blocks,
-            "the two arms at {records} records hold {} and {} pages; a per-page figure over \
+            "the two arms at {records} records hold {} and {} blocks; a per-block figure over \
              different block counts is two questions",
             wide.blocks, narrow.blocks
         );
@@ -1137,7 +1137,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
         // BUCKET plus a `BTreeMap` node per filled bucket, and which of those is larger depends
         // on the fill -- so the sign is reported, with the arm counts that explain it.
         println!(
-            "  {records} records: allocations a page {:.4} -> {:.4} ({:+.1}%); bytes a page \
+            "  {records} records: allocations a block {:.4} -> {:.4} ({:+.1}%); bytes a block \
              {:.1} -> {:.1} ({:+.1}%); block index arms One {} -> {}, Many {} -> {}",
             wide.allocs_per_block(),
             narrow.allocs_per_block(),
@@ -1163,14 +1163,14 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
     let small_ratio = small_narrow.allocs_per_block() / small_wide.allocs_per_block();
     let large_ratio = large_narrow.allocs_per_block() / large_wide.allocs_per_block();
     println!(
-        "  the fill deepens from {:.2} to {:.2} pages a bucket between the two corpus sizes, and \
+        "  the fill deepens from {:.2} to {:.2} blocks a bucket between the two corpus sizes, and \
          the allocation ratio moves from {small_ratio:.3} to {large_ratio:.3}",
         small_narrow.blocks as f64 / small_narrow.buckets as f64,
         large_narrow.blocks as f64 / large_narrow.buckets as f64
     );
     assert!(
         large_ratio < small_ratio,
-        "the narrow range costs {large_ratio:.3}x the allocations a page at {LARGE} records and \
+        "the narrow range costs {large_ratio:.3}x the allocations a block at {LARGE} records and \
          {small_ratio:.3}x at {SMALL}. A deeper fill spreads the map node over more blocks, so the \
          larger corpus must be the better of the two; if it is not, the node is not what the \
          per-block figure is tracking"

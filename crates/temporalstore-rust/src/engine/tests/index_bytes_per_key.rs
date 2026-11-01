@@ -763,7 +763,7 @@ fn what_a_live_key_costs_in_the_index_at_two_corpus_sizes() {
         );
         assert!(
             bucket_blocks > 0,
-            "denominator: the bucket index must hold pages, or its footprint is a zero that means \
+            "denominator: the bucket index must hold blocks, or its footprint is a zero that means \
              nothing"
         );
         assert!(
@@ -1858,7 +1858,7 @@ fn decompose_bucket_map(map: &crate::engine::state::BucketMap) -> BucketMapDecom
             req: boxed_block_req,
             chunk: boxed_block_chunk,
             count: single_block_buckets,
-            unit: "single-page buckets",
+            unit: "single-block buckets",
         },
         BucketMapTerm {
             name: "block_index Many: Vec<(u64, BlockIndex)>",
@@ -1992,12 +1992,12 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
 
         println!("=== {label} ===");
         println!(
-            "  DENOMINATORS: {live_keys} live keys, {} pages, {} buckets, {} objects, {} object \
+            "  DENOMINATORS: {live_keys} live keys, {} blocks, {} buckets, {} objects, {} object \
              slots, {} tombstone rows in {} buckets",
             d.blocks, d.buckets, d.objects, d.slots, d.tombstone_rows, d.tombstone_buckets
         );
         println!(
-            "  arms: {} single-page buckets, {} list buckets holding {} pages, {} multi-object \
+            "  arms: {} single-block buckets, {} list buckets holding {} blocks, {} multi-object \
              buckets",
             d.single_block_buckets, d.multi_block_buckets, d.blocks_in_list_arm, d.multi_object_buckets
         );
@@ -2007,7 +2007,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
             live_keys as f64 / d.buckets as f64
         );
         println!(
-            "  bucket_map TOTAL {} B requested, {} B in chunks   ({:.1} B/page, {:.1} B/bucket, \
+            "  bucket_map TOTAL {} B requested, {} B in chunks   ({:.1} B/block, {:.1} B/bucket, \
              {:.1} B/key -- three different denominators, all printed)",
             d.total_req,
             d.total_chunk,
@@ -2065,7 +2065,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
         let pair = std::mem::size_of::<(u64, BlockIndex)>();
         let spare_slots = d.list_capacity.saturating_sub(d.blocks_in_list_arm);
         println!(
-            "  spare page-list capacity: {} slots for {} pages = {spare_slots} spare, {} B \
+            "  spare block-list capacity: {} slots for {} blocks = {spare_slots} spare, {} B \
              the clone cannot see ({:.1} B/block, {:.2}x on the list term)",
             d.list_capacity,
             d.blocks_in_list_arm,
@@ -2109,7 +2109,7 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
     for (label, ratio) in &bucket_to_block {
         println!("  {label:<34} {ratio:.4} buckets per block");
     }
-    println!("=== the container term per PAGE, by fixture ===");
+    println!("=== the container term per BLOCK, by fixture ===");
     for (label, bpp) in &per_block_container {
         println!("  {label:<34} {bpp:>8.1} B/block");
     }
@@ -2118,13 +2118,13 @@ fn what_the_bucket_map_footprint_is_made_of_on_both_routing_ranges() {
     let (shipped_label, shipped_ratio) = bucket_to_block[3];
     assert!(
         legacy_ratio > 0.5,
-        "{legacy_label} produced {legacy_ratio:.4} buckets per page. The legacy range is supposed \
+        "{legacy_label} produced {legacy_ratio:.4} buckets per block. The legacy range is supposed \
          to give every key a bucket of its own, which is what makes a per-bucket cost read as a \
          per-block one -- without that this fixture is not the regime the 185 B/block figure came from"
     );
     assert!(
         shipped_ratio * 10.0 < legacy_ratio,
-        "{shipped_label} produced {shipped_ratio:.4} buckets per page against {legacy_ratio:.4} on \
+        "{shipped_label} produced {shipped_ratio:.4} buckets per block against {legacy_ratio:.4} on \
          the legacy range. The two must be different regimes or every row above is one population \
          measured twice"
     );
@@ -2941,7 +2941,7 @@ fn the_index_footprint_stays_inside_its_measured_bracket() {
 
     assert_eq!(
         PINNED_STRINGS, string_keys,
-        "the fixture seeded {PINNED_STRINGS} single-page objects and the string map holds \
+        "the fixture seeded {PINNED_STRINGS} single-block objects and the string map holds \
          {string_keys} -- the corpus is part of the bracket, so a figure taken over a different \
          one is not comparable to it"
     );
@@ -3510,7 +3510,7 @@ fn how_many_times_a_context_keys_characters_exist() {
     // change cannot carry a verdict about this one.
     assert_eq!(
         timeline_total, shared_with_bucket,
-        "{shared_with_bucket} of the time index's {timeline_total} key allocations are the same          allocation the PAGE INDEX holds, and every one should be. The pair files its maps during          execution, when the lookup does not yet hold the key, so the adoption after the bucket          index is filed is what closes it. A shortfall means that adoption stopped running or          moved to a point before the handle exists -- which is how it failed the first time, on          400 of 400 writes."
+        "{shared_with_bucket} of the time index's {timeline_total} key allocations are the same          allocation the BLOCK INDEX holds, and every one should be. The pair files its maps during          execution, when the lookup does not yet hold the key, so the adoption after the bucket          index is filed is what closes it. A shortfall means that adoption stopped running or          moved to a point before the handle exists -- which is how it failed the first time, on          400 of 400 writes."
     );
     assert_eq!(
         0, lookup_distinct,
@@ -4033,7 +4033,7 @@ fn where_the_string_maps_bytes_go_and_whether_a_btree_would_be_smaller() {
 ///   cargo test --features alloc-probe -p temporalstore-rust --lib what_one_key_with_one_block_costs -- --ignored --nocapture
 #[test]
 #[cfg(feature = "alloc-probe")]
-#[ignore = "seeds 40,000 single-page records then bounds the index; run by name"]
+#[ignore = "seeds 40,000 single-block records then bounds the index; run by name"]
 fn what_one_key_with_one_block_costs() {
     const SHIPPED_END: u32 = 1023;
     const KEYS: usize = 40_000;
@@ -4080,7 +4080,7 @@ fn what_one_key_with_one_block_costs() {
     assert_eq!(KEYS, keys0, "denominator: the fixture did not seed the corpus it reports");
     assert_eq!(
         keys0, pages0,
-        "denominator: {pages0} pages over {keys0} keys is not one page per key, so this is not the \
+        "denominator: {pages0} blocks over {keys0} keys is not one block per key, so this is not the \
          single-block regime it claims to measure"
     );
     assert_eq!(probe_keys.len(), read0, "the fixture cannot read its own keys before the bound");
@@ -4106,7 +4106,7 @@ fn what_one_key_with_one_block_costs() {
     let read1 = readable(&engine);
 
     println!();
-    println!("  ONE KEY, ONE PAGE -- {keys0} keys, {pages0} blocks before, {pages1} after");
+    println!("  ONE KEY, ONE BLOCK -- {keys0} keys, {pages0} blocks before, {pages1} after");
     println!(
         "    before   {before:>10} B   {:>6.1} B/key   (= B/block, one block a key)",
         before as f64 / keys0 as f64
@@ -4197,7 +4197,7 @@ fn what_one_key_with_one_block_costs() {
             .unwrap_or_else(|| panic!("the census has no {owed} row"));
         assert!(
             bytes > 0,
-            "the {owed} row is 0 B on a 40,000-key single-page shard, so this census is weighing \
+            "the {owed} row is 0 B on a 40,000-key single-block shard, so this census is weighing \
              something other than the index this test reports"
         );
     }
@@ -4221,7 +4221,7 @@ fn what_one_key_with_one_block_costs() {
     let after_per_key = after as f64 / keys0 as f64;
     assert!(
         after_per_key < 95.0,
-        "one key with one page costs {after_per_key:.1} B of RESIDENT index after the bound \
+        "one key with one block costs {after_per_key:.1} B of RESIDENT index after the bound \
          fires, over the 95 B bound. The per-structure table printed above says which structure \
          moved -- take the bound down with it rather than up to meet it"
     );
@@ -4264,7 +4264,7 @@ fn what_one_key_with_one_block_costs() {
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 #[test]
 #[cfg(feature = "alloc-probe")]
-#[ignore = "seeds 40,000 single-page records and runs the default cycle; run by name"]
+#[ignore = "seeds 40,000 single-block records and runs the default cycle; run by name"]
 fn what_the_default_configuration_does_to_a_forty_thousand_key_shard() {
     const SHIPPED_END: u32 = 1023;
     const KEYS: usize = 40_000;
@@ -4287,7 +4287,7 @@ fn what_the_default_configuration_does_to_a_forty_thousand_key_shard() {
     let before = total(&engine);
 
     println!();
-    println!("  DEFAULT CONFIGURATION on a {KEYS}-key single-page shard:");
+    println!("  DEFAULT CONFIGURATION on a {KEYS}-key single-block shard:");
     println!("    default index_resident_limit_bytes : {limit} B ({} MiB)", limit / (1024 * 1024));
     println!("    this shard's own resident index    : {resident} B");
     println!(
@@ -7782,7 +7782,7 @@ fn what_one_stats_read_allocates() {
     use crate::types::{Command, ExecuteRequest};
 
     println!();
-    println!("  corpus   live pages   allocs   alloc_bytes   bytes/page");
+    println!("  corpus   live blocks   allocs   alloc_bytes   bytes/block");
 
     let mut measured: Vec<(usize, usize, u64, u64)> = Vec::new();
     let mut scan_counts: Vec<(usize, usize, u64, u64)> = Vec::new();
@@ -7977,7 +7977,7 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
     for (rung, blocks, _, _) in &measured {
         assert!(
             *blocks >= *rung,
-            "corpus {rung} left only {blocks} live pages, so the walk had nothing to read and the \
+            "corpus {rung} left only {blocks} live blocks, so the walk had nothing to read and the \
              figures above are not measurements of it"
         );
     }
@@ -8009,7 +8009,7 @@ cached_last_sequence {wal_cached_bytes} B  -> the two disk reads cost {} B",
     // --- term that scales.
     assert!(
         (large_bytes as f64) < (small_bytes as f64) * 1.5,
-        "one stats read allocated {small_bytes} B over {small_blocks} pages and {large_bytes} B over \
+        "one stats read allocated {small_bytes} B over {small_blocks} blocks and {large_bytes} B over \
          {large_blocks} -- it is following the store again. `shard_stats` is what a node answers a \
          stats request with, so a term that scales is paid on every read: check whether a full-file \
          log scan or a per-bucket collect has come back onto the path."
@@ -10723,7 +10723,7 @@ fn what_a_release_does_to_the_published_amplification_ratio() {
     );
     assert!(
         swept.true_resident() >= released.true_resident(),
-        "the resident numerator FELL across a read sweep ({} -> {}). Reads load pages back, so the \
+        "the resident numerator FELL across a read sweep ({} -> {}). Reads load blocks back, so the \
          swept shard cannot be smaller than the released one -- something else released during the \
          sweep and the put-back column is attributing it to reads.",
         released.true_resident(),
@@ -11115,7 +11115,7 @@ fn which_term_carries_the_bucket_map_slope() {
     println!();
     println!("  whole bucket_map            {whole1:>10} {whole4:>10} {:>10.1}", whole_slope);
     println!("  terms in PER-BUCKET units (saturating)            {saturating_slope:>8.1} B/key");
-    println!("  terms in PER-PAGE / PER-OBJECT units (growing)    {per_key_slope:>8.1} B/key");
+    println!("  terms in PER-BLOCK / PER-OBJECT units (growing)    {per_key_slope:>8.1} B/key");
     let residual = whole_slope - (saturating_slope + per_key_slope);
     println!("  residual, whole minus the named terms             {residual:>8.1} B/key");
     println!();

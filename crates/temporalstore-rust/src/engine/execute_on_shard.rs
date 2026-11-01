@@ -80,7 +80,7 @@ pub(super) mod hash_read_divergence {
                 object_key,
                 field,
                 divergences = seen,
-                "the page index named a hash field the durable container does not hold; the \
+                "the block index named a hash field the durable container does not hold; the \
                  union served it from the index"
             );
         }

@@ -170,7 +170,7 @@ fn round_trip_every_block_through_the_wire(
         let older = as_an_older_build_wrote_it(&before);
         assert_eq!(
             older, before,
-            "page {key} changed when its `rs` key was removed from the wire; the key is inert and \
+            "block {key} changed when its `rs` key was removed from the wire; the key is inert and \
              this round trip has to be the identity"
         );
         shard.set_string_address(key.as_str().into(), &older);
@@ -349,14 +349,14 @@ fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
             assert_eq!(
                 block_total(contents),
                 RECORDS,
-                "0..{rebuild_end} {rebuild}: {} of {RECORDS} pages survived. Neither rebuild has a \
+                "0..{rebuild_end} {rebuild}: {} of {RECORDS} blocks survived. Neither rebuild has a \
                  drop filter any more, and a derived bucket cannot be out of range, so nothing can \
                  legitimately be lost here.",
                 block_total(contents)
             );
             assert_eq!(
                 contents, &expected,
-                "0..{rebuild_end} {rebuild}: the buckets the rebuild filed pages into are not the \
+                "0..{rebuild_end} {rebuild}: the buckets the rebuild filed blocks into are not the \
                  buckets the range puts those keys in"
             );
         }
@@ -377,7 +377,7 @@ fn neither_rebuild_can_drop_a_block_because_every_bucket_is_derived_in_range() {
     assert_ne!(
         observed.get(&(NARROW_END, "ownership")),
         observed.get(&(WIDE_END, "ownership")),
-        "the narrow and wide rebuilds filed the pages into the SAME buckets, so this test is not \
+        "the narrow and wide rebuilds filed the blocks into the SAME buckets, so this test is not \
          measuring a placement the range decides"
     );
 }
@@ -426,7 +426,7 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
         );
         assert!(
             outside.is_empty(),
-            "0..{end_routing_bucket}: {} buckets hold pages but sit above the shard's end; the \
+            "0..{end_routing_bucket}: {} buckets hold blocks but sit above the shard's end; the \
              first few are {:?}. `append_value` is handed \
              `block_routing_bucket(key, start, end)` and every filing site derives the same \
              expression, so a block there is invisible to every reader that scopes by bucket.",
@@ -449,7 +449,7 @@ fn every_block_the_live_write_path_files_lands_inside_the_shards_range() {
         }
         assert_eq!(
             contents, expected,
-            "0..{end_routing_bucket}: the write path filed pages into buckets the shard's own \
+            "0..{end_routing_bucket}: the write path filed blocks into buckets the shard's own \
              range does not put those keys in"
         );
     }
@@ -539,7 +539,7 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
         // ELEMENT BY ELEMENT.
         assert_eq!(
             contents, expected,
-            "0..{end_routing_bucket}: the buckets the flush filed pages into are not the buckets \
+            "0..{end_routing_bucket}: the buckets the flush filed blocks into are not the buckets \
              the shard's own range puts those keys in. Every rebuild takes the range as an \
              argument and it decides the placement, so a disagreement here is a call site still \
              passing `0, u32::MAX`."
@@ -555,7 +555,7 @@ fn the_production_flush_files_every_block_where_the_shards_own_range_puts_it() {
             .collect();
         assert!(
             outside.is_empty(),
-            "0..{end_routing_bucket}: {} buckets hold pages but sit above the shard's end; the \
+            "0..{end_routing_bucket}: {} buckets hold blocks but sit above the shard's end; the \
              first few are {:?}. A block there is invisible to every reader that scopes by bucket.",
             outside.len(),
             &outside[..outside.len().min(5)]
@@ -618,7 +618,7 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
     let same_range_again = contents_after(NARROW_END);
     assert_eq!(
         same_range_once, same_range_again,
-        "two rebuilds at the SAME range filed the pages differently, so this comparison cannot \
+        "two rebuilds at the SAME range filed the blocks differently, so this comparison cannot \
          tell a placement the range decided from noise in the fixture"
     );
 
@@ -653,7 +653,7 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
         same_range_once.len()
     );
     println!(
-        "  subject: wide {} buckets -> narrow {} buckets, {} of {RECORDS} pages changed \
+        "  subject: wide {} buckets -> narrow {} buckets, {} of {RECORDS} blocks changed \
          bucket, {} buckets outside the shard's range after",
         wide.len(),
         narrow.len(),
@@ -666,7 +666,7 @@ fn every_block_changes_bucket_with_the_range_because_the_range_decides_every_pla
     assert_eq!(
         moved.len(),
         RECORDS,
-        "{} of {RECORDS} pages changed bucket between the two ranges. Every page is placed by the \
+        "{} of {RECORDS} blocks changed bucket between the two ranges. Every block is placed by the \
          argument now, so all of them must move; a smaller number means some block was placed by \
          something other than the argument.",
         moved.len()
@@ -709,7 +709,7 @@ fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
 
     // DENOMINATOR: the honest index reports nothing.
     let entries = collect_live_block_entries(shard);
-    assert_eq!(entries.len(), keys.len(), "the fixture must hold one page per key");
+    assert_eq!(entries.len(), keys.len(), "the fixture must hold one block per key");
     let honest = validate_bucket_ownership_index_from_entries(1, shard, &entries, 0, NARROW_END);
     assert!(
         honest.mismatches.is_empty(),
@@ -747,7 +747,7 @@ fn the_ownership_report_names_a_block_filed_where_its_key_does_not_route() {
     assert_eq!(
         blocks_moved,
         after.mismatches.len(),
-        "the report named {} of {blocks_moved} moved page(s). A page filed where its key does not \
+        "the report named {} of {blocks_moved} moved block(s). A block filed where its key does not \
          route is what this check exists to find, and it is the only comparison on this path with \
          two independent sides.",
         after.mismatches.len()
@@ -817,12 +817,12 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
             .sum()
     };
     println!(
-        "  source on 0..{WIDE_END}: {outside_the_target} of {RECORDS} pages sit in a bucket above \
+        "  source on 0..{WIDE_END}: {outside_the_target} of {RECORDS} blocks sit in a bucket above \
          {NARROW_END}"
     );
     assert!(
         outside_the_target > RECORDS / 2,
-        "only {outside_the_target} of {RECORDS} source pages sit in a bucket above {NARROW_END}, \
+        "only {outside_the_target} of {RECORDS} source blocks sit in a bucket above {NARROW_END}, \
          so a narrowed install would have nothing to re-file and this test cannot see the defect \
          it exists for"
     );
@@ -857,10 +857,10 @@ fn a_manifest_installed_on_a_narrower_shard_keeps_every_block() {
         let shard = shards.get(&1).expect("shard 1");
         collect_live_block_entries(shard).len()
     };
-    println!("  installed on 0..{NARROW_END}: {installed} of {RECORDS} pages present");
+    println!("  installed on 0..{NARROW_END}: {installed} of {RECORDS} blocks present");
     assert_eq!(
         installed, RECORDS,
-        "{installed} of {RECORDS} pages survived installing a whole-shard manifest onto a \
+        "{installed} of {RECORDS} blocks survived installing a whole-shard manifest onto a \
          narrower shard. `rebuild_bucket_block_ownership` FILTERS on the range it is given, so an \
          install that passes the INSTALLING shard's range drops every block whose source bucket \
          falls outside it. A whole-shard image is installed whole or it is truncated."
@@ -924,7 +924,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
                 .filter(|routing_bucket| **routing_bucket > NARROW_END)
                 .count();
             println!(
-                "  written with the OLD argument: {} pages in {} buckets, {filed_outside} of them \
+                "  written with the OLD argument: {} blocks in {} buckets, {filed_outside} of them \
                  outside the shard's own range",
                 block_total(&contents),
                 contents.len()
@@ -966,7 +966,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         assert_eq!(
             entries.len(),
             keys.len(),
-            "the store went in holding {} pages and came back holding {}. Anything other than \
+            "the store went in holding {} blocks and came back holding {}. Anything other than \
              equality is a block orphaned or a block duplicated by the load.",
             keys.len(),
             entries.len()
@@ -992,7 +992,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
                 .collect()
         };
         println!(
-            "  after the restart: {readable} of {} records readable, {} pages, {} buckets above \
+            "  after the restart: {readable} of {} records readable, {} blocks, {} buckets above \
              the shard's end still holding blocks",
             keys.len(),
             entries.len(),
@@ -1000,7 +1000,7 @@ fn a_store_filed_under_the_whole_range_reads_back_whole_after_the_change() {
         );
         assert!(
             outside.is_empty(),
-            "{} buckets above the shard's end came back holding pages; the first few are {:?}. A \
+            "{} buckets above the shard's end came back holding blocks; the first few are {:?}. A \
              block there is invisible to every reader that scopes by bucket, so if this ever holds, \
              a store written before this change needs a rebuild before it is loaded with it and \
              this test is the one that has to say so.",

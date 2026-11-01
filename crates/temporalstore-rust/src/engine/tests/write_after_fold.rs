@@ -207,7 +207,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     assert_eq!(
         1,
         folded_blocks.len(),
-        "the {FIRST_BATCH} members resolve to {} distinct pages after the fold, so they never came \
+        "the {FIRST_BATCH} members resolve to {} distinct blocks after the fold, so they never came \
          to share one and this test has no collapse to observe",
         folded_blocks.len()
     );
@@ -220,7 +220,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // literal.
     assert_eq!(
         1, folded_live,
-        "after the fold the projection filed {folded_live} entr(ies) over {} distinct page(s); it \
+        "after the fold the projection filed {folded_live} entr(ies) over {} distinct block(s); it \
          must file exactly one per block",
         folded_blocks.len()
     );
@@ -253,7 +253,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     // FLOOR: the object still has entries at all.
     assert!(
         live > 0,
-        "the object has no live entries, so 'one entry per page' below would pass over an index \
+        "the object has no live entries, so 'one entry per block' below would pass over an index \
          that filed nothing"
     );
 
@@ -264,7 +264,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     assert_eq!(
         blocks.len(),
         live,
-        "the write path filed {live} entr(ies) for {} distinct page(s). Under this gate the page \
+        "the write path filed {live} entr(ies) for {} distinct block(s). Under this gate the block \
          IS the identity, so a write after a derivation must converge on the block's existing entry \
          rather than add one of its own",
         blocks.len()
@@ -391,7 +391,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
     assert_eq!(
         blocks.len(),
         live,
-        "{live} live entr(ies) for {} distinct page(s) after a rewrite. Recorded as the state an \
+        "{live} live entr(ies) for {} distinct block(s) after a rewrite. Recorded as the state an \
          address-keyed convergence has to reproduce: if this is one-to-one today, the superseded \
          block's entry is being removed by the COMPONENT match, and keying on the new address alone \
          would leave it behind naming a dead block",
@@ -469,7 +469,7 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
     // fixture can get wrong.
     assert_eq!(
         1, live,
-        "{live} live entries for a string rewritten three times, resolving to {} page(s). ONE is \
+        "{live} live entries for a string rewritten three times, resolving to {} block(s). ONE is \
          the state a component-keyed convergence produces, and it is why the address-keyed repair \
          must apply to the gated container arm ONLY: applied here it would leave two stale entries \
          naming dead blocks",
@@ -689,7 +689,7 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
         assert_eq!(
             1,
             folded_blocks.len(),
-            "the {CROWD} members resolve to {} pages after the fold, so no page holds more than \
+            "the {CROWD} members resolve to {} blocks after the fold, so no block holds more than \
              one member and the removal arm under test is not the one that runs",
             folded_blocks.len()
         );
@@ -720,7 +720,7 @@ fn a_gated_removal_leaves_every_other_member_whole_across_a_reload() {
     let listed = listed_members(&reloaded);
     let durable = durable_members(&reloaded);
     println!(
-        "\n=== one member removed from a folded page of {CROWD}, then another re-added, then a \
+        "\n=== one member removed from a folded block of {CROWD}, then another re-added, then a \
          reload ===\n  the listing serves {} member(s), the durable map holds {}",
         listed.len(),
         durable.len()
@@ -886,7 +886,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     // landing key would supersede the entry by itself and there would be nothing here to fix.
     assert_ne!(
         before, after,
-        "the rewrite landed back on page {before:?}, so the landing address already names the \
+        "the rewrite landed back on block {before:?}, so the landing address already names the \
          entry it supersedes and this test asserts nothing about a vacated block"
     );
 
@@ -894,7 +894,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     let durable = durable_members(&engine);
     let listed = listed_members(&engine);
     println!(
-        "\n=== rewrite off a page the element was alone on: {live} live entr(ies), \
+        "\n=== rewrite off a block the element was alone on: {live} live entr(ies), \
          {} distinct block(s); vacated {before:?} -> {after:?}; durable {}, listing \
          serves {}",
         blocks.len(),
@@ -928,7 +928,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     let occupied = occupied_blocks(&engine);
     assert_eq!(
         occupied, blocks,
-        "the index names {} live page(s) and the durable map holds its members on {}. The \
+        "the index names {} live block(s) and the durable map holds its members on {}. The \
          difference is an entry over a block nothing is on -- and under this gate a live entry IS a \
          claim of membership, so it serves a member that is not there",
         blocks.len(),
@@ -937,13 +937,13 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     assert_eq!(
         occupied.len(),
         live,
-        "{live} live entr(ies) for {} occupied page(s): two entries name one page, so one of them \
+        "{live} live entr(ies) for {} occupied block(s): two entries name one block, so one of them \
          is a duplicate claim over the same bytes",
         occupied.len()
     );
     assert!(
         !blocks.contains(&before),
-        "the vacated page {before:?} is still named by a live entry. The member moved to \
+        "the vacated block {before:?} is still named by a live entry. The member moved to \
          {after:?} and nothing else was on {before:?}, so that entry stands for a block with \
          nothing on it"
     );

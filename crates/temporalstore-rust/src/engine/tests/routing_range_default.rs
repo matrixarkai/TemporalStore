@@ -245,7 +245,7 @@ impl BlocksPerBucket {
     fn report(&self, label: &str) {
         let buckets = self.buckets();
         println!(
-            "  {label}: {buckets} occupied buckets over {} pages | mean {:.4} min {} p50 {} \
+            "  {label}: {buckets} occupied buckets over {} blocks | mean {:.4} min {} p50 {} \
              p90 {} p99 {} MAX {} | buckets holding >1 block: {} of {buckets}",
             self.blocks(),
             self.mean(),
@@ -273,7 +273,7 @@ impl BlocksPerBucket {
     /// The same line without the rows, for the sweep table.
     fn line(&self, label: &str) {
         println!(
-            "  {label:<34} buckets {:>6} pages {:>6} | mean {:>8.3} p50 {:>5} p90 {:>5} \
+            "  {label:<34} buckets {:>6} blocks {:>6} | mean {:>8.3} p50 {:>5} p90 {:>5} \
              p99 {:>5} MAX {:>5}",
             self.buckets(),
             self.blocks(),
@@ -370,7 +370,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
             assert_eq!(
                 records,
                 hist.blocks(),
-                "on 0..{end_routing_bucket} at {records} records the index holds {} pages for \
+                "on 0..{end_routing_bucket} at {records} records the index holds {} blocks for \
                  {records} one-block records; the denominator is not what it is read as",
                 hist.blocks()
             );
@@ -413,7 +413,7 @@ fn the_blocks_a_bucket_holds_at_every_candidate_range_as_percentiles_and_max() {
         assert_eq!(
             1,
             wide.max(),
-            "on the shipped default at {records} records the widest bucket holds {} pages. Every \
+            "on the shipped default at {records} records the widest bucket holds {} blocks. Every \
              key lands alone by construction at a modulus of 4.29 billion, so a bucket holding \
              two means the fixture is not the shape every figure here is compared against",
             wide.max()
@@ -486,7 +486,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
             let hist = blocks_per_bucket(&engine);
             fills.insert((records, candidate), (hist.mean(), hist.buckets()));
             println!(
-                "  0..{candidate} at {records} records: p50 {} pages, MAX {} pages over {} \
+                "  0..{candidate} at {records} records: p50 {} blocks, MAX {} blocks over {} \
                  occupied buckets of {} in the range",
                 hist.percentile(0.50),
                 hist.max(),
@@ -511,7 +511,7 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
         let ratio = large / small;
         let saturated = small_occupied == range_buckets && large_occupied == range_buckets;
         println!(
-            "  0..{candidate}: fill {small:.3} -> {large:.3} pages a bucket as the corpus goes \
+            "  0..{candidate}: fill {small:.3} -> {large:.3} blocks a bucket as the corpus goes \
              {SMALL} -> {LARGE} ({ratio:.2}x against a corpus ratio of {corpus_ratio:.2}x); \
              occupancy {small_occupied}/{range_buckets} -> {large_occupied}/{range_buckets}, \
              saturated at both sizes: {saturated}"
@@ -570,13 +570,13 @@ fn the_fill_a_candidate_range_produces_moves_with_the_corpus_not_only_with_the_r
         })
         .collect();
     println!(
-        "  candidates whose fill straddles the eleven-page crossover between {SMALL} and {LARGE} \
+        "  candidates whose fill straddles the eleven-block crossover between {SMALL} and {LARGE} \
          records: {straddlers:?} of {:?}",
         CANDIDATES
     );
     assert!(
         !straddlers.is_empty(),
-        "no candidate's fill crosses the eleven-page mark between {SMALL} and {LARGE} records. \
+        "no candidate's fill crosses the eleven-block mark between {SMALL} and {LARGE} records. \
          The claim this module makes is that a fixed bucket count cannot hold a fill across corpus \
          sizes; if no candidate straddles, that claim is not established by this fixture and the \
          recommendation must not lean on it"
@@ -651,7 +651,7 @@ fn the_read_path_entries_examined_a_lookup_grow_with_the_fill_a_candidate_produc
             *observed.get(&(records, WIDE_END)).expect("the wide arm ran");
         assert_eq!(
             1, wide_max,
-            "the shipped default at {records} records holds {wide_max} pages in its widest \
+            "the shipped default at {records} records holds {wide_max} blocks in its widest \
              bucket, so it is not the single-block shape this section's zero is attributed to"
         );
         assert_eq!(
@@ -901,7 +901,7 @@ fn both_byte_columns_and_the_allocations_a_record_at_every_candidate_range() {
             let arm = observed.get(&(records, end_routing_bucket)).expect("arm ran");
             assert_eq!(
                 arm.blocks, arm.records,
-                "on 0..{end_routing_bucket} at {records} records the index holds {} pages for \
+                "on 0..{end_routing_bucket} at {records} records the index holds {} blocks for \
                  {records} records; a per-record figure over a different block count is two \
                  questions",
                 arm.blocks
@@ -1128,7 +1128,7 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
         *observed.get(&WIDE_END).expect("the wide arm ran");
     assert_eq!(
         1, wide_max,
-        "the shipped default's widest bucket holds {wide_max} pages, so it is not the one-page \
+        "the shipped default's widest bucket holds {wide_max} blocks, so it is not the one-block \
          shape the rest of this test compares against"
     );
     assert_eq!(
@@ -1147,14 +1147,14 @@ fn the_dump_drain_and_the_release_unit_coarsen_by_the_blocks_a_bucket_holds() {
         let (drained, released, _, _) = *observed.get(&candidate).expect("candidate ran");
         assert!(
             drained > wide_drained && released > wide_released,
-            "0..{candidate} drains {drained} keys and releases {released} pages a bucket against \
+            "0..{candidate} drains {drained} keys and releases {released} blocks a bucket against \
              the shipped default's {wide_drained} and {wide_released}. If a candidate did not \
              coarsen either unit then it did not fill a bucket and this whole section is vacuous"
         );
         if let Some((wider, wider_drained, wider_released)) = previous {
             assert!(
                 drained <= wider_drained && released <= wider_released,
-                "0..{candidate} drains {drained} keys and releases {released} pages against \
+                "0..{candidate} drains {drained} keys and releases {released} blocks against \
                  0..{wider}'s {wider_drained} and {wider_released}, yet 0..{candidate} is the \
                  WIDER range and therefore the shallower fill"
             );
@@ -1236,12 +1236,12 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
     let (_, wide_blocks, wide_max) = *observed.get(&WIDE_END).expect("the wide arm ran");
     assert!(
         wide_blocks >= MEMBERS,
-        "the container arm wrote {wide_blocks} pages for {MEMBERS} components; an absent effect \
+        "the container arm wrote {wide_blocks} blocks for {MEMBERS} components; an absent effect \
          over an empty store is not a control"
     );
     assert!(
         wide_max > 1,
-        "the container arm's widest bucket holds {wide_max} page, so the components did not share \
+        "the container arm's widest bucket holds {wide_max} block, so the components did not share \
          a bucket even on the shipped default and this control is not the shape it names"
     );
 
@@ -1259,7 +1259,7 @@ fn narrowing_the_range_changes_nothing_for_a_store_whose_blocks_share_one_object
         );
     }
     println!(
-        "  the control holds: one object key is one bucket holding {wide_blocks} pages at all {} \
+        "  the control holds: one object key is one bucket holding {wide_blocks} blocks at all {} \
          ranges, so the sweep's effect is the modulus over OBJECT KEYS and nothing else",
         swept_ranges().len()
     );
@@ -1464,7 +1464,7 @@ fn a_store_built_on_the_new_default_round_trips_whole() {
     let handles_after: BTreeSet<u64> = after.values().flatten().copied().collect();
     let outside: Vec<u32> = after.keys().copied().filter(|bucket| *bucket > end).collect();
     println!(
-        "  built and reopened on 0..{end}: {readable}/{RECORDS} readable, {} page handles, \
+        "  built and reopened on 0..{end}: {readable}/{RECORDS} readable, {} block handles, \
          {buckets_before} buckets -> {} buckets, {} occupied above the shard's end",
         handles_after.len(),
         after.len(),
@@ -1896,7 +1896,7 @@ fn the_routing_range_decision_covers_its_four_cases_in_the_right_order() {
             decide_routing_range(&index_dir, 1, 0, 255),
             RoutingRangeDecision::Refuse { .. }
         ),
-        "with no pages on disk a disagreeing stamp stopped refusing, so the stamp check does not \
+        "with no blocks on disk a disagreeing stamp stopped refusing, so the stamp check does not \
          run before the on-disk-state check"
     );
 }
@@ -2203,7 +2203,7 @@ fn a_command_that_names_no_block_derives_no_bucket_and_a_read_derives_two() {
     // THE READ ARM IS THE DENOMINATOR: a zero here would make the ratio below 0/0.
     assert!(
         read_derivations >= RECORDS as u64,
-        "{read_derivations} derivations over {RECORDS} reads. A read derives its page's bucket to \
+        "{read_derivations} derivations over {RECORDS} reads. A read derives its block's bucket to \
          build the cache key, so this cannot be under one a read -- and if it is, the control below \
          is measuring nothing"
     );
@@ -2232,7 +2232,7 @@ fn a_command_that_names_no_block_derives_no_bucket_and_a_read_derives_two() {
     );
     assert_eq!(
         0, keyless_derivations,
-        "{keyless_derivations} bucket derivations over {RECORDS} commands that name no page, on a \
+        "{keyless_derivations} bucket derivations over {RECORDS} commands that name no block, on a \
          store holding none. The mechanism this change introduces is one derivation per block named, \
          so this arm has to pay none -- a non-zero count means something derives a bucket on a path \
          with no block to derive one for, and the first version of this arm caught exactly that in \

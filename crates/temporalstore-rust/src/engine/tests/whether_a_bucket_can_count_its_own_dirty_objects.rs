@@ -343,14 +343,14 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     println!("    blocks held by the widest object         {widest_object:>6}");
     println!();
     println!("    buckets with a count, via the SET       {:>6}", by_set.len());
-    println!("    buckets with a count, via the PAGES     {:>6}", by_objects.len());
+    println!("    buckets with a count, via the BLOCKS     {:>6}", by_objects.len());
     println!("    total, via the SET (the authority)      {set_total:>6}");
-    println!("    total, distinct objects via the PAGES   {object_total:>6}");
-    println!("    total, dirty PAGES                      {block_total:>6}");
+    println!("    total, distinct objects via the BLOCKS   {object_total:>6}");
+    println!("    total, dirty BLOCKS                      {block_total:>6}");
     println!("    set members with NO live block at all    {set_members_with_no_block:>6}");
     println!();
     println!("    the producer's loop visited              {producer_visits:>6}  (one per dirty bucket)");
-    println!("    a page walk would have to visit         {block_total_in_shard:>6}  (every page in the shard)");
+    println!("    a block walk would have to visit         {block_total_in_shard:>6}  (every block in the shard)");
     println!();
     println!("    after the dump: {after_dump} dirty object(s) in {after_dump_set_buckets} bucket(s), {after_dump_nodes_dirty} node(s) still reading dirty");
     println!();
@@ -468,7 +468,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     );
     assert!(
         widest_object > 1,
-        "the widest object holds {widest_object} page(s), so every object is single-page and a \
+        "the widest object holds {widest_object} block(s), so every object is single-block and a \
          block count and an object count are the same number on this fixture -- which means this \
          test cannot tell a correct derivation from a block tally. Write more kinds per key"
     );
@@ -485,7 +485,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     );
     assert_ne!(
         object_total, block_total,
-        "distinct dirty objects and dirty pages come to the same total ({object_total}), so this \
+        "distinct dirty objects and dirty blocks come to the same total ({object_total}), so this \
          fixture cannot distinguish an object count from a block count even though some object \
          holds {widest_object} blocks"
     );
@@ -496,7 +496,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // which is a weaker claim than this module states.
     assert!(
         set_members_with_no_block > 0,
-        "every dirty object has a live page on this fixture, so the term that decides the question \
+        "every dirty object has a live block on this fixture, so the term that decides the question \
          did not arise here. The fixture's removals are what put a non-block-backed \
          `control_state:cpc:*` record in the set -- check that they still do before reading the \
          clauses below as the general case"
@@ -508,7 +508,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // The shortfall itself.
     assert!(
         object_total < set_total,
-        "a page-derived walk totals {object_total} against the object-keyed set's {set_total}, so \
+        "a block-derived walk totals {object_total} against the object-keyed set's {set_total}, so \
          it is no longer SHORT of the authority. If it has become equal, re-read the two reasons \
          in this module's header: should both have stopped holding, `bucket_storage_summaries` can \
          move to the derivation and this test becomes the equality that licenses it"
@@ -524,7 +524,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         .collect::<Vec<_>>();
     assert!(
         !invisible_buckets.is_empty(),
-        "every bucket the set reports dirty is also found by the page walk, so the \
+        "every bucket the set reports dirty is also found by the block walk, so the \
          stops-being-dumped case did not arise on this fixture and the clause above is the whole \
          of the finding. Say so rather than leaving this assertion asserting nothing"
     );
@@ -549,7 +549,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         .collect::<Vec<_>>();
     assert!(
         !short_but_visible.is_empty(),
-        "every bucket the page walk DOES see, it counts exactly. The shortfall would then be \
+        "every bucket the block walk DOES see, it counts exactly. The shortfall would then be \
          confined to buckets holding no block at all, which is a narrower finding than this module \
          states -- a bucket holding several marks and one dirty object is what shows the count \
          itself is wrong, not just its support"
@@ -594,7 +594,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     // something: without it the two columns could be agreeing only on block-backed buckets.
     assert!(
         !node_carries_what_no_block_does.is_empty(),
-        "every dirty bucket here has a dirty page, so the node flag and the page walk cannot be \
+        "every dirty bucket here has a dirty block, so the node flag and the block walk cannot be \
          told apart on this fixture and the agreement above says nothing about the case that \
          matters. The fixture's removals are what produce a dirty bucket holding no block"
     );

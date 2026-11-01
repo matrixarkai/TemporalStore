@@ -535,7 +535,7 @@ fn a_wide_range_fixture_cannot_tell_the_two_placements_apart() {
     let entries = collect_live_block_entries(shard);
     assert!(
         !entries.is_empty(),
-        "the fixture stored no live page, so the misfiled count below is zero because there is \
+        "the fixture stored no live block, so the misfiled count below is zero because there is \
          nothing to misfile"
     );
 
@@ -548,7 +548,7 @@ fn a_wide_range_fixture_cannot_tell_the_two_placements_apart() {
         .count();
     assert_eq!(
         misfiled, 0,
-        "{misfiled} of {} live pages on the WIDE shard are summarised somewhere other than the \
+        "{misfiled} of {} live blocks on the WIDE shard are summarised somewhere other than the \
          `0..u32::MAX` placement",
         entries.len()
     );
@@ -567,7 +567,7 @@ fn a_wide_range_fixture_cannot_tell_the_two_placements_apart() {
          zero above has become a real reading and this comment is wrong."
     );
     println!(
-        "  WIDE shard: {} live pages, {misfiled} misfiled, and the two placements agree on \
+        "  WIDE shard: {} live blocks, {misfiled} misfiled, and the two placements agree on \
          {}/{} keys -- the zero is an identity",
         entries.len(),
         keys.len() - placements_differ,
@@ -703,7 +703,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         assert_eq!(
             entries.len(),
             blocks_before,
-            "{label}: the reconstruct changed the page count ({blocks_before} -> {}), so the two \
+            "{label}: the reconstruct changed the block count ({blocks_before} -> {}), so the two \
              arms are not comparing the same store",
             entries.len()
         );
@@ -718,7 +718,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
         assert_eq!(
             filed_count,
             entries.len(),
-            "{label}: {filed_count} of {} pages report a filing after the reconstruct, and all of \
+            "{label}: {filed_count} of {} blocks report a filing after the reconstruct, and all of \
              them should: the bucket-index arm of the walk has the map key in hand.",
             entries.len()
         );
@@ -741,7 +741,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
             }
         }
         println!(
-            "  {label}: {} pages, {misplaced} placed differently by the two ranges; only-filed \
+            "  {label}: {} blocks, {misplaced} placed differently by the two ranges; only-filed \
              {} buckets, only-summarised {} buckets (both must be 0 -- the summary walk reads the \
              filing rather than deriving a placement)",
             entries.len(),
@@ -766,7 +766,7 @@ fn the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_t
             assert_eq!(
                 misplaced,
                 entries.len(),
-                "the reconstruct the replay tail runs places every page by \
+                "the reconstruct the replay tail runs places every block by \
                  `block_routing_bucket(key, 0, u32::MAX)`, and a derivation over the shard's range \
                  would place it by `block_routing_bucket(key, 0, {NARROW_END_BUCKET})`. Those are \
                  different functions of the same key (asserted separately), so all {} blocks have to \
@@ -850,7 +850,7 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
             .count();
         assert!(
             dirty_blocks > 0,
-            "{label}: no live page belongs to a dirty object, so the precondition below holds \
+            "{label}: no live block belongs to a dirty object, so the precondition below holds \
              over an empty set"
         );
 
@@ -879,14 +879,14 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
             }
         }
         println!(
-            "  {label}: {dirty_blocks} pages of dirty objects, {unreachable} filed where a scoped \
+            "  {label}: {dirty_blocks} blocks of dirty objects, {unreachable} filed where a scoped \
              walk never looks, {miscredited} credited to a bucket the dirty set does not name"
         );
 
         if break_it {
             assert_eq!(
                 unreachable, dirty_blocks,
-                "after the reconstruct every page is FILED by `block_routing_bucket(key, 0, \
+                "after the reconstruct every block is FILED by `block_routing_bucket(key, 0, \
                  u32::MAX)` while the dirty set still keys on the shard's own range, so every \
                  block of a dirty object sits in a bucket a walk scoped to the dirty set never \
                  opens. The dump that names the dirty bucket then carries no slab for any of \
@@ -894,7 +894,7 @@ fn scoping_is_exact_only_while_every_block_carries_the_shards_own_placement() {
             );
             assert_eq!(
                 miscredited, 0,
-                "the pages are still unrouted, so the summary walk's own fallback would credit \
+                "the blocks are still unrouted, so the summary walk's own fallback would credit \
                  them to the shard's range and get the right bucket. It is the FILING that moved, \
                  which is why this half is counted separately from the half above."
             );
@@ -1062,7 +1062,7 @@ fn the_scoped_walk_equals_the_full_walk_on_every_bucket_the_dirty_set_names() {
     assert_eq!(checkpoints, 5, "the sequence was supposed to check five points");
     assert!(
         saved_total > 0,
-        "across five points the scoped walk skipped no page at all, so the saving this file \
+        "across five points the scoped walk skipped no block at all, so the saving this file \
          exists to price is zero and every figure below is vacuous"
     );
     println!("  blocks the scoped walk did not visit, summed over the five points: {saved_total}");
@@ -1127,7 +1127,7 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
     let (scoped, visits) = scoped_live_block_summaries(shard, start, end);
     assert!(
         !full.is_empty(),
-        "the shard came back from the restart holding no live page, so the comparison below is \
+        "the shard came back from the restart holding no live block, so the comparison below is \
          between two empty sets"
     );
     assert!(
@@ -1137,7 +1137,7 @@ fn a_round_immediately_after_a_restart_would_see_no_buckets_at_all() {
         scoped.len()
     );
     println!(
-        "  after the restart: full walk {} buckets / {} pages, scoped walk {} buckets / {visits} \
+        "  after the restart: full walk {} buckets / {} blocks, scoped walk {} buckets / {visits} \
          visits -- the ENTIRE store is in the losing direction",
         full.len(),
         full.values().sum::<u64>(),
@@ -1260,7 +1260,7 @@ fn what_scoping_the_summary_walk_saves_at_two_corpus_sizes() {
         );
         assert!(
             round_entries > 0,
-            "{records} records: the round materialised no live-page entry at all"
+            "{records} records: the round materialised no live-block entry at all"
         );
         let summary_charge = round_sites.get(&summary_site).copied().unwrap_or(0);
         assert!(
@@ -1635,7 +1635,7 @@ fn the_three_rebuild_call_sites_still_on_the_whole_range_are_each_right_to_be() 
     expected_sorted.sort();
     assert_eq!(
         observed, expected_sorted,
-        "the set of rebuild call sites filing pages under `0..u32::MAX` has moved.\n\
+        "the set of rebuild call sites filing blocks under `0..u32::MAX` has moved.\n\
          If you FIXED one -- passed the shard's own range, which is what every other caller does \
          -- delete it from WHOLE_RANGE_SITES; that is the change this file exists to make safe, \
          and `the_two_ranges_still_place_a_block_differently_and_the_summary_walk_follows_the_filing` \

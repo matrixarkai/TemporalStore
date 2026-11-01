@@ -643,7 +643,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         let before = blocks_of(&engine, kind, key);
         assert!(
             !before.is_empty(),
-            "DENOMINATOR: {kind}/{key} holds no page after its seed, so the delete below would \
+            "DENOMINATOR: {kind}/{key} holds no block after its seed, so the delete below would \
              prove nothing"
         );
         assert_eq!(
@@ -687,7 +687,7 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
         if collapsed {
             assert!(
                 tombstoned > 0,
-                "{kind}/{key}: the gated per-element delete left {} live pages of {} and filed \
+                "{kind}/{key}: the gated per-element delete left {} live blocks of {} and filed \
                  {tombstoned} tombstones, so it recorded the removal nowhere",
                 after.len(),
                 before.len()
@@ -987,7 +987,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     );
     assert_eq!(
         blocks_after_rewrite, 1,
-        "the rewrite must have filed its page, or the stale tombstone below is not sitting beside a \
+        "the rewrite must have filed its block, or the stale tombstone below is not sitting beside a \
          LIVE block"
     );
 
@@ -1031,21 +1031,21 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
 
     assert_eq!(
         row_block_refs, 1,
-        "DENOMINATOR: the walk counts {row_block_refs} block refs for a live page, not one"
+        "DENOMINATOR: the walk counts {row_block_refs} block refs for a live block, not one"
     );
     assert!(
         !row_deleted,
-        "the walk still calls a LIVE page's object deleted, so a stale tombstone is still sitting \
+        "the walk still calls a LIVE block's object deleted, so a stale tombstone is still sitting \
          beside it"
     );
     assert_eq!(
         row_deleted_refs, 0,
-        "the walk counts {row_deleted_refs} of this object's block refs as deleted; the page is \
+        "the walk counts {row_deleted_refs} of this object's block refs as deleted; the block is \
          live and no tombstone should be reclassifying it"
     );
     assert_eq!(
         row_hot, 1,
-        "the live page is counted as HOT now that no tombstone reclassifies it; {row_hot} says \
+        "the live block is counted as HOT now that no tombstone reclassifies it; {row_hot} says \
          the arithmetic landed somewhere else"
     );
     assert!(
@@ -1055,7 +1055,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     );
     assert_eq!(
         public.delete_marker_object_count, 0,
-        "the PUBLIC report counts {} delete-marked objects on a store whose one page is LIVE. \
+        "the PUBLIC report counts {} delete-marked objects on a store whose one block is LIVE. \
          This is the surface a recovery sweep reads, and the count is what the fix on the element \
          write path exists to make honest",
         public.delete_marker_object_count
@@ -1758,7 +1758,7 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
 
     assert_eq!(
         entry_now, 24,
-        "the page entry is {entry_now} bytes, not the 24 this arithmetic is written against; \
+        "the block entry is {entry_now} bytes, not the 24 this arithmetic is written against; \
          re-derive the field sum before trusting the two numbers above"
     );
     // FIVE BYTES OF SLACK, NOT ZERO, AND THIS IS THE ASSERTION THAT WAS WRONG. It read
@@ -1982,7 +1982,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             assert_eq!(
                 named.len(),
                 census.len(),
-                "{range_label} / {size_label}: {} of {} container pages carry a component; a page \
+                "{range_label} / {size_label}: {} of {} container blocks carry a component; a block \
                  without one is not part of this claim",
                 named.len(),
                 census.len()
@@ -2016,7 +2016,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let blocks = named.len() as f64;
             let mean_name = named.iter().sum::<usize>() as f64 / blocks;
             println!(
-                "    containers  {range_label:<20} {size_label:<14} pages={:<6} name len mean \
+                "    containers  {range_label:<20} {size_label:<14} blocks={:<6} name len mean \
                  {mean_name:>5.1}\n                  ALLOC_BYTES {:>8.2} B a name   \
                  ALLOC_CHUNK_BYTES {:>8.2} B a name   in-struct {} -> {} B",
                 named.len(),
@@ -2040,13 +2040,13 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             );
             let routed_named = routed_census.iter().filter(|row| row.2.is_some()).count();
             println!(
-                "    routed      {range_label:<20} {size_label:<14} pages={:<6} pages carrying a \
+                "    routed      {range_label:<20} {size_label:<14} blocks={:<6} blocks carrying a \
                  component={routed_named}  -> 0.00 B a block to save",
                 routed_census.len()
             );
             assert_eq!(
                 routed_named, 0,
-                "{routed_named} of {} routed pages carry a component; the control's whole point is \
+                "{routed_named} of {} routed blocks carry a component; the control's whole point is \
                  that this population has none, so an ordinal cannot pay on it",
                 routed_census.len()
             );
@@ -2233,7 +2233,7 @@ fn what_a_component_costs_an_element_at_five_member_widths() {
             assert_eq!(
                 held.len(),
                 MEMBERS,
-                "DENOMINATOR: {kind}/n={width} filed {} pages of this kind, not the {MEMBERS} \
+                "DENOMINATOR: {kind}/n={width} filed {} blocks of this kind, not the {MEMBERS} \
                  seeded -- the fixture does not reach the population this row claims",
                 held.len()
             );
@@ -2644,7 +2644,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         };
         assert_eq!(
             listed, by_component,
-            "the set listing is not in component order. It is built by folding the object's pages \
+            "the set listing is not in component order. It is built by folding the object's blocks \
              in `derive_membership`, whose map is keyed by the component spelling, so this is the \
              order it must come back in -- if it has stopped being, find out what imposed the new \
              one before trusting anything else in this section"
@@ -2879,7 +2879,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     }
     assert!(
         carried.contains("live.contains(") || carried.contains("&live"),
-        "the carry no longer filters on whether the fold left a page behind, which is the only \
+        "the carry no longer filters on whether the fold left a block behind, which is the only \
          thing stopping it from resurrecting a removed element"
     );
 

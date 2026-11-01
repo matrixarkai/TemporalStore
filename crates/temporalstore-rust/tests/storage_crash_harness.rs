@@ -136,7 +136,7 @@ fn storage_crash_harness_reports_corrupt_block_after_process_abort() {
     assert_eq!(
         summary.before_value.as_deref(),
         Some("before-value"),
-        "`before` must come back from the WAL replay even though the page holding it is corrupt. \
+        "`before` must come back from the WAL replay even though the block holding it is corrupt. \
          Getting nothing here would NOT prove the corruption was detected -- it is equally what a \
          shard that never loaded answers. Detection is proved by the unreadable-block-ref \
          assertions below, and those are this test's subject."

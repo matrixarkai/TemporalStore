@@ -139,7 +139,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> ObjectManagerRuntimeReport {
                 None => {
                     debug_assert!(
                         identities.names_no_position(),
-                        "bucket {} holds a live page the object lookup does not name while the \
+                        "bucket {} holds a live block the object lookup does not name while the \
                          lookup DOES name positions, so this report is dropping a row outside the \
                          one window that explains it",
                         bucket.routing_bucket

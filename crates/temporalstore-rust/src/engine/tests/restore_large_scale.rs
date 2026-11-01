@@ -893,7 +893,7 @@ fn assert_fixture_can_express(restart: &Restart) {
     );
     assert!(
         corpus.slabs_holding_live_bytes > 1,
-        "and the LIVE pages must span more than one of them -- a store whose every live page \
+        "and the LIVE blocks must span more than one of them -- a store whose every live block \
          sits in slab 0 compares one slab against itself: {} of {} slab(s) hold live bytes",
         corpus.slabs_holding_live_bytes,
         corpus.slabs_on_disk
@@ -1253,7 +1253,7 @@ fn summarise(report: &mut Report, arms: &[Restart]) {
         );
         row("index-log bytes read", small.index_log_bytes_read, large.index_log_bytes_read);
         row("block bytes read", small.block_bytes_read, large.block_bytes_read);
-        row("page reads", small.page_reads, large.page_reads);
+        row("block reads", small.page_reads, large.page_reads);
         row(
             "bytes read, attributed",
             small.attributed_bytes_read(),

@@ -70,7 +70,7 @@ fn the_two_shapes_put_their_spelling_byte_at_one_offset() {
     );
     assert_ne!(
         CONTAINER_BLOCK_MAGIC, CONTAINER_BLOCK_MAGIC_V2,
-        "the two magics are equal, so nothing DISCRIMINATES the shapes and a tombstone in a new page \
+        "the two magics are equal, so nothing DISCRIMINATES the shapes and a tombstone in a new block \
          would be read by the old rule as an empty live value"
     );
     // And they differ in exactly one byte, which is what makes the rewrite in
@@ -98,7 +98,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     let none = crate::engine::container_blocks::tombstone_block("string", "anything");
     assert!(
         none.is_none(),
-        "a kind whose pages name no element produced a tombstone page, which would be a page nothing \
+        "a kind whose blocks name no element produced a tombstone block, which would be a block nothing \
          can interpret"
     );
     // A component the kind's spelling cannot produce: a set's components are hex, and this is not.
@@ -112,7 +112,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
     println!("unframable removals counted: {counted}");
     assert_eq!(
         2, counted,
-        "both unframable removals must be COUNTED and not silently dropped -- a removal the pages do \
+        "both unframable removals must be COUNTED and not silently dropped -- a removal the blocks do \
          not record is a hole, and this counter is how it announces itself instead of turning up \
          later as a resurrected member"
     );
@@ -163,7 +163,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                         });
                 assert_eq!(
                     component, &recovered,
-                    "{kind}: the element is NOT recoverable from the tombstone page. The page item's \
+                    "{kind}: the element is NOT recoverable from the tombstone block. The block item's \
                      key went in as {component} and came back as {recovered}, so the block cannot \
                      stand in for a stored element name and a removal's identity would have to live \
                      somewhere else."
@@ -247,11 +247,11 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         with_silence.live.len(),
         with_silence.removed.len()
     );
-    assert_eq!(2, with_silence.blocks_read, "DENOMINATOR: two pages must be read");
+    assert_eq!(2, with_silence.blocks_read, "DENOMINATOR: two blocks must be read");
     assert!(with_silence.is_complete());
     assert!(
         with_silence.live.contains_key(&component),
-        "A LATER PAGE THAT DOES NOT MENTION THE ELEMENT REMOVED IT. Silence is not a removal: a fold \
+        "A LATER BLOCK THAT DOES NOT MENTION THE ELEMENT REMOVED IT. Silence is not a removal: a fold \
          writes blocks that hold only the elements it batched, so treating an unmentioned element as \
          gone would empty every container a round did not fully rewrite."
     );
@@ -268,7 +268,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
         with_removal.live.len(),
         with_removal.removed.len()
     );
-    assert_eq!(3, with_removal.blocks_read, "DENOMINATOR: three pages must be read");
+    assert_eq!(3, with_removal.blocks_read, "DENOMINATOR: three blocks must be read");
     assert!(with_removal.is_complete());
     assert!(
         with_removal.removed.contains(&component),
@@ -421,7 +421,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
     assert!(
         append_position(&at(1, crate::block_store::MAX_ADDRESSABLE_BLOCK_OFFSET, 1))
             < append_position(&at(2, 0, 1)),
-        "a page in a later slab does not compare greater than one at the highest offset of an \
+        "a block in a later slab does not compare greater than one at the highest offset of an \
          earlier slab, so the pair is not ordering slab before offset"
     );
 
@@ -452,7 +452,7 @@ fn the_fold_orders_blocks_by_append_position_and_not_by_the_order_it_was_handed_
         forwards.live.len(),
         forwards.removed.len()
     );
-    assert_eq!(2, reversed.blocks_read, "DENOMINATOR: both pages must be read");
+    assert_eq!(2, reversed.blocks_read, "DENOMINATOR: both blocks must be read");
     assert!(reversed.is_complete() && forwards.is_complete());
     assert!(
         reversed.removed.contains(&component),
@@ -517,7 +517,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         before.removed.len(),
         before.blocks_read
     );
-    assert_eq!(2, before.blocks_read, "DENOMINATOR: two pages must be read");
+    assert_eq!(2, before.blocks_read, "DENOMINATOR: two blocks must be read");
     assert!(before.is_complete());
     assert!(
         before.removed.contains(&component),
@@ -538,7 +538,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
         after.blocks_read,
         after.live.contains_key(&component)
     );
-    assert_eq!(2, after.blocks_read, "DENOMINATOR: two pages must be read");
+    assert_eq!(2, after.blocks_read, "DENOMINATOR: two blocks must be read");
     assert!(after.is_complete());
     assert!(
         after.live.contains_key(&component),
@@ -553,7 +553,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     // AND THE RULE DECLINES EXACTLY THAT ROUND. Three blocks in the container, one rewritten.
     assert!(
         !may_drop_tombstones(3, 1, 1),
-        "the rule permits dropping a tombstone in a round that rewrote one of three pages, which is \
+        "the rule permits dropping a tombstone in a round that rewrote one of three blocks, which is \
          the round just shown to resurrect"
     );
     // Nor when every block is rewritten but into SEVERAL blocks: a tombstone dropped into the first

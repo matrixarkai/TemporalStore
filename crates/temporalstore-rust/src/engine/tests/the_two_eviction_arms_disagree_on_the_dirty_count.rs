@@ -121,7 +121,7 @@ fn the_two_eviction_arms_must_agree_on_what_the_dirty_count_means() {
     );
     assert!(
         total_blocks > total_objects,
-        "this fixture cannot tell a page count from an object count ({total_blocks} pages vs \
+        "this fixture cannot tell a block count from an object count ({total_blocks} blocks vs \
          {total_objects} objects) -- every object holds one block, so the two arms would agree \
          for the wrong reason. The fixture needs a multi-block object, not a different assertion."
     );

@@ -338,7 +338,7 @@ fn every_container_block_carries_its_own_ordinal_rather_than_zero() {
     let kinds = seed_one_of_each_kind(&engine);
 
     let expected: Vec<Option<u64>> = (0..MEMBERS as u64).map(Some).collect();
-    println!("\n=== container page ordinals, {MEMBERS} elements an object ===");
+    println!("\n=== container block ordinals, {MEMBERS} elements an object ===");
     let mut checked = 0usize;
     for (kind, key) in &kinds {
         let ordinals = ordinals_of(&engine, kind, key);
@@ -353,7 +353,7 @@ fn every_container_block_carries_its_own_ordinal_rather_than_zero() {
         assert_eq!(
             ordinals.len(),
             MEMBERS,
-            "{kind}/{key} holds {} pages, not the {MEMBERS} the seed wrote -- the arm under test \
+            "{kind}/{key} holds {} blocks, not the {MEMBERS} the seed wrote -- the arm under test \
              did not file what this asserts about",
             ordinals.len()
         );
@@ -417,12 +417,12 @@ fn a_string_block_is_left_at_zero_which_is_the_control() {
             moved += 1;
         }
     }
-    assert_eq!(seen, KEYS, "the control saw {seen} pages, not {KEYS}");
+    assert_eq!(seen, KEYS, "the control saw {seen} blocks, not {KEYS}");
     let pct = 100.0 * moved as f64 / seen as f64;
-    println!("\n=== control === string pages moved {moved}/{seen} = {pct:.2}%");
+    println!("\n=== control === string blocks moved {moved}/{seen} = {pct:.2}%");
     assert_eq!(
         moved, 0,
-        "{moved} of {seen} string pages changed ordinal. The control must sit at 0.00%: the \
+        "{moved} of {seen} string blocks changed ordinal. The control must sit at 0.00%: the \
          container arms are the only ones that were touched"
     );
 }
@@ -471,7 +471,7 @@ fn an_overwrite_keeps_the_members_ordinal_rather_than_climbing() {
     assert_eq!(
         set_blocks.len(),
         1,
-        "a set of one member rewritten {REWRITES} times holds {} pages, not 1 -- this test is not \
+        "a set of one member rewritten {REWRITES} times holds {} blocks, not 1 -- this test is not \
          measuring an overwrite",
         set_blocks.len()
     );
@@ -718,7 +718,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
         .expect("the tombstone at ordinal 2 names a component");
     assert_ne!(
         m9_component, tombstoned_component,
-        "the tombstone at ordinal 2 names the SAME component as the live arrival, so the pages say \
+        "the tombstone at ordinal 2 names the SAME component as the live arrival, so the blocks say \
          the arrival was removed"
     );
     assert_eq!(
@@ -773,7 +773,7 @@ fn deletion_still_finds_its_element_by_component() {
         );
     }
     let before = blocks_of(&engine, "set", key);
-    assert_eq!(before.len(), 4, "the seed wrote {} pages, not 4", before.len());
+    assert_eq!(before.len(), 4, "the seed wrote {} blocks, not 4", before.len());
 
     let doomed = &members[2];
     let doomed_component = hex::encode(doomed);
@@ -843,7 +843,7 @@ fn deletion_still_finds_its_element_by_component() {
     assert_eq!(
         1,
         tombstoned.len(),
-        "the delete left {} tombstone entries, not one, so the pages do not state exactly this one \
+        "the delete left {} tombstone entries, not one, so the blocks do not state exactly this one \
          removal",
         tombstoned.len()
     );
@@ -918,7 +918,7 @@ fn hash_len_still_answers_the_entry_count() {
         other => panic!("HashLen answered {other:?}"),
     };
     let blocks = blocks_of(&engine, "hash", key).len() as i64;
-    println!("\n=== HLEN === answered {answered}, pages {blocks}, fields written {FIELDS}");
+    println!("\n=== HLEN === answered {answered}, blocks {blocks}, fields written {FIELDS}");
     assert_eq!(
         answered, FIELDS,
         "HLEN answered {answered} for {FIELDS} distinct fields. The ordinal assignment must not \
@@ -1083,14 +1083,14 @@ fn past_the_ceiling_the_ordinal_is_left_unassigned_rather_than_panicking() {
     );
     assert_eq!(
         assigned, 0,
-        "past the ceiling the ordinal must be left at 0 -- the value the page would carry before \
+        "past the ceiling the ordinal must be left at 0 -- the value the block would carry before \
          any of this -- so that an object with more than {MAX_ADDRESSABLE_BLOCK_ID} elements is \
          served exactly as it is today. It was assigned {assigned}"
     );
     assert_ne!(
         u64::from(assigned),
         MAX_ADDRESSABLE_BLOCK_ID,
-        "the ordinal saturated at the ceiling, handing a second page the id {MAX_ADDRESSABLE_BLOCK_ID}"
+        "the ordinal saturated at the ceiling, handing a second block the id {MAX_ADDRESSABLE_BLOCK_ID}"
     );
 
     // AND THE EXISTING MEMBER STILL ANSWERS ITS OWN ORDINAL, at the ceiling, unharmed.

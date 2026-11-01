@@ -177,7 +177,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     println!("    buckets in the map            {bucket_count:>5}");
     println!("    blocks across those buckets    {blocks:>5}");
     println!("    dirty buckets via the SET     {:>5}", via_objects.len());
-    println!("    dirty buckets via the PAGE    {:>5}", via_blocks.len());
+    println!("    dirty buckets via the BLOCK    {:>5}", via_blocks.len());
     println!();
 
     // ---- THE FIXTURE HAS TO REACH THE CASE. With one bucket per object the two agree trivially.
@@ -206,7 +206,7 @@ fn the_block_bit_answers_the_dirty_bucket_question() {
     // ---- object-keyed set is not load-bearing for this question and can be removed.
     assert_eq!(
         via_objects, via_blocks,
-        "the two methods disagree.\n  via the object set: {via_objects:?}\n  via the page bit:   \
+        "the two methods disagree.\n  via the object set: {via_objects:?}\n  via the block bit:   \
          {via_blocks:?}\n\nThe block bit is only sufficient while \
          `push_object_dirty_onto_its_existing_blocks` runs at EVERY site that marks an object dirty. \
          A disagreement means a marking site stopped pushing, and the object-keyed set is covering \

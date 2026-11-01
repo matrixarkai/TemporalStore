@@ -1572,7 +1572,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     let distinct_blocks: usize = long_table.iter().map(|(_, blocks)| blocks.len()).sum();
     assert!(
         distinct_blocks < long_entries,
-        "denominator: the table arm must actually be sharing -- {distinct_blocks} distinct pages \
+        "denominator: the table arm must actually be sharing -- {distinct_blocks} distinct blocks \
          over {long_entries} entries"
     );
 
@@ -1592,7 +1592,7 @@ fn the_container_shapes_priced_against_the_population_each_one_pays_in() {
     println!("--- LONG population: {LONG_SERIES} series of {LONG_POINTS} entries ---");
     println!("  BTreeMap<u64, ElementEntry>:          {long_btree_per:.1} bytes/entry");
     println!(
-        "  BTreeMap<u64, u32> + per-series pages: {long_table_per:.1} bytes/entry \
+        "  BTreeMap<u64, u32> + per-series blocks: {long_table_per:.1} bytes/entry \
          ({distinct_blocks} distinct blocks over {long_entries} entries)"
     );
     println!(
@@ -1707,12 +1707,12 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     let block = std::mem::size_of::<BlockIndex>();
     let list = std::mem::size_of::<Vec<(u64, BlockIndex)>>();
     println!(
-        "BlockIndexMap is {split} B, BTreeMap<u64, ElementEntry> is {map} B, a page list header is \
+        "BlockIndexMap is {split} B, BTreeMap<u64, ElementEntry> is {map} B, a block list header is \
          {list} B, BlockIndex is {block} B"
     );
     assert_eq!(
         list, split,
-        "BlockIndexMap must be exactly its page-list header -- it is {split} B against {list} B. \
+        "BlockIndexMap must be exactly its block-list header -- it is {split} B against {list} B. \
          Any excess means an arm has stopped riding a pointer niche and the node is paying for a \
          tag again"
     );
@@ -1758,7 +1758,7 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     // any shape at least as wide as a lone entry, and an inline `One` holds a handle beside it.
     assert!(
         inline >= pair,
-        "the control must HOLD a handle and a page inline: an inline One is {inline} B against a \
+        "the control must HOLD a handle and a block inline: an inline One is {inline} B against a \
          {pair}-byte pair. If this ever reads as narrow, the predicate above cannot tell an inline \
          block from a pointer to one and the guard is vacuous"
     );

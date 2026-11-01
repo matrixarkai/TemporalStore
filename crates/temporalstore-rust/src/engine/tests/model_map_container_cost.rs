@@ -1061,7 +1061,7 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
         );
         assert!(
             entries > 0,
-            "no index page entries were found at {keys} context nodes, so the second copy would \
+            "no index block entries were found at {keys} context nodes, so the second copy would \
              read as zero because nothing was walked"
         );
 
@@ -1073,7 +1073,7 @@ fn the_object_key_is_stored_twice_and_this_prices_the_second_copy() {
             std::mem::size_of::<String>()
         );
         println!(
-            "  index     : {entries:>9} pages  {:>12} B  ({:>6.1} B a page: {} B of Arc pointer \
+            "  index     : {entries:>9} blocks  {:>12} B  ({:>6.1} B a block: {} B of Arc pointer \
              plus {} distinct text allocation(s) totalling {distinct_text_bytes} B)",
             arc_pointer_bytes + distinct_text_bytes,
             (arc_pointer_bytes + distinct_text_bytes) as f64 / entries as f64,

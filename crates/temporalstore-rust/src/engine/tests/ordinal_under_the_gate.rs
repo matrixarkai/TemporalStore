@@ -184,7 +184,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
         );
         assert!(
             *blocks > 0,
-            "gate {label}: no page is filed for the object at all, so the count below compares \
+            "gate {label}: no block is filed for the object at all, so the count below compares \
              absences"
         );
     }
@@ -231,7 +231,7 @@ fn an_overwrite_keeps_the_members_ordinal_under_either_projection() {
     );
     assert_eq!(
         1, rows[1].1,
-        "gate on: {} entries where one live page should leave one. More than one means the \
+        "gate on: {} entries where one live block should leave one. More than one means the \
          supersede did not retire the block this rewrite vacated -- a live entry over a block no \
          element is on, which under this gate is a claim of membership",
         rows[1].1
@@ -379,7 +379,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
     assert_eq!(
         1,
         after.len(),
-        "after the derivation {} entr(ies) remain where one live page should leave one. A stale \
+        "after the derivation {} entr(ies) remain where one live block should leave one. A stale \
          entry naming a block no element carries is supposed to be dropped by the derivation, \
          because the projection reads the resident map and the resident map holds only the \
          current address",
@@ -636,7 +636,7 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
     };
     assert_eq!(
         2, live_blocks,
-        "{live_blocks} live page(s) for a two-field object -- the floor below assumes exactly one \
+        "{live_blocks} live block(s) for a two-field object -- the floor below assumes exactly one \
          planted (component=None) block and one intact (component=Some(\"{SIBLING}\")) sibling"
     );
 

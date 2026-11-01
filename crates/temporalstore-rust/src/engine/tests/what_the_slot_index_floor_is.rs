@@ -277,7 +277,7 @@ fn with_seeded_shard<R>(
         .sum();
     assert_eq!(
         blocks, keys,
-        "[CLAUSE one-page-an-object] the fixture holds {blocks} page(s) for {keys} object(s), so a \
+        "[CLAUSE one-block-an-object] the fixture holds {blocks} block(s) for {keys} object(s), so a \
          per-object figure taken off it is not a per-block figure and the two classes cannot be \
          separated"
     );
@@ -523,7 +523,7 @@ fn the_positional_served_index_is_priced_on_the_shipped_container() {
 /// clear-dirty-on-load contract in `persistence.rs` does.
 #[test]
 fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
-    println!("\n=== whether `node/object_index` is rebuildable from the pages of its bucket ===\n");
+    println!("\n=== whether `node/object_index` is rebuildable from the blocks of its bucket ===\n");
 
     fn engine_on(root: &std::path::Path) -> TemporalEngine {
         TemporalEngine::with_local_dirs(
@@ -595,7 +595,7 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     println!("  refusals by term: {:?}", outcome.refusals);
     assert!(
         outcome.released_blocks > 0,
-        "[CLAUSE state-reached] the release emptied no page list, so the state this finding is \
+        "[CLAUSE state-reached] the release emptied no block list, so the state this finding is \
          about was never built and every assertion below would be free. {} candidate(s) were \
          offered and the terms they failed on are {:?}",
         candidates.len(),
@@ -631,11 +631,11 @@ fn a_released_bucket_keeps_object_ids_that_no_block_beside_it_names() {
     );
     assert_eq!(
         total_named, 0,
-        "[CLAUSE no-page-names-it] the released buckets still hold {total_named} page(s), so the \
+        "[CLAUSE no-block-names-it] the released buckets still hold {total_named} block(s), so the \
          release did not empty the block list and the derivation below is not over nothing"
     );
     println!(
-        "\n  SO `node/object_index` IS NOT REBUILDABLE FROM THE PAGES OF ITS BUCKET. A decoder that\n  \
+        "\n  SO `node/object_index` IS NOT REBUILDABLE FROM THE BLOCKS OF ITS BUCKET. A decoder that\n  \
          derived it would load each of these {} bucket(s) as holding no objects, which is exactly\n  \
          the distinction a release depends on. The term is floor.",
         unnameable.len()

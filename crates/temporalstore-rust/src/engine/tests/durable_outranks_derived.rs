@@ -929,7 +929,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
         members.len()
     );
     println!(
-        "[unreadable] both members came back from the durable map and the pages, with no name in \
+        "[unreadable] both members came back from the durable map and the blocks, with no name in \
          the index for either of them"
     );
 
@@ -966,7 +966,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
     };
     assert!(
         !after.iter().any(|member| member == &second),
-        "a member is STILL SERVED after a remove: {after:?}. `SetMembers` answers from the pages \
+        "a member is STILL SERVED after a remove: {after:?}. `SetMembers` answers from the blocks \
          and `SetRemove` consults `shard.sets`, so a member the map does not hold is served and \
          undeletable -- the end state the unreadable-name defect used to produce, by a different \
          route."
@@ -976,7 +976,7 @@ fn an_element_name_cannot_be_made_unreadable_because_the_index_holds_none() {
         "the removal took the wrong member"
     );
     println!(
-        "[unreadable] and it removed cleanly, leaving {} member(s) -- the pages and the resident \
+        "[unreadable] and it removed cleanly, leaving {} member(s) -- the blocks and the resident \
          map agree about membership with no name in the index for either of them",
         after.len()
     );
@@ -1112,7 +1112,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
     for field in ["field-0", "field-1"] {
         assert!(
             field_names.contains(field),
-            "{field} IS NOT SERVED after the reload; the key came back with {:?}. No page entry \
+            "{field} IS NOT SERVED after the reload; the key came back with {:?}. No block entry \
              names a field, so the derived view cannot produce either of them and the durable map \
              is the only thing that can. This reddens if `fill_absent_elements` stops filling -- \
              i.e. if the reconcile goes back to assigning the derived view wholesale.",
@@ -1261,7 +1261,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         };
         assert!(
             !addresses.is_empty(),
-            "DENOMINATOR: the object holds no page entries, so the derivation below would be empty \
+            "DENOMINATOR: the object holds no block entries, so the derivation below would be empty \
              for a reason that has nothing to do with an empty member"
         );
         let derived = crate::engine::container_membership::derive_membership(
@@ -1271,7 +1271,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         );
         assert!(
             derived.is_complete(),
-            "the derivation from the pages is incomplete ({} failure(s): {} read, {} undecodable, \
+            "the derivation from the blocks is incomplete ({} failure(s): {} read, {} undecodable, \
              {} unframed, {} unrenderable), so a missing empty member below could be any of those \
              rather than a length boundary",
             derived.failures(),
@@ -1282,13 +1282,13 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
         );
         assert!(
             derived.live.contains_key(""),
-            "the pages do not derive the empty member as a zero-length component: {:?}. A reader \
+            "the blocks do not derive the empty member as a zero-length component: {:?}. A reader \
              that treats a short component as an absent one has come back -- which is the defect \
              this arm exists for, now one layer down",
             derived.live.keys().collect::<Vec<_>>()
         );
         println!(
-            "[empty-member] the pages derive {} live element(s) and the empty member is among them \
+            "[empty-member] the blocks derive {} live element(s) and the empty member is among them \
              as a zero-length component",
             derived.live.len()
         );
@@ -1772,7 +1772,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         .sum();
     assert!(
         live_blocks >= 1,
-        "DENOMINATOR: {live_blocks} live pages; with none, every carried element is skipped for the \
+        "DENOMINATOR: {live_blocks} live blocks; with none, every carried element is skipped for the \
          wrong reason and the finding below is vacuous"
     );
 
@@ -1801,14 +1801,14 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
     // THE CONTROL.
     assert!(
         restored.contains(&kept),
-        "the element whose page IS live was not restored either, so the filter rejects everything \
+        "the element whose block IS live was not restored either, so the filter rejects everything \
          and says nothing about the absent one"
     );
 
     // THE FINDING.
     assert!(
         !restored.contains(&gone),
-        "an element naming a page the fold did not leave behind was restored anyway. That is how a \
+        "an element naming a block the fold did not leave behind was restored anyway. That is how a \
          removed element comes back: `fill_absent_elements` keeps every durable element the derived \
          view could not produce, and the derived view cannot produce this one because its block is \
          gone. It would then be served after being deleted. (That merge now asks this same \
@@ -1816,7 +1816,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
          but the fold must not hand it a known-dead one to strip.)"
     );
     println!(
-        "[resurrect] so the carry is applied against the FINISHED page index, and a removal needs \
+        "[resurrect] so the carry is applied against the FINISHED block index, and a removal needs \
          no tombstone to be honoured -- taking the block away is the whole answer"
     );
 }
@@ -2038,11 +2038,11 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     let expected: std::collections::BTreeSet<String> =
         (0..FIELDS).map(|index| format!("field-{index:04}")).collect();
     println!(
-        "[pay] staged pages: {framed} framed, {not_framed} not framed, {corrupt} corrupt; \
+        "[pay] staged blocks: {framed} framed, {not_framed} not framed, {corrupt} corrupt; \
          spellings={spellings:?}"
     );
     println!(
-        "[pay] items per staged page: min={:?} max={:?}; {} distinct components recovered of {} \
+        "[pay] items per staged block: min={:?} max={:?}; {} distinct components recovered of {} \
          fields written",
         items_per_block.iter().min(),
         items_per_block.iter().max(),
@@ -2094,7 +2094,7 @@ fn what_a_staged_hash_block_says_about_its_own_element_and_what_asking_costs() {
     );
     assert!(
         after_read > after_load,
-        "THE READ COUNTER DOES NOT MOVE even for a read that must touch pages, so the load figure \
+        "THE READ COUNTER DOES NOT MOVE even for a read that must touch blocks, so the load figure \
          above is an instrument reading zero rather than a measurement of zero"
     );
     println!(
@@ -2211,7 +2211,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
     // restore as flat.
     assert!(
         after_read > replay_reads + before,
-        "the read counter did not move even for a HashGetAll that must touch pages, so the replay \
+        "the read counter did not move even for a HashGetAll that must touch blocks, so the replay \
          figure above is an instrument reading zero rather than a measurement"
     );
     assert_eq!(
@@ -2243,7 +2243,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
     let fallback_elapsed = started.elapsed();
     let fallback_reads = by_address.block_store().stats().reads - before_fallback;
     println!(
-        "[cost] FALLBACK (no carried page): installed={installed}, {fallback_reads} block reads \
+        "[cost] FALLBACK (no carried block): installed={installed}, {fallback_reads} block reads \
          for {} outcomes, {fallback_elapsed:?}",
         outcomes.len()
     );
@@ -2258,7 +2258,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
         outcomes.len()
     );
     println!(
-        "[cost] so the element name costs 0 reads where the page is carried and 1 read where it is \
+        "[cost] so the element name costs 0 reads where the block is carried and 1 read where it is \
          not; the production replay path carries it unconditionally"
     );
 
@@ -2296,7 +2296,7 @@ fn what_resolving_the_element_from_the_block_costs_a_replay() {
         set_with - set_without
     );
     println!(
-        "[cost] and in memory, per outcome and per carried page: Option<String> is {} B and \
+        "[cost] and in memory, per outcome and per carried block: Option<String> is {} B and \
          Option<Arc<str>> is {} B of struct, plus the heap the name itself takes -- 10 B for \
          `field-0000` and 40 B for a 20-byte member rendered as hex",
         std::mem::size_of::<Option<String>>(),
@@ -2470,7 +2470,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     println!("[outcome-name] NO NAME   ok={stripped_ok} fields={stripped_fields:?}");
     assert!(
         stripped_ok,
-        "a replay whose outcomes name no element was REFUSED: {stripped_status}. The page each \
+        "a replay whose outcomes name no element was REFUSED: {stripped_status}. The block each \
          outcome points at names its own field, so a refusal means the replay path has gone back \
          to asking the outcome -- which is the dead weight this change removed"
     );
@@ -2497,7 +2497,7 @@ fn a_recorded_outcome_without_its_element_name_replays_no_hash_field_at_all() {
     );
 
     println!(
-        "[outcome-name] VERDICT: the page is the authority. Untouched {} of {}; with the element \
+        "[outcome-name] VERDICT: the block is the authority. Untouched {} of {}; with the element \
          name CLEARED everywhere {} of {}; with the block's frame destroyed the load is REFUSED",
         control_fields.len(),
         expected.len(),
@@ -2587,12 +2587,12 @@ fn the_shared_install_pairs_carried_blocks_by_object_and_component() {
     // THE PRECONDITION THAT MAKES THIS THE DEFECT'S OWN SHAPE: two blocks, two outcomes, ONE object
     // id between them. Without this the arm is about some other arrangement.
     assert_eq!(2, outcomes.len(), "the fixture produced {} outcomes", outcomes.len());
-    assert_eq!(2, blocks.len(), "the fixture produced {} pages", blocks.len());
+    assert_eq!(2, blocks.len(), "the fixture produced {} blocks", blocks.len());
     let ids: std::collections::BTreeSet<u64> = blocks.iter().map(|block| block.object_id).collect();
     assert_eq!(
         1,
         ids.len(),
-        "the two pages carry {} distinct object ids, so the id DOES discriminate them here and \
+        "the two blocks carry {} distinct object ids, so the id DOES discriminate them here and \
          this arm is not about the defect it names",
         ids.len()
     );
@@ -2709,7 +2709,7 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
     );
     assert!(
         ambiguous,
-        "no record carries several pages of one object, so the carried-page route would succeed \
+        "no record carries several blocks of one object, so the carried-block route would succeed \
          and this arm would not exercise the fallback at all"
     );
     // AND EVERY OUTCOME STILL NAMES ITS ELEMENT, which is the other half of the precondition: the
@@ -2761,13 +2761,13 @@ fn a_replay_whose_block_is_unreachable_installs_from_the_outcomes_own_name() {
         std::collections::BTreeSet::new()
     };
     println!(
-        "[unreachable] load ok={} fields={held:?}; names from page={from_block} from \
+        "[unreachable] load ok={} fields={held:?}; names from block={from_block} from \
          component={from_component} disagreed={disagreed}",
         response.status.ok
     );
     assert!(
         response.status.ok,
-        "THE LOAD WAS REFUSED: {:?}. The page is out of reach and every outcome names its element, \
+        "THE LOAD WAS REFUSED: {:?}. The block is out of reach and every outcome names its element, \
          so refusing throws away a name that is sitting in the record -- which is the regression \
          the proxy suite caught",
         response.status
@@ -2899,7 +2899,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
     );
     assert!(
         !renamed_ok,
-        "a replay whose outcome names an element its page does not hold LOADED ANYWAY. One of the \
+        "a replay whose outcome names an element its block does not hold LOADED ANYWAY. One of the \
          two names is wrong and nothing can say which, so installing either files a name against \
          the wrong address"
     );
@@ -3030,13 +3030,13 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
         .map(|index| 1_787_270_070_000 + index as u64 * 1_000)
         .collect();
     println!(
-        "[tsf] feature append of {POINTS} points: {} records, {} outcomes, {blocks} staged pages \
+        "[tsf] feature append of {POINTS} points: {} records, {} outcomes, {blocks} staged blocks \
          ({decoded_blocks} decode as feature blocks)",
         records.len(),
         outcomes.len()
     );
     println!(
-        "[tsf] points per page: min={:?} max={:?}; {} of {POINTS} timestamps recovered FROM THE \
+        "[tsf] points per block: min={:?} max={:?}; {} of {POINTS} timestamps recovered FROM THE \
          BLOCKS",
         points_per_block.iter().min(),
         points_per_block.iter().max(),
@@ -3044,12 +3044,12 @@ fn what_the_element_name_on_a_timestamped_record_is_worth() {
     );
     assert_eq!(
         expected, recovered,
-        "the page does not name every point that was written, so the element name is NOT \
+        "the block does not name every point that was written, so the element name is NOT \
          recoverable from it and the refusal stands on its original ground"
     );
     assert_eq!(
         blocks, decoded_blocks,
-        "{} of {blocks} staged pages are not feature blocks, so the decode above does not cover \
+        "{} of {blocks} staged blocks are not feature blocks, so the decode above does not cover \
          the whole write",
         blocks - decoded_blocks
     );

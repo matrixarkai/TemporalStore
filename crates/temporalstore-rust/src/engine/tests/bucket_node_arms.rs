@@ -311,7 +311,7 @@ impl ArmHistogram {
         let mut objects = self.objects.clone();
         objects.sort_unstable();
         println!(
-            "\n{label}: {} buckets, {} occupied, {} pages",
+            "\n{label}: {} buckets, {} occupied, {} blocks",
             self.buckets(),
             self.occupied(),
             self.total_blocks()
@@ -421,7 +421,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
             assert_eq!(
                 hist.total_blocks(),
                 keys.len(),
-                "{records}/{end_routing_bucket}: the index holds {} pages for {} written keys, so \
+                "{records}/{end_routing_bucket}: the index holds {} blocks for {} written keys, so \
                  the histogram above is not over the fixture",
                 hist.total_blocks(),
                 keys.len()
@@ -600,7 +600,7 @@ fn the_arm_a_bucket_node_lands_in_is_decided_by_the_routing_range_not_by_the_wor
     let widest = narrow_large.blocks.iter().copied().max().unwrap_or_default();
     assert!(
         widest > 11,
-        "the widest bucket on 0..{NARROW_END} at {LARGE} records holds {widest} pages; below \
+        "the widest bucket on 0..{NARROW_END} at {LARGE} records holds {widest} blocks; below \
          twelve a `BTreeMap` node is not even filled once and the general arm would be priced \
          against a shape it never reaches"
     );
@@ -671,7 +671,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     // So a single block costs one allocation here, deliberately, and the object and tombstone
     // indexes are the two members whose simple spelling is still free.
     let simple_block = BlockIndexMap::Many(vec![(7, block_fixture())]);
-    assert_eq!(1, simple_block.len(), "a one-entry page list holds exactly one page");
+    assert_eq!(1, simple_block.len(), "a one-entry block list holds exactly one block");
     assert!(
         simple_block.get(&7).is_some(),
         "a one-entry block list must answer for the handle it holds"
@@ -715,7 +715,7 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
     );
     assert!(
         size_of::<crate::block_store::ElementEntry>() > size_of::<u64>(),
-        "the whole proposal rests on a page's address fitting in a tagged 64-bit word; here the \
+        "the whole proposal rests on a block's address fitting in a tagged 64-bit word; here the \
          address ALONE is {} bytes, and the entry around it carries a shared name and an address as well",
         size_of::<crate::block_store::ElementEntry>()
     );
@@ -1263,7 +1263,7 @@ fn what_the_tagged_node_actually_costs_the_allocator() {
             assert_eq!(
                 hist.total_blocks(),
                 keys.len(),
-                "the map holds {} pages for {} keys, so the per-record divisor is not the \
+                "the map holds {} blocks for {} keys, so the per-record divisor is not the \
                  fixture's",
                 hist.total_blocks(),
                 keys.len()
@@ -1706,7 +1706,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
         2 * simple_buckets - live_lines,
     );
     println!(
-        "  (SUPERSEDED) While the address sat past a line into the node the page entry was a line \
+        "  (SUPERSEDED) While the address sat past a line into the node the block entry was a line \
          away whether it was held inline or behind a pointer, so moving it out of line added no \
          line. That is no longer the case, and the figures above are what replaced it."
     );
@@ -1985,7 +1985,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
             assert_eq!(
                 hist.total_blocks(),
                 keys.len(),
-                "the map holds {} pages for {} keys, so the per-record divisor is not the \
+                "the map holds {} blocks for {} keys, so the per-record divisor is not the \
                  fixture's",
                 hist.total_blocks(),
                 keys.len()
@@ -2175,7 +2175,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
         .find(|node| node.block_index.len() == 1)
         .expect("a simple bucket");
     let tagged = retag(node);
-    let (handle, _) = node.block_index.iter().next().expect("one page");
+    let (handle, _) = node.block_index.iter().next().expect("one block");
     let handle = *handle;
 
     let probe = Probe::start();
@@ -2183,7 +2183,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
     let counts = probe.stop();
     std::hint::black_box(&reached.address);
     println!(
-        "\n  READING one page through the tagged word charged {} allocations and {} chunk bytes \
+        "\n  READING one block through the tagged word charged {} allocations and {} chunk bytes \
          over {} keys",
         counts.allocs,
         counts.chunk_bytes,

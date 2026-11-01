@@ -174,7 +174,7 @@ impl<K: RecordedKind> Default for RecordedMap<K> {
 // ---------------------------------------------------------------------------------------------
 
 /// PROOF THAT THE DURABLE RECORD FOR ONE ELEMENT IS ALREADY OUT.
-#[must_use = "a recorded element that is never installed leaves the record describing a page the \
+#[must_use = "a recorded element that is never installed leaves the record describing a block the \
               resident map does not hold"]
 pub(super) struct RecordedElement<K: RecordedKind> {
     /// The emitter's witness. Not read -- HOLDING it is the point, because it cannot be obtained

@@ -421,7 +421,7 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
     );
     assert!(
         !served_after.iter().any(|(name, _)| name.is_empty()),
-        "a field named `\"\"` is being served: {served_after:?}. That is a nameless page entry \
+        "a field named `\"\"` is being served: {served_after:?}. That is a nameless block entry \
          defaulted through `unwrap_or_default()`, whose value is the raw block frame"
     );
 }

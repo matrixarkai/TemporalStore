@@ -720,7 +720,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
         for (handle, block) in node.block_index.iter() {
             let object_key = identities.get(handle).unwrap_or_else(|| {
                 panic!(
-                    "[CLAUSE join-total] the page at handle {handle} in bucket {} has no identity \
+                    "[CLAUSE join-total] the block at handle {handle} in bucket {} has no identity \
                      beside it, so no counterfactual over block keys can be priced",
                     node.routing_bucket
                 )
@@ -728,7 +728,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
             let written = crate::engine::state::block_index_written_key(object_key, block);
             assert!(
                 handles_by_written_key.insert(written.clone(), *handle).is_none(),
-                "[CLAUSE join-total] two pages render the written key `{written}`, so a key is not \
+                "[CLAUSE join-total] two blocks render the written key `{written}`, so a key is not \
                  a block's name and the join below is not one-to-one"
             );
         }
@@ -850,7 +850,7 @@ fn split_written_key(key: &str) -> KeySlots {
     );
     assert_eq!(
         recomposed, key,
-        "[CLAUSE key-split-recomposes] the eight-slot split of a written page key does not rebuild \
+        "[CLAUSE key-split-recomposes] the eight-slot split of a written block key does not rebuild \
          it, so every per-slot figure taken from it is a guess"
     );
     slots
@@ -1036,7 +1036,7 @@ fn walk(reading: &Reading) -> Walked {
         let blocks = block_index.as_object().expect("the block index writes an object");
         assert!(
             !blocks.is_empty(),
-            "[CLAUSE no-empty-page-index] bucket `{bucket_key}` writes an EMPTY page index, and \
+            "[CLAUSE no-empty-block-index] bucket `{bucket_key}` writes an EMPTY block index, and \
              this walk charges one separator byte per entry -- an empty object's second brace has \
              no entry to be charged to, so the partition identity would be off by one per such \
              bucket"
@@ -1051,7 +1051,7 @@ fn walk(reading: &Reading) -> Walked {
             assert_eq!(
                 klen(block_key) - block_key.len(),
                 2,
-                "[CLAUSE map-key-quotes-are-two] the written page key `{block_key}` renders {} B \
+                "[CLAUSE map-key-quotes-are-two] the written block key `{block_key}` renders {} B \
                  wider than its characters, so it carries escaping and this term is not quotes",
                 klen(block_key) - block_key.len()
             );
@@ -1111,7 +1111,7 @@ fn walk(reading: &Reading) -> Walked {
                         }
                     }
                     other => panic!(
-                        "[CLAUSE no-unclassified] a page entry writes the key `{other}`, which \
+                        "[CLAUSE no-unclassified] a block entry writes the key `{other}`, which \
                          this decomposition does not name"
                     ),
                 }
@@ -1155,7 +1155,7 @@ fn walk(reading: &Reading) -> Walked {
                     decoded.block_id().unwrap_or_default().to_string().as_str(),
                     decoded.generation().unwrap_or_default().to_string().as_str(),
                 ),
-                "[CLAUSE address-restates-the-key] the five decimals in the page key {block_key:?} \
+                "[CLAUSE address-restates-the-key] the five decimals in the block key {block_key:?} \
                  are not what the entry's own written address spells, so the address is not a \
                  restatement of them and classing it redundancy would be wrong"
             );
@@ -1346,8 +1346,8 @@ impl Candidate {
     fn label(self) -> &'static str {
         match self {
             Candidate::Control => "control: nothing removed",
-            Candidate::BlockKeyBecomesTheHandle => "page key -> the live map's handle",
-            Candidate::BlockKeyDropsTheEmptySlot => "page key -> drop the always-empty slot",
+            Candidate::BlockKeyBecomesTheHandle => "block key -> the live map's handle",
+            Candidate::BlockKeyDropsTheEmptySlot => "block key -> drop the always-empty slot",
             Candidate::EntryDropsAddress => "entry -> drop `address` (BLOCKED)",
             Candidate::AddressDropsTheAlwaysNilSlot => "address -> drop the always-nil `oi` slot",
         }
@@ -1428,7 +1428,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                         let was = address.remove("oi").expect("the `oi` slot was written");
                         assert!(
                             was.is_null(),
-                            "[CLAUSE empty-slot-is-empty] the `oi` slot of a page in this fixture \
+                            "[CLAUSE empty-slot-is-empty] the `oi` slot of a block in this fixture \
                              holds `{was}`, so dropping it would drop a value rather than a hole"
                         );
                     }
@@ -1438,7 +1438,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                 }
                 assert!(
                     replacement.insert(new_key.clone(), entry).is_none(),
-                    "[CLAUSE doctoring-is-one-to-one] the doctored page index files two entries \
+                    "[CLAUSE doctoring-is-one-to-one] the doctored block index files two entries \
                      under `{new_key}`, so this candidate loses a block rather than bytes"
                 );
             }
@@ -1501,7 +1501,7 @@ fn the_slot_index_term_table_is_well_formed() {
     assert_eq!(
         declared(STRUCTURALLY_EMPTY).0,
         Scale::PerBlock,
-        "[CLAUSE table-unique] the structurally empty term must be a per-page one, or the \
+        "[CLAUSE table-unique] the structurally empty term must be a per-block one, or the \
          exemption below exempts the wrong thing"
     );
     println!();
@@ -1554,7 +1554,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     );
     assert_eq!(
         reading.blocks, reading.objects,
-        "[CLAUSE one-page-an-object] the fixture holds {} page(s) for {} object(s), so a per-PAGE \
+        "[CLAUSE one-block-an-object] the fixture holds {} block(s) for {} object(s), so a per-BLOCK \
          term and a per-OBJECT term are different quantities here and every B/object figure below \
          would silently be a B/block figure",
         reading.blocks, reading.objects
@@ -1593,7 +1593,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         .sum();
     assert_eq!(
         block_level, walked.block_subtree_bytes,
-        "[CLAUSE part-sum-page-subtree] the page-level terms charge {block_level} B against {} B of \
+        "[CLAUSE part-sum-block-subtree] the block-level terms charge {block_level} B against {} B of \
          written block index, so a term is charged at the bucket level that belongs at the block \
          level or the reverse -- the error the bucket-keyed NAME of this structure invites",
         walked.block_subtree_bytes
@@ -1644,7 +1644,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     // ---- THE TWO RECONSTRUCTIONS, COUNTED ----
     assert_eq!(
         walked.keys_reconstructed, reading.blocks,
-        "[CLAUSE address-restates-the-key] {} of {} page(s) write an address whose five values are \
+        "[CLAUSE address-restates-the-key] {} of {} block(s) write an address whose five values are \
          exactly the five decimals in the key they are filed under",
         walked.keys_reconstructed, reading.blocks
     );
@@ -1661,7 +1661,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     // argued from the shape.
     assert_eq!(
         walked.buckets_whose_object_index_is_derivable, reading.buckets,
-        "[CLAUSE object-index-restates-the-pages] {} of {} bucket(s) write an `object_index` that \
+        "[CLAUSE object-index-restates-the-blocks] {} of {} bucket(s) write an `object_index` that \
          is exactly the set of ids derivable from the kinds and object keys of their own block \
          entries -- a bucket that writes an id no block beside it accounts for carries something \
          the blocks do not, and calling this term redundancy would be wrong",
@@ -1730,7 +1730,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         walked.nil_object_id_slots, reading.blocks
     );
     println!(
-        "  THE `oi` SLOT IS NULL ON ALL {} PAGES and costs {:.3} B/object. The writer fills it \
+        "  THE `oi` SLOT IS NULL ON ALL {} BLOCKS and costs {:.3} B/object. The writer fills it \
          from a literal `None` -- the type it converts from has no such field -- and the reader \
          consumes it only as the right-hand side of `block_id.or(object_id)`. It is not skipped \
          for a reason the source states: the index log packs this struct POSITIONALLY, so a \
@@ -1753,7 +1753,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         reading.objects, reading.buckets, reading.blocks
     );
     println!(
-        "  THE PAGE ENTRY'S MAP KEY is {:.3} B/object of it, and every character of it was rebuilt \
+        "  THE BLOCK ENTRY'S MAP KEY is {:.3} B/object of it, and every character of it was rebuilt \
          from the entry it is filed against, on all {} blocks.",
         (tally.bytes_of("block/map_key_quotes")
             + tally.bytes_of("block/map_key/kind")
@@ -1827,7 +1827,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     for reading in readings.iter() {
         assert_eq!(
             reading.blocks, reading.objects,
-            "[CLAUSE one-page-an-object] {} object(s) hold {} block(s)",
+            "[CLAUSE one-block-an-object] {} object(s) hold {} block(s)",
             reading.objects, reading.blocks
         );
     }
@@ -2018,7 +2018,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
     let block_upper = half_at_scale((middle, middle_walk), (large, large_walk), Scale::PerBlock);
     assert!(
         (block_lower - block_upper).abs() / block_upper < 0.05,
-        "[CLAUSE the-per-page-class-is-a-line] the per-page class grows {block_lower:.3} B/object \
+        "[CLAUSE the-per-block-class-is-a-line] the per-block class grows {block_lower:.3} B/object \
          over the lower half and {block_upper:.3} over the upper, so the class that is supposed to \
          be one cost per stored block is not"
     );
@@ -2171,7 +2171,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
                 let original = serde_json::to_vec(&reading.value).expect("the baseline serializes");
                 assert_eq!(
                     rebuilt, original,
-                    "[CLAUSE doctoring-control] rebuilding the page index without changing \
+                    "[CLAUSE doctoring-control] rebuilding the block index without changing \
                      anything did not reproduce the stream, so every saving below is partly the \
                      cost of the doctoring itself"
                 );
@@ -2217,7 +2217,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
             if candidate == Candidate::BlockKeyBecomesTheHandle {
                 assert!(
                     container_saved <= 0,
-                    "[CLAUSE the-key-is-free-on-the-artefact] re-keying the page index by its \
+                    "[CLAUSE the-key-is-free-on-the-artefact] re-keying the block index by its \
                      handle saved {container_saved} B of container at {} {} object(s) -- the \
                      recorded direction is that it COSTS, and a flip here is the finding changing \
                      rather than the fixture",
@@ -2262,7 +2262,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
     println!();
     println!("================ WHICH DIRECTION IS THE ONE WORTH TAKING ================");
     println!(
-        "  The three per-page facts -- the object, the kind and the address -- are each written \
+        "  The three per-block facts -- the object, the kind and the address -- are each written \
          TWICE: once inside the composite map key, once as fields of the entry filed under it. \
          EXACTLY ONE of the two sides may go, never both, and the two sides are nothing like the \
          same price on the artefact."
@@ -2358,12 +2358,12 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     let baseline = through_the_decoder(&reading.value);
     assert!(
         !baseline.is_empty(),
-        "[CLAUSE the-round-trip-carries-pages] the decoded `slot_index` is empty, so the \
+        "[CLAUSE the-round-trip-carries-blocks] the decoded `slot_index` is empty, so the \
          comparison below would hold for an index that lost everything"
     );
     assert!(
         baseline.len() > 64 * reading.objects,
-        "[CLAUSE the-round-trip-carries-pages] the decoded `slot_index` is {} B for {} object(s), \
+        "[CLAUSE the-round-trip-carries-blocks] the decoded `slot_index` is {} B for {} object(s), \
          which is too little to be carrying one block each",
         baseline.len(),
         reading.objects
@@ -2373,7 +2373,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     let rekeyed = try_the_decoder(&doctor(&reading, Candidate::BlockKeyBecomesTheHandle));
     let refusal = match rekeyed {
         Ok(bytes) => panic!(
-            "[CLAUSE page-key-is-read] re-keying every page index by its handle still DECODES, to \
+            "[CLAUSE block-key-is-read] re-keying every block index by its handle still DECODES, to \
              a {} B `slot_index` against the baseline's {} -- the key is the only source of a \
              block's object now, so a decimal handle in its place has to be refused and not read",
             bytes.len(),
@@ -2383,7 +2383,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     };
     assert!(
         refusal.contains("is not a block-ref key"),
-        "[CLAUSE page-key-is-read] the handle-keyed index was refused with {refusal:?}, which is \
+        "[CLAUSE block-key-is-read] the handle-keyed index was refused with {refusal:?}, which is \
          not the key parse refusing -- a refusal for some other reason would pass this arm while \
          saying nothing about whether the key is read"
     );
@@ -2440,19 +2440,19 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     }
     assert_eq!(
         touched, 1,
-        "[CLAUSE instrument-fires] the tamper reached {touched} page(s) and must reach exactly \
+        "[CLAUSE instrument-fires] the tamper reached {touched} block(s) and must reach exactly \
          one, or a comparison that fails says nothing about which change caused it"
     );
     let tampered_out = through_the_decoder(&tampered);
     assert_ne!(
         tampered_out, baseline,
-        "[CLAUSE page-key-is-read] changing one character of ONE page key's object-key slot left \
+        "[CLAUSE block-key-is-read] changing one character of ONE block key's object-key slot left \
          the decoded `slot_index` byte-identical, so the decoder is not reading the slot and the \
          identity it files that block under came from somewhere else"
     );
 
     println!();
-    println!("================ THE PAGE KEY IS WRITTEN AND READ ================");
+    println!("================ THE BLOCK KEY IS WRITTEN AND READ ================");
     println!(
         "  {} object(s), {} block(s), {} bucket(s), baseline `slot_index` {} B.",
         reading.objects,
@@ -2462,7 +2462,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     );
     println!("  every block key replaced by its handle -> REFUSED: {refusal}");
     println!(
-        "  one character changed in ONE page key's object-key slot moves the decoded index ({} B \
+        "  one character changed in ONE block key's object-key slot moves the decoded index ({} B \
          against {} B) -- under the shape this change replaced it moved NOTHING.",
         tampered_out.len(),
         baseline.len()
@@ -2575,7 +2575,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
     let block_shipped_bytes = shipped_walk.tally.at_scale(Scale::PerBlock);
     assert_eq!(
         block_unbounded_bytes, block_shipped_bytes,
-        "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {block_unbounded_bytes} B \
+        "[CLAUSE the-per-block-class-is-range-blind] the per-block class is {block_unbounded_bytes} B \
          unbounded and {block_shipped_bytes} B on the shipped range for the SAME corpus -- a \
          per-block term depends only on the block's own key and address, so a difference here means \
          one of them does not"
@@ -2584,7 +2584,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
     let block_shipped = per_object(block_shipped_bytes);
     assert!(
         (block_unbounded - block_shipped).abs() / block_shipped < 0.02,
-        "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {block_unbounded:.3} \
+        "[CLAUSE the-per-block-class-is-range-blind] the per-block class is {block_unbounded:.3} \
          B/object unbounded and {block_shipped:.3} on the shipped range -- if it moves with the \
          routing range then the fall between the two published columns is not the one class this \
          arm attributes it to"

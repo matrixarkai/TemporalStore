@@ -627,7 +627,7 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
         for kind in ["set", "list", "hash", "zset"] {
             assert!(
                 index_entry_names_a_block(kind),
-                "{kind} must be page-named when the gate is on: all four container kinds are in \
+                "{kind} must be block-named when the gate is on: all four container kinds are in \
                  the collapsed set now. See `index_entry_names_a_block` for what discharged the \
                  hash and zset refusals"
             );
@@ -645,7 +645,7 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
             }
             assert!(
                 !index_entry_names_a_block(name),
-                "{name} answered page-named, but it is not a container kind: it files no element \
+                "{name} answered block-named, but it is not a container kind: it files no element \
                  name and has one block per object, so the block-keyed term would leave its \
                  relocated blocks behind as stale live entries"
             );
@@ -665,14 +665,14 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
     for kind in ["set", "zset", "list", "hash"] {
         assert!(
             index_entry_names_a_block(kind),
-            "{kind} is a container kind and did not answer page-named. There is no gate left to \
+            "{kind} is a container kind and did not answer block-named. There is no gate left to \
              turn off, so the only way this can be false is the predicate's own kind list"
         );
     }
     for kind in ["string", "feature"] {
         assert!(
             !index_entry_names_a_block(kind),
-            "{kind} answered page-named, and it holds ONE page per object: the page-keyed term \
+            "{kind} answered block-named, and it holds ONE block per object: the block-keyed term \
              would leave its relocated blocks behind as stale live entries"
         );
     }

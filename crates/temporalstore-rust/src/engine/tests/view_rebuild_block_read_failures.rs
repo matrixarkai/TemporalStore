@@ -178,7 +178,7 @@ fn a_clean_view_rebuild_reports_zero_unreadable_blocks_over_a_store_that_has_som
     let rebuilt = rebuilt_points(shard, "clean");
     println!("=== a clean view rebuild ===");
     println!(
-        "  {blocks} live pages, {rebuilt} of {POINTS} points rebuilt, \
+        "  {blocks} live blocks, {rebuilt} of {POINTS} points rebuilt, \
          {read_failures} unreadable, {decode_failures} undecodable"
     );
     assert_eq!(

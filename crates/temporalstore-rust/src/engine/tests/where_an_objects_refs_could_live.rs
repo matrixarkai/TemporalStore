@@ -154,7 +154,7 @@ fn where_each_kinds_refs_end_up() {
     );
     assert!(
         in_slot.get("string").copied().unwrap_or(0) >= 4,
-        "each of the four string keys should name at least one page from its slot, got {:?}",
+        "each of the four string keys should name at least one block from its slot, got {:?}",
         in_slot.get("string")
     );
 }
@@ -214,7 +214,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
     let refused = serde_json::to_string(&unfiled);
     let message = refused
         .expect_err(
-            "an index holding a placed page that nothing in it names must REFUSE to encode. If \
+            "an index holding a placed block that nothing in it names must REFUSE to encode. If \
              this now succeeds, the encoder found an identity somewhere else -- which is the \
              change the fold needs, and this test's premise with it.",
         )
@@ -237,7 +237,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
     let handle = block_index_handle(&object_key, &entry);
     filed.insert_object_block_lookup(3, handle, &object_key, &entry);
     let encoded = serde_json::to_string(&filed)
-        .expect("the same index encodes once its own field names the page's object");
+        .expect("the same index encodes once its own field names the block's object");
     println!("and encoded, once filed, as: {encoded}");
     assert!(
         encoded.contains("an-object"),
@@ -335,7 +335,7 @@ fn whether_a_slot_row_exists_when_its_page_is_filed() {
 
     assert!(
         !census.is_empty(),
-        "no page was filed at all, so this says nothing about ordering"
+        "no block was filed at all, so this says nothing about ordering"
     );
 }
 

@@ -399,7 +399,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     // edited anywhere else cannot rename it.
     assert!(
         !names.contains("hfield-Z"),
-        "the swapped name became the field name. The page carries its own element key, so an \
+        "the swapped name became the field name. The block carries its own element key, so an \
          edited name in the durable map must not be able to rename the field it points at: \
          {names:?}"
     );
@@ -428,7 +428,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
     assert_eq!(
         hash_fields.len() as i64,
         length,
-        "HashLen counts page-index entries and the swap removed none, so it must still answer {}",
+        "HashLen counts block-index entries and the swap removed none, so it must still answer {}",
         hash_fields.len()
     );
     assert_eq!(
@@ -701,7 +701,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     assert_eq!(
         48,
         round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
-        "the stride of an entry with a name slot added back is {} B, not the 48 the per-page \
+        "the stride of an entry with a name slot added back is {} B, not the 48 the per-block \
          saving was quoted against",
         round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width))
     );
@@ -822,7 +822,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     );
     assert!(
         !encoded.contains("component"),
-        "a component-less page entry still wrote a component key, so the absent shape this finding \
+        "a component-less block entry still wrote a component key, so the absent shape this finding \
          rests on is not what the encoder produces: {encoded}"
     );
     let decoded = serde_json::from_str::<crate::engine::state::StoredBlockEntry>(&encoded)
@@ -902,7 +902,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
          unintended reason is not a passing control"
     );
     println!(
-        "[leg A] an absent component is a legal wire shape on both carriers: page entry {} B with \
+        "[leg A] an absent component is a legal wire shape on both carriers: block entry {} B with \
          no component key, delta item decodes from an empty document. A row that NAMES one is \
          refused: {refusal}",
         encoded.len()
@@ -964,11 +964,11 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         let nameless_fields = shard
             .hashes
             .get(nameless_key)
-            .expect("the nameless-page key is present after one write");
+            .expect("the nameless-block key is present after one write");
         assert_eq!(
             nameless_fields.len(),
             1,
-            "the nameless-page key starts with {} field(s), not the one it needs",
+            "the nameless-block key starts with {} field(s), not the one it needs",
             nameless_fields.len()
         );
         let anchor = nameless_fields
@@ -997,7 +997,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     assert_ne!(
         nameless_address.address_word(),
         nameless_key_address.address_word(),
-        "the nameless page shares an address with the real one, so a phantom could not be told \
+        "the nameless block shares an address with the real one, so a phantom could not be told \
          from a coincidence"
     );
 
@@ -1063,7 +1063,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     };
     assert_eq!(
         nameless_entries_in_index, 1,
-        "the fold filed {nameless_entries_in_index} hash page(s) at the planted address for this \
+        "the fold filed {nameless_entries_in_index} hash block(s) at the planted address for this \
          key, not the one this test needs -- leg B has not built the state leg C is about"
     );
     println!("[leg B] the fold filed 1 hash block naming no field, under `{nameless_key}`");
@@ -1096,7 +1096,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
             .count();
         assert!(
             string_blocks_exercised >= 1,
-            "[{arm}] the control walked {string_blocks_exercised} string page(s), so it is a control \
+            "[{arm}] the control walked {string_blocks_exercised} string block(s), so it is a control \
              over nothing"
         );
 
@@ -1172,7 +1172,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         // --- THE CONTROL, at 0.00% on a kind whose component is LEGITIMATELY absent. ---
         assert!(
             shard.strings().contains_key(string_key),
-            "[{arm}] the control's string is gone: a page whose component is absent BY DESIGN was \
+            "[{arm}] the control's string is gone: a block whose component is absent BY DESIGN was \
              caught by a change that is only about the hash arm"
         );
         println!(
@@ -1250,14 +1250,14 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // THE DENOMINATOR: the two structures must hold DIFFERENT numbers, or the gap proves nothing.
     assert_eq!(
         2, indexed_blocks_after,
-        "`{nameless_key}` carries {indexed_blocks_after} live hash page entries, not the two this \
+        "`{nameless_key}` carries {indexed_blocks_after} live hash block entries, not the two this \
          stage needs -- one named block and the one nameless block leg B filed. Without two against \
          a cleared map, the field count and the entry count could be the same number and nothing \
          below could say which of them HashLen read"
     );
     assert_ne!(
         indexed_blocks_after, hash_len_after,
-        "HashLen answered {hash_len_after} and the index holds {indexed_blocks_after} live page \
+        "HashLen answered {hash_len_after} and the index holds {indexed_blocks_after} live block \
          entries for this key. They must DIFFER: the map was cleared and the index was not, so a \
          HashLen that matches the entry count is counting index entries rather than fields -- and \
          the nameless block is then being counted as a field, which is this module's defect"
@@ -1471,7 +1471,7 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
         assert_eq!(
             1,
             rows.len(),
-            "the {label}-handle arm filed {} page(s), not the one this guard is about -- the fold \
+            "the {label}-handle arm filed {} block(s), not the one this guard is about -- the fold \
              filed nothing, so the equalities above were over empty censuses",
             rows.len()
         );

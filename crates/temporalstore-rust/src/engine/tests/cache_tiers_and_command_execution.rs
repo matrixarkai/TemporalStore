@@ -2504,7 +2504,7 @@ fn planning_a_maintenance_round_reads_no_blocks() {
     // remove.
     assert!(
         surveyed > 0,
-        "the plan materialised no live-page entries at all with {live_blocks} live pages, so the \
+        "the plan materialised no live-block entries at all with {live_blocks} live blocks, so the \
 zero-read count above proves nothing"
     );
     // DELIBERATELY NOT ASSERTED EITHER WAY: whether this plan skipped the summary walk.
@@ -2852,7 +2852,7 @@ fn what_a_round_still_reads() {
         let round_reads = engine.block_store().stats().reads.saturating_sub(before);
 
         eprintln!(
-            "  {records:>6} records ({live} live pages):  boundary={boundary_ms:>8.2} ms \
+            "  {records:>6} records ({live} live blocks):  boundary={boundary_ms:>8.2} ms \
              / {boundary_reads} reads   whole round={round_ms:>8.2} ms / {round_reads} reads \
              ({:.1}x the live blocks)",
             round_reads as f64 / live.max(1) as f64
@@ -3843,7 +3843,7 @@ fn feature_append_packs_many_timestamp_values_into_one_block() {
     assert_eq!(first_address, second_address);
     // The address carries no object id; the entry derives one from its terms.
     let packed_bytes = engine.block_store().read(&first_address).unwrap();
-    let packed_points = decode_feature_block(&packed_bytes).expect("packed feature page");
+    let packed_points = decode_feature_block(&packed_bytes).expect("packed feature block");
     assert_eq!(packed_points.len(), 2);
     assert_eq!(packed_points[0].timestamp_ms, 10);
     assert_eq!(packed_points[1].timestamp_ms, 20);
@@ -4206,7 +4206,7 @@ fn feature_recovery_reports_index_timestamp_missing_from_packed_block() {
             .get_mut(&1)
             .and_then(|shard| shard.features_mut().get_mut("layout-feature"))
             .expect("feature series should exist");
-        let address = series.get(10).expect("packed page").clone();
+        let address = series.get(10).expect("packed block").clone();
         series.set(30, address);
     }
 
@@ -4434,7 +4434,7 @@ fn feature_recovery_reports_unsupported_packed_timestamped_block_version() {
     assert!(
         readiness.feature_block_layout.corrupt_packed_feature_blocks[0]
             .error
-            .contains("unsupported packed feature page version 2")
+            .contains("unsupported packed feature block version 2")
     );
 }
 

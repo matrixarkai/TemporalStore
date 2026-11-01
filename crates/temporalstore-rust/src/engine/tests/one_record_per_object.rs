@@ -413,9 +413,9 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
         assert_eq!(address, back_address, "{what}: the address row changed");
         assert_eq!(model_id, back_model, "{what}: the model id changed");
         // The presence halves specifically, because they are the ones a value comparison can miss.
-        assert_eq!(address.block_id(), back_address.block_id(), "{what}: page identity presence");
+        assert_eq!(address.block_id(), back_address.block_id(), "{what}: block identity presence");
         assert_eq!(address.generation(), back_address.generation(), "{what}: generation presence");
-        assert_eq!(address.length(), back_address.length(), "{what}: page length");
+        assert_eq!(address.length(), back_address.length(), "{what}: block length");
         assert_eq!(address.address_word(), back_address.address_word(), "{what}: address word");
         checked += 1;
     }
@@ -438,13 +438,13 @@ fn converting_one_objects_rows_into_the_record_and_back_loses_nothing() {
             matches!(record.page_address(), BlockAddress::Many(_)),
             "{what}: an identified block should take the layout arm"
         );
-        assert_eq!(1, layout.len(), "{what}: one page should produce a one-page layout");
+        assert_eq!(1, layout.len(), "{what}: one block should produce a one-block layout");
         let (back_address, back_model) = record
             .into_object_rows(Some(&layout))
             .unwrap_or_else(|error| panic!("{what}: unfolding refused: {error}"));
         assert_eq!(address, back_address, "{what}: the address row changed");
         assert_eq!(model_id, back_model, "{what}: the model id changed");
-        assert_eq!(address.block_id(), back_address.block_id(), "{what}: page identity");
+        assert_eq!(address.block_id(), back_address.block_id(), "{what}: block identity");
         assert_eq!(address.generation(), back_address.generation(), "{what}: generation presence");
         checked += 1;
     }
@@ -1670,7 +1670,7 @@ fn how_many_structures_hold_an_entry_for_one_control_state_object() {
          {BASE} ==="
     );
     println!(
-        "    denominators: {objects} control-state objects, {buckets} buckets, {blocks} pages \
+        "    denominators: {objects} control-state objects, {buckets} buckets, {blocks} blocks \
          ({:.2} blocks per bucket)",
         blocks as f64 / buckets as f64
     );

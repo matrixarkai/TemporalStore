@@ -596,7 +596,7 @@ non-purged bytes {non_purged_before} -> {non_purged_after_evict}",
     );
     assert!(
         relocatable_after < relocatable_before,
-        "relocatable page refs went {relocatable_before} -> {relocatable_after}; a round that \
+        "relocatable block refs went {relocatable_before} -> {relocatable_after}; a round that \
          drained its slabs has to leave fewer blocks on slabs anyone wants emptied, and this is the \
          term that says the second pass did something the first one could not"
     );

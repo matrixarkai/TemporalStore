@@ -755,7 +755,7 @@ fn an_idle_round_skips_the_whole_shard_survey_and_what_it_still_walks() {
     let busy = engine.run_storage_manager_cycle(round(true));
     assert!(
         busy.pressure_signals.live_block_summaries_measured,
-        "DENOMINATOR: a round on a freshly seeded store must survey the live page set, or this \
+        "DENOMINATOR: a round on a freshly seeded store must survey the live block set, or this \
          report field cannot tell a surveying round from a skipping one"
     );
     let busy_entries: u64 = busy.stages.iter().map(|stage| stage.walk.live_block_entries).sum();
@@ -800,7 +800,7 @@ fn an_idle_round_skips_the_whole_shard_survey_and_what_it_still_walks() {
     // THE SKIP IS THE CLAIM. A drained shard has no dirty object, so no round may survey.
     assert_eq!(
         surveyed_while_idle, 0,
-        "{surveyed_while_idle} of {rounds} drained rounds surveyed the whole live page set. The \
+        "{surveyed_while_idle} of {rounds} drained rounds surveyed the whole live block set. The \
          plan gates that on `shard_has_dirty_objects`; if a drained shard still reads dirty, the \
          gate is open on every idle round and the loop interval cannot be shortened"
     );
@@ -811,7 +811,7 @@ fn an_idle_round_skips_the_whole_shard_survey_and_what_it_still_walks() {
     assert!(interval_ms > 0, "a zero interval is a spin, not a loop");
     let entries_per_second = per_idle * 1_000.0 / interval_ms as f64;
     eprintln!(
-        "  at the shipped {interval_ms} ms interval that is {entries_per_second:.0} live-page \
+        "  at the shipped {interval_ms} ms interval that is {entries_per_second:.0} live-block \
          entries a second; the same residue on a 30 ms loop would be {:.0} a second",
         per_idle * 1_000.0 / 30.0
     );
@@ -819,7 +819,7 @@ fn an_idle_round_skips_the_whole_shard_survey_and_what_it_still_walks() {
     const IDLE_ENTRIES_PER_SECOND_CEILING: f64 = 700_000.0;
     assert!(
         entries_per_second <= IDLE_ENTRIES_PER_SECOND_CEILING,
-        "an idle loop charges {entries_per_second:.0} live-page entries a second ({per_idle:.0} \
+        "an idle loop charges {entries_per_second:.0} live-block entries a second ({per_idle:.0} \
          per round at a {interval_ms} ms interval), over the {IDLE_ENTRIES_PER_SECOND_CEILING:.0} \
          this pair is allowed. The interval and what an idle round walks are ONE setting: bound \
          the residue first, then shorten the interval -- not the other way round"

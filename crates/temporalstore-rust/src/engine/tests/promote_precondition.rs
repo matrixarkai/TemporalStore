@@ -227,7 +227,7 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
         .contains_object_block_address("string", "probe", None, &narrowed);
 
     println!(
-        "\n  WHAT THE MAPS HOLD vs WHAT A READER OF THEM SEES, at {BLOCKS} string pages\n\
+        "\n  WHAT THE MAPS HOLD vs WHAT A READER OF THEM SEES, at {BLOCKS} string blocks\n\
          \n    model-map rows                                      {held}\n\
            .. handing back the address the fixture filed        {round_tripped}\n\
            .. named by the bucket index at THAT address         {named_by_index}\n\
@@ -251,7 +251,7 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
     );
     assert_eq!(
         named_by_index, BLOCKS,
-        "the bucket index names {named_by_index} of {BLOCKS} pages at the address the model map \
+        "the bucket index names {named_by_index} of {BLOCKS} blocks at the address the model map \
          hands out, so the promotion check is offered missing blocks that are not missing",
     );
 
@@ -261,7 +261,7 @@ fn the_model_maps_hand_back_the_addresses_the_index_was_filed_with() {
     // here rather than to leave a literal pinned for a reason that has expired.
     assert_ne!(
         narrowed, unkeepable,
-        "the string row now round-trips a nonzero page ordinal. If that is deliberate, this \
+        "the string row now round-trips a nonzero block ordinal. If that is deliberate, this \
          assertion and the zero pinned in `address_at` are what should be deleted, in that change"
     );
     assert!(
@@ -296,7 +296,7 @@ fn a_shard_with_no_live_model_block_establishes_nothing() {
 
     assert!(
         !promoted,
-        "an empty set of model-map pages establishes nothing, so this must not report a rebuild \
+        "an empty set of model-map blocks establishes nothing, so this must not report a rebuild \
          -- the per-execute fast-skip in engine.rs latches on this answer"
     );
     assert_eq!(
@@ -315,10 +315,10 @@ fn a_shard_with_no_live_model_block_establishes_nothing() {
     let (_, rebuilds, blocks) = promote_model_map_check_counts();
     assert!(
         !promoted,
-        "an empty shard has no model-map page, and that must be answered before `bucket_map` is \
+        "an empty shard has no model-map block, and that must be answered before `bucket_map` is \
          asked whether it is empty -- it is"
     );
-    assert_eq!((rebuilds, blocks), (0, 0), "empty shard: no rebuild, no page offered");
+    assert_eq!((rebuilds, blocks), (0, 0), "empty shard: no rebuild, no block offered");
 }
 
 /// ARM 3 OF 5, THE OTHER HALF OF THE MISSING-BLOCK TEST: an EMPTY bucket index under live model blocks.
@@ -336,7 +336,7 @@ fn an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole() {
     shard.bucket_index.object_block_lookup.clear();
     assert!(
         !shard.strings().is_empty(),
-        "VACUITY: with no model block this would be answered by the no-model-page arm instead"
+        "VACUITY: with no model block this would be answered by the no-model-block arm instead"
     );
 
     reset_promote_model_map_check_counts();
@@ -348,7 +348,7 @@ fn an_empty_bucket_index_under_live_model_blocks_is_rebuilt_whole() {
         "an index naming nothing cannot already name 32 live model-map blocks"
     );
     assert_eq!((checks, rebuilds), (1, 1), "one check, and it rebuilt");
-    assert_eq!(blocks, 32, "VACUITY: the walk must still have been offered every page");
+    assert_eq!(blocks, 32, "VACUITY: the walk must still have been offered every block");
     let mut named = 0u64;
     let mut index = 0u64;
     while index < 32 {
@@ -379,13 +379,13 @@ fn an_index_that_names_every_live_block_rebuilds_nothing() {
 
     assert!(
         !promoted,
-        "every one of the 64 model-map pages is filed in the index at the same address, so there \
+        "every one of the 64 model-map blocks is filed in the index at the same address, so there \
          is nothing to promote"
     );
     assert_eq!((checks, rebuilds), (1, 0), "one check, no rebuild");
     assert_eq!(
         blocks, 64,
-        "VACUITY: the check must have been offered all 64 pages -- a walk that saw none reaches \
+        "VACUITY: the check must have been offered all 64 blocks -- a walk that saw none reaches \
          the same `false` for the wrong reason"
     );
     let after: Vec<u32> = shard.bucket_index.bucket_map.keys().copied().collect();
@@ -429,7 +429,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
             .bucket_map
             .get(&orphan_bucket)
             .is_some_and(|bucket| !bucket.block_index.is_empty()),
-        "VACUITY: the orphan's own bucket must be present and hold other pages, or a check that \
+        "VACUITY: the orphan's own bucket must be present and hold other blocks, or a check that \
          only noticed missing BUCKETS would pass this"
     );
     assert!(
@@ -451,13 +451,13 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
     // a failure to repair.
     assert!(
         promoted,
-        "the model maps hold a live page at an address the index does not name, which is the \
+        "the model maps hold a live block at an address the index does not name, which is the \
          whole question this precondition asks"
     );
     assert_eq!((checks, rebuilds), (1, 1), "one check, and it rebuilt");
     assert_eq!(
         blocks, 65,
-        "VACUITY: the walk must still have been offered every page, orphan included"
+        "VACUITY: the walk must still have been offered every block, orphan included"
     );
     assert!(
         shard.bucket_index.contains_object_block_address(
@@ -520,7 +520,7 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     let (_, control_rebuilds, control_blocks) = promote_model_map_check_counts();
     assert!(
         control_promoted,
-        "CONTROL: with {released_buckets:?}'s pages unfiled and NOT recorded as released, they are \
+        "CONTROL: with {released_buckets:?}'s blocks unfiled and NOT recorded as released, they are \
          missing and the check must notice -- if this fails the fixture is not presenting a missing \
          block at all and the exemption below proves nothing"
     );
@@ -540,7 +540,7 @@ fn a_block_in_a_released_bucket_is_not_a_missing_block() {
     let (_, rebuilds, blocks) = promote_model_map_check_counts();
     assert!(
         !promoted,
-        "a page routing to a released bucket is absent on purpose and must not count as missing \
+        "a block routing to a released bucket is absent on purpose and must not count as missing \
          -- counting it makes the first command after a release rebuild the whole shard"
     );
     assert_eq!(
@@ -583,7 +583,7 @@ fn the_check_does_not_allocate_per_block_it_walks() {
     let (small_allocs, small_blocks) = cost(500);
     let (large_allocs, large_blocks) = cost(5_000);
     println!(
-        "  promotion check: {small_allocs} allocation(s) over {small_blocks} pages walked, and \
+        "  promotion check: {small_allocs} allocation(s) over {small_blocks} blocks walked, and \
          {large_allocs} over {large_blocks}. The materialising form cost 4.0 per block: {} and {}.",
         small_blocks * 4,
         large_blocks * 4
@@ -593,12 +593,12 @@ fn the_check_does_not_allocate_per_block_it_walks() {
     // arm, and the large arm is still reached and still reported.
     assert!(
         small_allocs * 2 < small_blocks,
-        "the check allocated {small_allocs} time(s) to walk {small_blocks} pages; the form this \
+        "the check allocated {small_allocs} time(s) to walk {small_blocks} blocks; the form this \
          replaced cost 4.0 per block and the walk itself needs none"
     );
     assert!(
         large_allocs * 2 < large_blocks,
-        "the check allocated {large_allocs} time(s) to walk {large_blocks} pages; the form this \
+        "the check allocated {large_allocs} time(s) to walk {large_blocks} blocks; the form this \
          replaced cost 4.0 per block and the walk itself needs none"
     );
 }
@@ -695,7 +695,7 @@ fn a_restore_says_which_arm_it_took() {
     );
     assert!(
         walked >= records as u64,
-        "the checks walked {walked} model-map page(s) for a {records}-record store, so they were \
+        "the checks walked {walked} model-map block(s) for a {records}-record store, so they were \
          not looking at the recovered shard"
     );
 }

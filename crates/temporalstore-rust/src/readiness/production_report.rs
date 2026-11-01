@@ -217,7 +217,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "TemporalEngine command execution, checked execute/batch, runtime queue"
                     .to_string(),
                 "async jobs, cancellation status surface, dirty-object reporting".to_string(),
-                "page-address persistence and Prometheus metrics endpoint".to_string(),
+                "block-address persistence and Prometheus metrics endpoint".to_string(),
                 "load rejects duplicate loaded shards and unload removes shard metadata with not-found semantics"
                     .to_string(),
                 "config get/set follows partition-map not-found semantics".to_string(),
@@ -262,7 +262,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 "local stale candidate, lagging read-index, and stale snapshot guards".to_string(),
                 "kill switches for proxy reads/writes, replication, async storage, and scale changes"
                     .to_string(),
-                "local combined recovery proof covers Raft WAL restore plus wal, index-log, page-file, and packed timestamped KV recovery"
+                "local combined recovery proof covers Raft WAL restore plus wal, index-log, block-file, and packed timestamped KV recovery"
                     .to_string(),
                 "Prometheus alert rules and fault runbook cover stuck replica, split-brain control_state, slow follower, and storage pressure triage"
                     .to_string(),
@@ -282,7 +282,7 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                 && storage_ssd_cache_pressure.production_ready
                 && storage_production_posture.production_ready,
             covered: vec![
-                "local block segment files with page-address indexes".to_string(),
+                "local block segment files with block-address indexes".to_string(),
                 "local block compaction rolls to a fresh segment, rewrites live block references, persists the compacted index, and makes old segments GC-eligible"
                     .to_string(),
                 "memory plus disk read-through cache with zstd block envelope".to_string(),
@@ -297,17 +297,17 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "memory cache supports pinned hot/block blocks with eviction skip accounting, inspection, and Prometheus metrics"
                     .to_string(),
-                "storage lifecycle cache warmup returns selected slots, page-ref hits/fills/failures, block-store read count, and warmed bytes"
+                "storage lifecycle cache warmup returns selected slots, block-ref hits/fills/failures, block-store read count, and warmed bytes"
                     .to_string(),
                 "storage production report exposes Rust JSONL wal/index-log format, replay-safe status, sequence/record/byte counts, and binary compatibility gaps"
                     .to_string(),
-                "storage production report exposes Rust page-envelope version, checksum/object-id/routing-slot/compression support, band bytes, and page-header compatibility gaps"
+                "storage production report exposes Rust block-envelope version, checksum/object-id/routing-slot/compression support, band bytes, and block-header compatibility gaps"
                     .to_string(),
-                "storage compatibility decision is explicit: Rust log/page formats are migration-only versus binary logs/page headers, with golden conversion/replay required before migration"
+                "storage compatibility decision is explicit: Rust log/block formats are migration-only versus binary logs/block headers, with golden conversion/replay required before migration"
                     .to_string(),
                 "chunked timestamped KV block format is covered by sync and async shared-store replay plus Raft follower-read replication tests"
                     .to_string(),
-                "chunked timestamped KV block recovery strictly rejects malformed or unsupported packed-page payloads"
+                "chunked timestamped KV block recovery strictly rejects malformed or unsupported packed-block payloads"
                     .to_string(),
                 "storage migration corpus converts logical object/block/slot/index/wal exports into Rust-native blocks and replays through engine restart, slot dump, cache warmup, shared-store sync/async replay, and Raft leader-transfer reads"
                     .to_string(),
@@ -327,9 +327,9 @@ pub fn production_readiness_report() -> ProductionReadinessReport {
                     .to_string(),
                 "storage SSD cache pressure readiness covers local memory read-through, disk block cache, admission/eviction counters, weighted hotness/LRU eviction, slot warmup, cache invalidation, tiering policy, admission tuning, and long-running pressure validation evidence"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan block detection, missing/stale page-reference detection, corrupt block/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/block ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan block detection, missing/stale block-reference detection, corrupt block/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/block ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
-                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan block detection, missing/stale page-reference detection, corrupt block/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/block ownership index, SlotStore layout transition evidence, and model-layout compaction"
+                "storage production posture covers Rust lifecycle behavior evidence, native ObjectManager runtime mechanics, stream-backed band runtime, mature background StorageManager prepare/reclaim/evict/expire/compact/index-GC loop, merged dump/load policy with ownership validation, orphan block detection, missing/stale block-reference detection, corrupt block/index/wal/snapshot evidence, follower-cursor safe GC, cache pressure/refill, shared-store sync/async replay, unified storage corpus cases, first-class slot/object/block ownership index, SlotStore layout transition evidence, and model-layout compaction"
                     .to_string(),
             ],
             missing: {

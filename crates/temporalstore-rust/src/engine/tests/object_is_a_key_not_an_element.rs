@@ -289,7 +289,7 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     let (hash_blocks, hash_rows) = blocks_and_index_rows(&engine, "hash", &hash_keys);
     let (string_blocks, string_rows) = blocks_and_index_rows(&engine, "string", &string_keys);
 
-    println!("\n=== bucket.object_index rows against live pages ===");
+    println!("\n=== bucket.object_index rows against live blocks ===");
     println!("  kind     keys  blocks  rows  rows/block");
     for (kind, keys, blocks, rows) in [
         ("hash", hash_keys.len(), hash_blocks, hash_rows),
@@ -322,18 +322,18 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     );
     assert!(
         hash_blocks > hash_rows,
-        "DENOMINATOR: {hash_blocks} pages and {hash_rows} rows. A fixture whose keys held one page \
+        "DENOMINATOR: {hash_blocks} blocks and {hash_rows} rows. A fixture whose keys held one block \
          each would satisfy the assertion above while measuring nothing"
     );
 
     // THE CONTROL, flat by construction.
     assert_eq!(
         string_rows, ROUTED_KEYS,
-        "the control holds {string_rows} rows for {ROUTED_KEYS} one-page keys. Its component was \
+        "the control holds {string_rows} rows for {ROUTED_KEYS} one-block keys. Its component was \
          already `None`, so this change is the identity on it and the count cannot move"
     );
     println!(
-        "  VERDICT: container rows/page {:.4} (was 1.0000, one row per page); CONTROL string \
+        "  VERDICT: container rows/block {:.4} (was 1.0000, one row per block); CONTROL string \
          rows/block {:.4}, unmoved, {string_blocks} blocks exercised.",
         hash_rows as f64 / hash_blocks as f64,
         string_rows as f64 / string_blocks as f64
@@ -360,13 +360,13 @@ fn the_object_index_holds_one_row_per_key_rather_than_one_per_block() {
     assert_eq!(
         percentile(&per_key, 50.0),
         1,
-        "p50 pages per key is not 1 on a fixture that is {ROUTED_KEYS} single-page keys beside \
+        "p50 blocks per key is not 1 on a fixture that is {ROUTED_KEYS} single-block keys beside \
          {CONTAINER_KEYS} containers, so the caveat printed above would be wrong"
     );
     assert_eq!(
         per_key.last().copied().unwrap_or(0),
         MEMBERS_PER_KEY,
-        "MAX pages per key is not {MEMBERS_PER_KEY}: the container arm is what makes the \
+        "MAX blocks per key is not {MEMBERS_PER_KEY}: the container arm is what makes the \
          collapse visible and it is not in this sample"
     );
 }
@@ -483,7 +483,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     // retirement lands, and the only thing that moves it is the retirement itself.
     assert_eq!(
         FIELDS, after_one,
-        "{after_one} live pages after one of {FIELDS} fields was deleted. {FIELDS} is the expected \
+        "{after_one} live blocks after one of {FIELDS} fields was deleted. {FIELDS} is the expected \
          number and the cost described above: if this is {} the retirement of a vacated block's \
          entry has been implemented, and this assertion is the one to come and restate",
         FIELDS - 1
@@ -536,7 +536,7 @@ fn deleting_one_element_tombstones_the_object_only_at_its_last_element() {
     );
     assert_eq!(
         0, after_all,
-        "{after_all} live pages survived deleting every field. The retained live entry a single \
+        "{after_all} live blocks survived deleting every field. The retained live entry a single \
          removal leaves is deliberate while the block still holds siblings; at the LAST element \
          there are none, and `recorded_map::remove_element` drops the live entries for exactly \
          that reason -- so a non-zero here is that drop not firing"
@@ -610,7 +610,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     let listed = live_block_count(&engine, "hash", KEY);
     let resident = resident_fields(&engine, KEY);
     println!(
-        "\n=== HLEN === answered {answered}, pages {listed}, resident fields {}, fields written {FIELDS}",
+        "\n=== HLEN === answered {answered}, blocks {listed}, resident fields {}, fields written {FIELDS}",
         resident.len()
     );
     assert_eq!(
@@ -620,7 +620,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     );
     assert_eq!(
         listed as i64, answered,
-        "HLEN answered {answered} and the index holds {listed} live pages. A length that does not \
+        "HLEN answered {answered} and the index holds {listed} live blocks. A length that does not \
          equal its own listing is the shape #2014 caught"
     );
     // THE NO-DUPLICATE CLAIM, RE-ATTRIBUTED TO WHERE ELEMENT IDENTITY LIVES.
@@ -645,7 +645,7 @@ fn hash_len_and_its_listing_are_unmoved_by_a_component_free_id() {
     );
     assert_eq!(
         listed as i64, FIELDS,
-        "the index holds {listed} live pages for {FIELDS} distinct fields after one of them was \
+        "the index holds {listed} live blocks for {FIELDS} distinct fields after one of them was \
          rewritten; a rewrite that filed beside its own previous entry instead of superseding it \
          looks exactly like this"
     );

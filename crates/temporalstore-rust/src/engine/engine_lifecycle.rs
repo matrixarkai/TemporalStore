@@ -827,7 +827,7 @@ impl TemporalEngine {
 
     #[deprecated(
         since = "0.1.0",
-        note = "use block_store; page naming remains only for legacy compatibility"
+        note = "use block_store; block naming remains only for legacy compatibility"
     )]
     pub fn page_store(&self) -> BlockStore {
         self.block_store()
@@ -1807,7 +1807,7 @@ impl TemporalEngine {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     return OutcomeBlockElements::Unreadable(
-                        "the record carries several pages of this object, so the carried page \
+                        "the record carries several blocks of this object, so the carried block \
                          cannot be told apart, and the address is not in the block store",
                     )
                 }
@@ -1816,7 +1816,7 @@ impl TemporalEngine {
                 Ok(bytes) => bytes,
                 Err(_) => {
                     return OutcomeBlockElements::Unreadable(
-                        "the record carries no page for this object and the address is not in the \
+                        "the record carries no block for this object and the address is not in the \
                          block store",
                     )
                 }

@@ -194,7 +194,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         let (batches, folded) = crate::engine::container_batch_counts();
         assert!(
             batches > 0 && folded > 0,
-            "the fixture folded nothing: {batches} batch(es), {folded} page(s). Without a shared \
+            "the fixture folded nothing: {batches} batch(es), {folded} block(s). Without a shared \
              block the removal cannot leave a block stating the member, and the middle arm below \
              would be vacuous"
         );
@@ -217,7 +217,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         let stated = components_the_blocks_state(&engine, "removal/set");
         assert!(
             stated.contains(&victim_component),
-            "no live page states the removed member any more, so the payload and the durable map \
+            "no live block states the removed member any more, so the payload and the durable map \
              AGREE and this test cannot tell a reader that honours the removal from one that \
              enumerates the block. A block is never rewritten by the removal path, so after a fold \
              the folded block is supposed to still carry it"
@@ -273,7 +273,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     );
     assert!(
         !resident.contains(&victim),
-        "THE REMOVED MEMBER CAME BACK ACROSS A RELOAD. Its page still states it as live and the \
+        "THE REMOVED MEMBER CAME BACK ACROSS A RELOAD. Its block still states it as live and the \
          index entry names a block rather than an element, so a load that rebuilt membership from \
          blocks would resurrect it -- which is the failure this whole arrangement is arranged \
          against"

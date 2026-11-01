@@ -86,12 +86,12 @@ fn the_serving_fast_path_reads_blocks_after_the_shard_guard_drops() {
     let (shipped, shipped_fields) = measured_hash_get_all(&shipped_engine);
 
     eprintln!(
-        "[serving read] under the guard: {} of {} page read(s) under the guard, \
+        "[serving read] under the guard: {} of {} block read(s) under the guard, \
 {control_fields} field(s) served",
         control.block_reads_under_guard, control.block_reads_total,
     );
     eprintln!(
-        "[serving read] shipped:         {} of {} page read(s) under the guard, \
+        "[serving read] shipped:         {} of {} block read(s) under the guard, \
 {shipped_fields} field(s) served",
         shipped.block_reads_under_guard, shipped.block_reads_total,
     );
@@ -126,7 +126,7 @@ is zero the fixture was still cached and neither arm is a subject",
     // POSITIVE CONTROL: the counter can see a read inside the region, because here are 64.
     assert_eq!(
         control.block_reads_under_guard, FIELDS as u64,
-        "the control arm reads every page inside the guarded region and the counter saw {} of \
+        "the control arm reads every block inside the guarded region and the counter saw {} of \
 {}. The measurement is broken, not the code under it: the assertion below would pass against an \
 engine that had stopped counting entirely",
         control.block_reads_under_guard, control.block_reads_total,
@@ -135,7 +135,7 @@ engine that had stopped counting entirely",
     // THE ASSERTION THE REGION CHANGE MADE.
     assert_eq!(
         shipped.block_reads_under_guard, 0,
-        "the serving read fast path read {} of {} pages off the block store while still holding \
+        "the serving read fast path read {} of {} blocks off the block store while still holding \
 the shard-table read guard. A read guard excludes every writer, so serving one wide value stops \
 all writes on the shard for the length of that I/O -- once per FIELD, so the window grows with \
 the value. Copy the addresses out under the guard, drop it, then read. If a new step genuinely \

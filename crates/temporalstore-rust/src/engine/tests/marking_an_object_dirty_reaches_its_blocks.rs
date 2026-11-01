@@ -147,7 +147,7 @@ fn marking_an_object_dirty_sets_the_dirty_bit_on_the_blocks_it_already_has() {
 
     assert!(
         any_block_dirty(&shard, routing_bucket),
-        "marking the object must reach the page it already has; otherwise the bucket predicate, \
+        "marking the object must reach the block it already has; otherwise the bucket predicate, \
          which now reads only `block.dirty`, answers false for a dirty object"
     );
 
@@ -206,7 +206,7 @@ fn an_unmarked_object_leaves_its_blocks_clean() {
 ///
 /// rust-internal: drives an engine invariant, no product behaviour
 #[test]
-#[should_panic(expected = "a live page is resident while the object lookup names nothing")]
+#[should_panic(expected = "a live block is resident while the object lookup names nothing")]
 fn a_mark_on_a_live_block_nothing_has_filed_is_refused() {
     // THE CASE THE FAILED PREMISE WAS ABOUT. The fixture never builds the lookup, so the push has
     // to establish it before it can find anything. This is the state two existing tests reached
@@ -396,7 +396,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     for (rung, blocks, _) in &measured {
         assert!(
             *blocks >= (*rung as u64),
-            "corpus {rung} left only {blocks} pages resident, so the bucket the fold walks was never \
+            "corpus {rung} left only {blocks} blocks resident, so the bucket the fold walks was never \
              filled and the visit counts above are not measurements of it"
         );
     }
@@ -499,7 +499,7 @@ fn what_refreshing_a_buckets_flags_costs_per_write() {
     // quantity.
     assert!(
         control_folds > 0,
-        "the sweep over {CONTROL_BLOCKS} pages charged {control_folds} fold visits, so the counter \
+        "the sweep over {CONTROL_BLOCKS} blocks charged {control_folds} fold visits, so the counter \
          is not wired to the fold it is named for. Every figure this probe prints is then a dead \
          measurement rather than a cheap one -- which is exactly the fault this control was added \
          to catch, and it caught it once already on `REFRESH_FLAGS`."

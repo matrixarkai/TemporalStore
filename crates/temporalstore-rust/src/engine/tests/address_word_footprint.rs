@@ -211,7 +211,7 @@ fn what_a_block_address_costs_per_record_at_two_ranges_and_two_corpus_sizes() {
             );
             assert!(
                 addresses.block_entries > 0,
-                "denominator: no page-index entries, so there are no addresses to measure"
+                "denominator: no block-index entries, so there are no addresses to measure"
             );
 
             println!("\n--- {range_label}, {records} records ---");

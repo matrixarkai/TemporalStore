@@ -367,7 +367,7 @@ impl BlockStore {
             );
         }
         if !slab_stats_ready {
-            blockers.push("page-store band usage accounting is inconsistent".to_string());
+            blockers.push("block-store band usage accounting is inconsistent".to_string());
         }
         if !envelope_checksum_ready {
             blockers.push("stream record envelope/checksum inspection is not clean".to_string());
@@ -432,7 +432,7 @@ impl BlockStore {
                     .to_string(),
                 "open-time reconciliation repairs manifest/live stream divergence like band updates"
                     .to_string(),
-                "band usage reports map band ids to page-store used bytes like SlabStats"
+                "band usage reports map band ids to block-store used bytes like SlabStats"
                     .to_string(),
             ],
         })

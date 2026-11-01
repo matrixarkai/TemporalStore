@@ -248,7 +248,7 @@ impl ArmCensus {
         let (empty, one, many) = self.arm_samples();
         let pct = |n: usize| 100.0 * n as f64 / buckets.max(1) as f64;
         println!(
-            "  {label}: {buckets} buckets / {} pages | would-be arms Empty {empty} ({:.3}%) One \
+            "  {label}: {buckets} buckets / {} blocks | would-be arms Empty {empty} ({:.3}%) One \
              {one} ({:.3}%) Many {many} ({:.3}%)",
             self.blocks(),
             pct(empty),
@@ -256,7 +256,7 @@ impl ArmCensus {
             pct(many)
         );
         println!(
-            "      pages held per bucket: p50 {} / p90 {} / p99 {} / MAX {}   (denominator \
+            "      blocks held per bucket: p50 {} / p90 {} / p99 {} / MAX {}   (denominator \
              {buckets} buckets)",
             self.percentile(0.50),
             self.percentile(0.90),
@@ -652,7 +652,7 @@ fn the_shape_that_shipped_is_the_live_declaration_and_boxing_recovers_what_dropp
          re-reading"
     );
     println!(
-        "  page index shapes: keep {keep} B, drop {dropped} B, box {live} B (LIVE) | entry {} B, \
+        "  block index shapes: keep {keep} B, drop {dropped} B, box {live} B (LIVE) | entry {} B, \
          handle+entry {} B",
         std::mem::size_of::<BlockIndex>(),
         8 + std::mem::size_of::<BlockIndex>()
@@ -695,7 +695,7 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
             assert_eq!(
                 keys.len(),
                 census.blocks(),
-                "{label}: the census holds {} pages for {} keys, so its denominator is not the \
+                "{label}: the census holds {} blocks for {} keys, so its denominator is not the \
                  fixture's",
                 census.blocks(),
                 keys.len()
@@ -732,7 +732,7 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
         assert_eq!(
             wide.buckets(),
             wide.single_block_buckets(),
-            "{records} on the whole keyspace: {} of {} buckets hold one page -- the wide range is \
+            "{records} on the whole keyspace: {} of {} buckets hold one block -- the wide range is \
              single-block BY CONSTRUCTION and a fixture showing otherwise is not that range",
             wide.single_block_buckets(),
             wide.buckets()
@@ -741,13 +741,13 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
         let narrow = &observed[&(records, NARROW_END)];
         assert!(
             narrow.widest() > 1,
-            "{records} on 0..{NARROW_END}: the widest bucket holds {} page(s). A fixture that \
+            "{records} on 0..{NARROW_END}: the widest bucket holds {} block(s). A fixture that \
              never fills a bucket cannot tell a correct census from a constant answering one",
             narrow.widest()
         );
         assert!(
             narrow.single_block_buckets() * 2 < narrow.buckets(),
-            "{records} on 0..{NARROW_END}: {} of {} buckets are single-page. If the shipped \
+            "{records} on 0..{NARROW_END}: {} of {} buckets are single-block. If the shipped \
              default were still mostly single-block, #1964's premise would still hold and this \
              module's conclusion would not follow",
             narrow.single_block_buckets(),
@@ -762,14 +762,14 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
         let wide_share = wide.single_block_buckets() as f64 / wide.buckets() as f64;
         let narrow_share = narrow.single_block_buckets() as f64 / narrow.buckets() as f64;
         println!(
-            "  {records} records: single-page buckets {wide_share:.5} of {} on the whole keyspace \
+            "  {records} records: single-block buckets {wide_share:.5} of {} on the whole keyspace \
              -> {narrow_share:.5} of {} on the shipped default",
             wide.buckets(),
             narrow.buckets()
         );
         assert!(
             narrow_share < wide_share,
-            "{records}: the shipped default is {narrow_share:.5} single-page against the wide \
+            "{records}: the shipped default is {narrow_share:.5} single-block against the wide \
              range's {wide_share:.5}; the population did not invert and #1964's premise survives"
         );
     }
@@ -807,7 +807,7 @@ fn the_arm_histogram_at_both_routing_ranges_carries_its_denominator_on_every_row
 fn the_two_numbers_that_kept_the_inline_arm_re_derived_on_this_tree() {
     println!("\n=== #1964's two numbers, re-derived ===");
     println!(
-        "  quoted from #1964: save 160.9 B on every bucket, pay 112.0 B on every single-page one"
+        "  quoted from #1964: save 160.9 B on every bucket, pay 112.0 B on every single-block one"
     );
     println!(
         "  inline widths on THIS tree: keep {} B, box {} B, drop {} B (LIVE BlockIndexMap {} B, \
@@ -969,7 +969,7 @@ fn pay_per_single_block_bucket(block: &BlockIndex) -> ShapeCost {
 #[test]
 #[ignore = "the counting allocator is process-wide; run by name"]
 fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_listed() {
-    println!("\n=== the allocation per single-page bucket, at both ranges ===");
+    println!("\n=== the allocation per single-block bucket, at both ranges ===");
 
     let mut path_lengths: Vec<usize> = Vec::new();
     for records in [SMALL, LARGE] {
@@ -992,7 +992,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             let listed = pay_per_single_block_bucket(&block);
             assert_eq!(
                 1, listed.allocs,
-                "{label}: a one-entry page list took {} allocations, not one. #1964's case rests \
+                "{label}: a one-entry block list took {} allocations, not one. #1964's case rests \
                  on this being exactly one",
                 listed.allocs
             );
@@ -1026,7 +1026,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             let inline = measure(0, 1, || ShapeKeep::One(0, block.clone()));
             assert_eq!(
                 0, inline.allocs,
-                "{label}: holding a page INLINE took {} allocations; the inline entry's whole case \
+                "{label}: holding a block INLINE took {} allocations; the inline entry's whole case \
                  was that it takes none",
                 inline.allocs
             );
@@ -1034,7 +1034,7 @@ fn a_single_block_bucket_costs_exactly_one_allocation_whether_it_is_boxed_or_lis
             let single = census.single_block_buckets();
             let buckets = census.buckets();
             println!(
-                "  {label}: {single} single-page bucket(s) of {buckets} ({:.5}) x 1 allocation = \
+                "  {label}: {single} single-block bucket(s) of {buckets} ({:.5}) x 1 allocation = \
                  {single} allocation(s) added on the write path, {:.5} a bucket. Inline took \
                  {} allocs / 0 B; BOXED (shipped) 1 alloc / {} B served; a one-entry LIST 1 alloc \
                  / {} B served",
@@ -1114,7 +1114,7 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
         if end_routing_bucket == WIDE_END {
             assert_eq!(
                 0, examined,
-                "on the whole keyspace every bucket holds one page, so no lookup should reach \
+                "on the whole keyspace every bucket holds one block, so no lookup should reach \
                  `find_block` at all -- it examined {examined} entries over {hits} reads, which \
                  means the single-block arm is no longer answering without a search"
             );
@@ -1166,7 +1166,7 @@ fn the_read_path_examines_no_entry_for_a_single_block_bucket_and_one_if_the_arm_
 #[test]
 #[ignore = "seeds two container stores; run by name"]
 fn a_container_store_is_the_control_where_the_range_predicts_no_change() {
-    println!("\n=== the control: pages already sharing one bucket at every range ===");
+    println!("\n=== the control: blocks already sharing one bucket at every range ===");
     let mut seen: Vec<(u32, ArmCensus)> = Vec::new();
     for end_routing_bucket in [WIDE_END, NARROW_END] {
         let dir = tempfile::tempdir().expect("tempdir");
@@ -1198,13 +1198,13 @@ fn a_container_store_is_the_control_where_the_range_predicts_no_change() {
     let moved = (wide.single_block_buckets() as f64 - narrow.single_block_buckets() as f64).abs()
         / wide.buckets().max(1) as f64;
     println!(
-        "  the control's single-page share moved by {:.2}% between the two ranges -- the mechanism \
+        "  the control's single-block share moved by {:.2}% between the two ranges -- the mechanism \
          predicts 0.00% and a non-zero reading would refute the explanation, not the change",
         100.0 * moved
     );
     assert_eq!(
         0.0, moved,
-        "the control's single-page share moved by {moved:.5}, and the mechanism predicts exactly \
+        "the control's single-block share moved by {moved:.5}, and the mechanism predicts exactly \
          zero"
     );
 }
@@ -1238,7 +1238,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     assert_eq!(
         std::mem::size_of::<Vec<(u64, BlockIndex)>>(),
         std::mem::size_of::<BlockIndexMap>(),
-        "the page index is {} B against a bare page list's {} B -- `Empty` is only free while it \
+        "the block index is {} B against a bare block list's {} B -- `Empty` is only free while it \
          rides in the vector pointer's niche, and if it has stopped doing so it is no longer a \
          name that costs nothing",
         std::mem::size_of::<BlockIndexMap>(),
@@ -1248,7 +1248,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     // An empty block index allocates nothing, which is the other half of "free".
     let empty = BlockIndexMap::default();
     assert!(empty.is_empty(), "a default block index must hold no blocks");
-    assert_eq!(0, empty.len(), "a default page index must be length zero");
+    assert_eq!(0, empty.len(), "a default block index must be length zero");
 
     // AND "NO BLOCKS" MUST NOT DEPEND ON WHICH SPELLING OF IT YOU ARE HOLDING.
     //
@@ -1266,7 +1266,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     let un_normalised = BlockIndexMap::Many(Vec::new());
     assert!(
         un_normalised.is_empty(),
-        "a page index holding an EMPTY LIST reported itself non-empty. `Empty` and `Many(vec![])` \
+        "a block index holding an EMPTY LIST reported itself non-empty. `Empty` and `Many(vec![])` \
          are the same state, and `is_empty` must read the length rather than the discriminant or a \
          path that forgets to normalise turns a released bucket into a resident one"
     );
@@ -1283,7 +1283,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
         !one_block.is_empty(),
         "a block index holding one block reported itself empty, so `is_empty` answers a constant"
     );
-    assert_eq!(1, one_block.len(), "a one-entry list must report one page");
+    assert_eq!(1, one_block.len(), "a one-entry list must report one block");
 
     // And the release/reload round trip, which is what the lifecycle actually depends on.
     let dir = tempfile::tempdir().expect("tempdir");
@@ -1342,7 +1342,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     };
     assert_eq!(
         released, empty_indexes,
-        "{released} buckets were released but {empty_indexes} hold an empty page index; the empty \
+        "{released} buckets were released but {empty_indexes} hold an empty block index; the empty \
          state IS what a release leaves behind"
     );
     assert_eq!(
@@ -1361,7 +1361,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
     let after = read_back_count(&engine, &keys);
     assert_eq!(
         before, after,
-        "{before} keys read back before release and {after} after reload; the empty page index is \
+        "{before} keys read back before release and {after} after reload; the empty block index is \
          the state a release leaves behind and the reload must undo it exactly"
     );
     assert_eq!(
@@ -1370,7 +1370,7 @@ fn the_empty_arm_is_an_alias_for_no_blocks_and_costs_nothing_to_keep() {
          the empty state is not reversible"
     );
     println!(
-        "  release/reload round trip: {released} released ({empty_indexes} with an empty page \
+        "  release/reload round trip: {released} released ({empty_indexes} with an empty block \
          index, {kept_object_indexes} keeping their object index), {reloaded} reloaded, {before} \
          -> {after} keys readable"
     );
@@ -1656,7 +1656,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
     // a default run selects nothing and prints "0 passed; 0 failed". Reaching it takes
     // `--features alloc-probe -- --ignored` and the name. Third assertion state: not true, not
     // false, UNREACHABLE.
-    assert_eq!(24, narrow, "the live page entry is {narrow} B, not 24");
+    assert_eq!(24, narrow, "the live block entry is {narrow} B, not 24");
     assert_eq!(
         72, wide,
         "the mirror of the former entry is {wide} B, not 72; it is not the shape this change replaced"
@@ -1786,8 +1786,8 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         );
         for (arm, was, is, denominator) in [
             ("whole population", &before, &now, buckets),
-            ("the boxed single-page arm", &one_before, &one_now, one_arms),
-            ("the page-list arm", &many_before, &many_now, many_count),
+            ("the boxed single-block arm", &one_before, &one_now, one_arms),
+            ("the block-list arm", &many_before, &many_now, many_count),
         ] {
             let den = denominator.max(1) as f64;
             println!(
@@ -1861,7 +1861,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         let blocks = census.blocks() as u64;
         assert!(
             slots >= blocks,
-            "{label} @ {records}: {slots} entry slots for {blocks} pages, which cannot be -- the \
+            "{label} @ {records}: {slots} entry slots for {blocks} blocks, which cannot be -- the \
              slot arithmetic does not describe the lists the builder grew"
         );
         if slots > 0 {
@@ -1931,7 +1931,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
             }
         } else {
             println!(
-                "    no single-page bucket at this range and size, so the arm that rounds the \
+                "    no single-block bucket at this range and size, so the arm that rounds the \
                  saving away is absent from the total above"
             );
         }
@@ -1940,7 +1940,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         if many_plan.len() > 0 {
             assert!(
                 many_now.chunk_bytes < many_before.chunk_bytes,
-                "{label} @ {records}: the page-list arm charged {} B now against {} B before over \
+                "{label} @ {records}: the block-list arm charged {} B now against {} B before over \
                  {} buckets. A list of n entries is one allocation of n x width, so a narrower \
                  entry has to show here or the list is not holding the entry inline",
                 many_now.chunk_bytes,

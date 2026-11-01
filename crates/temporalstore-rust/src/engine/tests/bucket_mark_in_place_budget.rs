@@ -127,7 +127,7 @@ fn the_break_even_compaction_cap_is_under_one_entry_per_bucket() {
     // `size_of::<BlockAddress>()`, so a scan for a stale address width could not see it, and
     // `cargo check` cannot see an `assert_eq!` in a test body. It failed on the first run of the
     // suite, which is the only thing that could have found it.
-    assert_eq!(entry, 24, "the page entry moved; re-price the retained-entry cost");
+    assert_eq!(entry, 24, "the block entry moved; re-price the retained-entry cost");
     assert_eq!(
         stride, 32,
         "the retained-entry stride is {stride}; the cap arithmetic below prices one retained entry \
@@ -357,13 +357,13 @@ fn what_a_mark_in_place_delete_would_retain_at_two_corpus_sizes_and_two_delete_r
         if deleted > 0 {
             assert!(
                 retained_total > 0,
-                "[{}]: {deleted} keys were deleted and no bucket lost a page, so the fixture did \
+                "[{}]: {deleted} keys were deleted and no bucket lost a block, so the fixture did \
                  not reach the delete path this module prices",
                 arm.label
             );
             assert!(
                 tombs_total > 0,
-                "[{}]: {retained_total} pages were removed and no tombstone was written; the page \
+                "[{}]: {retained_total} blocks were removed and no tombstone was written; the block \
                  removal and the tombstone are supposed to be the same delete",
                 arm.label
             );

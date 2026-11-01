@@ -518,7 +518,7 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
     // --- NON-VACUITY: each matcher still matches, in both directions. ---
     assert!(
         declares_a_page_named_type("pub struct PageAddress {"),
-        "the type matcher no longer reports a page-named type declaration"
+        "the type matcher no longer reports a block-named type declaration"
     );
     assert!(
         declares_a_page_named_type("    type PageIndex = BlockIndexMap;"),
@@ -534,7 +534,7 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
     );
     assert!(
         declares_a_page_named_identity_field("    pub page_id: u64,"),
-        "the field matcher no longer reports a page-named identity field"
+        "the field matcher no longer reports a block-named identity field"
     );
     assert!(
         declares_a_page_named_identity_field("    page_ordinal: Option<u64>,"),
@@ -621,9 +621,9 @@ fn no_page_named_identity_type_field_or_size_constant_exists_in_this_crate() {
                 block_named_id_fields += 1;
             }
             let what = if declares_a_page_named_type(line) {
-                Some("a page-named type")
+                Some("a block-named type")
             } else if declares_a_page_named_identity_field(line) {
-                Some("a page-named identity field")
+                Some("a block-named identity field")
             } else if declares_a_page_size_constant(line) {
                 Some("a page SIZE constant")
             } else {

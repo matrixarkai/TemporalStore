@@ -207,7 +207,7 @@ impl Fill {
     fn line(&self, label: &str) {
         let buckets = self.buckets();
         println!(
-            "  {label:<44} occupied {buckets:>6} | pages {:>6} | p50 {:>4} p90 {:>4} p99 {:>4} \
+            "  {label:<44} occupied {buckets:>6} | blocks {:>6} | p50 {:>4} p90 {:>4} p99 {:>4} \
              MAX {:>4}",
             self.blocks(),
             self.percentile(0.50),

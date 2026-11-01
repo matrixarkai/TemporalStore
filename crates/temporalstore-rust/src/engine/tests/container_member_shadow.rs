@@ -630,18 +630,18 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
     assert_eq!(
         stored_lengths.len(),
         1,
-        "the stored pages are not all one length, so a single framing figure would be a mean over \
+        "the stored blocks are not all one length, so a single framing figure would be a mean over \
          two populations: {stored_lengths:?}"
     );
     let stored = *stored_lengths.iter().next().expect("one length");
     assert!(
         stored > MEMBER_WIDTH,
-        "a stored page is not larger than the member it holds, so there is no per-member framing \
+        "a stored block is not larger than the member it holds, so there is no per-member framing \
          to report: {stored} B for a {MEMBER_WIDTH}-byte member"
     );
     let framing = stored - MEMBER_WIDTH;
     println!(
-        "stored page {stored} B for a {MEMBER_WIDTH}-byte member: {framing} B of per-member record \
+        "stored block {stored} B for a {MEMBER_WIDTH}-byte member: {framing} B of per-member record \
          framing, paid {MEMBERS} times a container where one buffer would pay it once"
     );
 
@@ -662,7 +662,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
         );
         assert_eq!(
             MEMBERS, held,
-            "{key} holds {held} pages for {MEMBERS} members, so the per-member framing figure \
+            "{key} holds {held} blocks for {MEMBERS} members, so the per-member framing figure \
              above is a mean over the wrong population"
         );
         // THE ROUND TRIP, PER MEMBER, over the members the model map actually holds -- so this
@@ -677,7 +677,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
             assert_eq!(
                 MEMBER_WIDTH + 8,
                 block_key.len(),
-                "{key}: the page key for a {MEMBER_WIDTH}-byte member is {} B, not the member \
+                "{key}: the block key for a {MEMBER_WIDTH}-byte member is {} B, not the member \
                  behind an eight-byte score slot",
                 block_key.len()
             );
@@ -688,7 +688,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
             .unwrap_or_else(|| panic!("{key}: the block key for {component} renders no component"));
             assert_eq!(
                 component, back,
-                "{key}: the member does not survive the page key it is written into. That key is \
+                "{key}: the member does not survive the block key it is written into. That key is \
                  the ONLY copy of the member outside `shard.zsets` now -- the entry carries none -- \
                  so a codec that does not round-trip loses the element rather than mislabelling it"
             );
@@ -702,7 +702,7 @@ fn a_zset_members_identity_survives_the_block_key_that_is_now_its_only_copy() {
         CONTAINER_KEYS * MEMBERS
     );
     println!(
-        "{covered} members over {CONTAINER_KEYS} keys: every member round-trips through the page \
+        "{covered} members over {CONTAINER_KEYS} keys: every member round-trips through the block \
          key that is now its only copy outside the model map, and every block stores the member \
          again -- the entry holds no third copy and the score lives in the model map alone"
     );
@@ -913,12 +913,12 @@ fn a_zset_read_examines_no_block_index_entries_and_a_hash_whole_object_read_does
 
     assert_eq!(
         zset_examined, 0,
-        "a zset read examined {zset_examined} page-index entries, so the zset read path DOES \
+        "a zset read examined {zset_examined} block-index entries, so the zset read path DOES \
          resolve members through the block index and packing would cost it something"
     );
     assert!(
         whole_examined > 0,
-        "the CONTROL examined zero entries too, so this instrument cannot see a page lookup at all \
+        "the CONTROL examined zero entries too, so this instrument cannot see a block lookup at all \
          and the zset zero means nothing"
     );
 }
@@ -988,7 +988,7 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
         hist.report(&format!("0..{end_routing_bucket}, zset blocks per bucket"));
         assert!(
             hist.buckets() > 0,
-            "no bucket holds a zset page at 0..{end_routing_bucket}, so every figure below would \
+            "no bucket holds a zset block at 0..{end_routing_bucket}, so every figure below would \
              be a division by zero reported as a cost"
         );
 
@@ -1056,13 +1056,13 @@ fn what_one_block_per_member_costs_a_zset_container_at_both_routing_ranges() {
     // nothing below it, and `bucket_fill.rs` is where the key-sharing side is measured.
     assert_eq!(
         wide_max, MEMBERS,
-        "the widest bucket at 0..{wide_range} holds {wide_max} pages, not the whole \
+        "the widest bucket at 0..{wide_range} holds {wide_max} blocks, not the whole \
          {MEMBERS}-member container, so the members are NOT sharing one bucket and every \
          per-container figure above is wrong"
     );
     assert_eq!(
         narrow_max, MEMBERS,
-        "the widest bucket at 0..{narrow_range} holds {narrow_max} pages, not the whole \
+        "the widest bucket at 0..{narrow_range} holds {narrow_max} blocks, not the whole \
          {MEMBERS}-member container"
     );
     println!(
@@ -1155,7 +1155,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     assert_eq!(
         added.len(),
         1,
-        "the new member's page is not identifiable in the index: {} of this key's pages are at \
+        "the new member's block is not identifiable in the index: {} of this key's blocks are at \
          addresses the write created, not one",
         added.len()
     );
@@ -1164,12 +1164,12 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     let today_block_bytes = added[0].address.length() as usize;
     assert!(
         today_block_bytes >= MEMBER_WIDTH,
-        "the appended page is smaller than the member it holds: {today_block_bytes} B for a \
+        "the appended block is smaller than the member it holds: {today_block_bytes} B for a \
          {MEMBER_WIDTH}-byte member"
     );
     assert!(
         today_block_bytes < 4 * MEMBER_WIDTH,
-        "the appended page is implausibly large for one member, so it is not one member's page: \
+        "the appended block is implausibly large for one member, so it is not one member's block: \
          {today_block_bytes} B"
     );
 
@@ -1187,7 +1187,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
     );
 
     println!("--- bytes rewritten by ONE single-member update ---");
-    println!("  today  : {today_block_bytes:>7} B  (one page, the member itself)");
+    println!("  today  : {today_block_bytes:>7} B  (one block, the member itself)");
     println!(
         "  packed : {:>7} B  (the whole {MEMBERS}-member buffer, measured through rmp_serde)",
         buffer.len()
@@ -1206,7 +1206,7 @@ fn what_one_more_member_rewrites_against_what_one_packed_buffer_would() {
 
     assert!(
         buffer.len() > 10 * today_block_bytes,
-        "the packed buffer is not materially larger than the page a single-member write appends \
+        "the packed buffer is not materially larger than the block a single-member write appends \
          today, so there is no write amplification to report and this test is not measuring the \
          trade it claims: {} B against {today_block_bytes} B",
         buffer.len()

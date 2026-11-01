@@ -257,7 +257,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
     let engine = engine_on(dir.path());
     load_on(&engine);
 
-    println!("\n=== page reads per member, cold listing ===");
+    println!("\n=== block reads per member, cold listing ===");
     println!("  store path {path_len} characters (equal for every arm in this test)");
     println!(
         "  {:>6}  {:>6}  {:>9}  {:>11}  {:>9}  {:>11}  {:>10}",
@@ -358,13 +358,13 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
             // THE FINDING, per row: one block read per member for the set.
             assert_eq!(
                 population as u64, set_reads,
-                "the set listing for {set_key} performed {set_reads} page reads for {population} \
+                "the set listing for {set_key} performed {set_reads} block reads for {population} \
                  members. The claim this module is quoted on is exactly one per member"
             );
             // THE CONTROL, per row: none for the zset.
             assert_eq!(
                 0, zset_reads,
-                "the zset listing for {zset_key} performed {zset_reads} page reads. A zset answers \
+                "the zset listing for {zset_key} performed {zset_reads} block reads. A zset answers \
                  from `shard.zsets` and must read no block at all"
             );
 
@@ -404,7 +404,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
     }
 
     println!(
-        "\n  set : 1.00 page reads per member at every width and both populations\n  zset: \
+        "\n  set : 1.00 block reads per member at every width and both populations\n  zset: \
          {zset_total_reads} reads over {zset_total_members} members = 0.00 per member, with member \
          bytes returned"
     );
@@ -447,16 +447,16 @@ fn a_second_set_listing_reads_no_blocks_at_all_because_the_answer_is_cached() {
     // THE DENOMINATOR.
     assert_eq!(
         MEMBERS as u64, first_reads,
-        "the cold listing read {first_reads} pages for {MEMBERS} members; with zero, the warm \
+        "the cold listing read {first_reads} blocks for {MEMBERS} members; with zero, the warm \
          listing reading zero would be no finding"
     );
     assert_eq!(
         0, second_reads,
-        "the warm listing read {second_reads} pages -- the whole answer is cached under \
+        "the warm listing read {second_reads} blocks -- the whole answer is cached under \
          `CacheKey::set_members`"
     );
     println!(
-        "\n  cold listing {first_reads} page reads, warm listing {second_reads} -- the per-member \
+        "\n  cold listing {first_reads} block reads, warm listing {second_reads} -- the per-member \
          cost is paid once per cache fill, not once per SMEMBERS"
     );
 }
@@ -582,7 +582,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         );
         assert!(
             pairs >= 1,
-            "the page-index walk for {key} returned no pairs at all, so the pair count below is \
+            "the block-index walk for {key} returned no pairs at all, so the pair count below is \
              not a count of anything"
         );
 
@@ -593,7 +593,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
         // THE FINDING, FIRST HALF: the bytes are in the payload.
         assert_eq!(
             from_payload, from_blocks,
-            "the members decoded from the PAGE PAYLOAD differ from the members the listing \
+            "the members decoded from the BLOCK PAYLOAD differ from the members the listing \
              returns for {key}. The element key an item is filed under is the member in hex, so \
              these are the same bytes twice -- and since the entry stopped naming its element, the \
              payload is where that redundancy now lives"
@@ -630,7 +630,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
     let (batches, folded) = crate::engine::container_batch_counts();
     assert!(
         batches > 0 && folded > 0,
-        "the folded arm folded nothing: {batches} batch(es), {folded} page(s), so the pair count \
+        "the folded arm folded nothing: {batches} batch(es), {folded} block(s), so the pair count \
          below is the unfolded one and says nothing"
     );
     let served_folded = members_returned(&read(
@@ -795,7 +795,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     let payload_population = payload_members(&engine, &key);
     assert!(
         payload_population.contains(&removed),
-        "the live pages no longer state the removed member, so an address-liveness test would \
+        "the live blocks no longer state the removed member, so an address-liveness test would \
          refuse it and this arm has nothing to find. One entry a block is what keeps the block alive \
          through the removal of its element"
     );
@@ -823,7 +823,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
             .sum();
         assert!(
             live_blocks >= 1,
-            "DENOMINATOR: {live_blocks} live pages, so the derived view is empty and the merge \
+            "DENOMINATOR: {live_blocks} live blocks, so the derived view is empty and the merge \
              below would keep everything for the wrong reason"
         );
 

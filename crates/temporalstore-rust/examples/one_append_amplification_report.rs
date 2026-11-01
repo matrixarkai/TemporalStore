@@ -140,7 +140,7 @@ fn entry_for(shape: Shape, value: Vec<u8>) -> SharedStoreWalEntry {
                 staged_blocks.push(temporalstore_rust::wal::StagedBlock {
                     object_id: item.object_id,
                     component: item.component.as_deref().map(Arc::from),
-                    bytes: primary.block_store().read(&address).expect("carried page"),
+                    bytes: primary.block_store().read(&address).expect("carried block"),
                 });
             }
         }

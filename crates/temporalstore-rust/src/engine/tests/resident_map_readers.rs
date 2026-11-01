@@ -717,7 +717,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             .sum();
         assert!(
             live_blocks >= 6,
-            "DENOMINATOR: {live_blocks} live page(s), so the derived view is too thin for the merge \
+            "DENOMINATOR: {live_blocks} live block(s), so the derived view is too thin for the merge \
              below to be doing anything"
         );
 
@@ -749,7 +749,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         // -----------------------------------------------------------------------------------------
         assert!(
             crate::engine::record_exists_exact(shard, "ghost"),
-            "the ghost key has a live member and a live page, so EXISTS must be true here -- if \
+            "the ghost key has a live member and a live block, so EXISTS must be true here -- if \
              this fails the fixture is not the over-complete state this module is about"
         );
         println!(
@@ -868,7 +868,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         );
         assert!(
             named_but_not_live.is_empty(),
-            "the resident maps name {} address(es) that are not live pages in the index ({:?}). \
+            "the resident maps name {} address(es) that are not live blocks in the index ({:?}). \
              `compact_shard_blocks_relocating` iterates those maps to build its relocation work \
              list, so each of these is a block compaction reads off the old slab, copies onto the \
              fresh one and keeps alive for good",
@@ -1116,7 +1116,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
             .any(|block| !block.deleted
                 && block.address.block_slab_id() == dead_address.block_slab_id()
                 && block.address.offset() == dead_address.offset())),
-        "the fabricated address matches a live page, so the subjects below would be kept for the \
+        "the fabricated address matches a live block, so the subjects below would be kept for the \
          honest reason"
     );
 
@@ -1160,7 +1160,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
         .unwrap_or_default();
 
     println!(
-        "\n=== a persisted entry naming a page that is gone ===\n  set   {:?}\n  zset  {:?}\n  \
+        "\n=== a persisted entry naming a block that is gone ===\n  set   {:?}\n  zset  {:?}\n  \
          list  {:?}",
         set_members
             .iter()
@@ -1336,7 +1336,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     );
     assert!(
         !set_bucket_released,
-        "the bucket holding the set's pages was RELEASED. `released_model_kind_is_addressable` has \
+        "the bucket holding the set's blocks was RELEASED. `released_model_kind_is_addressable` has \
          admitted a container kind, so a container block can now sit in a released bucket -- and the \
          live-block set the merge filters against must come from \
          `collect_bucket_index_live_block_entries`, which supplements released blocks back in, and \
@@ -1344,7 +1344,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     );
     assert_eq!(
         4, set_blocks_still_indexed,
-        "the index holds {set_blocks_still_indexed} live set page(s), not the 4 written, so the \
+        "the index holds {set_blocks_still_indexed} live set block(s), not the 4 written, so the \
          release took some after all"
     );
 
@@ -1368,7 +1368,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     for member in &members {
         assert!(
             survived.contains(member),
-            "a member in a RELEASED bucket was dropped by the merge. The live-page set is being \
+            "a member in a RELEASED bucket was dropped by the merge. The live-block set is being \
              built from `bucket_index.bucket_map`, which omits a released bucket's blocks by design; \
              it must come from `collect_bucket_index_live_block_entries`, which supplements them \
              back in from the model maps"
@@ -1522,14 +1522,14 @@ fn the_merge_runs_even_when_no_set_block_survived() {
             // the one this test exists for. A skip leaves the deserialized map standing WHOLE at 3.
             assert_eq!(
                 0, in_map,
-                "{label}: the resident map holds {in_map} member(s) with NO set page surviving. \
+                "{label}: the resident map holds {in_map} member(s) with NO set block surviving. \
                  The merge is unconditional so that this is 0; a skip here leaves the deserialized \
                  persisted map standing whole at 3, which is the over-complete state by the one \
                  route the merge never used to see"
             );
             assert_eq!(
                 in_map, served,
-                "{label}: the resident map holds {in_map} against a served {served}. With no page \
+                "{label}: the resident map holds {in_map} against a served {served}. With no block \
                  left at any persisted address the filter refuses every element, so these must \
                  agree at 0"
             );

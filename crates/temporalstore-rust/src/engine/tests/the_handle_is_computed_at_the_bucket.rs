@@ -219,7 +219,7 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     assert_eq!(
         4,
         block_index.len(),
-        "the written page index holds {} entries, not the four filed -- so either the map lost one \
+        "the written block index holds {} entries, not the four filed -- so either the map lost one \
          or two entries collided on one rendered key",
         block_index.len()
     );
@@ -229,5 +229,5 @@ fn the_written_block_index_is_the_same_map_it_was_before_the_hoist() {
     let mut ascending = keys.clone();
     ascending.sort();
     assert_eq!(ascending, keys, "the written keys are not in ascending order");
-    println!("\n  the written page index: {} keys, ascending", keys.len());
+    println!("\n  the written block index: {} keys, ascending", keys.len());
 }

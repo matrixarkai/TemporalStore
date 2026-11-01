@@ -408,7 +408,7 @@ fn no_cell_leaves_an_acked_result_with_no_way_back() {
         assert_eq!(
             counts.results_with_no_way_back,
             0,
-            "cell {} left {} of {} acked results with NO way back: no operation, no page in the \
+            "cell {} left {} of {} acked results with NO way back: no operation, no block in the \
              record, and nothing stated in the result itself",
             shape.label.trim(),
             counts.results_with_no_way_back,
@@ -441,7 +441,7 @@ fn an_upsert_carries_its_block_inside_the_record() {
     for (shape, counts) in &upserts {
         assert!(
             counts.blocks_in_the_record >= counts.results_naming_only_an_address,
-            "upsert cell {} carries {} pages for {} results that name only an address, so some \
+            "upsert cell {} carries {} blocks for {} results that name only an address, so some \
              acked value can only be rebuilt from an address the ack did not make durable",
             shape.label.trim(),
             counts.blocks_in_the_record,
@@ -492,7 +492,7 @@ fn a_removal_carries_no_block() {
         assert_eq!(
             counts.blocks_in_the_record,
             0,
-            "removal cell {} carried {} blocks, so it is not the no-page cell it is labelled",
+            "removal cell {} carried {} blocks, so it is not the no-block cell it is labelled",
             shape.label.trim(),
             counts.blocks_in_the_record
         );

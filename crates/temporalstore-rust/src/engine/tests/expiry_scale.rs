@@ -1083,7 +1083,7 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
     // fires here instead of the fold silently wiping that block on the next recovery.
     assert!(
         record.items.is_empty(),
-        "the expiry delta carries {} page items. The round's deletes are supposed to leave no \
+        "the expiry delta carries {} block items. The round's deletes are supposed to leave no \
          block for a covered key, which is why the record is built without collecting any -- a \
          surviving block is now described by nothing and gets wiped on the fold",
         record.items.len()
@@ -1305,7 +1305,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     );
     assert!(
         record.items.is_empty(),
-        "the expiry delta carries {} page items. #1633's record describes the removal with an \
+        "the expiry delta carries {} block items. #1633's record describes the removal with an \
          EMPTY item list against covered keys; a record carrying items is a different shape and \
          this test no longer covers the one the expiry round writes",
         record.items.len()
@@ -1320,7 +1320,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         let key = due_key(index);
         assert!(
             named.contains(&key),
-            "the expiry delta does not name {key}. With no page items in the record, the blobs \
+            "the expiry delta does not name {key}. With no block items in the record, the blobs \
              are the ONLY thing that makes a key covered, so an unnamed key is one the fold \
              cannot touch however correct the fold is. Named: {named:?}"
         );
@@ -1352,7 +1352,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     }
     assert!(
         control_blocks > 0,
-        "CONTROL: the unfolded base holds no pages at all for the {DUE_KEYS} removed keys, so the \
+        "CONTROL: the unfolded base holds no blocks at all for the {DUE_KEYS} removed keys, so the \
          block half of the fold has nothing to wipe and asserting it wiped them is vacuous"
     );
     assert_eq!(
@@ -1400,7 +1400,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         assert_eq!(
             blocks_for(&folded, &key),
             0,
-            "the fold left {} page(s) of {key} attached. The record carries NO items, and an \
+            "the fold left {} block(s) of {key} attached. The record carries NO items, and an \
              empty item list against a covered key is how the removal is spelled: every block of \
              every covered key is wiped and only the carried items are restored. Blocks left \
              behind are blocks the deletes already retained -- dangling entries pointing into \
@@ -1427,7 +1427,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
         );
         assert!(
             blocks_for(&folded, &key) > 0,
-            "the fold left {key} with no pages while keeping its deadline -- a key that reads as \
+            "the fold left {key} with no blocks while keeping its deadline -- a key that reads as \
              present and answers nothing"
         );
     }
