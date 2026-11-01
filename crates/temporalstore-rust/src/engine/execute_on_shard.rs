@@ -2672,6 +2672,14 @@ pub(crate) fn execute_on_shard(
                 true,
             );
             mutated |= shard.features_mut().remove(&key[..]).is_some();
+            // THE ONE FEATURE WRITE THAT DOES NOT PUBLISH BLOCKS, so the invalidation in
+            // `sync_bucket_index_object_blocks_with_mode` does not cover it. The expiry path's
+            // `forget_object` already drops the view beside its own `features_mut().remove`; this
+            // arm removed the series and left the view behind. The length test hid it in the
+            // common case -- an emptied series reads as length 0 against a non-empty view -- but
+            // not when the key is re-created with the same number of points, which then answers
+            // with the sums of the DELETED series.
+            control_rollup::feature_forget(shard, &key);
             mutated |= mark_bucket_index_object_deleted(shard, &key);
             let _ = cache.invalidate_record(shard_id, "feature", &key);
             CommandResponse::Empty
