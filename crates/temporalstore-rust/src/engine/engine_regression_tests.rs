@@ -240,6 +240,8 @@ mod part3;
 mod part4;
 #[path = "tests/expiry_scale.rs"]
 mod expiry_scale;
+#[path = "tests/a_precision_is_part_of_a_bucket_identity.rs"]
+mod a_precision_is_part_of_a_bucket_identity;
 #[path = "tests/reclaim_dump.rs"]
 mod reclaim_dump;
 #[path = "tests/claim_stamp_hold.rs"]

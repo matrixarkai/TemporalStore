@@ -2933,7 +2933,9 @@ pub(crate) fn execute_on_shard(
                     .control_state_mut()
                     .entry(std::sync::Arc::from(&key[..]))
                     .or_default()
-                    .entry(timestamp_ms)
+                    // Names no precision, so it files under the format's `DISABLE` code, which is
+                    // the timestamp itself -- the same key this arm has always written.
+                    .entry(control_state_bucket_key(timestamp_ms, None))
                     .or_default();
                 *counter += amount;
                 *counter
@@ -2960,7 +2962,16 @@ pub(crate) fn execute_on_shard(
                 async_storage,
             );
             if control_rollup_enabled {
-                control_rollup::record_increment(shard, &key, timestamp_ms, amount);
+                control_rollup::record_increment(
+                    shard,
+                    &key,
+                    // The key the series was written under. The ladder derives a cell's
+                    // precision from the key it is handed, so handing it a raw timestamp
+                    // where the series holds a packed key would fold the cell under the
+                    // wrong code the moment these two expressions stopped agreeing.
+                    control_state_bucket_key(timestamp_ms, None),
+                    amount,
+                );
             }
             mutated = true;
             CommandResponse::Empty
@@ -2973,10 +2984,10 @@ pub(crate) fn execute_on_shard(
             ttl_ms,
         } => {
             remove_if_expired(shard, &key);
-            let bucket_ms = precision_ms
-                .filter(|precision_ms| *precision_ms > 0)
-                .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
-                .unwrap_or(timestamp_ms);
+            // The bucket's identity is (precision, start), not start alone -- two precisions
+            // used to share a cell whenever their truncations agreed. `control_state_bucket_key`
+            // carries both in the `u64` the series already holds.
+            let bucket_ms = control_state_bucket_key(timestamp_ms, precision_ms);
             *shard
                 .control_state_mut()
                 .entry(std::sync::Arc::from(&key[..]))
@@ -3036,10 +3047,10 @@ pub(crate) fn execute_on_shard(
             ttl_ms,
         } => {
             remove_if_expired(shard, &key);
-            let bucket_ms = precision_ms
-                .filter(|precision_ms| *precision_ms > 0)
-                .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
-                .unwrap_or(timestamp_ms);
+            // The bucket's identity is (precision, start), not start alone -- two precisions
+            // used to share a cell whenever their truncations agreed. `control_state_bucket_key`
+            // carries both in the `u64` the series already holds.
+            let bucket_ms = control_state_bucket_key(timestamp_ms, precision_ms);
             stage_component_outcome(
                 shard_id,
                 "control_change",
@@ -3086,8 +3097,7 @@ pub(crate) fn execute_on_shard(
                     .control_state()
                     .get(&key[..])
                     .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                        control_state_window_entries(series, start_ms, end_ms)
                             .map(|(_, value)| *value)
                             .sum()
                     })
@@ -3121,8 +3131,7 @@ pub(crate) fn execute_on_shard(
                     .control_state()
                     .get(&key[..])
                     .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                        control_state_window_entries(series, start_ms, end_ms)
                             .map(|(_, value)| *value)
                             .collect::<Vec<_>>()
                     })
@@ -3149,11 +3158,12 @@ pub(crate) fn execute_on_shard(
                 .control_state()
                 .get(&key[..])
                 .map(|series| {
-                    series
-                        .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                    control_state_window_entries(series, start_ms, end_ms)
                         .take(count.unwrap_or(usize::MAX))
-                        .map(|(timestamp_ms, amount)| FeaturePoint {
-                            timestamp_ms: *timestamp_ms,
+                        .map(|(bucket_key, amount)| FeaturePoint {
+                            // The START the key names. A packed key read as a timestamp is an
+                            // instant in the year 10889.
+                            timestamp_ms: control_state_bucket_start_ms(*bucket_key),
                             value: amount.to_string().into_bytes(),
                         })
                         .collect()
@@ -3173,7 +3183,8 @@ pub(crate) fn execute_on_shard(
                 .control_state_mut()
                 .entry(std::sync::Arc::from(&key[..]))
                 .or_default()
-                .entry(timestamp_ms)
+                // Names no precision: the format's `DISABLE` code, which is the timestamp itself.
+                .entry(control_state_bucket_key(timestamp_ms, None))
                 .or_default() += amount;
             persist_control_state_block(
                 cache,
@@ -3186,7 +3197,16 @@ pub(crate) fn execute_on_shard(
                 async_storage,
             );
             if control_rollup_enabled {
-                control_rollup::record_increment(shard, &key, timestamp_ms, amount);
+                control_rollup::record_increment(
+                    shard,
+                    &key,
+                    // The key the series was written under. The ladder derives a cell's
+                    // precision from the key it is handed, so handing it a raw timestamp
+                    // where the series holds a packed key would fold the cell under the
+                    // wrong code the moment these two expressions stopped agreeing.
+                    control_state_bucket_key(timestamp_ms, None),
+                    amount,
+                );
             }
             mutated = true;
             CommandResponse::Empty
@@ -3203,9 +3223,11 @@ pub(crate) fn execute_on_shard(
             remove_if_expired(shard, &key);
             let key = control_state_family_key(family, &key);
             let series = shard.control_state_mut().entry(std::sync::Arc::from(&key[..])).or_default();
-            *series.entry(timestamp_ms).or_default() += amount;
-            let values = series
-                .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+            // Names no precision, so it writes and reads the untagged (`DISABLE`) space.
+            *series
+                .entry(control_state_bucket_key(timestamp_ms, None))
+                .or_default() += amount;
+            let values = control_state_window_entries(series, start_ms, end_ms)
                 .map(|(_, value)| *value)
                 .collect::<Vec<_>>();
             persist_control_state_block(
@@ -3219,7 +3241,16 @@ pub(crate) fn execute_on_shard(
                 async_storage,
             );
             if control_rollup_enabled {
-                control_rollup::record_increment(shard, &key, timestamp_ms, amount);
+                control_rollup::record_increment(
+                    shard,
+                    &key,
+                    // The key the series was written under. The ladder derives a cell's
+                    // precision from the key it is handed, so handing it a raw timestamp
+                    // where the series holds a packed key would fold the cell under the
+                    // wrong code the moment these two expressions stopped agreeing.
+                    control_state_bucket_key(timestamp_ms, None),
+                    amount,
+                );
             }
             mutated = true;
             CommandResponse::Integer {
@@ -3262,10 +3293,15 @@ pub(crate) fn execute_on_shard(
             } else {
                 false
             };
-            let bucket_ms = precision_ms
+            // The bucket's identity is (precision, start), not start alone -- two precisions
+            // used to share a cell whenever their truncations agreed. `control_state_bucket_key`
+            // carries both in the `u64` the series already holds.
+            let bucket_ms = control_state_bucket_key(timestamp_ms, precision_ms);
+            // The code this request reads at. `None` -- no precision named, or one the format does
+            // not define -- keeps the union read this arm has always performed.
+            let read_code = precision_ms
                 .filter(|precision_ms| *precision_ms > 0)
-                .map(|precision_ms| timestamp_ms - timestamp_ms % precision_ms)
-                .unwrap_or(timestamp_ms);
+                .and_then(control_state_precision_code);
             let series = shard.control_state_mut().entry(std::sync::Arc::from(&key[..])).or_default();
             if !is_duplicate {
                 *series.entry(bucket_ms).or_default() += amount;
@@ -3276,11 +3312,17 @@ pub(crate) fn execute_on_shard(
                 let values = shard
                     .control_state()
                     .get(&key[..])
-                    .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                    .map(|series| match read_code {
+                        // Named a precision: read the buckets carrying its code and nothing else.
+                        // This is the whole point of the change -- a per-minute question used to be
+                        // answered with the per-day writes added in.
+                        Some(code) => series
+                            .range(control_state_precision_bounds(code, start_ms, end_ms))
                             .map(|(_, value)| *value)
-                            .collect::<Vec<_>>()
+                            .collect::<Vec<_>>(),
+                        None => control_state_window_entries(series, start_ms, end_ms)
+                            .map(|(_, value)| *value)
+                            .collect::<Vec<_>>(),
                     })
                     .unwrap_or_default();
                 aggregate_control_state_values(&values, &aggregator)
@@ -3349,8 +3391,7 @@ pub(crate) fn execute_on_shard(
                     .control_state()
                     .get(&key[..])
                     .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
+                        control_state_window_entries(series, start_ms, end_ms)
                             .map(|(_, value)| *value)
                             .collect::<Vec<_>>()
                     })
@@ -3504,9 +3545,11 @@ pub(crate) fn execute_on_shard(
                     .unwrap_or_default();
                 let window = series
                     .map(|series| {
-                        series
-                            .range(crate::engine::timestamp_range_bounds(start_ms, end_ms))
-                            .map(|(timestamp_ms, value)| (*timestamp_ms, *value))
+                        control_state_window_entries(series, start_ms, end_ms)
+                            .map(|(bucket_key, value)| {
+                                // The START, not the packed key: this pair is reported.
+                                (control_state_bucket_start_ms(*bucket_key), *value)
+                            })
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
