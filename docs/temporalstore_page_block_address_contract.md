@@ -64,6 +64,59 @@ published key, change its value, or add a `legacy_alias` field as a side effect
 of renaming an internal field. New implementation symbols should use block,
 slab, or bucket according to the object they describe.
 
+## What the wire carries now
+
+The slab wire names were flipped to the canonical spelling once the test that governs
+every such decision could be applied to the files that matter. That test is a count:
+a name the committed corpora carry is part of what older builds emitted, so it stays.
+
+**Six of the nine `compat/*.json` files are referenced by no test, harness or
+workflow.** Counting all nine made every retired slab name look pinned; counting the
+three anything reads shows them at zero. The flipped names are `zone_id`, `band`,
+`band_id`, `bands` and `storage_zone_samples`, each now emitted under the field's own
+canonical name with every retired spelling kept as an accepted alias.
+
+Three emitted names did NOT move:
+
+| emitted name | why it stays |
+|---|---|
+| `stale_page_tombstones` | 8 occurrences in the live corpora |
+| `block_segment_id` | 1 occurrence in the live corpora |
+| `zones`, on the index-log meta item | an asserted byte-identity invariant — below |
+
+A serde `rename` replaces the accepted name rather than adding to it, so every reader
+was widened and shipped before any writer moved. That ordering is not a courtesy; it is
+the only order in which a flip is available at all.
+
+### The index-log meta item keeps `zones`, and a test is why
+
+`MetaItem.slabs` was the last site considered and the only one refused, and the reason is
+not the one I expected to give.
+
+The reason I expected to give was its silence: the field carries `#[serde(default)]`, so a
+binary without the widened reader finds no `zones` key and loads an EMPTY slab catalog
+during an index-log replay, which is recovery, with no error anywhere. That argument was
+going to be answered by dating it — every binary carrying the widened reader reads a
+flipped item correctly, and the rest pre-date the first release.
+
+The better evidence is in a test:
+`meta_item_without_zones_serializes_byte_identically_to_pre_fold` asserts that an anchor
+whose slab list is empty serializes with `zones` present as an empty array, and states why
+— **a row is read by position, so a field that vanishes when it is empty moves every field
+behind it.** Byte-identity with a pre-fold anchor is an invariant somebody wrote down and
+asserted; a premise about which binaries exist is one I derived. The assertion outranks it,
+so the field keeps its emitted name.
+
+What this site DID gain is reader width: it now also accepts `extents` and `bands`
+alongside `slabs` and `zones`, which is strictly additive and costs the invariant nothing.
+
+A stamp is not an alternative here, and that was checked rather than assumed:
+`INDEX_LOG_RECORD_VERSION` is written into every record and compared nowhere, so bumping it
+buys nothing on this path. For contrast, the shard index's own stamp does work in both
+directions on the default codec — the container writes a version ahead of the payload and
+the decode refuses on inequality, so a future stamp is refused too. The one-sided `<`
+comparison that gets quoted is a second guard, for bare-JSON images.
+
 ## Remaining page spellings
 
 The remaining spellings have specific compatibility or integration roles:

@@ -1862,7 +1862,7 @@ pub struct MetaItem {
     pub start_wal_sequence: u64,
     #[serde(default)]
     pub timestamp_ms: u64,
-    #[serde(rename = "zones", alias = "slabs", default)]
+    #[serde(rename = "zones", alias = "slabs", alias = "extents", alias = "bands", default)]
     pub slabs: Vec<SlabCatalogEntry>,
     #[serde(alias = "zone_version", default)]
     pub slab_version: u64,
