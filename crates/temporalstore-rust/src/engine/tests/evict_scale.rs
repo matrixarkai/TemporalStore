@@ -457,7 +457,7 @@ fn the_eviction_fixture_holds_several_slabs_and_the_victims_are_its_oldest_block
     assert!(
         newest_victim_slab < newest_scan_slab,
         "the newest slab the victims touch is {newest_victim_slab}, against {newest_scan_slab} \
-         for the scan-ordered control. The round has to take the OLDEST pages, so its victims \
+         for the scan-ordered control. The round has to take the OLDEST blocks, so its victims \
          cannot reach further forward in slab order than the selection it is supposed to beat"
     );
     assert!(
@@ -679,7 +679,7 @@ fn an_eviction_round_leaves_every_live_key_and_block_exactly_where_it_was() {
         assert!(
             emptied.is_empty(),
             "dump={dump}: a bucket's object index changed across the round -- a release drops \
-             the resident page list and keeps the object index, so this must be EQUAL and not \
+             the resident block list and keeps the object index, so this must be EQUAL and not \
              merely non-zero. First few (bucket, before, after): {emptied:?}"
         );
     }
@@ -735,9 +735,9 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
            recency entries cloned        {:>8} {:>10}\n\
            model-map addresses visited   {:>8} {:>10}   {:>8.2}x\n\
            ... on a RELEASING round      {:>8} {:>10}   {:>8.2}x\n\
-           model-map pages emitted       {:>8} {:>10}\n\
+           model-map blocks emitted       {:>8} {:>10}\n\
            bucket-index entries visited  {:>8} {:>10}   {:>8.2}x\n\
-           live-page entries scanned     {:>8} {:>10}\n\
+           live-block entries scanned     {:>8} {:>10}\n\
            blocks released               {:>8} {:>10}\n",
         small.buckets,
         large.buckets,
@@ -861,7 +861,7 @@ fn an_eviction_rounds_bookkeeping_tracks_the_store_while_its_choosing_does_not()
         assert_eq!(
             arm.resident_visits, expected_index_reads,
             "a round over {} records visited {} bucket-index entries; two reads of an index \
-             holding {} nodes and {} pages is {expected_index_reads} exactly",
+             holding {} nodes and {} blocks is {expected_index_reads} exactly",
             arm.records, arm.resident_visits, arm.buckets, arm.records
         );
     }
@@ -1110,9 +1110,9 @@ fn what_an_eviction_round_costs_on_a_large_store_in_both_victim_regimes() {
                routing buckets               {:>10} {:>12}   {:>8.2}x\n\
                victims chosen                {:>10} {:>12}   {:>8.2}x\n\
                model-map addresses visited   {:>10} {:>12}   {:>8.2}x\n\
-               model-map pages emitted       {:>10} {:>12}   {:>8.2}x\n\
+               model-map blocks emitted       {:>10} {:>12}   {:>8.2}x\n\
                bucket-index entries visited  {:>10} {:>12}   {:>8.2}x\n\
-               live-page entries scanned     {:>10} {:>12}\n\
+               live-block entries scanned     {:>10} {:>12}\n\
                recency entries cloned        {:>10} {:>12}\n\
                blocks released               {:>10} {:>12}\n\
                VISITS PER VICTIM             {:>10} {:>12}   {:>8.2}x\n\
@@ -1376,7 +1376,7 @@ fn an_eviction_round_cannot_keep_up_with_the_store_it_is_draining() {
                one round                        {:>12.0} ns\n\
                one write                        {:>12.0} ns\n\
                writes that fit in one round     {writes_per_round:>12.1}\n\
-               net index pages per round        {:>12.1}",
+               net index blocks per round        {:>12.1}",
             arm.records,
             arm.buckets,
             arm.rounds,
@@ -2015,7 +2015,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
                 before,
                 "bucket {routing_bucket} was refused but now holds {} resident pages against \
                  {before} before the release. EQUAL, not merely non-zero: a bucket that kept one \
-                 of its two pages would pass a presence check",
+                 of its two blocks would pass a presence check",
                 bucket.block_index.len()
             );
             assert!(

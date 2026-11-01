@@ -4240,9 +4240,9 @@ impl StoredBlockEntry {
                     // is kept rather than those guards being loosened.
                     format!(
                         "no stored model kind for model id {:?}, read back out of the stored page \
-                         key {key:?}. The kind is that key's leftmost field and the page's own \
+                         key {key:?}. The kind is that key's leftmost field and the block's own \
                          copy of it is gone, so there is nothing else to read it from -- and \
-                         mapping it onto a kind it does not have would file the page under the \
+                         mapping it onto a kind it does not have would file the block under the \
                          wrong object. Declare it in `model_kind_registry`: under `live` if an arm \
                          of `visit_model_live_blocks` emits it, under `retired` -- with the reason \
                          an older index can carry it -- if not.",

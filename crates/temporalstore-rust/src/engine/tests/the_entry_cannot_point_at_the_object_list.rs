@@ -441,7 +441,7 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
     assert_eq!(
         u16_total, entry_total,
         "a u16 ordinal lands on {u16_total} against the live entry's {entry_total}. The sixteen \
-         bytes a page it was priced at have already been taken by the identity leaving the entry, \
+         bytes a block it was priced at have already been taken by the identity leaving the entry, \
          so it must land on exactly the same width -- if it narrows further, something else has \
          moved and this module's arithmetic needs remeasuring"
     );
@@ -544,7 +544,7 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
     );
     println!(
         "  VERDICT: the list is {rows_seen} rows of u64 id. The id is ALREADY free from the \
-         address on {id_already_answered}/{blocks_seen} pages, and the NAME is not in the list at \
+         address on {id_already_answered}/{blocks_seen} blocks, and the NAME is not in the list at \
          all -- so the ordinal serves no reader of `object_key`."
     );
 }
@@ -846,7 +846,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     assert!(
         hash_blocks > hash_rows,
         "DENOMINATOR: {hash_blocks} pages and {hash_rows} rows on the container arm. A fixture \
-         whose keys held one page each would measure nothing"
+         whose keys held one block each would measure nothing"
     );
 
     // THE CONTROL. #2019 was the IDENTITY on this arm -- a string block's component was already
@@ -855,7 +855,7 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
     assert_eq!(
         string_rows, string_blocks,
         "the control holds {string_rows} rows for {string_blocks} pages. #2019 was the identity on \
-         this arm, so one row per page is what it must still hold; if this has moved, the route IS \
+         this arm, so one row per block is what it must still hold; if this has moved, the route IS \
          reopened and this module's verdict needs remeasuring"
     );
     assert!(
@@ -893,8 +893,8 @@ fn the_row_collapse_does_not_reopen_the_route_because_the_routed_arm_did_not_mov
 
     println!(
         "  VERDICT: container ceiling {hash_net:+.2} B/page, CONTROL routed ceiling \
-         {string_net:+.2} B/page over {string_blocks} pages and {string_rows} rows. #2019 collapsed \
-         the container arm's rows/page by 25x and did NOT move the routed arm, whose ceiling is \
+         {string_net:+.2} B/block over {string_blocks} blocks and {string_rows} rows. #2019 collapsed \
+         the container arm's rows/block by 25x and did NOT move the routed arm, whose ceiling is \
          zero before the list's allocation is charged at all -- so step 1b stays refuted."
     );
 

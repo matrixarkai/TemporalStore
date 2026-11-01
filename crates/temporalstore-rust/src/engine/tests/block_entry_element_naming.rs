@@ -452,7 +452,7 @@ fn a_hash_field_cannot_be_renamed_by_editing_the_index_because_the_index_stores_
         }
         other => panic!(
             "the zset member did not answer. Its identity lives in `shard.zsets` and in its \
-             page's own item key -- the index names it nowhere -- so a miss here means one of \
+             block's own item key -- the index names it nowhere -- so a miss here means one of \
              those two stopped holding it: {other:?}"
         ),
     };
@@ -708,7 +708,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
 
     println!(
         "entry {} B, stride {live_stride} B, from {live_fields} B of field; with a name slot added \
-         back it would be {} B of field in {} B at a {} B stride -- the {} B a page this step \
+         back it would be {} B of field in {} B at a {} B stride -- the {} B a block this step \
          banked",
         size_of::<BlockIndex>(),
         live_fields + component_width,
@@ -1178,7 +1178,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         println!(
             "[leg C/{arm}] the derive minted nothing for `{nameless_key}` or `{empty_key}` -- no \
              phantom, and no real name either, because an entry names no element; control: \
-             {string_blocks_exercised} string page(s) exercised, 0 lost, 0.00%"
+             {string_blocks_exercised} string block(s) exercised, 0 lost, 0.00%"
         );
     }
 
@@ -1212,7 +1212,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     assert!(
         listed_after <= listed_before,
         "HashGetAll's listing moved {listed_before} -> {listed_after} across the derive: UPWARD. \
-         It serves the union of `shard.hashes` and the page index, so a rise means one of the two \
+         It serves the union of `shard.hashes` and the block index, so a rise means one of the two \
          gained an element the writes did not put there"
     );
     assert_eq!(
@@ -1251,7 +1251,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     assert_eq!(
         2, indexed_blocks_after,
         "`{nameless_key}` carries {indexed_blocks_after} live hash page entries, not the two this \
-         stage needs -- one named page and the one nameless page leg B filed. Without two against \
+         stage needs -- one named block and the one nameless block leg B filed. Without two against \
          a cleared map, the field count and the entry count could be the same number and nothing \
          below could say which of them HashLen read"
     );
@@ -1260,12 +1260,12 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
         "HashLen answered {hash_len_after} and the index holds {indexed_blocks_after} live page \
          entries for this key. They must DIFFER: the map was cleared and the index was not, so a \
          HashLen that matches the entry count is counting index entries rather than fields -- and \
-         the nameless page is then being counted as a field, which is this module's defect"
+         the nameless block is then being counted as a field, which is this module's defect"
     );
     println!(
         "[counts after] HashLen={hash_len_after} (was {hash_len_before}), HashGetAll listed \
          {listed_after} (was {listed_before}). HashLen reads the CLEARED `shard.hashes` and \
-         answers {hash_len_after} against {indexed_blocks_after} live page entries in the index, so \
+         answers {hash_len_after} against {indexed_blocks_after} live block entries in the index, so \
          the gap names the structure it read rather than being a coincidence"
     );
 }

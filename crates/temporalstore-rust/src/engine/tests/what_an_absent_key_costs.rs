@@ -611,7 +611,7 @@ fn an_absent_key_reads_no_block_store_file_in_any_residency() {
         assert_eq!(
             0, work.block_store_reads,
             "{LOOKUPS} absent lookups with the key's bucket {name} read the block store {} times \
-             ({} bytes), so an absent answer has started to need a page or a bucket reload and the \
+             ({} bytes), so an absent answer has started to need a block or a bucket reload and the \
              remedy is a different one from the one this module records",
             work.block_store_reads, work.block_store_bytes
         );

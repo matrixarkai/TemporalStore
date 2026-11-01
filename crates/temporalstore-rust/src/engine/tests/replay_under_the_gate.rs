@@ -394,7 +394,7 @@ fn the_gate_does_not_reach_the_component_the_index_log_item_is_built_from() {
         without_component.is_empty(),
         "THE NEGATIVE CONTROL DID NOT HOLD: a `(\"set\", None)` component built {} item(s), so the \
          `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
-         longer what protects the index log. If a later step gave the builder a page-named arm, \
+         longer what protects the index log. If a later step gave the builder a block-named arm, \
          THIS is the assertion to change -- deliberately, saying so",
         without_component.len()
     );
@@ -667,7 +667,7 @@ fn the_gate_does_not_reach_the_component_the_hash_index_log_item_is_built_from()
         without_component.is_empty(),
         "THE NEGATIVE CONTROL DID NOT HOLD: a (\"hash\", None) component built {} item(s), so the \
          `_ => None` fallthrough no longer drops the row and the mechanism asserted above is no \
-         longer what protects the index log. If a later step gave the builder a page-named arm, \
+         longer what protects the index log. If a later step gave the builder a block-named arm, \
          THIS is the assertion to change -- deliberately, saying so",
         without_component.len()
     );
@@ -832,7 +832,7 @@ fn every_declared_component_builds_an_index_item() {
             "a {label} write named {} component(s) and the collector built {} item(s). The \
              missing arm is `(\"{label}\", Some(..))` in `collect_upsert_index_items`: the caller \
              takes the delta path on the strength of the component being named, so an item that \
-             is not built is a page the record never mentions -- and the record gets SMALLER, so \
+             is not built is a block the record never mentions -- and the record gets SMALLER, so \
              it reads as a saving.",
             named.len(),
             items.len()

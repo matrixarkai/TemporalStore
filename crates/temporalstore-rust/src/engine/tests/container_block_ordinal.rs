@@ -592,7 +592,7 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
         live_entries_after_delete,
         vec![Some(0), Some(1), Some(2)],
         "the live index entries are {live_entries_after_delete:?}. Three is the expected number: \
-         the removal keeps the entry over the vacated page and adds a tombstone beside it. If this \
+         the removal keeps the entry over the vacated block and adds a tombstone beside it. If this \
          is two, the retirement has landed and this is the assertion to come and restate"
     );
     // AND THE TOMBSTONE KEPT THE NUMBER, which is the fact the old mechanism had no way to express.
@@ -702,12 +702,12 @@ fn the_ordinal_names_a_position_and_a_delete_frees_it() {
         2, at_two_live,
         "{at_two_live} live INDEX entries hold ordinal 2. Two is the expected number and the cost \
          described above: m9's and the one m2's removal left standing. If this is 1 the retirement \
-         of a vacated page's entry has landed, and this assertion is the one to come and restate"
+         of a vacated block's entry has landed, and this assertion is the one to come and restate"
     );
     assert_eq!(
         1, at_two_tombstoned,
         "{at_two_tombstoned} tombstones hold ordinal 2; the removed member's tombstone should be the \
-         one, and it is what keeps the removal readable from the pages"
+         one, and it is what keeps the removal readable from the blocks"
     );
     // The tombstone and the arrival differ in COMPONENT, which is where identity lives. If they
     // agreed, the tombstone would be saying the new member is gone.
@@ -824,8 +824,8 @@ fn deletion_still_finds_its_element_by_component() {
         after.len(),
         4,
         "the delete left {} live index entries. Four is the expected number and the retention \
-         described above: three survivors and the entry over the page the removed member vacated. \
-         If this is 3 the retirement of a vacated page's entry has landed, and this assertion is \
+         described above: three survivors and the entry over the block the removed member vacated. \
+         If this is 3 the retirement of a vacated block's entry has landed, and this assertion is \
          the one to come and restate",
         after.len()
     );
@@ -983,7 +983,7 @@ fn a_reloaded_container_still_reads_every_element() {
             }
             other => panic!(
                 "field {field} did not read back after a reload: {other:?}. A \"page id mismatch\" \
-                 from `decode_block_record` reads exactly like this -- the page is refused and the \
+                 from `decode_block_record` reads exactly like this -- the block is refused and the \
                  answer is empty"
             ),
         }

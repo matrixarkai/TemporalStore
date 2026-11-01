@@ -75,7 +75,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
     (
         "TRIVIAL_PAGE",
         "From the same source and removed by the same change, as REDUNDANT rather than merely \
-         foreign: its documented meaning was that the page is deleted, which `BLOCK_DELETED` \
+         foreign: its documented meaning was that the block is deleted, which `BLOCK_DELETED` \
          already carries. Our word for this is `deleted`, which 141 files already use. Two bits \
          for one fact is the defect; the borrowed name was how it arrived.",
     ),
@@ -105,7 +105,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
         "MultiPageObject",
         "Our word for a stored unit is BLOCK, not page: `ElementEntry`, `block_size`, \
          `block_in_log`, and `page_segment_id` was renamed to `block_slab_id`. A new CamelCase \
-         `*Page*` type name is therefore a copy rather than a coinage. Our own layout policies \
+         `*Block*` type name is therefore a copy rather than a coinage. Our own layout policies \
          spell this concept `single_block_object` and `component_block_object`, in snake_case, and \
          those are stored strings this scan leaves alone.",
     ),

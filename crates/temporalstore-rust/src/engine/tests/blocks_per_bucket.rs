@@ -405,7 +405,7 @@ fn the_blocks_a_bucket_holds_are_two_populations_and_not_one_mean() {
             0,
             hist.holding(1),
             "container arm {index}: {} buckets hold exactly one page; this arm exists to be the \
-             population where the single-page case does NOT dominate",
+             population where the single-block case does NOT dominate",
             hist.holding(1)
         );
         assert!(
@@ -910,7 +910,7 @@ fn what_each_shape_of_the_block_index_would_cost() {
     assert!(
         size_of::<MirrorInlineTwo>() > live_index,
         "the inline-two shape is supposed to be WIDER than what is there; it is the cost of \
-         reaching the second page without a map"
+         reaching the second block without a map"
     );
 
     // The handle already has no spare niche to give: the tag rides a pointer inside the block.
@@ -1126,7 +1126,7 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
     let ceiling = size_of::<BucketNode>() - size_of::<BlockIndexMap>() + 2 * word;
     println!(
         "\n  CEILING: were the entry ever to fit in a word, the node would be {} B against \
-         today's {} -- {} B a bucket, and every single-page bucket would allocate nothing. That is \
+         today's {} -- {} B a bucket, and every single-block bucket would allocate nothing. That is \
          the prize, and the address format is what stands between this engine and it.",
         ceiling,
         size_of::<BucketNode>(),
@@ -1523,7 +1523,7 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
     }
     println!(
         "\n  the allocation count is the durable figure: {:+} allocations for {single_block} \
-         single-page buckets, {:.4} apiece, and it does not move with the tree shape",
+         single-block buckets, {:.4} apiece, and it does not move with the tree shape",
         extra_calls,
         extra_calls as f64 / single_block as f64
     );
@@ -1567,8 +1567,8 @@ fn boxing_the_single_block_arm_costs_an_allocation_for_every_bucket_that_holds_o
     }
     println!(
         "  WHAT IT BUYS THAT WITH: {single_block} allocations that did not exist, one for every \
-         bucket that holds a single page -- a per-bucket allocation on the write path, one \
-         dependent load on every page read, and {single_block} small scattered chunks for the \
+         bucket that holds a single block -- a per-bucket allocation on the write path, one \
+         dependent load on every block read, and {single_block} small scattered chunks for the \
          allocator to fragment around. The bytes are within this instrument's own rounding; the \
          allocations are not."
     );
@@ -2428,7 +2428,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     assert!(
         container_blocks_bytes > container_nodes * 10,
         "the container store's page entries are {container_blocks_bytes} B against \
-         {container_nodes} B of node; if the page entry no longer dominates there, the next term \
+         {container_nodes} B of node; if the block entry no longer dominates there, the next term \
          named here is wrong"
     );
 
@@ -2470,7 +2470,7 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
     println!(
         "  NEXT STEP, PRICED AND DECLINED: the two NAME POINTERS are {} of the {} bytes and each is \
          a data pointer beside a length. Held one word each the entry is {} B and its list stride \
-         {} B -- measured at -16.00 B a page or better on all eight arms in \
+         {} B -- measured at -16.00 B a block or better on all eight arms in \
          `block_entry_name_pointer::what_a_one_word_name_slot_is_worth_on_the_chunk_column`, and \
          DECLINED there: `Arc<str>` cannot be made thin, the safe `Arc<String>` costs more than the \
          entry saves, and a hand-rolled one is an allocation this crate would own outright.",

@@ -1688,7 +1688,7 @@ fn a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows
         2 * simple_buckets,
         tagged_lines,
         "the tagged simple arm touched {tagged_lines} lines over {simple_buckets} buckets; a \
-         payload in its own allocation is a second line on every page read, without exception"
+         payload in its own allocation is a second line on every block read, without exception"
     );
     assert!(
         tagged_lines > live_lines,
@@ -2124,7 +2124,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
     println!(
         "  DEFAULT RANGE  (every key alone in a bucket): {wide_live_b:.1} -> {wide_tag_b:.1} \
          B/record, {:+.1} B a key saved, at {wide_allocs:.2}x the allocations and +0.4800 cache \
-         lines on EVERY page read",
+         lines on EVERY block read",
         wide_live_b - wide_tag_b
     );
     println!(
@@ -2198,7 +2198,7 @@ fn the_tagged_shape_priced_on_chunks_instead_of_requests() {
     println!(
         "  SO THE READ COST IS NOT IN ANY COLUMN ABOVE. The counting allocator reads it as 0.000 \
          because nothing is allocated, exactly as a resident-only change predicts. The whole of \
-         the read cost is the +0.4800 cache lines a page read measured in \
+         the read cost is the +0.4800 cache lines a block read measured in \
          `a_tagged_simple_arm_adds_a_line_to_every_block_read_and_the_general_arm_shows_it_does_not`."
     );
 }

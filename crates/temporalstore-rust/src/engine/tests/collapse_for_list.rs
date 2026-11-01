@@ -264,7 +264,7 @@ fn assert_collapsed(engine: &TemporalEngine, model_id: &str, object_key: &str) {
     assert!(
         live < ELEMENTS,
         "{model_id} filed {live} live entries for {ELEMENTS} elements, so nothing folded onto a \
-         shared page and every assertion in this arm is about a gate that changed nothing"
+         shared block and every assertion in this arm is about a gate that changed nothing"
     );
 }
 /// A PRESENT LIST ELEMENT IS STILL SERVED UNDER THE COLLAPSE, AND A POPPED ONE IS STILL GONE.
@@ -544,7 +544,7 @@ fn a_gated_removal_keeps_the_live_entry_and_adds_a_tombstone_instead_of_reducing
     assert!(
         after.1 > before.1,
         "a gated removal filed no tombstone ({} -> {}), so it recorded the removal nowhere and a \
-         membership derived from the pages would put the element back",
+         membership derived from the blocks would put the element back",
         before.1,
         after.1
     );
@@ -646,8 +646,8 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
             assert!(
                 !index_entry_names_a_block(name),
                 "{name} answered page-named, but it is not a container kind: it files no element \
-                 name and has one page per object, so the page-keyed term would leave its \
-                 relocated pages behind as stale live entries"
+                 name and has one block per object, so the block-keyed term would leave its \
+                 relocated blocks behind as stale live entries"
             );
         }
     }
@@ -673,7 +673,7 @@ fn the_shared_predicate_names_every_container_kind_and_nothing_else() {
         assert!(
             !index_entry_names_a_block(kind),
             "{kind} answered page-named, and it holds ONE page per object: the page-keyed term \
-             would leave its relocated pages behind as stale live entries"
+             would leave its relocated blocks behind as stale live entries"
         );
     }
 }
@@ -713,8 +713,8 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
         assert!(
             folded_live >= 1 && folded_live < ELEMENTS,
             "{model_id} holds {folded_live} live entries for {ELEMENTS} elements after the fold, \
-             so nothing folded onto a shared page and the write below cannot exercise the \
-             page-keyed term at all"
+             so nothing folded onto a shared block and the write below cannot exercise the \
+             block-keyed term at all"
         );
 
         // ONE MORE ELEMENT, under a name the fold has never seen, so the entry it files is a NEW
@@ -762,9 +762,9 @@ fn a_write_after_a_fold_supersedes_one_block_and_not_the_objects_siblings() {
             folded_live + 1,
             after_live,
             "{model_id} held {folded_live} live entries before one more element was written and \
-             {after_live} after. One more page means one more entry; anything else means filing \
-             the new page took the object's already-folded page with it, which is what the \
-             page-keyed supersede term exists to prevent"
+             {after_live} after. One more block means one more entry; anything else means filing \
+             the new block took the object's already-folded block with it, which is what the \
+             block-keyed supersede term exists to prevent"
         );
         // THE `after_named == 0` ARM IS GONE: an entry has no element name to count, so it could
         // only pass. What it was watching for -- the write path filing through a different arm
@@ -841,7 +841,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
         ELEMENTS as i64,
         length,
         "HashLen answered {length} for {ELEMENTS} fields. It counts index ENTRIES, so this is the \
-         reader that reports a page count the moment hash is collapsed"
+         reader that reports a block count the moment hash is collapsed"
     );
     for index in 0..ELEMENTS {
         let value = bytes(
@@ -855,7 +855,7 @@ fn hashs_index_readers_still_answer_per_field_over_a_collapsed_hash() {
             Some(element_bytes(index)),
             value,
             "HashGet lost field {index} over a COLLAPSED hash. It used to resolve through \
-             `bucket_index_block_address`, which required `page.component == Some(field)` on \
+             `bucket_index_block_address`, which required `block.component == Some(field)` on \
              every branch; it answers from `shard.hashes` now, and this is what shows a present \
              field is still reachable when its entry carries no element name"
         );

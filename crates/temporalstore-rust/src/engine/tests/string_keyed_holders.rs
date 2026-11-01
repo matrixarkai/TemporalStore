@@ -654,7 +654,7 @@ fn what_the_tombstone_path_files_and_what_it_allocates() {
     assert!(
         filed_after <= filed_before,
         "the delete FILED something new under the object ({filed_before} -> {filed_after}), so \
-         `insert_object_block_lookup` did not take its `page.deleted` early return and the \
+         `insert_object_block_lookup` did not take its `block.deleted` early return and the \
          tombstone call is not the no-op it looks like"
     );
     assert!(

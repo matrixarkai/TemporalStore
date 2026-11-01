@@ -469,8 +469,8 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     assert!(
         widest_object > 1,
         "the widest object holds {widest_object} page(s), so every object is single-page and a \
-         page count and an object count are the same number on this fixture -- which means this \
-         test cannot tell a correct derivation from a page tally. Write more kinds per key"
+         block count and an object count are the same number on this fixture -- which means this \
+         test cannot tell a correct derivation from a block tally. Write more kinds per key"
     );
     assert!(
         set_total > 0,
@@ -486,8 +486,8 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     assert_ne!(
         object_total, block_total,
         "distinct dirty objects and dirty pages come to the same total ({object_total}), so this \
-         fixture cannot distinguish an object count from a page count even though some object \
-         holds {widest_object} pages"
+         fixture cannot distinguish an object count from a block count even though some object \
+         holds {widest_object} blocks"
     );
 
     // STILL BLOCK 1: the term that makes a block walk unsound at all, and a property of the
@@ -497,7 +497,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     assert!(
         set_members_with_no_block > 0,
         "every dirty object has a live page on this fixture, so the term that decides the question \
-         did not arise here. The fixture's removals are what put a non-page-backed \
+         did not arise here. The fixture's removals are what put a non-block-backed \
          `control_state:cpc:*` record in the set -- check that they still do before reading the \
          clauses below as the general case"
     );
@@ -550,7 +550,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     assert!(
         !short_but_visible.is_empty(),
         "every bucket the page walk DOES see, it counts exactly. The shortfall would then be \
-         confined to buckets holding no page at all, which is a narrower finding than this module \
+         confined to buckets holding no block at all, which is a narrower finding than this module \
          states -- a bucket holding several marks and one dirty object is what shows the count \
          itself is wrong, not just its support"
     );
@@ -596,7 +596,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
         !node_carries_what_no_block_does.is_empty(),
         "every dirty bucket here has a dirty page, so the node flag and the page walk cannot be \
          told apart on this fixture and the agreement above says nothing about the case that \
-         matters. The fixture's removals are what produce a dirty bucket holding no page"
+         matters. The fixture's removals are what produce a dirty bucket holding no block"
     );
 
     // ---- 4. AND THE PRODUCER IS PINNED TO THE AUTHORITY, which is what makes the decline above

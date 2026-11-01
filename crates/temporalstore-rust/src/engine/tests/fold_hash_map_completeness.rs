@@ -223,7 +223,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         missing.is_empty(),
         "{} field(s) the pages derive are ABSENT from the durable map: {missing:?}. With the \
          element name off the entry this is the shape that loses data -- the map is the only place \
-         a reader can get a field name from, and a field the pages hold and the map does not is one \
+         a reader can get a field name from, and a field the blocks hold and the map does not is one \
          `HashGetAll` cannot name.",
         missing.len(),
     );
@@ -231,7 +231,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
     assert!(
         extra.is_empty(),
         "{} field(s) the durable map holds are NOT named by any live page: {extra:?}. The fold \
-         restored an element whose page it did not leave behind, which is a resurrection.",
+         restored an element whose block it did not leave behind, which is a resurrection.",
         extra.len(),
     );
 
@@ -314,15 +314,15 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
         // collapsing, forty hash fields on one block arriving as one entry with thirty-nine lost.
         println!(
             "[fold-hash] MEASURED: each field sits at its OWN address, so these six entries are \
-             six pages and the index files one entry for each. That is what the write and fold \
-             paths produce -- every element gets its own page, and pages are shared only after \
-             COMPACTION batches them, where one entry a page is now the intended shape rather \
+             six blocks and the index files one entry for each. That is what the write and fold \
+             paths produce -- every element gets its own block, and blocks are shared only after \
+             COMPACTION batches them, where one entry a block is now the intended shape rather \
              than a collapse to guard against."
         );
     } else {
         println!(
             "[fold-hash] MEASURED: {} field(s) share {} address(es). These entries have no \
-             element name to tell them apart, so entries converge on pages here -- which is the \
+             element name to tell them apart, so entries converge on blocks here -- which is the \
              intended shape and is what `container_blocks_are_batched` measures through a round.",
             blocks.len(),
             addresses.len()
@@ -406,7 +406,7 @@ fn a_field_whose_block_the_fold_removed_is_in_neither_source() {
     assert!(
         !durable.contains("field-1"),
         "field-1 is in the durable map and is NOT derived from any page: the merge restored an \
-         element whose page the fold removed. That is the resurrection the `live` gate exists to \
+         element whose block the fold removed. That is the resurrection the `live` gate exists to \
          prevent, and it is the defect the other test's `extra` assertion would report.",
     );
     assert_eq!(
@@ -492,7 +492,7 @@ fn every_hash_install_path_reports_a_touched_element_and_only_a_removal_does_not
         assert!(
             !touched.is_empty(),
             "{name} installs a hash page and reports NO touched element, so its field reaches the \
-             page index and never the durable map -- which is the gap that makes removing \
+             block index and never the durable map -- which is the gap that makes removing \
              `component` lose data",
         );
     }
@@ -507,7 +507,7 @@ fn every_hash_install_path_reports_a_touched_element_and_only_a_removal_does_not
     assert!(
         touched.is_empty(),
         "HashDelete reports a touched element. A removal that carries its field would have the \
-         fold restore it whenever the fold still holds some other page at that address, which is \
+         fold restore it whenever the fold still holds some other block at that address, which is \
          the resurrection the `live` gate is there to prevent",
     );
 }

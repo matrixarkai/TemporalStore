@@ -4315,7 +4315,7 @@ fn how_many_times_a_round_walks_every_live_block() {
 
         eprintln!(
             "  [walks] {records:>6} records, {live_blocks:>6} live pages -> round {round_ms:>8.1} ms \
-materialized {scanned:>8} live-page entries = {:>5.1}x the shard, stages {:?}",
+materialized {scanned:>8} live-block entries = {:>5.1}x the shard, stages {:?}",
             scanned as f64 / live_blocks as f64,
             report.executed_stages,
         );
@@ -5503,7 +5503,7 @@ fn can_the_block_gc_garbage_floor_bind() {
     assert!(
         distinct.len() > 1,
         "the live fraction is the same for every slab, so it still carries no information; it is \
-         supposed to separate the slabs holding live pages from the ones that do not: \
+         supposed to separate the slabs holding live blocks from the ones that do not: \
          {fractions:?}"
     );
     eprintln!(
@@ -6983,7 +6983,7 @@ fn does_compaction_retrigger_itself() {
     }
     eprintln!(
         "  VERDICT: compacted on {rounds_that_compacted} of {ROUNDS} rounds, \
-         {total_rewritten} page refs rewritten in total, over a store of {KEYS} that never changed"
+         {total_rewritten} block refs rewritten in total, over a store of {KEYS} that never changed"
     );
 }
 
@@ -7169,7 +7169,7 @@ fn does_the_periodic_loop_reach_compaction() {
         .unwrap_or(0);
     eprintln!(
         "  VERDICT: compacted on {rounds_that_compacted} of {ROUNDS} rounds, {total_rewritten} \
-         page refs rewritten, over a store that stopped changing before round 0; \
+         block refs rewritten, over a store that stopped changing before round 0; \
          {slabs_at_end} slabs remain"
     );
     if rounds_that_compacted == 0 {
@@ -9414,7 +9414,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
     assert!(
         COMPACTION_ROUNDS > rounds_needed,
         "the fixture holds {live_block_refs} live page refs, which needs {rounds_needed} \
-         compaction round(s); running only {COMPACTION_ROUNDS} would leave pages behind, and a \
+         compaction round(s); running only {COMPACTION_ROUNDS} would leave blocks behind, and a \
          short run looks exactly like a settled one"
     );
     let mut relocated_total = 0usize;
@@ -9518,7 +9518,7 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
         (true, IN_NAMED, OUTSIDE),
         "restoring from the manifest after the sweep gave (installed, named, unnamed) = {after:?} \
          where the same manifest gave {control:?} before it. The shard's live slabs are now \
-         {remaining:?}; the manifest names {:?} and the unnamed buckets' pages are on \
+         {remaining:?}; the manifest names {:?} and the unnamed buckets' blocks are on \
          {outside_slabs:?}. The middle number is the bucket the dump NAMES and the last is the \
          {unnamed_bucket_count} bucket(s) it does not -- install still succeeded, because both \
          validation and the install preflight filter what they probe down to bucket_ids",
@@ -10425,7 +10425,7 @@ fn a_draining_round_moves_only_the_blocks_on_the_slabs_it_was_asked_to_empty() {
         report.blocks_left_off_drain_set as u64 + report.rewritten_block_refs as u64,
         live_block_refs,
         "the round moved {} and declined {}, which does not account for the shard's \
-         {live_block_refs} live refs -- some page was neither considered nor moved",
+         {live_block_refs} live refs -- some block was neither considered nor moved",
         report.rewritten_block_refs,
         report.blocks_left_off_drain_set
     );

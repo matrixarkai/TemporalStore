@@ -280,15 +280,15 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
                 assert!(
                     lengths.widest() >= 2,
                     "{records} records on {range}: the widest `Many` list holds \
-                     {} page(s), which is not a multi-page list",
+                     {} block(s), which is not a multi-block list",
                     lengths.widest()
                 );
             } else {
                 assert_eq!(
                     many, 0,
                     "{records} records on the whole keyspace put {many} bucket(s) on the `Many` \
-                     arm; at one page a bucket none should be, and if any are then this arm is \
-                     not the single-page shape it is being read as"
+                     arm; at one block a bucket none should be, and if any are then this arm is \
+                     not the single-block shape it is being read as"
                 );
             }
         }
@@ -299,7 +299,7 @@ fn the_block_list_length_distribution_is_reported_as_a_histogram() {
     );
     println!(
         "  the widest page list seen across both corpus sizes on 0..{NARROW_END} holds \
-         {widest_seen} pages"
+         {widest_seen} blocks"
     );
 }
 
@@ -519,7 +519,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
         live.tally(5).block_refs,
         "one page filed TWICE left {} live ref(s) on its slab. The replace branch must report the \
          address it displaced so the tally can discharge it; a branch that reports none charges \
-         without discharging and the store believes it holds twice the pages it does",
+         without discharging and the store believes it holds twice the blocks it does",
         live.tally(5).block_refs
     );
     assert_eq!(
@@ -556,7 +556,7 @@ fn a_second_insert_of_the_same_block_replaces_it_rather_than_adding_beside_it() 
             length,
             index.len(),
             "re-filing a page at length {length} grew the list to {}; the list is holding the \
-             same page twice",
+             same block twice",
             index.len()
         );
         assert_eq!(
@@ -1090,7 +1090,7 @@ fn the_block_index_of_a_real_store_costs_less_as_a_list_than_as_a_tree() {
         assert!(
             *ratio < 1.0,
             "at {records} records the list charged {ratio:.3}x the tree's bytes for the same \
-             pages; the container change does not pay"
+             blocks; the container change does not pay"
         );
     }
 }
@@ -1377,7 +1377,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     println!(
         "  RE-DERIVED: boxing the inline entry SAVES {saved_per_bucket:.1} B asked / \
          {saved_per_bucket_chunk:.1} B served on EVERY bucket and PAYS {paid_per_single:.1} B \
-         asked / {paid_per_single_chunk:.1} B served on every SINGLE-PAGE one"
+         asked / {paid_per_single_chunk:.1} B served on every SINGLE-BLOCK one"
     );
     println!("  #1964 recorded 160.9 B saved and 112.0 B paid, on the request column only");
     assert!(
@@ -1388,7 +1388,7 @@ fn the_inline_entry_no_longer_earns_its_width_and_this_is_the_occupancy_where_it
     let crossover = saved_per_bucket_chunk / paid_per_single_chunk;
     println!(
         "  SO: boxing the entry pays in BYTES wherever fewer than {:.1}% of buckets hold exactly \
-         one page (served column)",
+         one block (served column)",
         100.0 * crossover
     );
     println!(
@@ -1695,7 +1695,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         total - 1,
         after,
         "a planted removal of the page for {planted} moved the count from {total} to {after}; the \
-         residual instrument cannot see a lost page and its zero above says nothing"
+         residual instrument cannot see a lost block and its zero above says nothing"
     );
     println!("  the planted loss of one block for {planted} was recovered exactly");
 }

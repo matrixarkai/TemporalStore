@@ -341,8 +341,8 @@ impl Surfaces {
         assert_eq!(
             self.objects, self.blocks,
             "[CLAUSE amortised-regime] the fixture holds {} page(s) for {} object(s); a string \
-             object is one page here, and a figure divided by objects over a corpus where it is \
-             not would not be a per-page figure at all",
+             object is one block here, and a figure divided by objects over a corpus where it is \
+             not would not be a per-block figure at all",
             self.blocks, self.objects
         );
     }
@@ -397,7 +397,7 @@ fn no_stored_model_spelling_holds_the_separator() {
         assert!(
             !spelling.contains(':'),
             "[CLAUSE kind-is-one-field] the stored spelling {spelling:?} holds the key separator, \
-             so a page of that kind would put its kind in two of the key's fields and the parse \
+             so a block of that kind would put its kind in two of the key's fields and the parse \
              would read the object key short"
         );
         assert!(
@@ -409,7 +409,7 @@ fn no_stored_model_spelling_holds_the_separator() {
             Some(*kind),
             StoredModelKind::from_stored_name(spelling),
             "[CLAUSE kind-is-one-field] the spelling {spelling:?} does not come back through \
-             `from_stored_name`, so a page of that kind would be refused or filed under another"
+             `from_stored_name`, so a block of that kind would be refused or filed under another"
         );
         assert!(
             spellings.insert(spelling),
@@ -480,7 +480,7 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
                     parts.kind
                 ),
                 "[CLAUSE every-page-inverts] the kind read back out of {key:?} is {:?} and the \
-                 page holds {:?}",
+                 block holds {:?}",
                 parts.kind,
                 block.model_id.as_str()
             );
@@ -676,7 +676,7 @@ fn a_key_that_does_not_round_trip_is_refused_rather_than_guessed() {
     assert!(
         block_ref_key_parts("string:k::0:0:0:0:0").is_ok(),
         "[CLAUSE unparsable-is-refused] an all-zero key was refused; a single `0` is the one \
-         leading zero that is canonical and the slots a first page renders are exactly these"
+         leading zero that is canonical and the slots a first block renders are exactly these"
     );
 }
 
@@ -1288,7 +1288,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         assert!(
             written > 0,
             "[CLAUSE reload-reads-everything] the unload wrote no base index at {index_path:?}, so \
-             the reload below would replay the log and this arm would not read a stored page entry \
+             the reload below would replay the log and this arm would not read a stored block entry \
              at all"
         );
         println!("[reload-reads-everything] the unload wrote a {written}-byte base index");
@@ -1371,7 +1371,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         accepted > 0,
         "[CLAUSE the-index-was-read] the reload accepted no base index (accepted={accepted}, \
          refused_stale={refused_stale}, undecodable={undecodable}), so it rebuilt from the log and \
-         read no stored page entry -- every assertion below would be about the write-ahead log"
+         read no stored block entry -- every assertion below would be about the write-ahead log"
     );
     assert_eq!(
         (0, 0),
@@ -1452,7 +1452,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     assert!(
         missing.is_empty(),
         "[CLAUSE reload-reads-everything] {} object(s) were not found after the reload, first \
-         {:?} -- a page filed under a reconstructed identity that is wrong is exactly this",
+         {:?} -- a block filed under a reconstructed identity that is wrong is exactly this",
         missing.len(),
         missing.iter().take(5).collect::<Vec<_>>()
     );

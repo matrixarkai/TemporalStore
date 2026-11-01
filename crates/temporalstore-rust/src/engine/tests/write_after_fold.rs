@@ -198,7 +198,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     let (folded_live, folded_blocks, _) = entry_census(&engine);
     println!(
         "\n=== after the fold: {folded_live} live entr(ies), \
-         {} distinct page(s)",
+         {} distinct block(s)",
         folded_blocks.len()
     );
 
@@ -221,7 +221,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     assert_eq!(
         1, folded_live,
         "after the fold the projection filed {folded_live} entr(ies) over {} distinct page(s); it \
-         must file exactly one per page",
+         must file exactly one per block",
         folded_blocks.len()
     );
 
@@ -233,7 +233,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     let listed = listed_members(&engine);
     println!(
         "  after one more write: {live} live entr(ies), \
-         {} distinct page(s); durable holds {}, the listing serves {}",
+         {} distinct block(s); durable holds {}, the listing serves {}",
         blocks.len(),
         durable.len(),
         listed.len()
@@ -265,7 +265,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
         blocks.len(),
         live,
         "the write path filed {live} entr(ies) for {} distinct page(s). Under this gate the page \
-         IS the identity, so a write after a derivation must converge on the page's existing entry \
+         IS the identity, so a write after a derivation must converge on the block's existing entry \
          rather than add one of its own",
         blocks.len()
     );
@@ -304,7 +304,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     let (dlive, dpages, derived_written) = entry_census(&engine);
     println!(
         "  after a re-derivation: {dlive} live entr(ies), \
-         {} distinct page(s)",
+         {} distinct block(s)",
         dpages.len()
     );
     // FLOOR: the re-derivation produced something to compare against.
@@ -320,7 +320,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
     assert_eq!(
         derived_written, written,
         "the write path and the projection spell this page's WRITTEN KEY differently. That key is \
-         stored inside the lookup refs, so a page filed by one route is looked up under a handle \
+         stored inside the lookup refs, so a block filed by one route is looked up under a handle \
          the other route never computes -- a durably acknowledged write that reads MISSING"
     );
 }
@@ -362,7 +362,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
     let listed = listed_members(&engine);
     println!(
         "\n=== rewrite after a fold: {live} live entr(ies), \
-         {} distinct page(s); durable {}, listing serves {}",
+         {} distinct block(s); durable {}, listing serves {}",
         blocks.len(),
         durable.len(),
         listed.len()
@@ -393,8 +393,8 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
         live,
         "{live} live entr(ies) for {} distinct page(s) after a rewrite. Recorded as the state an \
          address-keyed convergence has to reproduce: if this is one-to-one today, the superseded \
-         page's entry is being removed by the COMPONENT match, and keying on the new address alone \
-         would leave it behind naming a dead page",
+         block's entry is being removed by the COMPONENT match, and keying on the new address alone \
+         would leave it behind naming a dead block",
         blocks.len()
     );
 }
@@ -450,7 +450,7 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
     };
     println!(
         "  a string rewritten 3 times: {live} live entr(ies), \
-         {} distinct page(s)",
+         {} distinct block(s)",
         blocks.len()
     );
 
@@ -472,7 +472,7 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
         "{live} live entries for a string rewritten three times, resolving to {} page(s). ONE is \
          the state a component-keyed convergence produces, and it is why the address-keyed repair \
          must apply to the gated container arm ONLY: applied here it would leave two stale entries \
-         naming dead pages",
+         naming dead blocks",
         blocks.len()
     );
 }
@@ -887,7 +887,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     assert_ne!(
         before, after,
         "the rewrite landed back on page {before:?}, so the landing address already names the \
-         entry it supersedes and this test asserts nothing about a vacated page"
+         entry it supersedes and this test asserts nothing about a vacated block"
     );
 
     let (live, blocks, _) = entry_census(&engine);
@@ -895,7 +895,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     let listed = listed_members(&engine);
     println!(
         "\n=== rewrite off a page the element was alone on: {live} live entr(ies), \
-         {} distinct page(s); vacated {before:?} -> {after:?}; durable {}, listing \
+         {} distinct block(s); vacated {before:?} -> {after:?}; durable {}, listing \
          serves {}",
         blocks.len(),
         durable.len(),
@@ -929,7 +929,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     assert_eq!(
         occupied, blocks,
         "the index names {} live page(s) and the durable map holds its members on {}. The \
-         difference is an entry over a page nothing is on -- and under this gate a live entry IS a \
+         difference is an entry over a block nothing is on -- and under this gate a live entry IS a \
          claim of membership, so it serves a member that is not there",
         blocks.len(),
         occupied.len()
@@ -944,7 +944,7 @@ fn a_rewrite_off_a_block_the_element_was_alone_on_retires_that_blocks_entry() {
     assert!(
         !blocks.contains(&before),
         "the vacated page {before:?} is still named by a live entry. The member moved to \
-         {after:?} and nothing else was on {before:?}, so that entry stands for a page with \
+         {after:?} and nothing else was on {before:?}, so that entry stands for a block with \
          nothing on it"
     );
 }

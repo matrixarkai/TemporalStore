@@ -217,7 +217,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     println!("=== after a fold and one removal ===");
     println!(
         "  entries: {live_entries} live, {tombstone_entries} tombstone; \
-         {} distinct page(s) read, {} of the first shape",
+         {} distinct block(s) read, {} of the first shape",
         derived.blocks_read, derived.live_only_blocks
     );
     println!(
@@ -228,7 +228,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     );
     println!(
         "  the removed member: held by the resident map = {}, derived live from the pages = {}, \
-         NAMED REMOVED by the pages = {}",
+         NAMED REMOVED by the blocks = {}",
         served.contains(&victim),
         derived.live.contains_key(&victim_component),
         derived.removed.contains(&victim_component)
@@ -277,15 +277,15 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     assert!(
         derived.removed.contains(&victim_component),
         "THE PAGES DO NOT STATE THE REMOVAL. This is the refutation #2028 recorded, back: a folded \
-         page stays live for its other elements and nothing rewrote it, so the removed member is \
-         still in it and a page-derived membership resurrects it. Either the removal did not append \
-         a tombstone page, or the entry that kept that page reachable was dropped, or the derivation \
+         block stays live for its other elements and nothing rewrote it, so the removed member is \
+         still in it and a block-derived membership resurrects it. Either the removal did not append \
+         a tombstone block, or the entry that kept that block reachable was dropped, or the derivation \
          did not reach it."
     );
     assert!(
         !derived.live.contains_key(&victim_component),
         "the pages derive the removed member as LIVE as well as removed, so the tombstone did not \
-         outrank the page it supersedes -- which is an ORDERING failure, not a missing tombstone"
+         outrank the block it supersedes -- which is an ORDERING failure, not a missing tombstone"
     );
 
     // AND THE TWO SIDES AGREE, ELEMENT FOR ELEMENT. Not by count: #2014 is the recorded case of a

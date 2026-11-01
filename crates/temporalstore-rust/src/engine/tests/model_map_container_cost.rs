@@ -316,7 +316,7 @@ fn the_context_node_write_path_produces_exactly_one_field_per_hash() {
     assert_eq!(
         1, writers,
         "there is no longer exactly one producer inserting the single context-node field, so \
-         `write_context_node`'s own comment -- \"the one producer of a node page\" -- is stale and \
+         `write_context_node`'s own comment -- \"the one producer of a node block\" -- is stale and \
          the occupancy claim has to be re-derived: {writers}"
     );
 

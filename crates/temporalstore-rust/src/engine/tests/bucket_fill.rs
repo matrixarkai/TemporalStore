@@ -430,7 +430,7 @@ fn the_blocks_a_bucket_holds_are_decided_by_the_routing_range() {
         assert!(
             narrow.single_block_fraction() < 0.25,
             "the narrow arm at {records} records is {:.5} single-page; if a production-range shard \
-             were still single-page-dominated then #1959's reading would hold at both widths and \
+             were still single-block-dominated then #1959's reading would hold at both widths and \
              the range would not be the lever",
             narrow.single_block_fraction()
         );
@@ -566,7 +566,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
             assert!(
                 held.contains(key),
                 "{key} routes to bucket {home} on 0..{end_routing_bucket} and that bucket does \
-                 not hold it; filing and routing disagree, which is the shape that makes a page \
+                 not hold it; filing and routing disagree, which is the shape that makes a block \
                  invisible to a scoped reader"
             );
         }
@@ -605,7 +605,7 @@ fn routing_never_sees_the_component_which_is_why_a_containers_blocks_share_one_b
             hist.counts.get(&1).copied().unwrap_or_default(),
             0,
             "a container store on 0..{end_routing_bucket} produced a single-page bucket; every \
-             field is its own page under one key, so none is possible"
+             field is its own block under one key, so none is possible"
         );
         assert_eq!(
             hist.widest(),
@@ -684,7 +684,7 @@ fn the_narrow_range_holds_the_same_blocks_the_wide_one_does_bucket_for_bucket() 
             contents.keys().copied().collect::<BTreeSet<u32>>(),
             routed.keys().copied().collect::<BTreeSet<u32>>(),
             "on 0..{end_routing_bucket} the index occupies {} buckets and routing names {}; a \
-             bucket in one and not the other is a page nothing summarises",
+             bucket in one and not the other is a block nothing summarises",
             contents.len(),
             routed.len()
         );
@@ -721,8 +721,8 @@ fn the_narrow_range_holds_the_same_blocks_the_wide_one_does_bucket_for_bucket() 
     assert_eq!(
         wide, narrow,
         "the whole-keyspace store holds {} page handles and the 0..{NARROW_END} store holds {}; \
-         {} are in one and not the other. The range regroups pages; it must not change which \
-         pages exist",
+         {} are in one and not the other. The range regroups blocks; it must not change which \
+         blocks exist",
         wide.len(),
         narrow.len(),
         wide.symmetric_difference(narrow).count()
@@ -803,7 +803,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
             readable,
             RECORDS,
             "{direction} from 0..{from_end} to 0..{to_end}: {readable} of {RECORDS} records \
-             survived. A page filed under a bucket nothing summarises is supposed to be invisible \
+             survived. A block filed under a bucket nothing summarises is supposed to be invisible \
              to a SCOPED reader and still reachable by the full walk; unreadable is active loss"
         );
 
@@ -855,8 +855,8 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
         };
         println!(
             "  {direction} 0..{from_end} -> 0..{to_end}: {readable}/{RECORDS} readable, \
-             {entries} live pages, {buckets_before} buckets -> {} buckets, {} buckets holding \
-             {blocks_outside} pages above the shard's end",
+             {entries} live blocks, {buckets_before} buckets -> {} buckets, {} buckets holding \
+             {blocks_outside} blocks above the shard's end",
             after.len(),
             outside.len()
         );
@@ -881,7 +881,7 @@ fn a_store_reopened_on_the_other_range_keeps_every_block_in_both_directions() {
                 RECORDS,
                 "{direction} from 0..{from_end} to 0..{to_end}: {blocks_outside} of {RECORDS} pages \
                  came back filed above the shard's end, not all of them. The engine does not \
-                 re-file a page whose address carries an explicit bucket, so either every page is \
+                 re-file a block whose address carries an explicit bucket, so either every block is \
                  outside or the write path has stopped stamping one -- a partial count means the \
                  two halves of this fixture disagree and neither figure can be read"
             );
@@ -1047,7 +1047,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
                 blocks,
                 keys.len(),
                 "{records}/{end_routing_bucket}: the map holds {blocks} pages for {} keys, so the \
-                 per-page divisor below is not the fixture's",
+                 per-block divisor below is not the fixture's",
                 keys.len()
             );
             assert!(buckets > 0, "{records}/{end_routing_bucket}: no buckets to divide by");
@@ -1108,7 +1108,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
         assert_eq!(
             wide.blocks, narrow.blocks,
             "the two arms at {records} records hold {} and {} pages; a per-page figure over \
-             different page counts is two questions",
+             different block counts is two questions",
             wide.blocks, narrow.blocks
         );
         assert!(
@@ -1123,14 +1123,14 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
         assert_eq!(
             wide.arms.2, 0,
             "on the whole keyspace {} buckets are already on the `Many` arm at {records} records; \
-             at one page a bucket none should be, and if any are then the wide arm is not the \
-             single-page shape every figure here is compared against",
+             at one block a bucket none should be, and if any are then the wide arm is not the \
+             single-block shape every figure here is compared against",
             wide.arms.2
         );
         assert!(
             narrow.arms.2 > 0,
             "on 0..{NARROW_END} no bucket reached the `Many` arm at {records} records, so the \
-             fill did not happen and the per-page figures below compare two single-page stores"
+             fill did not happen and the per-block figures below compare two single-block stores"
         );
 
         // NEITHER DIRECTION IS ASSERTED. The fill trades one node per BLOCK for one node per
@@ -1138,7 +1138,7 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
         // on the fill -- so the sign is reported, with the arm counts that explain it.
         println!(
             "  {records} records: allocations a page {:.4} -> {:.4} ({:+.1}%); bytes a page \
-             {:.1} -> {:.1} ({:+.1}%); page index arms One {} -> {}, Many {} -> {}",
+             {:.1} -> {:.1} ({:+.1}%); block index arms One {} -> {}, Many {} -> {}",
             wide.allocs_per_block(),
             narrow.allocs_per_block(),
             100.0 * (narrow.allocs_per_block() - wide.allocs_per_block()) / wide.allocs_per_block(),
@@ -1171,9 +1171,9 @@ fn filling_a_bucket_trades_a_node_a_block_for_a_map_node_a_bucket_and_the_fill_d
     assert!(
         large_ratio < small_ratio,
         "the narrow range costs {large_ratio:.3}x the allocations a page at {LARGE} records and \
-         {small_ratio:.3}x at {SMALL}. A deeper fill spreads the map node over more pages, so the \
+         {small_ratio:.3}x at {SMALL}. A deeper fill spreads the map node over more blocks, so the \
          larger corpus must be the better of the two; if it is not, the node is not what the \
-         per-page figure is tracking"
+         per-block figure is tracking"
     );
 }
 

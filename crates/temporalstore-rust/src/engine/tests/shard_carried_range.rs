@@ -462,7 +462,7 @@ fn the_two_writers_file_by_the_stamp_and_the_two_stamps_disagree() {
     assert!(
         wide_outside > 0,
         "the WIDE stamp filed every page inside 0..{NARROW_END} as well, so the two stamps cannot \
-         be told apart by where they put a page and the inequality above is measuring noise"
+         be told apart by where they put a block and the inequality above is measuring noise"
     );
 }
 
@@ -719,7 +719,7 @@ fn a_store_written_on_one_range_is_refused_on_the_other() {
         assert!(
             !status.ok,
             "wrote on 0..{write_end} and opened on 0..{read_end}: the load succeeded, so a \
-             populated store can still be opened on a range none of its pages are filed under"
+             populated store can still be opened on a range none of its blocks are filed under"
         );
         assert_eq!(
             "routing_range_mismatch", status.code,
@@ -821,7 +821,7 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
     let contents = bucket_contents(shard);
     println!(
         "  installed a 0..{WIDE_END} image on a 0..{NARROW_END} shard: {readable}/{RECORDS} \
-         records, {} pages, stamp {:?}",
+         records, {} blocks, stamp {:?}",
         block_total(&contents),
         shard.routing_range()
     );
@@ -839,7 +839,7 @@ fn a_manifest_installed_across_ranges_leaves_the_target_carrying_its_own_range()
         (0, NARROW_END),
         shard.routing_range(),
         "the target came out of a manifest install carrying the IMAGE's range rather than its \
-         own, so the next unrouted page it files goes into a bucket it does not hold"
+         own, so the next unrouted block it files goes into a bucket it does not hold"
     );
 }
 
@@ -970,7 +970,7 @@ fn every_shard_the_engine_installs_carries_its_routing_range() {
         sites, expected,
         "the set of production sites that put a ShardState into the served shard map has moved.\n\
          If you ADDED one, it must stamp the shard's routing range -- an unstamped shard files \
-         every unrouted page under the WHOLE range, which on any shard not loaded on 0..u32::MAX \
+         every unrouted block under the WHOLE range, which on any shard not loaded on 0..u32::MAX \
          is a bucket the shard does not hold. Route it through `install_shard_state` instead.\n\
          If you REMOVED one, the engine has another way to install a shard and this guard can no \
          longer see it."
@@ -1210,7 +1210,7 @@ fn a_manifest_install_records_the_range_it_filed_under() {
             unloaded_stamp.end_routing_bucket
         ),
         "the install filed pages under {filed:?} and stamped \
-         {}..{}; a stamp naming a range other than the one the pages were filed under is worse \
+         {}..{}; a stamp naming a range other than the one the blocks were filed under is worse \
          than no stamp at all",
         unloaded_stamp.start_routing_bucket,
         unloaded_stamp.end_routing_bucket

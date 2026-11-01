@@ -2023,7 +2023,7 @@ impl std::fmt::Display for BlockRefKeyUnparsable {
             "the stored page key {:?} is not a block-ref key: {}. A page's identity is read back \
              out of the name it is filed under, so a key this cannot invert is an index that \
              names no object -- refused here so the caller replays its log rather than serving a \
-             page filed under a guess",
+             block filed under a guess",
             self.key, self.because
         )
     }
@@ -2100,7 +2100,7 @@ pub fn block_ref_key_parts(key: &str) -> Result<BlockRefKeyParts<'_>, BlockRefKe
             None => {
                 return Err(refuse(
                     "it holds fewer than seven separators, so it cannot be the eight-slot \
-                     composite the page index is keyed by",
+                     composite the block index is keyed by",
                 ))
             }
         }

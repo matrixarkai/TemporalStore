@@ -270,6 +270,6 @@ fn a_torn_block_is_counted_and_leaves_no_entry_rather_than_an_empty_series() {
     assert!(
         torn_points < clean_points,
         "the torn arm recovered {torn_points} points and the clean arm {clean_points}, so tearing \
-         the pages changed nothing and this comparison is empty"
+         the blocks changed nothing and this comparison is empty"
     );
 }

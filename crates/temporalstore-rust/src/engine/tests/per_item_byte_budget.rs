@@ -692,13 +692,13 @@ fn only_the_structures_that_hold_an_address_moved() {
         3, holders,
         "the mechanism predicts movement for the three structures holding an address inline; this \
          list names {holders}. `BlockIndexMap` and `BucketNode` were holders until #1975 boxed the \
-         single-page arm -- if either is a holder again, the entry is back inside the node"
+         single-block arm -- if either is a holder again, the entry is back inside the node"
     );
     assert!(
         control >= 12,
         "only {control} structures in the control group. Below twelve the control cannot \
          distinguish \"nothing else moved\" from \"nothing else was looked at\" -- and it gained two \
-         when #1975 took the page entry out of the node"
+         when #1975 took the block entry out of the node"
     );
 
     println!("=== what moved, and what the mechanism says should not have ===");
@@ -1404,7 +1404,7 @@ fn every_byte_of_the_bucket_node_is_accounted_for() {
     assert!(
         block.size * 2 < size,
         "the page index is {} of {size} bytes. It is supposed to be well under half the structure \
-         now that its single-page arm holds a pointer rather than a whole entry; if it is over half \
+         now that its single-block arm holds a pointer rather than a whole entry; if it is over half \
          again, the inline entry has come back or another payload has joined it",
         block.size
     );
@@ -1728,7 +1728,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         "the shape before #1958 was 208 bytes, 200 once the address inside the inline page entry \
          shed its derived generation, 192 once the node stopped carrying a per-bucket \
          last_dump_sequence, 184 once that address merged its two slab coordinates, 168 once the \
-         page entry's model spelling became one byte, and 112 once the page index stopped holding \
+         block entry's model spelling became one byte, and 112 once the block index stopped holding \
          that entry inline; it reads as {wide_ttl}, so the mirrors have drifted from the history \
          they claim to price"
     );
@@ -1736,20 +1736,20 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
         112, wide_tombstone,
         "the shape before #1961 was 200 bytes, 192 once the address shed its derived generation, \
          184 once the node stopped carrying a per-bucket last_dump_sequence, 176 once that address \
-         merged its two slab coordinates, 160 once the page entry's model spelling became one byte, \
-         and 104 once the page index stopped holding that entry inline; it reads as \
+         merged its two slab coordinates, 160 once the block entry's model spelling became one byte, \
+         and 104 once the block index stopped holding that entry inline; it reads as \
          {wide_tombstone}, so the eight bytes that change claims are not the eight bytes it took"
     );
     assert_eq!(96, live, "the node is {live} bytes, not 96");
     assert_eq!(
         104, loose,
         "the shape before the flags were packed was 184 bytes, 176 once the node stopped carrying a \
-         per-bucket last_dump_sequence, 168 once the address inside the inline page entry merged \
+         per-bucket last_dump_sequence, 168 once the address inside the inline block entry merged \
          its two slab coordinates, 152 once that entry's model spelling became one byte, and 96 \
-         once the page index stopped holding the entry inline -- this mirror holds the same page \
+         once the block index stopped holding the entry inline -- this mirror holds the same block \
          index, so it moves with the live shape every time and the EIGHT BYTES BETWEEN THEM is \
          still what packing the flags is worth. Which is the point of pricing by the DISTANCE \
-         between mirrors rather than by either width: FIVE changes to the page entry and its index \
+         between mirrors rather than by either width: FIVE changes to the block entry and its index \
          have moved both, and not one of them has moved this price. It reads as {loose}, so the row \
          that prices this change is not describing the shape it replaced"
     );
@@ -1834,7 +1834,7 @@ fn what_each_declined_shape_of_the_bucket_node_would_cost() {
     );
     println!(
         "\n  boxing the inline entry took the node {inline_block} -> {live} B ({:+} B a bucket), \
-         which is exactly the page index's own {} -> {} B",
+         which is exactly the block index's own {} -> {} B",
         live as i64 - inline_block as i64,
         size_of::<MirrorInlineBlockIndexMap>(),
         size_of::<BlockIndexMap>()

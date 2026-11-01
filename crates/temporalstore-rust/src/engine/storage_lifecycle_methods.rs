@@ -2871,7 +2871,7 @@ mod eviction_round_scale {
              \n                                {SMALL:>10} objects {LARGE:>10} objects      ratio\n\
                buckets                     {small_buckets:>10} {large_buckets:>18}   {:>8.2}x\n\
                victims chosen              {small_victims:>10} {large_victims:>18}\n\
-               live-page entries scanned   {small_scanned:>10} {large_scanned:>18}   {:>8.2}x\n\
+               live-block entries scanned   {small_scanned:>10} {large_scanned:>18}   {:>8.2}x\n\
                allocations, working round  {small_allocs:>10} {large_allocs:>18}   {:>8.2}x\n\
                alloc bytes, working round  {small_bytes:>10} {large_bytes:>18}   {:>8.2}x\n\
                allocations, IDLE round     {small_idle:>10} {large_idle:>18}   {:>8.2}x\n\

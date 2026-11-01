@@ -164,7 +164,7 @@ fn a_removal_that_cannot_be_framed_is_counted_and_writes_no_block() {
                 assert_eq!(
                     component, &recovered,
                     "{kind}: the element is NOT recoverable from the tombstone page. The page item's \
-                     key went in as {component} and came back as {recovered}, so the page cannot \
+                     key went in as {component} and came back as {recovered}, so the block cannot \
                      stand in for a stored element name and a removal's identity would have to live \
                      somewhere else."
                 );
@@ -252,7 +252,7 @@ fn an_older_block_is_not_outranked_by_a_block_that_merely_does_not_mention_the_e
     assert!(
         with_silence.live.contains_key(&component),
         "A LATER PAGE THAT DOES NOT MENTION THE ELEMENT REMOVED IT. Silence is not a removal: a fold \
-         writes pages that hold only the elements it batched, so treating an unmentioned element as \
+         writes blocks that hold only the elements it batched, so treating an unmentioned element as \
          gone would empty every container a round did not fully rewrite."
     );
     assert!(with_silence.removed.is_empty());
@@ -567,7 +567,7 @@ fn a_tombstone_dropped_while_an_older_block_survives_resurrects_its_element() {
     assert!(
         may_drop_tombstones(3, 3, 1),
         "the rule forbids dropping a tombstone even when the whole container was rewritten into one \
-         page, which would mean tombstones are never collectable at all"
+         block, which would mean tombstones are never collectable at all"
     );
     // The denominator case: a container with no blocks must not read as a total rewrite.
     assert!(

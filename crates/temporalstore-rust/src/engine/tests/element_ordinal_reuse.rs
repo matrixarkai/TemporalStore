@@ -713,8 +713,8 @@ fn every_per_element_delete_leaves_one_tombstone_and_the_whole_object_delete_lea
             assert_eq!(
                 1, tombstoned,
                 "{kind}/{key}: a PER-ELEMENT delete left {tombstoned} tombstone entry(ies), not one. \
-                 Zero means the removal reached the index and NOT the pages, so a membership derived \
-                 from the pages would put the element back -- which is the defect #2028 drove and \
+                 Zero means the removal reached the index and NOT the blocks, so a membership derived \
+                 from the blocks would put the element back -- which is the defect #2028 drove and \
                  this whole change exists to close. More than one means the removal filed a tombstone \
                  per bucket rather than per element."
             );
@@ -832,7 +832,7 @@ fn the_element_ordinal_a_delete_frees_is_handed_straight_back_to_the_next_elemen
         "the arrival took ordinal {ordinal_the_arrival_took} and the removed member had \
          {ordinal_the_third_member_took}. IF THIS IS RED, non-reuse is now enforced somewhere and \
          this module's refutation should be re-read rather than this assertion relaxed. The helper \
-         above counts LIVE pages; a red caused by the tombstone being counted is a helper that lost \
+         above counts LIVE blocks; a red caused by the tombstone being counted is a helper that lost \
          its `deleted` filter, not a reservation."
     );
 
@@ -965,7 +965,7 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
 
     println!(
         "\n  [tombstone] object id {object_id}: held before delete={held_before_delete}, after \
-         delete={held_after_delete}, after the next write={held_after_rewrite}; pages after that \
+         delete={held_after_delete}, after the next write={held_after_rewrite}; blocks after that \
          write={blocks_after_rewrite}"
     );
 
@@ -981,14 +981,14 @@ fn the_element_rewrite_clears_the_tombstone_so_a_live_block_reads_as_hot() {
     assert!(
         !held_after_rewrite,
         "the tombstone SURVIVED the next write of the same triple. The element write path clears \
-         `deleted_object_index` for the id it is filing a live page for; if this is red that \
+         `deleted_object_index` for the id it is filing a live block for; if this is red that \
          `remove` has been lost from `upsert_bucket_index_block_inner` and the stale tombstone is \
          back."
     );
     assert_eq!(
         blocks_after_rewrite, 1,
         "the rewrite must have filed its page, or the stale tombstone below is not sitting beside a \
-         LIVE page"
+         LIVE block"
     );
 
     // The consequence. Read TWICE: the per-object row through the internal walk (the same door
@@ -2041,7 +2041,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
             let routed_named = routed_census.iter().filter(|row| row.2.is_some()).count();
             println!(
                 "    routed      {range_label:<20} {size_label:<14} pages={:<6} pages carrying a \
-                 component={routed_named}  -> 0.00 B a page to save",
+                 component={routed_named}  -> 0.00 B a block to save",
                 routed_census.len()
             );
             assert_eq!(
@@ -2856,7 +2856,7 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
         assert!(
             !folded.contains(container),
             "apply_key_states now writes {container} directly. The carry must be applied AFTER the \
-             fold, against the finished page index, or a removed element comes back -- see \
+             fold, against the finished block index, or a removed element comes back -- see \
              `fold_carried_container_elements`."
         );
     }
@@ -2993,8 +2993,8 @@ fn an_ordinal_loses_the_member_the_fold_delivers_without_a_durable_entry() {
     let doomed_score = score_of(&doomed);
     println!(
         "  [fold] after the reload: control={control_score:?}  doomed={doomed_score:?}\n  [fold] \
-         the doomed member's bytes are still in the page payload, and the reconcile does not read \
-         pages"
+         the doomed member's bytes are still in the block payload, and the reconcile does not read \
+         blocks"
     );
 
     // THE CONTROL, so a fixture that lost everything cannot pass as this finding.

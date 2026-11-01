@@ -778,7 +778,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         let map_walk_addresses = crate::snapshot_probe::counts().live_slab_scan_addresses;
         println!(
             "  reader collect_live_block_slab_ids visited {map_walk_addresses} model-map \
-             address(es) over {live_blocks} live page(s)"
+             address(es) over {live_blocks} live block(s)"
         );
 
         // -----------------------------------------------------------------------------------------
@@ -852,7 +852,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
         }
         println!(
             "  reader compact_shard_blocks_relocating relocates from the model maps: \
-             {named_by_map} address(es) named, {} naming no live page",
+             {named_by_map} address(es) named, {} naming no live block",
             named_but_not_live.len()
         );
         // DENOMINATOR, RE-ATTRIBUTED TO THE FIXTURE THAT OWNS IT. This read 6 on the arithmetic "8
@@ -864,13 +864,13 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             written_population, named_by_map,
             "DENOMINATOR: the resident maps name {named_by_map} address(es), not the \
              {written_population} this fixture wrote. The merge keeps every persisted element whose \
-             page is still live, and one entry a page keeps all of them live, so nothing is dropped"
+             block is still live, and one entry a block keeps all of them live, so nothing is dropped"
         );
         assert!(
             named_but_not_live.is_empty(),
             "the resident maps name {} address(es) that are not live pages in the index ({:?}). \
              `compact_shard_blocks_relocating` iterates those maps to build its relocation work \
-             list, so each of these is a page compaction reads off the old slab, copies onto the \
+             list, so each of these is a block compaction reads off the old slab, copies onto the \
              fresh one and keeps alive for good",
             named_but_not_live.len(),
             named_but_not_live
@@ -903,7 +903,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
                 crate::engine::command_upsert_components(&removal, shard).is_none(),
                 "`command_upsert_components` now names a component for a REMOVAL. \
                  `collect_upsert_index_items` resolves that component's address out of the resident \
-                 map, so a removal reaching it would build a WAL index item pinning a page the \
+                 map, so a removal reaching it would build a WAL index item pinning a block the \
                  removal dropped -- and a replay would re-install it"
             );
         }
@@ -998,9 +998,9 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
     assert!(
         ghost_row.1 > ghost_row.2,
         "the resident map holds {} member(s) for `ghost` against {} served, so \
-         `fill_absent_elements` is no longer keeping elements whose page is live but whose element \
+         `fill_absent_elements` is no longer keeping elements whose block is live but whose element \
          is dead. That was #2017's state, re-reached because the fix tests the ADDRESS and one \
-         index entry a page keeps a page alive through the removal of one of its elements. If this \
+         index entry a block keeps a block alive through the removal of one of its elements. If this \
          has been fixed at the ELEMENT, turn the assertion over and name the mechanism",
         ghost_row.1,
         ghost_row.2
@@ -1178,7 +1178,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
     assert!(
         set_members.contains(&b"set-control".to_vec()),
         "the set control was dropped, so the filter is keeping nothing rather than keeping live \
-         pages"
+         blocks"
     );
     assert!(
         zset_members.contains(&b"zset-control".to_vec()),
@@ -1317,7 +1317,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     println!(
         "\n=== releasing every bucket, with a set among them ===\n  released \
          {released_count} bucket(s); {kind_refusals} refused on BlockKindNotAddressable\n  the \
-         set's own bucket released: {set_bucket_released}; set pages still in `bucket_map`: \
+         set's own bucket released: {set_bucket_released}; set blocks still in `bucket_map`: \
          {set_blocks_still_indexed}"
     );
 
@@ -1337,9 +1337,9 @@ fn a_bucket_holding_a_container_block_is_never_released() {
     assert!(
         !set_bucket_released,
         "the bucket holding the set's pages was RELEASED. `released_model_kind_is_addressable` has \
-         admitted a container kind, so a container page can now sit in a released bucket -- and the \
-         live-page set the merge filters against must come from \
-         `collect_bucket_index_live_block_entries`, which supplements released pages back in, and \
+         admitted a container kind, so a container block can now sit in a released bucket -- and the \
+         live-block set the merge filters against must come from \
+         `collect_bucket_index_live_block_entries`, which supplements released blocks back in, and \
          never from `bucket_index.bucket_map`, which does not"
     );
     assert_eq!(
@@ -1369,7 +1369,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         assert!(
             survived.contains(member),
             "a member in a RELEASED bucket was dropped by the merge. The live-page set is being \
-             built from `bucket_index.bucket_map`, which omits a released bucket's pages by design; \
+             built from `bucket_index.bucket_map`, which omits a released bucket's blocks by design; \
              it must come from `collect_bucket_index_live_block_entries`, which supplements them \
              back in from the model maps"
         );
@@ -1507,7 +1507,7 @@ fn the_merge_runs_even_when_no_set_block_survived() {
                 3, in_map,
                 "{label}: the resident map holds {in_map} member(s), not the 3 the stale snapshot \
                  put back. `fill_absent_elements` keeps a persisted element whose ADDRESS still \
-                 names a live page, and one entry a page means a page outlives the removal of one \
+                 names a live block, and one entry a block means a block outlives the removal of one \
                  of its elements -- so the merge restores all three. If this reads 1 the merge has \
                  been taught to ask about the ELEMENT and the finding below should be turned over"
             );

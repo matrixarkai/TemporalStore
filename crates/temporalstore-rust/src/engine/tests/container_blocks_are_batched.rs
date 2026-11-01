@@ -276,7 +276,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         assert_eq!(
             FOLDABLE_ELEMENTS, *blocks,
             "{kind} started with {blocks} pages for {FOLDABLE_ELEMENTS} elements, so the fixture is \
-             not the one-page-per-element shape this test folds"
+             not the one-block-per-element shape this test folds"
         );
         assert_eq!(FOLDABLE_ELEMENTS, *entries);
     }
@@ -360,7 +360,7 @@ fn a_compaction_round_folds_a_containers_blocks_and_folds_its_entry_count_with_t
         assert!(
             entries_after < *entries_before,
             "{kind} holds {entries_after} entries where it held {entries_before}; a round that \
-             folded {blocks_before} pages into {blocks_after} left the entry count alone, which is \
+             folded {blocks_before} blocks into {blocks_after} left the entry count alone, which is \
              what an entry that names its element does"
         );
         kinds_folded += 1;
@@ -471,7 +471,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         assert!(
             batches > 0 && folded > 0,
             "the round wrote {batches} batches folding {folded} pages, so the read-backs below are \
-             not reading folded pages"
+             not reading folded blocks"
         );
         let (block_count, entry_count) = addresses_and_entries(&engine, "hash", "readback");
         // THE FLOOR IS ON BLOCKS BEING SHARED BY ELEMENTS, NOT BY ENTRIES.
@@ -576,7 +576,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         assert!(
             listed.contains(member),
             "the reloaded set lost a member; a set listing reads a page per entry, so this is the \
-             arm that reads every folded page"
+             arm that reads every folded block"
         );
     }
     let ranged = match read(
@@ -626,7 +626,7 @@ fn every_element_reads_back_its_own_value_after_the_fold_and_after_a_reload() {
         assert!(
             zset_ranged.contains(member),
             "the reloaded zset lost a member. Its members are restored from the durable map \
-             rather than read off a page, so this is the arm that fails if the fold or the \
+             rather than read off a block, so this is the arm that fails if the fold or the \
              reload drops one"
         );
     }
@@ -687,7 +687,7 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     assert!(
         blocks_after > 1,
         "{OVER_CAP_ELEMENTS} elements folded into {blocks_after} page(s) against a cap of {cap}, so \
-         the cap did not bind and one page holds the whole container"
+         the cap did not bind and one block holds the whole container"
     );
     let smallest_possible = (OVER_CAP_ELEMENTS + cap - 1) / cap;
     assert!(
@@ -704,8 +704,8 @@ fn the_element_cap_binds_so_one_block_never_holds_a_whole_large_container() {
     assert_eq!(
         blocks_after, entries_after,
         "the index filed {entries_after} entries over {blocks_after} page(s). One entry a page is \
-         what the collapse means: more entries than pages is a stale entry over a dead page, and \
-         fewer means a page nothing names"
+         what the collapse means: more entries than blocks is a stale entry over a dead block, and \
+         fewer means a block nothing names"
     );
 }
 
@@ -992,7 +992,7 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
     );
     println!(
         "  so the compressor's share of the headline is {:.1} points, and the REPRESENTATION's \
-         saving -- framing plus one record header per page instead of many -- is {incompressible:.1}%",
+         saving -- framing plus one record header per block instead of many -- is {incompressible:.1}%",
         compressible - incompressible
     );
     // THE CLAIM THIS TEST EXISTS TO PIN: the compressible arm must save MORE, or the split is not

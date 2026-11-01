@@ -194,7 +194,7 @@ fn steady_walks_per_record(records: usize, batch: usize) -> u64 {
     );
     println!(
         "  {records:>6} records in batches of {batch:<4} -> ONE round materialised {entries:>9} \
-         live-page entries = {}x the store, from {} call site(s)",
+         live-block entries = {}x the store, from {} call site(s)",
         entries / records as u64,
         sites.len()
     );
@@ -223,12 +223,12 @@ fn a_round_walks_the_live_block_set_a_constant_number_of_times() {
         "a round cost {small} whole-store walks at {SMALL} records and {large} at {LARGE}. The \
          two must agree: the round's walk volume is supposed to be a fixed number of passes over \
          the store, so a size-dependent count means some pass is now proportional to something \
-         other than the live-page set"
+         other than the live-block set"
     );
     assert_eq!(
         small, WALKS_PER_ROUND,
         "a round now costs {small} whole-store walks per record, not the measured \
-         {WALKS_PER_ROUND}. Each one materialises every live page in the shard and clones two \
+         {WALKS_PER_ROUND}. Each one materialises every live block in the shard and clones two \
          strings per entry, so a walk added here is paid on every periodic round for ever. \
          `live_block_scan_sites_snapshot` names the call sites"
     );
@@ -290,7 +290,7 @@ fn an_idle_round_still_walks_the_live_block_set() {
     let walks = entries / RECORDS as u64;
     println!(
         "  IDLE round over {RECORDS} records, dirty set empty, nothing to dump: {entries} \
-         live-page entries = {walks}x the store"
+         live-block entries = {walks}x the store"
     );
     assert_eq!(
         walks, WALKS_PER_IDLE_ROUND,
@@ -499,7 +499,7 @@ fn the_rounds_block_reads_are_flat_in_corpus_size_and_all_under_a_guard() {
     assert_eq!(
         small_total, large_total,
         "one round read {small_total} pages at {SMALL} records and {large_total} at {LARGE}. The \
-         round's page reads are bounded per round, so a size-dependent count means a whole-store \
+         round's block reads are bounded per round, so a size-dependent count means a whole-store \
          read has come back into the round"
     );
 
@@ -600,8 +600,8 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
     assert_eq!(
         report.total_block_refs as u64, report.object_lifecycle.live_block_refs,
         "the readability probe walked {} live pages and the object-lifecycle report counted {}. \
-         Both describe the live-page set of one shard under one read guard, so a difference \
-         means one of them is being derived from something other than the pages the other saw",
+         Both describe the live-block set of one shard under one read guard, so a difference \
+         means one of them is being derived from something other than the blocks the other saw",
         report.total_block_refs, report.object_lifecycle.live_block_refs
     );
 
@@ -744,7 +744,7 @@ fn the_recovery_report_derives_three_answers_from_one_walk_and_takes_a_second_fo
         charges[0],
         indexed_blocks + report.total_block_refs as u64,
         "one walk materialised {} entries; with {released_buckets} bucket(s) released it should \
-         build the {indexed_blocks} indexed pages and then the whole {}-page set again",
+         build the {indexed_blocks} indexed blocks and then the whole {}-block set again",
         charges[0],
         report.total_block_refs
     );
@@ -796,7 +796,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
         entry_bytes <= text_field_bytes + address_bytes + 8,
         "a live-page entry is {entry_bytes} B against {text_field_bytes} B of shared text \
          pointers, {address_bytes} B of address and a few flags. Bigger than that means a field \
-         is carrying owned text, which is a heap copy per live page PER WALK on every periodic \
+         is carrying owned text, which is a heap copy per live block PER WALK on every periodic \
          round"
     );
 
@@ -806,7 +806,7 @@ fn a_live_block_entry_carries_pointers_not_text_and_the_hoist_lowered_the_peak()
     let new_peak_per_block = entry_bytes;
     println!(
         "  recovery report peak per live page: {old_peak_per_block} B -> {new_peak_per_block} B, \
-         {} B/page of address vector no longer built beside the entries",
+         {} B/block of address vector no longer built beside the entries",
         old_peak_per_block - new_peak_per_block
     );
     assert!(

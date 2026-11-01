@@ -150,7 +150,7 @@ fn roll_slab(engine: &TemporalEngine) {
     assert!(
         after > before,
         "the fixture asked for a slab roll and got none ({before} -> {after}), so the store is one \
-         slab and compaction and page reclaim have no choice to make"
+         slab and compaction and block reclaim have no choice to make"
     );
 }
 
@@ -466,7 +466,7 @@ fn a_round_costs_the_whole_store_stage_by_stage() {
             "stage {name} walked {large_per_record:.3} times the store at {LARGE} records against \
              {small_per_record:.3} at {SMALL}. Differing BETWEEN the sizes means this stage \
              stopped being proportional to the store and started being proportional to something \
-             else, which is the failure worth a page ({} entries, expected about {expected_large})",
+             else, which is the failure worth a block ({} entries, expected about {expected_large})",
             large.entries(name),
         );
     }

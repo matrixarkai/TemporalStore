@@ -1084,8 +1084,8 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
     assert!(
         record.items.is_empty(),
         "the expiry delta carries {} page items. The round's deletes are supposed to leave no \
-         page for a covered key, which is why the record is built without collecting any -- a \
-         surviving page is now described by nothing and gets wiped on the fold",
+         block for a covered key, which is why the record is built without collecting any -- a \
+         surviving block is now described by nothing and gets wiped on the fold",
         record.items.len()
     );
 
@@ -1098,7 +1098,7 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
     assert!(
         !named.is_empty(),
         "the expiry delta named no keys at all. `delta_record_covered_keys` reads the covered set \
-         from these blobs and a removed key contributes no page items, so a record with no blobs \
+         from these blobs and a removed key contributes no block items, so a record with no blobs \
          wipes nothing: every key this round removed comes back on a delta-fold recovery"
     );
 
@@ -1108,7 +1108,7 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
         assert!(
             named.contains(&key),
             "the expiry delta does not name {key}, which the round removed. The fold covers only \
-             the keys these blobs name, so this key keeps its pages and its past deadline and \
+             the keys these blobs name, so this key keeps its blocks and its past deadline and \
              comes back alive. Named: {named:?}"
         );
     }
@@ -1117,7 +1117,7 @@ fn the_expiry_delta_names_what_the_round_removed_and_anchors_no_further() {
     assert_eq!(
         live_named, 0,
         "the expiry delta names {live_named} keys the round did not remove. The fold WIPES every \
-         page of every covered key and restores only the items the record carries, so naming a \
+         block of every covered key and restores only the items the record carries, so naming a \
          live key deletes it on recovery. Named: {named:?}"
     );
 
@@ -1353,7 +1353,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     assert!(
         control_blocks > 0,
         "CONTROL: the unfolded base holds no pages at all for the {DUE_KEYS} removed keys, so the \
-         page half of the fold has nothing to wipe and asserting it wiped them is vacuous"
+         block half of the fold has nothing to wipe and asserting it wiped them is vacuous"
     );
     assert_eq!(
         control.expires_at_ms().len(),
@@ -1379,7 +1379,7 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
     println!(
         "  stale base at anchor {base_anchor} ({} bytes, unchanged by the round), one delta at \
          anchor {record_anchor} with {} items and {} key blobs: unfolded holds {} deadlines and \
-         {control_blocks} pages for the removed keys, folded holds {}",
+         {control_blocks} blocks for the removed keys, folded holds {}",
         base_before.len(),
         record.items.len(),
         record.key_states.len(),
@@ -1401,9 +1401,9 @@ fn a_delta_fold_recovery_applies_the_tombstones_a_stale_base_still_denies() {
             blocks_for(&folded, &key),
             0,
             "the fold left {} page(s) of {key} attached. The record carries NO items, and an \
-             empty item list against a covered key is how the removal is spelled: every page of \
-             every covered key is wiped and only the carried items are restored. Pages left \
-             behind are pages the deletes already retained -- dangling entries pointing into \
+             empty item list against a covered key is how the removal is spelled: every block of \
+             every covered key is wiped and only the carried items are restored. Blocks left \
+             behind are blocks the deletes already retained -- dangling entries pointing into \
              reclaimable slabs",
             blocks_for(&folded, &key)
         );
@@ -2283,7 +2283,7 @@ fn a_with_options_deadline_survives_recovery() {
         deadline_for(&engine, 1, INCREMENT_KEY),
         Some(before.0),
         "the ControlStateIncrementWithOptions deadline did not survive recovery: the record's \
-         page outcome was installed and its command never re-run, so the deadline had to be in \
+         block outcome was installed and its command never re-run, so the deadline had to be in \
          the record and was not",
     );
     assert_eq!(
@@ -3684,7 +3684,7 @@ fn an_expiry_round_under_replay_writes_a_delta_with_no_anchor() {
     assert!(
         record.items.is_empty(),
         "fixture: the expiry delta describes its removals with key-states alone, and this one \
-         carries {} page items",
+         carries {} block items",
         record.items.len()
     );
 }

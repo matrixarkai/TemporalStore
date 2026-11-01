@@ -545,7 +545,7 @@ fn relieving_memory_reclaims_no_space_and_reclaiming_space_is_its_own_call() {
         dead_bytes(&after_evict),
         dead_before,
         "an eviction round moved the candidates' dead bytes {dead_before} -> {}. Relieving memory \
-         releases a resident page list and writes no block, so it cannot reclaim disk space; if it \
+         releases a resident block list and writes no block, so it cannot reclaim disk space; if it \
          now does, the two passes have been fused and the trigger for the second is no longer what \
          decides it",
         dead_bytes(&after_evict)
@@ -577,7 +577,7 @@ fn relieving_memory_reclaims_no_space_and_reclaiming_space_is_its_own_call() {
     eprintln!();
     eprintln!(
         "  [two-passes] candidate dead bytes {dead_before} (before) -> {} (after eviction released \
-{} buckets, dropped {}) -> {} (after one compaction round relocated {} page refs over {} drained \
+{} buckets, dropped {}) -> {} (after one compaction round relocated {} block refs over {} drained \
 slabs); candidates {candidates_before} -> {} -> {}; relocatable refs {relocatable_before} -> {}; \
 non-purged bytes {non_purged_before} -> {non_purged_after_evict}",
         dead_bytes(&after_evict),
@@ -597,7 +597,7 @@ non-purged bytes {non_purged_before} -> {non_purged_after_evict}",
     assert!(
         relocatable_after < relocatable_before,
         "relocatable page refs went {relocatable_before} -> {relocatable_after}; a round that \
-         drained its slabs has to leave fewer pages on slabs anyone wants emptied, and this is the \
+         drained its slabs has to leave fewer blocks on slabs anyone wants emptied, and this is the \
          term that says the second pass did something the first one could not"
     );
 

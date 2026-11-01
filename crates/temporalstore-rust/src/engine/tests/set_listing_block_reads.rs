@@ -365,7 +365,7 @@ fn a_set_listing_reads_one_block_per_member_and_a_zset_listing_reads_none() {
             assert_eq!(
                 0, zset_reads,
                 "the zset listing for {zset_key} performed {zset_reads} page reads. A zset answers \
-                 from `shard.zsets` and must read no page at all"
+                 from `shard.zsets` and must read no block at all"
             );
 
             let per = set_reads as f64 / population as f64;
@@ -658,7 +658,7 @@ fn every_member_a_set_listing_returns_is_already_spelled_by_its_component() {
     assert!(
         folded_pairs >= 1 && folded_pairs < served_folded,
         "the folded key's walk returned {folded_pairs} pair(s) for {served_folded} served \
-         member(s). One entry a page is what makes this strict: before the collapse the walk \
+         member(s). One entry a block is what makes this strict: before the collapse the walk \
          returned a pair per element and these were equal, which is what let this arm claim the \
          component beside the address already spelled the member"
     );
@@ -796,7 +796,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     assert!(
         payload_population.contains(&removed),
         "the live pages no longer state the removed member, so an address-liveness test would \
-         refuse it and this arm has nothing to find. One entry a page is what keeps the page alive \
+         refuse it and this arm has nothing to find. One entry a block is what keeps the block alive \
          through the removal of its element"
     );
 
@@ -880,9 +880,9 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
     assert!(
         in_map.contains(&removed),
         "the resident map no longer holds the removed member. `fill_absent_elements` tests whether \
-         a page is still live at the persisted element's address, and one entry a page keeps that \
-         page alive through the removal of its element -- so this held at map 2 against a served 1. \
-         If the merge has been taught to ask about the ELEMENT rather than the page, this arm is \
+         a block is still live at the persisted element's address, and one entry a block keeps that \
+         block alive through the removal of its element -- so this held at map 2 against a served 1. \
+         If the merge has been taught to ask about the ELEMENT rather than the block, this arm is \
          the record of why it had to be, and the assertion should be turned over again with the \
          mechanism named"
     );

@@ -721,7 +721,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
             let object_key = identities.get(handle).unwrap_or_else(|| {
                 panic!(
                     "[CLAUSE join-total] the page at handle {handle} in bucket {} has no identity \
-                     beside it, so no counterfactual over page keys can be priced",
+                     beside it, so no counterfactual over block keys can be priced",
                     node.routing_bucket
                 )
             });
@@ -729,7 +729,7 @@ fn reading_on(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u3
             assert!(
                 handles_by_written_key.insert(written.clone(), *handle).is_none(),
                 "[CLAUSE join-total] two pages render the written key `{written}`, so a key is not \
-                 a page's name and the join below is not one-to-one"
+                 a block's name and the join below is not one-to-one"
             );
         }
     }
@@ -1439,7 +1439,7 @@ fn doctor(reading: &Reading, candidate: Candidate) -> serde_json::Value {
                 assert!(
                     replacement.insert(new_key.clone(), entry).is_none(),
                     "[CLAUSE doctoring-is-one-to-one] the doctored page index files two entries \
-                     under `{new_key}`, so this candidate loses a page rather than bytes"
+                     under `{new_key}`, so this candidate loses a block rather than bytes"
                 );
             }
             *node.get_mut("block_index").expect("block_index") =
@@ -1556,7 +1556,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
         reading.blocks, reading.objects,
         "[CLAUSE one-page-an-object] the fixture holds {} page(s) for {} object(s), so a per-PAGE \
          term and a per-OBJECT term are different quantities here and every B/object figure below \
-         would silently be a B/page figure",
+         would silently be a B/block figure",
         reading.blocks, reading.objects
     );
 
@@ -1594,7 +1594,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     assert_eq!(
         block_level, walked.block_subtree_bytes,
         "[CLAUSE part-sum-page-subtree] the page-level terms charge {block_level} B against {} B of \
-         written page index, so a term is charged at the bucket level that belongs at the page \
+         written block index, so a term is charged at the bucket level that belongs at the block \
          level or the reverse -- the error the bucket-keyed NAME of this structure invites",
         walked.block_subtree_bytes
     );
@@ -1662,9 +1662,9 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     assert_eq!(
         walked.buckets_whose_object_index_is_derivable, reading.buckets,
         "[CLAUSE object-index-restates-the-pages] {} of {} bucket(s) write an `object_index` that \
-         is exactly the set of ids derivable from the kinds and object keys of their own page \
-         entries -- a bucket that writes an id no page beside it accounts for carries something \
-         the pages do not, and calling this term redundancy would be wrong",
+         is exactly the set of ids derivable from the kinds and object keys of their own block \
+         entries -- a bucket that writes an id no block beside it accounts for carries something \
+         the blocks do not, and calling this term redundancy would be wrong",
         walked.buckets_whose_object_index_is_derivable, reading.buckets
     );
 
@@ -1724,7 +1724,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     assert_eq!(
         walked.nil_object_id_slots, reading.blocks,
         "[CLAUSE the-nil-slot-is-always-nil] {} of {} stored address(es) write `oi` as null; \
-         `impl From<ElementEntry> for BlockAddressWire` fills it from a LITERAL `None`, so a page \
+         `impl From<ElementEntry> for BlockAddressWire` fills it from a LITERAL `None`, so a block \
          carrying a value there means that literal has stopped being one and this term is no \
          longer a hole",
         walked.nil_object_id_slots, reading.blocks
@@ -1754,7 +1754,7 @@ fn what_the_slot_index_is_made_of_on_the_shipped_routing_range() {
     );
     println!(
         "  THE PAGE ENTRY'S MAP KEY is {:.3} B/object of it, and every character of it was rebuilt \
-         from the entry it is filed against, on all {} pages.",
+         from the entry it is filed against, on all {} blocks.",
         (tally.bytes_of("block/map_key_quotes")
             + tally.bytes_of("block/map_key/kind")
             + tally.bytes_of("block/map_key/object_key")
@@ -2020,7 +2020,7 @@ fn how_each_term_of_the_slot_index_scales_with_the_store() {
         (block_lower - block_upper).abs() / block_upper < 0.05,
         "[CLAUSE the-per-page-class-is-a-line] the per-page class grows {block_lower:.3} B/object \
          over the lower half and {block_upper:.3} over the upper, so the class that is supposed to \
-         be one cost per stored page is not"
+         be one cost per stored block is not"
     );
 
     // AND THE PER-BUCKET CLASS IS THE NON-LINEARITY, because the range bounds it.
@@ -2270,7 +2270,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
     println!(
         "  DROPPING THE KEY COSTS. It is 41 B/object of stream and the most compressible structure \
          in the index -- sorted, sharing prefixes, mostly repeating decimal runs -- so replacing it \
-         with the hash the live map already keys the page by lands a LARGER container on every \
+         with the hash the live map already keys the block by lands a LARGER container on every \
          point measured above."
     );
     println!(
@@ -2288,7 +2288,7 @@ fn what_removing_a_redundant_slot_index_term_would_cost_the_shipped_container() 
     );
     println!(
         "  AND THE THIRD IS BLOCKED, not deferred. The address's five VALUES are in the key and the \
-         two PRESENCE bits beside them are not: a log-resident page and the first page of an \
+         two PRESENCE bits beside them are not: a log-resident block and the first block of an \
          object in a slab render ONE key and differ in `log_backed()`. Its container price stays \
          priced here, and `the_presence_bits_of_an_address_are_not_in_the_key_it_renders` is why \
          it is not taken."
@@ -2364,7 +2364,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
     assert!(
         baseline.len() > 64 * reading.objects,
         "[CLAUSE the-round-trip-carries-pages] the decoded `slot_index` is {} B for {} object(s), \
-         which is too little to be carrying one page each",
+         which is too little to be carrying one block each",
         baseline.len(),
         reading.objects
     );
@@ -2375,7 +2375,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
         Ok(bytes) => panic!(
             "[CLAUSE page-key-is-read] re-keying every page index by its handle still DECODES, to \
              a {} B `slot_index` against the baseline's {} -- the key is the only source of a \
-             page's object now, so a decimal handle in its place has to be refused and not read",
+             block's object now, so a decimal handle in its place has to be refused and not read",
             bytes.len(),
             baseline.len()
         ),
@@ -2448,7 +2448,7 @@ fn the_block_keys_characters_are_read_back_by_the_decoder_now() {
         tampered_out, baseline,
         "[CLAUSE page-key-is-read] changing one character of ONE page key's object-key slot left \
          the decoded `slot_index` byte-identical, so the decoder is not reading the slot and the \
-         identity it files that page under came from somewhere else"
+         identity it files that block under came from somewhere else"
     );
 
     println!();
@@ -2577,7 +2577,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
         block_unbounded_bytes, block_shipped_bytes,
         "[CLAUSE the-per-page-class-is-range-blind] the per-page class is {block_unbounded_bytes} B \
          unbounded and {block_shipped_bytes} B on the shipped range for the SAME corpus -- a \
-         per-page term depends only on the page's own key and address, so a difference here means \
+         per-block term depends only on the block's own key and address, so a difference here means \
          one of them does not"
     );
     let block_unbounded = per_object(block_unbounded_bytes);
@@ -2601,7 +2601,7 @@ fn what_the_slot_index_is_made_of_on_the_unbounded_routing_range() {
     println!(
         "  `slot_index` is {:.2} B/object here against {:.2} on the shipped range, and {:.3} of the \
          {:.3} B/object difference is the per-bucket class alone: EVERY per-bucket term divides by \
-         ONE object on this range. The per-page class does not move. Read the two columns together \
+         ONE object on this range. The per-block class does not move. Read the two columns together \
          or neither.",
         per_object(whole),
         per_object(shipped.slot_index_entry_bytes()),

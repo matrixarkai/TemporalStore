@@ -562,7 +562,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     println!(
         "\n  AND A SECOND READING, reported because it is not what the field's own note implies:\n  \
          tombstoned ids reachable by NEITHER reader (not in object_index,\n  \
-         and no page carries them)                                  {ids_unreachable} of \
+         and no block carries them)                                  {ids_unreachable} of \
          {ids_outliving}"
     );
 
@@ -578,7 +578,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     assert!(
         buckets_outliving > 0,
         "the state this module is about was not reached: {buckets_with_tombstone} buckets carry a \
-         tombstone but in every one of them a page still carries the id, so a per-page bit COULD \
+         tombstone but in every one of them a block still carries the id, so a per-block bit COULD \
          have answered and the refutation would be unproven"
     );
 
@@ -586,7 +586,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
         buckets_outliving_in_object_index > 0,
         "not one of the {buckets_outliving} buckets carrying an orphaned tombstone holds that id in \
          `object_index`, so NEITHER reader reaches any of them -- the walk over `object_index` \
-         never sees the id and there is no page to carry it. On this corpus the field would be \
+         never sees the id and there is no block to carry it. On this corpus the field would be \
          unread, and the refutation this module states would be unproven"
     );
 
@@ -609,10 +609,10 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
         println!(
             "\n=== the chosen bucket {routing_bucket}, object {object_id} ===\n  \
              object_index holds it        {}\n  \
-             pages carrying it            {}\n  \
+             blocks carrying it            {}\n  \
              bucket.deleted()             {}\n  \
              tombstone names it           {}\n  \
-             pages in the bucket          {}",
+             blocks in the bucket          {}",
             bucket.object_index.contains(&object_id),
             bucket
                 .block_index
@@ -703,9 +703,9 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
 
     println!(
         "\n=== THE REFUTATION ===\n  Object {object_id} in bucket {routing_bucket} is IN \
-         `object_index` and NO page in `block_index` carries it. With the tombstone the published \
+         `object_index` and NO block in `block_index` carries it. With the tombstone the published \
          report calls it deleted; with that one entry removed and nothing else touched, LIVE. No \
-         per-page `deleted` bit could carry that, because the delete retired the pages -- and \
+         per-block `deleted` bit could carry that, because the delete retired the blocks -- and \
          `bucket.deleted()` is FALSE here, asserted above, so whole-bucket deletion is not what \
          answers either. `deleted_object_index` stays, and the {} -> {} the arithmetic offers is \
          not available.",

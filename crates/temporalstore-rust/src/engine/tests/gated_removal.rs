@@ -195,7 +195,7 @@ fn a_gated_removal_stays_removed_across_a_reload() {
         assert!(
             batches > 0 && folded > 0,
             "the fixture folded nothing: {batches} batch(es), {folded} page(s). Without a shared \
-             page the removal cannot leave a page stating the member, and the middle arm below \
+             block the removal cannot leave a block stating the member, and the middle arm below \
              would be vacuous"
         );
 
@@ -219,8 +219,8 @@ fn a_gated_removal_stays_removed_across_a_reload() {
             stated.contains(&victim_component),
             "no live page states the removed member any more, so the payload and the durable map \
              AGREE and this test cannot tell a reader that honours the removal from one that \
-             enumerates the page. A page is never rewritten by the removal path, so after a fold \
-             the folded page is supposed to still carry it"
+             enumerates the block. A block is never rewritten by the removal path, so after a fold \
+             the folded block is supposed to still carry it"
         );
         println!(
             "  the blocks still state {} member(s), including the removed one",
@@ -274,8 +274,8 @@ fn a_gated_removal_stays_removed_across_a_reload() {
     assert!(
         !resident.contains(&victim),
         "THE REMOVED MEMBER CAME BACK ACROSS A RELOAD. Its page still states it as live and the \
-         index entry names a page rather than an element, so a load that rebuilt membership from \
-         pages would resurrect it -- which is the failure this whole arrangement is arranged \
+         index entry names a block rather than an element, so a load that rebuilt membership from \
+         blocks would resurrect it -- which is the failure this whole arrangement is arranged \
          against"
     );
     assert_eq!(

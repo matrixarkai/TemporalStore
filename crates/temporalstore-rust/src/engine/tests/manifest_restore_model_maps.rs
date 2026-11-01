@@ -135,7 +135,7 @@ fn a_manifest_restore_on_the_default_recovery_arm_keeps_the_blocks_only_the_inde
     assert_eq!(
         hashes_after, HASH_FIELDS,
         "the restore served {hashes_after} of {HASH_FIELDS} hash fields while serving \
-         {strings_after} of {STRING_KEYS} strings: the manifest's index named every hash page, \
+         {strings_after} of {STRING_KEYS} strings: the manifest's index named every hash block, \
          and the ownership rebuild dropped the ones no serialized model map could re-supply"
     );
 }

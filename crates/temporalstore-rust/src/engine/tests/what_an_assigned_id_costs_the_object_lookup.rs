@@ -434,6 +434,6 @@ fn both_consumers_of_the_characters_take_a_str_and_not_an_id() {
     assert_ne!(
         first, second,
         "the handle is decided by the characters, which is the whole content of this pin: two \
-         keys over one page must not produce one handle"
+         keys over one block must not produce one handle"
     );
 }

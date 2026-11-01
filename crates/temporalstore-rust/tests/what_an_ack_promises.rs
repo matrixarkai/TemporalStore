@@ -466,7 +466,7 @@ fn an_upsert_records_results_that_name_only_an_address() {
         assert!(
             counts.results_naming_only_an_address > 0,
             "upsert cell {} recorded {} results and none of them names only an address, so a \
-             carried page is no longer what makes this cell recoverable",
+             carried block is no longer what makes this cell recoverable",
             shape.label.trim(),
             counts.results
         );

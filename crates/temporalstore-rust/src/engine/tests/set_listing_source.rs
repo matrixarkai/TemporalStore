@@ -109,7 +109,7 @@ fn folded_set(object_key: &str) -> (TemporalEngine, tempfile::TempDir) {
     assert!(
         batches > 0 && folded > 0,
         "the fixture folded nothing: {batches} batch(es), {folded} page(s). Every arm below rests \
-         on the members sharing a page, so this is not a fixture detail."
+         on the members sharing a block, so this is not a fixture detail."
     );
     (engine, dir)
 }
@@ -336,7 +336,7 @@ fn a_folded_set_still_lists_every_member_in_the_order_it_always_did() {
     assert!(
         blocks < stated.len(),
         "the members did not come to share a page: {blocks} page(s) stating {} member(s), so \
-         nothing here is exercising a page read that used to happen several times",
+         nothing here is exercising a block read that used to happen several times",
         stated.len()
     );
     let listed = listed_members(&engine, "listing/whole");
@@ -388,7 +388,7 @@ fn a_member_removed_after_the_fold_is_not_listed_even_though_its_block_still_sta
         stated.contains(&victim_component),
         "the pages no longer state the removed member as present, so the payload and the entries \
          AGREE and this arm cannot tell a payload-enumerating reader from an entry-driven one. \
-         The removal has to land after the fold for the folded page to still carry it."
+         The removal has to land after the fold for the folded block to still carry it."
     );
 
     // AND THE LISTING MUST SIDE WITH THE ENTRIES.
@@ -446,7 +446,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     assert_eq!(
         1, live_before,
         "the folded object holds {live_before} live entr(ies) over {blocks_before} page(s). One \
-         entry a page is what makes a whole-page un-naming the only one available, and this arm \
+         entry a block is what makes a whole-block un-naming the only one available, and this arm \
          is built on it"
     );
 
@@ -467,8 +467,8 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
         (0usize, 0usize),
         (blocks, live),
         "dropping this object's one entry left {blocks} page(s) and {live} live entr(ies). The \
-         un-naming is supposed to take a whole page's worth of names with it, because there is one \
-         entry a page -- if this ever reads (1, 39) the partial un-naming is representable again \
+         un-naming is supposed to take a whole block's worth of names with it, because there is one \
+         entry a block -- if this ever reads (1, 39) the partial un-naming is representable again \
          and the arm this one replaced should come back"
     );
 
@@ -488,7 +488,7 @@ fn the_set_listing_takes_its_identity_from_the_entries_and_not_from_the_payload(
     assert!(
         listed.is_empty(),
         "the listing returned {} member(s) with no live entry naming their page, while those \
-         pages still state all {MEMBERS}. A reader enumerating the payload answers exactly that \
+         blocks still state all {MEMBERS}. A reader enumerating the payload answers exactly that \
          way, which is the defect this arm exists for and the reason identity stays with the \
          entries",
         listed.len()
@@ -596,7 +596,7 @@ fn what_the_fold_is_worth_to_a_listing_that_decodes_each_block_once() {
     assert_eq!(
         MEMBERS as u64, unfolded,
         "the unfolded arm read {unfolded} pages for {MEMBERS} members; one per member is the shape \
-         this listing has when every member owns its own page"
+         this listing has when every member owns its own block"
     );
     assert!(
         folded < unfolded,

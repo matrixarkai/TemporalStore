@@ -742,7 +742,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     assert!(
         blocks.contains_key(&row_key),
         "the key the TOMBSTONE ROW composes must be one the encode wrote, or the row is not a \
-         source for this page: row composed {row_key}, encode wrote {:?}",
+         source for this block: row composed {row_key}, encode wrote {:?}",
         blocks.keys().collect::<Vec<_>>()
     );
 }

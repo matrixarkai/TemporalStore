@@ -304,8 +304,8 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     assert_eq!(
         3, live,
         "{live} live entries after removing one of three. One entry a page means the live count is \
-         the PAGE count, which a removal does not reduce -- if this is 2 the removal has started \
-         retiring the vacated page's entry, which is the footprint fix the doc describes, and the \
+         the BLOCK count, which a removal does not reduce -- if this is 2 the removal has started \
+         retiring the vacated block's entry, which is the footprint fix the doc describes, and the \
          comment above it should be read rather than this number adjusted"
     );
 
@@ -360,7 +360,7 @@ fn no_index_reader_answers_from_a_tombstone_entry() {
     assert_eq!(
         live, returned,
         "the index reader returned {returned} pair(s) where {live} entries are live and \
-         {tombstoned} tombstoned. It must return the LIVE pages and not the tombstone; {} would \
+         {tombstoned} tombstoned. It must return the LIVE blocks and not the tombstone; {} would \
          mean it has stopped filtering `deleted` and is answering from the tombstone entry",
         live + tombstoned
     );
@@ -503,7 +503,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     assert_eq!(
         MEMBERS, live_after,
         "{live_after} live entries where {MEMBERS} pages were written. A removal retains the page \
-         entry, so the live count must not fall -- if it has, the vacated page's entry is being \
+         entry, so the live count must not fall -- if it has, the vacated block's entry is being \
          retired and this module's cost figure needs remeasuring rather than this number adjusting"
     );
     assert_eq!(
@@ -597,7 +597,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
         "A FOLD ROUND ERASED THE TOMBSTONE ENTRIES: {tombstoned_folded} survive of {REMOVED}. The \
          rebuild reads the resident model maps, which cannot express a removal, so the entries have to \
          be CARRIED across `bucket_map.clear()`. Without that a removal stops being recorded in the \
-         pages at the next compaction round and a page-derived membership resurrects the element."
+         blocks at the next compaction round and a block-derived membership resurrects the element."
     );
     // AND HERE IS THE MEASUREMENT THAT CHANGES THIS MODULE'S COST STORY: THE REBUILD COLLECTS THE
     // RETAINED ENTRIES.
@@ -650,14 +650,14 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     assert!(
         live_blocks_folded < MEMBERS - REMOVED,
         "DENOMINATOR: the survivors resolve to {live_blocks_folded} live page(s) for {} members, so \
-         nothing folded and 'one entry a page' is the same number as one entry an element here",
+         nothing folded and 'one entry a block' is the same number as one entry an element here",
         MEMBERS - REMOVED
     );
     assert_eq!(
         live_blocks_folded, live_folded,
         "the rebuild produced {live_folded} live entries over {live_blocks_folded} live page(s). It \
-         emits at most one per distinct page, so these must agree -- more means the stale entries a \
-         removal left over its vacated pages survived the round, which is the retained-entry cost \
+         emits at most one per distinct block, so these must agree -- more means the stale entries a \
+         removal left over its vacated blocks survived the round, which is the retained-entry cost \
          this module prices and which the round is what clears"
     );
     // WHY CARRYING THEM IS NECESSARY, asserted at the source rather than argued.
@@ -768,7 +768,7 @@ fn a_keys_last_element_still_files_its_object_id() {
     assert!(
         after_last,
         "THE OBJECT ID WAS NOT FILED AT THE KEY'S LAST ELEMENT, so the object never reads as \
-         deleted -- and `object_manager::runtime_report` asks that index per page."
+         deleted -- and `object_manager::runtime_report` asks that index per block."
     );
 }
 
@@ -893,7 +893,7 @@ fn a_removal_that_matched_nothing_writes_no_tombstone_entry() {
     assert_eq!(
         1, tombstoned_after,
         "{tombstoned_after} tombstone entries were filed for a removal that matched nothing. ONE \
-         is the measured cost of the page-named arm firing unconditionally; ZERO would mean the \
+         is the measured cost of the block-named arm firing unconditionally; ZERO would mean the \
          removal path has gained a way to tell a miss from a hit, which is the fix described above \
          and is worth reading rather than relaxing this"
     );
@@ -998,14 +998,14 @@ fn a_removed_member_does_not_make_its_object_deleted() {
         (expected_live, 1),
         (live, tombstoned),
         "the fixture holds {live} live and {tombstoned} tombstone entries; the collapsed \
-         projection keeps the page entry and adds one tombstone, the per-element one replaces it"
+         projection keeps the block entry and adds one tombstone, the per-element one replaces it"
     );
 
     assert!(
         !object.deleted,
         "ONE REMOVED MEMBER MADE THE WHOLE OBJECT READ AS DELETED. `object.deleted |= page.deleted` \
-         said it from a single page, which was right while the only writer of that flag deleted an \
-         object's pages together and is wrong the moment one removed member carries it."
+         said it from a single block, which was right while the only writer of that flag deleted an \
+         object's blocks together and is wrong the moment one removed member carries it."
     );
     assert_eq!(
         1, object.deleted_block_ref_count,

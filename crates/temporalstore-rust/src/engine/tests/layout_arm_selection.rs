@@ -546,14 +546,14 @@ fn the_layout_arm_an_object_list_would_pay_for_is_now_the_container_arm_and_stil
     assert!(
         widest_bucket_share_of_multi_block_object > 0.0,
         "`multi_block_object` reached no bucket in any store. Since the component left the object \
-         id a container key is ONE object holding many pages, which is exactly this arm -- an \
+         id a container key is ONE object holding many blocks, which is exactly this arm -- an \
          unreached arm here means the identity did not collapse"
     );
     assert!(
         widest_block_share_of_multi_block_object > widest_bucket_share_of_multi_block_object,
         "`multi_block_object` peaks at {widest_bucket_share_of_multi_block_object:.3}% of buckets \
-         and {widest_block_share_of_multi_block_object:.3}% of pages. The whole shape of this arm \
-         is a FEW buckets holding MANY pages; if the page share is not the larger of the two, \
+         and {widest_block_share_of_multi_block_object:.3}% of blocks. The whole shape of this arm \
+         is a FEW buckets holding MANY blocks; if the block share is not the larger of the two, \
          the population being read is not the container one"
     );
     let shipped = shipped_range_at_scale_multi_block_object
@@ -833,7 +833,7 @@ fn the_object_list_this_bucket_stores_is_now_one_row_per_key_which_is_the_list_t
         assert!(
             pop.total_blocks > distinct_keys,
             "DENOMINATOR: {} pages over {distinct_keys} distinct (kind, key). A store whose keys \
-             each held one page satisfies every assertion below while measuring nothing",
+             each held one block satisfies every assertion below while measuring nothing",
             pop.total_blocks
         );
 

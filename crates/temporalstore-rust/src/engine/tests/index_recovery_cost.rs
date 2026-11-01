@@ -791,7 +791,7 @@ fn show_recovery(reading: &Recovery) {
     );
     eprintln!(
         "        READ base_image={:9} manifest={:8} ({:2} file(s))  WAL={:10} ({:4} read(s), {:3} \
-         scan(s))  INDEX-LOG={:8} ({:3} read(s))  pages={:9} ({:4} read(s))  = NAMED {:10} B",
+         scan(s))  INDEX-LOG={:8} ({:3} read(s))  blocks={:9} ({:4} read(s))  = NAMED {:10} B",
         reading.base_image_read,
         reading.manifest_bytes_read,
         reading.manifest_file_reads,

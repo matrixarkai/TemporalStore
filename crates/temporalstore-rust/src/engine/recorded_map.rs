@@ -193,7 +193,7 @@ pub(super) struct RecordedElement<K: RecordedKind> {
 /// means changing all seven. Measured, not guessed, and the same is true for every kind -- which is
 /// one small argument for this type: the gap is now in ONE place instead of once per kind.
 #[must_use = "a recorded element removal that is never applied leaves the element resident after \
-              its page was tombstoned"]
+              its block was tombstoned"]
 pub(super) struct RecordedElementRemoval<K: RecordedKind> {
     object_key: String,
     element: <K::Elements as ElementMap>::Element,

@@ -243,7 +243,7 @@ fn a_reload_of_a_store_this_binary_wrote_reads_the_index_rather_than_replaying()
         (live, tombstoned),
         "the reload restored {live} live and {tombstoned} tombstone entries, where this projection \
          files {expected_live} live and 1. The tombstone entry must SURVIVE the round trip through \
-         the persisted index -- if it does not, the pages stop recording the removal the moment a \
+         the persisted index -- if it does not, the blocks stop recording the removal the moment a \
          store is reloaded, and a later derivation resurrects it."
     );
 }
@@ -316,7 +316,7 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
         1, refused,
         "THE STALE STAMP WAS NOT REFUSED. accepted={accepted} refused_stale={refused} \
          absent={absent} undecodable={undecodable}. If the index was ACCEPTED then the bump from 3 \
-         to 5 does not gate anything and an index written before the page format changed would be \
+         to 5 does not gate anything and an index written before the block format changed would be \
          served as if it had not."
     );
     assert_eq!(
@@ -335,8 +335,8 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
     assert!(
         !seen.contains(&victim),
         "THE REMOVED MEMBER IS BACK AFTER A REPLAY. The removal's outcome carries the tombstone \
-         page's address so the replay can re-file the entry that keeps it reachable; if that address \
-         is not carried, replay re-drops the entry and the page is named by nothing."
+         block's address so the replay can re-file the entry that keeps it reachable; if that address \
+         is not carried, replay re-drops the entry and the block is named by nothing."
     );
     assert_eq!(
         MEMBERS - 1,
@@ -361,8 +361,8 @@ fn a_reload_after_the_stamp_bump_replays_rather_than_reading_the_index() {
     assert_eq!(
         1, tombstoned,
         "THE REPLAY REBUILT {tombstoned} TOMBSTONE ENTRIES, NOT ONE. Zero means the removal is no \
-         longer recorded in the pages after a recovery, so a membership derived from the pages would \
-         resurrect the member. The outcome carries the tombstone page's address for exactly this; if \
+         longer recorded in the blocks after a recovery, so a membership derived from the blocks would \
+         resurrect the member. The outcome carries the tombstone block's address for exactly this; if \
          the install stops passing it, or the outcome stops carrying it, this is what fails."
     );
     println!(
