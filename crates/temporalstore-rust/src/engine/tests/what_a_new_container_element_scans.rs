@@ -24,18 +24,26 @@
 //! wide enough: a hash of **20 fields** is the shape the benchmarks use, and at 20 fields a
 //! quadratic term is invisible.
 //!
-//! # WHAT IS ASSERTED
+//! # WHAT IS ASSERTED, AND WHY IT IS AN EQUALITY RATHER THAN A RATIO
 //!
-//! The SHAPE, at three element counts, with the quadratic read off the ratio between them rather
-//! than from a single number: doubling the elements must roughly quadruple the siblings examined.
-//! A linear implementation holds the ratio near 2.0, so the two are told apart by the same arm.
+//! Siblings examined, at three element counts, against `N*(N-1)/2` EXACTLY -- no tolerance, no
+//! trend. A ratio would have read 4.0x per doubling and said the same thing less precisely, and a
+//! ratio has to be given a band, which is a number nobody can defend.
+//!
+//! And, separately, that **per-write cost does not scale with that count**. Siblings quadruple
+//! from the middle size to the largest, so a write paying for the scan would roughly double. That
+//! is the claim this arm exists to make -- the scan is quadratic AND cheap -- and it is the half
+//! that a fix elsewhere cannot invalidate.
 
 #![allow(clippy::all)]
 use super::*;
 
-/// Siblings examined while building one container of `elements` members, and the ordinal the last
-/// member was given.
-fn build_one_container(kind: &str, elements: usize) -> (u64, u64) {
+/// How many times the sibling scan ran, how many siblings it examined, and what a write cost --
+/// building one container of `elements` members.
+///
+/// The clock starts AFTER the shard is loaded and the counters are zeroed, so the engine's own
+/// setup is not charged to a write. It covers the writes and nothing else.
+fn build_one_container(kind: &str, elements: usize) -> (u64, u64, f64) {
     use crate::types::{Command, ExecuteRequest};
 
     let dir = tempfile::tempdir().expect("tempdir");
@@ -51,6 +59,7 @@ fn build_one_container(kind: &str, elements: usize) -> (u64, u64) {
     crate::engine::state::SIBLING_SCAN_CALLS.store(0, std::sync::atomic::Ordering::Relaxed);
     crate::engine::state::SIBLING_SCAN_ELEMENTS.store(0, std::sync::atomic::Ordering::Relaxed);
 
+    let started = std::time::Instant::now();
     for i in 0..elements {
         let command = match kind {
             "hash" => Command::HashSet {
@@ -78,43 +87,54 @@ fn build_one_container(kind: &str, elements: usize) -> (u64, u64) {
         assert!(response.status.ok, "{kind} write {i}: {:?}", response.status);
     }
 
+    let per_write = started.elapsed().as_secs_f64() * 1000.0 / elements as f64;
     let calls = crate::engine::state::SIBLING_SCAN_CALLS.load(std::sync::atomic::Ordering::Relaxed);
     let examined =
         crate::engine::state::SIBLING_SCAN_ELEMENTS.load(std::sync::atomic::Ordering::Relaxed);
-    (calls, examined)
+    (calls, examined, per_write)
 }
 
-/// HOW THE SIBLING SCAN GROWS, AND WHICH KIND IS ACTUALLY SLOW. THEY ARE NOT THE SAME ANSWER.
+/// HOW THE SIBLING SCAN GROWS, AND WHETHER ANY WRITE ACTUALLY PAYS FOR IT.
 ///
-/// # TWO READINGS, AND THE SECOND ONE CORRECTS THE FIRST'S INTERPRETATION
+/// # TWO READINGS, AND ONLY ONE OF THEM IS A CLAIM ABOUT TODAY
 ///
 /// The scan is **exactly quadratic**: building a container of N elements examines `N*(N-1)/2`
 /// siblings, identically for all four kinds, because each new element asks for `max(block_id)`
-/// over every element already there. That is pinned below as an equality rather than a ratio, so
-/// it names the formula and not a trend.
+/// over every element already there. Pinned below as an equality, so it names the formula rather
+/// than a trend.
 ///
-/// But the scan is **cheap**. 32,640 pointer examinations for a 256-element container is
-/// microseconds, and the four kinds do the SAME scan work while their per-write wall time differs
-/// by 18x. So the quadratic cannot be what makes a container build slow at these sizes, and the
-/// hypothesis it was recorded under -- "the fsync-per-op cost is linear and cannot explain that
-/// curve; this scan can" -- is **half right**: the curve is real, the cost is not where it was
-/// attributed. Pinning both readings together is what keeps the two apart.
+/// And the scan is **cheap**: 32,640 pointer examinations for a 256-element container is
+/// microseconds. The way to assert that WITHOUT asserting anything about which kind is slow today
+/// is to read the growth of per-write cost against the growth of the scan. Siblings QUADRUPLE from
+/// `MID` to `LARGE`; a write that paid for the scan would roughly DOUBLE. So a per-write cost that
+/// stays flat across that doubling is the scan being irrelevant to it, measured.
 ///
 /// Where the quadratic DOES bite is the ceiling. At `MAX_ADDRESSABLE_BLOCK_ID` the same formula is
 /// ~2.1 billion examinations for one object, so this is a scaling defect rather than a present
 /// cost, and worth fixing as one.
 ///
-/// # WHY THIS WAS NOT ALREADY MEASURED
+/// # WHY THE COST SPREAD BETWEEN KINDS IS PRINTED AND NOT ASSERTED
 ///
-/// It came out of pricing a single HSET by the bytes it lands on disk, and the workload that would
-/// expose it does not exist in any benchmark here: a hash of **20 fields** is the shape they use,
-/// and at 20 fields a quadratic term is invisible.
+/// This arm first asserted it: `hash` measured **102.3 ms per write against zset's 2.7**, 37.9x
+/// apart at identical scan work, which is a clean proof that the scan is not the cost. It was also
+/// the wrong thing to assert. That spread is a DEFECT -- `upsert_bucket_index_block_inner` answered
+/// a per-write question by building two hash maps over the whole shard's object lookup, at
+/// `O(all blocks in the shard)` per write -- and `a_container_write_asks_its_own_slot` closes it,
+/// taking a hash field write from `182.65 ms` to `9.94` at 800 fields. The moment it landed, an
+/// assertion that the kinds differ by more than 2x would FAIL, on an arm that was correct when it
+/// merged.
+///
+/// So the spread is reported, and what is asserted is the invariant it was evidence FOR. `hash` is
+/// excluded from the growth clause for the same reason and named in the exclusion: while it carries
+/// a second per-write term that grows with the container, its curve cannot say anything about this
+/// one. Add it to `PAY_ONLY_FOR_THE_SCAN` once that term is gone and the clause gets stronger for
+/// free.
 ///
 /// # THE SIZES ARE CHOSEN BY WHAT THE WRITE PATH CAN AFFORD
 ///
 /// A doubling is a doubling at any scale, so the formula is read at 64/128/256. At 250/500/1,000
-/// this arm did not finish 1,750 writes in twenty minutes, which is itself the second reading
-/// below.
+/// this arm did not finish 1,750 writes in twenty minutes -- which was the cost spread above,
+/// before it was understood.
 ///
 /// rust-internal: measures this crate's own write path, no product behaviour
 #[test]
@@ -123,32 +143,39 @@ fn what_a_new_container_element_scans() {
     const MID: usize = 128;
     const LARGE: usize = 256;
 
-    /// What the scan costs if every new element walks every sibling already present: the sum of
+    /// The kinds whose write path has no term other than this scan that grows with the container,
+    /// so their per-write curve is attributable to it. See the note above on why `hash` is absent.
+    const PAY_ONLY_FOR_THE_SCAN: &[&str] = &["set", "zset", "list"];
+
+    /// Siblings examined if every new element walks every sibling already present: the sum of
     /// 0..n-1. Written as the closed form so the assertion names the shape it is testing.
     fn every_sibling_every_time(elements: usize) -> u64 {
         (elements as u64) * (elements as u64 - 1) / 2
     }
 
     println!();
-    let mut rows: Vec<(&str, f64, u64, u64)> = Vec::new();
+    // kind, ms/write at MID, ms/write at LARGE, siblings at LARGE
+    let mut rows: Vec<(&str, f64, f64, u64)> = Vec::new();
 
     for kind in ["hash", "set", "zset", "list"] {
-        let started = std::time::Instant::now();
-        let (_, small) = build_one_container(kind, SMALL);
-        let (mid_calls, mid) = build_one_container(kind, MID);
-        let (large_calls, large) = build_one_container(kind, LARGE);
-        let per_write =
-            started.elapsed().as_secs_f64() * 1000.0 / (SMALL + MID + LARGE) as f64;
+        let (_, small, small_ms) = build_one_container(kind, SMALL);
+        let (mid_calls, mid, mid_ms) = build_one_container(kind, MID);
+        let (large_calls, large, large_ms) = build_one_container(kind, LARGE);
 
         println!(
-            "  {kind:<6} siblings {:>7} / {:>7} / {:>7}   expected {:>7} / {:>7} / {:>7}   \
-             {per_write:>6.1} ms per write",
+            "  {kind:<6} siblings {:>7} / {:>7} / {:>7}   expected {:>7} / {:>7} / {:>7}",
             small,
             mid,
             large,
             every_sibling_every_time(SMALL),
             every_sibling_every_time(MID),
             every_sibling_every_time(LARGE),
+        );
+        println!(
+            "  {:<6} ms/write {small_ms:>7.2} / {mid_ms:>7.2} / {large_ms:>7.2}   \
+             scan x4 over that doubling, cost x{:.2}",
+            "",
+            large_ms / mid_ms.max(f64::MIN_POSITIVE),
         );
 
         // --- NON-VACUITY: a kind whose writes never reach the allocator says nothing either way.
@@ -170,43 +197,65 @@ fn what_a_new_container_element_scans() {
                 every_sibling_every_time(elements)
             );
         }
-        rows.push((kind, per_write, mid, large));
+        rows.push((kind, mid_ms, large_ms, large));
     }
 
-    // --- READING TWO: the four kinds do the SAME scan work and do not cost the same to write, so
-    // --- the scan is not what the time is going on.
-    let slowest = rows.iter().cloned().fold(rows[0], |a, b| if b.1 > a.1 { b } else { a });
-    let fastest = rows.iter().cloned().fold(rows[0], |a, b| if b.1 < a.1 { b } else { a });
-    println!();
-    println!(
-        "  the same scan work costs {:.1} ms per write on {} and {:.1} ms on {} -- {:.1}x apart",
-        slowest.1,
-        slowest.0,
-        fastest.1,
-        fastest.0,
-        slowest.1 / fastest.1.max(f64::MIN_POSITIVE)
-    );
-    println!();
-
-    // Every kind examined the same number of siblings, which is the premise that makes the time
-    // spread attributable to something OTHER than the scan.
+    // --- THE PREMISE OF EVERYTHING BELOW: the kinds do the SAME scan work, so a difference in
+    // --- what they cost is a difference in something else.
     let reference = rows[0].3;
     for (kind, _, _, large) in &rows {
         assert_eq!(
             reference, *large,
             "{kind} examined {large} siblings against {reference} for {}: the kinds must do the \
-             same scan work for the time spread below to say anything about what else they do",
+             same scan work before any statement about their costs says anything",
             rows[0].0
         );
     }
-    assert!(
-        slowest.1 / fastest.1.max(f64::MIN_POSITIVE) > 2.0,
-        "the four kinds cost within 2x of each other per write ({:.1} ms on {} against {:.1} on \
-         {}), so this arm no longer shows the scan and the time to be separate questions -- which \
-         is the whole of its second reading",
-        slowest.1,
+
+    // --- REPORTED, NOT ASSERTED. See the note above: this spread is a defect being closed
+    // --- elsewhere, so pinning it would make this arm fail on someone else's fix.
+    let slowest = rows.iter().cloned().fold(rows[0], |a, b| if b.2 > a.2 { b } else { a });
+    let fastest = rows.iter().cloned().fold(rows[0], |a, b| if b.2 < a.2 { b } else { a });
+    println!();
+    println!(
+        "  at {LARGE} elements the same scan work costs {:.2} ms per write on {} and {:.2} ms on \
+         {} -- {:.1}x apart",
+        slowest.2,
         slowest.0,
-        fastest.1,
-        fastest.0
+        fastest.2,
+        fastest.0,
+        slowest.2 / fastest.2.max(f64::MIN_POSITIVE)
     );
+
+    // --- READING TWO, AS THE INVARIANT RATHER THAN THE EVIDENCE. The scan QUADRUPLES from MID to
+    // --- LARGE. A write that paid for it would roughly double; these stay flat, which is the
+    // --- measured form of "the scan is quadratic and cheap".
+    const COST_GROWTH_A_SCAN_WOULD_FORCE: f64 = 2.0;
+    const FLAT_ENOUGH: f64 = 1.8;
+    let mut checked = 0usize;
+    for (kind, mid_ms, large_ms, _) in &rows {
+        if !PAY_ONLY_FOR_THE_SCAN.contains(kind) {
+            continue;
+        }
+        checked += 1;
+        let growth = large_ms / mid_ms.max(f64::MIN_POSITIVE);
+        assert!(
+            growth < FLAT_ENOUGH,
+            "{kind}: siblings examined went x4 from {MID} to {LARGE} elements and per-write cost \
+             went x{growth:.2} ({mid_ms:.2} -> {large_ms:.2} ms), at or past the x\
+             {COST_GROWTH_A_SCAN_WOULD_FORCE:.1} a write PAYING for that scan would show. Either \
+             the scan stopped being cheap, or something else on this kind's write path now grows \
+             with the container -- and the first thing to check is which, because this arm's whole \
+             point is that a quadratic scan and a slow write are separate questions."
+        );
+    }
+    // A clause that filters its own population is disarmed by shrinking it.
+    assert_eq!(
+        PAY_ONLY_FOR_THE_SCAN.len(),
+        checked,
+        "the growth clause ran on {checked} kinds against the {} it names: a kind that stops being \
+         measured here stops being checked here, silently",
+        PAY_ONLY_FOR_THE_SCAN.len()
+    );
+    println!();
 }
