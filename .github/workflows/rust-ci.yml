@@ -244,6 +244,7 @@ jobs:
             engine::tests::the_user_byte_write_ratio::no_string_row_is_removed_outside_its_door \
             engine::tests::per_item_byte_budget::the_stored_spelling_of_a_bucket_node_did_not_move \
             engine::tests::per_item_byte_budget::the_stored_spelling_of_the_object_side_moved_in_exactly_the_live_object_list \
+            engine::tests::blocks_per_bucket::the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth \
             engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"

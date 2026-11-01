@@ -2432,68 +2432,211 @@ fn the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term() {
          named here is wrong"
     );
 
-    // What the next step would have to reach, priced -- and RECONSTRUCTED, so a group named with
-    // the wrong type fails here instead of printing a number nobody checks.
-    let object_key = size_of::<Arc<str>>();
+}
+
+/// THE BLOCK ENTRY, RECONSTRUCTED -- AND THE SHAPE THAT WOULD EMPTY ITS TAIL, PRICED.
+///
+/// # THIS BLOCK WAS RED ON main, AND THE FIXTURE IT SAT BEHIND IS WHY
+///
+/// These claims used to live at the end of
+/// [`the_block_entry_and_not_the_bucket_node_is_the_next_dominant_term`], which seeds two stores
+/// and is `#[ignore]`d for that reason. The reconstruction there summed `object_key`,
+/// `component`, `kind` and `routing_bucket` on top of the address and the two flags -- 56 bytes
+/// against an entry of 24 -- because all four of those fields had LEFT `BlockIndex` and the sum
+/// went on naming them. It printed an accurate failure that nobody read.
+///
+/// NOT ONE OF THESE CLAIMS NEEDED THE STORES. They are `size_of` arithmetic, and they were held
+/// behind an eighty-thousand-key fixture that takes seven minutes, so they could only ever run by
+/// name and in practice ran never. **A check behind a fixture it does not need is a check that
+/// goes stale**, and splitting it out is the repair -- pinning the expensive arm would have bought
+/// the same cover for seven minutes of every gating run.
+///
+/// So this arm takes no fixture, finishes in no measurable time, and its name is pinned in the
+/// hard gate. What stays behind in the ignored arm is the only part that genuinely needs two
+/// stores: which term LEADS at which workload.
+///
+/// # WHAT IT ASSERTS
+///
+/// The entry reconstructs as a sixteen-byte eight-aligned address group plus a three-byte tail
+/// inside an eight-byte rounding. Then two claims about where the next step has to go:
+///
+///   * THE TAIL MUST REACH ZERO. `every_byte_of_the_block_index_is_accounted_for` shows that
+///     packing the two flags into one byte leaves a tail rounding to the SAME eight. That is the
+///     trap, not a curiosity: the tail costs a whole word at one byte just as at three, so no
+///     partial narrowing of it is worth anything. Asserted across every width the tail can take.
+///   * THE SHAPE THAT DOES EMPTY IT. The address has its own tail -- `length` 4 + `block_id` 2 +
+///     `present` 1 = seven inside an eight-byte rounding -- so a SECOND byte there is already
+///     paid for. Widening that presence byte to a flag word is free and buys sixteen bits, two
+///     spoken for, against nine needed: five for the model spelling and one each for the flags.
+///
+/// # WHAT A BYTE OF THE STRIDE IS WORTH, AND WHY IT IS THIS ROW AND NOT THE CONTAINER
+///
+/// `index_bytes_per_key::which_term_carries_the_bucket_map_slope` decomposes `bucket_map`s 48.0
+/// B/key marginal with a residual of 0.0 and finds **33.8 of it in one term**, the
+/// `Vec<(u64, BlockIndex)>` list, at 1.056 blocks a key on the shipped routing range. So a byte off
+/// this stride is worth about 1.06 B/key and the eight bytes here about 8.4.
+///
+/// The per-bucket terms beside it SATURATE -- the shipped range caps buckets at 1,024, so a term
+/// measured in buckets stops growing while keys keep arriving and contributes nothing to a per-key
+/// slope however large it is in absolute terms. That is why this row cannot be taken by tidying a
+/// container, and why the stride is the thing to narrow.
+///
+///   cargo test -p temporalstore-rust --lib the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth -- --nocapture
+#[test]
+fn the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth() {
+    // WHAT THE NEXT STEP WOULD HAVE TO REACH, RECONSTRUCTED -- AND THIS BLOCK WAS RED, UNNOTICED.
+    //
+    // It summed `object_key`, `component`, `kind` and `routing_bucket` on top of the address and
+    // the flags and asserted the total against `size_of`: 56 bytes against an entry of 24. Every
+    // one of those four left `BlockIndex` -- `object_key` in the step that took the entry 40 -> 24
+    // -- and the sum went on naming them. The message it printed was accurate and nobody read it.
+    //
+    // WHY NOTHING CAUGHT IT, which is the part worth keeping. This arm is `#[ignore]`d and its
+    // name was pinned in no gating step, and every gating `cargo test` call in this repository is
+    // an `--exact` named filter -- so it ran nowhere. That is the same mechanism that left two
+    // byte goldens in `per_item_byte_budget` stale through the page-to-block writer flip (#2451).
+    // A reconstruction is a check only while something runs it, so this name is pinned now.
+    //
+    // AND A STALE PRICING ARM IS WORSE THAN A STALE GOLDEN, because this is the block the NEXT
+    // change to this structure gets priced against. The 56 was not an idle number: it made two
+    // name pointers look like the largest group in the entry and the obvious next step, and they
+    // are not in the entry at all.
     let model_id = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>();
-    let component = size_of::<Option<Arc<str>>>();
-    let names = object_key + model_id + component;
+    let address = size_of::<ElementEntry>();
     let flags = 2 * size_of::<bool>();
-    // THE TWO LOCATING FIELDS the entry absorbed from the index-log row. Named here because
-    // this sum is checked against `size_of`, and it reconstructed to the right total by
-    // ROUNDING rather than by being complete before they were added.
-    let locating = size_of::<crate::index_log::IndexItemKind>() + size_of::<u32>();
-    let field_sum = names + size_of::<ElementEntry>() + flags + locating;
-    println!(
-        "\n=== inside the {} B page entry ===",
-        size_of::<BlockIndex>()
-    );
-    println!("  address                       : {:>4} B", size_of::<ElementEntry>());
-    println!("  object_key                    : {object_key:>4} B  (a fat pointer; the length rides beside it)");
-    println!("  model_id                      : {model_id:>4} B  (a one-byte spelling since #1994, NOT a pointer)");
-    println!("  component                     : {component:>4} B  (a fat optional pointer)");
+    let field_sum = model_id + address + flags;
+    let tail_now = model_id + flags;
+    println!();
+    println!("=== inside the {} B block entry, as it now stands ===", size_of::<BlockIndex>());
+    println!("  address (eight-aligned group) : {address:>4} B");
+    println!("  model_id                      : {model_id:>4} B  (a one-byte spelling, not a pointer)");
     println!("  dirty + deleted               : {flags:>4} B");
-    println!("  kind + routing_bucket         : {locating:>4} B  (absorbed from the index-log row)");
     println!(
-        "  {field_sum} B of field in {} B",
-        size_of::<BlockIndex>()
+        "  {field_sum} B of field in {} B, so the tail is {tail_now} B inside an {} B rounding",
+        size_of::<BlockIndex>(),
+        round_up_to(tail_now, 8)
     );
     assert_eq!(
         size_of::<BlockIndex>(),
-        round_up_to(field_sum, std::mem::align_of::<BlockIndex>()),
-        "the groups named above sum to {field_sum} B, which rounds to {} B against an entry of {} \
-         B. One of the four is named with the wrong type -- which COMPILES, and is exactly how this \
-         block came to charge `model_id` sixteen bytes for one",
-        round_up_to(field_sum, std::mem::align_of::<BlockIndex>()),
-        size_of::<BlockIndex>()
-    );
-    println!(
-        "  NEXT STEP, PRICED AND DECLINED: the two NAME POINTERS are {} of the {} bytes and each is \
-         a data pointer beside a length. Held one word each the entry is {} B and its list stride \
-         {} B -- measured at -16.00 B a block or better on all eight arms in \
-         `block_entry_name_pointer::what_a_one_word_name_slot_is_worth_on_the_chunk_column`, and \
-         DECLINED there: `Arc<str>` cannot be made thin, the safe `Arc<String>` costs more than the \
-         entry saves, and a hand-rolled one is an allocation this crate would own outright.",
-        object_key + component,
-        size_of::<BlockIndex>(),
-        round_up_to(field_sum - 2 * size_of::<usize>(), std::mem::align_of::<BlockIndex>()),
-        round_up_to(
-            size_of::<u64>()
-                + round_up_to(field_sum - 2 * size_of::<usize>(), std::mem::align_of::<BlockIndex>()),
-            8
-        )
+        address + round_up_to(tail_now, std::mem::align_of::<BlockIndex>()),
+        "the block entry no longer reconstructs as a {address} B eight-aligned address plus a \
+         {tail_now} B tail rounded up. A group named with the wrong type COMPILES, which is how \
+         this block came to charge four fields the entry does not have"
     );
 
-    // The two name pointers are the largest single group inside the entry, which is what makes them
-    // the next thing to price rather than the flags or the address. Stated against the CORRECT
-    // group -- the old form counted `model_id` as a third fat pointer, and at 48 against 24 it
-    // passed for the wrong reason.
+    // THE TAIL HAS TO REACH ZERO, AND THAT IS WHY THE FLAGS-ONLY STEP IS NOT THE STEP.
+    //
+    // `every_byte_of_the_block_index_is_accounted_for` asserts that packing the two flags into one
+    // byte takes the tail from 3 to 2 and rounds to the SAME eight. That is correct, and it is
+    // also the whole trap: the tail costs a full word at one byte just as it does at three, so no
+    // partial narrowing of it is worth anything. Either all three non-address fields leave the
+    // tail or none of them pays. Asserted across every width this tail can take, so the
+    // all-or-nothing claim is a measurement rather than a remark about the current three bytes.
+    for occupied in 1..=tail_now {
+        assert_eq!(
+            8,
+            round_up_to(occupied, 8),
+            "a tail of {occupied} B rounds to {} rather than 8, so the all-or-nothing claim here \
+             does not hold at every width this tail can take",
+            round_up_to(occupied, 8)
+        );
+    }
+
+    // SO HERE IS THE SHAPE THAT TAKES IT TO ZERO, PRICED BEFORE IT IS PAID.
+    //
+    // The address has its OWN tail -- `length` 4 + `block_id` 2 + `present` 1 = seven inside an
+    // eight-byte rounding -- so a SECOND byte there is already paid for. Widening that presence
+    // byte to a flag WORD therefore costs nothing and buys sixteen bits, of which two are spoken
+    // for. The three fields in the entry tail need nine between them: five for a model spelling
+    // drawn from a set whose size is asserted below, and one each for the two flags.
+    //
+    // These mirrors are local because one arm uses them; the module-level mirrors are the ones
+    // several arms compare against.
+    #[allow(dead_code)]
+    #[derive(Clone)]
+    struct MirrorWideFlagAddress {
+        address: u64,
+        length: u32,
+        block_id: u16,
+        flags: u16,
+    }
+    #[allow(dead_code)]
+    #[derive(Clone)]
+    struct MirrorTaillessBlockIndex {
+        address: MirrorWideFlagAddress,
+    }
+
+    // THE BIT BUDGET, ASSERTED RATHER THAN ASSUMED. Five bits hold the spelling only while the set
+    // fits in thirty-two. If one is added past that, this fails HERE and names the budget, rather
+    // than showing up as a width that quietly would not move.
+    let spellings = crate::engine::storage_bucket_internals::StoredModelKind::ALL.len();
+    let model_bits = spellings.next_power_of_two().trailing_zeros() as usize;
+    let needed_bits = model_bits + 2 + 2;
+    println!();
+    println!(
+        "  bit budget: {spellings} spellings need {model_bits} bits, plus two flags and the two \
+         presence bits = {needed_bits} of 16"
+    );
     assert!(
-        object_key + component > size_of::<ElementEntry>(),
-        "the two name pointers are {} B against the address's {} B; if the address has become the \
-         larger group, the next step named here is the wrong one",
-        object_key + component,
-        size_of::<ElementEntry>()
+        spellings <= 32,
+        "the model spelling set holds {spellings} values, which does not fit the five bits this \
+         shape budgets for it"
+    );
+    assert!(
+        needed_bits <= 16,
+        "the folded tail needs {needed_bits} bits and the widened flag word holds 16"
+    );
+
+    // WIDENING THE PRESENCE BYTE IS FREE -- the premise, so it is asserted first.
+    assert_eq!(
+        size_of::<ElementEntry>(),
+        size_of::<MirrorWideFlagAddress>(),
+        "widening the presence byte to a word moved the address from {} B to {} B, so it is NOT \
+         free and the saving below is not available at this price",
+        size_of::<ElementEntry>(),
+        size_of::<MirrorWideFlagAddress>()
+    );
+    assert_eq!(
+        16,
+        size_of::<MirrorTaillessBlockIndex>(),
+        "the tailless entry is {} B rather than 16, so folding the tail does not reach the next \
+         word down and this shape buys nothing",
+        size_of::<MirrorTaillessBlockIndex>()
+    );
+
+    // AND WHAT IT IS WORTH IS PER BLOCK, ON THE LIST STRIDE, which is where the slope lives.
+    //
+    // `index_bytes_per_key::which_term_carries_the_bucket_map_slope` decomposes `bucket_map`s 48.0
+    // B/key marginal and finds 33.8 of it in ONE term, `Vec<(u64, BlockIndex)>`, at 1.056 blocks a
+    // key on the shipped routing range. So every byte off this stride is worth about 1.06 B/key,
+    // and the per-bucket terms beside it saturate at 1,024 buckets and are worth nothing per key
+    // however large they are in absolute terms.
+    let stride_now = size_of::<(u64, BlockIndex)>();
+    let stride_folded = size_of::<u64>() + size_of::<MirrorTaillessBlockIndex>();
+    println!(
+        "  list stride {stride_now} B -> {stride_folded} B, so {} B a block",
+        stride_now - stride_folded
+    );
+    println!();
+    assert_eq!(
+        32, stride_now,
+        "the shipped list stride is {stride_now} B rather than 32, so the slope this is priced \
+         against was taken at a different stride"
+    );
+    assert_eq!(24, stride_folded, "the folded stride is {stride_folded} B rather than 24");
+    assert!(
+        stride_folded < stride_now,
+        "the folded stride is not narrower than the one that ships, so this is not a saving"
+    );
+
+    // The address is now the LARGEST group in the entry, and it is the one group that cannot
+    // leave: `BlockStore::read` sizes its read with the length, and `BlockIndex::log_backed` reads
+    // the block id precisely so that it answers with no I/O. Asserted, because the old form of
+    // this claim named two fat pointers that are no longer here and passed for the wrong reason.
+    assert!(
+        address > tail_now,
+        "the address is {address} B against {tail_now} B of tail; if the tail has become the \
+         larger group, the step named here is the wrong one"
     );
     assert_eq!(
         1, model_id,
