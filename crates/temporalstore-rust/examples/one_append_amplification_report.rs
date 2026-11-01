@@ -58,6 +58,16 @@ const KEY: &str = "amp-key";
 
 /// The cluster id the sweep runs under, and a much longer one used to show the envelope no longer
 /// depends on it. These differ by 40 characters.
+/// What the C++ store was measured to put on disk for one operation, and the payload that
+/// measurement carried. Both come from a disk measurement of one of its hash operations:
+/// about 158.6 B written per operation over a payload of about 144 B.
+///
+/// The payload figure is a LOWER bound on what that operation carried, so the envelope these
+/// two imply -- 158.6 - 144 = 14.6 B -- is an UPPER bound on theirs. Every distance printed
+/// below is therefore a LOWER bound on ours, which is the direction that cannot flatter us.
+const THEIR_BYTES_PER_OP: f64 = 158.6;
+const THEIR_PAYLOAD_BYTES: f64 = 144.0;
+
 const CLUSTER: &str = "cluster-one-append";
 const LONG_CLUSTER: &str = "cluster-one-append-with-a-deliberately-much-longer-name";
 
@@ -398,6 +408,81 @@ async fn report(shape: Shape, options: &StoreOptions) {
     );
     println!(
         "    replicated/user models copied blob bytes; allocator and disk overhead are excluded"
+    );
+
+    // ---- AND THE ENVELOPE IS THE WHOLE OF THE DISTANCE TO THE C++ STORE. Their cost has the
+    // ---- same shape as ours -- one payload plus a constant -- so the two lines differ only in
+    // ---- their intercepts, and the ratio either of them quotes is mostly its own intercept
+    // ---- divided by the payload it was quoted at. Both are evaluated here at THEIR payload
+    // ---- size, which is the only arrangement under which the two ratios mean the same thing.
+    let their_env = THEIR_BYTES_PER_OP - THEIR_PAYLOAD_BYTES;
+    assert!(
+        THEIR_PAYLOAD_BYTES < THEIR_BYTES_PER_OP,
+        "the C++ figures say a {THEIR_PAYLOAD_BYTES:.0} B payload costs {THEIR_BYTES_PER_OP:.1} B \
+         on disk, which leaves it no envelope at all -- one of the two numbers was misread"
+    );
+    println!();
+    println!("  AGAINST THE C++ STORE, BOTH LINES EVALUATED AT THE SAME PAYLOAD");
+    println!();
+    println!(
+        "    their envelope  {their_env:>6.1} B   upper bound, from {THEIR_BYTES_PER_OP:.1} B/op \
+over a {THEIR_PAYLOAD_BYTES:.0} B payload"
+    );
+    println!("    our envelope    {blob_env:>6.1} B   fitted over the sweep above");
+    println!();
+    println!("    payload B   ours x   theirs x   ours/theirs");
+    for payload in [THEIR_PAYLOAD_BYTES, 1024.0, 8192.0, 65536.0] {
+        let ours = blob_rate * payload + blob_env;
+        let theirs = payload + their_env;
+        println!(
+            "    {payload:>9.0}   {:>6.3}   {:>8.3}   {:>11.3}",
+            ours / payload,
+            theirs / payload,
+            ours / theirs
+        );
+    }
+    let matched = (blob_rate * THEIR_PAYLOAD_BYTES + blob_env) / (THEIR_PAYLOAD_BYTES + their_env);
+    println!();
+    println!(
+        "    So at their payload size one append of ours costs {matched:.3}x what theirs was"
+    );
+    println!(
+        "    measured to cost, and the whole of that is {:.1} B of envelope against their \
+{their_env:.1} B.",
+        blob_env
+    );
+    println!("    Ours is NOT the cheaper of the two there today. Both marginal rates are one");
+    println!("    payload, so the envelope is the only term that can move this at any size, and");
+    println!("    the distance closes with the payload rather than with any change to the store.");
+    println!();
+    println!("    AND THE REASON IS BATCHING, NOT A TIGHTER ENCODING. Their record header is");
+    println!("    written once per flush over a batch of items, so their per-item share of it");
+    println!("    falls as the batch grows. Ours is charged per ENTRY and stays charged inside a");
+    println!("    batch: `publish_wal_entries_batch` concatenates N frames into one append, which");
+    println!("    amortizes the durable barrier and not one byte of the envelope. Each of the N");
+    println!("    still carries its own frame marker, length varint, CRC32C and record fields,");
+    println!("    and its own offset-metadata sidecar beside them.");
+    println!();
+    println!("    So the term to attack is the per-entry frame, not the fields inside it -- every");
+    println!("    field of both legs has already been priced one by one. The entry shape already");
+    println!("    admits the fix: it carries a VECTOR of outcome items, so N writes can travel in");
+    println!("    one frame under one sidecar, which is the shape their log already has.");
+
+    // ---- AND THAT RATIO IS A CEILING, so handing the envelope's saving back fails here rather
+    // ---- than being discovered in a later report. It moves only with our envelope: theirs is
+    // ---- two constants above, and both rates are pinned to one payload by the asserts below.
+    let matched_ceiling = if matches!(shape, Shape::Command) {
+        1.30
+    } else {
+        1.39
+    };
+    assert!(
+        matched < matched_ceiling,
+        "at a {THEIR_PAYLOAD_BYTES:.0} B payload one append costs {matched:.3}x what the C++ store \
+         was measured to cost, over the {matched_ceiling:.2}x ceiling for {shape:?}. Both marginal \
+         rates are one payload, so the whole of this is our {blob_env:.1} B envelope against their \
+         {their_env:.1} B -- re-price the log frame and the sidecar field by field before raising \
+         this bound"
     );
 
     // ---- THE FIT HAS TO BE A FIT. A line quoted over points that do not lie on one is a
