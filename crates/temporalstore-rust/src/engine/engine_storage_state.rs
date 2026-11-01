@@ -1961,6 +1961,24 @@ impl ObjectSlots {
         self.filled.truncate_to(self.ids.len().div_ceil(64));
     }
 
+    /// Give back the capacity a SETTLED slot array is not using.
+    ///
+    /// `insert` grows `ids` with `Vec::push`, which DOUBLES, and `drop_trailing_placeholders`
+    /// shortens it with `Vec::pop`, which lowers the length and leaves the capacity where it
+    /// was. So a bucket that churned wide and shrank keeps the wide buffer, and the resident
+    /// model charges the buffer. `what_a_slot_array_costs_under_churn` bounds the LENGTH
+    /// (`peak slots / peak objects == 1.000`); nothing bounded the capacity.
+    fn compact_settled_capacity(&mut self) -> usize {
+        let reclaimed = self.ids.capacity() - self.ids.len();
+        if reclaimed > 0 {
+            self.ids.shrink_to_fit();
+        }
+        reclaimed
+    }
+
+    fn ids_len_and_capacity(&self) -> (usize, usize) {
+        (self.ids.len(), self.ids.capacity())
+    }
     fn into_ids(self) -> Vec<u64> {
         let filled = self.filled;
         self.ids
@@ -1972,6 +1990,25 @@ impl ObjectSlots {
     }
 }
 
+impl ObjectIndex {
+    /// Give back a settled slot array's unused capacity, and report the slots reclaimed.
+    pub(super) fn compact_settled_capacity(&mut self) -> usize {
+        match self {
+            ObjectIndex::Many(slots) => slots.compact_settled_capacity(),
+            // `One` holds the id inline in the enum and `Empty` holds nothing, so neither owns
+            // a buffer that can carry slack.
+            _ => 0,
+        }
+    }
+
+    /// Length and capacity of the slot array, for a probe that must see what a clone cannot.
+    pub(super) fn slots_len_and_capacity(&self) -> (usize, usize) {
+        match self {
+            ObjectIndex::Many(slots) => slots.ids_len_and_capacity(),
+            _ => (0, 0),
+        }
+    }
+}
 pub(super) enum ObjectIndexIter<'a> {
     Empty,
     One(std::iter::Once<&'a u64>),
@@ -3936,6 +3973,39 @@ impl BlockIndexMap {
         }
     }
 
+    /// Give back the capacity a SETTLED list is not using, and report the slots reclaimed.
+    ///
+    /// WHY THIS IS NOT PART OF `shrink`. `shrink` runs on the removal path, where the step
+    /// policy deliberately keeps capacity rounded UP so a list being edited does not
+    /// reallocate on every touch. This runs where the caller knows the list is done changing
+    /// for now -- a dump has just captured the bucket -- so an exact fit is the right trade:
+    /// the spare slots go back and the next insert pays ONE reallocation to round up again.
+    ///
+    /// `resident_heap_bytes` charges `capacity`, so for a list already at its minimum LENGTH
+    /// this is the only thing that moves the row.
+    /// `what_the_dump_reclaims_from_settled_containers` measures it.
+    pub(super) fn compact_settled_capacity(&mut self) -> usize {
+        match self {
+            BlockIndexMap::Many(blocks) => {
+                let reclaimed = blocks.capacity() - blocks.len();
+                if reclaimed > 0 {
+                    blocks.shrink_to_fit();
+                }
+                reclaimed
+            }
+            // Neither other arm owns a growable buffer: `One` holds a `Box` sized to its one
+            // entry and `Empty` holds nothing.
+            _ => 0,
+        }
+    }
+
+    /// Length and capacity of the list arm, for a probe that must see what a clone cannot.
+    pub(super) fn list_len_and_capacity(&self) -> (usize, usize) {
+        match self {
+            BlockIndexMap::Many(blocks) => (blocks.len(), blocks.capacity()),
+            _ => (0, 0),
+        }
+    }
     /// Whether this bucket holds no blocks.
     ///
     /// READS THE LENGTH, NOT THE DISCRIMINANT. `Empty` and `Many(vec![])` are both "no blocks", and
