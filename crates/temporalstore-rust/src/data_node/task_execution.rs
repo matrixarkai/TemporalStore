@@ -272,23 +272,41 @@ pub(super) fn run_gc_inner(inner: &DataNodeRuntimeInner, request: GcRequest) -> 
             for manifest in inner.engine.list_bucket_dump_manifests(request.shard_id) {
                 live_block_slab_ids.extend(manifest.block_slab_ids.iter().copied());
             }
-            // Quarantine or unlink, nothing else: both entries take the same path and differ
-            // only in what they do with a slab once it has been selected, so a request that does
-            // not ask for quarantine runs exactly the code it ran before.
-            let gc_result = if request.block_gc_delayed_destroy {
-                inner
-                    .engine
-                    .block_store()
-                    .gc_slabs_before_with_live_refs_delayed_destroy(
-                        retain_from_block_slab_id,
-                        live_block_slab_ids,
-                    )
-            } else {
-                inner
-                    .engine
-                    .block_store()
-                    .gc_slabs_before_with_live_refs(retain_from_block_slab_id, live_block_slab_ids)
+            // Quarantine or unlink, nothing else: `delayed_destroy` is the last argument below
+            // and changes only what happens to a slab once it has been selected.
+            //
+            // THE POLICY ENTRY FOR BOTH, where this used to call the two that take no policy at
+            // all. This function is what the PERIODIC loop reaches, and the loop is where the
+            // three bounds on `GcRequest` come from; sending them anywhere else would have left
+            // them unread. An all-zero policy -- the decode default, so every operator reclaim
+            // RPC -- selects every candidate it is offered, and the candidates are the slabs the
+            // policy-free entries would have removed, so that path is unchanged rather than
+            // merely similar: see the field docs on `GcRequest`.
+            //
+            // What it does cost at every setting is a second pass over the slab directory, since
+            // the plan stats each file before the removal walk does. Against a stage that ran
+            // once per shard per round and could destroy the whole store, that is the right side
+            // of the trade -- and the plan is only ever able to NARROW what the walk removes,
+            // because `gc_slabs_before_with_live_refs_selected` re-checks liveness, currency and
+            // the live-bytes tally itself immediately before each irreversible step.
+            let gc_policy = crate::block_store::BlockStoreGcPolicy {
+                max_destroy_slabs: request.block_gc_max_destroy_slabs_per_round,
+                max_destroy_physical_bytes: request.block_gc_max_destroy_physical_bytes_per_round,
+                max_utility_score: None,
+                min_age_ms: None,
+                min_slab_garbage_basis_points: Some(
+                    request.block_gc_min_slab_garbage_basis_points,
+                ),
             };
+            let gc_result = inner
+                .engine
+                .block_store()
+                .gc_slabs_before_with_live_refs_policy(
+                    retain_from_block_slab_id,
+                    live_block_slab_ids,
+                    gc_policy,
+                    request.block_gc_delayed_destroy,
+                );
             match gc_result {
                 Ok(report) => {
                     if request.block_gc_invalidate_removed_slabs_only {

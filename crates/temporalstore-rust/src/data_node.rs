@@ -897,6 +897,44 @@ pub struct GcRequest {
     /// it. It is harder to defend on a loop that runs every thirty seconds.
     #[serde(default)]
     pub block_gc_invalidate_removed_slabs_only: bool,
+    /// Slabs one round may destroy. 0 means NO BOUND.
+    ///
+    /// THREE BOUNDS THAT EXISTED ONLY ON THE OTHER PIPELINE. `StorageManagerCycleRequest` has
+    /// carried all three, and `run_storage_manager_cycle` passes them into `BlockStoreGcPolicy` --
+    /// but that pipeline runs on an inbound `TaskRequest::StorageManager`. The PERIODIC loop a
+    /// server starts (`start_storage_manager_scheduler_for_all_shards` ->
+    /// `run_storage_manager_once`) builds THIS request instead, and it had no field for any of
+    /// them, so its block-GC stage reached `gc_slabs_before_with_live_refs` and its
+    /// delayed-destroy sibling -- the two entries that take no policy at all. A bound reachable
+    /// only from the other pipeline bounds nothing on this one, which is the same reason
+    /// `eviction_count_limit` and `index_resident_limit_bytes` had to be added to
+    /// `StorageManagerOptions`.
+    ///
+    /// 0 IS THE DECODE DEFAULT, so an operator reclaim RPC selects exactly the slabs it selected
+    /// before -- exactly, not approximately: under an all-zero policy `gc_policy_plan` admits
+    /// every candidate it is offered, and its candidate predicate (`gc_utility_candidates`:
+    /// below the retention floor, not current, not live) is the removal predicate in
+    /// `gc_slabs_before_with_live_refs_selected` minus the live-bytes tally, which that function
+    /// still applies afterwards. So the selected set it hands back is the set the unpoliced entry
+    /// would have removed.
+    #[serde(default)]
+    pub block_gc_max_destroy_slabs_per_round: usize,
+    /// Physical bytes one round may destroy. 0 means NO BOUND.
+    ///
+    /// A SPENDING bound when set: `gc_policy_plan` asks whether the budget has already been spent,
+    /// never whether this candidate would overshoot it, so the first candidate of a round is
+    /// always admitted and no value here can switch the stage off.
+    #[serde(default)]
+    pub block_gc_max_destroy_physical_bytes_per_round: u64,
+    /// Garbage floor in basis points. 0 collects every eligible slab.
+    ///
+    /// Inert at any setting today, and recorded here rather than left out so the two pipelines
+    /// build the same policy from the same three fields: a collector candidate is a slab no live
+    /// block points at, so it reads 10,000 bp of garbage and clears every floor.
+    /// `can_the_block_gc_garbage_floor_bind` is what fails if something starts offering this
+    /// stage a partially live slab.
+    #[serde(default)]
+    pub block_gc_min_slab_garbage_basis_points: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -1200,6 +1238,19 @@ pub struct StorageManagerOptions {
     /// would let the fed half advance past the starved one.
     #[serde(default)]
     pub raft_snapshot_refs: Vec<BucketDumpRaftSnapshotRef>,
+    /// Slabs the block-GC stage may destroy in one round. 0 means no bound.
+    ///
+    /// The cycle request's three block-GC bounds, which this loop had no field for. See the
+    /// matching fields on `GcRequest` for what each one does and why the loop was the unbounded
+    /// side of the pair.
+    #[serde(default = "default_storage_manager_block_gc_max_destroy_slabs_per_round")]
+    pub block_gc_max_destroy_slabs_per_round: usize,
+    /// Physical bytes the block-GC stage may destroy in one round. 0 means no bound.
+    #[serde(default = "default_storage_manager_block_gc_max_destroy_physical_bytes_per_round")]
+    pub block_gc_max_destroy_physical_bytes_per_round: u64,
+    /// Garbage floor for the block-GC stage, in basis points. 0 collects every eligible slab.
+    #[serde(default = "default_storage_manager_block_gc_min_slab_garbage_basis_points")]
+    pub block_gc_min_slab_garbage_basis_points: u64,
 }
 
 /// Victims one evict stage may take in total, across repeated batches.
@@ -1326,6 +1377,17 @@ impl Default for StorageManagerOptions {
             // four lifecycle requests and both reclaim plans in `run_storage_manager_once`.
             follower_replay_cursors: Vec::new(),
             raft_snapshot_refs: Vec::new(),
+            // THE CYCLE'S VALUES, not 0, and for the reason every bound above it carries the
+            // cycle's value: both pipelines run the same stages, and where they disagreed on a
+            // bound the periodic one -- the loop a server actually starts -- was the unbounded
+            // side. 500 slabs and one slab-target of bytes per round, with the byte ceiling a
+            // SPENDING bound so the first candidate always goes through.
+            block_gc_max_destroy_slabs_per_round:
+                crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND,
+            block_gc_max_destroy_physical_bytes_per_round:
+                crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND,
+            block_gc_min_slab_garbage_basis_points:
+                crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS,
         }
     }
 }
@@ -1367,6 +1429,18 @@ fn default_storage_manager_max_dump_buckets_per_round() -> usize {
 
 fn default_storage_manager_stage_enabled() -> bool {
     true
+}
+
+fn default_storage_manager_block_gc_max_destroy_slabs_per_round() -> usize {
+    crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_SLABS_PER_ROUND
+}
+
+fn default_storage_manager_block_gc_max_destroy_physical_bytes_per_round() -> u64 {
+    crate::engine::reports::DEFAULT_BLOCK_GC_MAX_DESTROY_PHYSICAL_BYTES_PER_ROUND
+}
+
+fn default_storage_manager_block_gc_min_slab_garbage_basis_points() -> u64 {
+    crate::engine::reports::DEFAULT_BLOCK_GC_MIN_SLAB_GARBAGE_BASIS_POINTS
 }
 
 fn storage_manager_pressure_signal(

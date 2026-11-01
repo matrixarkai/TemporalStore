@@ -1170,6 +1170,9 @@ fn gc_does_not_clear_the_dirty_scheduling_tracker() {
             retain_block_slabs_from_id: None,
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2180,6 +2183,9 @@ fn runtime_gc_reclaims_log_tails_and_reports_counts() {
             retain_block_slabs_from_id: Some(2),
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2272,6 +2278,9 @@ fn operator_gc_retains_slabs_referenced_by_dump_manifest() {
             retain_block_slabs_from_id: Some(u64::MAX),
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -2445,6 +2454,9 @@ fn runtime_honors_inflight_cancellation_before_gc_side_effects() {
             retain_block_slabs_from_id: None,
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         }),
     };
     runtime
@@ -2558,6 +2570,9 @@ fn runtime_rejects_background_work_when_background_queue_is_full() {
             retain_block_slabs_from_id: None,
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         },
         RequestController { timeout_ms: 1000 },
     );
@@ -7327,13 +7342,19 @@ fn what_an_index_gc_round_costs() {
 /// #1563 measured eleven slabs left after ten idle rounds: compaction rolls one a round and block
 /// GC removes none, so `stale_block_pressure` never closes and compaction re-triggers for ever.
 ///
-/// The floor is the first suspect. The periodic stage computes it as
+/// THE SUSPICION BELOW WAS RIGHT, AND IT IS FIXED. The periodic stage used to compute the floor as
 ///
 ///     stale_block_slab_ids.iter().min().saturating_add(1)
 ///
 /// and `stale_block_slab_ids` is every slab NOT in the live set -- so the floor is derived FROM
 /// the stale set. Taking the minimum and adding one authorises deleting slabs strictly below the
 /// OLDEST stale slab, which is at most that one slab, however many are stale.
+///
+/// `the_block_gc_budget_reaches_the_periodic_loop` measured exactly that: against 6 collectable
+/// slabs a round bounded at one slab removed 1, and a round with NO bound also removed 1. The
+/// reduction is now `max` over the non-manifest-pinned stale slabs, and the same fixture removes
+/// 5 with no bound. This diagnostic is kept because the treadmill question it asks -- is the
+/// collector keeping pace with compaction, round by round -- is still worth being able to print.
 ///
 /// This prints, per round, how many slabs are stale, what floor that produces, and how many the
 /// collector actually removed. If removed stays at zero while stale climbs, the floor is not the
@@ -7395,7 +7416,7 @@ fn what_the_retain_floor_authorises() {
         let floor = plan
             .stale_block_slab_ids
             .iter()
-            .min()
+            .max()
             .map(|id| id.saturating_add(1))
             .unwrap_or(0);
         let slabs = runtime
@@ -7425,9 +7446,14 @@ fn what_the_retain_floor_authorises() {
 ///       -- --ignored --nocapture --test-threads=1
 ///
 /// #1564 measured the block-GC retain floor freezing at 2 while stale slabs climbed to nine and the
-/// collector removed nothing. The floor freezes because it is `min(stale) + 1`, so it cannot rise
-/// past the oldest stale slab -- but that only explains the freeze if the oldest stale slab is
-/// itself unremovable, and it sits BELOW the floor, which the formula does authorise.
+/// collector removed nothing. It froze because the floor was then `min(stale) + 1`, so it could not
+/// rise past the oldest stale slab -- but that only explains the freeze if the oldest stale slab is
+/// itself unremovable, and it sits BELOW the floor, which the formula did authorise.
+///
+/// The floor is now `max(unpinned stale) + 1`. At `min + 1` the candidate set could not exceed ONE
+/// slab, so no per-round budget on this stage could bind at any setting: measured in
+/// `the_block_gc_budget_reaches_the_periodic_loop` as 1 removed at a budget of one and 1 removed
+/// with no budget, against 6 collectable.
 ///
 /// `gc_slabs_before_with_live_refs_selected` keeps a slab below the floor for exactly two reasons,
 /// and the report names both: it is the CURRENT slab, or it is LIVE. And the periodic stage widens
@@ -7494,7 +7520,7 @@ fn why_a_stale_slab_below_the_floor_survives() {
         let floor = plan
             .stale_block_slab_ids
             .iter()
-            .min()
+            .max()
             .map(|id| id.saturating_add(1))
             .unwrap_or(0);
         let live_by_block = engine.live_block_slab_ids_all_shards();
@@ -7525,7 +7551,7 @@ fn why_a_stale_slab_below_the_floor_survives() {
 
 /// An idle shard stops accumulating slabs: the collector keeps pace with compaction.
 ///
-/// The block-GC retain floor is a MIN over the stale slabs, and `run_gc_inner` treats every slab
+/// The block-GC retain floor was a MIN over the stale slabs, and `run_gc_inner` treats every slab
 /// named by a bucket dump manifest as live. So once a dump exists, the slab it names is stale (its
 /// blocks have moved) and retained (the manifest needs it) -- and `min` sat on that slab for ever.
 /// The floor never advanced, every slab compaction rolled afterwards was above it, and the store
@@ -7533,8 +7559,11 @@ fn why_a_stale_slab_below_the_floor_survives() {
 /// with the collector removing nothing after the first.
 ///
 /// Same shape as #1516, where a reclaim frontier taken as a min over every bucket was pinned by one
-/// clean bucket. The floor now takes its min over stale slabs that are NOT manifest-pinned, so it
+/// clean bucket. The floor now reduces over stale slabs that are NOT manifest-pinned, so it
 /// advances past them; they stay protected by the `is_live` check that was already refusing them.
+/// The reduction is `max`: excluding the pinned slabs from the SET is what stops one immovable
+/// member freezing the floor, which leaves the reduction free to admit every collectable slab
+/// rather than only the oldest.
 ///
 /// This asserts the property that failed: an idle shard reaches a steady slab count instead of
 /// climbing. It writes NOTHING after the fixture, so any growth is the loop's own doing.
@@ -9470,6 +9499,9 @@ fn a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install() {
             retain_block_slabs_from_id: Some(u64::MAX),
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         },
         RequestController { timeout_ms: 5000 },
     );
@@ -11519,6 +11551,9 @@ fn reclaim_is_refused_while_the_shard_is_recovering() {
             retain_block_slabs_from_id: Some(u64::MAX),
             block_gc_delayed_destroy: false,
             block_gc_invalidate_removed_slabs_only: false,
+            block_gc_max_destroy_slabs_per_round: 0,
+            block_gc_max_destroy_physical_bytes_per_round: 0,
+            block_gc_min_slab_garbage_basis_points: 0,
         },
         RequestController { timeout_ms: 5_000 },
     );
@@ -11690,5 +11725,148 @@ fn the_data_node_pressure_snapshot_does_not_read_either_log() {
     assert_eq!(
         index_read, 0,
         "the data node's pressure snapshot decoded {index_read} bytes of the index log"
+    );
+}
+
+/// The block-GC bounds reach the loop a server actually starts.
+///
+/// `StorageManagerCycleRequest` has carried three of them -- a slab count, a physical-byte
+/// ceiling and a garbage floor -- and `run_storage_manager_cycle` passes all three into
+/// `BlockStoreGcPolicy`. That pipeline runs on an inbound `TaskRequest::StorageManager`. The
+/// PERIODIC loop (`start_storage_manager_scheduler_for_all_shards` -> `run_storage_manager_once`)
+/// builds a `GcRequest` instead, and `GcRequest` had no field for any of the three, so the stage
+/// called `gc_slabs_before_with_live_refs` and its delayed-destroy sibling -- the entries that
+/// take no policy at all. On the loop the block-GC stage therefore destroyed every eligible slab
+/// on every round at every setting, and the `skipped_by_budget_*` figures the plan publishes
+/// could not be anything but zero.
+///
+/// Measured rather than reasoned about: with a slab budget of one, a round holding N >= 2
+/// collectable slabs removes exactly one and leaves the rest. The unbounded arm that follows
+/// removes what the bounded rounds left, which is what says their counts of one were a bound and
+/// not the whole supply.
+#[test]
+fn the_block_gc_budget_reaches_the_periodic_loop() {
+    const BATCH: usize = 400;
+    const ROUNDS: usize = 6;
+    const KEYSPACE: usize = 100;
+
+    // One fixture builder, called twice, so the two arms differ in the BUDGET and nothing else.
+    // Seeded the way `can_the_block_gc_garbage_floor_bind` seeds: repeated writes over a small
+    // keyspace with a maintenance round after each batch, which is what leaves behind slabs no
+    // live block points at. Block GC is OFF while seeding so those slabs accumulate instead of
+    // being taken by the same rounds that create them.
+    let seeded = || {
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let runtime = DataNodeRuntime::new_without_workers_with_options(
+            engine,
+            DataNodeRuntimeOptions {
+                worker_threads: 0,
+                max_queue_depth: 4,
+                max_background_queue_depth: 2,
+            },
+        );
+        let seed_options = StorageManagerOptions {
+            enable_block_gc: false,
+            ..StorageManagerOptions::default()
+        };
+        let mut written = 0usize;
+        for _ in 0..ROUNDS {
+            let engine = runtime.engine();
+            for index in 0..BATCH {
+                engine.execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringSet {
+                        key: format!("budget-{:06}", (written + index) % KEYSPACE),
+                        value: vec![b'v'; 96],
+                    },
+                });
+            }
+            written += BATCH;
+            runtime.run_storage_manager_once(1, seed_options.clone());
+        }
+        runtime
+    };
+
+    let removed_in_one_round = |budget: usize| -> (usize, Vec<String>) {
+        let runtime = seeded();
+        let report = runtime.run_storage_manager_once(
+            1,
+            StorageManagerOptions {
+                block_gc_max_destroy_slabs_per_round: budget,
+                ..StorageManagerOptions::default()
+            },
+        );
+        let removed = report
+            .gc_report
+            .as_ref()
+            .map(|gc| gc.block_slabs_removed)
+            .unwrap_or(0);
+        (removed, report.executed_stages.clone())
+    };
+
+    // THE DENOMINATOR, on a fresh fixture: how many slabs are collectable with nothing in the
+    // way. A budget of one cannot be told from no budget against a supply of one.
+    let runtime = seeded();
+    let engine = runtime.engine();
+    let live = engine.live_block_slab_ids_all_shards();
+    let plan = engine
+        .block_store()
+        .gc_policy_plan(
+            u64::MAX,
+            live.iter().copied(),
+            &crate::block_store::BlockStoreGcPolicy {
+                max_destroy_slabs: 0,
+                max_destroy_physical_bytes: 0,
+                max_utility_score: None,
+                min_age_ms: None,
+                min_slab_garbage_basis_points: None,
+            },
+        )
+        .expect("an unbounded plan");
+    let collectable = plan.selected_block_slab_ids.len();
+    eprintln!("  collectable with no retention floor and no budget: {collectable}");
+    assert!(
+        collectable >= 2,
+        "only {collectable} collectable slab(s) in the fixture, so no budget could be \
+         distinguished from another: candidates={} selected={:?}",
+        plan.candidate_count,
+        plan.selected_block_slab_ids
+    );
+    drop(runtime);
+
+    // THE TWO ARMS. Same fixture, same single round, only the budget differs.
+    let (bounded, bounded_stages) = removed_in_one_round(1);
+    let (unbounded, unbounded_stages) = removed_in_one_round(0);
+    eprintln!("  one round at a budget of 1 removed {bounded}; at 0 (no bound) removed {unbounded}");
+
+    for (label, stages) in [("bounded", &bounded_stages), ("unbounded", &unbounded_stages)] {
+        assert!(
+            stages.iter().any(|stage| stage == "reclaim_page"),
+            "the {label} arm did not run the block-GC stage, so nothing here is about its \
+             budget: executed {stages:?}"
+        );
+    }
+
+    assert_eq!(
+        bounded, 1,
+        "a round bounded at one slab removed {bounded}, so the bound is not being applied"
+    );
+
+    // THE DISCRIMINATING ASSERTION, and the one the first version of this test lacked. It ran
+    // three rounds against ONE fixture and read "1 removed" as the budget biting; the unbounded
+    // round removed 1 as well, because the stage's retention floor was then a MIN over the
+    // non-manifest-pinned stale slabs plus one, which admits a single slab however many are
+    // collectable -- so the assertion above would have held with the budget unread. Varying ONLY
+    // the budget is what makes the difference attributable to it, and the floor being a `max` is
+    // what leaves a difference to attribute.
+    assert!(
+        unbounded > bounded,
+        "an unbounded round removed {unbounded} and a round bounded at one slab removed \
+         {bounded}, out of {collectable} collectable slabs. Equal counts mean the budget is NOT \
+         what limited the bounded round -- the stage's retention floor is -- and this test would \
+         pass with the budget unread. Either the floor needs widening before a per-round slab \
+         budget can bind on this path, or the fixture does not present the stage with more than \
+         one candidate per round."
     );
 }
