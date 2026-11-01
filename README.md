@@ -97,15 +97,15 @@ the rounding is exactly what a change of container shape moves:
 whole-keyspace column is the arm where every key lands alone in its own bucket by construction.*
 
 **At a matched denominator** — same corpus, same 256 B values, one shard, weighing the whole
-resident shard state rather than the index alone — the shipped range costs **316.3 B/key at 8,000
-keys (marginal 274.5 B/key)** against **472.6 B/key at 2,000 keys (marginal 468.0 B/key)** on the
+resident shard state rather than the index alone — the shipped range costs **281.2 B/key at 8,000
+keys (marginal 238.0 B/key)** against **447.4 B/key at 2,000 keys (marginal 438.7 B/key)** on the
 whole keyspace. *(`where_the_resident_index_bytes_go_on_both_routing_ranges`.)*
 
 **The per-key figure is a sawtooth, and that is a property of the measurement.** The hash table
 behind a per-key map is a step function of the key count, so dividing by keys gives a sawtooth that
-doubles the moment the table does: the string table measures **46.9 B/key at 1,792 keys and 93.3
-B/key at 1,800** — 1.99x for eight more keys — while the whole resident index steps 414.1 → 460.7
-B/key (1.113x), diluted by the per-bucket rows that do not move.
+doubles the moment the table does: the string table measures **74.3 B/key at 1,792 keys and 147.9
+B/key at 1,800** — 1.99x for eight more keys — while the whole resident index steps 362.0 → 435.9
+B/key (1.204x), diluted by the per-bucket rows that do not move.
 *(`the_per_key_index_figure_is_a_sawtooth`.)*
 
 **Limits.** A store records the routing range it was built on and **refuses** to load under a
