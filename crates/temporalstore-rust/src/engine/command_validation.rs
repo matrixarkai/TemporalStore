@@ -577,6 +577,35 @@ pub(super) fn validate_command_preconditions(
                 ));
             }
         }
+        // THE FOURTH WRITE INTO A FEATURE SERIES, AND THE ONLY ONE THAT WAS NOT BOUNDED.
+        //
+        // `FeatureAppend`, `FeatureAppendWithPolicy` and `FeatureReplace` above all refuse a write
+        // that would take the series past `FEATURE_ADD_HARD_MAX_SIZE`. `SequenceAdd` lands in the
+        // SAME `shard.features()` series, through the same append and the same trim, and had no
+        // such arm -- so the one command named for long sequences was the one command a caller
+        // could hand an unbounded batch to.
+        //
+        // WHAT THE ABSENCE COST IS WORK, NOT FOOTPRINT, which is why the trim did not cover it.
+        // An oversized batch was accepted in full: every row was appended, a block was written
+        // for each, and the trim then dropped all but the retained bound. The series ended the
+        // right size and the write did the whole batch's work to get there. Refusing is the
+        // difference between doing that work and not.
+        //
+        // The bound is checked against the series as it stands plus the batch, and saturating, so
+        // a `rows.len()` near `usize::MAX` refuses rather than wrapping into an accept.
+        Command::SequenceAdd { key, rows } => {
+            let current = shard
+                .features()
+                .get(&key[..])
+                .map(|series| series.len())
+                .unwrap_or(0);
+            if current.saturating_add(rows.len()) > FEATURE_ADD_HARD_MAX_SIZE {
+                return Err(Status::error(
+                    "invalid_argument",
+                    format!("{key} size bigger than {FEATURE_ADD_HARD_MAX_SIZE}"),
+                ));
+            }
+        }
         Command::ContextUpsertNode { tenant_hash, node } => {
             validate_context_required(*tenant_hash != 0, "tenant_hash is required")?;
             validate_context_node(node)?;
