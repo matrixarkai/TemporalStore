@@ -130,6 +130,20 @@ jobs:
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery
         run: cargo run --release --locked -p temporalstore-rust --features matrixobject --example one_append_amplification_report
+      # The scale report asserts the shape of BOTH sides -- bytes and block lookups per
+      # entry, the per-replica star write, and now what a read actually fetched. None of it
+      # ran here: the only example this job ran was the one above, so every assertion in it
+      # was decoration. It is run at a small sweep because the assertions compare rounds
+      # against each other and two sizes is enough to tell a constant from a line, while the
+      # shipped default sweep takes minutes.
+      - name: The shared store's read and write shape at scale
+        run: |
+          set -o pipefail
+          MATRIXARK_SCALE_SIZES=200,400 cargo run --release --locked -p temporalstore-rust --features matrixobject --example scale_shared_store_report | tee /tmp/scale-shape.log
+          # The report exits 0 only by reaching its own assertions; this is what catches it
+          # exiting early with nothing asserted.
+          grep -q 'Converged on every node at every size' /tmp/scale-shape.log
+          grep -q 'fetched/returned' /tmp/scale-shape.log
 
       - name: cargo build (release service binaries)
         run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
