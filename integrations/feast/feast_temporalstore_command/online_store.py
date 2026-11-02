@@ -132,7 +132,33 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     off, :meth:`TemporalStoreCommandOnlineStore.teardown` has nothing to enumerate and
     says so rather than silently leaving data behind.
 
-    **DO NOT TURN THIS ON FOR A LARGE VIEW. THE WRITE PATH BECOMES QUADRATIC.**
+    **DO NOT TURN THIS ON TOGETHER WITH ASYNC COMMIT. ROWS ARE LOST.**
+    Measured on a release build against a freshly created, empty shard, writing
+    20,000 entities at a batch width of 500, with ``async_storage=true`` on the
+    shard: **17,500 of the 20,000 rows read back empty.** Not late -- empty.
+    The shard reported ``total_records=20001``, and ``HashGetAll`` on a lost
+    row's key answered with **zero fields**, so the object exists and holds
+    nothing; a 20-second pause did not bring the values back. Only the last
+    2,500 writes -- the final five batches -- survived, which is the shape of
+    older dirty objects being dropped before they were persisted.
+
+    It is an INTERACTION, and that is why it went unseen: neither half does it
+    alone. Same node, same payload, same entity count:
+
+    ===============  ==========  =====================
+    async_storage    this flag   rows lost of 20,000
+    ===============  ==========  =====================
+    false            true        0
+    true             false       0
+    true             **true**    **17,500**
+    ===============  ==========  =====================
+
+    The default path is unaffected, because this flag is off by default and
+    ``async_storage=true`` with it off loses nothing. If you need exact teardown
+    AND async commit, do the teardown pass against a shard configured for
+    durable commit.
+
+    **AND THE WRITE PATH IS QUADRATIC EVEN WHEN IT IS SAFE.**
     Every key goes into ONE set -- the shard reports it as a single
     `set_records` entry -- so each row's `SetAdd` is a write to a container
     holding every row before it. Measured on a release build, writing N rows at
@@ -526,3 +552,78 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 (len(commands) + batch_size - 1) // batch_size + 1,
                 batch_size,
             )
+
+    # -- the async serving path -----------------------------------------------
+    #
+    # WITHOUT THESE TWO, FEAST'S ASYNC SERVING DOES NOT WORK AT ALL. The base
+    # class's `online_read_async` and `online_write_batch_async` raise
+    # `NotImplementedError`, and `FeatureStore.get_online_features_async` calls
+    # straight into them, so a store that implements only the four abstract
+    # methods serves synchronously and fails outright on the async endpoint --
+    # which is the one a serving deployment under concurrency reaches for.
+    #
+    # These offload the synchronous call to a worker thread rather than running
+    # a native async HTTP client, and that is a deliberate choice, not a stub:
+    #
+    #  * The work is one blocking socket round trip. CPython releases the GIL
+    #    around socket reads and writes, so N coroutines on N worker threads
+    #    genuinely overlap their waiting -- the concurrency is real, and it is
+    #    measured in `docs/feast_online_store_benchmark.md` rather than assumed.
+    #  * `asyncio.to_thread` uses the loop's default executor, whose threads are
+    #    REUSED. The client keeps one keep-alive connection per thread, so a
+    #    bounded pool means a bounded number of connections and no handshake per
+    #    read. A native per-request async client would have to pool connections
+    #    itself to match that.
+    #  * It cannot drift from the sync path, because it IS the sync path. Two
+    #    separate request builders would be two places for the wire format to be
+    #    wrong, and only one of them covered by the command-shape tests.
+    #
+    # The honest cost: a worker thread per in-flight request, so this scales
+    # with the executor's size, not with the socket count a native async client
+    # could reach. Raise the loop's default executor if you need more.
+
+    async def online_read_async(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        entity_keys: List[EntityKeyProto],
+        requested_features: Optional[List[str]] = None,
+    ) -> List[Tuple[Optional[datetime], Optional[Dict[str, ValueProto]]]]:
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.online_read, config, table, entity_keys, requested_features
+        )
+
+    async def online_write_batch_async(
+        self,
+        config: RepoConfig,
+        table: FeatureView,
+        data: List[
+            Tuple[EntityKeyProto, Dict[str, ValueProto], datetime, Optional[datetime]]
+        ],
+        progress: Optional[Callable[[int], Any]],
+    ) -> None:
+        import asyncio
+
+        return await asyncio.to_thread(
+            self.online_write_batch, config, table, data, progress
+        )
+
+    # -- shutdown --------------------------------------------------------------
+
+    def close(self) -> None:
+        """Release every pooled connection this store opened.
+
+        The base class's `close` is `pass`, which is correct for a store that
+        holds nothing and wrong for this one: the client keeps a keep-alive
+        connection per thread, and under the async methods those threads belong
+        to an executor the caller never sees. A serving process that builds and
+        discards stores would leak a file descriptor per thread per store with
+        the inherited no-op, and the leak is invisible because every call still
+        succeeds.
+        """
+        if self._client is not None:
+            self._client.close()
+            self._client = None
+            self._client_signature = None

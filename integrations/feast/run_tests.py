@@ -52,8 +52,8 @@ except Exception:
 # put the wire floor at 9 against a real 7, and the floor refused the run --
 # which is the behaviour wanted, on the wrong value.
 WIRE_FLOOR = 7
-COMMAND_FLOOR_WITH_FEAST = 19
-COMMAND_FLOOR_WITHOUT_FEAST = 9
+COMMAND_FLOOR_WITH_FEAST = 25
+COMMAND_FLOOR_WITHOUT_FEAST = 12
 
 
 def _load_module(path: str, name: str):
@@ -109,7 +109,15 @@ def run_unittest_style(path: str, name: str) -> tuple[int, int]:
         print(f"FAIL {name}: collected 0 tests")
         return 0, 1
     result = unittest.TextTestRunner(verbosity=1).run(suite)
-    executed = result.testsRun - len(result.skipped)
+    # CLAMPED AT ZERO, because this subtraction goes NEGATIVE on a class-level
+    # skip: when `setUpClass` raises `SkipTest`, `testsRun` is 0 while
+    # `skipped` carries one entry for the whole class, giving -1. Measured
+    # here, not reasoned about -- this printed "executed -1" and then
+    # "-1 test(s) executed against a live node", and every `executed == 0`
+    # guard downstream silently did not fire. The same arithmetic was wrong in
+    # two places; it is fixed here, where the count is produced, rather than at
+    # each caller.
+    executed = max(0, result.testsRun - len(result.skipped))
     failed = len(result.failures) + len(result.errors)
     print(
         f"{name}: collected {collected}, executed {executed}, "
@@ -153,6 +161,38 @@ def main() -> int:
             f"command tier executed {command_executed} tests, "
             f"expected at least {command_floor}"
         )
+
+    # -- the conformance tier, which is ALLOWED to skip -----------------------
+    # It drives the provider through Feast's public API against a live data
+    # node. Included here rather than left as a separate command because a file
+    # no runner ever touches is as green as a correct one -- this at least
+    # imports and collects it on every run, and executes it whenever a node is
+    # reachable. It has no floor: "no node" is a legitimate skip, and turning
+    # that into a failure would make this script need a server. What it will
+    # not do is report a skipped run as a pass -- the count is printed either
+    # way.
+    print("\n--- feast_temporalstore_command conformance tier (needs a node) ---")
+    conformance_path = os.path.join(
+        HERE, "feast_temporalstore_command", "tests", "test_feast_api_conformance.py"
+    )
+    if not FEAST_AVAILABLE:
+        print("conformance: SKIPPED, feast is not installed")
+    elif not os.path.isfile(conformance_path):
+        problems.append("the conformance test file is missing")
+    else:
+        conf_executed, conf_failed = run_unittest_style(
+            conformance_path, "test_feast_api_conformance"
+        )
+        if conf_failed:
+            problems.append(f"{conf_failed} conformance test(s) failed")
+        if conf_executed == 0:
+            print(
+                "conformance: SKIPPED ENTIRELY -- no data node was reachable, so "
+                "NOTHING was verified through Feast's own API. Not a failure "
+                "here, and not a pass either."
+            )
+        else:
+            print(f"conformance: {conf_executed} test(s) executed against a live node")
 
     print()
     if problems:

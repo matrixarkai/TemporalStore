@@ -93,6 +93,16 @@ class TemporalStoreClient:
         self.shard_id = shard_id
         self.timeout_seconds = timeout_seconds
         self._local = threading.local()
+        # EVERY connection this client ever opened, not just this thread's.
+        # `threading.local` is the right place to KEEP a connection and the
+        # wrong place to find one from another thread, so `close()` could only
+        # ever release the socket belonging to whoever happened to call it.
+        # Under the async methods the work runs on an executor's threads, so
+        # the caller closing the store is never the thread holding the
+        # connections, and every one of them would leak. This registry is what
+        # makes `close()` mean closed.
+        self._all_connections: List[http.client.HTTPConnection] = []
+        self._registry_lock = threading.Lock()
 
     # -- connection handling -------------------------------------------------
 
@@ -103,7 +113,18 @@ class TemporalStoreClient:
                 self.host, self.port, timeout=self.timeout_seconds
             )
             self._local.conn = conn
+            # The lock is taken only when a thread opens its FIRST connection,
+            # never on the hot path.
+            with self._registry_lock:
+                self._all_connections.append(conn)
         return conn
+
+    def _forget(self, conn: http.client.HTTPConnection) -> None:
+        with self._registry_lock:
+            try:
+                self._all_connections.remove(conn)
+            except ValueError:
+                pass
 
     def _drop_connection(self) -> None:
         conn = getattr(self._local, "conn", None)
@@ -112,10 +133,28 @@ class TemporalStoreClient:
                 conn.close()
             except Exception:
                 pass
+            self._forget(conn)
             self._local.conn = None
 
     def close(self) -> None:
-        self._drop_connection()
+        """Close every connection this client opened, on any thread.
+
+        Idempotent, and safe to call from a thread that never issued a request.
+        A connection closed here that some thread still has in its
+        `threading.local` is reopened on that thread's next call, because
+        :meth:`_connection` builds one whenever its slot is empty -- and a
+        closed `HTTPConnection` raises on reuse, which `_post` already treats
+        as a dropped pooled connection and retries once.
+        """
+        with self._registry_lock:
+            connections = list(self._all_connections)
+            self._all_connections.clear()
+        for conn in connections:
+            try:
+                conn.close()
+            except Exception:
+                pass
+        self._local = threading.local()
 
     def _post(self, path: str, document: Dict[str, Any]) -> Dict[str, Any]:
         body = json.dumps(document, separators=(",", ":")).encode("utf-8")
