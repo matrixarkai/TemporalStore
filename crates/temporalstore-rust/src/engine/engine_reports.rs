@@ -3781,6 +3781,11 @@ pub struct StorageManagerStageReport {
     pub last_run_unix_ms: u64,
     #[serde(default)]
     pub duration_ms: u64,
+    /// The stage's own time in MICROSECONDS. `duration_ms` truncates to whole
+    /// milliseconds, so every stage of a sub-millisecond round reports 0 there and the
+    /// breakdown cannot name the stage that paid. Additive: `duration_ms` is unchanged.
+    #[serde(default)]
+    pub duration_us: u64,
     #[serde(default)]
     pub skipped_reason: String,
     #[serde(default)]
@@ -3957,6 +3962,9 @@ pub struct StorageManagerCycleReport {
     /// time and tile this; they used to all be a copy of this number.
     #[serde(default)]
     pub duration_ms: u64,
+    /// The whole round in MICROSECONDS, beside `duration_ms`.
+    #[serde(default)]
+    pub duration_us: u64,
     pub dry_run: bool,
     pub native_stage_order: Vec<String>,
     pub completed: bool,

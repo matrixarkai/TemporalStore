@@ -220,6 +220,8 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
     out.push_str("# TYPE temporalstore_storage_manager_phase_skipped gauge\n");
     out.push_str("# HELP temporalstore_storage_manager_phase_duration_ms Last StorageManager phase duration.\n");
     out.push_str("# TYPE temporalstore_storage_manager_phase_duration_ms gauge\n");
+    out.push_str("# HELP temporalstore_storage_manager_phase_duration_us Last StorageManager phase duration in microseconds.\n");
+    out.push_str("# TYPE temporalstore_storage_manager_phase_duration_us gauge\n");
     out.push_str("# HELP temporalstore_storage_manager_phase_pressure Last StorageManager phase pressure counters by kind.\n");
     out.push_str("# TYPE temporalstore_storage_manager_phase_pressure gauge\n");
     out.push_str("# HELP temporalstore_storage_manager_phase_work Last StorageManager phase work counters by kind.\n");
@@ -259,6 +261,15 @@ fn append_storage_manager_cycle_metrics(out: &mut String, report: &StorageManage
             report.shard_id,
             &stage.stage,
             stage.duration_ms,
+        );
+        // Beside the millisecond gauge, not instead of it: a sub-millisecond stage reads 0
+        // there, which is why the round could not name the stage that paid.
+        append_storage_manager_phase_value(
+            out,
+            "temporalstore_storage_manager_phase_duration_us",
+            report.shard_id,
+            &stage.stage,
+            stage.duration_us,
         );
         for (kind, value) in [
             ("score", stage.pressure_score),
