@@ -44,7 +44,7 @@ pub(crate) fn hash_entries_response(result: Result<CommandResponse, String>) -> 
                 .into_iter()
                 .flat_map(|(field, value)| {
                     [
-                        RespValue::Bulk(Some(field.into_bytes())),
+                        RespValue::Bulk(Some(decode_or_raw(&field))),
                         RespValue::Bulk(Some(value)),
                     ]
                 })
@@ -114,6 +114,24 @@ pub(crate) fn parse_feature_filter_op(value: &str) -> Result<FeatureFilterOp, St
 
 pub(crate) fn string_arg(value: &[u8]) -> String {
     String::from_utf8_lossy(value).to_string()
+}
+
+/// A STORED NAME, GIVEN BACK AS THE BYTES IT STANDS FOR.
+///
+/// This is the read half of the binary-safe name sequence, and on every name this build writes
+/// today it is a NO-OP: an untagged name decodes to its own bytes, which is `decode_name`'s first
+/// arm. Its only effect is to make a node ABLE to read a tagged name, which is what has to be
+/// deployed everywhere before anything starts writing one. Shipping that write step in the same
+/// commit is the rolling-restart hazard the encoding module's own doc names.
+///
+/// THE ERROR ARM IS UNREACHABLE FROM OUR OWN ENCODER, and that is why this falls back rather than
+/// failing. `encode_name` never emits a tagged name whose tail is not base64, so an error here
+/// means the stored bytes did not come from it -- corrupt, or written by something else. Answering
+/// with the name AS STORED is exactly what every reader did before this encoding existed, so the
+/// fallback is the old behaviour rather than a new guess, and it keeps one unreadable name from
+/// failing a listing of a thousand good ones.
+pub(crate) fn decode_or_raw(stored: &str) -> Vec<u8> {
+    crate::binary_safe_name::decode_name(stored).unwrap_or_else(|_| stored.as_bytes().to_vec())
 }
 
 pub(crate) fn upper(value: &[u8]) -> String {

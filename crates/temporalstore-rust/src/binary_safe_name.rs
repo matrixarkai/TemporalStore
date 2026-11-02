@@ -21,7 +21,13 @@
 //! binary meets a name it cannot decode -- which is why this tree splits a frame format into a
 //! reader commit and a writer commit, and this follows that shape.
 //!
-//! **Nothing in production calls this yet, on purpose.** It is a guard ahead of its caller, the
+//! **`decode_name` IS CALLED IN PRODUCTION NOW; `encode_name` IS STILL NOT, on purpose.** The read
+//! sites answer through `redis::decode_or_raw`, which is a no-op on every name this build writes
+//! (an untagged name decodes to its own bytes) and whose only effect is to make a node ABLE to
+//! read a tagged one. The WRITE step is still separate and still unlanded, because a build must be
+//! able to read the shape before any build emits it.
+//!
+//! The paragraph below is kept for `encode_name`, which remains a guard ahead of its caller. It is a guard ahead of its caller, the
 //! same way `the_tombstone_drop_rule_has_no_caller_on_purpose` is. The call sites are a separate
 //! change: `Command::Hash*` carries `key: String` and `field: String`, and those two fields are
 //! referenced from 198 non-test places across 32 files (494 including tests), so widening their

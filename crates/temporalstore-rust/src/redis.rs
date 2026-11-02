@@ -372,6 +372,10 @@ fn redis_info(section: &str, shard_id: ShardId, state: &RedisCommandState) -> St
 
 
 #[cfg(test)]
+#[path = "redis/a_stored_name_is_read_as_bytes.rs"]
+mod a_stored_name_is_read_as_bytes;
+
+#[cfg(test)]
 mod tests {
     use std::io::BufReader;
 

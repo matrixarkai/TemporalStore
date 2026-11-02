@@ -15,7 +15,7 @@ pub(super) fn redis_keys_response(
     RespValue::Array(
         live_matching_keys(&pattern, state, execute)
             .into_iter()
-            .map(|key| RespValue::Bulk(Some(key.into_bytes())))
+            .map(|key| RespValue::Bulk(Some(decode_or_raw(&key))))
             .collect(),
     )
 }
@@ -72,7 +72,7 @@ pub(super) fn redis_scan_response(
         RespValue::Array(
             selected
                 .into_iter()
-                .map(|key| RespValue::Bulk(Some(key.into_bytes())))
+                .map(|key| RespValue::Bulk(Some(decode_or_raw(&key))))
                 .collect(),
         ),
     ])
