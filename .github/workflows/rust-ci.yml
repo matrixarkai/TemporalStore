@@ -211,6 +211,8 @@ jobs:
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
             shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::the_widened_object_readers_accept_both_shapes \
+            shared_store::tests::the_object_writer_is_json_until_asked_and_the_reader_never_cares \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
