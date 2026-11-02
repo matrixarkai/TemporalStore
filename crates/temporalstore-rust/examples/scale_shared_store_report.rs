@@ -125,9 +125,17 @@ fn chunk_fetches(store: &MatrixObjectObjectStore) -> (u64, u64) {
     let inner = store.inner();
     let guard = inner.lock().expect("store lock poisoned");
     let stats = guard.read_cache_stats();
+    // `compressed_fill_bytes` IS NOT A TERM HERE, and adding it was wrong. The fill
+    // counters are not four paths: `direct_fill` and `ec_fill` partition the fills, and
+    // `compressed_fill` is an OVERLAPPING CLASSIFICATION of those same fills -- whether the
+    // bytes just cached happen to be run-length compressible. The increment sits after the
+    // if/else, not inside it, so a compressible direct fill is counted in both and summing
+    // all four charges those bytes twice.
+    //
+    // It overstated this report's read amplification by the compressible share of the
+    // traffic: 2.441 where the figure is 2.218.
     let fetched = stats
         .direct_fill_bytes
-        .saturating_add(stats.compressed_fill_bytes)
         .saturating_add(stats.ec_fill_bytes)
         .saturating_add(stats.uncacheable_read_bytes);
     (stats.misses, fetched)
@@ -777,12 +785,20 @@ async fn main() {
     println!("    because a replayer is a different node and does not have the writer's memory.");
     println!();
     println!("    So every lookup now misses, and `fetched/returned` is the read amplification:");
-    println!("    about 2.4, flat across the sweep. Its numerator is summed over every replica the");
-    println!("    read touched and its denominator is one replayer's logical bytes, so the");
-    println!("    replication factor is INSIDE it -- with a quorum of 2, returning a byte needs");
-    println!("    that byte from two replicas before any overhead, which is most of the 2.4. It is");
-    println!("    printed undivided because dividing by the replica count would assume every");
-    println!("    replica was read, which is what a quorum read does not do.");
+    println!("    about 2.22, flat across the sweep. It decomposes exactly, and measured rather");
+    println!("    than assumed -- running the same sweep with one replica instead of three halves");
+    println!("    it to 1.109, so a read touches exactly two replicas:");
+    println!();
+    println!("        2.218  =  2 replicas read  x  1.109 per replica");
+    println!();
+    println!("    and that 1.109 is this entry's frame over the range asked for: 335.6 bytes");
+    println!("    fetched against 302.7 returned, which is `blob B/entry` in the write table to");
+    println!("    the byte. The replay fetches exactly what the append wrote and nothing else, so");
+    println!("    there is no waste at the block layer to remove -- the read lever is the SAME");
+    println!("    envelope the write side reports as `blob/user`, and shrinking it moves both.");
+    println!();
+    println!("    The ratio is printed undivided because dividing by the replica count would");
+    println!("    assume every replica was read, which is what a quorum read does not do.");
     println!();
     println!("    TIMINGS ARE PRINTED AND NOT ASSERTED, because a timing is a fact about this box.");
     println!("    On this run append went {:.0} -> {:.0} us/entry and replay {:.0} -> {:.0}, over a {corpus_ratio:.0}x corpus.",
