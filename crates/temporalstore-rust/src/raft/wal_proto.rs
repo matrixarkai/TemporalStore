@@ -742,6 +742,130 @@ pub(super) fn decode_envelope(bytes: &[u8]) -> io::Result<RaftWalEnvelope> {
 mod tests {
     use super::*;
 
+/// THE COMMANDS THE RAFT WAL MODELS AS PROTOBUF, BY NAME. EVERYTHING ELSE IS CARRIED AS TEXT.
+///
+/// `command_encoding` is the only place that decides, and its last arm carries the command as
+/// `serde_json` bytes inside a protobuf envelope. That arm is DELIBERATE -- this is the durability
+/// path, and the module header makes fidelity the rule: a command this module does not model is
+/// carried byte for byte rather than approximated by the nearest match. So the text arm is not a
+/// defect to be removed in one go; it is the floor that lets modelled arms be added one at a time.
+///
+/// WHAT WAS MISSING IS THE ROSTER. Nothing said which commands still take it, so the size of the
+/// remaining work was invisible -- the same hole that `COMMANDS_STILL_ENCODED_AS_JSON` closed for
+/// the shared WAL. This states it from the short end: three commands are modelled, and every other
+/// variant of `Command` reaches this log as text.
+///
+/// THIS LIST ONLY GROWS, AND THE GUARD BELOW IS WHAT MAKES THAT TRUE. Modelling a command without
+/// adding its name here fails the test, and adding a name without modelling it fails too.
+///
+/// IT DELIBERATELY DOES NOT CLAIM REACHABILITY. The shared-WAL roster is an intersection, because
+/// `mirror_write` admits only writes. The equivalent filter for this log lives in a BINARY
+/// (`bin/server/raft_route.rs` serves reads locally and lets everything else fall through to
+/// `propose`), there is more than one proposer, and this crate's library cannot see any of them. A
+/// roster that guessed the intersection would be a roster nobody could check, so this one states
+/// the CODEC fact only: of the commands that do reach here, these three are binary.
+const COMMANDS_THE_RAFT_WAL_MODELS: &[&str] = &["HashSet", "StringSet", "StringSetEx"];
+
+/// The roster above, checked from both ends: the source text that defines the arms, and the real
+/// encoder driven with real commands.
+#[test]
+fn the_raft_wal_names_every_command_it_still_carries_as_text() {
+    // ---------- the source-text half: which commands `command_encoding` names at all.
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let text = std::fs::read_to_string(root.join("src/raft/wal_proto.rs"))
+        .expect("this guard reads src/raft/wal_proto.rs");
+    let body = text
+        .split_once("pub(crate) fn command_encoding")
+        .expect("command_encoding must be in this file")
+        .1;
+    let body = &body[..body.find("\n}").expect("command_encoding must close")];
+    let mut modelled: Vec<String> = body
+        .split("Command::")
+        .skip(1)
+        .map(|rest| {
+            rest.chars()
+                .take_while(|c| c.is_alphanumeric() || *c == '_')
+                .collect()
+        })
+        .collect();
+    modelled.sort();
+    modelled.dedup();
+
+    // DENOMINATOR FIRST. This parses SOURCE TEXT, which is exactly the thing that silently returns
+    // empty once a refactor moves the function -- and an empty parse would make the comparison
+    // below pass against an empty roster.
+    assert!(
+        !modelled.is_empty(),
+        "parsed no Command names out of command_encoding, so this guard proved nothing"
+    );
+    assert_eq!(
+        modelled, COMMANDS_THE_RAFT_WAL_MODELS,
+        "the commands command_encoding models have changed. Add the new name to \
+         COMMANDS_THE_RAFT_WAL_MODELS in the same change that modelled it, or delete the name \
+         that is no longer modelled -- the roster is what makes the remaining text arm visible."
+    );
+
+    // ---------- the behaviour half. A LIST OF NAMES IS NOT A FORMAT: the arm is chosen by
+    // ---------- `command_encoding` at run time, so each case goes through the real encoder.
+    let carried_as_text: Vec<(&str, Command)> = vec![
+        (
+            "SetAdd",
+            Command::SetAdd {
+                key: "k".into(),
+                member: b"m".to_vec(),
+            },
+        ),
+        // THE DOCUMENTED TRAP, pinned: a zero-TTL StringSetEx must NOT take the modelled arm,
+        // because the modelled form tells the two string writes apart by a non-zero TTL and would
+        // bring this one back as a plain StringSet.
+        (
+            "StringSetEx with a zero ttl",
+            Command::StringSetEx {
+                key: "k".into(),
+                value: b"v".to_vec(),
+                ttl_ms: 0,
+            },
+        ),
+    ];
+    assert_eq!(
+        carried_as_text.len(),
+        2,
+        "two cases, or the loop below asserts nothing"
+    );
+
+    for (name, command) in carried_as_text {
+        match command_to_proto(&command).expect("the command must encode") {
+            v1::wal_command::Kind::Verbatim(bytes) => {
+                // It really is text, not merely a differently-named binary arm.
+                assert!(
+                    serde_json::from_slice::<serde_json::Value>(&bytes).is_ok(),
+                    "{name} took the verbatim arm but its payload is not text"
+                );
+                // And it must come back, or the roster would be describing a write-only record.
+                let back = command_from_proto(v1::wal_command::Kind::Verbatim(bytes))
+                    .expect("the verbatim arm must decode");
+                assert_eq!(back, command, "{name} did not survive the round trip");
+            }
+            _ => panic!(
+                "{name} now takes a modelled arm -- add it to COMMANDS_THE_RAFT_WAL_MODELS in \
+                 this same change, because the roster only grows"
+            ),
+        }
+    }
+
+    // ---------- THE CONTROL. Without this, a `command_to_proto` that returned Verbatim for
+    // ---------- EVERYTHING would satisfy every assertion above.
+    let modelled_command = Command::HashSet {
+        key: "k".into(),
+        field: "f".into(),
+        value: b"v".to_vec(),
+    };
+    match command_to_proto(&modelled_command).expect("HashSet must encode") {
+        v1::wal_command::Kind::HashSet(_) => {}
+        _ => panic!("HashSet is on the modelled roster but did not take its modelled arm"),
+    }
+}
+
     fn envelope_with(command: Command) -> RaftWalEnvelope {
         RaftWalEnvelope {
             sequence: 7,
