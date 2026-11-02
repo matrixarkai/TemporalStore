@@ -4068,6 +4068,43 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             // this field existed were recorded with.
             keep_ttl: *keep_ttl,
         }),
+        Command::ContextResourceBlobBegin { tenant_hash } => {
+            v1::command::Kind::ContextResourceBlobBegin(v1::ContextResourceBlobBegin {
+                tenant_hash: *tenant_hash,
+            })
+        }
+        Command::ContextResourceBlobAppend {
+            tenant_hash,
+            upload_token,
+            payload,
+        } => v1::command::Kind::ContextResourceBlobAppend(v1::ContextResourceBlobAppend {
+            tenant_hash: *tenant_hash,
+            upload_token: upload_token.clone(),
+            payload: payload.clone(),
+        }),
+        Command::ContextResourceBlobCommit {
+            tenant_hash,
+            upload_token,
+        } => v1::command::Kind::ContextResourceBlobCommit(v1::ContextResourceBlobCommit {
+            tenant_hash: *tenant_hash,
+            upload_token: upload_token.clone(),
+        }),
+        Command::ContextResourceBlobPut {
+            tenant_hash,
+            payload,
+        } => v1::command::Kind::ContextResourceBlobPut(v1::ContextResourceBlobPut {
+            tenant_hash: *tenant_hash,
+            payload: payload.clone(),
+        }),
+        Command::ContextResourceBlobSweep {
+            tenant_hash,
+            referenced_content_hashes,
+            min_age_ms,
+        } => v1::command::Kind::ContextResourceBlobSweep(v1::ContextResourceBlobSweep {
+            tenant_hash: *tenant_hash,
+            referenced_content_hashes: referenced_content_hashes.clone(),
+            min_age_ms: *min_age_ms,
+        }),
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
@@ -11034,11 +11071,6 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "ContextCompressEvents",
     "ContextMarkEmbeddingDirty",
     "ContextMarkSummaryDirty",
-    "ContextResourceBlobAppend",
-    "ContextResourceBlobBegin",
-    "ContextResourceBlobCommit",
-    "ContextResourceBlobPut",
-    "ContextResourceBlobSweep",
     "ContextSetNodeEmbedding",
     "ContextUpsertChildRef",
     "ContextUpsertEntity",
@@ -11477,6 +11509,125 @@ fn an_unknown_condition_or_policy_tag_is_refused_rather_than_defaulted() {
         assert!(
             sdk::feature_write_policy_from_proto(number).is_err(),
             "policy {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
+}
+
+/// THE FIVE RESOURCE-BLOB WRITES, DRIVEN THROUGH THE REAL FRAME.
+///
+/// MAPPED INDIVIDUALLY, NOT AS A SET. A chunked upload looks like it must move atomically, but the
+/// commit point here is the RESOURCE RECORD that carries the returned URI -- not the Commit
+/// command -- so a blob with no record is garbage the sweep collects rather than a corrupt state.
+/// The upload token is an opaque string that round-trips identically under either codec, so a
+/// mixed-codec begin/append/commit sequence still matches up. Covered by the token round-trip
+/// assertion below.
+///
+/// THE PAYLOAD IS `bytes`, WHICH IS THE WHOLE POINT. It was a base64 string until it stopped being
+/// one; had it been ported as a proto `string` it would have preserved the value exactly and kept
+/// the 33% inflation on the widest payloads in the system. The cases below carry bytes that are
+/// NOT valid UTF-8, so a mapping that routed them through a string could not pass.
+#[test]
+fn the_resource_blob_writes_are_framed_as_protobuf_and_round_trip() {
+    // 0xff / 0xfe are not valid UTF-8 in any position, and 0x00 is not printable.
+    let raw: Vec<u8> = vec![0x00, 0xff, 0xfe, 0x7b, 0x0a];
+    assert!(
+        String::from_utf8(raw.clone()).is_err(),
+        "the payload fixture must not be valid text, or a string mapping would pass"
+    );
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextResourceBlobBegin",
+            Command::ContextResourceBlobBegin { tenant_hash: 7 },
+        ),
+        (
+            "ContextResourceBlobAppend",
+            Command::ContextResourceBlobAppend {
+                tenant_hash: 7,
+                upload_token: "tok-1".into(),
+                payload: raw.clone(),
+            },
+        ),
+        (
+            "ContextResourceBlobCommit",
+            Command::ContextResourceBlobCommit {
+                tenant_hash: 7,
+                upload_token: "tok-1".into(),
+            },
+        ),
+        (
+            "ContextResourceBlobPut",
+            Command::ContextResourceBlobPut {
+                tenant_hash: 7,
+                payload: raw.clone(),
+            },
+        ),
+        (
+            "ContextResourceBlobPut (empty payload)",
+            Command::ContextResourceBlobPut {
+                tenant_hash: 7,
+                // An empty payload is a caller's choice, not an absent field.
+                payload: Vec::new(),
+            },
+        ),
+        (
+            "ContextResourceBlobSweep",
+            Command::ContextResourceBlobSweep {
+                tenant_hash: 7,
+                // Deliberately unsorted: order is not load-bearing for a set, but a mapping that
+                // reordered would still be visible here rather than silently accepted.
+                referenced_content_hashes: vec![9, 1, 5],
+                min_age_ms: 1_000,
+            },
+        ),
+        (
+            "ContextResourceBlobSweep (no hashes)",
+            Command::ContextResourceBlobSweep {
+                tenant_hash: 7,
+                referenced_content_hashes: Vec::new(),
+                min_age_ms: 0,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: seven cases over the five commands this batch mapped -- Put and Sweep
+    // appear twice, for their empty-collection shapes.
+    assert_eq!(cases.len(), 7, "seven cases over the five commands this batch mapped");
+
+    for (name, command) in cases {
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
         );
     }
 }
