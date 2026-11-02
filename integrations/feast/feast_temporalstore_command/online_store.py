@@ -131,6 +131,29 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     Off by default because it adds a write per row to a single hot key. With it
     off, :meth:`TemporalStoreCommandOnlineStore.teardown` has nothing to enumerate and
     says so rather than silently leaving data behind.
+
+    **DO NOT TURN THIS ON FOR A LARGE VIEW. THE WRITE PATH BECOMES QUADRATIC.**
+    Every key goes into ONE set -- the shard reports it as a single
+    `set_records` entry -- so each row's `SetAdd` is a write to a container
+    holding every row before it. Measured on a release build, writing N rows at
+    a batch width of 500, against the same node and payload:
+
+    ========  ==============  ==============
+    rows      elapsed         vs 5,000 rows
+    ========  ==============  ==============
+    5,000       3.05 s          1.0x
+    20,000     39.94 s         13.1x
+    50,000    463.67 s        152.0x
+    ========  ==============  ==============
+
+    Ten times the rows for about a hundred and fifty times the work. Two other
+    online stores driven through the same harness stayed linear over the same
+    range, so this is this write path and not the host.
+
+    Use it for a small view, or for a test fixture that has to clean up after
+    itself. For a production view of any size, leave it off and reclaim rows
+    with :attr:`key_ttl_seconds` instead -- an expiry costs one command per row
+    once, not one container rewrite per row.
     """
 
     teardown_batch_size: int = 512

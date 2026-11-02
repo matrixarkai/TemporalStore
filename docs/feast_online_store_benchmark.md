@@ -113,7 +113,118 @@ PYTHONPATH="$PWD" python benchmarks/bench_feature_serving.py \
 
 The harness exits non-zero when a run is PROVISIONAL or VOID, so it can gate.
 
-<!-- MEASURED-TABLES -->
+## Measured: single-client read latency
+
+**Conditions for both tables below**, identical except the payload: 5,000
+entities, hot set 512, 1,500 reads per cell, batch width 10 where stated, one
+client thread, 16-core shared host at 1-minute load 3 with no compiler running,
+TemporalStore a **release** build on a **freshly created, empty shard**
+(`total_records = 0` asserted before the run). Each arm's rows were read back
+and compared byte for byte against what was written before any clock started;
+each TemporalStore arm's `teardown` was confirmed to have removed exactly
+`entities + 1` records, returning the shard to 0.
+
+Both runs exited 0: the control held (drift 17.3% and 13.0%, tolerance 25%) and
+peak load stayed under `--max-load`.
+
+### 20 B of feature payload per row (ten int64 features)
+
+| store | durability | cold p50 | cold p99 | warm p50 (b=1) | warm p99 (b=1) | warm p50 (b=10) | warm p99 (b=10) | warm rows/s (b=10) | serving p50 (b=10) | serving p99 (b=10) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SQLite | rollback journal, in-process | 72 us | 162 us | 73 us | 213 us | 452 us | 866 us | 20,053 | 1,025 us | 2,653 us |
+| Valkey 8.1.10 | no persistence | 479 us | 1,041 us | 477 us | 637 us | 925 us | 1,458 us | 10,486 | 1,830 us | 2,926 us |
+| PostgreSQL 16.15 | `synchronous_commit=on`, tmpfs | 703 us | 1,206 us | 825 us | 1,806 us | 1,192 us | 2,611 us | 7,076 | 2,437 us | 4,277 us |
+| **TemporalStore** | **async commit** | **396 us** | **532 us** | **355 us** | **484 us** | 970 us | 1,387 us | 10,130 | 1,771 us | 2,731 us |
+| **TemporalStore** | **durable commit** | 656 us | 948 us | 410 us | 558 us | 933 us | 1,610 us | 10,204 | 2,242 us | 3,444 us |
+| SQLite (control re-run) | rollback journal, in-process | 83 us | 186 us | 86 us | 198 us | 433 us | 919 us | 21,270 | 1,060 us | 2,237 us |
+
+At this payload the async-commit configuration answered a single-entity read
+faster than the Valkey configuration in every percentile measured, computed per
+case rather than averaged: cold p50 17% lower (396 vs 479 us), cold p99 49%
+lower (532 vs 1,041 us), warm p50 26% lower (355 vs 477 us), warm p99 24% lower
+(484 vs 637 us). At batch width 10 the two are level — warm p50 5% higher (970
+vs 925 us), warm p99 5% lower (1,387 vs 1,458 us), throughput 3% lower. The
+durable-commit configuration costs 37% on the cold p50 (656 vs 396 us) and 15%
+on the warm p50 (410 vs 355 us) against its own async configuration, which is
+the price of the fsync and is why durability is a column here.
+
+### 1,035 B of feature payload per row (four int64 features and a 1 KiB blob)
+
+| store | durability | cold p50 | cold p99 | warm p50 (b=1) | warm p99 (b=1) | warm p50 (b=10) | warm p99 (b=10) | warm rows/s (b=10) | serving p50 (b=10) | serving p99 (b=10) |
+|---|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| SQLite | rollback journal, in-process | 82 us | 186 us | 63 us | 191 us | 354 us | 737 us | 25,412 | 813 us | 1,658 us |
+| Valkey 8.1.10 | no persistence | 472 us | 616 us | 455 us | 619 us | **861 us** | **1,223 us** | **11,381** | **1,509 us** | **2,728 us** |
+| PostgreSQL 16.15 | `synchronous_commit=on`, tmpfs | 705 us | 1,118 us | 715 us | 1,817 us | 1,186 us | 2,174 us | 8,006 | 2,291 us | 5,860 us |
+| TemporalStore | async commit | 479 us | 716 us | 445 us | 607 us | 1,614 us | 2,700 us | 5,923 | 2,453 us | 6,127 us |
+| TemporalStore | durable commit | 615 us | 948 us | 470 us | 690 us | 1,702 us | 4,287 us | 5,366 | 2,331 us | 3,520 us |
+| SQLite (control re-run) | rollback journal, in-process | 59 us | 176 us | 55 us | 140 us | 286 us | 557 us | 31,518 | 887 us | 1,573 us |
+
+**This result is unfavourable and is reported as measured.** At a 1 KiB payload
+and batch width 10, the async-commit configuration is behind the Valkey one by
+88% on warm p50 (1,614 vs 861 us), 121% on warm p99 (2,700 vs 1,223 us) and 48%
+on throughput (5,923 vs 11,381 rows/s). At batch width 1 the two remain level
+(warm p50 445 vs 455 us), and the 20 B table above shows no such spread at
+either width — so the cost appears only where the payload is large **and** many
+rows are fetched per call.
+
+The wire format accounts for it arithmetically rather than by supposition.
+A response payload on this surface is a decimal array, about 3.8 characters per
+byte, so a batch of 10 rows × 11 fields × ~1 KiB of values is roughly 11 KB of
+feature bytes arriving as ~42 KB of JSON text to be tokenized and converted
+element by element. At 20 B per row that text is negligible and the spread does
+not appear; at 1 KiB it dominates the call. This is the **transport**, not the
+engine, and it is the measured case for giving `CommandResponse::Values` the
+same bytes codec that `HashMultiSet.entries` already carries on the request
+side.
+
+## Measured: scalability over entity count
+
+One dimension varied — entity count — with payload, hot set, read count, batch
+width and client concurrency all fixed, each point starting from an empty shard.
+
+**The read-latency half of this sweep is incomplete, and the reason is a defect
+this run found.** Only the 5,000-entity point produced usable read figures:
+
+| entities | control drift | outcome |
+|---:|---:|---|
+| 1,000 | 27.5% | **VOID** — control exceeded the 25% tolerance, so no cross-store comparison from it is usable |
+| 5,000 | 9.8% | clean; TemporalStore async warm p50 417 us / p99 567 us against Valkey 491 us / 673 us |
+| 20,000 | — | **run refused**: the write reported success and the shard grew to 20,001 records, but entity 0 read back nothing |
+| 50,000 | — | **run refused**, same way, at 50,001 records |
+
+What the refused points did yield is the write path's shape, and it is clean
+enough to name. With `track_keys_for_teardown` on, every written key is added
+to a single per-view set:
+
+| entities | TemporalStore write | vs 5,000 | Valkey write | SQLite write |
+|---:|---:|---:|---:|---:|
+| 5,000 | 3.05 s | 1.0x | 0.40 s | 0.50 s |
+| 20,000 | 39.94 s | 13.1x | 1.29 s | 3.24 s |
+| 50,000 | 463.67 s | 152.0x | 3.43 s | 9.11 s |
+
+Ten times the rows for about a hundred and fifty times the work: that is
+quadratic, and the mechanism is visible in the shard's own counters — the
+tracking set is `set_records: 1`, one key, and every row's `set_add` is a write
+to it. A container write that costs its container's size makes N inserts cost
+O(N²). The two comparison arms are linear in the same test
+(Valkey 8.6x and SQLite 18.2x for 10x the rows), so this is a property of this
+write path and not of the host.
+
+**`track_keys_for_teardown` is therefore not usable above a few thousand
+entities per view**, and that is now written where the option is documented. It
+remains off by default. The entity-count read sweep needs re-running with it off
+and a different means of bounding the shard between points; until then the read
+figures above stand only at 5,000 entities and the question of how read latency
+moves with entity count is **not answered here**.
+
+The readback failure at 20,000 and 50,000 is a separate finding and is not
+attributed in this document: all the rows were present by the shard's own count
+and a sampled read returned nothing for entity 0, which is a correctness
+symptom rather than a latency one. It is reported rather than explained because
+the two candidate mechanisms — eviction under the cache memory budget with
+async commit, and the quadratic set write starving the batch — were not
+separated by the end of this run.
+
 
 ## A note on the shard a read is answered from
 
