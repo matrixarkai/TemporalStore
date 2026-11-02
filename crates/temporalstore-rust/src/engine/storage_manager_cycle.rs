@@ -37,6 +37,9 @@ use crate::engine::reports::StageWalkCharges;
 #[derive(Debug, Default, Clone, Copy)]
 pub(super) struct StageSpan {
     duration_ms: u64,
+    /// The same interval in microseconds. `duration_ms` truncates, so a stage that
+    /// finishes inside a millisecond reports 0 there and the round cannot name it.
+    duration_us: u64,
     walk: StageWalkCharges,
 }
 
@@ -46,10 +49,13 @@ impl StageSpan {
     /// Read-and-restart in one call for both the clock and the walk accumulators, so no interval
     /// is charged twice and none is dropped between two stages.
     fn close(clock: &mut std::time::Instant) -> Self {
-        let duration_ms = clock.elapsed().as_millis() as u64;
+        let elapsed = clock.elapsed();
+        let duration_ms = elapsed.as_millis() as u64;
+        let duration_us = elapsed.as_micros() as u64;
         *clock = std::time::Instant::now();
         Self {
             duration_ms,
+            duration_us,
             walk: crate::engine::take_stage_walk_charges(),
         }
     }
@@ -58,6 +64,7 @@ impl StageSpan {
     fn plus(self, other: Self) -> Self {
         Self {
             duration_ms: self.duration_ms.saturating_add(other.duration_ms),
+            duration_us: self.duration_us.saturating_add(other.duration_us),
             walk: StageWalkCharges {
                 live_block_entries: self
                     .walk
@@ -369,6 +376,7 @@ impl TemporalEngine {
         // reported 328 ms at 32,000 records.
         stages.push(StorageManagerStageReport {
             duration_ms: plan_span.duration_ms,
+            duration_us: plan_span.duration_us,
             walk: plan_span.walk,
             stage: "plan".to_string(),
             enabled: true,
@@ -421,6 +429,7 @@ impl TemporalEngine {
         let prepare_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
             duration_ms: prepare_span.duration_ms,
+            duration_us: prepare_span.duration_us,
             walk: prepare_span.walk,
             stage: "prepare".to_string(),
             enabled: request.enable_prepare,
@@ -740,6 +749,7 @@ impl TemporalEngine {
         let index_gc_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
             duration_ms: reclaim_wal_span.duration_ms,
+            duration_us: reclaim_wal_span.duration_us,
             walk: reclaim_wal_span.walk,
             stage: "reclaim_wal".to_string(),
             wal_resident_blocks_materialised,
@@ -837,6 +847,7 @@ impl TemporalEngine {
 
         stages.push(StorageManagerStageReport {
             duration_ms: expire_span.duration_ms,
+            duration_us: expire_span.duration_us,
             walk: expire_span.walk,
             stage: "expire".to_string(),
             enabled: request.enable_expire,
@@ -878,6 +889,7 @@ impl TemporalEngine {
 
         stages.push(StorageManagerStageReport {
             duration_ms: evict_span.duration_ms,
+            duration_us: evict_span.duration_us,
             walk: evict_span.walk,
             stage: "evict".to_string(),
             enabled: request.enable_evict,
@@ -1003,6 +1015,7 @@ impl TemporalEngine {
 
         stages.push(StorageManagerStageReport {
             duration_ms: reclaim_block_span.duration_ms,
+            duration_us: reclaim_block_span.duration_us,
             walk: reclaim_block_span.walk,
             stage: "reclaim_page".to_string(),
             enabled: request.enable_block_reclaim,
@@ -1061,6 +1074,7 @@ impl TemporalEngine {
 
         stages.push(StorageManagerStageReport {
             duration_ms: index_gc_span.duration_ms,
+            duration_us: index_gc_span.duration_us,
             walk: index_gc_span.walk,
             stage: "index_gc".to_string(),
             enabled: request.enable_index_gc,
@@ -1217,6 +1231,7 @@ impl TemporalEngine {
         let merged_dump_load_policy_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
             duration_ms: merged_dump_load_policy_span.duration_ms,
+            duration_us: merged_dump_load_policy_span.duration_us,
             walk: merged_dump_load_policy_span.walk,
             stage: "merged_dump_load_policy".to_string(),
             enabled: true,
@@ -1243,6 +1258,7 @@ impl TemporalEngine {
         let compact_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
             duration_ms: compact_span.duration_ms,
+            duration_us: compact_span.duration_us,
             walk: compact_span.walk,
             stage: "compact".to_string(),
             enabled: request.enable_block_compaction,
@@ -1314,6 +1330,7 @@ impl TemporalEngine {
         let reap_metrics_span = StageSpan::close(&mut stage_clock);
         stages.push(StorageManagerStageReport {
             duration_ms: reap_metrics_span.duration_ms,
+            duration_us: reap_metrics_span.duration_us,
             walk: reap_metrics_span.walk,
             stage: "reap_metrics".to_string(),
             enabled: true,
@@ -1344,7 +1361,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
         });
         let phase_executor =
             StorageManagerPhaseExecutor::new(cycle_started_unix_ms, cycle_started_at);
-        let round_duration_ms = phase_executor.annotate_reports(
+        let (round_duration_ms, round_duration_us) = phase_executor.annotate_reports(
             &mut stages,
             &errors,
             pressure_signals.follower_cursor_retention_blockers
@@ -1370,6 +1387,7 @@ counts on this stage are NOT MEASURED and read 0, they are not a measurement of 
         StorageManagerCycleReport {
             shard_id: request.shard_id,
             duration_ms: round_duration_ms,
+            duration_us: round_duration_us,
             dry_run: request.dry_run,
             native_stage_order,
             completed: errors.is_empty(),

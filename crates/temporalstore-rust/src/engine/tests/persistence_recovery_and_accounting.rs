@@ -10390,6 +10390,118 @@ fn the_storage_cycle_records_how_long_its_stages_take() {
     // zero milliseconds, and that assertion would fail on a fast machine for no reason.
 }
 
+/// The same round, in MICROSECONDS -- the assertion the millisecond field cannot make.
+///
+/// The test above says it out loud: "a quick cycle rounds every stage to zero milliseconds", so it
+/// deliberately does not assert that any stage exceeds zero. That is not a quirk of the fixture, it
+/// is the resolution of the field. `StageSpan::close` took `elapsed().as_millis()`, so an idle
+/// round -- which is most rounds on most shards -- reported 0 ms for every stage and the breakdown
+/// could not name the stage that paid.
+///
+/// Measured against the design being followed, whose own per-stage counters are microsecond
+/// denominated and whose whole idle round sits at a few hundred of them: every stage of it would
+/// have read 0 in this report. `duration_us` is published beside `duration_ms`, never instead of
+/// it, so the existing gauge and every assertion on it are untouched.
+///
+/// Two properties, both of which fail if the field is dropped or wired back to milliseconds:
+/// the microsecond rows TILE the round the same way the millisecond rows do, and at least one row
+/// is NON-ZERO on a round whose millisecond rows may legitimately all be zero.
+#[test]
+fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..400 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{index:06}"),
+                value: vec![118u8; 128],
+            },
+        });
+    }
+
+    // Drain to the idle round, which is the case the millisecond field cannot describe. The first
+    // round has the written records to reclaim; by the fourth there is nothing left to do.
+    let mut cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    for _ in 0..3 {
+        cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            ..Default::default()
+        });
+    }
+
+    assert!(!cycle.stages.is_empty(), "the cycle should have run stages");
+
+    // Printed, because the per-stage attribution on an IDLE round is the figure that had no
+    // representable value before this field existed.
+    eprintln!(
+        "  IDLE round: {} us total ({} ms), {} stages",
+        cycle.duration_us,
+        cycle.duration_ms,
+        cycle.stages.len()
+    );
+    for stage in &cycle.stages {
+        eprintln!(
+            "    {:<26} {:>9} us  {:>5} ms  walk_entries={}",
+            stage.stage, stage.duration_us, stage.duration_ms, stage.walk.live_block_entries
+        );
+    }
+
+    let total_us: u64 = cycle.stages.iter().map(|stage| stage.duration_us).sum();
+    let total_ms: u64 = cycle.stages.iter().map(|stage| stage.duration_ms).sum();
+    eprintln!("  stage totals: {total_us} us against a round of {} us", cycle.duration_us);
+
+    assert!(
+        cycle.duration_us >= total_us,
+        "the microsecond rows must tile the round the way the millisecond rows do: they sum to          {total_us} us on a round that took {} us, so one interval is charged to two stages",
+        cycle.duration_us
+    );
+    assert!(
+        cycle.duration_us > 0,
+        "the round itself reported 0 us, so the microsecond clock is not running at all"
+    );
+    assert!(
+        cycle.stages.iter().any(|stage| stage.duration_us > 0),
+        "every one of the {} stage rows reports 0 us. The millisecond rows sum to {total_ms} ms on          this round, which is exactly the case this field exists for: if the round took measurable          time, at least one stage must be able to say so",
+        cycle.stages.len()
+    );
+
+    // AND WHICH STAGES SURVEY THE SHARD ON A ROUND WITH NOTHING TO DO.
+    //
+    // The walk counter is deterministic where the clock is not -- the same fixture gives the same
+    // entry count on every run, so this is assertable where a duration is not. Measured on this
+    // fixture: `plan` walks the shard once, `reclaim_wal` five times and
+    // `merged_dump_load_policy` about six, for ~12 whole-shard walks on an IDLE round, while the
+    // seven stages below walk NOTHING.
+    //
+    // Pinned as the invariant rather than as the total: these seven must not start surveying the
+    // shard. The three that do are the round's whole cost and bringing them down is its own
+    // change; a pin on the TOTAL would have to be edited by that change and would therefore guard
+    // nothing in the meantime.
+    for stage in &cycle.stages {
+        if matches!(
+            stage.stage.as_str(),
+            "plan" | "reclaim_wal" | "merged_dump_load_policy"
+        ) {
+            continue;
+        }
+        assert_eq!(
+            stage.walk.live_block_entries, 0,
+            "stage `{}` walked {} live-block entries on a round with nothing to reclaim. Only the              lifecycle plan and the two stages built on it survey the shard; a stage that starts              doing so turns an idle round into another whole-shard pass",
+            stage.stage, stage.walk.live_block_entries
+        );
+    }
+}
+
 /// A COLD RELOAD, not a synthetic apply loop: a fresh engine rebuilds the shard from disk.
 ///
 /// The equivalence gate feeds recorded outcomes to an engine by hand, which proves the apply path

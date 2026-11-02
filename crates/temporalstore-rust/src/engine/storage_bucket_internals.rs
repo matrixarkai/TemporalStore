@@ -276,8 +276,10 @@ impl StorageManagerPhaseExecutor {
         stages: &mut [StorageManagerStageReport],
         errors: &[String],
         retention_blockers: usize,
-    ) -> u64 {
-        let round_duration_ms = self.round_started_at.elapsed().as_millis() as u64;
+    ) -> (u64, u64) {
+        let round_elapsed = self.round_started_at.elapsed();
+        let round_duration_ms = round_elapsed.as_millis() as u64;
+        let round_duration_us = round_elapsed.as_micros() as u64;
         annotate_storage_manager_admin_stage_fields(
             stages,
             self.round_started_unix_ms,
@@ -285,7 +287,7 @@ impl StorageManagerPhaseExecutor {
             errors,
             retention_blockers,
         );
-        round_duration_ms
+        (round_duration_ms, round_duration_us)
     }
 }
 
