@@ -257,6 +257,29 @@ jobs:
             -- --exact --test-threads=1 2>&1 | tee /tmp/append-safety.log
           grep -q 'test result: ok. 1 passed; 0 failed' /tmp/append-safety.log
 
+      # The snapshot manifest listing decides what a shard APPEARS to hold. A manifest passed
+      # over by name produces a short list, which is a successful call, and `garbage_collect`
+      # is built on that listing -- so a snapshot it cannot see is one it can never collect.
+      # Both arms assert a COUNT, because an empty or short Vec is indistinguishable from a
+      # shard with fewer snapshots.
+      - name: Snapshot manifests are found by what they are, not their name
+        run: |
+          set -o pipefail
+          for t in \
+            snapshot_store::tests::list_snapshots_finds_a_manifest_filed_under_the_binary_suffix \
+            snapshot_store::tests::a_staged_manifest_is_still_excluded_under_either_suffix ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-snapshot --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/snap-manifest.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/snap-manifest.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/snap-manifest.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
+
       # The published write and space ratios are only falsifiable at a consumer if the identities
       # tying each ratio to its published terms actually run. They are NOT covered by the suite
       # step above, which carries continue-on-error AND has been observed timing out at its limit,
