@@ -79,7 +79,7 @@ fn control_state_family_key_for_resp(family: ControlStateFamily, key: &str) -> S
 fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> RespValue {
     match upper(&args[1]).as_str() {
         "GET" if args.len() == 3 => {
-            let key = string_arg(&args[2]);
+            let key = name_arg(&args[2]);
             match state.config.get(&key) {
                 Some(value) => RespValue::Array(vec![
                     RespValue::Bulk(Some(key.into_bytes())),
@@ -91,7 +91,7 @@ fn redis_config_response(args: &[Vec<u8>], state: &mut RedisCommandState) -> Res
         "SET" if args.len() == 4 => {
             state
                 .config
-                .insert(string_arg(&args[2]), string_arg(&args[3]));
+                .insert(name_arg(&args[2]), name_arg(&args[3]));
             RespValue::SimpleString("OK".to_string())
         }
         "REWRITE" if args.len() == 2 => RespValue::SimpleString("OK".to_string()),
@@ -114,8 +114,8 @@ fn copy_or_rename_key_response(
     state: &mut RedisCommandState,
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let source_key = string_arg(source);
-    let destination_key = string_arg(destination);
+    let source_key = name_arg(source);
+    let destination_key = name_arg(destination);
     let value = match load_stored_key_value(&source_key, execute) {
         Ok(Some(value)) => value,
         Ok(None) if rename => return RespValue::Error("ERR no such key".to_string()),
@@ -2168,3 +2168,5 @@ mod tests {
         );
     }
 }
+#[path = "redis/a_name_is_written_as_the_bytes_it_stands_for.rs"]
+mod a_name_is_written_as_the_bytes_it_stands_for;

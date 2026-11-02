@@ -21,7 +21,7 @@
 //! binary meets a name it cannot decode -- which is why this tree splits a frame format into a
 //! reader commit and a writer commit, and this follows that shape.
 //!
-//! **`decode_name` IS CALLED IN PRODUCTION NOW; `encode_name` IS STILL NOT, on purpose.** The read
+//! **BOTH `decode_name` AND `encode_name` ARE CALLED IN PRODUCTION NOW.** The read
 //! sites answer through `redis::decode_or_raw`, which is a no-op on every name this build writes
 //! (an untagged name decodes to its own bytes) and whose only effect is to make a node ABLE to
 //! read a tagged one. The WRITE step is still separate and still unlanded, because a build must be

@@ -161,7 +161,7 @@ pub(crate) fn expire_response(
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    let key = string_arg(&args[1]);
+    let key = name_arg(&args[1]);
     if ttl <= 0 {
         return discard_key_now(&key, state, execute);
     }
@@ -187,7 +187,7 @@ pub(crate) fn expire_at_response(
         Ok(value) => value.saturating_mul(factor),
         Err(err) => return RespValue::Error(err),
     };
-    let key = string_arg(&args[1]);
+    let key = name_arg(&args[1]);
     let remaining_ms = deadline_ms.saturating_sub(unix_time_ms() as i64);
     if remaining_ms <= 0 {
         return discard_key_now(&key, state, execute);
@@ -210,7 +210,7 @@ pub(crate) fn expire_time_response(
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
     match execute(Command::CommonTtl {
-        key: string_arg(key),
+        key: name_arg(key),
     }) {
         Ok(CommandResponse::Integer { value }) if value < 0 => RespValue::Integer(value),
         Ok(CommandResponse::Integer { value }) => {
@@ -295,7 +295,7 @@ pub(crate) fn string_increment_response(
     increment: i64,
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let key = string_arg(key);
+    let key = name_arg(key);
     let current = match execute(Command::StringGet { key: key.clone() }) {
         Ok(CommandResponse::Bytes { value: None }) => 0,
         Ok(CommandResponse::Bytes { value: Some(value) }) => match parse_i64_arg(&value, "value") {
@@ -326,7 +326,7 @@ pub(crate) fn string_increment_float_response(
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    let key = string_arg(key);
+    let key = name_arg(key);
     let current = match execute(Command::StringGet { key: key.clone() }) {
         Ok(CommandResponse::Bytes { value: None }) => 0.0,
         Ok(CommandResponse::Bytes { value: Some(value) }) => match parse_f64_arg(&value, "value") {
@@ -356,8 +356,8 @@ pub(crate) fn hash_increment_float_response(
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    let key = string_arg(key);
-    let field = string_arg(field);
+    let key = name_arg(key);
+    let field = name_arg(field);
     let current = match execute(Command::HashGet {
         key: key.clone(),
         field: field.clone(),
@@ -395,7 +395,7 @@ pub(crate) fn string_getrange_response(
         Err(err) => return RespValue::Error(err),
     };
     match execute(Command::StringGet {
-        key: string_arg(&args[1]),
+        key: name_arg(&args[1]),
     }) {
         Ok(CommandResponse::Bytes { value }) => {
             let value = value.unwrap_or_default();
@@ -415,7 +415,7 @@ pub(crate) fn string_setrange_response(
         Ok(value) => value,
         Err(err) => return RespValue::Error(err),
     };
-    let key = string_arg(&args[1]);
+    let key = name_arg(&args[1]);
     match execute(Command::StringGet { key: key.clone() }) {
         Ok(CommandResponse::Bytes { value }) => {
             let mut value = value.unwrap_or_default();
