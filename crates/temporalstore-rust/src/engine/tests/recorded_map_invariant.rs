@@ -229,13 +229,47 @@ fn the_recorded_map_exposes_no_way_to_mutate_any_kind_without_a_record() {
         "keys",
         "values",
         "iter",
-        "entries",
+        // `entries` IS GONE FROM THIS LIST, AND ITS REMOVAL IS NOT A LOOSENING. It handed out
+        // `&HashMap<ModelKey, K::Elements>` so a serde adapter could pass the inner shape to a
+        // codec. The map's value is a per-object ROW now and the row is private to this module, so
+        // a `pub(super)` return would leak a private type -- the door is still there as a private
+        // `rows()`, reachable only by the codecs in this file, which is strictly tighter than it
+        // was. The two codecs it fed take an ITERATOR of `(key, elements)` instead, which is what
+        // `iter` above already yields.
+        //
+        // THE FOUR BELOW ARE THE ROW'S REFS SURFACE. `refs` and `rows_with_refs` are reads: `&self`,
+        // borrow and a count. The other two need declaring honestly, because the answer to this
+        // guard's question is not "no":
+        //
+        //   `set_refs` and `take_refs` MUTATE A MAP WITHOUT A RECORD.
+        //
+        // What they mutate is a DERIVED field, and that is the whole of the justification. A row's
+        // refs are not in the stored bytes, no index image carries them, and the load path re-files
+        // every block it reads -- so there is no durable statement for a record to be consistent
+        // with, and nothing a replay could double-apply. They are on exactly the same footing as
+        // `ObjectSlot::refs`, which the same filer sets for the three kinds that already have a row,
+        // also without a record.
+        //
+        // The membership of the map is untouched by both: `set_refs` answers `false` rather than
+        // creating a row, and `take_refs` leaves the row and its elements in place. So the invariant
+        // this module exists to hold -- that no element appears or disappears without a record --
+        // is not what these touch. If either ever gains the power to add or drop a key, it belongs
+        // on the exception list below with a reason, not here.
+        "refs",
+        "set_refs",
+        "take_refs",
+        "rows_with_refs",
         // A READ, AND IT CANNOT MUTATE A MAP. `block_an_element_vacates` takes `&self` and returns a
         // CLONE of an address the map already holds -- the block an element is moving off, which the
         // filer needs because an index entry no longer names its element. There is no `&mut` on it
         // and nothing it returns can be written through, so it is on the same footing as the reads
         // above rather than on the exception list below.
         "block_an_element_vacates",
+        // A NAMED ITERATOR, AND IT EXISTS BECAUSE AN ASSOCIATED TYPE CANNOT BE `impl Iterator`.
+        // `&RecordedMap<K>` yielded `hash_map::Iter<'_, ModelKey, K::Elements>` while the value WAS
+        // the elements; it now projects the elements out of each row, and `IntoIterator::IntoIter`
+        // has to be a type with a name. It lends `&K::Elements`, so it is a read like `iter`.
+        "RowElements",
         // The five shared exceptions.
         "from_decoded",
         "reconcile_from_durable",

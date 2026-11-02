@@ -7,15 +7,23 @@ use serde::{Deserialize, Deserializer, Serialize, Serializer};
 
 use crate::block_store::ElementEntry;
 
-pub fn serialize<S>(
-    value: &HashMap<super::state::ModelKey, BTreeMap<Vec<u8>, (u64, ElementEntry)>>,
-    serializer: S,
-) -> Result<S::Ok, S::Error>
+/// TAKES AN ITERATOR OF `(key, members)` RATHER THAN THE MAP ITSELF, for the reason
+/// `set_index_serde::serialize` gives: the resident map's value is a per-object ROW now, the
+/// intermediate below is collected either way, and the stored bytes are unchanged because the same
+/// pairs go in. A zset's member carries its score beside the address, which is why this codec is
+/// stated per kind rather than shared with the set one.
+pub fn serialize<'a, S, I>(value: I, serializer: S) -> Result<S::Ok, S::Error>
 where
     S: Serializer,
+    I: IntoIterator<
+        Item = (
+            &'a super::state::ModelKey,
+            &'a BTreeMap<Vec<u8>, (u64, ElementEntry)>,
+        ),
+    >,
 {
     let encoded = value
-        .iter()
+        .into_iter()
         .map(|(key, members)| {
             (
                 key,
