@@ -699,3 +699,5 @@ mod what_each_maintenance_bound_costs_per_round;
 mod what_one_hash_field_write_costs_durably;
 #[path = "tests/what_a_cold_set_listing_reads.rs"]
 mod what_a_cold_set_listing_reads;
+#[path = "tests/does_the_durable_map_answer_what_the_fold_answers.rs"]
+mod does_the_durable_map_answer_what_the_fold_answers;

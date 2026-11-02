@@ -100,6 +100,30 @@ impl Config {
     pub fn control_distinct_sketch_enabled(&self) -> bool {
         self.flag("control_distinct_sketch")
     }
+
+    /// Gate for answering `SMEMBERS` from the durable member map instead of folding every
+    /// block of the object.
+    ///
+    /// DEFAULT ON, AND THE COST IT REMOVES IS NOT SMALL. The fold reads one block per block
+    /// the object has, tombstones included, so a listing of 64 live members performs 1,033
+    /// block reads once 1,024 members have been removed -- measured, 71.4 ms against 614 us
+    /// for the identical answer on an unchurned set. The durable map is keyed BY MEMBER
+    /// BYTES, so it already holds the identity the bucket index cannot, and answering from
+    /// its keys costs no block reads at all and is O(live) whatever the churn.
+    ///
+    /// WHY IT IS A GATE AND NOT A STRAIGHT SWITCH. Asking the payload is the direction that
+    /// resurrected a removed member once, so the two mechanisms must stay comparable rather
+    /// than one of them becoming unreachable: with this off the fold answers exactly as
+    /// before, which is what lets one test drive both on the same store and assert they
+    /// agree, and what lets the cost harness keep measuring the fold it was written for. It
+    /// is also the escape hatch if the map is ever found wrong on a shape no test covers.
+    ///
+    /// THE FOLD IS STILL REACHED WITH THIS ON, for a key the map holds no entry for -- see
+    /// `Command::SetMembers`. So `derive_membership` does not become a zero-caller function,
+    /// and a listing can never answer EMPTY for a key whose blocks say otherwise.
+    pub fn set_listing_from_map_enabled(&self) -> bool {
+        self.flag_or("set_listing_from_map", true)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]

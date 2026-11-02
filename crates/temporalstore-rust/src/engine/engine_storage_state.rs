@@ -493,6 +493,11 @@ pub(super) struct ShardState {
     // sketches on the CHANGE write path. Serde-skipped; set on every execute.
     #[serde(skip)]
     pub(super) control_distinct_sketch: bool,
+    // Transient per-execute hint: gate for answering a set listing from the durable member
+    // map rather than by folding every block of the object. Serde-skipped; set on every
+    // execute.
+    #[serde(skip)]
+    pub(super) set_listing_from_map: bool,
     // THE LEGACY COMPATIBILITY FIELD IS GONE, and the condition its own doc set is what
     // retired it: no door can deliver a top-level `context_events` key any more. Pre-stamp
     // images are refused on every one of `decode_index_bytes`'s callers, and images at stamp
@@ -9245,6 +9250,7 @@ pub(super) fn repack_decoded_btrees(state: &mut ShardState) {
         rollups: _,
         control_coalesce_persist: _,
         control_distinct_sketch: _,
+        set_listing_from_map: _,
         dirty_objects: _,
         // A plain `u64` the decode leaves at 0 because it is `#[serde(skip)]`, and 0 is the value
         // this pass would want anyway: it means the first logged-deletion round after a load is
