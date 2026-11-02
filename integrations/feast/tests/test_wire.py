@@ -96,10 +96,17 @@ def test_an_encoded_name_is_unchanged_by_the_lossy_decode_the_server_applies():
 
 
 def test_raw_field_names_collide_under_the_server_and_encoded_ones_do_not():
-    """THE DEFECT, PINNED. Unencoded 4-byte field names collide after the lossy decode; the
-    same names encoded do not. Measured at 1 in 1,042 over 4,000,000 samples, so 20,000 samples
-    is expected to produce roughly 190 colliding pairs -- far more than zero, which is what the
-    encoded side must produce.
+    """THE ENCODING IS INJECTIVE WHERE A LOSSY DECODE IS NOT. Measured at 1 in 1,042 over
+    4,000,000 samples, so 20,000 samples is expected to produce roughly 190 colliding pairs under
+    the lossy conversion -- far more than zero, which is what the encoded side must produce.
+
+    WHAT THIS TEST CANNOT DO, AND AN EARLIER VERSION CLAIMED IT COULD. ``lossy()`` is a local
+    Python model of the conversion, so this assertion is about ``bytes.decode('utf-8','replace')``
+    and NOT about the server. It therefore passes identically whether or not the server still
+    mangles names, and it can never become the signal to delete this module -- a guard whose
+    predicate does not depend on the thing it guards cannot fire. The server-side condition is
+    pinned on the Rust side instead, by ``an_arbitrary_byte_field_comes_back_as_the_same_bytes``
+    and ``two_distinct_byte_names_stay_two_names``; consult those, not this.
     """
     rng = random.Random(20261101)
     names = [rng.getrandbits(32).to_bytes(4, "little") for _ in range(20_000)]
@@ -112,13 +119,10 @@ def test_raw_field_names_collide_under_the_server_and_encoded_ones_do_not():
         "the encoding must be injective: every distinct field name keeps its own identity"
     )
     assert len(collapsed) < len(distinct), (
-        f"THE SERVER DEFECT IS GONE: all {len(distinct)} distinct field names survived the lossy "
-        "decode, where this test expects roughly 1 in 1,042 pairs to collide. That means "
-        "`string_arg` no longer decodes key and field arguments with String::from_utf8_lossy, "
-        "which is the ONLY reason wire.py exists. This is the signal to DELETE wire.py, write "
-        "Feast's bytes straight to the wire, and delete this test with it -- not to relax the "
-        "assertion. Confirm against redis_dispatch.rs (HSET/HMGET/HKEYS/HDEL) before doing so, "
-        "and re-materialize any rows written in the encoded shape."
+        f"all {len(distinct)} distinct names survived `lossy()`, which models "
+        "`bytes.decode('utf-8','replace')`. That conversion is fixed by the Unicode standard, so "
+        "this cannot change unless `lossy()` itself was edited -- it is NOT a statement about the "
+        "server. Do not read it as one."
     )
 
 

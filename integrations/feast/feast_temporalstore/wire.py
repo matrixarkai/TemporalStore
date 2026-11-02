@@ -19,7 +19,21 @@ made binary without changing the DURABLE command encoding -- which needs a forma
 reader-first rollout, not a one-line change. The workaround in this module is what makes feature
 serving correct in the meantime.
 
-THE DELETION CONDITION, BOTH HALVES REQUIRED. This module can be dropped only once the server
+BOTH SERVER HALVES NOW HOLD, AND RE-MATERIALIZATION IS WHAT REMAINS. The server keeps keys and
+hash fields as the bytes they stand for: the round trip is pinned by
+``an_arbitrary_byte_field_comes_back_as_the_same_bytes``, the absence of collisions by
+``two_distinct_byte_names_stay_two_names``, and the glob path -- which a tagged name would
+otherwise stop matching -- by ``a_scan_pattern_still_finds_a_name_whose_stored_spelling_is_tagged``.
+
+So this module is no longer load-bearing for CORRECTNESS against a current server. It is still
+load-bearing for DATA: rows already materialized carry the encoded spelling, and a client that
+stopped encoding would address names the store does not hold. Deleting it therefore requires
+re-materializing those rows, which is an operational step and not a code change, and it must not
+be done on the strength of a passing test suite alone. The tripwire in ``tests/test_wire.py``
+cannot tell anyone when that moment arrives, because it models the conversion locally rather than
+asking the server -- see its own docstring.
+
+THE ORIGINAL DELETION CONDITION, FOR THE RECORD, BOTH HALVES REQUIRED. This module can be dropped only once the server
 guarantees **both** that ``HKEYS``/``HGETALL`` round-trip arbitrary byte names back identically,
 **and** that two distinct byte names never collide. A fix that stops the collision while still
 handing back a mangled name does not free this code: ``online_store._drop_view`` reads field names
