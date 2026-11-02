@@ -269,6 +269,11 @@ message Command {
     ContextResourceBlobCommit context_resource_blob_commit = 47;
     ContextResourceBlobPut context_resource_blob_put = 48;
     ContextResourceBlobSweep context_resource_blob_sweep = 49;
+    ContextMarkEmbeddingDirty context_mark_embedding_dirty = 50;
+    ContextMarkSummaryDirty context_mark_summary_dirty = 51;
+    ContextCompressEvents context_compress_events = 52;
+    ContextUpsertChildRef context_upsert_child_ref = 53;
+    ContextWriteIndexRef context_write_index_ref = 54;
   }
 }
 
@@ -1010,4 +1015,73 @@ message ContextResourceBlobSweep {
   // snapshot manifest's checksum list, where the published digest folds it in order.
   repeated uint64 referenced_content_hashes = 2;
   uint64 min_age_ms = 3;
+}
+
+// ===========================================================================================
+// The context graph writes that carry only scalars or a small record.
+//
+// The node, the event and the four larger records are separate changes: they bring their own
+// nested messages, and the durable node needs a COMPLETE message of its own rather than the
+// four-field client projection above.
+// ===========================================================================================
+
+message ContextChildRef {
+  uint64 parent_hash = 1;
+  uint64 child_hash = 2;
+  uint64 updated_at_ms = 3;
+}
+
+message ContextIndexRef {
+  uint64 primary_node_hash = 1;
+  uint64 primary_event_time_ms = 2;
+  uint64 event_id_hash = 3;
+}
+
+message ContextMarkEmbeddingDirty {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  uint64 event_time_ms = 3;
+  uint32 reason = 4;
+  uint32 propagate_depth = 5;
+  // `clear` flips the mark off rather than on, so a dropped field is not a smaller version of
+  // the same write -- it is the opposite one. A plain bool, matching the Rust default of false.
+  bool clear = 6;
+}
+
+message ContextMarkSummaryDirty {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  uint64 event_time_ms = 3;
+  uint32 reason = 4;
+  uint32 propagate_depth = 5;
+}
+
+message ContextCompressEvents {
+  uint64 tenant_hash = 1;
+  uint64 node_hash = 2;
+  uint64 source_start_ms = 3;
+  uint64 source_end_ms = 4;
+  uint64 compressed_time_ms = 5;
+  // EXPLICIT PRESENCE, because absent and zero are different requests: absent is "no cap on how
+  // many source events to fold", zero is a cap of none at all. Collapsing them onto a zero
+  // default would turn an uncapped compaction into one that folds nothing, or the reverse.
+  optional uint64 max_source_events = 6;
+  // Plain floats: the Rust fields default to 0.0, so absent decoding to 0.0 is the same value a
+  // record written without them already replays with.
+  float min_confidence = 7;
+  float min_importance = 8;
+}
+
+message ContextUpsertChildRef {
+  uint64 tenant_hash = 1;
+  ContextChildRef child_ref = 2;
+}
+
+message ContextWriteIndexRef {
+  uint64 tenant_hash = 1;
+  string index_name = 2;
+  uint64 index_value_hash = 3;
+  uint64 scope_hash = 4;
+  uint64 event_time_ms = 5;
+  ContextIndexRef index_ref = 6;
 }

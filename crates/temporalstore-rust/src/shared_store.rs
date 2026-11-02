@@ -4105,6 +4105,85 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             referenced_content_hashes: referenced_content_hashes.clone(),
             min_age_ms: *min_age_ms,
         }),
+        Command::ContextMarkEmbeddingDirty {
+            tenant_hash,
+            node_hash,
+            event_time_ms,
+            reason,
+            propagate_depth,
+            clear,
+        } => v1::command::Kind::ContextMarkEmbeddingDirty(v1::ContextMarkEmbeddingDirty {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            event_time_ms: *event_time_ms,
+            reason: *reason,
+            propagate_depth: *propagate_depth,
+            clear: *clear,
+        }),
+        Command::ContextMarkSummaryDirty {
+            tenant_hash,
+            node_hash,
+            event_time_ms,
+            reason,
+            propagate_depth,
+        } => v1::command::Kind::ContextMarkSummaryDirty(v1::ContextMarkSummaryDirty {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            event_time_ms: *event_time_ms,
+            reason: *reason,
+            propagate_depth: *propagate_depth,
+        }),
+        Command::ContextCompressEvents {
+            tenant_hash,
+            node_hash,
+            source_start_ms,
+            source_end_ms,
+            compressed_time_ms,
+            max_source_events,
+            min_confidence,
+            min_importance,
+        } => v1::command::Kind::ContextCompressEvents(v1::ContextCompressEvents {
+            tenant_hash: *tenant_hash,
+            node_hash: *node_hash,
+            source_start_ms: *source_start_ms,
+            source_end_ms: *source_end_ms,
+            compressed_time_ms: *compressed_time_ms,
+            // Presence carried across, not flattened: absent is "no cap", Some(0) is a cap of
+            // zero, and those ask for opposite things.
+            max_source_events: max_source_events.map(|count| count as u64),
+            min_confidence: *min_confidence,
+            min_importance: *min_importance,
+        }),
+        Command::ContextUpsertChildRef {
+            tenant_hash,
+            child_ref,
+        } => v1::command::Kind::ContextUpsertChildRef(v1::ContextUpsertChildRef {
+            tenant_hash: *tenant_hash,
+            child_ref: Some(v1::ContextChildRef {
+                parent_hash: child_ref.parent_hash,
+                child_hash: child_ref.child_hash,
+                updated_at_ms: child_ref.updated_at_ms,
+            }),
+        }),
+        Command::ContextWriteIndexRef {
+            tenant_hash,
+            index_name,
+            index_value_hash,
+            scope_hash,
+            event_time_ms,
+            index_ref,
+        } => v1::command::Kind::ContextWriteIndexRef(v1::ContextWriteIndexRef {
+            tenant_hash: *tenant_hash,
+            index_name: index_name.clone(),
+            index_value_hash: *index_value_hash,
+            scope_hash: *scope_hash,
+            event_time_ms: *event_time_ms,
+            index_ref: Some(v1::ContextIndexRef {
+                primary_node_hash: index_ref.primary_node_hash,
+                primary_event_time_ms: index_ref.primary_event_time_ms,
+                event_id_hash: index_ref.event_id_hash,
+            }),
+        }),
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
@@ -11068,18 +11147,13 @@ mod tests {
 /// covering one requires deleting its name here, in the same change. So the work left is visible
 /// in the tree instead of in a plan, and progress cannot be undone quietly.
 const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
-    "ContextCompressEvents",
-    "ContextMarkEmbeddingDirty",
-    "ContextMarkSummaryDirty",
     "ContextSetNodeEmbedding",
-    "ContextUpsertChildRef",
     "ContextUpsertEntity",
     "ContextUpsertNode",
     "ContextUpsertSummary",
     "ContextWriteCompressionEvent",
     "ContextWriteEvent",
     "ContextWriteExtractedEvent",
-    "ContextWriteIndexRef",
     "ContextWritePackAudit",
 ];
 
@@ -11630,6 +11704,219 @@ fn the_resource_blob_writes_are_framed_as_protobuf_and_round_trip() {
             "{name} did not survive the round trip"
         );
     }
+}
+
+/// THE FIVE SCALAR-AND-SMALL-RECORD CONTEXT WRITES, DRIVEN THROUGH THE REAL FRAME.
+///
+/// Three things in this batch can be got wrong silently, so each has a case rather than being
+/// covered by a single happy-path round trip:
+///
+///  * `max_source_events` is `Option<usize>` and carries EXPLICIT PRESENCE. Absent is "no cap on
+///    how many source events to fold"; `Some(0)` is a cap of none at all. Collapsing them onto a
+///    zero default turns an uncapped compaction into one that folds nothing, or the reverse. Both
+///    arms appear below.
+///  * `clear` on the embedding-dirty mark flips the mark OFF rather than on, so a dropped field
+///    is not a smaller version of the same write -- it is the opposite one. Both values appear.
+///  * the two nested records are message fields, which are always optional on the wire, so an
+///    absent one is refused by name rather than defaulted to a record of zeros.
+#[test]
+fn the_scalar_context_writes_are_framed_as_protobuf_and_round_trip() {
+    use crate::types::{ContextChildRef, ContextIndexRef};
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ContextMarkEmbeddingDirty (clear false)",
+            Command::ContextMarkEmbeddingDirty {
+                tenant_hash: 7,
+                node_hash: 11,
+                event_time_ms: 101,
+                reason: 3,
+                propagate_depth: 2,
+                clear: false,
+            },
+        ),
+        (
+            "ContextMarkEmbeddingDirty (clear true)",
+            Command::ContextMarkEmbeddingDirty {
+                tenant_hash: 7,
+                node_hash: 11,
+                event_time_ms: 102,
+                reason: 0,
+                propagate_depth: 0,
+                // The opposite write, not a smaller one.
+                clear: true,
+            },
+        ),
+        (
+            "ContextMarkSummaryDirty",
+            Command::ContextMarkSummaryDirty {
+                tenant_hash: 7,
+                node_hash: 11,
+                event_time_ms: 103,
+                reason: 5,
+                propagate_depth: 1,
+            },
+        ),
+        (
+            "ContextCompressEvents (no cap)",
+            Command::ContextCompressEvents {
+                tenant_hash: 7,
+                node_hash: 11,
+                source_start_ms: 1,
+                source_end_ms: 2,
+                compressed_time_ms: 3,
+                // Absent: fold without a cap.
+                max_source_events: None,
+                min_confidence: 0.5,
+                min_importance: 0.25,
+            },
+        ),
+        (
+            "ContextCompressEvents (cap of zero)",
+            Command::ContextCompressEvents {
+                tenant_hash: 7,
+                node_hash: 11,
+                source_start_ms: 1,
+                source_end_ms: 2,
+                compressed_time_ms: 3,
+                // Present and zero: a different request from the one above.
+                max_source_events: Some(0),
+                min_confidence: 0.0,
+                min_importance: 0.0,
+            },
+        ),
+        (
+            "ContextUpsertChildRef",
+            Command::ContextUpsertChildRef {
+                tenant_hash: 7,
+                child_ref: ContextChildRef {
+                    parent_hash: 11,
+                    child_hash: 12,
+                    updated_at_ms: 104,
+                },
+            },
+        ),
+        (
+            "ContextWriteIndexRef",
+            Command::ContextWriteIndexRef {
+                tenant_hash: 7,
+                index_name: "by-name".into(),
+                index_value_hash: 21,
+                scope_hash: 22,
+                event_time_ms: 105,
+                index_ref: ContextIndexRef {
+                    primary_node_hash: 11,
+                    primary_event_time_ms: 106,
+                    event_id_hash: 23,
+                },
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: seven cases over the five commands this batch mapped -- two commands
+    // appear twice, for the presence and polarity shapes above.
+    assert_eq!(cases.len(), 7, "seven cases over the five commands this batch mapped");
+
+    for (name, command) in cases {
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+/// AN ABSENT NESTED RECORD IS REFUSED, NOT DEFAULTED TO ZEROS.
+///
+/// A protobuf message field is always optional on the wire, so a record that omits it decodes to
+/// `None`. Both of these writes are meaningless without the record they carry, and defaulting
+/// would file a child ref or an index ref of all zeros as if it were real -- the same shape as
+/// reading a fabricated 0 off a lossy projection.
+#[test]
+fn an_absent_nested_context_record_is_refused() {
+    let child = v1::Command {
+        kind: Some(v1::command::Kind::ContextUpsertChildRef(
+            v1::ContextUpsertChildRef {
+                tenant_hash: 7,
+                child_ref: None,
+            },
+        )),
+    };
+    let err = sdk::sdk_command_to_types(child)
+        .expect_err("an absent child ref must be refused, not defaulted");
+    assert!(
+        err.message().contains("child ref missing"),
+        "the refusal must name what was missing: {}",
+        err.message()
+    );
+
+    let index = v1::Command {
+        kind: Some(v1::command::Kind::ContextWriteIndexRef(
+            v1::ContextWriteIndexRef {
+                tenant_hash: 7,
+                index_name: "by-name".into(),
+                index_value_hash: 21,
+                scope_hash: 22,
+                event_time_ms: 105,
+                index_ref: None,
+            },
+        )),
+    };
+    let err = sdk::sdk_command_to_types(index)
+        .expect_err("an absent index ref must be refused, not defaulted");
+    assert!(
+        err.message().contains("index ref missing"),
+        "the refusal must name what was missing: {}",
+        err.message()
+    );
+
+    // CONTROL: a PRESENT record still decodes, so the two assertions above are not passing
+    // because the decoder refuses everything.
+    let ok = v1::Command {
+        kind: Some(v1::command::Kind::ContextUpsertChildRef(
+            v1::ContextUpsertChildRef {
+                tenant_hash: 7,
+                child_ref: Some(v1::ContextChildRef {
+                    parent_hash: 11,
+                    child_hash: 12,
+                    updated_at_ms: 104,
+                }),
+            },
+        )),
+    };
+    assert!(
+        sdk::sdk_command_to_types(ok).is_ok(),
+        "a present child ref must still decode"
+    );
 }
 
 #[test]
