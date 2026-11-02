@@ -66,9 +66,14 @@ fn main() {
     let key_bytes: usize = args.get(3).and_then(|a| a.parse().ok()).unwrap_or(16);
     let value_bytes: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(64);
     assert!(
-        matches!(model, "string" | "hash"),
-        "model must be string|hash, got {model}"
+        matches!(model, "string" | "hash" | "set" | "zset" | "list" | "feature"),
+        "model must be string|hash|set|zset|list|feature, got {model}"
     );
+    // CONTAINER MODELS WRITE ONE MEMBER PER OPERATION INTO ONE KEY, which is the comparison that
+    // matters: the alternative design re-encodes and rewrites the whole container per operation,
+    // so the question is how our per-member cost behaves as the container grows. One key, N
+    // members, N operations.
+    let one_container = matches!(model, "set" | "zset" | "list" | "feature");
 
     let dir = std::env::temp_dir().join(format!(
         "whole_store_cost_{}_{}",
@@ -111,11 +116,44 @@ fn main() {
     for index in 0..ops {
         let key = padded("k", index, key_bytes);
         last_key = key.clone();
+        // A container model keeps ONE key and varies the member; a scalar model varies the key.
+        let (key, member) = if one_container {
+            ("container".to_string(), padded("m", index, key_bytes))
+        } else {
+            (key, String::new())
+        };
+        last_key = key.clone();
         let command = match model {
+            // ONE FIXED FIELD, N KEYS -- deliberately NOT one hash growing by a field. This is the
+            // workload the matched cross-implementation figure was taken on, and changing it here
+            // would silently compare two different things. (Making the field vary without also
+            // making this a container model wrote the EMPTY field 200 times, which the arrival
+            // proof caught.)
             "hash" => Command::HashSet {
                 key: key.clone(),
                 field: "f".to_string(),
                 value: value.clone(),
+            },
+            "set" => Command::SetAdd {
+                key: key.clone(),
+                member: member.clone().into_bytes(),
+            },
+            "zset" => Command::ZSetAdd {
+                key: key.clone(),
+                member: member.clone().into_bytes(),
+                score: index as f64,
+            },
+            "list" => Command::ListPush {
+                key: key.clone(),
+                member: member.clone().into_bytes(),
+                left: false,
+            },
+            "feature" => Command::FeatureAppend {
+                key: key.clone(),
+                points: vec![temporalstore_rust::types::FeaturePoint {
+                    timestamp_ms: 1_000 + index as u64,
+                    value: value.clone(),
+                }],
             },
             _ => Command::StringSet {
                 key: key.clone(),
@@ -136,31 +174,81 @@ fn main() {
     let after = tree_bytes(&dir);
 
     // ARRIVAL, PROVEN. A success code is not evidence the bytes are stored.
-    let read_back = match model {
-        "hash" => engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::HashGet {
-                key: last_key.clone(),
-                field: "f".to_string(),
-            },
-        }),
-        _ => engine.execute(ExecuteRequest {
-            shard_id: 1,
-            command: Command::StringGet {
-                key: last_key.clone(),
-            },
-        }),
+    // ARRIVAL PER MODEL. A container model proves its MEMBER COUNT, because a per-member write
+    // that silently collapsed onto one member would still return ok and still grow the directory.
+    let last_member = padded("m", ops - 1, key_bytes);
+    let served = match model {
+        "hash" => matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::HashGet {
+                        key: last_key.clone(),
+                        field: "f".to_string(),
+                    },
+                })
+                .response,
+            CommandResponse::Bytes { value: Some(got) } if got == value
+        ),
+        // No `SetCard` exists; the listing is the only member count, so count what it returns.
+        "set" => matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::SetMembers { key: last_key.clone() },
+                })
+                .response,
+            CommandResponse::Members { members } if members.len() == ops
+        ),
+        "zset" => matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ZSetCard { key: last_key.clone() },
+                })
+                .response,
+            CommandResponse::Integer { value } if value == ops as i64
+        ),
+        "list" => matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::ListLen { key: last_key.clone() },
+                })
+                .response,
+            CommandResponse::Integer { value } if value == ops as i64
+        ),
+        // No `FeatureCount` exists either. "count" on the aggregate query is the element count,
+        // and the window is BOUNDED rather than u64::MAX on purpose: an unbounded window on the
+        // gated rollup path walks the time domain, and the fix for that is not on main yet.
+        "feature" => matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::FeatureAggQuery {
+                        key: last_key.clone(),
+                        start_ms: 0,
+                        end_ms: 1_000 + ops as u64 + 1,
+                        aggregator: "count".to_string(),
+                        count: None,
+                    },
+                })
+                .response,
+            CommandResponse::Aggregate { value } if value == ops as i64
+        ),
+        _ => matches!(
+            engine
+                .execute(ExecuteRequest {
+                    shard_id: 1,
+                    command: Command::StringGet { key: last_key.clone() },
+                })
+                .response,
+            CommandResponse::Bytes { value: Some(got) } if got == value
+        ),
     };
     // `Bytes`, not `Value` -- read off the arms in `execute_on_shard` rather than guessed, after
     // guessing wrong once.
-    let served = match read_back.response {
-        CommandResponse::Bytes { value: Some(got) } => got == value,
-        CommandResponse::Bytes { value: None } => false,
-        other => {
-            eprintln!("unexpected read-back response: {other:?}");
-            false
-        }
-    };
+
 
     let grew = after.saturating_sub(before);
     println!("model              {model}");
