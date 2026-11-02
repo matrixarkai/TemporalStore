@@ -141,7 +141,7 @@ fn sequence_rows(count: usize) -> Vec<SequenceFeatureRow> {
         .collect()
 }
 
-fn add_rows(engine: &TemporalEngine, key: &str, count: usize) -> ExecuteOutcome {
+fn add_rows(engine: &TemporalEngine, key: &str, count: usize) -> ExecuteResponse {
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::SequenceAdd {
@@ -154,15 +154,23 @@ fn add_rows(engine: &TemporalEngine, key: &str, count: usize) -> ExecuteOutcome 
 #[test]
 fn a_sequence_add_past_the_hard_max_is_refused_like_every_other_feature_write() {
     let (engine, _dir) = engine_with(&[]);
-    // AT the bound is accepted, so the refusal is a bound and not an off-by-one that rejects the
-    // largest legal batch. This arm is why the test cannot pass by refusing everything.
-    let at = add_rows(&engine, "seq-at", FEATURE_ADD_HARD_MAX_SIZE);
+    // A LEGAL BATCH IS STILL ACCEPTED, so this cannot pass by refusing everything -- which is the
+    // one way a refusal test can be green and useless.
+    //
+    // WHY THIS ARM IS SMALL RATHER THAN EXACTLY AT THE BOUND. A batch of exactly
+    // FEATURE_ADD_HARD_MAX_SIZE is legal, so asserting it is accepted would make this test
+    // APPEND 100,000 ROWS AND WRITE A BLOCK FOR EACH before the trim dropped all but the retained
+    // bound -- precisely the work this change exists to stop a caller provoking, paid on every CI
+    // run. The refusal arm below pins the boundary from the high side, which is the side the
+    // `>` comparison can be wrong on; the cheap accept arm pins that the arm exists at all.
+    let legal = add_rows(&engine, "seq-legal", 8);
     assert!(
-        at.status.ok,
-        "a batch EXACTLY at the hard max is legal and must be accepted: {:?}",
-        at.response
+        legal.status.ok,
+        "a small, legal sequence add must still be accepted: {:?}",
+        legal.response
     );
-    // One past it is refused.
+    // One past the bound is refused -- and refused by validation, BEFORE any row is appended,
+    // which is why this arm is cheap even though the batch is enormous.
     let over = add_rows(
         &engine,
         "seq-over",
