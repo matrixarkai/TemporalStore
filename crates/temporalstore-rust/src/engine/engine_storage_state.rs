@@ -386,9 +386,52 @@ pub(super) struct ShardState {
     #[serde(default)]
     pub(super) buckets: HashMap<ModelKey, (f64, u64)>,
     /// Sorted sets: member -> (total-order score bits, element block). The score-ordered view
-    /// is derived per query -- V1 accepts the per-range sort; the upgrade path is a second
-    /// in-memory map rebuilt at load, never a second persisted structure (the index component
-    /// already encodes score-then-member, so recovery has the order for free).
+    /// is derived per query -- V1 accepts the per-range sort.
+    ///
+    /// THE "SECOND IN-MEMORY MAP REBUILT AT LOAD" UPGRADE THIS NOTE USED TO PROPOSE WAS COSTED
+    /// AND DECLINED. It is recorded here rather than deleted, because the proposal is the natural
+    /// one and the next reader will arrive at it again.
+    ///
+    /// The shape was: a resident map ordered by (score, member), rebuilt at load, never persisted
+    /// -- the index component already encodes score-then-member, so recovery would have the order
+    /// for free. The recovery half is still true. The maintenance half is what fails.
+    ///
+    /// A DERIVED ORDER CANNOT EVEN BE RELIABLY INVALIDATED HERE, let alone maintained. This field
+    /// is a `RecordedMap<ZSetKind>`, and its contents are reachable through roughly fifteen
+    /// distinct mutation routes (`install_element`, `install_element_staged_only`,
+    /// `remove_element`, `drop_object`, `adopt_key`, `adopt_element_names`,
+    /// `block_an_element_vacates`, `from_decoded`, `reconcile_from_durable`,
+    /// `fold_carried_elements`, `replay_install_element`, `replay_remove_element`,
+    /// `repack_decoded`, and the two below). Two of them -- `element_values_mut` and `iter_mut` --
+    /// hand out `&mut` to the elements and return, so NO hook of any kind fires on the mutation
+    /// that follows. A derived order that misses one route is a WRONG ANSWER SERVED QUICKLY, and
+    /// the case it gets wrong is the one a presence- or length-based staleness test cannot see: a
+    /// score UPDATE on a member already present, where the member set does not change at all.
+    /// That case is driven by `an_ordered_zset_read_pays_for_its_answer::
+    /// a_score_update_reorders_an_ordered_read`, so a view that got it wrong would fail there.
+    ///
+    /// MAKING IT SAFE MEANS WIDENING A GENERIC FOR ONE KIND, WHICH THIS TREE ALREADY REFUSED.
+    /// The only sound owner for the view is `RecordedMap` itself, so that every route which hands
+    /// out `&mut` drops it -- but `RecordedMap` is shared by four kinds, and `ZSetKind`'s own note
+    /// in `recorded_map` closes this door: "Nothing was widened to fit this kind. That matters: a
+    /// trait grown to fit one kind is how a generic type acquires a member that belongs to
+    /// nobody." The upgrade would be exactly that.
+    ///
+    /// AND NO INSTRUMENT IN THIS TREE CAN SHOW THE WIN, which is why any revival starts with an
+    /// instrument and not with a patch. The defect the view would fix is SCAN TIME -- a score
+    /// window walks every member, and a rank range sorts every member however few it returns. The
+    /// only probe that covers these reads, `part4::what_the_score_ordered_zset_reads_cost`, counts
+    /// ALLOCATIONS, and it measures `ZSetRangeByScore`, `ZSetRank`, `ZSetScore` and `ZSetAdd` --
+    /// not `ZSetRange` and not `ZSetPop`. Measured on it, `range_by_score` of eight members costs
+    /// 27 allocations and 942 bytes at BOTH 256 and 1,024 members: that path already filters
+    /// before it clones, so its allocations are output-proportional and its remaining cost is
+    /// invisible to this probe at any size. So the prerequisite for revisiting this is a TIME
+    /// instrument over `ZSetRange`/`ZSetPop` plus a machine that can link a release build.
+    ///
+    /// WHAT WAS TAKEN INSTEAD, and its denominator stated once: `ZSetRange` and `ZSetPop` stopped
+    /// cloning every member in order to return k of them, so their ALLOCATIONS went from O(n) to
+    /// O(k). Their TIME is unchanged at O(n log n). Never a persisted second structure, which the
+    /// original note was right to rule out.
     // THE WIRE IS UNCHANGED AND THE `with =` MOVED RATHER THAN WENT: `ZSetKind` names
     // `zset_index_serde` as its codec, which is a REQUIRED associated function with no default --
     // so this kind cannot inherit the wrong encoding, which is the defect a blanket impl produced
