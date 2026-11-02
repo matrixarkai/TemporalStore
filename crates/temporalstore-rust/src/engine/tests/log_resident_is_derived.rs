@@ -88,12 +88,7 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
     assert!(in_slab.block_id().is_some(), "the control address must be slab-backed");
 
     // The entry the tombstone path builds. It no longer carries a log-resident flag to get wrong.
-    let tombstone = BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        address: in_log.clone(),
-        dirty: true,
-        deleted: true,
-    };
+    let tombstone = BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Hash, in_log.clone(), true, true);
 
     println!(
         "[log-resident] accessor {} on a log-resident tombstone, with no stored flag beside it",
@@ -145,12 +140,7 @@ fn the_log_resident_fact_is_derived_from_the_address_alone() {
 #[test]
 fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
 
-    let block = BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-        address: ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None),
-        dirty: false,
-        deleted: false,
-    };
+    let block = BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Hash, ElementEntry::from_parts(42, 1_048_576, 4096, Some(7), None), false, false);
 
     // THROUGH THE WRAPPER, BECAUSE THE ENTRY HAS NO ENCODER OF ITS OWN. The identity used to be
     // INJECTED here, by this fixture, because `object_key` was a serialized member a derive could
@@ -186,7 +176,11 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // removes -- so it had to move onto a field that survives. If this comparison cannot see
     // `deleted` change it cannot see a key leave either, and the assertions above would pass over
     // anything.
-    let flipped = BlockIndex { deleted: true, ..block.clone() };
+    let flipped = {
+        let mut flipped = block.clone();
+        flipped.set_deleted(true);
+        flipped
+    };
     let flipped_encoded =
         serde_json::to_string(&crate::engine::state::BlockEntryAt { block: &flipped })
             .expect("serializes");
@@ -212,8 +206,10 @@ fn the_stored_entry_has_dropped_the_flag_and_gained_no_key() {
     // the note had RIGHT is kept, because it is why this pin is worth having at all: `cargo
     // check` cannot see an `assert_eq!` in a test body, so this compiled clean through the
     // whole width step and only running it said so.
+    // 16 NOW, AND THE SENTENCE ABOVE EARNED ITSELF AGAIN: this pin compiled clean through the
+    // tail packing and only running it said so.
     assert_eq!(
-        24,
+        16,
         std::mem::size_of::<BlockIndex>(),
         "the entry is {} bytes; this module's change was never a footprint change and the body \
          says so",

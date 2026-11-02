@@ -2682,12 +2682,7 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             // The object key is simply stated once now, in the position the index is keyed by.
             block_index: [(
                 std::sync::Arc::<str>::from("k"),
-                BlockIndex {
-                    model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-                    address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
-                    dirty: false,
-                    deleted: false,
-                },
+                BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)), false, false),
             )]
             .into_iter()
             .collect(),
@@ -2704,21 +2699,11 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             block_index: [
                 (
                     std::sync::Arc::<str>::from("feature-key"),
-                    BlockIndex {
-                        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
-                        address: ElementEntry::from_parts(2, 0, 4, Some(2), Some(40)),
-                        dirty: false,
-                        deleted: false,
-                    },
+                    BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Feature, ElementEntry::from_parts(2, 0, 4, Some(2), Some(40)), false, false),
                 ),
                 (
                     std::sync::Arc::<str>::from("feature-key"),
-                    BlockIndex {
-                        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Feature,
-                        address: ElementEntry::from_parts(2, 4, 4, Some(3), Some(40)),
-                        dirty: false,
-                        deleted: false,
-                    },
+                    BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Feature, ElementEntry::from_parts(2, 4, 4, Some(3), Some(40)), false, false),
                 ),
             ]
             .into_iter()
@@ -2736,21 +2721,11 @@ fn bucket_store_reports_all_layout_states_and_runtime_flags() {
             block_index: [
                 (
                     std::sync::Arc::<str>::from("hash-key"),
-                    BlockIndex {
-                        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-                        address: ElementEntry::from_parts(3, 0, 1, Some(4), Some(50)),
-                        dirty: false,
-                        deleted: false,
-                    },
+                    BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Hash, ElementEntry::from_parts(3, 0, 1, Some(4), Some(50)), false, false),
                 ),
                 (
                     std::sync::Arc::<str>::from("hash-key"),
-                    BlockIndex {
-                        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-                        address: ElementEntry::from_parts(3, 1, 1, Some(5), Some(51)),
-                        dirty: false,
-                        deleted: false,
-                    },
+                    BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Hash, ElementEntry::from_parts(3, 1, 1, Some(5), Some(51)), false, false),
                 ),
             ]
             .into_iter()

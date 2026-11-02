@@ -285,16 +285,13 @@ impl TemporalEngine {
             )),
             Command::ContextResourceBlobAppend {
                 upload_token,
-                payload_base64,
+                payload,
                 ..
             } => Some(respond(
-                BASE64
-                    .decode(payload_base64)
-                    .map_err(|err| format!("invalid base64 payload: {err}"))
-                    .and_then(|bytes| {
-                        self.resource_blob_append(upload_token, &bytes)
-                            .map_err(|err| err.to_string())
-                    })
+                // No decode step: the command carries bytes, so there is no longer a way for a
+                // malformed payload to reach here as "invalid base64".
+                self.resource_blob_append(upload_token, payload)
+                    .map_err(|err| err.to_string())
                     .map(|bytes_total| CommandResponse::ContextResourceBlobUpload {
                         upload_token: upload_token.clone(),
                         bytes_total,
@@ -316,15 +313,10 @@ impl TemporalEngine {
             )),
             Command::ContextResourceBlobPut {
                 tenant_hash,
-                payload_base64,
+                payload,
             } => Some(respond(
-                BASE64
-                    .decode(payload_base64)
-                    .map_err(|err| format!("invalid base64 payload: {err}"))
-                    .and_then(|bytes| {
-                        self.resource_blob_put(*tenant_hash, &bytes)
-                            .map_err(|err| err.to_string())
-                    })
+                self.resource_blob_put(*tenant_hash, payload)
+                    .map_err(|err| err.to_string())
                     .map(
                         |(uri, size_bytes, content_hash)| CommandResponse::ContextResourceBlobCommitted {
                             uri,

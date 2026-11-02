@@ -672,7 +672,7 @@ fn a_tombstone_outlives_every_block_that_could_have_carried_it() {
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&TOMB_SHARD).expect("shard is loaded");
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)

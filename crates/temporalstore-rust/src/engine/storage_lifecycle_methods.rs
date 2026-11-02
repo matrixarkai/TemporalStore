@@ -232,7 +232,7 @@ impl TemporalEngine {
         // were materialised at all -- with no summaries the filter selects nothing either way.
         // THE ITEM COUNTS COME OUT OF THE SAME LOCK ACQUISITION as the dirty state. Taking a
         // second read lock to answer one ratio would be two acquisitions for one decision.
-        let (shard_has_dirty_objects, dirty_bucket_nodes, durable_items, live_items) = self
+        let (shard_has_dirty_objects, dirty_claims, durable_items, live_items) = self
             .shards
             .read()
             .expect("engine lock poisoned")
@@ -240,7 +240,7 @@ impl TemporalEngine {
             .map(|shard| {
                 (
                     !shard.dirty_objects.is_empty(),
-                    crate::engine::storage_reporting::dirty_bucket_nodes(shard),
+                    crate::engine::storage_reporting::dirty_bucket_claims(shard),
                     shard.durable_items(),
                     shard.live_item_count(),
                 )
@@ -300,7 +300,7 @@ impl TemporalEngine {
         // the opposite -- a dirty bucket read as clean -- is undumped state no round would pick up.
         let mut dirty_bucket_summaries = dirty_bucket_source
             .iter()
-            .filter(|summary| dirty_bucket_nodes.contains(&summary.routing_bucket))
+            .filter(|summary| dirty_claims.contains_key(&summary.routing_bucket))
             .collect::<Vec<_>>();
         // Oldest undumped write first: the bucket that has held the log longest is dumped first.
         //
@@ -317,24 +317,12 @@ impl TemporalEngine {
         // 0 means no claim recorded, which sorts LAST: a bucket we cannot place in the log is not
         // evidence of being old, and the ones we can place are the ones whose dump moves the
         // floor.
-        let first_dirty_by_bucket = self
-            .shards
-            .read()
-            .expect("engine lock poisoned")
-            .get(&request.shard_id)
-            .map(|shard| {
-                shard
-                    .bucket_index
-                    .bucket_map
-                    .iter()
-                    .map(|(routing_bucket, bucket)| {
-                        (*routing_bucket, bucket.first_dirty_wal_sequence)
-                    })
-                    .collect::<std::collections::HashMap<u32, u64>>()
-            })
-            .unwrap_or_default();
+        //
+        // Read off the dirty claims the plan already took under its one lock acquisition. This was
+        // a second lock and a `HashMap` over every bucket, consulted only for the dirty summaries
+        // selected above -- which are exactly the buckets `dirty_claims` names.
         let first_dirty_rank = |routing_bucket: u32| -> u64 {
-            match first_dirty_by_bucket.get(&routing_bucket).copied() {
+            match dirty_claims.get(&routing_bucket).map(|(wal, _index_log)| *wal) {
                 Some(0) | None => u64::MAX,
                 Some(sequence) => sequence,
             }
@@ -891,7 +879,7 @@ impl TemporalEngine {
                 continue;
             }
             cleared_buckets.push(bucket_id);
-            if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
+            if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&bucket_id) {
                 // Hold the generation at the captured (derived) value so the reclaim
                 // fingerprint still matches once the dirty objects are cleared.
                 bucket.dirty_generation = bucket.dirty_generation.max(captured_generation);
@@ -909,7 +897,7 @@ impl TemporalEngine {
                 bucket.first_dirty_wal_sequence = 0;
                 bucket.first_dirty_index_log_sequence = 0;
                 for block in bucket.block_index.blocks_mut_unaccounted() {
-                    block.dirty = false;
+                    block.set_dirty(false);
                 }
             }
         }
@@ -1143,30 +1131,15 @@ impl TemporalEngine {
         // `BucketStorageSummary` for the reason the dump ordering's claim is: a summary is stored
         // in the dump manifest and compared field-by-field when a manifest is validated, so a new
         // field there is a durability contract, not a report field.
-        let (bucket_claims, dirty_bucket_nodes) = self
+        //
+        // ONE MAP, DIRTY BUCKETS ONLY. This was a `HashMap` of both claims for EVERY bucket plus a
+        // set of the dirty ones, and the claim map was read at one site, behind the dirty test.
+        let dirty_claims = self
             .shards
             .read()
             .expect("shards lock poisoned")
             .get(&shard_id)
-            .map(|shard| {
-                (
-                    shard
-                        .bucket_index
-                        .bucket_map
-                        .iter()
-                        .map(|(routing_bucket, bucket)| {
-                            (
-                                *routing_bucket,
-                                (
-                                    bucket.first_dirty_wal_sequence,
-                                    bucket.first_dirty_index_log_sequence,
-                                ),
-                            )
-                        })
-                        .collect::<std::collections::HashMap<u32, (u64, u64)>>(),
-                    crate::engine::storage_reporting::dirty_bucket_nodes(shard),
-                )
-            })
+            .map(crate::engine::storage_reporting::dirty_bucket_claims)
             .unwrap_or_default();
         let manifests =
             list_bucket_dump_manifests_shared_at(&self.index_dir, shard_id).unwrap_or_default();
@@ -1341,14 +1314,11 @@ impl TemporalEngine {
                 // direction EMPTY at every state a dump cycle passes through, including nine
                 // partial-dump rounds, which is the case a full dump cannot produce because
                 // `clear_dumped_bucket_dirty_state` walks `manifest.bucket_ids` and nothing else.
-                if !dirty_bucket_nodes.contains(&summary.routing_bucket) {
+                let Some(&(wal_claim, index_log_claim)) = dirty_claims.get(&summary.routing_bucket)
+                else {
                     covered_bucket_count = covered_bucket_count.saturating_add(1);
                     continue;
-                }
-                let (wal_claim, index_log_claim) = bucket_claims
-                    .get(&summary.routing_bucket)
-                    .copied()
-                    .unwrap_or((0, 0));
+                };
                 if wal_claim > 0 && index_log_claim > 0 {
                     durable_wal_frontier =
                         durable_wal_frontier.min(wal_claim.saturating_sub(1));
@@ -1367,7 +1337,7 @@ impl TemporalEngine {
             //
             // Asked of the bucket's own flag, the same record the covered arm above reads, so the
             // two arms of this plan cannot disagree about which buckets are dirty.
-            if dirty_bucket_nodes.contains(&summary.routing_bucket) {
+            if dirty_claims.contains_key(&summary.routing_bucket) {
                 durable_wal_frontier = durable_wal_frontier.min(manifest.wal_sequence);
                 durable_index_log_frontier =
                     durable_index_log_frontier.min(manifest.index_log_sequence);
@@ -1966,12 +1936,12 @@ impl TemporalEngine {
                 let mut physical_bytes = 0u64;
                 let mut dirty_object_count = 0u64;
                 for block in bucket.block_index.values() {
-                    if block.deleted {
+                    if block.deleted() {
                         continue;
                     }
                     logical_bytes = logical_bytes.saturating_add(block.address.length());
                     physical_bytes = physical_bytes.saturating_add(block.address.length());
-                    if block.dirty {
+                    if block.dirty() {
                         dirty_object_count = dirty_object_count.saturating_add(1);
                     }
                 }
@@ -2183,7 +2153,7 @@ impl TemporalEngine {
                                 let dirty = bucket
                                     .block_index
                                     .values()
-                                    .filter(|block| !block.deleted && block.dirty)
+                                    .filter(|block| !block.deleted() && block.dirty())
                                     .count() as u64;
                                 (*routing_bucket, dirty)
                             })

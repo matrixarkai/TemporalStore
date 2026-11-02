@@ -72,7 +72,7 @@ fn put(engine: &TemporalEngine, payload: &[u8]) -> (String, u64, u64) {
         engine,
         Command::ContextResourceBlobPut {
             tenant_hash: TENANT,
-            payload_base64: BASE64.encode(payload),
+            payload: payload.to_vec(),
         },
     ) {
         CommandResponse::ContextResourceBlobCommitted {
@@ -127,7 +127,7 @@ fn multipart_upload_commits_and_fetches_back_byte_identical() {
             Command::ContextResourceBlobAppend {
                 tenant_hash: TENANT,
                 upload_token: token.clone(),
-                payload_base64: BASE64.encode(part),
+                payload: part.to_vec(),
             },
         ) {
             CommandResponse::ContextResourceBlobUpload { .. } => {}

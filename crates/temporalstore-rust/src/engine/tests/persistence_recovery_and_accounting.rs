@@ -4642,7 +4642,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     let blocks_marked_dirty: std::collections::BTreeSet<String> =
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
-            .filter(|(_, _, _, block)| block.dirty)
+            .filter(|(_, _, _, block)| block.dirty())
             .map(|(_, _, object_key, _)| object_key.to_string())
             .collect();
     let any_block_at_all: std::collections::BTreeSet<String> =
@@ -4876,10 +4876,10 @@ fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, block) in bucket.block_index.iter() {
             blocks += 1;
-            let spelling = block.model_id.as_str().as_ptr();
-            match first_of_kind.get(block.model_id.as_str()) {
+            let spelling = block.model_id().as_str().as_ptr();
+            match first_of_kind.get(block.model_id().as_str()) {
                 None => {
-                    first_of_kind.insert(block.model_id.to_string(), spelling);
+                    first_of_kind.insert(block.model_id().to_string(), spelling);
                 }
                 Some(first) => {
                     if *first == spelling {
@@ -5222,7 +5222,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
             let Some(refs) = shard
                 .bucket_index
                 .object_block_lookup
-                .key_ptr(block.model_id.as_str(), handed_out.as_ref())
+                .key_ptr(block.model_id().as_str(), handed_out.as_ref())
             else {
                 continue;
             };
@@ -5445,12 +5445,7 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
 /// number; this one states the reason.
 #[test]
 fn installing_the_same_block_twice_replaces_it() {
-    let block = || crate::engine::state::BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
-        dirty: false,
-        deleted: false,
-    };
+    let block = || crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)), false, false);
 
     let mut map = crate::engine::state::BlockIndexMap::default();
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
@@ -7014,8 +7009,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // so for such a bucket the buffer is held until a re-add clears the tombstones or a later
         // stage collects them. That is stated here rather than left to be rediscovered from the
         // per-key ceiling above, which is the assertion that would eventually fail for it.
-        let live = bucket.block_index.values().filter(|block| !block.deleted).count();
-        let tombstoned = bucket.block_index.values().filter(|block| block.deleted).count();
+        let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
+        let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
         let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
         // RESTATED: THE LIVE ENTRY IS RETAINED TOO, NOT ONLY A TOMBSTONE ADDED.
         //
@@ -7103,8 +7098,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
                     .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == "wide")
             })
             .expect("the object must still be filed");
-        let live = bucket.block_index.values().filter(|block| !block.deleted).count();
-        let tombstoned = bucket.block_index.values().filter(|block| block.deleted).count();
+        let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
+        let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
         let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
         // THE TOMBSTONE CLAIM HELD AND WAS CHECKED RATHER THAN ADJUSTED. The message below is the
         // one this arm shipped with, and the measurement still agrees with it: writing a field back
@@ -7644,11 +7639,11 @@ fn block_index_identity_string_cardinality() {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, block) in bucket.block_index.iter() {
             blocks += 1;
-            distinct_models.insert(block.model_id.as_str());
+            distinct_models.insert(block.model_id().as_str());
             // One address per spelling for the whole process, and not an allocation: the entry
             // holds one byte and reads the registry's `&'static str` through it.
-            model_allocations.insert(block.model_id.as_str().as_ptr());
-            model_bytes += block.model_id.as_str().len();
+            model_allocations.insert(block.model_id().as_str().as_ptr());
+            model_bytes += block.model_id().as_str().len();
             // THE COMPONENT HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
             //
             // It measured whether an entry's element name was a SHARED allocation -- distinct
@@ -8301,7 +8296,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         let recomputed: std::collections::BTreeSet<u64> = bucket
             .block_index
             .iter()
-            .filter(|(_, block)| !block.deleted)
+            .filter(|(_, block)| !block.deleted())
             .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty block index leaves the
@@ -13893,7 +13888,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
         let rebuilt: crate::engine::state::ObjectIndex = bucket
             .block_index
             .iter()
-            .filter(|(_, block)| !block.deleted)
+            .filter(|(_, block)| !block.deleted())
             .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
             .collect();
         checked += 1;
@@ -14018,7 +14013,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for block in bucket.block_index.values() {
-            *kinds.entry(block.model_id.clone().to_string()).or_insert(0) += 1;
+            *kinds.entry(block.model_id().clone().to_string()).or_insert(0) += 1;
         }
     }
     // And the context keys the model map holds, so the two can be compared.
@@ -14433,7 +14428,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                 (
                     (bucket, handle.to_string()),
                     (
-                        block.model_id.to_string(),
+                        block.model_id().to_string(),
                         object_key.to_string(),
                         None::<String>,
                     ),
@@ -14463,7 +14458,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                 (
                     (bucket, handle.to_string()),
                     (
-                        block.model_id.to_string(),
+                        block.model_id().to_string(),
                         object_key.to_string(),
                         None::<String>,
                     ),
@@ -16106,7 +16101,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
         let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(routing_bucket, _handle, object_key, block)| {
-                format!("{routing_bucket}|{}|{}|{}", block.model_id, object_key, "-")
+                format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
             })
             .collect();
         rows.sort();
@@ -16217,7 +16212,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
         let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(routing_bucket, _handle, object_key, block)| {
-                format!("{routing_bucket}|{}|{}|{}", block.model_id, object_key, "-")
+                format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
             })
             .collect();
         rows.sort();
@@ -19489,7 +19484,7 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
         .map(|(routing_bucket, _handle, object_key, block)| {
             (
                 routing_bucket,
-                block.model_id.to_string(),
+                block.model_id().to_string(),
                 object_key.to_string(),
                 None::<String>,
                 block.address.block_slab_id(),

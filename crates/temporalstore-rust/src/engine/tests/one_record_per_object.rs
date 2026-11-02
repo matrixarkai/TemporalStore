@@ -528,19 +528,25 @@ fn a_layout_handle_with_no_layout_is_refused_by_name() {
     );
 }
 
-/// WHAT THE RECORD COSTS INSIDE THE MAP THAT WOULD HOLD IT -- MEASURED, NOT MULTIPLIED BY HAND.
+/// WHAT THE RECORD COSTS INSIDE THE MAP THAT HOLDS IT -- MEASURED, NOT MULTIPLIED BY HAND.
 ///
-/// The record is 24 bytes where the address it replaces is 16, so the obvious statement is "eight
-/// bytes an object". THAT STATEMENT IS WRONG, and wrong in the direction that flatters the design.
-/// A hash table allocates SLOTS, not entries: the eight bytes are paid on every slot the table
-/// holds, including the empty ones, so the real figure is eight times the table's slot occupancy.
-/// This codebase has already priced that multiplier once -- the `Box<str>` key change is recorded
-/// as 13.1 B/key saved at 1.434 slots a key, not 8.
+/// THIS ARM'S ORIGINAL PREMISE IS RETIRED, AND SAYING SO IS THE POINT OF THE REWRITE. It read:
+/// "the record is 24 bytes where the address it replaces is 16, so the obvious statement is eight
+/// bytes an object -- and that statement is wrong, because a hash table allocates SLOTS rather
+/// than entries, so the real figure is eight times the table's slot occupancy". Both halves were
+/// true and the first is no longer: the element entry was packed from 24 bytes to 16 and the
+/// record is 16, so THE TWO VALUES ARE THE SAME WIDTH and there is no per-entry difference left
+/// for an occupancy to multiply.
 ///
-/// So rather than guess the occupancy, this weighs both maps at the same population: the one the
-/// shard holds today and the one it would hold with the record in it. The difference IS the cost,
-/// with the slack included, and it is reported per object so it can be set against the per-object
-/// savings below it.
+/// So the question has inverted. It was "what does the wider value cost"; it is now "does a value
+/// of EQUAL width cost nothing", and the answer is what makes the record shippable: the swap is
+/// free, and every extra fact the record carries over a bare address -- the model id, the named
+/// flag bits, the size class -- rides in a slot that was already paid for.
+///
+/// WHY THE OLD ASSERTION IS NOT SIMPLY LOOSENED. Weakening the old one-sided bound to admit zero
+/// leaves an arm that passes whether or not the two widths ever met, which cannot fail and so
+/// guards nothing. The equality of the widths is asserted FIRST, so a future divergence reddens
+/// here and names itself, and the cost is then pinned AT zero rather than bounded on one side.
 ///
 /// rust-internal: measures this crate's own resident structures, no product behaviour
 #[test]
@@ -585,28 +591,38 @@ fn what_the_record_costs_inside_the_map_that_holds_it() {
         record_bytes as f64 / KEYS as f64
     );
     println!(
-        "  ADDED BY THE RECORD           {added:>9} B   {:>6.1} B/object   (the naive figure is \
-         {} B/object, so the slot occupancy multiplies it by {:.2}x)",
-        added as f64 / KEYS as f64,
-        std::mem::size_of::<ObjectRecord>() - std::mem::size_of::<ElementEntry>(),
-        (added as f64 / KEYS as f64)
-            / (std::mem::size_of::<ObjectRecord>() - std::mem::size_of::<ElementEntry>()) as f64
+        "  ADDED BY THE RECORD           {added:>9} B   {:>6.1} B/object",
+        added as f64 / KEYS as f64
+    );
+    println!(
+        "  the two values are {} B and {} B wide, so there is no per-entry difference for the \
+         table's slot occupancy to multiply -- which is why this figure is a zero, not a product.",
+        std::mem::size_of::<ElementEntry>(),
+        std::mem::size_of::<ObjectRecord>()
     );
 
     assert!(today_bytes > 0, "non-vacuity: the present-day map weighed nothing");
-    assert!(
-        added > 0,
-        "a 24-byte value in place of a 16-byte one cannot cost nothing; the probe charged {added}"
+    // THE PREMISE, ASSERTED BEFORE THE FIGURE THAT RESTS ON IT. This arm prices a swap between
+    // two map values on the claim that they are the same width. If they diverge again the
+    // question becomes what the WIDER one costs on every slot the table holds, and the zero
+    // below stops being the right answer -- so a divergence must fail HERE, by name, rather
+    // than silently inside the equality that follows.
+    let entry_width = std::mem::size_of::<ElementEntry>();
+    let record_width = std::mem::size_of::<ObjectRecord>();
+    assert_eq!(
+        entry_width, record_width,
+        "this arm prices a swap between two map values on the premise that they are the same \
+         width -- the entry is {entry_width} B and the record {record_width} B. Re-derive what \
+         the wider value costs at the measured slot occupancy before trusting the cost below."
     );
-    // THE DIRECTION OF THE ERROR THIS TEST EXISTS TO CATCH. If the measured cost came out at or
-    // below the naive per-entry figure, the slack would not be being counted and every saving
-    // quoted against it would be overstated.
-    let naive = (std::mem::size_of::<ObjectRecord>() - std::mem::size_of::<ElementEntry>()) as f64;
-    assert!(
-        added as f64 / KEYS as f64 >= naive,
-        "the measured cost {:.1} B/object is BELOW the naive {naive:.0} B/object, so the table's \
-         empty slots are not being charged and this figure cannot be set against a saving",
-        added as f64 / KEYS as f64
+    // AND THE COST, PINNED AT ZERO RATHER THAN BOUNDED. Two values of the same width, in the
+    // same map shape, at the same population, must weigh the same. Anything else means the probe
+    // is reading something other than the value type.
+    assert_eq!(
+        0, added,
+        "two map values of equal width ({entry_width} B) were charged {added} B differently at \
+         {KEYS} keys. Either the probe is measuring something besides the value, or one of these \
+         types carries heap the other does not and this is no longer a width comparison."
     );
 }
 
@@ -615,12 +631,17 @@ fn what_the_record_costs_inside_the_map_that_holds_it() {
 /// The move is de-risked everywhere except its price. The inline arm takes 400 of 400 real string
 /// addresses, the key-ordered expiry walk has no production caller, the compaction write-back is
 /// guarded, and `control_state_blocks` has already made the same move. What is open is whether it
-/// pays: the record is measured at +16.4 B/object over a bare address and that is charged on EVERY
-/// string key, while the savings -- deleting the per-key expiry table and the by-key half of the
-/// dirty index -- land only on the keys that actually carry a deadline or are dirty.
+/// pays. THE COST SIDE OF THAT QUESTION HAS GONE TO ZERO: the record was +16.4 B/object over a
+/// bare address when the address was 16 B and the record 24, and both are 16 B now, so the charge
+/// on every string key is nothing -- the arm above pins it at zero and reddens if the widths part
+/// again. What is left is the savings side, deleting the per-key expiry table and the by-key half
+/// of the dirty index, which lands only on the keys that carry a deadline or are dirty.
 ///
-/// That asymmetry is exactly the shape that made a union merge cost 144 B/key elsewhere in this
-/// campaign, so it is priced rather than assumed.
+/// The asymmetry that made this worth pricing rather than assuming was a cost charged on EVERY key
+/// against a saving earned on SOME; with the cost at zero that asymmetry is gone and the figures
+/// below are a lower bound on the case for the move. It stays measured because the saving side is
+/// still population-dependent -- the shape that made a union merge cost 144 B/key elsewhere in
+/// this campaign.
 ///
 /// WHAT IS HELD CONSTANT: the keys. Every arm shares one set of `Arc<str>` allocations, so the
 /// figures are the ROWS and not the characters -- the same discipline the consolidation probes use.

@@ -317,7 +317,7 @@ fn whether_the_reclaim_checks_can_read_the_bucket_node() {
     // ---- against, reached deliberately here to show which record decides it.
     {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
-        let bucket = shards
+        let mut bucket = shards
             .get_mut(&1)
             .expect("shard 1")
             .bucket_index

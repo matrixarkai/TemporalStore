@@ -498,7 +498,122 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 selection_type: control_state_selection_type_from_proto(command.selection_type)?,
             }
         }
+        v1::command::Kind::BucketTake(command) => types::Command::BucketTake {
+            key: command.key,
+            tokens: command.tokens,
+            capacity: command.capacity,
+            refill_per_sec: command.refill_per_sec,
+        },
+        v1::command::Kind::CommonDelete(command) => {
+            types::Command::CommonDelete { key: command.key }
+        }
+        v1::command::Kind::CommonPersist(command) => {
+            types::Command::CommonPersist { key: command.key }
+        }
+        v1::command::Kind::FeatureDelete(command) => {
+            types::Command::FeatureDelete { key: command.key }
+        }
+        v1::command::Kind::FeatureReplace(command) => types::Command::FeatureReplace {
+            key: command.key,
+            start_ms: command.start_ms,
+            end_ms: command.end_ms,
+            points: command
+                .points
+                .into_iter()
+                .map(sdk_feature_point_to_types)
+                .collect(),
+        },
+        v1::command::Kind::FeatureAppendWithPolicy(command) => {
+            types::Command::FeatureAppendWithPolicy {
+                key: command.key,
+                points: command
+                    .points
+                    .into_iter()
+                    .map(sdk_feature_point_to_types)
+                    .collect(),
+                policy: feature_write_policy_from_proto(command.policy)?,
+            }
+        }
+        v1::command::Kind::SeenCheck(command) => types::Command::SeenCheck {
+            key: command.key,
+            member: command.member,
+            window_ms: command.window_ms,
+        },
+        v1::command::Kind::StringSetConditional(command) => {
+            types::Command::StringSetConditional {
+                key: command.key,
+                value: command.value,
+                // Straight across: `None` means discard the deadline, `Some(0)` means arm zero.
+                ttl_ms: command.ttl_ms,
+                condition: string_set_condition_from_proto(command.condition)?,
+                return_old: command.return_old,
+                // Absent decodes to false, which is what every record written before this field
+                // existed was recorded with. Reading absent as "leave the deadline alone" would
+                // change those records' meaning on replay.
+                keep_ttl: command.keep_ttl,
+            }
+        }
     })
+}
+
+pub(crate) fn string_set_condition_to_proto(
+    condition: types::StringSetCondition,
+) -> v1::StringSetCondition {
+    match condition {
+        types::StringSetCondition::Always => v1::StringSetCondition::Always,
+        types::StringSetCondition::IfExists => v1::StringSetCondition::IfExists,
+        types::StringSetCondition::IfNotExists => v1::StringSetCondition::IfNotExists,
+    }
+}
+
+/// REFUSED, NOT DEFAULTED. Guessing `Always` would turn a create-only write into one that
+/// overwrites a value somebody else put there.
+pub(crate) fn string_set_condition_from_proto(
+    condition: i32,
+) -> Result<types::StringSetCondition, TonicStatus> {
+    match v1::StringSetCondition::try_from(condition) {
+        Ok(v1::StringSetCondition::Always) => Ok(types::StringSetCondition::Always),
+        Ok(v1::StringSetCondition::IfExists) => Ok(types::StringSetCondition::IfExists),
+        Ok(v1::StringSetCondition::IfNotExists) => Ok(types::StringSetCondition::IfNotExists),
+        Ok(v1::StringSetCondition::Unspecified) | Err(_) => {
+            Err(TonicStatus::invalid_argument(format!(
+                "string-set condition {condition} is not one this build can apply"
+            )))
+        }
+    }
+}
+
+pub(crate) fn feature_write_policy_to_proto(
+    policy: types::FeatureWritePolicy,
+) -> v1::FeatureWritePolicy {
+    match policy {
+        types::FeatureWritePolicy::Upsert => v1::FeatureWritePolicy::Upsert,
+        types::FeatureWritePolicy::InsertIfAbsent => v1::FeatureWritePolicy::InsertIfAbsent,
+        types::FeatureWritePolicy::ReplaceExisting => v1::FeatureWritePolicy::ReplaceExisting,
+        types::FeatureWritePolicy::Block => v1::FeatureWritePolicy::Block,
+    }
+}
+
+/// REFUSED, NOT DEFAULTED. `Block` and `Upsert` are opposite answers to the same question, so a
+/// default would silently pick one of them for a record written by a build that knew better.
+pub(crate) fn feature_write_policy_from_proto(
+    policy: i32,
+) -> Result<types::FeatureWritePolicy, TonicStatus> {
+    match v1::FeatureWritePolicy::try_from(policy) {
+        Ok(v1::FeatureWritePolicy::Upsert) => Ok(types::FeatureWritePolicy::Upsert),
+        Ok(v1::FeatureWritePolicy::InsertIfAbsent) => {
+            Ok(types::FeatureWritePolicy::InsertIfAbsent)
+        }
+        Ok(v1::FeatureWritePolicy::ReplaceExisting) => {
+            Ok(types::FeatureWritePolicy::ReplaceExisting)
+        }
+        Ok(v1::FeatureWritePolicy::Block) => Ok(types::FeatureWritePolicy::Block),
+        Ok(v1::FeatureWritePolicy::Unspecified) | Err(_) => {
+            Err(TonicStatus::invalid_argument(format!(
+                "feature write policy {policy} is not one this build can apply"
+            )))
+        }
+    }
 }
 
 /// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.

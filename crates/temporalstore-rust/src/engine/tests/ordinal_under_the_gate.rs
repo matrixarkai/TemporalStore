@@ -71,11 +71,11 @@ fn blocks_and_ordinals(engine: &TemporalEngine, object_key: &str) -> (usize, Vec
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || !keys
                     .live_identity(bucket.routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == object_key)
-                || block.deleted
+                || block.deleted()
             {
                 continue;
             }
@@ -104,7 +104,7 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
     let mut rows = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || !keys
                     .identity_of(bucket, *handle, block)
                     .is_some_and(|beside| &**beside.object_key == object_key)
@@ -113,7 +113,7 @@ fn entry_rows(engine: &TemporalEngine, object_key: &str) -> Vec<String> {
             }
             rows.push(format!(
                 "deleted={} component=None slab={} off={} len={} block_id={:?}",
-                block.deleted,
+                block.deleted(),
                 block.address.block_slab_id(),
                 block.address.offset(),
                 block.address.length(),
@@ -301,12 +301,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             4_096, 8_192, 48, Some(7), None,
         );
         let planted_key: std::sync::Arc<str> = std::sync::Arc::from("heal/set");
-        let block = crate::engine::state::BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::stored_model_kind("set"),
-            address: orphan,
-            dirty: false,
-            deleted: false,
-        };
+        let block = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::stored_model_kind("set"), orphan, false, false);
         // AND THE PLANT FILES THE OBJECT LOOKUP TOO, WHICH IT HAD TO START DOING.
         //
         // `BucketNode::insert_block` files the BUCKET's block index and nothing else -- it is handed
@@ -321,7 +316,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         // planting a state this engine does not produce, and the test would have been measuring
         // that instead of the stale entry it is about.
         let handle = crate::engine::state::block_index_handle(&planted_key, &block);
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)
@@ -333,6 +328,9 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             "the handle the bucket filed the plant under is not the one composed from the \
              identity beside it, so the lookup row below would name a position the block is not at"
         );
+        // The guard reports the dirty flag when it is dropped, so its borrow of the bucket map ends
+        // here rather than at the last use.
+        drop(bucket);
         shard
             .bucket_index
             .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &block);
@@ -443,11 +441,11 @@ fn live_ordinals_hash(engine: &TemporalEngine, object_key: &str) -> Vec<u64> {
     let mut ordinals = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "hash"
+            if block.model_id().as_str() != "hash"
                 || !keys
                     .live_identity(bucket.routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == object_key)
-                || block.deleted
+                || block.deleted()
             {
                 continue;
             }
@@ -626,11 +624,11 @@ fn a_component_less_hash_entry_is_still_answered_correctly_by_get_len_and_incrby
                     .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
             .filter(|(routing_bucket, handle, block)| {
-                block.model_id.as_str() == "hash"
+                block.model_id().as_str() == "hash"
                     && keys
                         .live_identity(*routing_bucket, *handle)
                         .is_some_and(|(_, named)| &**named == KEY)
-                    && !block.deleted
+                    && !block.deleted()
             })
             .count()
     };
@@ -723,8 +721,8 @@ fn named_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
             // other walks in this file. It decides nothing while `false` stands beside it, and
             // it is kept exactly so that this walk does not read as a different kind of walk
             // from its siblings if the `false` ever comes out.
-            !block.deleted
-                && block.model_id.as_str() == "hash"
+            !block.deleted()
+                && block.model_id().as_str() == "hash"
                 && keys
                     .live_identity(*routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == key)

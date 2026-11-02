@@ -37,7 +37,7 @@ pub(crate) fn set_algebra_response(
 ) -> RespValue {
     let mut sets = Vec::new();
     for key in keys {
-        match sorted_set_members(&string_arg(key), execute) {
+        match sorted_set_members(&name_arg(key), execute) {
             Ok(members) => sets.push(members.into_iter().collect::<HashSet<_>>()),
             Err(err) => return RespValue::Error(err),
         }

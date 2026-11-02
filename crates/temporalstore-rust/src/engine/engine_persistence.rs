@@ -405,7 +405,7 @@ impl TemporalEngine {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.set_dirty(false);
             for block in bucket.block_index.blocks_mut_unaccounted() {
-                block.dirty = false;
+                block.set_dirty(false);
             }
         }
         refresh_bucket_runtime_flags(&mut shard);

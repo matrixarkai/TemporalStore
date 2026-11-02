@@ -47,8 +47,8 @@ pub fn execute_redis_command_with_state(
         "COMMAND" => redis_command_response(&args),
         "CONFIG" if args.len() >= 2 => redis_config_response(&args, state),
         "SLAVEOF" if args.len() == 3 => {
-            let host = string_arg(&args[1]);
-            let port = string_arg(&args[2]);
+            let host = text_arg(&args[1]);
+            let port = text_arg(&args[2]);
             if host.eq_ignore_ascii_case("no") && port.eq_ignore_ascii_case("one") {
                 state.master = None;
             } else {
@@ -59,7 +59,7 @@ pub fn execute_redis_command_with_state(
         "INFO" if args.len() == 1 || args.len() == 2 => {
             let section = args
                 .get(1)
-                .map(|value| string_arg(value))
+                .map(|value| text_arg(value))
                 .unwrap_or_else(|| "default".to_string());
             RespValue::Bulk(Some(
                 redis_info(section.as_str(), shard_id, state).into_bytes(),
@@ -82,13 +82,13 @@ pub fn execute_redis_command_with_state(
         }
         "TYPE" if args.len() == 2 => redis_type_response(&args[1], &mut execute),
         "GET" if args.len() == 2 => bytes_response(execute(Command::StringGet {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         })),
         "MGET" if args.len() >= 2 => {
             let mut values = Vec::new();
             for key in args.iter().skip(1) {
                 match execute(Command::StringGet {
-                    key: string_arg(key),
+                    key: name_arg(key),
                 }) {
                     Ok(CommandResponse::Bytes { value }) => values.push(RespValue::Bulk(value)),
                     Ok(_) => return RespValue::Error("ERR invalid mget response".to_string()),
@@ -98,14 +98,14 @@ pub fn execute_redis_command_with_state(
             RespValue::Array(values)
         }
         "GETDEL" if args.len() == 2 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             match execute(Command::StringGet { key: key.clone() }) {
                 Ok(CommandResponse::Bytes { value }) => {
                     if value.is_some() {
                         if let Err(err) = execute(Command::CommonDelete { key }) {
                             return RespValue::Error(format!("ERR {err}"));
                         }
-                        state.keyspace.remove(&string_arg(&args[1]));
+                        state.keyspace.remove(&name_arg(&args[1]));
                     }
                     RespValue::Bulk(value)
                 }
@@ -122,7 +122,7 @@ pub fn execute_redis_command_with_state(
         // back in the same command, so the separate `StringGet` that used to read it (and
         // could observe a different record than the one being replaced) is gone too.
         "GETSET" if args.len() == 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             match execute(Command::StringSetConditional {
                 key: key.clone(),
                 value: args[2].clone(),
@@ -140,7 +140,7 @@ pub fn execute_redis_command_with_state(
             }
         }
         "SET" if args.len() >= 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let value = args[2].clone();
             let options = match parse_set_options(&args[3..]) {
                 Ok(options) => options,
@@ -174,7 +174,7 @@ pub fn execute_redis_command_with_state(
             }
         }
         "SETNX" if args.len() == 3 => match execute(Command::StringSetConditional {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
             value: args[2].clone(),
             ttl_ms: None,
             condition: StringSetCondition::IfNotExists,
@@ -183,7 +183,7 @@ pub fn execute_redis_command_with_state(
         }) {
             Ok(CommandResponse::Integer { value }) => {
                 if value > 0 {
-                    state.keyspace.insert(string_arg(&args[1]));
+                    state.keyspace.insert(name_arg(&args[1]));
                 }
                 RespValue::Integer(value)
             }
@@ -196,7 +196,7 @@ pub fn execute_redis_command_with_state(
         "MSET" if args.len() >= 3 && args.len() % 2 == 1 => {
             for pair in args[1..].chunks(2) {
                 if let Err(err) = execute(Command::StringSetConditional {
-                    key: string_arg(&pair[0]),
+                    key: name_arg(&pair[0]),
                     value: pair[1].clone(),
                     ttl_ms: None,
                     condition: StringSetCondition::Always,
@@ -205,14 +205,14 @@ pub fn execute_redis_command_with_state(
                 }) {
                     return RespValue::Error(format!("ERR {err}"));
                 }
-                state.keyspace.insert(string_arg(&pair[0]));
+                state.keyspace.insert(name_arg(&pair[0]));
             }
             RespValue::SimpleString("OK".to_string())
         }
         "MSETNX" if args.len() >= 3 && args.len() % 2 == 1 => {
             for pair in args[1..].chunks(2) {
                 match execute(Command::CommonExists {
-                    key: string_arg(&pair[0]),
+                    key: name_arg(&pair[0]),
                 }) {
                     Ok(CommandResponse::Integer { value }) if value > 0 => {
                         return RespValue::Integer(0);
@@ -228,7 +228,7 @@ pub fn execute_redis_command_with_state(
             // to re-derive that, and so the rule has one spelling rather than two.
             for pair in args[1..].chunks(2) {
                 if let Err(err) = execute(Command::StringSetConditional {
-                    key: string_arg(&pair[0]),
+                    key: name_arg(&pair[0]),
                     value: pair[1].clone(),
                     ttl_ms: None,
                     condition: StringSetCondition::Always,
@@ -237,12 +237,12 @@ pub fn execute_redis_command_with_state(
                 }) {
                     return RespValue::Error(format!("ERR {err}"));
                 }
-                state.keyspace.insert(string_arg(&pair[0]));
+                state.keyspace.insert(name_arg(&pair[0]));
             }
             RespValue::Integer(1)
         }
         "GETEX" if args.len() >= 2 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             match execute(Command::StringGet { key: key.clone() }) {
                 Ok(CommandResponse::Bytes { value }) => {
                     if value.is_some() {
@@ -287,12 +287,12 @@ pub fn execute_redis_command_with_state(
             // stored a key with deadline now+0 that vanishes on the next access.
             Ok(0) => RespValue::Error("ERR invalid expire time in setex".to_string()),
             Ok(seconds) => match execute(Command::StringSetEx {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 value: args[3].clone(),
                 ttl_ms: seconds.saturating_mul(1000),
             }) {
                 Ok(_) => {
-                    state.keyspace.insert(string_arg(&args[1]));
+                    state.keyspace.insert(name_arg(&args[1]));
                     RespValue::SimpleString("OK".to_string())
                 }
                 Err(err) => RespValue::Error(format!("ERR {err}")),
@@ -302,12 +302,12 @@ pub fn execute_redis_command_with_state(
         "PSETEX" if args.len() == 4 => match parse_u64(&args[2], "milliseconds") {
             Ok(0) => RespValue::Error("ERR invalid expire time in psetex".to_string()),
             Ok(ttl_ms) => match execute(Command::StringSetEx {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 value: args[3].clone(),
                 ttl_ms,
             }) {
                 Ok(_) => {
-                    state.keyspace.insert(string_arg(&args[1]));
+                    state.keyspace.insert(name_arg(&args[1]));
                     RespValue::SimpleString("OK".to_string())
                 }
                 Err(err) => RespValue::Error(format!("ERR {err}")),
@@ -318,7 +318,7 @@ pub fn execute_redis_command_with_state(
             let mut count = 0;
             for key in args.iter().skip(1) {
                 match execute(Command::CommonExists {
-                    key: string_arg(key),
+                    key: name_arg(key),
                 }) {
                     Ok(CommandResponse::Integer { value }) => count += value,
                     Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
@@ -330,7 +330,7 @@ pub fn execute_redis_command_with_state(
         "DEL" if args.len() >= 2 => {
             let mut removed = 0;
             for key_arg in args.iter().skip(1) {
-                let key = string_arg(key_arg);
+                let key = name_arg(key_arg);
                 match execute(Command::CommonExists { key: key.clone() }) {
                     Ok(CommandResponse::Integer { value }) => {
                         if value > 0 {
@@ -350,7 +350,7 @@ pub fn execute_redis_command_with_state(
         "UNLINK" if args.len() >= 2 => {
             let mut removed = 0;
             for key_arg in args.iter().skip(1) {
-                let key = string_arg(key_arg);
+                let key = name_arg(key_arg);
                 match execute(Command::CommonExists { key: key.clone() }) {
                     Ok(CommandResponse::Integer { value }) if value > 0 => {
                         if let Err(err) = execute(Command::CommonDelete { key: key.clone() }) {
@@ -370,7 +370,7 @@ pub fn execute_redis_command_with_state(
             let mut touched = 0;
             for key in args.iter().skip(1) {
                 match execute(Command::CommonExists {
-                    key: string_arg(key),
+                    key: name_arg(key),
                 }) {
                     Ok(CommandResponse::Integer { value }) => touched += value,
                     Ok(_) => return RespValue::Error("ERR invalid exists response".to_string()),
@@ -382,7 +382,7 @@ pub fn execute_redis_command_with_state(
         "RANDOMKEY" if args.len() == 1 => live_matching_keys("*", state, &mut execute)
             .into_iter()
             .next()
-            .map(|key| RespValue::Bulk(Some(key.into_bytes())))
+            .map(|key| RespValue::Bulk(Some(decode_or_raw(&key))))
             .unwrap_or(RespValue::Bulk(None)),
         "FLUSHDB" | "FLUSHALL" if args.len() == 1 || args.len() == 2 => {
             for key in state.keyspace.iter().cloned().collect::<Vec<_>>() {
@@ -410,7 +410,7 @@ pub fn execute_redis_command_with_state(
         "EXPIREAT" if args.len() == 3 => expire_at_response(&args, 1000, state, &mut execute),
         "PEXPIREAT" if args.len() == 3 => expire_at_response(&args, 1, state, &mut execute),
         "PERSIST" if args.len() == 2 => match execute(Command::CommonPersist {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
             Ok(_) => RespValue::Error("ERR invalid persist response".to_string()),
@@ -419,7 +419,7 @@ pub fn execute_redis_command_with_state(
         "EXPIRETIME" if args.len() == 2 => expire_time_response(&args[1], 1000, &mut execute),
         "PEXPIRETIME" if args.len() == 2 => expire_time_response(&args[1], 1, &mut execute),
         "TTL" if args.len() == 2 => match execute(Command::CommonTtl {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             // TTL: the negative sentinels (-2 missing, -1 no-expiry) pass through
             // unchanged; a positive remaining-ms value rounds UP to seconds ((ms+999)/1000).
@@ -435,10 +435,10 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "PTTL" if args.len() == 2 => integer_response(execute(Command::CommonTtl {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         })),
         "STRLEN" if args.len() == 2 => match execute(Command::StringGet {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Bytes { value }) => {
                 RespValue::Integer(value.map(|value| value.len() as i64).unwrap_or_default())
@@ -450,12 +450,12 @@ pub fn execute_redis_command_with_state(
         "SETRANGE" if args.len() == 4 => {
             let response = string_setrange_response(&args, &mut execute);
             if matches!(response, RespValue::Integer(_)) {
-                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(name_arg(&args[1]));
             }
             response
         }
         "APPEND" if args.len() == 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             match execute(Command::StringGet { key: key.clone() }) {
                 Ok(CommandResponse::Bytes { value }) => {
                     let mut new_value = value.unwrap_or_default();
@@ -477,14 +477,14 @@ pub fn execute_redis_command_with_state(
         "INCR" if args.len() == 2 => {
             let response = string_increment_response(&args[1], 1, &mut execute);
             if matches!(response, RespValue::Integer(_)) {
-                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(name_arg(&args[1]));
             }
             response
         }
         "DECR" if args.len() == 2 => {
             let response = string_increment_response(&args[1], -1, &mut execute);
             if matches!(response, RespValue::Integer(_)) {
-                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(name_arg(&args[1]));
             }
             response
         }
@@ -492,7 +492,7 @@ pub fn execute_redis_command_with_state(
             Ok(increment) => {
                 let response = string_increment_response(&args[1], increment, &mut execute);
                 if matches!(response, RespValue::Integer(_)) {
-                    state.keyspace.insert(string_arg(&args[1]));
+                    state.keyspace.insert(name_arg(&args[1]));
                 }
                 response
             }
@@ -501,7 +501,7 @@ pub fn execute_redis_command_with_state(
         "INCRBYFLOAT" if args.len() == 3 => {
             let response = string_increment_float_response(&args[1], &args[2], &mut execute);
             if matches!(response, RespValue::Bulk(Some(_))) {
-                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(name_arg(&args[1]));
             }
             response
         }
@@ -513,7 +513,7 @@ pub fn execute_redis_command_with_state(
                 Some(neg) => {
                     let response = string_increment_response(&args[1], neg, &mut execute);
                     if matches!(response, RespValue::Integer(_)) {
-                        state.keyspace.insert(string_arg(&args[1]));
+                        state.keyspace.insert(name_arg(&args[1]));
                     }
                     response
                 }
@@ -525,15 +525,15 @@ pub fn execute_redis_command_with_state(
             let response =
                 hash_increment_float_response(&args[1], &args[2], &args[3], &mut execute);
             if matches!(response, RespValue::Bulk(Some(_))) {
-                state.keyspace.insert(string_arg(&args[1]));
+                state.keyspace.insert(name_arg(&args[1]));
             }
             response
         }
         "HSET" if args.len() >= 4 && args.len() % 2 == 0 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let mut added = 0;
             for pair in args[2..].chunks(2) {
-                let field = string_arg(&pair[0]);
+                let field = name_arg(&pair[0]);
                 match execute(Command::HashGet {
                     key: key.clone(),
                     field,
@@ -546,7 +546,7 @@ pub fn execute_redis_command_with_state(
             }
             let entries = args[2..]
                 .chunks(2)
-                .map(|pair| (string_arg(&pair[0]), pair[1].clone()))
+                .map(|pair| (name_arg(&pair[0]), pair[1].clone()))
                 .collect();
             match execute(Command::HashMultiSet {
                 key: key.clone(),
@@ -560,17 +560,17 @@ pub fn execute_redis_command_with_state(
             }
         }
         "HSETNX" if args.len() == 4 => match execute(Command::HashGet {
-            key: string_arg(&args[1]),
-            field: string_arg(&args[2]),
+            key: name_arg(&args[1]),
+            field: name_arg(&args[2]),
         }) {
             Ok(CommandResponse::Bytes { value: Some(_) }) => RespValue::Integer(0),
             Ok(CommandResponse::Bytes { value: None }) => match execute(Command::HashSet {
-                key: string_arg(&args[1]),
-                field: string_arg(&args[2]),
+                key: name_arg(&args[1]),
+                field: name_arg(&args[2]),
                 value: args[3].clone(),
             }) {
                 Ok(_) => {
-                    state.keyspace.insert(string_arg(&args[1]));
+                    state.keyspace.insert(name_arg(&args[1]));
                     RespValue::Integer(1)
                 }
                 Err(err) => RespValue::Error(format!("ERR {err}")),
@@ -581,26 +581,26 @@ pub fn execute_redis_command_with_state(
         "HMSET" if args.len() >= 4 && args.len() % 2 == 0 => {
             let entries = args[2..]
                 .chunks(2)
-                .map(|pair| (string_arg(&pair[0]), pair[1].clone()))
+                .map(|pair| (name_arg(&pair[0]), pair[1].clone()))
                 .collect();
             match execute(Command::HashMultiSet {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 entries,
             }) {
                 Ok(_) => {
-                    state.keyspace.insert(string_arg(&args[1]));
+                    state.keyspace.insert(name_arg(&args[1]));
                     RespValue::SimpleString("OK".to_string())
                 }
                 Err(err) => RespValue::Error(format!("ERR {err}")),
             }
         }
         "HGET" if args.len() == 3 => bytes_response(execute(Command::HashGet {
-            key: string_arg(&args[1]),
-            field: string_arg(&args[2]),
+            key: name_arg(&args[1]),
+            field: name_arg(&args[2]),
         })),
         "HSTRLEN" if args.len() == 3 => match execute(Command::HashGet {
-            key: string_arg(&args[1]),
-            field: string_arg(&args[2]),
+            key: name_arg(&args[1]),
+            field: name_arg(&args[2]),
         }) {
             Ok(CommandResponse::Bytes { value }) => {
                 RespValue::Integer(value.map(|value| value.len() as i64).unwrap_or_default())
@@ -609,8 +609,8 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "HEXISTS" if args.len() == 3 => match execute(Command::HashGet {
-            key: string_arg(&args[1]),
-            field: string_arg(&args[2]),
+            key: name_arg(&args[1]),
+            field: name_arg(&args[2]),
         }) {
             Ok(CommandResponse::Bytes { value }) => RespValue::Integer(i64::from(value.is_some())),
             Ok(_) => RespValue::Error("ERR invalid hget response".to_string()),
@@ -618,8 +618,8 @@ pub fn execute_redis_command_with_state(
         },
         "HMGET" if args.len() >= 3 => {
             match execute(Command::HashMultiGet {
-                key: string_arg(&args[1]),
-                fields: args.iter().skip(2).map(|field| string_arg(field)).collect(),
+                key: name_arg(&args[1]),
+                fields: args.iter().skip(2).map(|field| name_arg(field)).collect(),
             }) {
                 Ok(CommandResponse::Values { values }) => {
                     RespValue::Array(values.into_iter().map(RespValue::Bulk).collect())
@@ -630,21 +630,21 @@ pub fn execute_redis_command_with_state(
         }
         "HINCRBY" if args.len() == 4 => match parse_i64_arg(&args[3], "increment") {
             Ok(increment) => integer_response(execute(Command::HashIncrBy {
-                key: string_arg(&args[1]),
-                field: string_arg(&args[2]),
+                key: name_arg(&args[1]),
+                field: name_arg(&args[2]),
                 increment,
             })),
             Err(err) => RespValue::Error(err),
         },
         "HGETALL" if args.len() == 2 => match execute(Command::HashGetAll {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::HashEntries { entries }) => RespValue::Array(
                 entries
                     .into_iter()
                     .flat_map(|(field, value)| {
                         vec![
-                            RespValue::Bulk(Some(field.into_bytes())),
+                            RespValue::Bulk(Some(decode_or_raw(&field))),
                             RespValue::Bulk(Some(value)),
                         ]
                     })
@@ -654,19 +654,19 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "HKEYS" if args.len() == 2 => match execute(Command::HashGetAll {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::HashEntries { entries }) => RespValue::Array(
                 entries
                     .into_iter()
-                    .map(|(field, _)| RespValue::Bulk(Some(field.into_bytes())))
+                    .map(|(field, _)| RespValue::Bulk(Some(decode_or_raw(&field))))
                     .collect(),
             ),
             Ok(_) => RespValue::Error("ERR invalid hkeys response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "HVALS" if args.len() == 2 => match execute(Command::HashGetAll {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::HashEntries { entries }) => RespValue::Array(
                 entries
@@ -687,16 +687,16 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             match execute(Command::HashGetAll {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
             }) {
                 Ok(CommandResponse::HashEntries { mut entries }) => {
                     entries.sort_by(|left, right| left.0.cmp(&right.0));
                     let values = entries
                         .into_iter()
-                        .filter(|(field, _)| redis_pattern_matches(&pattern, field))
+                        .filter(|(field, _)| redis_pattern_matches_bytes(pattern.as_bytes(), &decode_or_raw(field)))
                         .flat_map(|(field, value)| {
                             [
-                                RespValue::Bulk(Some(field.into_bytes())),
+                                RespValue::Bulk(Some(decode_or_raw(&field))),
                                 RespValue::Bulk(Some(value)),
                             ]
                         })
@@ -708,13 +708,13 @@ pub fn execute_redis_command_with_state(
             }
         }
         "HLEN" if args.len() == 2 => integer_response(execute(Command::HashLen {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         })),
         "HDEL" if args.len() >= 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let mut removed = 0;
             for field in args.iter().skip(2) {
-                let field = string_arg(field);
+                let field = name_arg(field);
                 match execute(Command::HashGet {
                     key: key.clone(),
                     field: field.clone(),
@@ -736,7 +736,7 @@ pub fn execute_redis_command_with_state(
             RespValue::Integer(removed)
         }
         "ZADD" if args.len() >= 4 && args.len() % 2 == 0 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let mut pairs = Vec::new();
             for chunk in args[2..].chunks(2) {
                 match parse_score_arg(&chunk[0]) {
@@ -765,7 +765,7 @@ pub fn execute_redis_command_with_state(
             RespValue::Integer(added)
         }
         "ZSCORE" if args.len() == 3 => match execute(Command::ZSetScore {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
             member: args[2].clone(),
         }) {
             Ok(CommandResponse::Bytes { value }) => RespValue::Bulk(value),
@@ -773,7 +773,7 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "ZREM" if args.len() >= 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let mut removed = 0;
             for member in args.iter().skip(2) {
                 match execute(Command::ZSetRemove {
@@ -788,7 +788,7 @@ pub fn execute_redis_command_with_state(
             RespValue::Integer(removed)
         }
         "ZCARD" if args.len() == 2 => match execute(Command::ZSetCard {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
             Ok(_) => RespValue::Error("ERR invalid zcard response".to_string()),
@@ -798,7 +798,7 @@ pub fn execute_redis_command_with_state(
             let mut rev = command == "ZREVRANGE";
             let mut withscores = false;
             for flag in args.iter().skip(4) {
-                match string_arg(flag).to_ascii_uppercase().as_str() {
+                match text_arg(flag).to_ascii_uppercase().as_str() {
                     "WITHSCORES" => withscores = true,
                     "REV" if command == "ZRANGE" => rev = true,
                     other => {
@@ -811,7 +811,7 @@ pub fn execute_redis_command_with_state(
                 parse_i64_arg(&args[3], "stop"),
             ) {
                 (Ok(start), Ok(stop)) => match execute(Command::ZSetRange {
-                    key: string_arg(&args[1]),
+                    key: name_arg(&args[1]),
                     start,
                     stop,
                     rev,
@@ -829,11 +829,11 @@ pub fn execute_redis_command_with_state(
             let rev = command == "ZREVRANGEBYSCORE";
             let withscores = match args.get(4) {
                 None => false,
-                Some(flag) if string_arg(flag).eq_ignore_ascii_case("WITHSCORES") => true,
+                Some(flag) if name_arg(flag).eq_ignore_ascii_case("WITHSCORES") => true,
                 Some(other) => {
                     return RespValue::Error(format!(
                         "ERR syntax error near {}",
-                        string_arg(other)
+                        name_arg(other)
                     ))
                 }
             };
@@ -846,7 +846,7 @@ pub fn execute_redis_command_with_state(
             match (parse_score_arg(low_raw), parse_score_arg(high_raw)) {
                 (Ok((min, min_exclusive, _)), Ok((max, max_exclusive, _))) => {
                     match execute(Command::ZSetRangeByScore {
-                        key: string_arg(&args[1]),
+                        key: name_arg(&args[1]),
                         min,
                         max,
                         min_exclusive,
@@ -867,7 +867,7 @@ pub fn execute_redis_command_with_state(
         }
         "ZINCRBY" if args.len() == 4 => match parse_score_arg(&args[2]) {
             Ok((increment, false, _)) => match execute(Command::ZSetIncrBy {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 member: args[3].clone(),
                 increment,
             }) {
@@ -882,7 +882,7 @@ pub fn execute_redis_command_with_state(
             match (parse_score_arg(&args[2]), parse_score_arg(&args[3])) {
                 (Ok((min, min_exclusive, _)), Ok((max, max_exclusive, _))) => {
                     match execute(Command::ZSetRangeByScore {
-                        key: string_arg(&args[1]),
+                        key: name_arg(&args[1]),
                         min,
                         max,
                         min_exclusive,
@@ -913,7 +913,7 @@ pub fn execute_redis_command_with_state(
                 },
             };
             match execute(Command::ZSetPop {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 min: command == "ZPOPMIN",
                 count,
             }) {
@@ -928,7 +928,7 @@ pub fn execute_redis_command_with_state(
             }
         }
         "ZRANK" | "ZREVRANK" if args.len() == 3 => match execute(Command::ZSetRank {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
             member: args[2].clone(),
             rev: command == "ZREVRANK",
         }) {
@@ -943,7 +943,7 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "LPUSH" | "RPUSH" if args.len() >= 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let left = command == "LPUSH";
             let mut length = 0;
             for member in args.iter().skip(2) {
@@ -961,7 +961,7 @@ pub fn execute_redis_command_with_state(
             RespValue::Integer(length)
         }
         "LPOP" | "RPOP" if args.len() == 2 || args.len() == 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let left = command == "LPOP";
             // Optional COUNT arg: answers an array (possibly empty) instead of a bulk/nil.
             let count = if args.len() == 3 {
@@ -1006,7 +1006,7 @@ pub fn execute_redis_command_with_state(
                 parse_i64_arg(&args[3], "stop"),
             ) {
                 (Ok(start), Ok(stop)) => match execute(Command::ListRange {
-                    key: string_arg(&args[1]),
+                    key: name_arg(&args[1]),
                     start,
                     stop,
                 }) {
@@ -1023,14 +1023,14 @@ pub fn execute_redis_command_with_state(
             }
         }
         "LLEN" if args.len() == 2 => match execute(Command::ListLen {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
             Ok(_) => RespValue::Error("ERR invalid llen response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "SADD" if args.len() >= 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
                 Ok(CommandResponse::Members { members }) => {
                     members.into_iter().collect::<HashSet<_>>()
@@ -1054,7 +1054,7 @@ pub fn execute_redis_command_with_state(
             RespValue::Integer(added)
         }
         "SMEMBERS" if args.len() == 2 => match execute(Command::SetMembers {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Members { members }) => RespValue::Array(
                 members
@@ -1066,14 +1066,14 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "SCARD" if args.len() == 2 => match execute(Command::SetMembers {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Members { members }) => RespValue::Integer(members.len() as i64),
             Ok(_) => RespValue::Error("ERR invalid smembers response".to_string()),
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "SISMEMBER" if args.len() == 3 => match execute(Command::SetMembers {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Members { members }) => {
                 RespValue::Integer(i64::from(members.iter().any(|member| member == &args[2])))
@@ -1082,7 +1082,7 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "SMISMEMBER" if args.len() >= 3 => match execute(Command::SetMembers {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Members { members }) => {
                 let existing = members.into_iter().collect::<HashSet<_>>();
@@ -1097,7 +1097,7 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(format!("ERR {err}")),
         },
         "SREM" if args.len() >= 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let mut existing = match execute(Command::SetMembers { key: key.clone() }) {
                 Ok(CommandResponse::Members { members }) => {
                     members.into_iter().collect::<HashSet<_>>()
@@ -1120,7 +1120,7 @@ pub fn execute_redis_command_with_state(
             RespValue::Integer(removed)
         }
         "SPOP" if args.len() == 2 || args.len() == 3 => {
-            let key = string_arg(&args[1]);
+            let key = name_arg(&args[1]);
             let count = match args.get(2) {
                 Some(value) => match parse_usize(value, "count") {
                     Ok(value) => Some(value),
@@ -1162,7 +1162,7 @@ pub fn execute_redis_command_with_state(
                 },
                 None => None,
             };
-            match sorted_set_members(&string_arg(&args[1]), &mut execute) {
+            match sorted_set_members(&name_arg(&args[1]), &mut execute) {
                 Ok(members) => match count {
                     Some(count) if count >= 0 => RespValue::Array(
                         members
@@ -1202,13 +1202,13 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
-            match sorted_set_members(&string_arg(&args[1]), &mut execute) {
+            match sorted_set_members(&name_arg(&args[1]), &mut execute) {
                 Ok(members) => redis_cursor_block_response(
                     cursor,
                     count,
                     members
                         .into_iter()
-                        .filter(|member| redis_pattern_matches(&pattern, &string_arg(member)))
+                        .filter(|member| redis_pattern_matches_bytes(pattern.as_bytes(), member))
                         .map(|member| RespValue::Bulk(Some(member)))
                         .collect(),
                 ),
@@ -1216,8 +1216,8 @@ pub fn execute_redis_command_with_state(
             }
         }
         "SMOVE" if args.len() == 4 => {
-            let source = string_arg(&args[1]);
-            let destination = string_arg(&args[2]);
+            let source = name_arg(&args[1]);
+            let destination = name_arg(&args[2]);
             let member = args[3].clone();
             match execute(Command::SetMembers {
                 key: source.clone(),
@@ -1256,7 +1256,7 @@ pub fn execute_redis_command_with_state(
         "SCAN" if args.len() >= 2 => redis_scan_response(&args, state, &mut execute),
         "FAPPEND" if args.len() == 4 => match parse_u64(&args[2], "timestamp_ms") {
             Ok(timestamp_ms) => status_ok(execute(Command::FeatureAppend {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 points: vec![FeaturePoint {
                     timestamp_ms,
                     value: args[3].clone(),
@@ -1274,7 +1274,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             integer_response(execute(Command::FeatureAppendWithPolicy {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 points: vec![FeaturePoint {
                     timestamp_ms,
                     value: args[3].clone(),
@@ -1299,7 +1299,7 @@ pub fn execute_redis_command_with_state(
                 None => None,
             };
             match execute(Command::FeatureQuery {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
                 count,
@@ -1332,17 +1332,17 @@ pub fn execute_redis_command_with_state(
                 Ok(value) => Some(value),
                 Err(err) => return RespValue::Error(err),
             };
-            let op = match parse_feature_filter_op(&string_arg(&args[6])) {
+            let op = match parse_feature_filter_op(&text_arg(&args[6])) {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(err),
             };
             match execute(Command::FeatureQueryFiltered {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
                 count,
                 filters: vec![FeatureFilter {
-                    field: string_arg(&args[5]),
+                    field: name_arg(&args[5]),
                     op,
                     value: match parse_u64(&args[7], "filter_value") {
                         Ok(value) => value,
@@ -1381,14 +1381,14 @@ pub fn execute_redis_command_with_state(
             let raw_filters = args
                 .iter()
                 .skip(5)
-                .map(|filter| string_arg(filter))
+                .map(|filter| name_arg(filter))
                 .collect::<Vec<_>>();
             let filters = match parse_feature_filters(raw_filters.iter().map(String::as_str)) {
                 Ok(value) => value,
                 Err(err) => return RespValue::Error(format!("ERR {err}")),
             };
             match execute(Command::FeatureQueryFiltered {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
                 count,
@@ -1423,7 +1423,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             status_ok(execute(Command::FeatureReplace {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
                 points: vec![FeaturePoint {
@@ -1433,7 +1433,7 @@ pub fn execute_redis_command_with_state(
             }))
         }
         "FDEL" if args.len() == 2 => status_ok(execute(Command::FeatureDelete {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         })),
         "FAGG" if args.len() == 5 || args.len() == 6 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
@@ -1452,10 +1452,10 @@ pub fn execute_redis_command_with_state(
                 None => None,
             };
             match execute(Command::FeatureAggQuery {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
-                aggregator: string_arg(&args[4]),
+                aggregator: text_arg(&args[4]),
                 count,
             }) {
                 Ok(CommandResponse::Aggregate { value }) => RespValue::Integer(value),
@@ -1465,7 +1465,7 @@ pub fn execute_redis_command_with_state(
         }
         "SEENCHECK" if args.len() == 4 => match parse_i64_arg(&args[3], "window_ms") {
             Ok(window_ms) if window_ms >= 0 => match execute(Command::SeenCheck {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 member: args[2].clone(),
                 window_ms: window_ms as u64,
             }) {
@@ -1477,7 +1477,7 @@ pub fn execute_redis_command_with_state(
             Err(err) => RespValue::Error(err),
         },
         "SEENCARD" if args.len() == 2 => match execute(Command::SeenCard {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         }) {
             Ok(CommandResponse::Integer { value }) => RespValue::Integer(value),
             Ok(_) => RespValue::Error("ERR invalid seencard response".to_string()),
@@ -1495,7 +1495,7 @@ pub fn execute_redis_command_with_state(
                 parse(&args[4], "refill_per_sec"),
             ) {
                 (Ok(tokens), Ok(capacity), Ok(refill_per_sec)) => {
-                    let key = string_arg(&args[1]);
+                    let key = name_arg(&args[1]);
                     let command_value = if command == "BUCKETTAKE" {
                         Command::BucketTake {
                             key,
@@ -1537,7 +1537,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             status_ok(execute(Command::ControlStateIncrement {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 timestamp_ms,
                 amount,
             }))
@@ -1560,7 +1560,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             status_ok(execute(Command::ControlStateIncrementWithOptions {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 timestamp_ms,
                 amount,
                 precision_ms: Some(precision_ms),
@@ -1586,9 +1586,9 @@ pub fn execute_redis_command_with_state(
                 (None, None)
             };
             let key = if command == "HCHANGE" {
-                control_state_family_key_for_resp(ControlStateFamily::Counter, &string_arg(&args[1]))
+                control_state_family_key_for_resp(ControlStateFamily::Counter, &name_arg(&args[1]))
             } else {
-                string_arg(&args[1])
+                name_arg(&args[1])
             };
             status_ok(execute(Command::ControlStateChangeAdd {
                 key,
@@ -1608,7 +1608,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             integer_response(execute(Command::ControlStateCount {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
             }))
@@ -1623,10 +1623,10 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             integer_response(execute(Command::ControlStateQuery {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
-                aggregator: string_arg(&args[4]),
+                aggregator: text_arg(&args[4]),
             }))
         }
         "CONTROLSTATEDETAIL" if args.len() == 4 || args.len() == 5 => {
@@ -1646,7 +1646,7 @@ pub fn execute_redis_command_with_state(
                 None => None,
             };
             feature_points_response(execute(Command::ControlStateDetail {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
                 count,
@@ -1663,7 +1663,7 @@ pub fn execute_redis_command_with_state(
             };
             status_ok(execute(Command::ControlStateSet {
                 family: control_state_family_for_command(&command),
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 timestamp_ms,
                 amount,
             }))
@@ -1683,7 +1683,7 @@ pub fn execute_redis_command_with_state(
                 value => return RespValue::Error(format!("ERR unsupported selection_type: {value}")),
             };
             status_ok(execute(Command::ControlStateSelectionSet {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 value: args[2].clone(),
                 occur_time_ms,
                 ttl_ms,
@@ -1691,7 +1691,7 @@ pub fn execute_redis_command_with_state(
             }))
         }
         "FOLQUERY" | "SELECTIONQUERY" if args.len() == 2 => bytes_response(execute(Command::ControlStateSelectionQuery {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
         })),
         "HQUERY" | "COUNTERQUERY" | "CPCQUERY" | "DISTINCTQUERY" | "FOLQUERY" | "SELECTIONQUERY" if args.len() == 5 => {
             let start_ms = match parse_u64(&args[2], "start_ms") {
@@ -1704,10 +1704,10 @@ pub fn execute_redis_command_with_state(
             };
             integer_response(execute(Command::ControlStateFamilyQuery {
                 family: control_state_family_for_command(&command),
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
-                aggregator: string_arg(&args[4]),
+                aggregator: text_arg(&args[4]),
             }))
         }
         "HSETANDGET" | "COUNTERSETANDGET" | "CPCSETANDGET" | "DISTINCTSETANDGET" | "FOLSETANDGET" | "SELECTIONSETANDGET" if args.len() == 7 => {
@@ -1729,12 +1729,12 @@ pub fn execute_redis_command_with_state(
             };
             integer_response(execute(Command::ControlStateSetAndGet {
                 family: control_state_family_for_command(&command),
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 timestamp_ms,
                 amount,
                 start_ms,
                 end_ms,
-                aggregator: string_arg(&args[6]),
+                aggregator: text_arg(&args[6]),
             }))
         }
         "HSETANDGETOPT" | "COUNTERSETANDGETOPT" | "CPCSETANDGETOPT" | "DISTINCTSETANDGETOPT" | "FOLSETANDGETOPT" | "SELECTIONSETANDGETOPT" if args.len() == 10 => {
@@ -1765,7 +1765,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             let uuid = {
-                let raw = string_arg(&args[9]);
+                let raw = text_arg(&args[9]);
                 if raw.is_empty() {
                     None
                 } else {
@@ -1774,19 +1774,19 @@ pub fn execute_redis_command_with_state(
             };
             integer_response(execute(Command::ControlStateSetAndGetWithOptions {
                 family: control_state_family_for_command(&command),
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 timestamp_ms,
                 amount,
                 start_ms,
                 end_ms,
-                aggregator: string_arg(&args[6]),
+                aggregator: text_arg(&args[6]),
                 precision_ms,
                 ttl_ms,
                 uuid,
             }))
         }
         "CONTROLSTATEMANAGER" if args.len() == 2 => hash_entries_response(execute(Command::ControlStateManager {
-            key: string_arg(&args[1]),
+            key: name_arg(&args[1]),
             op_type: None,
             field_list: Vec::new(),
             start_offset: String::new(),
@@ -1796,18 +1796,18 @@ pub fn execute_redis_command_with_state(
         // MANAGER op conformance: CONTROLSTATEMANAGER key op_type is_distinct [start_offset end_offset | field...]
         // op_type: QUERY(2)|FIELD_LIST(5)|FIELD_COUNT(6)|ALL_DATA_VALUE(7). is_distinct: 0/1.
         "CONTROLSTATEMANAGER" if args.len() >= 4 => {
-            let op_type = string_arg(&args[2]);
-            let is_distinct = matches!(string_arg(&args[3]).as_str(), "1" | "cpc" | "true");
+            let op_type = text_arg(&args[2]);
+            let is_distinct = matches!(name_arg(&args[3]).as_str(), "1" | "cpc" | "true");
             let op = op_type.trim().to_ascii_uppercase();
             let is_field_list = op == "5" || op == "FIELD_LIST";
             let is_query = op == "2" || op == "QUERY";
             let (field_list, start_offset, end_offset) = if is_field_list && args.len() >= 6 {
-                (Vec::new(), string_arg(&args[4]), string_arg(&args[5]))
+                (Vec::new(), name_arg(&args[4]), name_arg(&args[5]))
             } else if is_query {
                 (
                     args[4..]
                         .iter()
-                        .map(|arg| (string_arg(arg), String::new()))
+                        .map(|arg| (name_arg(arg), String::new()))
                         .collect(),
                     String::new(),
                     String::new(),
@@ -1816,7 +1816,7 @@ pub fn execute_redis_command_with_state(
                 (Vec::new(), String::new(), String::new())
             };
             hash_entries_response(execute(Command::ControlStateManager {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 op_type: Some(op_type),
                 field_list,
                 start_offset,
@@ -1834,7 +1834,7 @@ pub fn execute_redis_command_with_state(
                 Err(err) => return RespValue::Error(err),
             };
             hash_entries_response(execute(Command::ControlStateDebug {
-                key: string_arg(&args[1]),
+                key: name_arg(&args[1]),
                 start_ms,
                 end_ms,
             }))

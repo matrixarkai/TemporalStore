@@ -79,9 +79,9 @@ fn blocks_and_entries(engine: &TemporalEngine, object_key: &str) -> (usize, usiz
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || block.deleted
+                || block.deleted()
             {
                 continue;
             }

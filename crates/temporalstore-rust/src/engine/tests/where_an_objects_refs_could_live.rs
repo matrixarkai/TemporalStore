@@ -190,12 +190,7 @@ fn the_index_encoder_refuses_a_page_whose_refs_are_not_in_its_own_field() {
     use std::sync::Arc;
 
     let object_key: Arc<str> = Arc::from("an-object");
-    let entry = BlockIndex {
-        model_id: StoredModelKind::String,
-        address: Default::default(),
-        dirty: false,
-        deleted: false,
-    };
+    let entry = BlockIndex::new(StoredModelKind::String, Default::default(), false, false);
 
     let placed = || -> CoreIndex {
         let mut node = BucketNode::default();

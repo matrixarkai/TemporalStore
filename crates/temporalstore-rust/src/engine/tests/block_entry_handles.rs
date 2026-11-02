@@ -336,7 +336,7 @@ fn blocks_per_object(engine: &TemporalEngine) -> BlocksPerObject {
             bucket_components.insert(None::<&str>);
             let slot = per_object
                 .entry((
-                    block.model_id,
+                    block.model_id(),
                     named.at(bucket.routing_bucket, *handle).to_string(),
                 ))
                 .or_default();
@@ -1080,11 +1080,19 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     let flags = size_of::<bool>() + size_of::<bool>();
 
     println!("\n=== BlockIndex, field by field ===");
-    println!("  offsets: address@{} model_id@{} dirty@{} deleted@{}",
+    println!("  offsets: address@{} (model_id, dirty and deleted are packed bits, not fields)",
         offset_of!(BlockIndex, address),
-        offset_of!(BlockIndex, model_id),
-        offset_of!(BlockIndex, dirty),
-        offset_of!(BlockIndex, deleted),
+        // THE THREE PACKED FIELDS HAVE NO OFFSETS, WHICH IS WHY THEY ARE NOT LISTED.
+        //
+        // `model_id`, `dirty` and `deleted` are five bits and two bits inside the flag word
+        // `ElementEntry` lends its holder. An offset can only speak about a FIELD, so their rows
+        // are gone rather than moved -- and `offset_of!` of a field that does not exist does not
+        // compile, which is how this table refused the leg that packed them.
+        //
+        // What replaces the check for them is the same kind of claim one level down: that their
+        // bits do not collide and fit the eight borrowed, asserted beside the packed accessors in
+        // `engine_storage_state.rs`. A bit budget is to a packed field what an offset is to a
+        // declared one.
     );
     println!(
         "  address {address} + model_id {model} + flags {flags} = {} bytes of field in {} B \
@@ -1094,6 +1102,10 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
         size_of::<BlockIndex>()
     );
 
+    // THE SPELLING IS STILL ONE BYTE WIDE AND IS NO LONGER A FIELD, which are two different
+    // claims and only the first is about `StoredModelKind`. `model` is now what the spelling
+    // WOULD cost if the entry still declared it -- the same idiom this file already uses for
+    // `object_key_when_it_was_a_field`.
     assert_eq!(1, model, "the model spelling is supposed to be one byte");
     assert_eq!(8, align_of::<BlockIndex>());
 
@@ -1105,7 +1117,19 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // proves the arithmetic rather than the comment -- if the field set and this sum part, it
     // fails here.
     let eight_aligned = address;
-    let tail = model + flags;
+    // THE TAIL IS ZERO NOW, AND THAT IS THE WHOLE OF THE STEP.
+    //
+    // `model_id`, `dirty` and `deleted` are not fields any more: five bits and two bits inside
+    // the flag word `ElementEntry` lends its holder. So the entry IS its eight-aligned group and
+    // there is nothing to round. It is written as a literal 0 rather than as `model + flags`
+    // because those two are now counterfactuals -- what the fields WOULD have cost -- and adding
+    // a counterfactual into a reconstruction of the live type is how a decomposition stops
+    // describing it.
+    //
+    // AND ZERO IS THE ONLY VALUE THAT PAYS. The tail was 3 B inside an 8 B rounding, so a
+    // partial narrowing bought exactly nothing: `round_up(1, 8)` and `round_up(3, 8)` are both
+    // 8. That is why all three moved at once instead of the cheapest one.
+    let tail = 0usize;
     let round_up = |value: usize, to: usize| (value + to - 1) / to * to;
     assert_eq!(
         eight_aligned + round_up(tail, align_of::<BlockIndex>()),
@@ -1126,7 +1150,12 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // RECONSTRUCTION above needed no change, which is the point of reconstructing rather than
     // totalling, and this literal did. `cargo check` cannot see an `assert_eq!` in a test body,
     // so the pin compiled clean and only running it said so.
-    assert_eq!(24, size_of::<BlockIndex>());
+    // SIXTEEN NOW, AND ASSERTED AS THE EMPTINESS RATHER THAN THE NUMBER: the entry is exactly its
+    // address, because the model spelling and the two flags became bits in the flag word the
+    // address lends its holder. A bare `== 16` would pass if a tail came back on a leg where the
+    // address also shrank by eight.
+    assert_eq!(size_of::<ElementEntry>(), size_of::<BlockIndex>());
+    assert_eq!(16, size_of::<BlockIndex>());
     // THE `!= 39` AND `!= 41` PARTNERS THAT STOOD HERE ARE GONE. They could distinguish no
     // case. The `assert_eq!` above panics first, so on the only change that could ever have
     // fired them they were never reached -- and an assertion that never ran reads exactly like
@@ -1158,8 +1187,32 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // The relation is asserted in the NEGATIVE so this cannot silently become true again: an entry
     // back inside the block index would put the width of the whole structure back on every bucket.
     let arm = size_of::<crate::engine::state::BlockIndexMap>();
+    // THE PROXY COLLIDED, SO THE CONTROL IS THE ENUM NOW.
+    //
+    // This read `assert_ne!(8 + size_of::<BlockIndex>(), arm)`: an inline arm would be a handle
+    // plus a whole entry, so the map must not be that wide. It held while the entry was 24
+    // (8 + 24 = 32 against the map's 24) and COLLIDES at 16 (8 + 16 = 24 against 24). The
+    // yardstick became the thing it was measuring, and the arm failed without a defect.
+    //
+    // An inline map is an ENUM, not a pair. Its `One(u64, BlockIndex)` arm carries 24 bytes with
+    // no spare value for a tag -- only the `Vec` arm has a pointer niche, and `One` cannot share
+    // it -- so a genuinely inline map costs 32 against the shipped 24. Measured off a declaration
+    // rather than computed, so the next width change moves both sides instead of erasing the gap.
+    #[allow(dead_code)]
+    enum MirrorInlineArm {
+        Empty,
+        One(u64, BlockIndex),
+        Many(Vec<(u64, BlockIndex)>),
+    }
+    let inline_arm = size_of::<MirrorInlineArm>();
+    assert!(
+        inline_arm > 8 + size_of::<BlockIndex>(),
+        "the inline mirror is {inline_arm} B, not more than the {} B pair it must carry plus a \
+         tag; it is not a faithful stand-in and the assertion below would be vacuous",
+        8 + size_of::<BlockIndex>()
+    );
     assert_ne!(
-        8 + size_of::<BlockIndex>(),
+        inline_arm,
         arm,
         "the block index is {arm} B, which is a handle plus a whole entry again -- the inline arm has \
          come back and every bucket in the map is paying the entry's width whether it holds one block \
@@ -1181,8 +1234,30 @@ fn every_byte_of_the_entry_is_accounted_for_by_the_fields_it_holds() {
     // single-block arm would have to carry -- so that is what is asserted. At 24 against 32 it
     // holds, and it would hold at any entry width, which is the point: this is a claim about the
     // representation and not an accident of two numbers meeting.
+    // THE COMMENT ABOVE CLAIMS THIS IS NOT AN ACCIDENT OF TWO NUMBERS MEETING. IT WAS.
+    //
+    // It reads: "At 24 against 32 it holds, and it would hold at any entry width, which is the
+    // point: this is a claim about the representation and not an accident of two numbers
+    // meeting." It does NOT hold at any entry width. `u64 + BlockIndex` was 8 + 24 = 32; at
+    // 8 + 16 = 24 the comparison is 24 < 24 and fails, with the representation unchanged. The
+    // disclaimer was the thing that needed checking.
+    //
+    // An inline map is an ENUM. Its `One(u64, BlockIndex)` arm has no niche for the tag -- the
+    // `Vec` arm owns the only pointer niche -- so it costs a whole word more than the pair, 32
+    // against 24, at any entry width. Measured off a declaration, the claim really is about the
+    // representation.
+    #[allow(dead_code)]
+    enum InlineMapShape {
+        Empty,
+        One(u64, BlockIndex),
+        Many(Vec<(u64, BlockIndex)>),
+    }
     assert!(
-        arm < size_of::<u64>() + size_of::<BlockIndex>(),
+        size_of::<InlineMapShape>() > size_of::<u64>() + size_of::<BlockIndex>(),
+        "the inline mirror must cost more than the bare pair or it carries no tag"
+    );
+    assert!(
+        arm < size_of::<InlineMapShape>(),
         "the block index is {arm} B and a handle plus one entry is {} B; the index must be too \
          narrow to hold one inline, or the entry is back in the node",
         size_of::<u64>() + size_of::<BlockIndex>()
@@ -1227,7 +1302,7 @@ fn resolving_a_model_spelling_examines_no_block_index_entries() {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_, block) in bucket.block_index.iter() {
             // The resolution under test, folded so it cannot be optimised away.
-            let spelling = block.model_id.as_str();
+            let spelling = block.model_id().as_str();
             folded = folded
                 .wrapping_mul(31)
                 .wrapping_add(spelling.len() as u64)
@@ -1380,7 +1455,7 @@ fn block_triples(engine: &TemporalEngine) -> Vec<(String, String, Option<String>
             .into_iter()
             .map(|(_, _, object_key, block)| {
             (
-                block.model_id.as_str().to_string(),
+                block.model_id().as_str().to_string(),
                 object_key.to_string(),
                 None::<String>,
                 block.address.block_slab_id(),
@@ -1426,7 +1501,7 @@ fn a_stored_spelling_with_no_row_is_refused_by_name_at_the_decode() {
     // its kind slot is replaced, so this plants exactly the defect and nothing else.
     let block = sample_entry();
     let real_key = crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &block);
-    let planted = real_key.replacen(block.model_id.as_str(), "not_a_model_kind", 1);
+    let planted = real_key.replacen(block.model_id().as_str(), "not_a_model_kind", 1);
     assert_ne!(
         real_key, planted,
         "the plant matched nothing in {real_key:?}, so the refusal below would be about the real \
@@ -1460,12 +1535,12 @@ const SAMPLE_ENTRY_OBJECT_KEY: &str = "k";
 
 /// One block entry, for the tests that mutate a single field of a real encoding.
 fn sample_entry() -> BlockIndex {
-    BlockIndex {
-        model_id: StoredModelKind::String,
-        address: crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),
-        dirty: true,
-        deleted: false,
-    }
+    BlockIndex::new(
+        StoredModelKind::String,
+        crate::block_store::ElementEntry::from_parts(1, 2, 4, Some(5), Some(6)),
+        true,
+        false,
+    )
 }
 
 /// AND THE SAME REFUSAL AT THE WRITE, which is the other direction a spelling arrives from.
@@ -1564,7 +1639,7 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
         let sample = sample_entry();
         let real_key =
             crate::engine::state::block_index_written_key(SAMPLE_ENTRY_OBJECT_KEY, &sample);
-        let key = real_key.replacen(sample.model_id.as_str(), spelling, 1);
+        let key = real_key.replacen(sample.model_id().as_str(), spelling, 1);
         assert_ne!(
             real_key, key,
             "the retired spelling was not planted into {real_key:?}, so this arm is about the \
@@ -1585,11 +1660,11 @@ fn a_retired_spelling_still_decodes_into_a_block_entry() {
         );
         assert_eq!(
             spelling,
-            block.model_id.as_str(),
+            block.model_id().as_str(),
             "the spelling came back as something else"
         );
         assert!(
-            block.model_id.is_retired(),
+            block.model_id().is_retired(),
             "{spelling:?} is declared under `retired` and the entry does not say so"
         );
         seen += 1;
@@ -1696,7 +1771,7 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
         ("positional", &positional_key, &from_positional),
     ] {
         assert_eq!(
-            block.model_id, decoded.model_id,
+            block.model_id(), decoded.model_id(),
             "{label}: the spelling did not survive the round trip"
         );
         // THE IDENTITY IS COMPARED AGAINST WHAT THE FIXTURE NAMED, not against a copy on the
@@ -1708,8 +1783,8 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
             "{label}: object_key moved across the round trip"
         );
         // No component on the entry, so there is no such field to survive a round trip.
-        assert_eq!(block.dirty, decoded.dirty, "{label}: dirty moved");
-        assert_eq!(block.deleted, decoded.deleted, "{label}: deleted moved");
+        assert_eq!(block.dirty(), decoded.dirty(), "{label}: dirty moved");
+        assert_eq!(block.deleted(), decoded.deleted(), "{label}: deleted moved");
         // NOT a stored field any more, and this is the ONLY address property this loop checks --
         // there is no `address` comparison beside it -- so the accessor comparison still has
         // content: it asserts the block id's PRESENCE survives both encoders.
@@ -1750,6 +1825,11 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     let after_the_address_narrowing = 64usize;
     let after_shedding_the_object_id = 56usize;
     let after_shedding_the_element_name = 40usize;
+    // A SIXTH MILESTONE. The identity's departure took 40 -> 24; the tail packing takes 24 -> 16.
+    // Written as its own link for the reason the fifth was: this chain's comment records that the
+    // final link was once asked to carry two changes at once and failed "naming the right
+    // mechanism for the wrong arithmetic". Folding 8 into the identity's 16 would repeat that.
+    let after_shedding_the_identity = 24usize;
     let in_memory_after = std::mem::size_of::<BlockIndex>();
     let spelling_wire_delta = 0i64;
     println!(
@@ -1792,10 +1872,27 @@ fn the_model_spelling_did_not_move_on_the_wire_and_the_entry_lost_three_steps_in
     // attributable to one change.
     assert_eq!(
         16,
-        after_shedding_the_element_name - in_memory_after,
+        after_shedding_the_element_name - after_shedding_the_identity,
         "the entry giving up its own copy of the IDENTITY is supposed to be sixteen bytes -- a fat \
          pointer leaving the eight-aligned group whole, the same shape of step as the element name \
          and for the same reason. Two of these in two legs is what took the entry from 56 to 24."
+    );
+
+    // AND THE SIXTH LINK: THE TAIL REACHING ZERO, WORTH EIGHT.
+    //
+    // `model_id`, `dirty` and `deleted` left the field set for five bits and two bits inside the
+    // flag word the address already carries. Eight and not three, because three bytes of tail sat
+    // inside an eight-byte rounding: `round_up(1, 8)` and `round_up(3, 8)` are both 8, so no
+    // partial narrowing of this tail was worth anything and the only width that pays is zero.
+    //
+    // It is the first link in this chain that moves no field OUT of the structure -- the three
+    // terms are still readable, through accessors, from bits the entry already owned. So the
+    // mechanism is different from every link above it, which is why it gets its own.
+    assert_eq!(
+        8,
+        after_shedding_the_identity - in_memory_after,
+        "emptying the entry's tail is supposed to be eight bytes: three bytes of field inside an \
+         eight-byte rounding, so the whole word comes back or nothing does"
     );
     assert_eq!(
         0, spelling_wire_delta,
@@ -1929,12 +2026,26 @@ mod tail_layout {
     /// two flags; this mirror carries three, because the measurement it serves is "three bools
     /// against one flag byte" and that is the comparison the whole table is about. It is named so
     /// a reader does not take the third as a claim about the live field set.
+    // ONE FIELD, BECAUSE TODAY'S ENTRY HAS ONE. `model`, `dirty` and `deleted` are bits in the
+    // flag word the address lends its holder, and `log_backed` was already derived from the
+    // address rather than stored. A mirror that keeps declaring them is naming a shape the
+    // engine does not have -- which is exactly what the assertion below this struct exists to
+    // catch, and it caught it twice before (72 against 64, then 64 against 56).
     pub(super) struct F0 {
+        pub(super) address: [u64; 2],
+    }
+    /// THE LOOSE SHAPE THIS ROW IS ACTUALLY ABOUT, split out from `F0`.
+    ///
+    /// `F0` has to equal the LIVE entry, which is now one field, and the row below has to
+    /// compare a THREE-BOOL tail against a packed one. Those became different types the moment
+    /// the tail was packed, and using one mirror for both made `loose - packed` underflow:
+    /// 16 - 24 panics in debug and WRAPS in release, which is how release reported a pass.
+    #[allow(dead_code)]
+    pub(super) struct F0Loose {
         pub(super) address: [u64; 2],
         pub(super) model: u8,
         pub(super) dirty: bool,
         pub(super) deleted: bool,
-        pub(super) log_backed: bool,
     }
     pub(super) struct F1 {
         pub(super) address: [u64; 2],
@@ -1984,7 +2095,7 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
     let rows = [
         ("names, 32 B address (before)", size_of::<A0>(), size_of::<A1>()),
         ("names, 24 B address (before)", size_of::<E0>(), size_of::<E1>()),
-        ("names, 16 B address (TODAY)", size_of::<F0>(), size_of::<F1>()),
+        ("names, 16 B address (HISTORICAL)", size_of::<F0Loose>(), size_of::<F1>()),
         ("component ordinal, 32 B", size_of::<B0>(), size_of::<B1>()),
         ("both names ordinals, 32 B", size_of::<C0>(), size_of::<C1>()),
         ("both names + 24 B address", size_of::<D0>(), size_of::<D1>()),
@@ -1994,6 +2105,14 @@ fn packing_the_flag_bytes_is_worth_nothing_alone_and_a_step_in_combination() {
     let mut crossings = 0usize;
     let mut no_ops = 0usize;
     for (label, loose, packed) in rows {
+        // NAMED, NOT WRAPPED. `loose - packed` underflowed once a mirror stopped describing the
+        // loose shape, and the two profiles disagree about that: debug panics, release wraps to
+        // a huge usize that reads like a measurement. Asserting the order first makes the
+        // failure say WHICH row inverted.
+        assert!(
+            loose >= packed,
+            "row {label}: the loose shape is {loose} B and the packed one {packed} B, so the"
+        );
         let saved = loose - packed;
         println!("  {label:<28} {loose:>10} {packed:>10} {saved:>8}");
         if saved == 0 {
@@ -2146,7 +2265,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
     let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in bucket.block_index.iter() {
-            if block.deleted {
+            if block.deleted() {
                 deleted_blocks += 1;
                 continue;
             }
@@ -2154,7 +2273,7 @@ fn an_empty_value_still_carries_a_length_so_the_zero_length_tombstone_is_open() 
                 zero_length_live += 1;
                 println!(
                     "  live zero-length block: model={} key={}",
-                    block.model_id.as_str(),
+                    block.model_id().as_str(),
                     named.at(bucket.routing_bucket, *handle)
                 );
             } else {

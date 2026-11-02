@@ -668,7 +668,7 @@ impl TemporalEngine {
                 for key in &delta_command_keys {
                     let routing_bucket =
                         block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+                    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
                         if bucket.first_dirty_wal_sequence == 0 {
                             bucket.first_dirty_wal_sequence = batch_first_wal_sequence;
                         }
@@ -740,7 +740,7 @@ impl TemporalEngine {
                     for key in &delta_command_keys {
                         let routing_bucket =
                             block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                        if let Some(bucket) =
+                        if let Some(mut bucket) =
                             shard.bucket_index.bucket_map.get_mut(&routing_bucket)
                         {
                             if bucket.first_dirty_index_log_sequence == 0 {

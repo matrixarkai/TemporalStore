@@ -208,7 +208,7 @@ fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<Strin
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted || block.model_id.as_str() != kind {
+            if block.deleted() || block.model_id().as_str() != kind {
                 continue;
             }
             let at = (
@@ -586,7 +586,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
         let mut durable = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for block in bucket.block_index.values() {
-                if block.deleted || block.model_id.as_str() != "hash" {
+                if block.deleted() || block.model_id().as_str() != "hash" {
                     continue;
                 }
                 if crate::wal_record::is_wal_resident(block.address.block_slab_id()) {
@@ -1132,8 +1132,8 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
                         .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
                 })
                 .filter(|(routing_bucket, handle, block)| {
-                    !block.deleted
-                        && block.model_id.as_str() == "hash"
+                    !block.deleted()
+                        && block.model_id().as_str() == "hash"
                         && &**named.at(*routing_bucket, *handle) == key
                 })
                 .count();

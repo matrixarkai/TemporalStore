@@ -1706,7 +1706,7 @@ fn the_bucket_a_block_is_filed_in_is_the_bucket_its_key_computes_within_one_rang
         for (routing_bucket, _handle, object_key, block) in
             super::blocks_with_identity(&shard.bucket_index)
         {
-            if block.deleted {
+            if block.deleted() {
                 continue;
             }
             verdict.blocks += 1;
@@ -2070,7 +2070,7 @@ fn a_pre_stamp_store_built_narrow_is_adopted_onto_a_range_that_cannot_compute_it
     let mut blocks = 0usize;
     let mut computed_elsewhere = 0usize;
     for (routing_bucket, _handle, object_key, block) in &placed {
-        if block.deleted {
+        if block.deleted() {
             continue;
         }
         blocks += 1;

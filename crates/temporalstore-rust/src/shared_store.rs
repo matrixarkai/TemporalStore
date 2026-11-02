@@ -781,7 +781,7 @@ where
             Err(err) => return Err(err.into()),
         };
         if let Some(bytes) = &current_bytes {
-            let current: ShardLease = serde_json::from_slice(bytes)?;
+            let current: ShardLease = decode_shard_lease(bytes)?;
             if current.load_version >= load_version {
                 return Err(SharedStoreReplicationError::StaleOwnership {
                     shard_id,
@@ -794,7 +794,7 @@ where
             load_version,
             owner: owner.into(),
         };
-        let new_bytes = Bytes::from(serde_json::to_vec(&lease)?);
+        let new_bytes = Bytes::from(encode_shard_lease(&lease)?);
         match self
             .object_store
             .compare_and_swap(&key, current_bytes, new_bytes)
@@ -825,7 +825,7 @@ where
             }
             Err(err) => return Err(err.into()),
         };
-        let current: ShardLease = serde_json::from_slice(&bytes)?;
+        let current: ShardLease = decode_shard_lease(&bytes)?;
         if current.load_version != load_version {
             return Err(SharedStoreReplicationError::StoreConditionFailed {
                 detail: format!(
@@ -1173,7 +1173,7 @@ where
         self.object_store
             .put(
                 &self.index_routing_range_key(shard_id),
-                Bytes::from(serde_json::to_vec(
+                Bytes::from(encode_routing_range_stamp(
                     &crate::engine::routing_range_stamp::RoutingRangeStamp {
                         start_routing_bucket,
                         end_routing_bucket,
@@ -1340,7 +1340,7 @@ where
                 what: "no routing-range object beside the published index".to_string(),
             })?;
         let routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp =
-            serde_json::from_slice(&range_bytes).map_err(|err| {
+            decode_routing_range_stamp(&range_bytes).map_err(|err| {
                 SharedStoreReplicationError::RoutingRangeMissing {
                     shard_id,
                     what: format!("the routing-range object did not decode: {err}"),
@@ -1729,7 +1729,7 @@ where
             .get(&self.replay_cursor_key(shard_id))
             .await
         {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Ok(bytes) => Ok(Some(decode_replay_cursor(&bytes)?)),
             Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(err) => Err(err.into()),
         }
@@ -1756,7 +1756,7 @@ where
         self.object_store
             .put(
                 &self.replay_cursor_key(cursor.shard_id),
-                Bytes::from(serde_json::to_vec_pretty(cursor)?),
+                Bytes::from(encode_replay_cursor(cursor)?),
             )
             .await?;
         Ok(())
@@ -2969,6 +2969,153 @@ fn is_bucket_dump_manifest_key(key: &str) -> bool {
     key.ends_with(".json") || key.ends_with(SHARED_STORE_BINARY_OBJECT_SUFFIX)
 }
 
+/// THE FIRST BYTE OF A BINARY SHARED-STORE OBJECT.
+///
+/// ONE BYTE IS ENOUGH, AND THIS ONE IS CHOSEN SO IT CANNOT BE MISTAKEN. A bare JSON object on
+/// disk starts with `{` (0x7B), optionally behind JSON whitespace (space, tab, CR, LF). 0x01 is
+/// none of those and is not valid JSON in any position, so a reader can decide the shape from
+/// `bytes[0]` with no chance of reading a JSON document as protobuf or the reverse.
+///
+/// It is NOT a codec/shape pair like the index log's container byte. There is one binary shape per
+/// object here and no compression arm, so a second field would encode a choice nobody is making.
+pub(crate) const SHARED_OBJECT_CONTAINER_PROTOBUF: u8 = 0x01;
+
+/// The binary body of an object, or `None` when the bytes are the JSON shape.
+///
+/// THE ONLY PLACE THAT DECIDES. Every reader below calls this, so the two shapes cannot be told
+/// apart two different ways -- which is how a sniffing reader usually goes wrong.
+fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
+    match bytes.split_first() {
+        Some((&SHARED_OBJECT_CONTAINER_PROTOBUF, body)) => Some(body),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lets a test exercise the binary writer without touching process-wide environment, which
+    /// would race every other test in the binary.
+    static PROTOBUF_OBJECTS_ON_THIS_THREAD: std::cell::Cell<bool> =
+        std::cell::Cell::new(false);
+}
+
+#[cfg(test)]
+pub(crate) fn write_shared_objects_as_protobuf_on_this_thread(on: bool) {
+    PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.set(on));
+}
+
+/// WHETHER THE WRITER TAKES THE BINARY ARM. OFF BY DEFAULT, AND THE READER DOES NOT CONSULT IT.
+///
+/// Reading the binary shape is UNCONDITIONAL; only writing it is gated. That asymmetry is the
+/// point: a store written by a node with this on must stay readable by a node with it off, so the
+/// reader cannot be allowed to depend on the flag. Same arrangement the index log uses.
+fn write_shared_objects_as_protobuf() -> bool {
+    #[cfg(test)]
+    if PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.get()) {
+        return true;
+    }
+    matches!(
+        std::env::var("TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn encode_shared_object_protobuf<M: Message>(message: &M) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + message.encoded_len());
+    out.push(SHARED_OBJECT_CONTAINER_PROTOBUF);
+    message
+        .encode(&mut out)
+        .expect("a Vec sink cannot run out of room");
+    out
+}
+
+// ---- the shard lease
+
+fn decode_shard_lease(bytes: &[u8]) -> Result<ShardLease, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreShardLease::decode(body)?;
+        return Ok(ShardLease {
+            load_version: proto.load_version,
+            owner: proto.owner,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_shard_lease(lease: &ShardLease) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+            load_version: lease.load_version,
+            owner: lease.owner.clone(),
+        }));
+    }
+    Ok(serde_json::to_vec(lease)?)
+}
+
+// ---- the replay cursor
+
+fn decode_replay_cursor(
+    bytes: &[u8],
+) -> Result<SharedStoreReplayCursor, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreReplayCursorObject::decode(body)?;
+        return Ok(SharedStoreReplayCursor {
+            shard_id: proto.shard_id,
+            last_wal_index: proto.last_wal_index,
+            last_replay_time_ms: proto.last_replay_time_ms,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_replay_cursor(
+    cursor: &SharedStoreReplayCursor,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(
+            &v1::SharedStoreReplayCursorObject {
+                shard_id: cursor.shard_id,
+                last_wal_index: cursor.last_wal_index,
+                last_replay_time_ms: cursor.last_replay_time_ms,
+            },
+        ));
+    }
+    Ok(serde_json::to_vec_pretty(cursor)?)
+}
+
+// ---- the routing-range stamp published beside the index
+
+pub(crate) fn decode_routing_range_stamp(
+    bytes: &[u8],
+) -> Result<crate::engine::routing_range_stamp::RoutingRangeStamp, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreRoutingRangeStamp::decode(body)?;
+        return Ok(crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: proto.start_routing_bucket,
+            end_routing_bucket: proto.end_routing_bucket,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_routing_range_stamp(
+    stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(
+            &v1::SharedStoreRoutingRangeStamp {
+                start_routing_bucket: stamp.start_routing_bucket,
+                end_routing_bucket: stamp.end_routing_bucket,
+            },
+        ));
+    }
+    Ok(serde_json::to_vec(stamp)?)
+}
+
 fn parse_wal_index(key: &str) -> Option<u64> {
     key.rsplit('/')
         .next()?
@@ -3842,6 +3989,84 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             occur_time_ms: *occur_time_ms,
             ttl_ms: *ttl_ms,
             selection_type: sdk::control_state_selection_type_to_proto(*selection_type) as i32,
+        }),
+        Command::BucketTake {
+            key,
+            tokens,
+            capacity,
+            refill_per_sec,
+        } => v1::command::Kind::BucketTake(v1::BucketTake {
+            key: key.clone(),
+            tokens: *tokens,
+            capacity: *capacity,
+            refill_per_sec: *refill_per_sec,
+        }),
+        Command::CommonDelete { key } => {
+            v1::command::Kind::CommonDelete(v1::CommonDelete { key: key.clone() })
+        }
+        Command::CommonPersist { key } => {
+            v1::command::Kind::CommonPersist(v1::CommonPersist { key: key.clone() })
+        }
+        Command::FeatureDelete { key } => {
+            v1::command::Kind::FeatureDelete(v1::FeatureDelete { key: key.clone() })
+        }
+        Command::FeatureReplace {
+            key,
+            start_ms,
+            end_ms,
+            points,
+        } => v1::command::Kind::FeatureReplace(v1::FeatureReplace {
+            key: key.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            points: points
+                .iter()
+                .map(|point| v1::FeaturePoint {
+                    timestamp_ms: point.timestamp_ms,
+                    value: point.value.clone(),
+                })
+                .collect(),
+        }),
+        Command::FeatureAppendWithPolicy { key, points, policy } => {
+            v1::command::Kind::FeatureAppendWithPolicy(v1::FeatureAppendWithPolicy {
+                key: key.clone(),
+                points: points
+                    .iter()
+                    .map(|point| v1::FeaturePoint {
+                        timestamp_ms: point.timestamp_ms,
+                        value: point.value.clone(),
+                    })
+                    .collect(),
+                policy: sdk::feature_write_policy_to_proto(*policy) as i32,
+            })
+        }
+        Command::SeenCheck {
+            key,
+            member,
+            window_ms,
+        } => v1::command::Kind::SeenCheck(v1::SeenCheck {
+            key: key.clone(),
+            member: member.clone(),
+            window_ms: *window_ms,
+        }),
+        Command::StringSetConditional {
+            key,
+            value,
+            ttl_ms,
+            condition,
+            return_old,
+            keep_ttl,
+        } => v1::command::Kind::StringSetConditional(v1::StringSetConditional {
+            key: key.clone(),
+            value: value.clone(),
+            // Explicit presence, carried straight across: absent is "discard the deadline" and
+            // Some(0) is "arm it for zero", which are different requests.
+            ttl_ms: *ttl_ms,
+            condition: sdk::string_set_condition_to_proto(*condition) as i32,
+            return_old: *return_old,
+            // A plain bool, so absent decodes to false -- the behaviour records written before
+            // this field existed were recorded with.
+            keep_ttl: *keep_ttl,
         }),
         _ => return None,
     };
@@ -7366,6 +7591,138 @@ mod tests {
         assert_eq!(found[0].checkpoint_wal_index, 1);
     }
 
+    /// EVERY WIDENED READER ACCEPTS BOTH SHAPES, AND THE CONTAINER BYTE CANNOT BE JSON.
+    ///
+    /// This is the whole point of a reader-first change, so it is asserted directly rather than
+    /// inferred from a round trip: for each object, the JSON bytes a shipped build writes TODAY
+    /// must still decode, and the binary bytes a later build will write must decode too. If only
+    /// the second held, every store already on disk would be unreadable -- silently, because the
+    /// reader would simply fail to parse and the caller would see an error it has no remedy for.
+    #[test]
+    fn the_widened_object_readers_accept_both_shapes() {
+        // DENOMINATOR FIRST: three objects, and the loop below is written per object rather than
+        // generically, so this count is what says none of them was quietly dropped.
+        let mut checked = 0;
+
+        // ---- the shard lease
+        let lease = ShardLease {
+            load_version: 7,
+            owner: "owner-a".to_string(),
+        };
+        let json = serde_json::to_vec(&lease).unwrap();
+        assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
+        assert_eq!(decode_shard_lease(&json).unwrap(), lease, "JSON lease must still decode");
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+            load_version: lease.load_version,
+            owner: lease.owner.clone(),
+        });
+        assert_eq!(binary[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+        assert_eq!(decode_shard_lease(&binary).unwrap(), lease, "binary lease must decode");
+        checked += 1;
+
+        // ---- the replay cursor
+        let cursor = SharedStoreReplayCursor {
+            shard_id: 3,
+            last_wal_index: 41,
+            last_replay_time_ms: 1234,
+        };
+        let json = serde_json::to_vec_pretty(&cursor).unwrap();
+        assert_eq!(decode_replay_cursor(&json).unwrap(), cursor, "JSON cursor must still decode");
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreReplayCursorObject {
+            shard_id: cursor.shard_id,
+            last_wal_index: cursor.last_wal_index,
+            last_replay_time_ms: cursor.last_replay_time_ms,
+        });
+        assert_eq!(decode_replay_cursor(&binary).unwrap(), cursor, "binary cursor must decode");
+        checked += 1;
+
+        // ---- the routing-range stamp
+        let stamp = crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 16,
+            end_routing_bucket: 31,
+        };
+        let json = serde_json::to_vec(&stamp).unwrap();
+        assert_eq!(
+            decode_routing_range_stamp(&json).unwrap(),
+            stamp,
+            "JSON stamp must still decode"
+        );
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreRoutingRangeStamp {
+            start_routing_bucket: stamp.start_routing_bucket,
+            end_routing_bucket: stamp.end_routing_bucket,
+        });
+        assert_eq!(
+            decode_routing_range_stamp(&binary).unwrap(),
+            stamp,
+            "binary stamp must decode"
+        );
+        checked += 1;
+
+        assert_eq!(checked, 3, "three objects are widened in this change");
+
+        // The container byte is the whole basis of the sniff, so pin what it is NOT. A JSON
+        // document can begin with whitespace before its brace; none of those is 0x01.
+        assert_ne!(SHARED_OBJECT_CONTAINER_PROTOBUF, b'{');
+        for ws in [b' ', b'\t', b'\r', b'\n'] {
+            assert_ne!(
+                SHARED_OBJECT_CONTAINER_PROTOBUF, ws,
+                "the container byte must not be JSON whitespace"
+            );
+        }
+        assert!(
+            shared_object_protobuf_body(b"{\"load_version\":1,\"owner\":\"x\"}").is_none(),
+            "a JSON object must not be taken for the binary shape"
+        );
+        assert!(
+            shared_object_protobuf_body(b"").is_none(),
+            "an empty object is not the binary shape"
+        );
+    }
+
+    /// THE WRITER IS STILL JSON BY DEFAULT, AND THE READER DOES NOT CONSULT THE GATE.
+    ///
+    /// The asymmetry is the safety property: a store written with the flag ON must stay readable
+    /// by a node with it OFF. A test that only flipped the flag and round-tripped would pass even
+    /// if the reader had been made conditional, which is the mistake that breaks existing stores.
+    #[tokio::test]
+    async fn the_object_writer_is_json_until_asked_and_the_reader_never_cares() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        // ---- default: JSON on disk. The key comes from the SAME helper the writer uses, so this
+        // cannot drift from the real layout the way a hand-spelled prefix would.
+        replicator.acquire_shard_lease(1, 1, "owner-a").await.unwrap();
+        let lease_key = replicator.lease_key(1);
+        let default_bytes = store.get(&lease_key).await.unwrap();
+        assert_eq!(
+            default_bytes[0], b'{',
+            "the shipped default must still write the JSON shape"
+        );
+        // And it validates, through the widened reader.
+        replicator.validate_shard_lease(1, 1).await.unwrap();
+
+        // ---- asked: binary on disk, and still readable.
+        write_shared_objects_as_protobuf_on_this_thread(true);
+        replicator.acquire_shard_lease(1, 2, "owner-b").await.unwrap();
+        let binary_bytes = store.get(&lease_key).await.unwrap();
+        assert_eq!(
+            binary_bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "with the gate on, the lease must be written in the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&binary_bytes).is_err(),
+            "the binary object must not parse as JSON, or the container byte proves nothing"
+        );
+
+        // THE LOAD-BEARING ASSERTION: turn the writer back OFF and read the binary object. A
+        // reader that consulted the gate would fail here, which is exactly the regression that
+        // would make a mixed-version cluster unable to read its own store.
+        write_shared_objects_as_protobuf_on_this_thread(false);
+        replicator.validate_shard_lease(1, 2).await.unwrap();
+        // A stale fence is still refused, so the widening did not weaken the check itself.
+        assert!(replicator.validate_shard_lease(1, 1).await.is_err());
+    }
+
     #[tokio::test]
     async fn restoring_bucket_dump_manifests_leaves_a_local_one_alone() {
         // A local manifest is at least as current as a published one, and it is the file that
@@ -10674,9 +11031,6 @@ mod tests {
 /// covering one requires deleting its name here, in the same change. So the work left is visible
 /// in the tree instead of in a plan, and progress cannot be undone quietly.
 const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
-    "BucketTake",
-    "CommonDelete",
-    "CommonPersist",
     "ContextCompressEvents",
     "ContextMarkEmbeddingDirty",
     "ContextMarkSummaryDirty",
@@ -10695,11 +11049,6 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "ContextWriteExtractedEvent",
     "ContextWriteIndexRef",
     "ContextWritePackAudit",
-    "FeatureAppendWithPolicy",
-    "FeatureDelete",
-    "FeatureReplace",
-    "SeenCheck",
-    "StringSetConditional",
 ];
 
 /// THE NINE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
@@ -10950,6 +11299,186 @@ fn an_unknown_control_state_tag_is_refused_rather_than_defaulted() {
         sdk::control_state_selection_type_from_proto(2).expect("Last must decode"),
         crate::types::ControlStateSelectionType::Last
     );
+}
+
+/// THE EIGHT WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// A mapping is not a format: `encode_wal_proto_frame` chooses the arm, so each case is checked
+/// three ways -- the frame declares protobuf, the payload does NOT parse as JSON, and the command
+/// returns field for field.
+///
+/// THE TWO PRESENCE RULES ARE THE POINT OF THIS BATCH, and they differ on purpose:
+///   * `ttl_ms` has explicit presence, so `None` (discard the deadline) and `Some(0)` (arm zero)
+///     stay different. Both appear below.
+///   * `keep_ttl` does NOT, because absent must mean `false` -- the behaviour every record
+///     written before that field existed was recorded with. A `true` and a `false` case appear
+///     below so a mapping that dropped the field could not pass.
+/// Every enum-carrying case names a DIFFERENT tag, so a mapping that collapsed them onto one
+/// value could not pass either.
+#[test]
+fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip() {
+    use crate::types::{FeaturePoint, FeatureWritePolicy, StringSetCondition};
+
+    let point = |timestamp_ms: u64, value: &[u8]| FeaturePoint {
+        timestamp_ms,
+        value: value.to_vec(),
+    };
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "BucketTake",
+            Command::BucketTake {
+                key: "k".into(),
+                tokens: 1.5,
+                capacity: 10.0,
+                refill_per_sec: 0.25,
+            },
+        ),
+        ("CommonDelete", Command::CommonDelete { key: "k".into() }),
+        ("CommonPersist", Command::CommonPersist { key: "k".into() }),
+        ("FeatureDelete", Command::FeatureDelete { key: "k".into() }),
+        (
+            "FeatureReplace",
+            Command::FeatureReplace {
+                key: "k".into(),
+                start_ms: 1,
+                end_ms: 2,
+                points: vec![point(1, b"a"), point(2, b"")],
+            },
+        ),
+        (
+            "FeatureAppendWithPolicy (Block)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: vec![point(3, b"c")],
+                policy: FeatureWritePolicy::Block,
+            },
+        ),
+        (
+            "FeatureAppendWithPolicy (InsertIfAbsent)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: Vec::new(),
+                policy: FeatureWritePolicy::InsertIfAbsent,
+            },
+        ),
+        (
+            "SeenCheck",
+            Command::SeenCheck {
+                key: "k".into(),
+                member: b"m".to_vec(),
+                window_ms: 60_000,
+            },
+        ),
+        (
+            "StringSetConditional (ttl None, keep_ttl true)",
+            Command::StringSetConditional {
+                key: "k".into(),
+                value: b"v".to_vec(),
+                // None is "discard the deadline", and keep_ttl true is the third outcome.
+                ttl_ms: None,
+                condition: StringSetCondition::IfNotExists,
+                return_old: true,
+                keep_ttl: true,
+            },
+        ),
+        (
+            "StringSetConditional (ttl Some(0), keep_ttl false)",
+            Command::StringSetConditional {
+                key: "k".into(),
+                value: Vec::new(),
+                // Some(0) must NOT come back as None: a zero a caller sent is a value.
+                ttl_ms: Some(0),
+                condition: StringSetCondition::IfExists,
+                return_old: false,
+                keep_ttl: false,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: ten cases over the eight commands this batch mapped -- two of them
+    // appear twice because their enum tag and their presence rules are what could break.
+    assert_eq!(cases.len(), 10, "ten cases over the eight commands this batch mapped");
+
+    for (name, command) in cases {
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+/// AN UNKNOWN CONDITION OR POLICY TAG IS REFUSED, NOT DEFAULTED.
+///
+/// `Always` would make a create-only write overwrite somebody else's value, and `Block` and
+/// `Upsert` are opposite answers to the same question -- so a `try_from(..).unwrap_or_default()`
+/// is a silently wrong write in both cases.
+#[test]
+fn an_unknown_condition_or_policy_tag_is_refused_rather_than_defaulted() {
+    use crate::types::{FeatureWritePolicy, StringSetCondition};
+
+    // DENOMINATOR: the tags that must be ACCEPTED, so a decoder refusing everything cannot pass.
+    for (number, expected) in [
+        (1, StringSetCondition::Always),
+        (2, StringSetCondition::IfExists),
+        (3, StringSetCondition::IfNotExists),
+    ] {
+        assert_eq!(
+            sdk::string_set_condition_from_proto(number).expect("a known condition must decode"),
+            expected
+        );
+    }
+    for (number, expected) in [
+        (1, FeatureWritePolicy::Upsert),
+        (2, FeatureWritePolicy::InsertIfAbsent),
+        (3, FeatureWritePolicy::ReplaceExisting),
+        (4, FeatureWritePolicy::Block),
+    ] {
+        assert_eq!(
+            sdk::feature_write_policy_from_proto(number).expect("a known policy must decode"),
+            expected
+        );
+    }
+    for number in [0, 99, -1] {
+        assert!(
+            sdk::string_set_condition_from_proto(number).is_err(),
+            "condition {number} was accepted, so an unknown tag is being guessed at"
+        );
+        assert!(
+            sdk::feature_write_policy_from_proto(number).is_err(),
+            "policy {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
 }
 
 #[test]

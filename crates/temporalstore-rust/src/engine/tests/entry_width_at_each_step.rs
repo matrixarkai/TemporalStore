@@ -88,11 +88,12 @@ use crate::engine::storage_bucket_internals::StoredModelKind;
 /// Spelled as types rather than as a literal so that a field whose own width moves elsewhere fails
 /// here instead of leaving this file describing the old one. Every row below is this sum with
 /// terms taken away, which is what makes the differences readable as the cost of one step.
-const LIVE_FIELD_SUM: usize = size_of::<StoredModelKind>() // model_id
-    + size_of::<ElementEntry>()                            // address
-    + size_of::<bool>()                                    // dirty
-    + size_of::<bool>(); // deleted
-const _: () = assert!(LIVE_FIELD_SUM == 19);
+// ONE TERM NOW. The other three are not fields of the live entry any more: they are five bits
+// and two bits inside the flag word `ElementEntry` lends its holder. So the sum IS the address,
+// and every row below that reads as "this sum with terms taken away" is now a row about the
+// address alone.
+const LIVE_FIELD_SUM: usize = size_of::<ElementEntry>(); // address -- and nothing beside it
+const _: () = assert!(LIVE_FIELD_SUM == 16);
 
 /// STEP ZERO: the field set the live entry has, mirrored field for field and in declaration order.
 ///
@@ -107,10 +108,10 @@ const _: () = assert!(LIVE_FIELD_SUM == 19);
 /// word. The OFFSET pins below are what that bought.
 #[allow(dead_code)]
 struct StepZeroTheLiveEntry {
-    model_id: StoredModelKind,
+    // ONE FIELD. `model_id`, `dirty` and `deleted` are no longer fields of the live entry: they
+    // are five bits and two bits inside the flag word `ElementEntry` lends its holder, so the
+    // mirror cannot declare them and still mirror anything.
     address: ElementEntry,
-    dirty: bool,
-    deleted: bool,
 }
 
 /// THE POSITIVE CONTROL: the mirror measures the live entry, or every number below is about a
@@ -128,7 +129,9 @@ struct StepZeroTheLiveEntry {
 /// assertions did not notice for a whole commit.
 const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == size_of::<BlockIndex>());
 const _: () = assert!(align_of::<StepZeroTheLiveEntry>() == align_of::<BlockIndex>());
-const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == 24);
+// SIXTEEN NOW, AND THE WORD-GRANULARITY WARNING ABOVE IS WHY BOTH FORMS ARE KEPT. The relation
+// to the live entry is the claim; the literal is the arithmetic that relation currently lands on.
+const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == 16);
 
 /// THE CONTROL THAT CAN SEE THE FIELD LIST: every field at the same offset in the mirror as in the
 /// live entry.
@@ -148,25 +151,34 @@ const _: () = assert!(size_of::<StepZeroTheLiveEntry>() == 24);
 /// THE `object_key` PAIR IS GONE WITH THE FIELD, and it could not have been left behind: an
 /// `offset_of!` of a field that does not exist does not compile. That is exactly the property
 /// this list was added for after the width pins let two retired fields through.
-const _: () = assert!(
-    std::mem::offset_of!(StepZeroTheLiveEntry, model_id)
-        == std::mem::offset_of!(BlockIndex, model_id)
-);
+// AND THIS LIST DID ITS JOB BY REFUSING A CHANGE, WHICH IS WORTH RECORDING WHERE IT HAPPENED.
+//
+// The paragraph above says an `offset_of!` of a field that does not exist does not compile, and
+// names that as the property the list was added for. It is what stopped the leg that packed the
+// entry's tail: three of these four pins named fields that had become BITS, and the build
+// refused rather than passing on a width that happened to land right. The width pins above could
+// not have caught it -- 19 of field in 24 and 16 of field in 16 are different field sets, and a
+// width pin discriminates at word granularity and no finer.
+//
+// SO ONE PIN SURVIVES, AND IT IS NOT A WEAKER VERSION OF FOUR. An offset check can only speak
+// about FIELDS. The three that left are not fields any more, so there is no offset to compare --
+// not an offset that moved. What replaces the check for them is a different claim of the same
+// kind: that their bits do not collide and fit the eight the address lends, asserted beside the
+// packed accessors in `engine_storage_state.rs` as
+// `MODEL_MASK | DIRTY_BIT | DELETED_BIT == 0b0111_1111` and the three pairwise disjointness
+// pins. A bit budget is to a packed field what an offset is to a declared one.
 const _: () = assert!(
     std::mem::offset_of!(StepZeroTheLiveEntry, address) == std::mem::offset_of!(BlockIndex, address)
-);
-const _: () = assert!(
-    std::mem::offset_of!(StepZeroTheLiveEntry, dirty) == std::mem::offset_of!(BlockIndex, dirty)
-);
-const _: () = assert!(
-    std::mem::offset_of!(StepZeroTheLiveEntry, deleted) == std::mem::offset_of!(BlockIndex, deleted)
 );
 
 /// AND THE FIELD SUM, which is the half that moves when a field's own WIDTH moves rather than when
 /// the list does. Built from the live entry's field types, so a term that widens elsewhere fails
 /// here instead of leaving every decomposition below describing the old one.
-const _: () = assert!(LIVE_FIELD_SUM == 19);
-const _: () = assert!(size_of::<StepZeroTheLiveEntry>() - LIVE_FIELD_SUM == 5);
+const _: () = assert!(LIVE_FIELD_SUM == 16);
+// AND THE SLACK IS ZERO, where it was five. Nineteen rounded up to twenty-four and left five
+// bytes standing empty; sixteen is already a multiple of eight, so a field added here now
+// costs a WHOLE WORD rather than being free up to five bytes.
+const _: () = assert!(size_of::<StepZeroTheLiveEntry>() - LIVE_FIELD_SUM == 0);
 
 /// THE NEGATIVE CONTROL: the same mirror with one word added, which must NOT measure the live
 /// entry.
@@ -210,7 +222,29 @@ const _: () = assert!(size_of::<StepZeroWithOneWordTooMany>() == 32);
 // holding it has five bytes standing empty BY CONSTRUCTION. The entry had five bytes of slack at
 // forty too; what twenty-four changes is the width, not the room in it, and every field decision
 // taken here while the entry was believed to be exactly full still has to be re-priced.
-const STEP_ONE_FIELD_SUM: usize = LIVE_FIELD_SUM;
+// THE SEQUENCE STARTS FROM THE FOUR-FIELD SHAPE, WHICH THE LIVE ENTRY HAS NOW LEFT.
+//
+// This read `= LIVE_FIELD_SUM`, and the alias held for as long as the live entry WAS the
+// four-field set. It is not any more: the model spelling and the two flags were packed into the
+// flag word the address lends its holder, so the live sum is the address alone at sixteen.
+//
+// THE STEPS BELOW ARE STILL WORTH MEASURING -- they are a sequence of narrowings from the
+// four-field shape, and each difference is still the cost of one step. But their baseline is now
+// HISTORICAL, and leaving it aliased to the live entry would re-base every one of them on a shape
+// none of them describes, which is precisely how the decompositions in this file went stale
+// before: not by being wrong when written, but by being tied to a type that moved under them.
+//
+// So it is spelled out, and TIED to the live entry through the tail that left rather than left to
+// drift from it: the difference between the two sums IS the three bytes that became bits.
+const STEP_ONE_FIELD_SUM: usize = size_of::<StoredModelKind>()
+    + size_of::<ElementEntry>()
+    + size_of::<bool>()
+    + size_of::<bool>();
+const _: () = assert!(STEP_ONE_FIELD_SUM == 19);
+const _: () = assert!(
+    STEP_ONE_FIELD_SUM
+        == LIVE_FIELD_SUM + size_of::<StoredModelKind>() + size_of::<bool>() + size_of::<bool>()
+);
 
 /// STEP TWO: THE SAME FIELD SET, PACKED -- AND IT BUYS FIVE BYTES, NOT NOTHING.
 ///
@@ -262,7 +296,12 @@ struct StepTwoAUnderADeclaredOrderUnpacked {
 const _: () = assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() == 32);
 const _: () = assert!(align_of::<StepTwoAUnderADeclaredOrderUnpacked>() == 8);
 const _: () =
-    assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() - size_of::<StepZeroTheLiveEntry>() == 8);
+    // SIXTEEN, NOT EIGHT, AND THE STEP DID NOT CHANGE -- STEP ZERO DID. This mirror still
+    // declares the four-field shape with its tail; step zero no longer has one. So the
+    // difference is now the word the declared order wastes PLUS the word the packed tail
+    // returned, and reading it as a changed step cost would be reading a change in the
+    // baseline as a change in the thing measured against it.
+    assert!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>() - size_of::<StepZeroTheLiveEntry>() == 16);
 
 /// STEP THREE: THE TWO FLAGS BECOME ONE FLAG GROUP -- AND IT BUYS NOTHING.
 ///
@@ -306,7 +345,9 @@ struct StepFourTheAddressBecomesOneWord {
     deleted: bool,
 }
 
-const STEP_FOUR_FIELD_SUM: usize = LIVE_FIELD_SUM - size_of::<ElementEntry>() + size_of::<u64>();
+// FROM THE SEQUENCE'S OWN BASELINE, not from the live entry -- same reason as above.
+const STEP_FOUR_FIELD_SUM: usize =
+    STEP_ONE_FIELD_SUM - size_of::<ElementEntry>() + size_of::<u64>();
 const _: () = assert!(STEP_FOUR_FIELD_SUM == 11);
 const _: () = assert!(size_of::<StepFourTheAddressBecomesOneWord>() == 16);
 const _: () = assert!(align_of::<StepFourTheAddressBecomesOneWord>() == 8);
@@ -336,7 +377,14 @@ const _: () =
 /// block, so the handle travels with every entry and the element is what a block actually costs
 /// resident. Stated here beside the entry widths so that a width step is never reported as a
 /// footprint step without the element it lands in.
-const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
+// THE STRIDE IS 24 NOW, AND IT IS WRITTEN AS THE SUM OF ITS PARTS.
+//
+// `== 32` was a handle plus an entry that carried a three-byte tail. The tail is empty, so the
+// entry is its address and the stride is the handle plus that. Spelled as the sum because the
+// 24 is a consequence: a literal would pass if the handle widened while the entry shrank.
+const _: () =
+    assert!(size_of::<(u64, BlockIndex)>() == size_of::<u64>() + size_of::<BlockIndex>());
+const _: () = assert!(size_of::<(u64, BlockIndex)>() == 24);
 // AND THE SECOND LINE OF THIS PAIR WAS THE STEP-ONE ELEMENT, WHICH IS NOW THE FIRST. It read
 // `size_of::<(u64, StepOneTheIdentityLeaves)>() == 32` -- the element the list WOULD hold once the
 // identity left. It left: the live element is thirty-two, asserted above, and a second assertion
@@ -418,11 +466,26 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
     // Read off the live entry's own field TYPES, so a mirror that stops describing that field set
     // fails even when it rounds to the same width.
     assert_eq!(
-        19, LIVE_FIELD_SUM,
+        16, LIVE_FIELD_SUM,
         "the live entry's field sum moved; the rows above are decompositions of the old one"
     );
+    // ZERO SLACK, AND THIS EQUALITY STILL HAS TEETH -- WHICH IS NOT TRUE OF EVERY SLACK CHECK.
+    //
+    // The two sides are INDEPENDENT: the left is the live struct's width, the right is the
+    // ADDRESS's width. Add a field to `BlockIndex` and the left grows while `LIVE_FIELD_SUM`
+    // stays put, so the difference goes non-zero and this fires. Worth stating, because a sibling
+    // slack check in `blocks_per_bucket` had to be REPLACED rather than renumbered: it read
+    // `rounded_tail - tail`, and once the tail reached zero both sides derived from the same term,
+    // so round_up(0, 8) - 0 was 0 for every structure that could exist and it could not fail.
+    // Same shape on the page, opposite verdict -- the question is whether the two sides can move
+    // apart, not whether the number is small.
+    //
+    // WHAT THE ZERO MEANS: the entry is exactly its address. It had five bytes standing empty, so
+    // a u8, u16 or u32 could be added for nothing; 16 is already a multiple of 8, so the next
+    // field on this type costs a WHOLE WORD, per block. The saving this module tracks was a
+    // one-time collection of rounding waste and cannot be collected twice.
     assert_eq!(
-        5,
+        0,
         size_of::<BlockIndex>() - LIVE_FIELD_SUM,
         "the live entry's slack moved, so what the next field added here costs has moved with it"
     );
@@ -430,7 +493,10 @@ fn the_width_of_the_entry_at_each_step_toward_the_target_shape() {
     // EVERY STEP IS COMPOSED ON STEP ZERO, WHICH IS WHAT STEP ONE BECAME. Each row below is the
     // cost of that step on top of the identity having left -- and the identity has left, so that
     // base is the live entry rather than a mirror of one.
-    assert_eq!(size_of::<StepZeroTheLiveEntry>(), 24);
+    // SIXTEEN. Step zero is the LIVE entry, and the comment above says so: 'that base is the
+    // live entry rather than a mirror of one'. The steps below it are historical widths and keep
+    // their own numbers; only the base moves when the live type does.
+    assert_eq!(size_of::<StepZeroTheLiveEntry>(), 16);
     assert_eq!(size_of::<StepTwoTheSameFieldSetPacked>(), 19);
     assert_eq!(size_of::<StepTwoAUnderADeclaredOrderUnpacked>(), 32);
     assert_eq!(size_of::<StepThreeTheFlagsFoldIntoOneByte>(), 24);

@@ -217,14 +217,146 @@ and a different means of bounding the shard between points; until then the read
 figures above stand only at 5,000 entities and the question of how read latency
 moves with entity count is **not answered here**.
 
-The readback failure at 20,000 and 50,000 is a separate finding and is not
-attributed in this document: all the rows were present by the shard's own count
-and a sampled read returned nothing for entity 0, which is a correctness
-symptom rather than a latency one. It is reported rather than explained because
-the two candidate mechanisms — eviction under the cache memory budget with
-async commit, and the quadratic set write starving the batch — were not
-separated by the end of this run.
+The readback failure at 20,000 and 50,000 is **now attributed** — see "A
+correctness defect that disqualifies one option" below. Those runs had
+`track_keys_for_teardown` on against a shard configured for async commit, and
+that pair loses rows. It took four probes to get there, and the first three
+were worthless for a specific reason worth recording: each of them left
+`async_storage` at the node's default of `false` while the failing arm had
+forced it to `true`, so all three varied the wrong dimension and "not
+reproduced" meant only that they had not tested the configuration that failed.
 
+
+## Measured: serving QPS on the default write path, and what binds it
+
+**Conditions.** Release build, a freshly created shard asserted at
+`total_records = 0`, 5,000 entities, hot set 512, batch width 10, 1,200 read
+calls per cell (12,000 rows), `track_keys_for_teardown` **off** — the default,
+and the only safe setting under async commit (see below). Every cell's rows were
+read back and byte-compared before any clock started, and every cell served
+12,000/12,000. 16-core shared host, 1-minute load 6.1 falling to 4.4, one
+compiler running. Concurrency is coroutines over `online_read_async`.
+
+### Reads, 20 B of payload per row (ten int64 features)
+
+| concurrency | p50 | p99 | calls/s | rows/s |
+|---:|---:|---:|---:|---:|
+| 1 | 1,908 us | 7,146 us | 457 | 4,566 |
+| 2 | 2,230 us | 4,060 us | 799 | 7,990 |
+| **4** | 4,096 us | 8,441 us | **892** | **8,919** |
+| 8 | 9,274 us | 21,118 us | 741 | 7,408 |
+| 16 | 17,464 us | 103,411 us | 787 | 7,869 |
+
+(`async_storage=true`. The same sweep under durable commit peaks one step
+earlier — 7,964 rows/s at concurrency 2 — and its tail collapses at 16, where
+p99 reached **1,222,073 us**, 1.2 seconds.)
+
+**Throughput peaks at concurrency 4 and does not improve after it**, while p99
+grows 12x between 4 and 16. The ceiling for this payload is about **8,900
+rows/s / 890 calls/s from a single client process**, and past that point extra
+concurrency buys tail latency rather than throughput.
+
+### Reads, 1,035 B of payload per row
+
+Flatter and roughly half the throughput: 4,467 rows/s at concurrency 1, peaking
+at **5,147 rows/s** (concurrency 8, async commit) and 5,168 rows/s (concurrency
+4, durable commit). Wide rows cost about 1.7x per row against the narrow case
+at the peak.
+
+### What actually binds a read, priced apart
+
+Same batch read, same node, three payload states — absent keys transport no
+payload at all, so that cell is the envelope-and-engine floor:
+
+| cell | field slots | response | feature bytes | p50 | vs floor |
+|---|---:|---:|---:|---:|---:|
+| absent keys (**floor**) | 110 (all null) | 1,491 B | 0 | **1,026.6 us** | — |
+| 20 B/row | 110 | 2,336 B | 376 B | 1,758.4 us | +731.8 us |
+| 1,035 B/row | 60 | 38,421 B | 10,490 B | 1,631.5 us | +604.9 us |
+
+**Two things here were not what the earlier payload comparison suggested.**
+
+First, **the 1 KiB cell carries 36,930 more response bytes than the floor and
+costs LESS added latency than the 20 B cell does** (+605 us against +732 us).
+So at batch 10 the response encoding is a bandwidth cost, not the dominant
+latency cost.
+
+Second, the ordering follows the number of **field slots** fetched, not the
+bytes in them: 110 slots holding 376 B in total cost more than 60 slots holding
+10,490 B. Field count is a first-order term and payload width a second-order
+one at these sizes. A view with many narrow features is therefore the expensive
+shape, which is the opposite of the intuition a byte-count model gives.
+
+And the floor itself is the largest single component: **1,026.6 us to answer a
+ten-command batch that returns nothing at all**, about 63% of the wide-row
+read's p50 and 58% of the narrow one's. Reducing per-call and per-field
+overhead is worth more than any payload encoding at this batch width.
+
+### The response-encoding change, specified and handed over
+
+This section is a **specification, not an implementation** — the codec is owned
+elsewhere, and response encoding is a client contract on a public repository.
+
+Measured, at batch 10 and 1,035 B/row: the response is **38,421 B to deliver
+10,490 B of feature values, 3.66x**. Giving `CommandResponse::Values` the bytes
+codec that `HashMultiSet.entries` already carries on the request side would
+send those values as 13,987 B of base64, making the response about **15,478 B —
+60% fewer response bytes**. At 20 B/row the same change saves about **15%**,
+because there the envelope rather than the payload is most of the response.
+
+The latency expected from it is bounded by the +604.9 us the payload adds over
+the floor, not by the byte ratio, so it should be justified as bandwidth and
+tail relief under load rather than as p50.
+
+### Writes
+
+Reported, but **not quotable as a durability ratio**: one measurement per cell,
+and the ordering is inconsistent between payloads, which means the differences
+are inside the noise of a contended host rather than a property of the commit
+mode.
+
+| payload | async commit | durable commit |
+|---|---:|---:|
+| 20 B/row | 3,695 rows/s | 2,030 rows/s |
+| 1,035 B/row | 1,703 rows/s | 3,760 rows/s |
+
+Durable commit is faster in one row and slower in the other, which cannot both
+be true of the mechanism. A usable write figure needs repeated runs on a quiet
+host; what these do establish is the **order of magnitude: a few thousand rows
+per second per client at a batch width of 500**, with the earlier latency table
+showing durable commit costing 37% on the cold read p50.
+
+## A correctness defect that disqualifies one option, measured
+
+`track_keys_for_teardown` combined with `async_storage=true` **loses rows.**
+Release build, a freshly created shard asserted empty, 20,000 entities at batch
+width 500:
+
+* **17,500 of 20,000 rows read back empty.** Not late — empty.
+* The shard reported `total_records = 20001`, so **a record count is not
+  evidence a record has content**: `HashGetAll` on a lost row's key answered
+  with **zero fields**.
+* A 20-second pause did not bring them back, so this is loss and not a
+  visibility delay.
+* Only the last 2,500 writes — the final five batches — survived, which is the
+  shape of older dirty objects being dropped before they were persisted.
+
+It is an **interaction**, which is why it survived earlier probing: neither
+half does it alone, and three separate probes that varied only one of them
+cleared both.
+
+| `async_storage` | `track_keys_for_teardown` | rows lost of 20,000 |
+|---|---|---:|
+| false | true | 0 |
+| true | false | 0 |
+| **true** | **true** | **17,500** |
+
+The default serving path is unaffected: the flag is off by default, and async
+commit with it off lost nothing in any run. Every QPS figure above was taken
+with it off, which is also what a deployment runs. The option's own
+documentation now carries this table, and the earlier entity-count sweep's
+refusals at 20,000 and 50,000 entities are explained by it — those runs had the
+flag on.
 
 ## A note on the shard a read is answered from
 

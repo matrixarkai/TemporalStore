@@ -130,6 +130,20 @@ jobs:
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery
         run: cargo run --release --locked -p temporalstore-rust --features matrixobject --example one_append_amplification_report
+      # The scale report asserts the shape of BOTH sides -- bytes and block lookups per
+      # entry, the per-replica star write, and now what a read actually fetched. None of it
+      # ran here: the only example this job ran was the one above, so every assertion in it
+      # was decoration. It is run at a small sweep because the assertions compare rounds
+      # against each other and two sizes is enough to tell a constant from a line, while the
+      # shipped default sweep takes minutes.
+      - name: The shared store's read and write shape at scale
+        run: |
+          set -o pipefail
+          MATRIXARK_SCALE_SIZES=200,400 cargo run --release --locked -p temporalstore-rust --features matrixobject --example scale_shared_store_report | tee /tmp/scale-shape.log
+          # The report exits 0 only by reaching its own assertions; this is what catches it
+          # exiting early with nothing asserted.
+          grep -q 'Converged on every node at every size' /tmp/scale-shape.log
+          grep -q 'fetched/returned' /tmp/scale-shape.log
 
       - name: cargo build (release service binaries)
         run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
@@ -176,6 +190,14 @@ jobs:
       #     while the guard beside it, which asserts `Default`, stayed green
       #   - and those shipped values are non-zero, which the equality above cannot say on its
       #     own: if every bound went to 0 in `Default` too, both sides would agree
+      #   - the metadata log's RECOVERY PROTOCOL. The log is a SEQUENCE, so its framing carries
+      #     torn-tail recovery and not just separation: a partial record at the end is dropped
+      #     and REMOVED (left in place it splices onto the next append, which then reads as the
+      #     torn tail and is dropped on the following restart -- silently losing a write that WAS
+      #     acknowledged), while a record that does not parse with records AFTER it is a hard
+      #     error, because those were acknowledged too. Four arms, one per property, plus the
+      #     0x0A invariant: a binary payload contains newlines freely, and the reader used to
+      #     split on them.
       #   - the durable command encoding: the four guards below say which write commands reach
       #     the shared WAL as protobuf and which still reach it as JSON. They were pinned
       #     NOWHERE until now, so they ran only in the advisory step above -- and that step is
@@ -211,6 +233,15 @@ jobs:
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
             shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::an_unknown_condition_or_policy_tag_is_refused_rather_than_defaulted \
+            types::tests::a_blob_record_written_in_the_old_shape_still_decodes_to_the_same_bytes \
+            meta::tests::a_framed_record_is_consumed_by_its_length_not_by_a_newline \
+            meta::tests::the_log_reads_lines_and_framed_records_from_one_file \
+            meta::tests::every_shape_of_torn_tail_is_dropped_and_cut_back_to_a_record_boundary \
+            meta::tests::a_record_that_does_not_parse_with_records_after_it_is_still_an_error \
+            shared_store::tests::the_widened_object_readers_accept_both_shapes \
+            shared_store::tests::the_object_writer_is_json_until_asked_and_the_reader_never_cares \
             shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
             shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
             raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
@@ -240,6 +271,32 @@ jobs:
             object_store::tests::a_put_only_store_refuses_append_without_replacing_bytes \
             -- --exact --test-threads=1 2>&1 | tee /tmp/append-safety.log
           grep -q 'test result: ok. 1 passed; 0 failed' /tmp/append-safety.log
+
+      # The snapshot manifest listing decides what a shard APPEARS to hold. A manifest passed
+      # over by name produces a short list, which is a successful call, and `garbage_collect`
+      # is built on that listing -- so a snapshot it cannot see is one it can never collect.
+      # Both arms assert a COUNT, because an empty or short Vec is indistinguishable from a
+      # shard with fewer snapshots.
+      - name: Snapshot manifests are found by what they are, not their name
+        run: |
+          set -o pipefail
+          for t in \
+            snapshot_store::tests::list_snapshots_finds_a_manifest_filed_under_the_binary_suffix \
+            snapshot_store::tests::a_manifest_decodes_from_both_shapes_and_the_encoding_does_not_change_it \
+            snapshot_store::tests::an_unknown_compression_tag_is_refused_rather_than_defaulted \
+            snapshot_store::tests::a_binary_manifest_is_written_only_when_asked_and_read_without_the_gate \
+            snapshot_store::tests::a_staged_manifest_is_still_excluded_under_either_suffix ; do
+            echo "--- $t ---"
+            cargo test --release -p temporalstore-snapshot --lib "$t" \
+              -- --exact --test-threads=1 2>&1 | tee /tmp/snap-manifest.log
+            ran=$(sed -n 's/^running \([0-9]*\) tests\?$/\1/p' /tmp/snap-manifest.log | head -1)
+            if [ "$ran" != "1" ]; then
+              echo "::error::$t: expected exactly 1 test, the run reported '${ran:-none}' -- renamed, moved, or dropped from the filter"
+              exit 1
+            fi
+            grep -q 'test result: ok\. 1 passed; 0 failed' /tmp/snap-manifest.log \
+              || { echo "::error::$t did not pass"; exit 1; }
+          done
 
       # The published write and space ratios are only falsifiable at a consumer if the identities
       # tying each ratio to its published terms actually run. They are NOT covered by the suite

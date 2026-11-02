@@ -59,6 +59,10 @@ struct NodeReplay {
     index_reads: u64,
     range_bytes: u64,
     chunk_reads: u64,
+    /// Lookups that MISSED, which is the fetch count.
+    cache_misses: u64,
+    /// Bytes the cache actually pulled from the durable layer, summed over every replica.
+    fetched_bytes: u64,
     micros: u128,
 }
 
@@ -102,6 +106,41 @@ struct ReplicaWrite {
 /// That is what makes "per-entry cost does not grow" assertable here. A per-operation walk
 /// of something that grows with the log shows up as reads per entry climbing, whatever the
 /// machine is doing at the time.
+/// What the read cache FETCHED, against how often it was ASKED.
+///
+/// `chunk_reads` below is `hits + misses`: a LOOKUP count. That is the right instrument for
+/// catching a per-operation walk of the log -- two were found and removed that way -- and it is
+/// NOT read amplification, because a hit costs no fetch. Reading it as amplification is a mistake
+/// this report made easy by naming the column `block reads`, so the fetch side is now printed
+/// beside it and the two are labelled apart.
+///
+/// `uncacheable_read_bytes` is inside the sum deliberately. A read too large for the cache is
+/// fetched and never filled, so a fetch figure built from the fill counters alone would report
+/// ZERO for exactly the reads that cost the most.
+///
+/// Both figures are summed over every replica the read touched, while the `range KiB` they are
+/// compared against is one replayer's logical bytes. The replica count is therefore INSIDE the
+/// ratio, which is why it is spelled out where it is printed rather than left to be assumed.
+fn chunk_fetches(store: &MatrixObjectObjectStore) -> (u64, u64) {
+    let inner = store.inner();
+    let guard = inner.lock().expect("store lock poisoned");
+    let stats = guard.read_cache_stats();
+    // `compressed_fill_bytes` IS NOT A TERM HERE, and adding it was wrong. The fill
+    // counters are not four paths: `direct_fill` and `ec_fill` partition the fills, and
+    // `compressed_fill` is an OVERLAPPING CLASSIFICATION of those same fills -- whether the
+    // bytes just cached happen to be run-length compressible. The increment sits after the
+    // if/else, not inside it, so a compressible direct fill is counted in both and summing
+    // all four charges those bytes twice.
+    //
+    // It overstated this report's read amplification by the compressible share of the
+    // traffic: 2.441 where the figure is 2.218.
+    let fetched = stats
+        .direct_fill_bytes
+        .saturating_add(stats.ec_fill_bytes)
+        .saturating_add(stats.uncacheable_read_bytes);
+    (stats.misses, fetched)
+}
+
 fn chunk_reads(store: &MatrixObjectObjectStore) -> u64 {
     let inner = store.inner();
     let guard = inner.lock().expect("store lock poisoned");
@@ -184,7 +223,22 @@ async fn round(entries: usize, options: &StoreOptions) -> Round {
     for n in 0..REPLAYERS {
         let name = format!("node-{n}");
         let engine = node_engine(dir.path(), &name);
+        // A REPLAYER IS A DIFFERENT NODE, and a different node does not inherit the
+        // writer's page cache. Without this, all four replays are served entirely from the
+        // cache the appends just filled: measured at 1,798 lookups, ZERO misses and ZERO
+        // bytes fetched at 400 entries. Every read figure in the table below described a
+        // cache hit, the fetch columns read zero, and nothing said so -- which is how
+        // `block reads` came to be read as read amplification when it is a lookup count.
+        //
+        // Clearing makes the read side measure what the header claims it measures: a node
+        // catching up from the store.
+        {
+            let inner = store.inner();
+            let guard = inner.lock().expect("store lock poisoned");
+            guard.clear_read_cache();
+        }
         let reads_before_replay = chunk_reads(&store);
+        let (misses_before, fetched_before) = chunk_fetches(&store);
         let began = Instant::now();
         let report = rep()
             .replay_wal_strict(SHARD, 0, &engine)
@@ -192,6 +246,9 @@ async fn round(entries: usize, options: &StoreOptions) -> Round {
             .unwrap_or_else(|err| panic!("{name} replay at {entries}: {err:?}"));
         let micros = began.elapsed().as_micros();
         let replay_chunk_reads = chunk_reads(&store) - reads_before_replay;
+        let (misses_after, fetched_after) = chunk_fetches(&store);
+        let replay_cache_misses = misses_after - misses_before;
+        let replay_fetched_bytes = fetched_after - fetched_before;
 
         // ---- AND IT SERVED WHAT IT REPLAYED. A replay report is a count; this is the data.
         let probe = format!("scale-key-{:08}", entries);
@@ -213,6 +270,8 @@ async fn round(entries: usize, options: &StoreOptions) -> Round {
             index_reads: report.offset_index_reads as u64,
             range_bytes: report.range_bytes_read,
             chunk_reads: replay_chunk_reads,
+            cache_misses: replay_cache_misses,
+            fetched_bytes: replay_fetched_bytes,
             micros,
         });
     }
@@ -364,11 +423,11 @@ async fn main() {
     println!();
     println!("  THE READ SIDE, per node and never averaged");
     println!();
-    println!("    entries   node      applied   last   index reads   range KiB   block reads   replay ms   us/entry");
+    println!("    entries   node      applied   last   index reads   range KiB   lookups   misses   fetched KiB   fetched/returned   replay ms   us/entry");
     for r in &rounds {
         for n in &r.replays {
             println!(
-                "    {:>7}   {:<8}  {:>7}   {:>4}   {:>11}   {:>9.1}   {:>10}   {:>9.1}   {:>8.1}",
+                "    {:>7}   {:<8}  {:>7}   {:>4}   {:>11}   {:>9.1}   {:>7}   {:>6}   {:>11.1}   {:>16.3}   {:>9.1}   {:>8.1}",
                 r.entries,
                 n.node,
                 n.applied,
@@ -376,6 +435,13 @@ async fn main() {
                 n.index_reads,
                 n.range_bytes as f64 / 1024.0,
                 n.chunk_reads,
+                n.cache_misses,
+                n.fetched_bytes as f64 / 1024.0,
+                if n.range_bytes == 0 {
+                    0.0
+                } else {
+                    n.fetched_bytes as f64 / n.range_bytes as f64
+                },
                 n.micros as f64 / 1000.0,
                 n.micros as f64 / r.entries as f64,
             );
@@ -452,6 +518,60 @@ async fn main() {
                 replica.index, replica.discard_ranges
             );
         }
+    }
+    // AND THE FETCH COLUMNS SAY SOMETHING THE LOOKUP COLUMN CANNOT. `lookups` is
+    // `hits + misses`, so it can be flat and informative while nothing is fetched at all --
+    // which is exactly the state this read side was in before the cache was cleared.
+    for r in &rounds {
+        for n in &r.replays {
+            // Not vacuous, and this is the assertion that was FALSE before the clear: a
+            // replay that fetches nothing satisfies any ratio, and a zeroed counter looks
+            // like a fast store rather than an unwired instrument.
+            assert!(
+                n.cache_misses > 0 && n.fetched_bytes > 0,
+                "{} at {} entries fetched {} bytes over {} misses -- a replay that fetched                  nothing is being served from a cache it should not have",
+                n.node,
+                r.entries,
+                n.fetched_bytes,
+                n.cache_misses
+            );
+            // The cache is cleared before each replay, so every lookup is a first touch and
+            // must miss. This is what fails if the clear is ever removed, which would put the
+            // read columns back to describing cache hits.
+            assert_eq!(
+                n.cache_misses, n.chunk_reads,
+                "{} at {} entries served {} of its {} lookups from cache, and a replay that                  starts with a cleared cache has nothing to hit",
+                n.node,
+                r.entries,
+                n.chunk_reads - n.cache_misses,
+                n.chunk_reads
+            );
+        }
+    }
+    // AND THE BYTES FETCHED PER ENTRY DO NOT GROW WITH THE CORPUS. Checked across the whole
+    // sweep rather than at its largest point, for the same reason as the read counts above: a
+    // cost that doubles between the last two sizes and nowhere else still grows.
+    let fetched_per_entry = |r: &Round| {
+        r.replays
+            .iter()
+            .map(|n| n.fetched_bytes)
+            .max()
+            .unwrap_or(0) as f64
+            / r.entries as f64
+    };
+    let first_fetched = fetched_per_entry(&rounds[0]);
+    assert!(
+        first_fetched > 0.0,
+        "the first round fetched nothing, so the bound below would hold against anything"
+    );
+    for r in &rounds[1..] {
+        let now = fetched_per_entry(r);
+        assert!(
+            now <= first_fetched * 1.5,
+            "a replay fetched {now:.1} bytes per entry at {} entries against {first_fetched:.1}              at {}, so what a read costs grows with the corpus",
+            r.entries,
+            rounds[0].entries
+        );
     }
     // AND THE FAN-OUT IS WHAT THE WRITE TABLE CLAIMS. `physical/user` is printed as
     // blob x replica_count; this checks it against what the replicas actually hold, so the
@@ -650,6 +770,35 @@ async fn main() {
     println!("    range READ, which was always indexed, not the work of LOCATING it. Two walks were");
     println!("    found here and removed -- an append that re-read the whole object to rehash it,");
     println!("    and a replay that re-read the whole offset index once per entry.");
+    println!();
+    println!("    AND WHAT A READ FETCHED, WHICH THE LOOKUP COLUMN CANNOT SAY. `lookups` counts");
+    println!("    every time the block cache was ASKED, hits included. That catches a");
+    println!("    per-operation walk, and it is not read amplification: a hit costs no fetch.");
+    println!("    `misses` is the fetch count, `fetched KiB` the bytes pulled from the durable");
+    println!("    layer -- including reads too large for the cache, which fill nothing and were");
+    println!("    counted nowhere before.");
+    println!();
+    println!("    Those columns read ZERO until a replayer stopped inheriting the writer's cache.");
+    println!("    One store serves the appends and all four replays here, so a replay was served");
+    println!("    entirely from what the appends had just filled: every lookup a hit, nothing");
+    println!("    fetched, and no figure saying so. The cache is now cleared before each replay,");
+    println!("    because a replayer is a different node and does not have the writer's memory.");
+    println!();
+    println!("    So every lookup now misses, and `fetched/returned` is the read amplification:");
+    println!("    about 2.22, flat across the sweep. It decomposes exactly, and measured rather");
+    println!("    than assumed -- running the same sweep with one replica instead of three halves");
+    println!("    it to 1.109, so a read touches exactly two replicas:");
+    println!();
+    println!("        2.218  =  2 replicas read  x  1.109 per replica");
+    println!();
+    println!("    and that 1.109 is this entry's frame over the range asked for: 335.6 bytes");
+    println!("    fetched against 302.7 returned, which is `blob B/entry` in the write table to");
+    println!("    the byte. The replay fetches exactly what the append wrote and nothing else, so");
+    println!("    there is no waste at the block layer to remove -- the read lever is the SAME");
+    println!("    envelope the write side reports as `blob/user`, and shrinking it moves both.");
+    println!();
+    println!("    The ratio is printed undivided because dividing by the replica count would");
+    println!("    assume every replica was read, which is what a quorum read does not do.");
     println!();
     println!("    TIMINGS ARE PRINTED AND NOT ASSERTED, because a timing is a fact about this box.");
     println!("    On this run append went {:.0} -> {:.0} us/entry and replay {:.0} -> {:.0}, over a {corpus_ratio:.0}x corpus.",

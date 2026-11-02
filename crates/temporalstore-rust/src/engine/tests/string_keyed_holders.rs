@@ -156,6 +156,59 @@ fn which_string_keyed_holders_duplicate_a_key_another_map_holds() {
     record("zsets", shard.zsets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
     record("lists", shard.lists.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
 
+    // FIVE MORE OBJECT-KEYED TABLES. This walk's COVERAGE decides whether the key-character
+    // lever is worth taking, and it had been compared against the wrong denominator: the
+    // refusal that left the arena/span shape open said this covered "five structures out of 67
+    // `ModelKey`-keyed declarations". 67 is DECLARATIONS IN ONE FILE (98 tree-wide); the number
+    // that decides the lever is OBJECT-KEYED TABLES -- where one key can actually live -- of
+    // which there are about fifteen, and this walk already recorded seven. That same list named
+    // `control_state_selection`, `control_state` and `feature_values` as untouched when all
+    // three are recorded above under their domain SPELLINGS rather than their variant names.
+    // So the gap was eight, not sixty-two. These are five of that eight; the other three
+    // (`context_compression_watermark`, `expiry`, `counters`) sit behind a private
+    // `addresses_of(SideTable)` and need a `pub(super)` door first.
+    record("seen", shard.seen.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record("buckets", shard.buckets.keys().map(|k| (&**k, k.as_ptr() as usize)).collect());
+    record(
+        "control_state_changes",
+        shard.control_state_changes.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+    );
+    record(
+        "context_event_timeline",
+        shard.context_event_timeline.keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+    );
+    record(
+        "context_nodes",
+        shard.context_nodes().keys().map(|k| (&**k, k.as_ptr() as usize)).collect(),
+    );
+
+    // EACH NEWLY WALKED TABLE IS ASSERTED REACHED, WHICH IS THE WHOLE POINT. An empty table
+    // contributes no holders, so it LOWERS the measured duplication -- the direction that
+    // flatters the lever, because the refusal turned on the header being paid for at the
+    // holders the index really has. A table this fixture never populates is reported as NOT
+    // EXERCISED rather than counted as a zero.
+    let newly_walked: [(&str, usize); 5] = [
+        ("seen", shard.seen.len()),
+        ("buckets", shard.buckets.len()),
+        ("control_state_changes", shard.control_state_changes.len()),
+        ("context_event_timeline", shard.context_event_timeline.len()),
+        ("context_nodes", shard.context_nodes().len()),
+    ];
+    println!("{}", "
+=== coverage of the newly walked tables ===");
+    for (name, len) in &newly_walked {
+        println!("  {name:<24} {len:>4} keys");
+    }
+    let unexercised: Vec<&str> = newly_walked
+        .iter()
+        .filter(|(_, len)| *len == 0)
+        .map(|(name, _)| *name)
+        .collect();
+    if !unexercised.is_empty() {
+        println!("  NOT EXERCISED by this fixture: {unexercised:?}");
+        println!("  Their holder contribution is UNMEASURED, not zero.");
+    }
+
     println!();
     println!("  {KEYS} raw keys, written through six families");
     println!();

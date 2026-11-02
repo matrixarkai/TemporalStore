@@ -957,12 +957,12 @@ fn the_bound_on_each_sequence_is_the_stores_lifetime_not_the_corpus() {
 fn perturb(engine: &TemporalEngine, routing_bucket: u32, edit: impl Fn(&mut BucketNode)) {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&SEQ_SHARD).expect("shard is loaded");
-    let bucket = shard
+    let mut bucket = shard
         .bucket_index
         .bucket_map
         .get_mut(&routing_bucket)
         .expect("the bucket this test chose is in the map");
-    edit(bucket);
+    edit(&mut bucket);
 }
 
 /// THE TWO TRANSIENT CLAIMS ARE LOAD-BEARING: clearing either one alone stops the plan.
@@ -1628,7 +1628,7 @@ fn forget_dirtiness(engine: &TemporalEngine, routing_bucket: u32) -> usize {
     let mut shards = engine.shards.write().expect("engine lock poisoned");
     let shard = shards.get_mut(&SEQ_SHARD).expect("shard is loaded");
     let dropped = shard.dirty_objects.drain_buckets(&[routing_bucket]);
-    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         bucket.set_dirty(false);
     }
     dropped

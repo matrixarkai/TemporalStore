@@ -1426,13 +1426,13 @@ impl TemporalEngine {
                 out.push_str(&format!(
                     "bucket={routing_bucket} ref={block_ref_key} kind={} key={} object_id={} slab={} off={} len={} deleted={} log_backed={}
 ",
-                    block.model_id,
+                    block.model_id(),
                     object_key,
                     object_id,
                     block.address.block_slab_id(),
                     block.address.offset(),
                     block.address.length(),
-                    block.deleted,
+                    block.deleted(),
                     block.log_backed(),
                 ));
             }
@@ -2781,7 +2781,7 @@ impl TemporalEngine {
         let identities = shard.bucket_index.block_identities();
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, block) in bucket.block_index.iter() {
-                if block.deleted {
+                if block.deleted() {
                     continue;
                 }
                 // A LIVE block is named by the object lookup, which the decode fills -- so the

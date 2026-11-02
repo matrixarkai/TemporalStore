@@ -14,11 +14,188 @@ use tokio::io::AsyncWriteExt;
 use crate::metrics::SnapshotMetrics;
 use crate::object_store::{ObjectStore, ObjectStoreError};
 use crate::types::{
-    ChecksumEntry, LocalSnapshot, BlockSlabManifest, ShardId, SnapshotManifest, SnapshotRef,
-    SnapshotRetention, SnapshotStatus,
+    ChecksumEntry, CompressionFormat, LocalSnapshot, BlockSlabManifest, ShardId, SnapshotManifest,
+    SnapshotRef, SnapshotRetention, SnapshotStatus,
 };
 
+/// THE FIRST BYTE OF A BINARY MANIFEST.
+///
+/// A JSON manifest starts with `{` (0x7B), optionally behind JSON whitespace -- and this writer
+/// uses `to_vec_pretty`, so that whitespace is really in the durable bytes. 0x01 is not a brace,
+/// not whitespace and not valid JSON in any position, so one byte decides the shape.
+pub(crate) const MANIFEST_CONTAINER_PROTOBUF: u8 = 0x01;
+
+/// The binary body of a manifest, or `None` when the bytes are the JSON shape.
+///
+/// THE ONLY PLACE THAT DECIDES, so the four readers cannot tell the shapes apart four different
+/// ways.
+fn manifest_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
+    match bytes.split_first() {
+        Some((&MANIFEST_CONTAINER_PROTOBUF, body)) => Some(body),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    static PROTOBUF_MANIFEST_ON_THIS_THREAD: std::cell::Cell<bool> =
+        std::cell::Cell::new(false);
+}
+
+#[cfg(test)]
+pub(crate) fn write_manifest_as_protobuf_on_this_thread(on: bool) {
+    PROTOBUF_MANIFEST_ON_THIS_THREAD.with(|flag| flag.set(on));
+}
+
+/// WHETHER THE WRITER TAKES THE BINARY ARM. OFF BY DEFAULT, AND THE READERS DO NOT CONSULT IT.
+///
+/// Reading the binary shape is UNCONDITIONAL; only writing it is gated. A snapshot written by a
+/// node with this on must stay readable by a node with it off, so a reader that depended on the
+/// flag would strand a mixed-version cluster on its own snapshots.
+fn write_manifest_as_protobuf() -> bool {
+    #[cfg(test)]
+    if PROTOBUF_MANIFEST_ON_THIS_THREAD.with(|flag| flag.get()) {
+        return true;
+    }
+    matches!(
+        std::env::var("TS_SNAPSHOT_MANIFEST_PROTOBUF_ENABLED")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn compression_to_proto(format: CompressionFormat) -> crate::manifest_proto::CompressionFormat {
+    match format {
+        CompressionFormat::None => crate::manifest_proto::CompressionFormat::None,
+        CompressionFormat::Lz4 => crate::manifest_proto::CompressionFormat::Lz4,
+        CompressionFormat::Zstd => crate::manifest_proto::CompressionFormat::Zstd,
+    }
+}
+
+/// `None` is a real choice here, so UNSPECIFIED is refused rather than read as "no compression".
+/// Defaulting it would hand a reader uncompressed bytes for a snapshot a newer build compressed.
+fn compression_from_proto(value: i32) -> Result<CompressionFormat, SnapshotStoreError> {
+    match crate::manifest_proto::CompressionFormat::try_from(value) {
+        Ok(crate::manifest_proto::CompressionFormat::None) => Ok(CompressionFormat::None),
+        Ok(crate::manifest_proto::CompressionFormat::Lz4) => Ok(CompressionFormat::Lz4),
+        Ok(crate::manifest_proto::CompressionFormat::Zstd) => Ok(CompressionFormat::Zstd),
+        Ok(crate::manifest_proto::CompressionFormat::Unspecified) | Err(_) => {
+            Err(SnapshotStoreError::Io(std::io::Error::other(format!(
+                "snapshot manifest names compression {value}, which this build cannot read"
+            ))))
+        }
+    }
+}
+
+/// Decode a manifest in EITHER shape.
+///
+/// Every reader goes through this. The JSON arm is what every snapshot on disk today needs, and
+/// removing it would make those snapshots unreadable -- which is why it stays regardless of what
+/// the writer does.
+fn decode_manifest(bytes: &[u8]) -> Result<SnapshotManifest, SnapshotStoreError> {
+    let Some(body) = manifest_protobuf_body(bytes) else {
+        return Ok(serde_json::from_slice(bytes)?);
+    };
+    let proto = <crate::manifest_proto::SnapshotManifest as prost::Message>::decode(body)
+        .map_err(|err| SnapshotStoreError::Io(std::io::Error::other(err)))?;
+    let created_at = proto
+        .created_at
+        .parse::<chrono::DateTime<Utc>>()
+        .map_err(|err| {
+            SnapshotStoreError::Io(std::io::Error::other(format!(
+                "snapshot manifest carries an unreadable created_at {:?}: {err}",
+                proto.created_at
+            )))
+        })?;
+    Ok(SnapshotManifest {
+        cluster_id: proto.cluster_id,
+        shard_id: proto.shard_id,
+        snapshot_id: proto.snapshot_id,
+        raft_term: proto.raft_term,
+        last_log_index: proto.last_log_index,
+        last_applied_log_id: proto.last_applied_log_id,
+        created_at,
+        engine_version: proto.engine_version,
+        // ORDER PRESERVED, deliberately: the published digest folds these in iteration order.
+        block_slabs: proto
+            .block_slabs
+            .into_iter()
+            .map(|slab| BlockSlabManifest {
+                block_slab_id: slab.block_slab_id,
+                relative_path: slab.relative_path,
+                byte_size: slab.byte_size,
+                sha256: slab.sha256,
+            })
+            .collect(),
+        object_count: proto.object_count,
+        record_count: proto.record_count,
+        checksums: proto
+            .checksums
+            .into_iter()
+            .map(|entry| ChecksumEntry {
+                relative_path: entry.relative_path,
+                sha256: entry.sha256,
+                byte_size: entry.byte_size,
+            })
+            .collect(),
+        compression: compression_from_proto(proto.compression)?,
+    })
+}
+
+/// Encode a manifest, in the shape the gate asks for.
+fn encode_manifest(manifest: &SnapshotManifest) -> Result<Bytes, SnapshotStoreError> {
+    if !write_manifest_as_protobuf() {
+        return Ok(Bytes::from(serde_json::to_vec_pretty(manifest)?));
+    }
+    let proto = crate::manifest_proto::SnapshotManifest {
+        cluster_id: manifest.cluster_id.clone(),
+        shard_id: manifest.shard_id,
+        snapshot_id: manifest.snapshot_id.clone(),
+        raft_term: manifest.raft_term,
+        last_log_index: manifest.last_log_index,
+        last_applied_log_id: manifest.last_applied_log_id.clone(),
+        // The same text the JSON form carries, so the value round-trips exactly.
+        created_at: manifest.created_at.to_rfc3339(),
+        engine_version: manifest.engine_version.clone(),
+        block_slabs: manifest
+            .block_slabs
+            .iter()
+            .map(|slab| crate::manifest_proto::BlockSlabManifest {
+                block_slab_id: slab.block_slab_id.clone(),
+                relative_path: slab.relative_path.clone(),
+                byte_size: slab.byte_size,
+                sha256: slab.sha256.clone(),
+            })
+            .collect(),
+        object_count: manifest.object_count,
+        record_count: manifest.record_count,
+        checksums: manifest
+            .checksums
+            .iter()
+            .map(|entry| crate::manifest_proto::ChecksumEntry {
+                relative_path: entry.relative_path.clone(),
+                sha256: entry.sha256.clone(),
+                byte_size: entry.byte_size,
+            })
+            .collect(),
+        compression: compression_to_proto(manifest.compression) as i32,
+    };
+    let mut out = Vec::with_capacity(1 + prost::Message::encoded_len(&proto));
+    out.push(MANIFEST_CONTAINER_PROTOBUF);
+    prost::Message::encode(&proto, &mut out)
+        .map_err(|err| SnapshotStoreError::Io(std::io::Error::other(err)))?;
+    Ok(Bytes::from(out))
+}
+
 const MANIFEST: &str = "manifest.json";
+/// The name a manifest takes once its body is binary.
+///
+/// Same convention as the shared store's binary objects (`wal.protobuf.blob`), rather than a
+/// second spelling for the same idea.
+const MANIFEST_BINARY: &str = "manifest.protobuf.blob";
 const INDEX: &str = "index.bin";
 const CHECKSUMS: &str = "checksums.json";
 
@@ -170,7 +347,7 @@ where
             .object_store
             .get(&format!("{manifest_key}{MANIFEST}"))
             .await?;
-        let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+        let manifest: SnapshotManifest = decode_manifest(&manifest_bytes)?;
         let snapshot_ref =
             snapshot_ref_from_manifest(self.object_store.as_ref(), &manifest).await?;
         self.download_snapshot(&snapshot_ref, destination).await
@@ -339,11 +516,11 @@ where
         let keys = self.object_store.list(&prefix).await?;
         let mut snapshots = Vec::new();
         for key in keys {
-            if !key.ends_with(MANIFEST) || key.contains("/.tmp-") {
+            if !is_snapshot_manifest_key(&key) {
                 continue;
             }
             let manifest_bytes = self.object_store.get(&key).await?;
-            let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+            let manifest: SnapshotManifest = decode_manifest(&manifest_bytes)?;
             snapshots
                 .push(snapshot_ref_from_manifest(self.object_store.as_ref(), &manifest).await?);
         }
@@ -360,7 +537,7 @@ where
     async fn verify_snapshot(&self, snapshot_ref: &SnapshotRef) -> Result<(), SnapshotStoreError> {
         let manifest_key = format!("{}{}", prefix_from_ref(snapshot_ref), MANIFEST);
         let manifest_bytes = self.object_store.get(&manifest_key).await?;
-        let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+        let manifest: SnapshotManifest = decode_manifest(&manifest_bytes)?;
         for entry in &manifest.checksums {
             let key = format!("{}{}", manifest.stable_prefix(), entry.relative_path);
             let bytes = self.object_store.get(&key).await?;
@@ -414,7 +591,7 @@ async fn upload_snapshot_inner<O: ObjectStore>(
             .await?;
     }
 
-    let manifest_bytes = Bytes::from(serde_json::to_vec_pretty(&snapshot.manifest)?);
+    let manifest_bytes = encode_manifest(&snapshot.manifest)?;
     object_store
         .put(&format!("{stable_prefix}{MANIFEST}"), manifest_bytes)
         .await?;
@@ -429,7 +606,7 @@ async fn download_snapshot_inner<O: ObjectStore>(
 ) -> Result<LocalSnapshot, SnapshotStoreError> {
     let prefix = prefix_from_ref(snapshot_ref);
     let manifest_bytes = object_store.get(&format!("{prefix}{MANIFEST}")).await?;
-    let manifest: SnapshotManifest = serde_json::from_slice(&manifest_bytes)?;
+    let manifest: SnapshotManifest = decode_manifest(&manifest_bytes)?;
     tokio::fs::create_dir_all(destination.join("page_segments")).await?;
 
     let index_path = destination.join(INDEX);
@@ -597,6 +774,26 @@ async fn verify_local_snapshot(snapshot: &LocalSnapshot) -> Result<(), SnapshotS
     Ok(())
 }
 
+/// WHETHER THIS KEY NAMES A SNAPSHOT MANIFEST. THE NAME SAYS WHAT IT IS, NOT HOW IT IS ENCODED.
+///
+/// A KEY FILTER THAT NAMES A CODEC IS A SILENT SKIP WAITING TO HAPPEN, and `list_snapshots` is
+/// the shape where that costs most: it returns a LIST, so a manifest passed over does not read as
+/// a missing file -- the shard simply appears to have fewer snapshots, or none. There is no error
+/// and no log line.
+///
+/// What that breaks here specifically: `garbage_collect` is built on this listing, so a snapshot
+/// it cannot see is a snapshot it can never collect. The leak grows silently, and `keep_last` is
+/// counted against a population that is missing members. `list_snapshots` is also a public trait
+/// method, so a consumer outside this crate sees the same short list.
+///
+/// THE `.tmp-` EXCLUSION IS PART OF THE PREDICATE, NOT A SEPARATE CONCERN. An upload stages under
+/// a temp prefix and publishes the manifest last; a temp manifest appearing in the list would be a
+/// half-written snapshot presented as a complete one. Widening the suffix without carrying the
+/// exclusion across would trade one defect for a worse one.
+fn is_snapshot_manifest_key(key: &str) -> bool {
+    (key.ends_with(MANIFEST) || key.ends_with(MANIFEST_BINARY)) && !key.contains("/.tmp-")
+}
+
 fn prefix_from_ref(snapshot_ref: &SnapshotRef) -> String {
     format!(
         "{}/shards/{}/snapshots/{}-{}-{}/",
@@ -685,6 +882,304 @@ mod tests {
         let listed = snapshots.list_snapshots(42).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].snapshot_id, uploaded.snapshot_id);
+    }
+
+    /// A MANIFEST IS FOUND BY WHAT IT IS, NOT BY WHAT IT IS CALLED.
+    ///
+    /// The filter read `manifest.json`, so a manifest under any other suffix was skipped -- and a
+    /// skip here produces a SHORT LIST, which is a successful call. `garbage_collect` is built on
+    /// this listing, so an invisible snapshot is one it can never collect.
+    ///
+    /// This re-files a REAL uploaded manifest with ONLY the name changed and asserts the COUNT,
+    /// because `list_snapshots(..).is_ok()` and an empty `Vec` are both "success".
+    /// A manifest with deliberately UNSORTED, NON-UNIQUE-PREFIX entries, so an encoder that
+    /// reordered, deduped or re-grouped either list could not produce an equal value.
+    fn manifest_with_ordered_entries() -> SnapshotManifest {
+        SnapshotManifest {
+            cluster_id: "cluster-a".to_string(),
+            shard_id: 42,
+            snapshot_id: "snap-1".to_string(),
+            raft_term: 7,
+            last_log_index: 100,
+            last_applied_log_id: "term:7:index:100".to_string(),
+            created_at: Utc::now(),
+            engine_version: "0.1.0".to_string(),
+            block_slabs: vec![
+                BlockSlabManifest {
+                    block_slab_id: "0002".to_string(),
+                    relative_path: "page_segments/0002.seg".to_string(),
+                    byte_size: 2,
+                    sha256: "bb".to_string(),
+                },
+                BlockSlabManifest {
+                    block_slab_id: "0001".to_string(),
+                    relative_path: "page_segments/0001.seg".to_string(),
+                    byte_size: 1,
+                    sha256: "aa".to_string(),
+                },
+            ],
+            object_count: 3,
+            record_count: 4,
+            checksums: vec![
+                ChecksumEntry {
+                    relative_path: "zzz".to_string(),
+                    sha256: "c3".to_string(),
+                    byte_size: 3,
+                },
+                ChecksumEntry {
+                    relative_path: "aaa".to_string(),
+                    sha256: "c1".to_string(),
+                    byte_size: 1,
+                },
+                ChecksumEntry {
+                    relative_path: "mmm".to_string(),
+                    sha256: "c2".to_string(),
+                    byte_size: 2,
+                },
+            ],
+            compression: CompressionFormat::Zstd,
+        }
+    }
+
+    /// BOTH SHAPES DECODE, AND THE ENCODING DOES NOT CHANGE THE VALUE.
+    ///
+    /// The second half is the one that matters. The published snapshot digest folds the checksum
+    /// entries in ITERATION ORDER, so order is part of the value: modelling the list as a proto
+    /// `map` -- which is the tidier-looking choice -- would leave every file verifying
+    /// individually while the snapshot's own digest changed for every snapshot already written.
+    /// Asserting the decoded manifests are EQUAL is stronger than comparing one digest, because
+    /// any digest computed from equal manifests is equal.
+    #[test]
+    fn a_manifest_decodes_from_both_shapes_and_the_encoding_does_not_change_it() {
+        let original = manifest_with_ordered_entries();
+
+        // The shape every snapshot on disk today carries.
+        let json = serde_json::to_vec_pretty(&original).unwrap();
+        assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
+        let from_json = decode_manifest(&json).expect("the JSON shape must still decode");
+        assert_eq!(from_json, original, "JSON round trip changed the manifest");
+
+        // The shape a later build writes.
+        write_manifest_as_protobuf_on_this_thread(true);
+        let binary = encode_manifest(&original).unwrap();
+        write_manifest_as_protobuf_on_this_thread(false);
+        assert_eq!(binary[0], MANIFEST_CONTAINER_PROTOBUF);
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&binary).is_err(),
+            "the binary shape must not parse as JSON, or the container byte proves nothing"
+        );
+        let from_binary = decode_manifest(&binary).expect("the binary shape must decode");
+        assert_eq!(from_binary, original, "binary round trip changed the manifest");
+
+        // THE DIGEST-NEUTRALITY ASSERTION: the two shapes decode to the same value, so anything
+        // derived from them -- including the published digest -- is the same.
+        assert_eq!(from_json, from_binary, "the two shapes decode to different manifests");
+
+        // ORDER, SPELLED OUT. Equality above would catch a reorder, but naming it here is what
+        // tells the next person the order is load-bearing rather than incidental.
+        assert_eq!(
+            from_binary
+                .checksums
+                .iter()
+                .map(|e| e.relative_path.as_str())
+                .collect::<Vec<_>>(),
+            vec!["zzz", "aaa", "mmm"],
+            "the checksum order is folded into the published digest and must not be sorted"
+        );
+        assert_eq!(
+            from_binary
+                .block_slabs
+                .iter()
+                .map(|s| s.block_slab_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["0002", "0001"],
+            "the slab order must not be sorted either"
+        );
+        // And the timestamp survives exactly, which is why it travels as text rather than millis.
+        assert_eq!(from_binary.created_at, original.created_at);
+    }
+
+    /// AN UNREADABLE COMPRESSION TAG IS REFUSED, NOT DEFAULTED.
+    ///
+    /// `None` is a real choice, so reading UNSPECIFIED as "no compression" would hand a caller
+    /// raw bytes for a snapshot a newer build had compressed.
+    #[test]
+    fn an_unknown_compression_tag_is_refused_rather_than_defaulted() {
+        for (value, expected) in [
+            (1, CompressionFormat::None),
+            (2, CompressionFormat::Lz4),
+            (3, CompressionFormat::Zstd),
+        ] {
+            assert_eq!(
+                compression_from_proto(value).expect("a known tag must decode"),
+                expected
+            );
+        }
+        for value in [0, 99, -1] {
+            assert!(
+                compression_from_proto(value).is_err(),
+                "compression tag {value} was accepted, so an unknown tag is being guessed at"
+            );
+        }
+    }
+
+    /// THE WRITER IS JSON UNTIL ASKED, AND THE READERS NEVER CONSULT THE GATE.
+    ///
+    /// Driven through the real upload, list, verify and download paths, because the four readers
+    /// are what a running node uses -- a codec that round-trips in isolation proves nothing about
+    /// them. The gate is turned OFF before every read, which is the assertion that matters: a
+    /// reader made conditional on the flag would pass every other check here.
+    ///
+    /// NOTE ON THE KEY: the manifest keeps the name `manifest.json` even when its body is binary.
+    /// That is deliberate -- it is fetched by an exact key, and deployed binaries open it by that
+    /// name, so renaming it is the one-way door. The listing widening landed separately is what
+    /// makes a future rename possible, not something this change needs.
+    #[tokio::test]
+    async fn a_binary_manifest_is_written_only_when_asked_and_read_without_the_gate() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(FileObjectStore::new(tmp.path().join("objects")));
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store.clone());
+
+        // ---- default: JSON on disk, and the whole path works.
+        let local = sample_snapshot(&tmp.path().join("source-json"), 42, 100).await;
+        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
+        let key = format!("{}{MANIFEST}", prefix_from_ref(&uploaded));
+        assert_eq!(
+            store.get(&key).await.unwrap()[0],
+            b'{',
+            "the shipped default must still write the JSON shape"
+        );
+
+        // ---- asked: binary on disk.
+        write_manifest_as_protobuf_on_this_thread(true);
+        let local = sample_snapshot(&tmp.path().join("source-proto"), 42, 200).await;
+        let binary_ref = snapshots.upload_snapshot(local).await.unwrap();
+        write_manifest_as_protobuf_on_this_thread(false);
+
+        let binary_key = format!("{}{MANIFEST}", prefix_from_ref(&binary_ref));
+        let on_disk = store.get(&binary_key).await.unwrap();
+        assert_eq!(
+            on_disk[0], MANIFEST_CONTAINER_PROTOBUF,
+            "with the gate on, the manifest must be written in the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&on_disk).is_err(),
+            "the binary manifest must not parse as JSON"
+        );
+
+        // ---- THE LOAD-BEARING PART: every reader, with the gate OFF.
+        let listed = snapshots.list_snapshots(42).await.unwrap();
+        assert_eq!(listed.len(), 2, "both snapshots must be listed: {listed:?}");
+        assert!(
+            listed.iter().any(|s| s.snapshot_id == binary_ref.snapshot_id),
+            "the binary-bodied snapshot is missing from the listing"
+        );
+        snapshots
+            .verify_snapshot(&binary_ref)
+            .await
+            .expect("verify must read the binary manifest");
+        snapshots
+            .download_snapshot(&binary_ref, tmp.path().join("restore"))
+            .await
+            .expect("download must read the binary manifest");
+    }
+
+    #[tokio::test]
+    async fn list_snapshots_finds_a_manifest_filed_under_the_binary_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(FileObjectStore::new(tmp.path().join("objects")));
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store.clone());
+        let local = sample_snapshot(&tmp.path().join("source"), 42, 100).await;
+        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
+
+        // CONTROL: it is found under the old name first, so a failure after the rename is
+        // attributable to the NAME rather than to a fixture that never worked.
+        assert_eq!(snapshots.list_snapshots(42).await.unwrap().len(), 1);
+
+        // DENOMINATOR FIRST: locate the one manifest before renaming it. A prefix that listed
+        // nothing would make the rename a no-op and every assertion below vacuous.
+        let prefix = "cluster-a/shards/42/snapshots/";
+        let manifests: Vec<String> = store
+            .list(prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.ends_with(MANIFEST))
+            .collect();
+        assert_eq!(manifests.len(), 1, "expected one manifest under {prefix}");
+        let old_key = manifests[0].clone();
+
+        // Only the NAME changes.
+        let bytes = store.get(&old_key).await.unwrap();
+        let new_key = format!(
+            "{}{MANIFEST_BINARY}",
+            old_key.strip_suffix(MANIFEST).unwrap()
+        );
+        store.put(&new_key, bytes).await.unwrap();
+        store.delete(&old_key).await.unwrap();
+
+        let listed = snapshots.list_snapshots(42).await.unwrap();
+        assert_eq!(
+            listed.len(),
+            1,
+            "the manifest was passed over because of its NAME, and a short list is what a shard \
+             with fewer snapshots returns"
+        );
+        assert_eq!(listed[0].snapshot_id, uploaded.snapshot_id);
+    }
+
+    /// THE `.tmp-` EXCLUSION SURVIVES THE WIDENING.
+    ///
+    /// An upload stages under a temp prefix and publishes the manifest last, so a temp manifest in
+    /// the list would be a half-written snapshot presented as a complete one. Widening the suffix
+    /// is exactly the change that could drop this, and the old filter spelled the exclusion inline
+    /// where it was easy to lose.
+    #[tokio::test]
+    async fn a_staged_manifest_is_still_excluded_under_either_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(FileObjectStore::new(tmp.path().join("objects")));
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store.clone());
+        let local = sample_snapshot(&tmp.path().join("source"), 42, 100).await;
+        snapshots.upload_snapshot(local).await.unwrap();
+        assert_eq!(snapshots.list_snapshots(42).await.unwrap().len(), 1);
+
+        // Stage a copy of the real manifest under a temp prefix, in BOTH spellings.
+        let prefix = "cluster-a/shards/42/snapshots/";
+        let real = store
+            .list(prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|key| key.ends_with(MANIFEST))
+            .expect("one real manifest");
+        let bytes = store.get(&real).await.unwrap();
+        for name in [MANIFEST, MANIFEST_BINARY] {
+            store
+                .put(&format!("{prefix}.tmp-staging/{name}"), bytes.clone())
+                .await
+                .unwrap();
+        }
+
+        // DENOMINATOR: the staged objects really are under the prefix the listing walks, or this
+        // test would be asserting that nothing is excluded because nothing is there.
+        let staged = store
+            .list(prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains("/.tmp-"))
+            .count();
+        assert_eq!(staged, 2, "both staged manifests must be present to be excluded");
+
+        assert_eq!(
+            snapshots.list_snapshots(42).await.unwrap().len(),
+            1,
+            "a staged manifest reached the list, so a half-written snapshot is being presented \
+             as a complete one"
+        );
     }
 
     #[tokio::test]

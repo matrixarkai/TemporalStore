@@ -2863,7 +2863,7 @@ mod tests {
         let keyless = [
             Command::ContextResourceBlobPut {
                 tenant_hash: 7,
-                payload_base64: String::new(),
+                payload: Vec::new(),
             },
             Command::ContextResourceBlobBegin { tenant_hash: 7 },
             Command::SequenceBatchQuery {

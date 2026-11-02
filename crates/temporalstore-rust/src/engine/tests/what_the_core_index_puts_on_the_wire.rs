@@ -344,15 +344,10 @@ fn a_block_entry_no_longer_carries_its_object_key_as_a_member_on_the_wire() {
     bucket.set_meta_loaded(true);
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_block(&"an-object", 
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+        BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",
             )
-            .expect("`string` is a stored model spelling"),
-            address: Default::default(),
-            dirty: false,
-            deleted: false,
-        },
+            .expect("`string` is a stored model spelling"), Default::default(), false, false),
         &mut live,
     );
 
@@ -476,12 +471,12 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // than be ignored -- the treatment `entry_count_versus_block_count::block_at` took for its own
     // dead `component` argument. The object each block belongs to is named where it is filed.
     fn block(slab: u64, offset: u64, deleted: bool) -> BlockIndex {
-        BlockIndex {
-            model_id: stored_model_kind(KIND),
-            address: ElementEntry::from_parts(slab, offset, 16, Some(offset / 16 + 1), None),
-            dirty: false,
+        BlockIndex::new(
+            stored_model_kind(KIND),
+            ElementEntry::from_parts(slab, offset, 16, Some(offset / 16 + 1), None),
+            false,
             deleted,
-        }
+        )
     }
 
     let mut index = CoreIndex::default();
@@ -504,7 +499,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
             ..
         } = &mut index;
         for (routing_bucket, object_key, entry) in &placed {
-            let node = bucket_map
+            let mut node = bucket_map
                 .get_mut(routing_bucket)
                 .expect("the bucket was just inserted");
             node.insert_block(object_key, entry.clone(), block_slab_live);
@@ -538,8 +533,8 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // `debug_assert!`s that an element was named, so a deleted block with no row is a state
     // production does not reach. This fixture now files what that producer files.
     for (routing_bucket, object_key, entry) in &placed {
-        if entry.deleted {
-            let bucket = index
+        if entry.deleted() {
+            let mut bucket = index
                 .bucket_map
                 .get_mut(routing_bucket)
                 .expect("the bucket holding the tombstone was just inserted");
@@ -573,7 +568,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
         .flat_map(|(routing_bucket, node)| {
             node.block_index
                 .iter()
-                .filter(|(_, block)| !block.deleted)
+                .filter(|(_, block)| !block.deleted())
                 .map(move |(handle, _)| (*routing_bucket, *handle))
         })
         .collect();
@@ -647,18 +642,8 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
     node.set_in_memory(true);
     index.bucket_map.insert(7, node);
 
-    let live = BlockIndex {
-        model_id: stored_model_kind(KIND),
-        address: ElementEntry::from_parts(SLAB, LIVE_OFFSET, LENGTH, Some(1), None),
-        dirty: false,
-        deleted: false,
-    };
-    let dead = BlockIndex {
-        model_id: stored_model_kind(KIND),
-        address: ElementEntry::from_parts(SLAB, DEAD_OFFSET, LENGTH, Some(2), None),
-        dirty: true,
-        deleted: true,
-    };
+    let live = BlockIndex::new(stored_model_kind(KIND), ElementEntry::from_parts(SLAB, LIVE_OFFSET, LENGTH, Some(1), None), false, false);
+    let dead = BlockIndex::new(stored_model_kind(KIND), ElementEntry::from_parts(SLAB, DEAD_OFFSET, LENGTH, Some(2), None), true, true);
 
     let (live_handle, dead_handle) = {
         let CoreIndex {
@@ -666,7 +651,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
             block_slab_live,
             ..
         } = &mut index;
-        let node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
+        let mut node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
         // ONE KEY FOR BOTH BLOCKS, WHICH IS WHAT THE FIXTURE MEANT. The two differ in their
         // address and their `deleted` bit; they are the same object by construction, so passing
         // the literal twice says that, where reading one copy off each block did not.

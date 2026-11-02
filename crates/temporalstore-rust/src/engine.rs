@@ -84,6 +84,7 @@ pub use storage_reports::{
     storage_cache_inspection_listings,
 };
 pub use state::{block_slab_live_charges, reset_block_slab_live_charges};
+pub use state::{bucket_node_scan_visits, reset_bucket_node_scan_visits};
 pub use shard_write_guard::{
     index_encode_counts, maintenance_mirror_sink_lookups, maintenance_block_read_counts,
     reset_index_encode_counts, reset_maintenance_mirror_sink_lookups,
@@ -1362,7 +1363,7 @@ impl TemporalEngine {
                                     start_routing_bucket,
                                     end_routing_bucket,
                                 );
-                                if let Some(bucket) =
+                                if let Some(mut bucket) =
                                     shard.bucket_index.bucket_map.get_mut(&routing_bucket)
                                 {
                                     if bucket.first_dirty_wal_sequence == 0 {
@@ -1522,7 +1523,7 @@ impl TemporalEngine {
                     for key in &delta_command_keys {
                         let routing_bucket =
                             block_routing_bucket(key, start_routing_bucket, end_routing_bucket);
-                        if let Some(bucket) =
+                        if let Some(mut bucket) =
                             shard.bucket_index.bucket_map.get_mut(&routing_bucket)
                         {
                             if bucket.first_dirty_index_log_sequence == 0 {
@@ -3900,7 +3901,7 @@ fn collect_command_index_items_for(
                 // so the surviving question is whether the CALLER asked for a named element at
                 // all. It did not match a named element before this change and it does not now --
                 // `component.is_some()` is the same predicate with the entry's constant folded in.
-                if block.model_id.as_str() != kind || component.is_some() {
+                if block.model_id().as_str() != kind || component.is_some() {
                     continue;
                 }
             }
@@ -3911,7 +3912,7 @@ fn collect_command_index_items_for(
                 // The resident entry already holds these as shared names, so the item
                 // takes the pointer instead of copying the characters per item.
                 object_key: Arc::clone(beside.object_key),
-                model_id: block.model_id.clone().to_string(),
+                model_id: block.model_id().clone().to_string(),
                 // THE ROW'S SLOT 5 STAYS AND THE FIELD IS GONE. This emission was already writing
                 // a constant `None` into it, so the bytes it produces do not move: the serializer
                 // writes that same nil for every row now, and a row written by an older binary
@@ -3924,7 +3925,7 @@ fn collect_command_index_items_for(
                 // call, not to the row. Keeping both means: no component term, and the key handed
                 // in explicitly.
                 object_id: block.object_id(shard_id, beside.object_key),
-                deleted: block.deleted,
+                deleted: block.deleted(),
                 // `in_log` here was `block.log_backed()` -- the accessor added when the stored
                 // copy of this same fact was removed from the resident entry. One derivation,
                 // two spellings, on a row. Now neither.
@@ -4587,7 +4588,7 @@ fn fold_carried_container_elements(shard: &mut ShardState, carried: &[serde_json
     let mut live: std::collections::HashSet<LiveBlockKey> = std::collections::HashSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for block in bucket.block_index.values() {
-            if !block.deleted {
+            if !block.deleted() {
                 live.insert(live_block_key(&block.address));
             }
         }
@@ -4832,7 +4833,7 @@ fn fold_delta_block_items(
         // same routing bucket (the bucket derives from the object key), so the removal scans one
         // bucket per item and the covered-key wipe below stays untouched for snapshot records.
         for item in items {
-            let Some(bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
+            let Some(mut bucket) = bucket_index.bucket_map.get_mut(&item.routing_bucket) else {
                 continue;
             };
             // CONVERGE ON THE BLOCK WHEN THE BLOCK IS THE IDENTITY, exactly as the write path's
@@ -4876,7 +4877,7 @@ fn fold_delta_block_items(
             // `block_slab_live` are disjoint fields of `bucket_index`, which is why the line
             // below could already take `&mut bucket_index.block_slab_live` while holding `bucket`.
             let names = crate::engine::state::block_identities_in(
-                bucket,
+                &bucket,
                 &crate::engine::state::BlockKeysByPosition::from_parts(&bucket_index.objects, &bucket_index.object_block_lookup),
             );
             let routing_bucket = item.routing_bucket;
@@ -4890,7 +4891,7 @@ fn fold_delta_block_items(
                     // every other block of the bucket with it.
                     return true;
                 };
-                let drop = block.model_id.as_str() == item.model_id
+                let drop = block.model_id().as_str() == item.model_id
                     && &**beside == item.object_key.as_ref()
                     && match (names_a_block, here.as_ref()) {
                         (true, Some(here)) => live_block_key(&block.address) == *here,
@@ -4901,7 +4902,7 @@ fn fold_delta_block_items(
                     // recomputed from the item, because the item's terms are what MATCHED and the
                     // block's are what was FILED -- and the handle is only knowable here.
                     unfiled.push((
-                        block.model_id,
+                        block.model_id(),
                         Arc::clone(beside),
                         crate::engine::state::BlockLookupRef {
                             routing_bucket,
@@ -4940,7 +4941,7 @@ fn fold_delta_block_items(
                 let drop = covered_keys.contains(&**beside);
                 if drop {
                     unfiled.push((
-                        block.model_id,
+                        block.model_id(),
                         Arc::clone(beside),
                         crate::engine::state::BlockLookupRef {
                             routing_bucket,
@@ -4959,7 +4960,7 @@ fn fold_delta_block_items(
         let Some(address) = item.entry.as_ref().cloned() else {
             continue;
         };
-        let bucket = bucket_index
+        let mut bucket = bucket_index
             .bucket_map
             .entry(item.routing_bucket)
             .or_insert_with(|| BucketNode {
@@ -4972,10 +4973,8 @@ fn fold_delta_block_items(
         // record's spelling is only rebuilt when the index is written back out.
         let object_key: Arc<str> = Arc::from(item.object_key.clone());
         let handle = bucket.insert_block(&object_key, 
-            BlockIndex {
-                model_id: crate::engine::storage_bucket_internals::stored_model_kind(
-                    &item.model_id,
-                ),
+            BlockIndex::new(
+                crate::engine::storage_bucket_internals::stored_model_kind( &item.model_id, ),
                 // NO NAME IS FILED, AND THERE IS NO LONGER A CONDITION DECIDING IT. This read
                 // `if index_entry_names_a_block(..) { None } else { item.component }`, on the
                 // reasoning that the two routes must compute the same written key for the same
@@ -4996,9 +4995,9 @@ fn fold_delta_block_items(
                 // The record carries the id and the address no longer does, so there is nothing
                 // to copy across: the entry derives the id from its own terms.
                 address,
-                dirty: false,
-                deleted: false,
-            },
+                false,
+                false,
+            ),
             &mut bucket_index.block_slab_live,
         );
         // TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the position the
@@ -5969,13 +5968,13 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
     let mut removed = false;
     let target_buckets = bucket_index_target_buckets_for_object_key(shard, key);
     for routing_bucket in target_buckets {
-        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+        let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::block_identities_in(
-            bucket,
+            &bucket,
             &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
         );
         bucket.block_index.retain(
@@ -5999,10 +5998,12 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
         if !deleted_object_ids.is_empty() {
             bucket.object_index.extend(deleted_object_ids.iter().copied());
             bucket.set_dirty(true);
-            bucket.set_deleted(bucket.block_index.is_empty());
+            let next_flag = bucket.block_index.is_empty();
+            bucket.set_deleted(next_flag);
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
-            bucket.set_in_memory(!bucket.block_index.is_empty());
+            let next_flag = !bucket.block_index.is_empty();
+            bucket.set_in_memory(next_flag);
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks. A delta over the
             // ids this delete dropped stood here and was wrong -- it left drift that the reconcile
             // it replaced had been repairing silently. All three arms of that reconcile are kept,
@@ -6011,10 +6012,10 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
             // THE PROJECTION THIS LOOP ALREADY BUILT, handed over rather than re-derived.
             crate::engine::storage_bucket_internals::repair_object_index_against_its_blocks(
                 shard_id,
-                bucket,
+                &mut bucket,
                 &names,
             );
-            crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(bucket);
+            crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(&mut bucket);
             // Moved below the prune, which touches `object_index` and never this field. Nothing
             // between them reads it.
             bucket.deleted_object_index.extend(deleted_object_ids);
@@ -6050,7 +6051,7 @@ fn mark_bucket_index_object_deleted(shard: &mut ShardState, key: &str) -> bool {
                     .bucket_index
                     .bucket_map
                     .values()
-                    .any(|bucket| bucket.block_index.values().any(|block| !block.deleted)),
+                    .any(|bucket| bucket.block_index.values().any(|block| !block.deleted())),
             "a live block is resident while the object lookup names nothing, so this delete would \
              have rebuilt a lookup over blocks nothing filed: every production site that installs \
              a block files it in the same call"
@@ -6254,14 +6255,14 @@ fn mark_bucket_index_block_deleted_recording(
             .unwrap_or_default()
     };
     for routing_bucket in target_buckets {
-        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+        let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         let mut bucket_removed = false;
         let mut deleted_object_ids = BTreeSet::new();
         // NAMED BEFORE THE MUTATION, for the reason at `fold_delta_block_items`.
         let names = crate::engine::state::block_identities_in(
-            bucket,
+            &bucket,
             &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
         );
         bucket.block_index.retain(
@@ -6286,7 +6287,7 @@ fn mark_bucket_index_block_deleted_recording(
             let Some(beside) = names.get(handle) else {
                 return true;
             };
-            let matches = block.model_id.as_str() == model_id
+            let matches = block.model_id().as_str() == model_id
                 && &**beside == key
                 && component.is_none();
             if matches {
@@ -6345,7 +6346,7 @@ fn mark_bucket_index_block_deleted_recording(
                     // A TOMBSTONE ENTRY IS NOT A SURVIVING BLOCK, and a block the index cannot
                     // name is not one either: it cannot be shown to carry the id, so it does not
                     // keep the id claimed.
-                    !block.deleted
+                    !block.deleted()
                         && names.get(handle).is_some_and(|beside| {
                             block.object_id(shard_id, beside) == *object_id
                         })
@@ -6353,19 +6354,21 @@ fn mark_bucket_index_block_deleted_recording(
             });
             bucket.deleted_object_index.extend(deleted_object_ids);
             bucket.set_dirty(true);
-            bucket.set_deleted(bucket.block_index.is_empty());
+            let next_flag = bucket.block_index.is_empty();
+            bucket.set_deleted(next_flag);
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             bucket.set_meta_loaded(true);
-            bucket.set_in_memory(!bucket.block_index.is_empty());
+            let next_flag = !bucket.block_index.is_empty();
+            bucket.set_in_memory(next_flag);
             // THE REPAIR AT THE REMOVAL SITE, over this bucket's own blocks rather than over the
             // set this call happened to drop. See [`repair_object_index_against_its_blocks`].
             // THE PROJECTION THIS LOOP ALREADY BUILT, handed over rather than re-derived.
             crate::engine::storage_bucket_internals::repair_object_index_against_its_blocks(
                 shard_id,
-                bucket,
+                &mut bucket,
                 &names,
             );
-            crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(bucket);
+            crate::engine::storage_bucket_internals::classify_bucket_layout_in_place(&mut bucket);
         }
     }
     if removed {
@@ -6893,7 +6896,7 @@ fn record_exists_exact(shard: &ShardState, key: &str) -> bool {
                         .bucket_map
                         .get(&block_ref.routing_bucket)
                         .and_then(|bucket| bucket.block_index.get(&block_ref.block_ref_key))
-                        .map(|block| !block.deleted && block.model_id.as_str() == *kind)
+                        .map(|block| !block.deleted() && block.model_id().as_str() == *kind)
                         .unwrap_or(false)
                 })
             })
@@ -7026,7 +7029,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
                 .bucket_index
                 .bucket_map
                 .values()
-                .any(|bucket| bucket.block_index.values().any(|block| !block.deleted)),
+                .any(|bucket| bucket.block_index.values().any(|block| !block.deleted())),
         "a live block is resident while the object lookup names nothing, so this mark can find no \
          blocks: every production site that installs a block files it in the same call, and this \
          state is reachable only by writing into `bucket_map` directly"
@@ -7056,11 +7059,11 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
             continue;
         };
         for block_ref in entry.iter() {
-            let Some(bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
+            let Some(mut bucket) = buckets.get_mut(&block_ref.routing_bucket) else {
                 continue;
             };
             if let Some(block) = bucket.block_index.get_mut(&block_ref.block_ref_key) {
-                block.dirty = true;
+                block.set_dirty(true);
             }
         }
     }
@@ -7800,7 +7803,7 @@ fn object_manager_stats(
                     .bucket_map
                     .values()
                     .flat_map(|bucket| bucket.block_index.values())
-                    .filter(|block| !block.deleted)
+                    .filter(|block| !block.deleted())
                     .count();
                 (0, live_blocks, 0)
             };
@@ -7884,21 +7887,11 @@ fn object_manager_stats(
             // below already says the first of those is the normal case during ingest, because
             // `mark_object_dirty` flags an object's routing bucket as it records it.
             let bucket_total = shard.bucket_index.bucket_map.len();
-            let flagged_dirty = shard
-                .bucket_index
-                .bucket_map
-                .values()
-                .filter(|bucket| bucket.dirty())
-                .count();
+            let flagged_dirty = shard.bucket_index.bucket_map.dirty_buckets().len();
             if flagged_dirty >= bucket_total || shard.dirty_objects.is_empty() {
                 return_dirty_bucket_count(flagged_dirty)
             } else {
-            let mut dirty_buckets = shard
-                .bucket_index
-                .bucket_map
-                .iter()
-                .filter_map(|(bucket_id, bucket)| bucket.dirty().then_some(*bucket_id))
-                .collect::<BTreeSet<_>>();
+            let mut dirty_buckets = shard.bucket_index.bucket_map.dirty_buckets().clone();
             // THE REMAINING BUCKETS ARE FOUND BY THEIR BLOCKS, NOT BY THE OBJECT SET.
             //
             // The collect above has every bucket that is dirty in its own right. What it can miss
@@ -7925,7 +7918,7 @@ fn object_manager_stats(
                     if dirty_buckets.contains(bucket_id) {
                         continue;
                     }
-                    if bucket.block_index.values().any(|block| block.dirty) {
+                    if bucket.block_index.values().any(|block| block.dirty()) {
                         dirty_buckets.insert(*bucket_id);
                         if dirty_buckets.len() >= bucket_total {
                             break;
@@ -7950,7 +7943,7 @@ fn object_manager_stats(
                             // has an identity beside it and `dirty_objects.contains(..)` could
                             // never be satisfied for any block here. What is left is the one term
                             // that needs no identity: the block's own dirty bit.
-                            block.dirty
+                            block.dirty()
                         })
                 })
                 .count()
@@ -8024,12 +8017,7 @@ fn object_manager_stats(
             .map(|slot| slot.owned_element_count())
             .sum::<usize>();
     let routing_bucket_count = routing_bucket_count(start_routing_bucket, end_routing_bucket);
-    let mut dirty_buckets = shard
-        .bucket_index
-        .bucket_map
-        .iter()
-        .filter_map(|(bucket, node)| node.dirty().then_some(*bucket))
-        .collect::<BTreeSet<_>>();
+    let mut dirty_buckets = shard.bucket_index.bucket_map.dirty_buckets().clone();
     // The buckets the dirty index already holds these objects under. This was a hash per dirty
     // key to recompute `block_routing_bucket(key, start, end)`, which is the same function, with
     // the same arguments, that recorded them.

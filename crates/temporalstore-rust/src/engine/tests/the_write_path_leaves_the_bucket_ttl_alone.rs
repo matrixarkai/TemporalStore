@@ -56,15 +56,10 @@ fn a_bucket_holding_one_block(routing_bucket: u32, object_key: &str) -> BucketNo
     bucket.set_in_memory(true);
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_block(&object_key, 
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
+        BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                 "string",
             )
-            .expect("`string` is a stored model spelling"),
-            address: Default::default(),
-            dirty: false,
-            deleted: false,
-        },
+            .expect("`string` is a stored model spelling"), Default::default(), false, false),
         &mut live,
     );
     bucket
