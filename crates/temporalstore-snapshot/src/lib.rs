@@ -17,3 +17,11 @@ pub use types::{
     ChecksumEntry, CompressionFormat, LocalSnapshot, BlockSlabManifest, SnapshotManifest,
     SnapshotRef, SnapshotRetention, SnapshotStatus,
 };
+
+/// Generated protobuf types for the snapshot manifest.
+///
+/// `pub(crate)`: the binary shape is an encoding detail of this crate's own objects, not part of
+/// what it offers callers. The manifest's public type stays the Rust struct.
+pub(crate) mod manifest_proto {
+    include!(concat!(env!("OUT_DIR"), "/temporalstore.snapshot.v1.rs"));
+}

@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+syntax = "proto3";
+
+package temporalstore.snapshot.v1;
+
+// The snapshot manifest, binary shape.
+//
+// Its own file and its own package rather than an arm of the service proto: this crate is
+// published on its own and does not depend on the one that compiles the service contract, so
+// sharing that file would make the dependency run the wrong way.
+
+// How a snapshot's files are compressed. NONE is a real choice and is distinct from
+// UNSPECIFIED, which is "a build that did not say" -- the decoder refuses that by name rather
+// than defaulting it, so a snapshot written by a newer build cannot be read as uncompressed.
+enum CompressionFormat {
+  COMPRESSION_FORMAT_UNSPECIFIED = 0;
+  COMPRESSION_FORMAT_NONE = 1;
+  COMPRESSION_FORMAT_LZ4 = 2;
+  COMPRESSION_FORMAT_ZSTD = 3;
+}
+
+message ChecksumEntry {
+  string relative_path = 1;
+  string sha256 = 2;
+  uint64 byte_size = 3;
+}
+
+message BlockSlabManifest {
+  // The JSON form spells this `block_segment_id` and still reads the retired
+  // `page_segment_id`. Neither spelling is load-bearing once the field number is what reaches
+  // disk, which is the point of carrying a number instead of a name.
+  string block_slab_id = 1;
+  string relative_path = 2;
+  uint64 byte_size = 3;
+  string sha256 = 4;
+}
+
+message SnapshotManifest {
+  string cluster_id = 1;
+  uint64 shard_id = 2;
+  string snapshot_id = 3;
+  uint64 raft_term = 4;
+  uint64 last_log_index = 5;
+  string last_applied_log_id = 6;
+  // CARRIED AS THE RFC 3339 TEXT, NOT AS MILLISECONDS.
+  //
+  // The JSON form is an RFC 3339 string, and a timestamp routed through an integer would lose
+  // sub-millisecond precision. `created_at` is a SORT KEY in two places and is copied onto the
+  // published reference, so a value that changed on a format round trip would reorder listings
+  // and alter what a consumer reads. A string round-trips the existing bytes exactly.
+  string created_at = 7;
+  string engine_version = 8;
+  // REPEATED, AND NEVER A MAP.
+  //
+  // The published digest folds these in ITERATION ORDER, so order is part of the value. A map
+  // has no defined order: the files would each still verify while the snapshot's own digest
+  // changed for every snapshot already written. Nothing on this path may sort, dedup or
+  // re-group either list.
+  repeated BlockSlabManifest block_slabs = 9;
+  uint64 object_count = 10;
+  uint64 record_count = 11;
+  repeated ChecksumEntry checksums = 12;
+  CompressionFormat compression = 13;
+}
