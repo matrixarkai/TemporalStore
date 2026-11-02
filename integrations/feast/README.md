@@ -4,7 +4,28 @@
 # TemporalStore as a Feast online store
 
 [Feast](https://github.com/feast-dev/feast) resolves its online store through a plugin class
-named in `feature_store.yaml`. This folder is that plugin, serving feature values out of
+named in `feature_store.yaml`. This folder holds **two** such plugins, because TemporalStore
+exposes two surfaces and they have genuinely different trade-offs. Pick by surface, not by
+preference:
+
+| package | surface | pick it when |
+|---|---|---|
+| **`feast_temporalstore`** (this file) | RESP, port 6399 | you already run the proxy, or you want Feast's own Redis tooling and mental model |
+| **`feast_temporalstore_command`** ([its README](feast_temporalstore_command/README.md)) | the data node's own `POST /batch_execute` | you want one round trip per `get_online_features` call, one process instead of three, readable hash fields with no encoding workaround, and optionally a queryable feature history behind each served value |
+
+The two store **values** identically — `ValueProto.SerializeToString()` either way, which is what
+makes a latency comparison between them, or against any other Feast online store, mean anything.
+They do not share a key space: the RESP path hex-encodes keys and base64url-encodes fields to
+survive the lossy decode described below, while the command path keeps the readable
+`"{view}:{feature}"`. Rows written through one are not readable through the other, so choose one
+per project rather than switching under a populated store.
+
+`run_tests.py` in this directory runs both packages' offline suites with no third-party test
+runner, and `benchmarks/bench_feature_serving.py` measures either of them against SQLite, Valkey
+and PostgreSQL through Feast itself — see
+[`docs/feast_online_store_benchmark.md`](../../docs/feast_online_store_benchmark.md).
+
+The rest of this file is about the RESP plugin, which serves feature values out of
 TemporalStore over its RESP surface.
 
 ```yaml

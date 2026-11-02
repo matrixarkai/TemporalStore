@@ -133,6 +133,20 @@ class TemporalStoreCommandOnlineStoreConfig(FeastConfigBaseModel):
     says so rather than silently leaving data behind.
     """
 
+    teardown_batch_size: int = 512
+    """How many deletes `teardown` sends per round trip.
+
+    THIS BOUND IS NOT COSMETIC. `teardown` deletes one key per row the view
+    ever wrote, and that count is a property of the data, not of the caller --
+    so without a bound the request size is unbounded. Measured against a live
+    node: a view holding 5,000 entities built a single 5,001-command
+    `/batch_execute` and the call timed out, taking the rest of the run with
+    it. A view with a million entities would have built a million-command
+    request. Chunking keeps each round trip's size a function of this setting
+    and makes teardown's cost linear in a bounded number of calls instead of
+    one unbounded one.
+    """
+
 
 def _ts_field(feature_view_name: str) -> str:
     return f"_ts:{feature_view_name}"
@@ -456,6 +470,7 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
             return
 
         client = self._get_client(config)
+        batch_size = max(1, int(online_config.teardown_batch_size))
         for table in tables:
             view_name = self._view_name(table, config)
             set_key = self._teardown_set_key(config, view_name)
@@ -470,8 +485,21 @@ class TemporalStoreCommandOnlineStore(OnlineStore):
                 commands.append(
                     {"kind": "common_delete", "key": raw.decode("utf-8")}
                 )
-            commands.append({"kind": "common_delete", "key": set_key})
-            client.batch_execute(commands)
+            # The tracking set is dropped LAST, and only after every key it
+            # named is gone. If a chunk fails partway, the set still lists the
+            # survivors, so a re-run finishes the job; dropping the set first
+            # would strand whatever remained with nothing left to name it.
+            deleted = 0
+            for start in range(0, len(commands), batch_size):
+                chunk = commands[start : start + batch_size]
+                client.batch_execute(chunk)
+                deleted += len(chunk)
+            client.batch_execute([{"kind": "common_delete", "key": set_key}])
             logger.info(
-                "temporalstore: tore down view=%s keys=%d", view_name, len(members)
+                "temporalstore: tore down view=%s keys=%d in %d round trip(s) "
+                "of at most %d",
+                view_name,
+                deleted,
+                (len(commands) + batch_size - 1) // batch_size + 1,
+                batch_size,
             )

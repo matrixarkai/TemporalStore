@@ -151,20 +151,39 @@ anyone reading a latency or bandwidth number off this path:
 ## Tests
 
 ```bash
-cd integrations/feast
-python feast_temporalstore_command/tests/test_online_store.py
+# both provider packages, with or without Feast installed
+python integrations/feast/run_tests.py
+
+# or this package's suite on its own
+cd integrations/feast && PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_online_store.py
 ```
 
-Sixteen tests, no running store needed: the transport is replaced with a
+**18 tests, no running store needed**: the transport is replaced with a
 recording stub and the assertions are about the commands this integration
-emits. Four of them run with Feast absent; the rest skip loudly rather than
-pass quietly. The runner asserts the collected test **count**, because a file
-that stops being collected otherwise reports a green run of zero tests.
+emits, which is the part that can be wrong in a way a live smoke test would not
+notice. Counts, as measured rather than estimated:
+
+| environment | collected | executed | skipped |
+| --- | --: | --: | --: |
+| Feast installed | 18 | 18 | 0 |
+| Feast absent | 18 | 9 | 9 |
+
+The runner asserts the **executed** count, not the collected one, and that
+distinction is the whole guard: `unittest` collects a class decorated with
+`skipUnless` whether or not the condition holds, so a collected count cannot
+tell a run with Feast from a run without it — and cannot tell either from a run
+where the Feast tier silently stopped executing.
+
+`run_tests.py` additionally runs the sibling `feast_temporalstore` package's
+wire tests, which are bare `test_*` functions with no runner of their own, and
+it needs no third-party test runner so the open-source readiness job can
+execute both tiers without installing one.
 
 ## Benchmark
 
 `../benchmarks/bench_feature_serving.py` compares this store against SQLite,
-Redis and PostgreSQL through Feast itself. It is store-agnostic — it selects an
-arm by writing a `feature_store.yaml`, so it measures any Feast online store,
-including the RESP path. See `docs/feast_online_store_benchmark.md` for the
-method and the measured table.
+Valkey and PostgreSQL through Feast itself. It is store-agnostic — it selects an
+arm by an `online_store` block, so it measures any Feast online store,
+including the RESP path. See
+[`../../../docs/feast_online_store_benchmark.md`](../../../docs/feast_online_store_benchmark.md)
+for the method, what the harness refuses to report, and the measured tables.

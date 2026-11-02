@@ -444,8 +444,8 @@ class OnlineStoreTest(unittest.TestCase):
             tracked, written, "the tracked members must be exactly the keys written"
         )
 
-        # Now tear down: one set_members read, then a batched delete of every
-        # member plus the set itself.
+        # Now tear down: one set_members read, then bounded batches of deletes,
+        # then the tracking set dropped last and on its own.
         client = self._install(
             [
                 ok(
@@ -454,22 +454,94 @@ class OnlineStoreTest(unittest.TestCase):
                         "members": [list(k.encode()) for k in sorted(written)],
                     }
                 ),
-                {
-                    "status": {"ok": True, "code": "ok", "message": ""},
-                    "responses": [ok({"kind": "empty"})] * 3,
-                },
             ]
         )
         self.store.teardown(self.config, [self.view], [self.entity])
-        self.assertEqual(len(client.sent), 2)
+        self.assertEqual(client.sent[0][0], "/execute")
         self.assertEqual(client.sent[0][1]["command"]["kind"], "set_members")
-        deletes = client.sent[1][1]["commands"]
-        self.assertEqual([c["kind"] for c in deletes], ["common_delete"] * 3)
+        deleted_keys = []
+        for path, document in client.sent[1:]:
+            self.assertEqual(path, "/batch_execute")
+            for command in document["commands"]:
+                self.assertEqual(command["kind"], "common_delete")
+                deleted_keys.append(command["key"])
         self.assertEqual(
-            {c["key"] for c in deletes},
+            set(deleted_keys),
             written | {set_key},
             "teardown must delete every tracked key AND the tracking set",
         )
+        # The set is dropped LAST: while any key it names still exists, the set
+        # is the only thing that names it, so a run that failed partway can be
+        # repeated. Dropping it first would strand the survivors.
+        self.assertEqual(deleted_keys[-1], set_key)
+        self.assertEqual(
+            len(deleted_keys),
+            len(written) + 1,
+            "no key may be deleted twice",
+        )
+
+    def test_teardown_bounds_its_batches_instead_of_sending_one_per_key_count(self):
+        """THE REQUEST SIZE MUST NOT BE A PROPERTY OF THE DATA.
+
+        Found against a live node, not here: with the tracking set holding
+        5,000 keys, teardown built a single 5,001-command `/batch_execute` and
+        the call timed out. The test that was supposed to cover this path used
+        TWO keys, so the unbounded batch and a bounded one were the same
+        request and it could not tell them apart -- a guard whose population is
+        smaller than the bound it checks is not checking the bound.
+
+        So this one uses a population LARGER than the batch size and asserts on
+        the biggest request actually sent.
+        """
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        self.config.online_store.skip_dedup = True
+        self.config.online_store.track_keys_for_teardown = True
+        self.config.online_store.teardown_batch_size = 16
+        rows = 100  # > 16, so the bound has to chunk
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+
+        client = self._install()
+        self.store.online_write_batch(
+            self.config,
+            self.view,
+            [
+                (self._entity_key(i), {"trips": ValueProto(int64_val=i)}, now, None)
+                for i in range(rows)
+            ],
+            None,
+        )
+        written = {
+            c["key"] for c in client.sent[0][1]["commands"] if c["kind"] == "hash_multi_set"
+        }
+        self.assertEqual(len(written), rows, "the fixture must really hold 100 keys")
+
+        client = self._install(
+            [
+                ok(
+                    {
+                        "kind": "members",
+                        "members": [list(k.encode()) for k in sorted(written)],
+                    }
+                ),
+            ]
+        )
+        self.store.teardown(self.config, [self.view], [self.entity])
+
+        batches = [document["commands"] for _, document in client.sent[1:]]
+        self.assertTrue(batches, "teardown sent no deletes at all")
+        largest = max(len(b) for b in batches)
+        self.assertLessEqual(
+            largest,
+            16,
+            f"teardown sent a {largest}-command batch against a bound of 16; "
+            f"the request size is still a property of the data",
+        )
+        deleted = [c["key"] for b in batches for c in b]
+        set_key = self.store._teardown_set_key(self.config, "stats")
+        self.assertEqual(set(deleted), written | {set_key})
+        self.assertEqual(len(deleted), rows + 1, "no key may be deleted twice")
+        self.assertEqual(deleted[-1], set_key, "the tracking set is dropped last")
 
     def test_teardown_without_key_tracking_says_so_instead_of_claiming_success(self):
         client = self._install()
@@ -486,7 +558,7 @@ class OnlineStoreTest(unittest.TestCase):
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
 MINIMUM_EXECUTED_WITHOUT_FEAST = 9
-MINIMUM_EXECUTED_WITH_FEAST = 18
+MINIMUM_EXECUTED_WITH_FEAST = 19
 
 
 def main() -> int:

@@ -161,6 +161,25 @@ def arm_online_store_block(arm: str, args: argparse.Namespace, repo_dir: str) ->
             # turned off so the write phase is one round trip and the read
             # numbers are not reading a different write history per arm.
             "skip_dedup": True,
+            # ON FOR THE BENCHMARK, AND IT CHANGES A COLUMN, SO IT IS STATED.
+            # The command surface has no key-space scan, so without this flag
+            # `teardown_infra` cannot enumerate what the run wrote and every
+            # arm leaves its rows behind. Measured across one sweep: the shard
+            # went from 40,000 to 80,000 hash records, so each later point was
+            # reading a larger store than the one before it and an entity-count
+            # sweep was also, silently, a store-size sweep.
+            #
+            # The cost is on the WRITE path only -- one `set_add` per row into
+            # one per-view set -- so `write_seconds` here is not comparable with
+            # a deployment that leaves the flag off. The read columns, which are
+            # what this harness is for, are untouched by it.
+            "track_keys_for_teardown": True,
+            # `set_members` answers with the WHOLE tracking set in one response,
+            # and a response payload is a decimal array (~4 characters a byte),
+            # so a 50,000-entity view's teardown read is megabytes and does not
+            # fit the 10 s default. Raised for the harness only; it does not
+            # touch any read on the measured path.
+            "timeout_seconds": 120.0,
         }
     if arm == "ts_proxy":
         host, port = args.temporalstore_proxy.split(":")
@@ -230,6 +249,30 @@ def write_source_parquet(path: str, payload: str) -> None:
     if spec["blob_bytes"]:
         frame["blob"] = [b"\x00", b"\x01"]
     pd.DataFrame(frame).to_parquet(path, index=False)
+
+
+def temporalstore_record_count(args: argparse.Namespace) -> Optional[int]:
+    """Total records the shard reports holding, or ``None`` if it cannot be read.
+
+    Used to check that a teardown actually removed rows, and to stamp the store
+    size a latency figure was taken against: a read is answered out of a shard
+    of some size, and a sweep that grows the shard as it goes is not varying one
+    dimension.
+    """
+    import http.client
+
+    host, port = args.temporalstore.split(":")
+    try:
+        conn = http.client.HTTPConnection(host, int(port), timeout=10)
+        conn.request("GET", "/server/info")
+        shards = json.loads(conn.getresponse().read())
+        conn.close()
+    except Exception:
+        return None
+    for shard in shards if isinstance(shards, list) else []:
+        if shard.get("shard_id") == args.shard_id:
+            return shard.get("total_records")
+    return None
 
 
 def set_temporalstore_durability(args: argparse.Namespace, async_storage: bool) -> None:
@@ -483,10 +526,37 @@ def run_arm(
             f"{args.reads * args.batch} rows"
         )
 
+    # TEARDOWN IS CHECKED AGAINST THE STORE'S OWN RECORD COUNT, not against the
+    # absence of an exception. The opt-in key-tracking path is the only one that
+    # deletes anything, and a `teardown` that quietly deleted nothing would look
+    # identical to a working one from here -- while leaving every later arm in
+    # the sweep reading a larger store.
+    records_before = temporalstore_record_count(args) if arm.startswith("ts_") else None
     try:
         provider.teardown_infra(config.project, [view], [entity])
-    except Exception:
-        pass
+        teardown_error: Optional[str] = None
+    except Exception as exc:  # noqa: BLE001 -- reported, not swallowed
+        teardown_error = f"{type(exc).__name__}: {exc}"
+    if teardown_error:
+        print(f"    teardown FAILED: {teardown_error}")
+    elif records_before is not None:
+        records_after = temporalstore_record_count(args)
+        if records_after is None:
+            print("    teardown reported ok; could not read the record count back")
+        else:
+            removed = records_before - records_after
+            print(
+                f"    teardown removed {removed:,} records "
+                f"({records_before:,} -> {records_after:,}); "
+                f"wrote {args.entities:,} entities"
+            )
+            if removed <= 0:
+                raise SystemExit(
+                    f"{arm}: teardown reported success but the shard still holds "
+                    f"{records_after:,} records (was {records_before:,}). A teardown "
+                    f"that deletes nothing leaves every later measurement reading a "
+                    f"larger store than the one before it."
+                )
 
     return ArmResult(
         arm=arm,
@@ -602,25 +672,46 @@ def main() -> int:
             )
 
     # -- the control -------------------------------------------------------
+    # ONE CHECK PER PAYLOAD GROUP, AND NO `break`. The first version of this
+    # block filtered `results` by ARM only and then broke out of the loop
+    # unconditionally, so with `--payloads small,large` it compared the small
+    # group's two SQLite runs and never looked at the large group at all: the
+    # second payload's control could drift arbitrarily and the run still
+    # reported itself usable. A guard that filters its own population down to
+    # one group is disarmed by adding a second. The results carry the payload
+    # width, so group on that -- the same key `render` already groups by.
     control_void: Optional[str] = None
-    for payload in payloads:
-        group = [r for r in results if r.arm in ("sqlite", "sqlite_control")]
+    drift_reasons: List[str] = []
+    for payload_bytes in sorted({r.payload_bytes_per_row for r in results}):
+        group = [r for r in results if r.payload_bytes_per_row == payload_bytes]
         first = next((r for r in group if r.arm == "sqlite"), None)
         last = next((r for r in group if r.arm == "sqlite_control"), None)
-        if first and last and first.warm_b1.p50 > 0:
-            drift = abs(last.warm_b1.p50 - first.warm_b1.p50) / first.warm_b1.p50
+        if not (first and last):
+            # Said out loud: without both control runs there IS no control, and
+            # a silent pass here would read as one.
             print(
-                f"\ncontrol: SQLite warm p50 first={first.warm_b1.p50:,.0f} us "
-                f"last={last.warm_b1.p50:,.0f} us drift={drift:.1%}"
+                f"\ncontrol: payload {payload_bytes} B/row has no sqlite/"
+                f"sqlite_control pair -- this group has NO control"
             )
-            if drift > args.control_tolerance:
-                control_void = (
-                    f"the control arm drifted {drift:.1%} between its first and "
-                    f"last run (tolerance {args.control_tolerance:.0%}); the host "
-                    f"or the harness was the variable, so no cross-store "
-                    f"comparison in this run is usable"
-                )
-        break
+            continue
+        if first.warm_b1.p50 <= 0:
+            continue
+        drift = abs(last.warm_b1.p50 - first.warm_b1.p50) / first.warm_b1.p50
+        print(
+            f"\ncontrol: payload {payload_bytes} B/row SQLite warm p50 "
+            f"first={first.warm_b1.p50:,.0f} us last={last.warm_b1.p50:,.0f} us "
+            f"drift={drift:.1%}"
+        )
+        if drift > args.control_tolerance:
+            drift_reasons.append(f"{payload_bytes} B/row drifted {drift:.1%}")
+    if drift_reasons:
+        control_void = (
+            f"the control arm drifted beyond the {args.control_tolerance:.0%} "
+            f"tolerance between its first and last run ("
+            + "; ".join(drift_reasons)
+            + "); the host or the harness was the variable, so no cross-store "
+            "comparison in this run is usable"
+        )
 
     provisional = peak_load > args.max_load
     table = render(results, args, provisional)
