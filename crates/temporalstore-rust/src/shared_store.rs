@@ -3990,6 +3990,84 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             ttl_ms: *ttl_ms,
             selection_type: sdk::control_state_selection_type_to_proto(*selection_type) as i32,
         }),
+        Command::BucketTake {
+            key,
+            tokens,
+            capacity,
+            refill_per_sec,
+        } => v1::command::Kind::BucketTake(v1::BucketTake {
+            key: key.clone(),
+            tokens: *tokens,
+            capacity: *capacity,
+            refill_per_sec: *refill_per_sec,
+        }),
+        Command::CommonDelete { key } => {
+            v1::command::Kind::CommonDelete(v1::CommonDelete { key: key.clone() })
+        }
+        Command::CommonPersist { key } => {
+            v1::command::Kind::CommonPersist(v1::CommonPersist { key: key.clone() })
+        }
+        Command::FeatureDelete { key } => {
+            v1::command::Kind::FeatureDelete(v1::FeatureDelete { key: key.clone() })
+        }
+        Command::FeatureReplace {
+            key,
+            start_ms,
+            end_ms,
+            points,
+        } => v1::command::Kind::FeatureReplace(v1::FeatureReplace {
+            key: key.clone(),
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            points: points
+                .iter()
+                .map(|point| v1::FeaturePoint {
+                    timestamp_ms: point.timestamp_ms,
+                    value: point.value.clone(),
+                })
+                .collect(),
+        }),
+        Command::FeatureAppendWithPolicy { key, points, policy } => {
+            v1::command::Kind::FeatureAppendWithPolicy(v1::FeatureAppendWithPolicy {
+                key: key.clone(),
+                points: points
+                    .iter()
+                    .map(|point| v1::FeaturePoint {
+                        timestamp_ms: point.timestamp_ms,
+                        value: point.value.clone(),
+                    })
+                    .collect(),
+                policy: sdk::feature_write_policy_to_proto(*policy) as i32,
+            })
+        }
+        Command::SeenCheck {
+            key,
+            member,
+            window_ms,
+        } => v1::command::Kind::SeenCheck(v1::SeenCheck {
+            key: key.clone(),
+            member: member.clone(),
+            window_ms: *window_ms,
+        }),
+        Command::StringSetConditional {
+            key,
+            value,
+            ttl_ms,
+            condition,
+            return_old,
+            keep_ttl,
+        } => v1::command::Kind::StringSetConditional(v1::StringSetConditional {
+            key: key.clone(),
+            value: value.clone(),
+            // Explicit presence, carried straight across: absent is "discard the deadline" and
+            // Some(0) is "arm it for zero", which are different requests.
+            ttl_ms: *ttl_ms,
+            condition: sdk::string_set_condition_to_proto(*condition) as i32,
+            return_old: *return_old,
+            // A plain bool, so absent decodes to false -- the behaviour records written before
+            // this field existed were recorded with.
+            keep_ttl: *keep_ttl,
+        }),
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
@@ -10953,9 +11031,6 @@ mod tests {
 /// covering one requires deleting its name here, in the same change. So the work left is visible
 /// in the tree instead of in a plan, and progress cannot be undone quietly.
 const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
-    "BucketTake",
-    "CommonDelete",
-    "CommonPersist",
     "ContextCompressEvents",
     "ContextMarkEmbeddingDirty",
     "ContextMarkSummaryDirty",
@@ -10974,11 +11049,6 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "ContextWriteExtractedEvent",
     "ContextWriteIndexRef",
     "ContextWritePackAudit",
-    "FeatureAppendWithPolicy",
-    "FeatureDelete",
-    "FeatureReplace",
-    "SeenCheck",
-    "StringSetConditional",
 ];
 
 /// THE NINE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
@@ -11229,6 +11299,186 @@ fn an_unknown_control_state_tag_is_refused_rather_than_defaulted() {
         sdk::control_state_selection_type_from_proto(2).expect("Last must decode"),
         crate::types::ControlStateSelectionType::Last
     );
+}
+
+/// THE EIGHT WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// A mapping is not a format: `encode_wal_proto_frame` chooses the arm, so each case is checked
+/// three ways -- the frame declares protobuf, the payload does NOT parse as JSON, and the command
+/// returns field for field.
+///
+/// THE TWO PRESENCE RULES ARE THE POINT OF THIS BATCH, and they differ on purpose:
+///   * `ttl_ms` has explicit presence, so `None` (discard the deadline) and `Some(0)` (arm zero)
+///     stay different. Both appear below.
+///   * `keep_ttl` does NOT, because absent must mean `false` -- the behaviour every record
+///     written before that field existed was recorded with. A `true` and a `false` case appear
+///     below so a mapping that dropped the field could not pass.
+/// Every enum-carrying case names a DIFFERENT tag, so a mapping that collapsed them onto one
+/// value could not pass either.
+#[test]
+fn the_covered_writes_in_the_eight_batch_are_framed_as_protobuf_and_round_trip() {
+    use crate::types::{FeaturePoint, FeatureWritePolicy, StringSetCondition};
+
+    let point = |timestamp_ms: u64, value: &[u8]| FeaturePoint {
+        timestamp_ms,
+        value: value.to_vec(),
+    };
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "BucketTake",
+            Command::BucketTake {
+                key: "k".into(),
+                tokens: 1.5,
+                capacity: 10.0,
+                refill_per_sec: 0.25,
+            },
+        ),
+        ("CommonDelete", Command::CommonDelete { key: "k".into() }),
+        ("CommonPersist", Command::CommonPersist { key: "k".into() }),
+        ("FeatureDelete", Command::FeatureDelete { key: "k".into() }),
+        (
+            "FeatureReplace",
+            Command::FeatureReplace {
+                key: "k".into(),
+                start_ms: 1,
+                end_ms: 2,
+                points: vec![point(1, b"a"), point(2, b"")],
+            },
+        ),
+        (
+            "FeatureAppendWithPolicy (Block)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: vec![point(3, b"c")],
+                policy: FeatureWritePolicy::Block,
+            },
+        ),
+        (
+            "FeatureAppendWithPolicy (InsertIfAbsent)",
+            Command::FeatureAppendWithPolicy {
+                key: "k".into(),
+                points: Vec::new(),
+                policy: FeatureWritePolicy::InsertIfAbsent,
+            },
+        ),
+        (
+            "SeenCheck",
+            Command::SeenCheck {
+                key: "k".into(),
+                member: b"m".to_vec(),
+                window_ms: 60_000,
+            },
+        ),
+        (
+            "StringSetConditional (ttl None, keep_ttl true)",
+            Command::StringSetConditional {
+                key: "k".into(),
+                value: b"v".to_vec(),
+                // None is "discard the deadline", and keep_ttl true is the third outcome.
+                ttl_ms: None,
+                condition: StringSetCondition::IfNotExists,
+                return_old: true,
+                keep_ttl: true,
+            },
+        ),
+        (
+            "StringSetConditional (ttl Some(0), keep_ttl false)",
+            Command::StringSetConditional {
+                key: "k".into(),
+                value: Vec::new(),
+                // Some(0) must NOT come back as None: a zero a caller sent is a value.
+                ttl_ms: Some(0),
+                condition: StringSetCondition::IfExists,
+                return_old: false,
+                keep_ttl: false,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: ten cases over the eight commands this batch mapped -- two of them
+    // appear twice because their enum tag and their presence rules are what could break.
+    assert_eq!(cases.len(), 10, "ten cases over the eight commands this batch mapped");
+
+    for (name, command) in cases {
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+/// AN UNKNOWN CONDITION OR POLICY TAG IS REFUSED, NOT DEFAULTED.
+///
+/// `Always` would make a create-only write overwrite somebody else's value, and `Block` and
+/// `Upsert` are opposite answers to the same question -- so a `try_from(..).unwrap_or_default()`
+/// is a silently wrong write in both cases.
+#[test]
+fn an_unknown_condition_or_policy_tag_is_refused_rather_than_defaulted() {
+    use crate::types::{FeatureWritePolicy, StringSetCondition};
+
+    // DENOMINATOR: the tags that must be ACCEPTED, so a decoder refusing everything cannot pass.
+    for (number, expected) in [
+        (1, StringSetCondition::Always),
+        (2, StringSetCondition::IfExists),
+        (3, StringSetCondition::IfNotExists),
+    ] {
+        assert_eq!(
+            sdk::string_set_condition_from_proto(number).expect("a known condition must decode"),
+            expected
+        );
+    }
+    for (number, expected) in [
+        (1, FeatureWritePolicy::Upsert),
+        (2, FeatureWritePolicy::InsertIfAbsent),
+        (3, FeatureWritePolicy::ReplaceExisting),
+        (4, FeatureWritePolicy::Block),
+    ] {
+        assert_eq!(
+            sdk::feature_write_policy_from_proto(number).expect("a known policy must decode"),
+            expected
+        );
+    }
+    for number in [0, 99, -1] {
+        assert!(
+            sdk::string_set_condition_from_proto(number).is_err(),
+            "condition {number} was accepted, so an unknown tag is being guessed at"
+        );
+        assert!(
+            sdk::feature_write_policy_from_proto(number).is_err(),
+            "policy {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
 }
 
 #[test]

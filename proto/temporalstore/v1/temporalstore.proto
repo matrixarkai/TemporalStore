@@ -256,6 +256,14 @@ message Command {
     ControlStateSetAndGet control_state_set_and_get = 34;
     ControlStateSetAndGetWithOptions control_state_set_and_get_with_options = 35;
     ControlStateSelectionSet control_state_selection_set = 36;
+    BucketTake bucket_take = 37;
+    CommonDelete common_delete = 38;
+    CommonPersist common_persist = 39;
+    FeatureDelete feature_delete = 40;
+    FeatureReplace feature_replace = 41;
+    FeatureAppendWithPolicy feature_append_with_policy = 42;
+    SeenCheck seen_check = 43;
+    StringSetConditional string_set_conditional = 44;
   }
 }
 
@@ -856,4 +864,95 @@ message SharedStoreReplayCursorObject {
 message SharedStoreRoutingRangeStamp {
   uint32 start_routing_bucket = 1;
   uint32 end_routing_bucket = 2;
+}
+
+// ===========================================================================================
+// Eight writes that reached the durable WAL as JSON because the proto did not model them.
+// ===========================================================================================
+
+// Whether a conditional string write may create, may only replace, or does not care.
+// UNSPECIFIED is refused on decode: guessing `Always` would turn a create-only write into one
+// that overwrites.
+enum StringSetCondition {
+  STRING_SET_CONDITION_UNSPECIFIED = 0;
+  STRING_SET_CONDITION_ALWAYS = 1;
+  STRING_SET_CONDITION_IF_EXISTS = 2;
+  STRING_SET_CONDITION_IF_NOT_EXISTS = 3;
+}
+
+// What an append does when a point already exists at the same instant. UNSPECIFIED is refused:
+// `Block` and `Upsert` are opposite answers, so a default would silently pick one.
+enum FeatureWritePolicy {
+  FEATURE_WRITE_POLICY_UNSPECIFIED = 0;
+  FEATURE_WRITE_POLICY_UPSERT = 1;
+  FEATURE_WRITE_POLICY_INSERT_IF_ABSENT = 2;
+  FEATURE_WRITE_POLICY_REPLACE_EXISTING = 3;
+  FEATURE_WRITE_POLICY_BLOCK = 4;
+}
+
+message BucketTake {
+  string key = 1;
+  double tokens = 2;
+  double capacity = 3;
+  double refill_per_sec = 4;
+}
+
+message CommonDelete {
+  string key = 1;
+}
+
+message CommonPersist {
+  string key = 1;
+}
+
+message FeatureDelete {
+  string key = 1;
+}
+
+message FeatureReplace {
+  string key = 1;
+  uint64 start_ms = 2;
+  uint64 end_ms = 3;
+  // Reuses the existing point message rather than restating its two fields.
+  repeated FeaturePoint points = 4;
+}
+
+message FeatureAppendWithPolicy {
+  string key = 1;
+  repeated FeaturePoint points = 2;
+  FeatureWritePolicy policy = 3;
+}
+
+message SeenCheck {
+  string key = 1;
+  bytes member = 2;
+  uint64 window_ms = 3;
+}
+
+// THE THREE-OUTCOME FIELD, AND WHY THE TWO PRESENCE RULES DIFFER.
+//
+// A value-replacing write can do one of three things to the deadline it overwrites: arm a new
+// one, DISCARD the old one, or LEAVE IT ALONE. Two fields spell that, and they are modelled
+// deliberately differently:
+//
+//   * `ttl_ms` carries EXPLICIT PRESENCE. Absent means discard the deadline; present means arm
+//     that value, including zero. Collapsing absent onto a zero default would lose the
+//     difference between "clear it" and "arm it for 0 ms".
+//
+//   * `keep_ttl` DOES NOT, and must not. Absent has to mean `false`, because that is the
+//     clearing behaviour every record written before the field existed was recorded with. If it
+//     carried explicit presence and absent were read as "leave the deadline alone", every one of
+//     those records would CHANGE MEANING on replay -- an old record arming 5000 ms would replay
+//     as no deadline at all, silently dropping a deadline that was durable.
+//
+// `ttl_ms` present together with `keep_ttl` true is contradictory and unreachable: the parser
+// refuses an expiry beside KEEPTTL. It is not modelled as valid, and the shard treats an arming
+// TTL as the winner if one is ever built by hand.
+message StringSetConditional {
+  string key = 1;
+  bytes value = 2;
+  optional uint64 ttl_ms = 3;
+  StringSetCondition condition = 4;
+  bool return_old = 5;
+  bool keep_ttl = 6;
 }
