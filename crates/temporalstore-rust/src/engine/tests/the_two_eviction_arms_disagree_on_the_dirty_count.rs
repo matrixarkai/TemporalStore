@@ -89,7 +89,7 @@ fn blocks_and_objects(
         let n = bucket
             .block_index
             .values()
-            .filter(|block| !block.deleted && block.dirty)
+            .filter(|block| !block.deleted() && block.dirty())
             .count() as u64;
         if n > 0 {
             blocks.insert(*bucket_id, n);

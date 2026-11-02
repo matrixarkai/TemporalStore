@@ -102,7 +102,7 @@ fn both_sources(
         let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, block) in &bucket.block_index {
-                if block.model_id.as_str() == "hash"
+                if block.model_id().as_str() == "hash"
                     && &**named.at(bucket.routing_bucket, *handle) == key
                 {
                     addresses.push(block.address.clone());

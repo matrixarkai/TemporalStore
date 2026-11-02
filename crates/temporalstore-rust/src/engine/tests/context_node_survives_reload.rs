@@ -272,9 +272,9 @@ fn whether_the_reconcile_keeps_a_container_only_element_when_it_is_run_by_name()
             let object_key = named.at(*bucket_id, *handle);
             if object_key.as_ref() == node_key {
                 index_entries_for_node.push((
-                    block.model_id.to_string(),
+                    block.model_id().to_string(),
                     None::<String>,
-                    block.deleted,
+                    block.deleted(),
                 ));
             }
             if object_key.as_ref() == "control-hash" {

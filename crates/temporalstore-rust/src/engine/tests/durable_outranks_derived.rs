@@ -1056,7 +1056,7 @@ fn an_unnamed_hash_block_is_skipped_and_the_durable_map_keeps_the_field() {
         let mut entries = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, block) in &bucket.block_index {
-                if block.model_id.as_str() == "hash"
+                if block.model_id().as_str() == "hash"
                     && &**named.at(bucket.routing_bucket, *handle) == "un-hash"
                 {
                     entries += 1;
@@ -1250,7 +1250,7 @@ fn an_empty_zset_member_is_a_whole_component_and_survives_the_fold_shape() {
             let mut addresses: Vec<crate::block_store::ElementEntry> = Vec::new();
             for bucket in shard.bucket_index.bucket_map.values() {
                 for (handle, block) in &bucket.block_index {
-                    if block.model_id.as_str() == "zset"
+                    if block.model_id().as_str() == "zset"
                         && &**named.at(bucket.routing_bucket, *handle) == "mt-zset"
                     {
                         addresses.push(block.address.clone());
@@ -1768,7 +1768,7 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
         .bucket_index
         .bucket_map
         .values()
-        .map(|bucket| bucket.block_index.values().filter(|block| !block.deleted).count())
+        .map(|bucket| bucket.block_index.values().filter(|block| !block.deleted()).count())
         .sum();
     assert!(
         live_blocks >= 1,

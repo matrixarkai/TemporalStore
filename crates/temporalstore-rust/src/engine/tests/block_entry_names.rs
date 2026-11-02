@@ -150,7 +150,7 @@ fn name_spread(engine: &TemporalEngine) -> NameSpread {
         for (handle, block) in bucket.block_index.iter() {
             held += 1;
             keys.insert(named.at(bucket.routing_bucket, *handle));
-            models.insert(block.model_id.as_str());
+            models.insert(block.model_id().as_str());
             // Every entry's name is the same absence, so this set holds one member for any
             // non-empty bucket. The histogram it feeds is restated where it is read.
             components.insert(None::<&str>);
@@ -532,13 +532,13 @@ fn key_allocation_census(engine: &TemporalEngine) -> KeyAllocationCensus {
         for (handle, block) in bucket.block_index.iter() {
             let object_key = named.at(bucket.routing_bucket, *handle);
             let slot = by_object
-                .entry((block.model_id.to_string(), object_key.to_string()))
+                .entry((block.model_id().to_string(), object_key.to_string()))
                 .or_default();
             slot.0.insert(object_key.as_ptr() as usize);
             // The spelling is a `&'static str` off the registry now, not an allocation: one
             // address per kind for the whole process, so this census reads 1 BY CONSTRUCTION
             // rather than because a pool happened to be consulted. Kept as the control it was.
-            slot.1.insert(block.model_id.as_str().as_ptr() as usize);
+            slot.1.insert(block.model_id().as_str().as_ptr() as usize);
             slot.2 += 1;
         }
     }
@@ -685,18 +685,12 @@ fn capture_the_stored_spelling_of_a_block_entry() {
         length: u64,
         flags: (bool, bool, bool),
     ) -> BlockIndex {
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::stored_model_kind(model),
-            address: ElementEntry::from_parts(
-                slab,
-                offset,
-                length,
-                Some(4),
-                Some(42),
-            ),
-            dirty: flags.0,
-            deleted: flags.1,
-        }
+        BlockIndex::new(
+            crate::engine::storage_bucket_internals::stored_model_kind(model),
+            ElementEntry::from_parts( slab, offset, length, Some(4), Some(42), ),
+            flags.0,
+            flags.1,
+        )
     }
 
     // THROUGH THE WRAPPER. The entry has no `Serialize` of its own, and it no longer takes an
@@ -786,15 +780,15 @@ fn capture_the_stored_spelling_of_a_block_entry() {
             println!(
                 "        (\"{}\", \"{}\", {}, {}, {}, {}, {}, {}, {}),",
                 named.at(bucket.routing_bucket, *handle),
-                entry.model_id,
+                entry.model_id(),
                 // The component column is `None` on every row now: an entry names a block. The
                 // column is kept in the printed shape so an existing golden still lines up.
                 "None".to_string(),
                 entry.address.block_slab_id(),
                 entry.address.offset(),
                 entry.address.length(),
-                entry.dirty,
-                entry.deleted,
+                entry.dirty(),
+                entry.deleted(),
                 entry.log_backed()
             );
         }
@@ -935,18 +929,12 @@ const OLD_STORE_BLOCKS: &[(&str, &str, Option<&str>, u64, u64, u64, bool, bool, 
 pub(super) const BLOCK_FIXTURE_OBJECT_KEY: &str = "k";
 
 pub(super) fn block_fixture(length: u64, flags: (bool, bool)) -> BlockIndex {
-    BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: crate::block_store::ElementEntry::from_parts(
-            1,
-            2,
-            length,
-            Some(4),
-            Some(42),
-        ),
-        dirty: flags.0,
-        deleted: flags.1,
-    }
+    BlockIndex::new(
+        crate::engine::storage_bucket_internals::StoredModelKind::String,
+        crate::block_store::ElementEntry::from_parts( 1, 2, length, Some(4), Some(42), ),
+        flags.0,
+        flags.1,
+    )
 }
 
 /// THE STORED SPELLING OF A PAGE ENTRY, character for character, over three shapes.
@@ -1176,13 +1164,13 @@ fn an_index_written_before_this_change_loads_block_for_block() {
             .map(|(_, _, object_key, block)| {
             (
                 object_key.to_string(),
-                block.model_id.to_string(),
+                block.model_id().to_string(),
                 None::<String>,
                 block.address.block_slab_id(),
                 block.address.offset(),
                 block.address.length(),
-                block.dirty,
-                block.deleted,
+                block.dirty(),
+                block.deleted(),
             )
         })
         .collect();
@@ -1993,13 +1981,13 @@ fn block_tuples(
             .map(|(_, _, object_key, block)| {
             (
                 object_key.to_string(),
-                block.model_id.to_string(),
+                block.model_id().to_string(),
                 None::<String>,
                 block.address.block_slab_id(),
                 block.address.offset(),
                 block.address.length(),
-                block.dirty,
-                block.deleted,
+                block.dirty(),
+                block.deleted(),
                 block.log_backed(),
             )
         })
@@ -2251,7 +2239,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
         println!(
             "  key={:?} kind={} slab={} off={} len={} log_backed={}",
             object_key,
-            block.model_id.as_str(),
+            block.model_id().as_str(),
             block.address.block_slab_id(),
             block.address.offset(),
             block.address.length(),
@@ -2291,7 +2279,7 @@ fn a_record_whose_block_handle_was_omitted_still_names_its_block_after_the_fold(
             block.log_backed(),
             "{label}: the block must come back WAL-resident, which is the shape the hazard is about"
         );
-        assert!(!block.deleted, "{label}: the block must not come back deleted");
+        assert!(!block.deleted(), "{label}: the block must not come back deleted");
     }
 
     // And the object is named by the bucket that holds it, which is what a per-object read
@@ -2497,12 +2485,12 @@ fn an_ungated_store_is_refused_before_it_is_served() {
         super::blocks_with_identity(&decoded.bucket_index)
             .into_iter()
             .filter(|(_, _, _, block)| {
-                matches!(block.model_id.as_str(), "hash" | "zset" | "set" | "list")
+                matches!(block.model_id().as_str(), "hash" | "zset" | "set" | "list")
             })
             .map(|(_, _, object_key, block)| {
                 (
                     object_key.to_string(),
-                    block.model_id.as_str().to_string(),
+                    block.model_id().as_str().to_string(),
                     element_name_of(block),
                 )
             })

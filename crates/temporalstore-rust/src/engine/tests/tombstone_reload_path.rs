@@ -95,12 +95,12 @@ fn entry_counts(engine: &TemporalEngine) -> (usize, usize) {
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != KEY
             {
                 continue;
             }
-            if block.deleted {
+            if block.deleted() {
                 tombstoned += 1;
             } else {
                 live += 1;

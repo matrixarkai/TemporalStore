@@ -90,12 +90,7 @@ fn dirty_key_set_arm(set: &crate::engine::state::DirtyKeySet) -> &'static str {
 fn probe_block(object: &str, slot: u64) -> (Arc<str>, BlockIndex) {
     (
         Arc::from(object),
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-            address: ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)),
-            dirty: false,
-            deleted: false,
-        },
+        BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, ElementEntry::from_parts(1, slot * 64, 64, Some(slot), Some(slot)), false, false),
     )
 }
 /// THE SHRINK QUESTION, on every path that can shrink.

@@ -275,7 +275,7 @@ fn population(engine: &TemporalEngine) -> Population {
             // it feeds still has a subject: it compares grouping by the engine's object id against
             // grouping by (kind, key), and those two can still disagree.
             *out.component_free_by_object_id.entry(id).or_default() += 1;
-            let kind_key = format!("{:?}\u{1}{}", entry.model_id, object_key);
+            let kind_key = format!("{:?}\u{1}{}", entry.model_id(), object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
             *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
@@ -326,7 +326,7 @@ fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
             *per_key
                 .entry(format!(
                     "{:?}\u{1}{}",
-                    entry.model_id,
+                    entry.model_id(),
                     named.at(node.routing_bucket, *handle)
                 ))
                 .or_default() += 1;

@@ -164,8 +164,8 @@ fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) 
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted
-                || block.model_id.as_str() != kind
+            if block.deleted()
+                || block.model_id().as_str() != kind
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
@@ -920,8 +920,8 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
             let mut total = 0u64;
             for bucket in shard.bucket_index.bucket_map.values() {
                 for (handle, block) in &bucket.block_index {
-                    if block.deleted
-                        || block.model_id.as_str() != kind
+                    if block.deleted()
+                        || block.model_id().as_str() != kind
                         || &**named.at(bucket.routing_bucket, *handle) != "priced"
                     {
                         continue;

@@ -127,7 +127,7 @@ fn remove_pages_of_kind(
         bucket.block_index.retain(
             block_slab_live,
             crate::engine::state::StaleCause::Overwrite,
-            |_handle, block| block.model_id != kind,
+            |_handle, block| block.model_id() != kind,
         );
     }
 }

@@ -63,17 +63,14 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
     bucket.set_in_memory(true);
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_block(&object_key, 
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
-                "string",
-            )
-            .expect("`string` is a stored model spelling"),
-            address: Default::default(),
+        BlockIndex::new(
+            crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name( "string", ) .expect("`string` is a stored model spelling"),
+            Default::default(),
             // CLEAN, which is the only interesting starting state: a block that is already dirty
             // would satisfy every assertion below whatever the mark did.
-            dirty: false,
-            deleted: false,
-        },
+            false,
+            false,
+        ),
         &mut live,
     );
     shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
@@ -127,7 +124,7 @@ fn any_block_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
         .expect("the fixture bucket must exist")
         .block_index
         .values()
-        .any(|block| block.dirty)
+        .any(|block| block.dirty())
 }
 
 #[test]

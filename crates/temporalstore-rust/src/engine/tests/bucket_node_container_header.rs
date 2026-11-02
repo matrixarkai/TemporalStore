@@ -597,13 +597,19 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
     // The inputs differ. Asserted before anything downstream is compared.
     let entry_widths = [
         size_of::<Entry<1>>(),
+        // ENTRY<2> IS THE LIVE WIDTH AND WAS NOT SAMPLED. `Entry<N>` is `[u64; N]`, so 16 B is
+        // `Entry<2>` -- the sample set jumped 8 to 24 and the entry landed between them. The
+        // arm's own guard caught that rather than passing over a sample set that no longer
+        // contains reality, which is the behaviour to preserve: 24 is kept as a HISTORICAL
+        // sample so the sweep still spans the widths this type has actually had.
+        size_of::<Entry<2>>(),
         size_of::<Entry<3>>(),
         size_of::<Entry<5>>(),
         size_of::<Entry<7>>(),
         size_of::<Entry<25>>(),
     ];
     assert_eq!(
-        [8, 24, 40, 56, 200], entry_widths,
+        [8, 16, 24, 40, 56, 200], entry_widths,
         "the stand-in entries are not the widths claimed"
     );
     for pair in entry_widths.windows(2) {
@@ -616,6 +622,7 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
 
     let index_widths = [
         size_of::<MirrorIndex<Entry<1>>>(),
+        size_of::<MirrorIndex<Entry<2>>>(),
         size_of::<MirrorIndex<Entry<3>>>(),
         size_of::<MirrorIndex<Entry<5>>>(),
         size_of::<MirrorIndex<Entry<7>>>(),
@@ -623,6 +630,7 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
     ];
     let node_widths = [
         size_of::<MirrorNode<MirrorIndex<Entry<1>>>>(),
+        size_of::<MirrorNode<MirrorIndex<Entry<2>>>>(),
         size_of::<MirrorNode<MirrorIndex<Entry<3>>>>(),
         size_of::<MirrorNode<MirrorIndex<Entry<5>>>>(),
         size_of::<MirrorNode<MirrorIndex<Entry<7>>>>(),
@@ -631,18 +639,18 @@ fn the_node_cannot_see_how_wide_an_entry_is() {
 
     println!("\n=== the entry's width, and what it does to the index and the node ===");
     println!("  {:<14} {:>12} {:>12}", "entry", "block index", "node");
-    for i in 0..5 {
+    for i in 0..6 {
         println!("  {:<14} {:>12} {:>12}", entry_widths[i], index_widths[i], node_widths[i]);
     }
 
     assert_eq!(
-        [24, 24, 24, 24, 24], index_widths,
+        [24, 24, 24, 24, 24, 24], index_widths,
         "the block index's width moved with the entry's: {index_widths:?}. One of its arms is \
          holding an entry INLINE, and the invariance this module asserts is not a property of this \
          shape any more"
     );
     assert_eq!(
-        [96, 96, 96, 96, 96], node_widths,
+        [96, 96, 96, 96, 96, 96], node_widths,
         "the node's width moved with the entry's: {node_widths:?}"
     );
     // And the live width is one of the five, so this is not a statement about stand-ins alone.

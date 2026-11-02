@@ -284,8 +284,8 @@ fn live_entries(engine: &TemporalEngine, model_id: &str, object_key: &str) -> us
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted
-                || block.model_id.as_str() != model_id
+            if block.deleted()
+                || block.model_id().as_str() != model_id
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;

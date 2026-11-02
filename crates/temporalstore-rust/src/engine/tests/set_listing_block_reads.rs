@@ -191,9 +191,9 @@ fn payload_members(engine: &TemporalEngine, object_key: &str) -> BTreeSet<Vec<u8
     let mut stated = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || block.deleted
+                || block.deleted()
             {
                 continue;
             }
@@ -817,7 +817,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
                 bucket
                     .block_index
                     .values()
-                    .filter(|block| !block.deleted)
+                    .filter(|block| !block.deleted())
                     .count()
             })
             .sum();

@@ -954,12 +954,12 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
             // `identity_of` reaches for one -- the lookup never holds a deleted block. A marker for
             // a block nothing names would name no object, so it is not written.
             if let Some(beside) = block
-                .deleted
+                .deleted()
                 .then(|| identities.identity_of(runtime_bucket, *handle, block))
                 .flatten()
             {
                 bucket.delete_markers
-                    .insert(format!("{}:{}", block.model_id, beside.object_key));
+                    .insert(format!("{}:{}", block.model_id(), beside.object_key));
             }
         }
     }
@@ -1500,7 +1500,7 @@ pub(super) fn rebuild_bucket_block_ownership(
             bucket
                 .block_index
                 .values()
-                .filter(|block| block.deleted)
+                .filter(|block| block.deleted())
                 .map(move |block| {
                     (
                         *routing_bucket,
@@ -1577,12 +1577,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         let object_key = Arc::clone(&entry.object_key);
         let handle = bucket.insert_block(
             &object_key,
-            BlockIndex {
-                model_id: entry.kind,
-                address: entry.address,
-                dirty: entry.dirty,
-                deleted: entry.deleted,
-            },
+            BlockIndex::new(entry.kind, entry.address, entry.dirty, entry.deleted),
             &mut shard.bucket_index.block_slab_live,
         );
         // THE BLOCK IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
@@ -1643,7 +1638,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         // later append position, where a DROPPED tombstone over a removed element resurrects it.
         let live_again = resident_holds_component(
             shard,
-            tombstone.model_id,
+            tombstone.model_id(),
             &element.object_key,
             &element.component,
         );
@@ -1669,7 +1664,7 @@ pub(super) fn rebuild_bucket_block_ownership(
                 }
             });
         let address = tombstone.address.clone();
-        let model_id = tombstone.model_id;
+        let model_id = tombstone.model_id();
         bucket.insert_block(
             &element.object_key,
             tombstone,
@@ -1712,7 +1707,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         bucket.set_loading(false);
         bucket.set_in_memory(!bucket.block_index.is_empty());
         let every_block_deleted =
-            !bucket.block_index.is_empty() && bucket.block_index.values().all(|block| block.deleted);
+            !bucket.block_index.is_empty() && bucket.block_index.values().all(|block| block.deleted());
         bucket.set_deleted(every_block_deleted);
         update_bucket_layout(shard_id, bucket, &keys);
     }
@@ -2019,7 +2014,7 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
             from_index += 1;
             entries.push(LiveBlockEntry {
                 object_key: Arc::clone(beside),
-                kind: block.model_id,
+                kind: block.model_id(),
                 // `None`: THIS WALK IS OVER THE INDEX, AND AN INDEX ENTRY NAMES A BLOCK.
                 //
                 // This cloned `block.component`, under a note about avoiding a double allocation
@@ -2030,8 +2025,8 @@ pub(super) fn collect_bucket_index_live_block_entries(shard: &ShardState) -> Vec
                 // container element from it: see `rebuild_unserialized_model_maps_from_bucket_index`.
                 component: None,
                 address: block.address.clone(),
-                dirty: block.dirty,
-                deleted: block.deleted,
+                dirty: block.dirty(),
+                deleted: block.deleted(),
                 log_backed: block.log_backed(),
                 // The key of the map being walked. This walk always knew it; it was iterating
                 // `.values()` and throwing it away, which is why five readers downstream had to
@@ -2524,9 +2519,9 @@ pub(super) fn release_bucket_blocks(
                 // bucket's lookup entries cannot be shown to drop only its own.
                 return Some(BucketReleaseRefusal::LookupNotLocal);
             };
-            if block.dirty {
+            if block.dirty() {
                 Some(BucketReleaseRefusal::BlockDirty)
-            } else if block.deleted {
+            } else if block.deleted() {
                 Some(BucketReleaseRefusal::BlockDeleted)
             } else if block_routing_bucket(
                 beside,
@@ -2540,7 +2535,7 @@ pub(super) fn release_bucket_blocks(
                 // under a stale range, or moved by hand, fails here. The old form compared a field
                 // the filing site had just written against the filing site's own key.
                 Some(BucketReleaseRefusal::BlockRoutingMismatch)
-            } else if !released_model_kind_is_addressable(block.model_id.as_str()) {
+            } else if !released_model_kind_is_addressable(block.model_id().as_str()) {
                 Some(BucketReleaseRefusal::BlockKindNotAddressable)
             } else {
                 None
@@ -2559,7 +2554,7 @@ pub(super) fn release_bucket_blocks(
                         .bucket_index
                         // `None`: the lookup files every block of an object under one nameless
                         // slot, which is the slot an entry has always been filed in here.
-                        .block_refs_for(block.model_id.as_str(), beside, None)
+                        .block_refs_for(block.model_id().as_str(), beside, None)
                         .map(|refs| {
                             refs.iter().all(|block_ref| block_ref.routing_bucket == routing_bucket)
                         })
@@ -2579,7 +2574,7 @@ pub(super) fn release_bucket_blocks(
                 // direction: releasing across a disagreement loses blocks.
                 names.get(handle).map(|beside| {
                     released_block_identity(
-                        block.model_id.as_str(),
+                        block.model_id().as_str(),
                         beside,
                         // `None`: the identity an entry can state is its block's, not its
                         // element's.
@@ -2604,7 +2599,7 @@ pub(super) fn release_bucket_blocks(
             .block_index
             .iter()
             .filter_map(|(handle, block)| {
-                names.get(handle).map(|beside| (block.model_id, Arc::clone(beside)))
+                names.get(handle).map(|beside| (block.model_id(), Arc::clone(beside)))
             })
             .collect();
         let block_count = dropped.len();
@@ -2673,15 +2668,15 @@ pub(super) fn reload_released_bucket(
         let address = entry.address;
         blocks.push((
             Arc::clone(&entry.object_key),
-            BlockIndex {
-                model_id: entry.kind,
+            BlockIndex::new(
+                entry.kind,
                 address,
                 // The model maps carry no per-block dirty/deleted bit, which is exactly why
                 // release refuses a bucket holding either. Reloaded blocks are clean and live,
                 // which is the state they were released in.
-                dirty: false,
-                deleted: false,
-            },
+                false,
+                false,
+            ),
             object_id,
         ));
     }
@@ -2715,11 +2710,11 @@ pub(super) fn reload_released_bucket(
     // loop below is what puts these blocks back into it.
     let live_object_ids: BTreeSet<u64> = installed
         .iter()
-        .filter(|(_, _, block)| !block.deleted)
+        .filter(|(_, _, block)| !block.deleted())
         .map(|(_, object_key, block)| {
             crate::engine::hashing::stable_block_object_id(
                 shard_id,
-                block.model_id.as_str(),
+                block.model_id().as_str(),
                 object_key,
             )
         })
@@ -3280,6 +3275,27 @@ macro_rules! model_kind_registry {
                 }
             }
 
+            /// THE DENSE CODE THE PACKED ENTRY HOLDS, which is a POSITION and not `report_code`.
+            ///
+            /// `report_code` is unique and non-zero but NOT dense -- it is a reporting byte and
+            /// nothing bounds it below 32. The flag word on a block entry has five bits for this,
+            /// so the code has to be an index into [`StoredModelKind::ALL`], which is dense by
+            /// construction and derived from the declaration rather than listed beside it.
+            ///
+            /// `the_packed_model_code_round_trips_every_spelling` drives both directions over
+            /// `ALL`, and a `const` below floors the width, so adding an eighteenth spelling is
+            /// fine and a thirty-third fails the build naming the budget.
+            pub(super) fn packed_code(self) -> u8 {
+                Self::ALL
+                    .iter()
+                    .position(|candidate| *candidate == self)
+                    .expect("every spelling is in ALL by construction") as u8
+            }
+
+            /// The spelling a packed code names, or `None` for a code no declaration covers.
+            pub(super) fn from_packed_code(code: u8) -> Option<Self> {
+                Self::ALL.get(usize::from(code)).copied()
+            }
             /// Whether NO live arm emits this spelling. Derived as the complement of the live
             /// half rather than listed, so it cannot disagree with the declaration.
             pub(super) const fn is_retired(self) -> bool {
@@ -3311,6 +3327,12 @@ macro_rules! model_kind_registry {
         /// `>= 17`, and a store that carries the name would stop loading.
         const _: () = assert!(StoredModelKind::ALL.len() == ModelKind::ALL.len() + RETIRED_MODEL_REPORT_CODES.len());
         const _: () = assert!(StoredModelKind::ALL.len() >= 17);
+        /// AND THE CEILING THE PACKED CODE NEEDS, which is a different claim from the floor
+        /// above: the floor says the registry did not lose rows, this says a code still fits
+        /// the five bits the block entry's flag word sets aside for it. Adding a spelling is
+        /// free until the thirty-third, and then this fails naming the budget rather than a
+        /// width silently refusing to move.
+        const _: () = assert!(StoredModelKind::ALL.len() <= 32);
         /// ONE BYTE. The reason the entry can hold it where it held a fat pointer.
         const _: () = assert!(std::mem::size_of::<StoredModelKind>() == 1);
 
@@ -4814,17 +4836,17 @@ pub(super) fn insert_container_tombstone_entry(
     let Some(named_element) = component else {
         return;
     };
-    let block = BlockIndex {
-        model_id: stored_model_kind(kind),
+    let block = BlockIndex::new(
+        stored_model_kind(kind),
         // NO COMPONENT SLOT AT ALL NOW, where this used to spell `component: None` under a note
         // about the entry carrying no name on any path. The entry has no field for a name, so the
         // claim is held by the type instead of by this assignment. The element's name is still
         // recorded for a tombstone, in the BUCKET's `tombstone_elements` below, which is the one
         // structure only a removal pays for.
-        address: address.clone(),
-        dirty: true,
-        deleted: true,
-    };
+        address.clone(),
+        true,
+        true,
+    );
     let bucket = shard
         .bucket_index
         .bucket_map
@@ -4909,7 +4931,7 @@ pub(super) fn insert_container_tombstone_entry(
     // The assert keeps the reasoning attached to the fact it depends on. If this block ever stops
     // being a deleted one, the filing above was removed deliberately and has to come back.
     debug_assert!(
-        block.deleted,
+        block.deleted(),
         "a tombstone block is no longer `deleted`, so the object-lookup filing removed here is          needed again: a non-deleted block DOES belong in the lookup"
     );
     shard.buckets_pending_flag_refresh.insert(routing_bucket);
@@ -5164,7 +5186,7 @@ fn upsert_bucket_index_block_inner(
                                 })
                                 .is_some_and(|block| {
                                     let key = super::live_block_key(&block.address);
-                                    key == here || (!block.deleted && Some(key) == vacated)
+                                    key == here || (!block.deleted() && Some(key) == vacated)
                                 })
                         })
                         .cloned()
@@ -5345,7 +5367,7 @@ fn upsert_bucket_index_block_inner(
                     // THE ONE BLOCK THE ROW NAMED, and the deleted flag beside it so a live entry
                     // that happens to sit at that address is never taken: a block is reachable
                     // again once its bytes are reused.
-                    !(block.deleted
+                    !(block.deleted()
                         && crate::engine::state::tombstone_block_key(&block.address)
                             == tombstoned_block)
                 });
@@ -5360,12 +5382,7 @@ fn upsert_bucket_index_block_inner(
     // THE IDENTITY, BOUND BEFORE THE BLOCK TAKES IT, so the handle and the lookup can both be given
     // it once the block has none to read.
     let filed_object_key = Arc::clone(&entry.object_key);
-    let block_index = BlockIndex {
-        model_id: entry.kind,
-        address,
-        dirty: entry.dirty,
-        deleted: entry.deleted,
-    };
+    let block_index = BlockIndex::new(entry.kind, address, entry.dirty, entry.deleted);
     {
         let bucket = shard
             .bucket_index
@@ -5558,7 +5575,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             |handle, block| {
             // `object_key` IS THIS FUNCTION'S ARGUMENT, so the comparison is against the same
             // characters it always was -- read from beside the block rather than off it.
-            let matches_object = block.model_id.as_str() == kind
+            let matches_object = block.model_id().as_str() == kind
                 && names.get(handle).is_some_and(|beside| &**beside == object_key);
             if matches_object {
                 // THE SET THIS FILLS COLLAPSES TO AT MOST ONE ELEMENT, AND THAT IS NOT NEW.
@@ -5675,15 +5692,10 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         // THE IDENTITY, BOUND BEFORE THE BLOCK TAKES IT, so the handle and the lookup can both
         // be given it once the block has none.
         let filed_object_key = Arc::clone(&entry.object_key);
-        let block = BlockIndex {
-            model_id: entry.kind,
-            address: {
+        let block = BlockIndex::new(entry.kind, {
                 let mut address = entry.address;
                     address
-            },
-            dirty: entry.dirty,
-            deleted: entry.deleted,
-        };
+            }, entry.dirty, entry.deleted);
         // The map assigns the handle; the lookup records the same one.
         let block_ref_key = bucket.insert_block(
             &filed_object_key,
@@ -5936,7 +5948,7 @@ pub(super) fn update_bucket_layout(
     let live_object_ids: BTreeSet<u64> = bucket
         .block_index
         .iter()
-        .filter(|(_, block)| !block.deleted)
+        .filter(|(_, block)| !block.deleted())
         .filter_map(|(handle, _)| {
             let named = keys.live_identity(routing_bucket, *handle);
             if named.is_none() {
@@ -6066,7 +6078,7 @@ pub(super) fn repair_object_index_against_its_blocks(
     let live_object_ids: BTreeSet<u64> = bucket
         .block_index
         .iter()
-        .filter(|(_, block)| !block.deleted)
+        .filter(|(_, block)| !block.deleted())
         .filter_map(|(handle, block)| {
             names.get(handle).map(|beside| block.object_id(shard_id, beside))
         })
@@ -6341,7 +6353,7 @@ fn refresh_one_bucket_runtime_flags(
             .block_index
             .values()
             .inspect(|_| fold_visits += 1)
-            .all(|block| block.deleted);
+            .all(|block| block.deleted());
     bucket.set_deleted(every_block_deleted);
     // ASKED OF THE INDEX, NOT FOLDED OVER THE BLOCKS. The dirty-object index already records which
     // routing bucket each dirty object belongs to -- it is recorded there at mark time, beside the
@@ -6665,7 +6677,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     for (routing_bucket, handle) in live_targets {
         if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             if let Some(block) = bucket.block_index.get_mut(&handle) {
-                block.dirty = false;
+                block.set_dirty(false);
                 touched_buckets.insert(routing_bucket);
             }
         }
@@ -6673,9 +6685,9 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     for (routing_bucket, triple) in tombstoned {
         if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             for block in bucket.block_index.blocks_mut_unaccounted() {
-                if block.deleted && crate::engine::state::tombstone_block_key(&block.address) == triple
+                if block.deleted() && crate::engine::state::tombstone_block_key(&block.address) == triple
                 {
-                    block.dirty = false;
+                    block.set_dirty(false);
                     touched_buckets.insert(routing_bucket);
                 }
             }
@@ -6699,7 +6711,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
                 .values()
                 // `any(block.dirty)` alone; the keys were just dropped from the dirty set and
                 // this object's blocks were just cleared, so the two halves agree by construction.
-                .any(|block| block.dirty);
+                .any(|block| block.dirty());
             bucket.set_dirty(any_block_dirty);
             match shard_id {
                 Some(shard_id) => update_bucket_layout(shard_id, bucket, &keys),
@@ -6758,7 +6770,7 @@ pub(super) fn rebuild_bucket_first_index(
             bucket
                 .block_index
                 .values()
-                .filter(|block| block.deleted)
+                .filter(|block| block.deleted())
                 .map(move |block| {
                     (
                         *routing_bucket,
@@ -6813,12 +6825,7 @@ pub(super) fn rebuild_bucket_first_index(
         let object_key = Arc::clone(&entry.object_key);
         let handle = bucket.insert_block(
             &object_key,
-            BlockIndex {
-                model_id: entry.kind,
-                address: entry.address,
-                dirty: block_dirty,
-                deleted: entry.deleted,
-            },
+            BlockIndex::new(entry.kind, entry.address, block_dirty, entry.deleted),
             &mut bucket_index.block_slab_live,
         );
         // THE BLOCK IS TAKEN BACK OUT BY ITS HANDLE rather than cloned on the way in, so the
@@ -6881,7 +6888,7 @@ pub(super) fn rebuild_bucket_first_index(
         // `bucket_index` -- which is exactly the map the live entries above were derived from.
         let live_again = resident_holds_component(
             shard,
-            tombstone.model_id,
+            tombstone.model_id(),
             &element.object_key,
             &element.component,
         );
@@ -6898,7 +6905,7 @@ pub(super) fn rebuild_bucket_first_index(
             });
         bucket.set_dirty(true);
         let address = tombstone.address.clone();
-        let model_id = tombstone.model_id;
+        let model_id = tombstone.model_id();
         bucket.insert_block(
             &element.object_key,
             tombstone,
@@ -7999,7 +8006,7 @@ pub(super) fn validate_bucket_ownership_index_from_entries(
                             && block.address.offset() == entry.address.offset()
                             && block.address.length() == entry.address.length()
                             && block.address.block_id() == expected_block_id
-                            && block.model_id == entry.kind
+                            && block.model_id() == entry.kind
                     })
             });
         if !bucket_block_present {
@@ -8328,12 +8335,12 @@ mod release_refusal_guards {
     }
 
     fn block(key: &str, model_id: &str, component: Option<&str>, address: ElementEntry) -> BlockIndex {
-        BlockIndex {
-            model_id: super::stored_model_kind(model_id),
+        BlockIndex::new(
+            super::stored_model_kind(model_id),
             address,
-            dirty: false,
-            deleted: false,
-        }
+            false,
+            false,
+        )
     }
 
     /// THE HANDLE THESE FIXTURES FILE THEIR ONE BLOCK UNDER.
@@ -8462,9 +8469,10 @@ mod release_refusal_guards {
         let key = key_routing_to(key_prefix, routing_bucket);
         let held = address(routing_bucket, 64);
         file_string_row(shard, &key, &held);
-        let dirty = BlockIndex {
-            dirty: true,
-            ..block(&key, "string", None, held)
+        let dirty = {
+            let mut dirty = block(&key, "string", None, held);
+            dirty.set_dirty(true);
+            dirty
         };
         install_block(shard, routing_bucket, &key, dirty);
         key
