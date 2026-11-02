@@ -10420,6 +10420,43 @@ impl ShardState {
     }
 
     /// Install one control-state block, under the control-state kind.
+    ///
+    /// # THE ROW'S BLOCK REFS ARE NOT THE CALLER'S TO REPLACE, AND THIS REPLACED THEM
+    ///
+    /// This was one `insert`, which overwrites any row already there. That was the whole story
+    /// while a row WAS an address; since the fold a row also carries this object's BLOCK REFS, and
+    /// an `insert` of a freshly built slot drops them -- the caller composes its slot from a
+    /// control-state record and has no refs to put in it.
+    ///
+    /// `adopt_refs_into_slot` below does not cover it: that door adopts from the LOOKUP, and by
+    /// the second write an object's refs are in its ROW, not the lookup. So it found nothing and
+    /// returned `false`, and the refs were already gone.
+    ///
+    /// MEASURED as one ordered event stream on `control_state_values_survive_unload_reload`, which
+    /// fails on its SECOND increment -- before it unloads anything, so the reload in its name is
+    /// not where it breaks:
+    ///
+    ///   LOOKUPARM filed=true                                   block 1 -> lookup, no row yet
+    ///   MARK  lookup_empty=true slots_with_refs=1 live_blocks=1 adopted into the row, passes
+    ///   REMOVE-ALL component=None slots_with_refs=1             the element supersede, correctly
+    ///   SLOTARM filed=true                                      block 2 -> the ROW, read back
+    ///   MARK  lookup_empty=true slots_with_refs=0 live_blocks=1 the row was replaced: refs gone
+    ///
+    /// The object was then named by NEITHER home while its block was live, which is an index
+    /// `serialize_block_index` refuses as unwritable, a cold read answering `None`, and the
+    /// `debug_assert!` in `push_object_dirty_onto_its_existing_blocks` firing on the next mark.
+    ///
+    /// # THE SAME GUARANTEE `set_string_address` ALREADY DOCUMENTS
+    ///
+    /// That door writes through `get_mut` and `set_address` precisely so that "the write-back
+    /// preserves everything that is not the address", and says that building a fresh slot instead
+    /// "would drop them". The control-state door is its sibling and never got the treatment. It
+    /// takes a whole slot rather than an address, so it cannot write through `set_address`; it
+    /// carries the refs across instead, which is the same guarantee by the only means available.
+    ///
+    /// MERGED AND NOT ASSIGNED, for the reason `adopt_refs_into_slot` gives at its own merge: the
+    /// incoming slot may already carry a ref, and replacing would drop it -- one block of an
+    /// object going missing with no error anywhere.
     pub(super) fn insert_control_state_block(
         &mut self,
         key: ModelKey,
@@ -10428,12 +10465,23 @@ impl ShardState {
         const KIND: super::storage_bucket_internals::StoredModelKind =
             super::storage_bucket_internals::StoredModelKind::ControlState;
         let object_key = std::sync::Arc::clone(&key);
-        let previous = self
-            .bucket_index
-            .objects
-            .entry(KIND)
-            .or_default()
-            .insert(key, slot);
+        let mut slot = slot;
+        let previous = {
+            let table = self.bucket_index.objects.entry(KIND).or_default();
+            if let Some(carried) = table.get(&*key).and_then(|row| row.refs().cloned()) {
+                match slot.refs_mut() {
+                    Some(existing) => {
+                        for block_ref in carried.iter() {
+                            existing.insert(block_ref.clone());
+                        }
+                    }
+                    None => {
+                        slot.replace_refs(Some(carried));
+                    }
+                }
+            }
+            table.insert(key, slot)
+        };
         // SAME REASON AS THE STRING ROW ABOVE, and this kind needs it MORE: every control-state
         // filing measured found no row at all, so without this none of its refs would ever reach
         // a slot.

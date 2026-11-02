@@ -488,3 +488,70 @@ fn the_owned_element_array_reaches_the_stored_image() {
          upgrade-then-roll-back returns every object with a default address and reports nothing."
     );
 }
+
+/// A CONTROL-STATE ROW'S BLOCK REFS SURVIVE AN INSTALL OVER THAT ROW.
+///
+/// `insert_control_state_block` was one `HashMap::insert`, which overwrites the row already there.
+/// That was the whole story while a row WAS an address; since the block refs were folded into the
+/// slot, a row also names where this object's blocks are, and the caller composes its slot from a
+/// control-state record with no refs in it. So every install over a live row dropped them.
+///
+/// WHAT THAT COST, so the shape is recognisable if it comes back: the object was left named by
+/// NEITHER home while its block was live -- an index `serialize_block_index` refuses as
+/// unwritable, a cold read answering `None`, and the `debug_assert!` in
+/// `push_object_dirty_onto_its_existing_blocks` firing on the next mark. Nine of the ten failures
+/// in the `control_state` suite were this one defect.
+///
+/// THE DENOMINATOR IS ASSERTED FIRST. A guard that installs over a row holding no refs cannot
+/// fail however the door is written, so the ref is put there and READ BACK before the install
+/// under test -- otherwise this passes on an empty set.
+#[test]
+fn installing_a_control_state_block_keeps_the_rows_block_refs() {
+    let mut shard = ShardState::default();
+    let before = slot_at(1, 0, 32);
+    let installed_over_it = slot_at(2, 128, 16);
+
+    shard.insert_control_state_block("k1".into(), before);
+
+    // THE REF IS FILED THROUGH THE ROW, which is where a kind with slot rows keeps them.
+    let filed = crate::engine::state::BlockLookupRef {
+        routing_bucket: 7,
+        block_ref_key: 99,
+    };
+    let touched = shard.with_control_state_block_mut("k1", |slot| {
+        slot.file_ref(filed.clone());
+    });
+    assert!(
+        touched.is_some(),
+        "the fixture did not reach the row it means to put a ref on"
+    );
+    assert!(
+        shard
+            .control_state_blocks()
+            .get("k1")
+            .and_then(|slot| slot.refs())
+            .is_some(),
+        "denominator: the row holds no refs before the install, so this guard would pass however          the door is written"
+    );
+
+    shard.insert_control_state_block("k1".into(), installed_over_it.clone());
+
+    let refs = shard
+        .control_state_blocks()
+        .get("k1")
+        .and_then(|slot| slot.refs())
+        .expect(
+            "the install replaced the row and took its block refs with it, leaving the object's              live block named by neither home",
+        );
+    assert!(
+        refs.iter().any(|block_ref| *block_ref == filed),
+        "the row kept refs but not the one that was filed on it"
+    );
+    // AND THE REST OF THE ROW IS STILL THE CALLER'S, which is what makes this a carry-over rather
+    // than a refusal to write: the address installed here is the one that was passed in.
+    assert_eq!(
+        shard.control_state_blocks().get("k1").map(|slot| slot.address()),
+        Some(installed_over_it.address()),
+        "the install was supposed to take the caller's address"
+    );
+}
