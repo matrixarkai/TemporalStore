@@ -1082,6 +1082,7 @@ impl TemporalEngine {
             config.control_state_max_size(),
             config.control_distinct_sketch_enabled(),
                 config.trim_boundary_record_enabled(),
+            config.set_listing_from_map_enabled(),
             request.shard_id,
             start_routing_bucket,
             end_routing_bucket,

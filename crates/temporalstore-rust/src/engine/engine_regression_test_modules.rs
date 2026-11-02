@@ -456,3 +456,7 @@ mod a_trim_records_one_boundary;
 mod one_series_two_commands_one_ceiling;
 #[path = "tests/the_two_other_feature_arms_hold_the_ceiling.rs"]
 mod the_two_other_feature_arms_hold_the_ceiling;
+#[path = "tests/what_a_cold_set_listing_reads.rs"]
+mod what_a_cold_set_listing_reads;
+#[path = "tests/does_the_durable_map_answer_what_the_fold_answers.rs"]
+mod does_the_durable_map_answer_what_the_fold_answers;
