@@ -195,6 +195,7 @@ jobs:
             block_store::tests::policy_gc_plans_and_applies_byte_bounded_destroy \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval \
             data_node::tests::part3::the_block_gc_budget_reaches_the_periodic_loop \
+            index_log::index_log_sweep_bound::the_default_entry_budget_belongs_to_the_path_that_runs_when_asked \
             data_node::tests::part3::an_idle_shard_stops_accumulating_slabs \
             data_node::tests::part3::a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install \
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
