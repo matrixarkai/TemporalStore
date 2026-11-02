@@ -6,7 +6,8 @@
 //! Two production sweeps walk this log and only one of them takes a per-round entry budget:
 //!
 //! - [`LocalIndexLogStore::gc_before_sequence_limited`] takes `max_entries_per_round`, and the
-//!   storage-manager cycle passes 256 (`StorageManagerCycleRequest::default`);
+//!   storage-manager cycle passes `DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND`, 200 at the time of
+//!   writing (`StorageManagerCycleRequest::default`);
 //! - [`LocalIndexLogStore::gc_reflected_before_anchor`] takes no such parameter at all and
 //!   constructs its report with `max_entries_per_round: 0`.
 //!
@@ -277,7 +278,7 @@ fn what_the_unbounded_post_dump_sweep_costs_at_two_corpus_sizes() {
 /// AN ENTRY BUDGET READS EXACTLY AS MUCH AND COPIES MORE.
 ///
 /// The same log, swept twice: once with no budget and once with the storage-manager cycle's
-/// shipped 256. The budgeted round reads the identical number of frames -- the loop has no
+/// shipped default. The budgeted round reads the identical number of frames -- the loop has no
 /// break -- removes fewer, and therefore RETAINS more, and every retained record is re-framed
 /// and written out. So the budget buys nothing on the read, nothing on the lock hold, and costs
 /// strictly more on the write.
@@ -293,18 +294,22 @@ fn an_entry_budget_copies_more_and_reads_exactly_as_much() {
     // would have the budget compete with the piece unlinking for the same records. One piece
     // makes the loop the whole of the round.
     let _one_piece = roll_at(0);
-    const BUDGET: usize = 256;
+    // DERIVED, not copied. This test's prose calls it "the storage-manager cycle's shipped
+    // default", so reading the constant is what keeps that sentence true: a literal here went
+    // stale when the default moved from 256 to 200 and took the whole lib-test target red with
+    // it, under a green check, because the only unfiltered CI step is advisory.
+    const BUDGET: usize = crate::engine::reports::DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND;
     const RECORDS: usize = 2_000;
     // Every record below this floor is removable, so the removable count is 1,500 -- comfortably
-    // above the 256 the budget is. CHECKED below rather than assumed: a fixture shrunk to afford
+    // above whatever the budget is. CHECKED below rather than assumed: a fixture shrunk to afford
     // more mutants would make the threshold under test inert.
     const RETAIN_FROM: u64 = 1_501;
 
     let mut arms = Vec::new();
     for (label, budget, retain_from) in [
         ("no budget", 0usize, RETAIN_FROM),
-        ("budget 256", BUDGET, RETAIN_FROM),
-        // The control: only 100 records are removable, which no budget of 256 can reach.
+        ("budget, shipped default", BUDGET, RETAIN_FROM),
+        // The control: only 100 records are removable, which the shipped budget cannot reach.
         ("control, under budget", BUDGET, 101),
     ] {
         let dir = tempfile::tempdir().unwrap();
@@ -333,7 +338,7 @@ fn an_entry_budget_copies_more_and_reads_exactly_as_much() {
     let (_, _, control_report, control) = &arms[2];
 
     // THE FIXTURE REACHES THE THRESHOLD UNDER TEST. Without this the whole comparison is
-    // "256 is bigger than everything here", which is not what it claims to measure.
+    // "the budget is bigger than everything here", which is not what it claims to measure.
     assert!(
         unbudgeted_report.removable_records_before_budget > BUDGET * 4,
         "the fixture offers {} removable records against a budget of {BUDGET}; the budget cannot \
@@ -842,7 +847,8 @@ fn the_unbounded_sweep_integrates_linearly_in_rounds() {
 ///   `maybe_dump_and_reclaim_index_logs`, which the embedded proxy polls on a BACKGROUND TIMER,
 ///   `MATRIXARK_RUST_PROXY_LOG_RECLAIM_INTERVAL_MS`, default 1,000 ms. Unattended, once a second,
 ///   for the life of the process.
-/// - `gc_before_sequence_limited` -- budgeted at 256 -- is reached from
+/// - `gc_before_sequence_limited` -- budgeted at `DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND`,
+///   200 at the time of writing -- is reached from
 ///   `run_storage_manager_cycle`, which in that same proxy is the `storage_manager_cycle` REQUEST
 ///   OP ("Exposed as an op, not a background thread: it rewrites durable structures, so it runs
 ///   when asked"), and in the server and the data-node is a maintenance cycle.
@@ -999,28 +1005,36 @@ fn seeded_engine(dir: &std::path::Path, records: usize) -> crate::engine::Tempor
 /// THE REPO'S OWN BOUNDEDNESS GUARD PASSES AND SAYS NOTHING ABOUT THE SWEEP THAT RUNS ONCE A
 /// SECOND.
 ///
-/// `every_maintenance_round_is_bounded_by_default` pins `index_gc_max_entries_per_round` to 256
-/// and asserts it is non-zero, on the reasoning that "zero is NO bound: ... the index-log sweep
+/// `every_maintenance_round_is_bounded_by_default` pins `index_gc_max_entries_per_round` and
+/// asserts it is non-zero, on the reasoning that "zero is NO bound: ... the index-log sweep
 /// removes every removable record". That is true of the field it reads, and the field it reads
 /// is on `StorageManagerCycleRequest` -- the operator-driven path. The background sweep does not
 /// take that field, has no field of its own, and is not named by that guard at all.
 ///
 /// Asserted here rather than left as prose, so the two facts stay attached to each other: the
-/// default really is 256, and the post-dump sweep really does run with no entry budget.
+/// default really is 200, and the post-dump sweep really does run with no entry budget.
+///
+/// THE LITERAL BELOW IS DELIBERATE AND MUST STAY A LITERAL. Reading the constant would make the
+/// assertion vacuous, and pinning the number is the whole job: when #2425 moved the default from
+/// 256 to 200 this test fired, exactly as intended. What went wrong is that nobody then updated
+/// the prose, so the tripwire sat red instead of being cleared -- and it is not pinned in the
+/// gating CI step, so the only suite that ran it is advisory. Both are fixed with this change.
 #[test]
 fn the_default_entry_budget_belongs_to_the_path_that_runs_when_asked() {
     assert_eq!(
         crate::engine::reports::StorageManagerCycleRequest::default()
             .index_gc_max_entries_per_round,
-        256,
-        "the storage-manager cycle's default entry budget moved; the note above names 256"
+        200,
+        "the storage-manager cycle's default entry budget moved; this note and the prose above \
+         name 200, and the value lives in DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND. Update both \
+         together -- that is what was missed last time this fired."
     );
     assert_eq!(
         POST_DUMP_SWEEP_ENTRY_BUDGET, 0,
         "the post-dump sweep grew an entry budget; see the note on the constant for why it had \
          none, and re-measure before keeping this"
     );
-    // And 0 there is not a smaller bound than 256 -- it is the absence of one, which is what the
+    // And 0 there is not a smaller bound than 200 -- it is the absence of one, which is what the
     // consumer's own guard says. Stated against the CONSUMER so a reader does not have to take
     // the constant's word for it.
     let dir = tempfile::tempdir().unwrap();
