@@ -70,7 +70,10 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
     )
 }
 
-fn load_on(engine: &TemporalEngine) {
+/// `from_map` picks WHICH MECHANISM this arm measures, and every figure below is meaningless
+/// without knowing which: false folds every block of the object (what this file was written
+/// to price), true answers from the durable member map and reads nothing.
+fn load_on(engine: &TemporalEngine, from_map: bool) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
         table_name: "cold-set".to_string(),
@@ -82,6 +85,24 @@ fn load_on(engine: &TemporalEngine) {
         local_node_id: Some(1),
     });
     assert!(response.status.ok, "load failed: {:?}", response.status);
+    let mut extend_config = std::collections::BTreeMap::new();
+    extend_config.insert(
+        "set_listing_from_map".to_string(),
+        if from_map { "on" } else { "off" }.to_string(),
+    );
+    assert!(
+        engine
+            .set_config(crate::control::SetConfigRequest {
+                shard_id: 1,
+                config: crate::control::Config {
+                    version: 2,
+                    extend_config,
+                    ..Default::default()
+                },
+            })
+            .ok,
+        "the mechanism under measurement has to be the one that is set"
+    );
 }
 
 fn member_bytes(index: usize) -> Vec<u8> {
@@ -138,10 +159,10 @@ struct Row {
     warm_us: u128,
 }
 
-fn drive(tombstones: usize) -> Row {
+fn drive(tombstones: usize, from_map: bool) -> Row {
     let dir = tempfile::tempdir().unwrap();
     let engine = engine_on(dir.path());
-    load_on(&engine);
+    load_on(&engine, from_map);
 
     for index in 0..(LIVE + tombstones) {
         write(
@@ -210,11 +231,23 @@ fn drive(tombstones: usize) -> Row {
          means the arm labelled cold was not distinguishable from a warm one and every figure in \
          this row is void"
     );
-    assert!(
-        cold_reads > 0,
-        "the cold listing read no blocks at all, so it did not fold anything and this file is \
-         measuring something other than the fold"
-    );
+    // TWO-SIDED NOW, because there are two mechanisms and zero reads is damning for one and
+    // the whole point of the other. A single floor could only ever be right about one arm.
+    if from_map {
+        assert_eq!(
+            0, cold_reads,
+            "the map arm read {cold_reads} block(s). Answering from the durable member map is\
+             supposed to touch no block at all -- its keys ARE the member identity, so a read\
+             here means the listing fell through to the fold and this arm is not measuring\
+             what it claims"
+        );
+    } else {
+        assert!(
+            cold_reads > 0,
+            "the cold listing read no blocks at all, so it did not fold anything and this arm\
+             is measuring something other than the fold"
+        );
+    }
 
     Row {
         tombstones,
@@ -239,7 +272,13 @@ fn what_a_cold_set_listing_reads_against_the_tombstone_count() {
     );
     println!("  tombstones  blocks(fold->removes)  cold_reads  warm_reads  cold_us  warm_us");
 
-    let rows: Vec<Row> = TOMBSTONES.iter().copied().map(drive).collect();
+    // THE FOLD ARM. Named rather than implied: with the durable map preferred by default, a
+    // sweep that did not say so would measure the map and report it as the fold's cost.
+    let rows: Vec<Row> = TOMBSTONES
+        .iter()
+        .copied()
+        .map(|tombstones| drive(tombstones, false))
+        .collect();
     for row in &rows {
         println!(
             "  {:>10}  {:>9} -> {:<9}  {:>10}  {:>10}  {:>7}  {:>7}",
@@ -280,5 +319,75 @@ fn what_a_cold_set_listing_reads_against_the_tombstone_count() {
         baseline.tombstones,
         widest.cold_reads,
         widest.tombstones
+    );
+}
+
+/// rust-internal: the same sweep, answered from the durable member map instead of the fold
+///
+/// THE AFTER-FIGURE, AND IT SITS BESIDE THE BEFORE ON PURPOSE. The arm above prices the fold: one
+/// block read per block the object has, tombstones included, so the reads grow with the number of
+/// REMOVED members while the answer does not. This arm prices the durable member map, whose keys
+/// ARE the member identity -- so it answers the same members having read nothing.
+///
+/// Both arms are driven here rather than one being quoted from the other's PR, because a before
+/// and an after taken in different runs on a shared box are two numbers rather than a comparison.
+/// The fold column is re-measured, not cited.
+#[test]
+fn what_a_cold_set_listing_reads_from_the_durable_map() {
+    println!(
+        "
+  load average now: {}
+  live members held fixed at {LIVE}
+",
+        std::fs::read_to_string("/proc/loadavg")
+            .unwrap_or_else(|_| "unavailable".to_string())
+            .trim()
+    );
+    println!("  tombstones   fold_reads   map_reads   fold_us   map_us");
+    let mut fold_rows = Vec::new();
+    let mut map_rows = Vec::new();
+    for tombstones in TOMBSTONES.iter().copied() {
+        let fold = drive(tombstones, false);
+        let map = drive(tombstones, true);
+        println!(
+            "  {:>10}   {:>10}   {:>9}   {:>7}   {:>6}",
+            tombstones, fold.cold_reads, map.cold_reads, fold.cold_us, map.cold_us
+        );
+        fold_rows.push(fold);
+        map_rows.push(map);
+    }
+
+    // EVERY POINT, not just the widest: a single point could be zero because the fixture failed to
+    // build any block at all, and the fold column beside it is what rules that out.
+    for (fold, map) in fold_rows.iter().zip(map_rows.iter()) {
+        assert_eq!(
+            0, map.cold_reads,
+            "the map arm read {} block(s) at {} tombstones",
+            map.cold_reads, map.tombstones
+        );
+        assert!(
+            fold.cold_reads > 0,
+            "the FOLD arm read no blocks at {} tombstones, so the zero beside it is not a \
+             comparison -- this fixture built nothing to read",
+            fold.tombstones
+        );
+    }
+
+    let widest_fold = fold_rows.last().expect("the sweep ran");
+    let widest_map = map_rows.last().expect("the sweep ran");
+    println!(
+        "
+  at {} tombstones over {LIVE} live members: fold {} block reads, map {}
+",
+        widest_fold.tombstones, widest_fold.cold_reads, widest_map.cold_reads
+    );
+
+    // AND THE SAVING HAS TO BE THE DEAD SIDE, which is the claim rather than "it got faster".
+    assert!(
+        widest_fold.cold_reads > fold_rows[0].cold_reads,
+        "the fold arm did not grow with the dead count ({} -> {}), so this run is not exhibiting \
+         the cost the map arm avoids and the zero column proves nothing",
+        fold_rows[0].cold_reads,
+        widest_fold.cold_reads
     );
 }

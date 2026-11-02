@@ -1038,6 +1038,7 @@ impl TemporalEngine {
             config.control_rollup_enabled(),
             config.control_coalesce_persist_enabled(),
             config.control_distinct_sketch_enabled(),
+            config.set_listing_from_map_enabled(),
             request.shard_id,
             start_routing_bucket,
             end_routing_bucket,

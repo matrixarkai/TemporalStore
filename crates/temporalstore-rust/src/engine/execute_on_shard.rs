@@ -416,12 +416,20 @@ pub(super) fn remove_container_element(
 /// clean result over a branch nothing reached.
 static GATED_LISTING_DERIVED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 static GATED_LISTING_DECLINED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// How many set listings were answered from the durable member map rather than by a fold.
+/// It joins the two above for one reason: a test that asserts the fold served has to be able
+/// to tell "the fold served" from "something cheaper served", and without this the map path
+/// is indistinguishable from a cache hit -- both leave the fold counters at zero.
+static SET_LISTING_FROM_MAP: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-/// (derived, declined) for gated container listings.
-pub fn gated_listing_counts() -> (u64, u64) {
+/// (derived, declined, from_map) for gated container listings. The third exists so a test can
+/// still tell WHICH mechanism answered once the durable map became the preferred one: a map
+/// answer and a cache hit both leave the first two at zero, and they are not the same event.
+pub fn gated_listing_counts() -> (u64, u64, u64) {
     (
         GATED_LISTING_DERIVED.load(std::sync::atomic::Ordering::Relaxed),
         GATED_LISTING_DECLINED.load(std::sync::atomic::Ordering::Relaxed),
+        SET_LISTING_FROM_MAP.load(std::sync::atomic::Ordering::Relaxed),
     )
 }
 
@@ -429,6 +437,7 @@ pub fn gated_listing_counts() -> (u64, u64) {
 pub fn reset_gated_listing_counts() {
     GATED_LISTING_DERIVED.store(0, std::sync::atomic::Ordering::Relaxed);
     GATED_LISTING_DECLINED.store(0, std::sync::atomic::Ordering::Relaxed);
+    SET_LISTING_FROM_MAP.store(0, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Removals whose tombstone block could not be APPENDED, as distinct from could not be FRAMED.
@@ -457,6 +466,7 @@ pub(crate) fn execute_on_shard(
     control_rollup_enabled: bool,
     control_coalesce_persist: bool,
     control_distinct_sketch: bool,
+    set_listing_from_map: bool,
     shard_id: ShardId,
     start_routing_bucket: u32,
     end_routing_bucket: u32,
@@ -467,6 +477,7 @@ pub(crate) fn execute_on_shard(
     // every control-state write arm.
     shard.control_coalesce_persist = control_coalesce_persist;
     shard.control_distinct_sketch = control_distinct_sketch;
+    shard.set_listing_from_map = set_listing_from_map;
     let mut mutated = false;
     let response = match command {
         // Applied as nothing: `mutated` stays false, so it neither dirties a shard nor
@@ -2209,6 +2220,45 @@ pub(crate) fn execute_on_shard(
                 };
             }
             cached_response(cache, CacheKey::set_members(shard_id, &key), || {
+                // THE DURABLE MAP ANSWERS FIRST, AND IT READS NO BLOCKS AT ALL.
+                //
+                // `shard.sets` is keyed BY MEMBER BYTES, so it holds the member identity the
+                // bucket index cannot -- which is the whole reason the fold below had to ask
+                // the payload. A listing needs only those keys; the element address each one
+                // maps to is never consulted, so a stale address after a fold cannot reach
+                // this answer.
+                //
+                // WHAT IT REMOVES. The fold reads one block per block the object has,
+                // tombstones included: 1,033 block reads and 71.4 ms to answer 64 live
+                // members once 1,024 have been removed, against 614 us unchurned. From the
+                // map it is zero block reads and O(live) whatever the churn -- and a churned
+                // set is the steady state rather than an edge case.
+                //
+                // WHY THIS MAY BE PREFERRED, as what is driven rather than what is argued.
+                // Three places in this tree already said the map answers correctly, and
+                // three claims are not a measurement -- so
+                // `does_the_durable_map_answer_what_the_fold_answers` drives BOTH mechanisms
+                // on one store across the five shapes where they could part company,
+                // including the precedence case (live, tombstoned, live again) where the fold
+                // resolves by `append_position` and the map by the key being present. The
+                // gate is what makes that comparison possible at all.
+                //
+                // AND THE FOLD IS STILL REACHED, for a key the map holds no entry for. That
+                // matters twice: `derive_membership` does not become a zero-caller function,
+                // and a listing can never answer EMPTY for a key whose blocks say otherwise
+                // -- which is exactly the `listed=0` against 40 that killed the entries walk.
+                if shard.set_listing_from_map {
+                    if let Some(members) = shard.sets.get(&key) {
+                        SET_LISTING_FROM_MAP
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return CommandResponse::Members {
+                            members: members
+                                .iter()
+                                .map(|(member, _)| member.clone())
+                                .collect(),
+                        };
+                    }
+                }
                 // IDENTITY IS IN THE PAYLOAD, AND THERE IS NO LONGER ANOTHER WAY.
                 //
                 // This was the gated arm of an `if`, and the ungated arm walked the entries and
