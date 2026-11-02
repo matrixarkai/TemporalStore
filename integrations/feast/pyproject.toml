@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feast-temporalstore"
+version = "0.1.0"
+description = "TemporalStore as a Feast online store for feature serving"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+# `feast` is NOT a hard dependency: the wire layer is tested without it, and pinning Feast here
+# would force a version on a user who already has one.
+dependencies = ["redis>=4.6.0"]
+
+[project.optional-dependencies]
+feast = ["feast>=0.40"]
+dev = ["pytest>=7"]
+
+[tool.setuptools.packages.find]
+include = ["feast_temporalstore*"]

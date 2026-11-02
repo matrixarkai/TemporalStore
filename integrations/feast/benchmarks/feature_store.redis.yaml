@@ -1,0 +1,11 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+# The Redis arm. Same project, same registry, same entity key serialization -- so a difference
+# between the two runs is the store and not the fixture.
+project: feast_bench
+registry: data/registry.db
+provider: local
+online_store:
+    type: redis
+    connection_string: localhost:6379
+entity_key_serialization_version: 3
