@@ -1715,7 +1715,22 @@ pub enum Command {
     ContextResourceBlobAppend {
         tenant_hash: u64,
         upload_token: String,
-        payload_base64: String,
+        /// THE PAYLOAD AS BYTES, NOT AS A BASE64 STRING.
+        ///
+        /// It was `payload_base64: String` because a JSON document has no byte type. That made
+        /// the encoding part of the TYPE, so every durable record paid base64's flat third on the
+        /// widest payloads in the system -- and a binary codec would have inherited the inflation
+        /// rather than removed it, since a `string` field preserves the value exactly.
+        ///
+        /// `bytes_serde` keeps the JSON form byte-identical to what shipped (it writes a base64
+        /// string using the same STANDARD alphabet the producers used) while letting a binary
+        /// format carry the bytes themselves.
+        ///
+        /// THE ALIAS IS LOAD-BEARING. Renaming the field changes the JSON KEY, and every record
+        /// written before this carries the old one. Without the alias those records fail to parse
+        /// on replay -- at restore, not at write.
+        #[serde(with = "crate::bytes_serde", alias = "payload_base64")]
+        payload: Vec<u8>,
     },
     /// Publish a staged upload: content-hash, fsync, rename into place. The resource record
     /// that carries the returned URI is the commit point; a blob with no record is garbage the
@@ -1727,7 +1742,9 @@ pub enum Command {
     /// Single-shot begin+append+commit for payloads that fit one request.
     ContextResourceBlobPut {
         tenant_hash: u64,
-        payload_base64: String,
+        /// Bytes, with the old JSON key still accepted. See `ContextResourceBlobAppend::payload`.
+        #[serde(with = "crate::bytes_serde", alias = "payload_base64")]
+        payload: Vec<u8>,
     },
     /// Range-read a published blob. `length == 0` means to the end.
     ContextResourceBlobFetch {
@@ -2803,6 +2820,107 @@ pub struct BatchExecuteResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A RECORD WRITTEN IN THE OLD SHAPE STILL REPLAYS, BYTE FOR BYTE.
+    ///
+    /// The payload field was renamed from `payload_base64` to `payload` and retyped from `String`
+    /// to `Vec<u8>`. Both halves of that can lose data on an existing record, and they fail
+    /// differently:
+    ///
+    ///  * THE KEY. Every record already on disk carries `payload_base64`. Without
+    ///    `alias = "payload_base64"` those records do not parse at all -- and the failure lands at
+    ///    REPLAY, long after the write was acknowledged.
+    ///  * THE ALPHABET. `bytes_serde` writes base64 with `general_purpose::STANDARD`, and the
+    ///    producers encoded with `general_purpose::STANDARD` too. If those differed even in
+    ///    padding, an old record would decode to DIFFERENT BYTES -- silent corruption rather than
+    ///    a parse error, which no round trip over a freshly built value could catch.
+    ///
+    /// So this is asserted over JSON TEXT IN THE OLD SHAPE, hand-written rather than produced by
+    /// this build, which is the only form that can witness either failure.
+    #[test]
+    fn a_blob_record_written_in_the_old_shape_still_decodes_to_the_same_bytes() {
+        // Bytes chosen so the base64 has padding and a non-trivial tail: 5 bytes is 8 base64
+        // characters with one '=' pad, so a padding difference would change the text.
+        let payload: Vec<u8> = vec![0x00, 0x01, 0xfe, 0xff, 0x7b];
+        let encoded = {
+            use base64::engine::general_purpose::STANDARD;
+            use base64::Engine as _;
+            STANDARD.encode(&payload)
+        };
+        assert!(encoded.ends_with('='), "the fixture must exercise padding: {encoded}");
+
+        // ---- the old shape, as a shipped build wrote it: old KEY, base64 STRING value.
+        //
+        // THE RECORD IS INTERNALLY TAGGED. `Command` carries
+        // `#[serde(tag = "kind", rename_all = "snake_case")]`, so a record is one flat object
+        // with a `kind` discriminator beside the variant's own fields -- NOT the externally
+        // tagged `{"ContextResourceBlobPut": {...}}` that a reader of the Rust enum would
+        // assume. Spelling the fixture the wrong way makes it fail to parse for a reason that
+        // has nothing to do with what is under test, which is how this arm first failed.
+        let old_put = format!(
+            r#"{{"kind":"context_resource_blob_put","tenant_hash":7,"payload_base64":"{encoded}"}}"#
+        );
+        match serde_json::from_str::<Command>(&old_put)
+            .expect("a record written before the rename must still parse")
+        {
+            Command::ContextResourceBlobPut {
+                tenant_hash,
+                payload: got,
+            } => {
+                assert_eq!(tenant_hash, 7);
+                assert_eq!(got, payload, "the old record decoded to different bytes");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        let old_append = format!(
+            r#"{{"kind":"context_resource_blob_append","tenant_hash":7,"upload_token":"t","payload_base64":"{encoded}"}}"#
+        );
+        match serde_json::from_str::<Command>(&old_append)
+            .expect("a record written before the rename must still parse")
+        {
+            Command::ContextResourceBlobAppend {
+                upload_token,
+                payload: got,
+                ..
+            } => {
+                assert_eq!(upload_token, "t");
+                assert_eq!(got, payload, "the old record decoded to different bytes");
+            }
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // ---- and the NEW key is accepted too, so the alias did not replace the field name.
+        let new_put = format!(
+            r#"{{"kind":"context_resource_blob_put","tenant_hash":7,"payload":"{encoded}"}}"#
+        );
+        match serde_json::from_str::<Command>(&new_put).expect("the current key must parse") {
+            Command::ContextResourceBlobPut { payload: got, .. } => assert_eq!(got, payload),
+            other => panic!("unexpected command: {other:?}"),
+        }
+
+        // ---- a round trip through what this build writes, so the pair is closed.
+        let round = serde_json::to_string(&Command::ContextResourceBlobPut {
+            tenant_hash: 7,
+            payload: payload.clone(),
+        })
+        .unwrap();
+        // DENOMINATOR FOR THE FIXTURES ABOVE: they are hand-written, so if the record's tagging
+        // ever changes they would stop describing the format while still being valid JSON. This
+        // asserts the shape they were written against is the shape this build emits.
+        assert!(
+            round.starts_with(r#"{"kind":"context_resource_blob_put""#),
+            "the record is no longer internally tagged as the fixtures above assume: {round}"
+        );
+        assert!(
+            round.contains(&encoded),
+            "the current writer must still emit the same base64 text: {round}"
+        );
+        match serde_json::from_str::<Command>(&round).unwrap() {
+            Command::ContextResourceBlobPut { payload: got, .. } => assert_eq!(got, payload),
+            other => panic!("unexpected command: {other:?}"),
+        }
+    }
 
 
     /// Sets TS_VECTOR_INT8 and restores it ON DROP, so a failing assertion cannot leave it set for

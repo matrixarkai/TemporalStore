@@ -3966,7 +3966,16 @@ fn execute_record_log_request(
                 shard_id: DEFAULT_SHARD_ID,
                 command: Command::ContextResourceBlobPut {
                     tenant_hash,
-                    payload_base64: request.value.clone(),
+                    // The RPC still carries base64 in a string field, so the decode moved HERE,
+                    // to the edge, instead of living inside the durable command. That is the
+                    // point of the change: the wire's encoding stops being the record's type.
+                    payload: {
+                        use base64::engine::general_purpose::STANDARD;
+                        use base64::Engine as _;
+                        STANDARD
+                            .decode(request.value.as_bytes())
+                            .map_err(|err| format!("blob put needs a base64 value: {err}"))?
+                    },
                 },
             });
             if !response.status.ok {

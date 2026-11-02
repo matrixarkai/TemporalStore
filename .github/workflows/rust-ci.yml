@@ -233,6 +233,7 @@ jobs:
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
             shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            types::tests::a_blob_record_written_in_the_old_shape_still_decodes_to_the_same_bytes \
             meta::tests::a_framed_record_is_consumed_by_its_length_not_by_a_newline \
             meta::tests::the_log_reads_lines_and_framed_records_from_one_file \
             meta::tests::every_shape_of_torn_tail_is_dropped_and_cut_back_to_a_record_boundary \

@@ -382,7 +382,7 @@ mod tests {
         // node-embedding reads. A table an operator had drained to 100 went on sending them.
         let keyless = Command::ContextResourceBlobPut {
             tenant_hash: 7,
-            payload_base64: String::new(),
+            payload: Vec::new(),
         };
         assert_eq!(
             command_routing_key(&keyless),
