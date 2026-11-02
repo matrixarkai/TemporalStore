@@ -12371,6 +12371,127 @@ fn what_the_one_word_handle_costs_in_the_allocation() {
          this arm exists to carry -- do not quote the gross as the lever -- no longer applies"
     );
 }
+/// WHY THE BLOCK LIST STILL CARRIES AN 8-BYTE HANDLE BESIDE AN ENTRY THAT ALREADY HAS ONE.
+///
+/// The list is `Vec<(u64, BlockIndex)>` -- 32 B an entry, one per key, and the largest term of
+/// the `bucket_map` row. The leading `u64` is `block_index_handle`, a hash over the model
+/// spelling, the object key and five address terms. **It is derivable from the entry**, and the
+/// tree says so: `emit_one_entry_a_block` dedups on `(slab, offset, length)`, and its own doc
+/// states that "no two emitted entries share an address, so no two can share a handle". So the
+/// obvious cut is to drop the handle and key the list by the address the entry already holds,
+/// worth eight bytes a block.
+///
+/// # IT IS A LOSS, AND THE REASON IS THE SECOND HOME
+///
+/// The handle is not only a sort key. It is the DURABLE REF KEY: `BlockLookupRef` is
+/// `{routing_bucket: u32, block_ref_key: u64}` and that `u64` IS the handle, written to disk
+/// inside the lookup's refs. An 8-byte handle is a SURROGATE for a 16-byte `ElementEntry`
+/// address, which is the whole reason it exists. Key the list by the address and the ref has to
+/// carry the address, so the ref widens -- and the two sides are paid at DIFFERENT
+/// MULTIPLIERS:
+///
+///   * the saving is per BLOCK, about 1.056 blocks a key on the published corpus;
+///   * the cost is per BUCKET of the `strings` table, 2,048 buckets for 1,792 keys = 1.143.
+///
+/// The cost is paid at the higher multiplier, so moving eight bytes from the list to the ref
+/// LOSES. Same shape as `what_the_one_word_handle_costs_in_the_allocation`: one width, two
+/// homes, different denominators, and the arithmetic decided by which home is paid more often.
+///
+/// # AND A NARROWER VERSION OF THE IDEA ALREADY CAUSED DATA LOSS
+///
+/// Recorded at `block_index_handle`: dropping `length` from the handle takes it NARROWER than
+/// the dedup, so two entries differing only in length survive the dedup and then collide on one
+/// handle -- and a handle collision returns a DIFFERENT block rather than failing. That is the
+/// 39-of-40 element loss. This arm does not re-measure that; it prices the SAFE version of the
+/// idea, which is the one that looks free.
+///
+/// rust-internal: measures this crate's own layout, no product behaviour
+///
+///   cargo test -p temporalstore-rust --lib what_keying_the_block_list_by_address_would_cost -- --exact --nocapture
+#[test]
+fn what_keying_the_block_list_by_address_would_cost() {
+    use crate::block_store::ElementEntry;
+    use crate::engine::object_record::{ObjectRecord, ObjectSlot};
+    use crate::engine::state::{BlockIndex, BlockLookupRef, BlockRefs};
+    use std::mem::size_of;
+    use std::sync::Arc;
+
+    /// The published 1,792-key phase: 7/8 of 2,048, so the string table is exactly full.
+    const KEYS: usize = 1_792;
+    const BUCKETS: usize = 2_048;
+    /// Blocks a key on that corpus, from the decomposition arms.
+    const BLOCKS_PER_KEY: f64 = 1.056;
+
+    // --- the mirror: a ref that carries the ADDRESS instead of a surrogate for it ---
+    #[allow(dead_code)]
+    struct WideRef {
+        routing_bucket: u32,
+        address: ElementEntry,
+    }
+    #[allow(dead_code)]
+    enum WideRefs {
+        One(WideRef),
+        Many(Vec<WideRef>),
+    }
+    #[allow(dead_code)]
+    struct WideSlot {
+        record: ObjectRecord,
+        many: Option<Box<Vec<(u64, ElementEntry)>>>,
+        refs: Option<WideRefs>,
+    }
+
+    let today_entry = size_of::<(u64, BlockIndex)>();
+    let address_only = size_of::<BlockIndex>();
+    let saved_per_block = today_entry - address_only;
+
+    let today_bucket = size_of::<(Arc<str>, ObjectSlot)>() + 1;
+    let wide_bucket = size_of::<(Arc<str>, WideSlot)>() + 1;
+    let cost_per_bucket = wide_bucket.saturating_sub(today_bucket);
+
+    let saved = saved_per_block as f64 * BLOCKS_PER_KEY;
+    let cost = cost_per_bucket as f64 * BUCKETS as f64 / KEYS as f64;
+    let net = saved - cost;
+
+    println!();
+    println!("  the handle is {} B standing in for a {} B address", size_of::<u64>(), size_of::<ElementEntry>());
+    println!("  list entry   {today_entry} B -> {address_only} B      = -{saved_per_block} B a BLOCK");
+    println!("  ref          {} B -> {} B", size_of::<BlockLookupRef>(), size_of::<WideRef>());
+  
+    println!("  refs union   {} B -> {} B", size_of::<BlockRefs>(), size_of::<WideRefs>());
+    println!("  slot         {} B -> {} B", size_of::<ObjectSlot>(), size_of::<WideSlot>());
+    println!("  bucket       {today_bucket} B -> {wide_bucket} B      = +{cost_per_bucket} B a BUCKET");
+    println!("  {BLOCKS_PER_KEY} blocks a key, {BUCKETS}/{KEYS} = {:.3} buckets a key", BUCKETS as f64 / KEYS as f64);
+    println!("  saved {saved:.2} B/key    cost {cost:.2} B/key    NET {net:+.2} B/key");
+
+    // THE SURROGATE'S PREMISE: the handle must be NARROWER than the address it stands for, or
+    // it is not a surrogate and this whole argument is about nothing.
+    assert!(
+        size_of::<u64>() < size_of::<ElementEntry>(),
+        "the handle is {} B and the address it stands in for is {} B; if the address were no \
+         wider there would be no reason for a surrogate and this arm measures nothing",
+        size_of::<u64>(),
+        size_of::<ElementEntry>()
+    );
+    // THE SAVING IS REAL. Eight bytes a block is what makes the idea attractive.
+    assert_eq!(
+        8, saved_per_block,
+        "the list entry is {today_entry} B against {address_only} B for the entry alone, so the \
+         handle is not the eight bytes this arm prices"
+    );
+    // AND THE COST IS REAL TOO, or the ref does not widen and the cut would be free.
+    assert!(
+        cost_per_bucket > 0,
+        "a ref carrying the address did not widen the bucket ({today_bucket} -> {wide_bucket}), \
+         so nothing opposes the saving and this refusal does not hold"
+    );
+    // THE VERDICT: a LOSS, because the cost is paid at the higher multiplier.
+    assert!(
+        net < 0.0,
+        "keying the block list by address now NETS {net:+.2} B/key rather than losing. The \
+         multipliers or the widths have moved -- re-price it, because the refusal recorded here \
+         rests on the cost being paid per bucket and the saving per block"
+    );
+}
 /// THE PUBLISHED `strings` FIGURE FOLLOWS FROM THE SLOT'S WIDTH, SO IT IS DERIVED AND CHECKED
 /// HERE RATHER THAN RE-MEASURED BY HAND.
 ///
