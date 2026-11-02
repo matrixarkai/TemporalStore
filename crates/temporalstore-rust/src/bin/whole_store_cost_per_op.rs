@@ -1,0 +1,210 @@
+// SPDX-License-Identifier: Apache-2.0
+// Copyright 2026 MatrixArkAI
+
+//! WHAT ONE WRITE COSTS ON DISK, OVER THE WHOLE DATA DIRECTORY.
+//!
+//! # WHY THE DENOMINATOR IS THE WHOLE DIRECTORY AND NOT THE WAL
+//!
+//! `wal_cost_scale_harness` reports `log_bytes_on_disk` by summing a directory, which is the right
+//! SHAPE, but it sums only the write-ahead log. A durable write here also lands blocks and an
+//! index, and a comparison whose other half sums a storage pool holding its log and its pages
+//! together would then differ by WHAT EACH SIDE INCLUDES rather than by what either side costs.
+//! That is the denominator trap, and it is the easiest way to publish a ratio that measures
+//! bookkeeping.
+//!
+//! So this sums every file under the whole data directory — cache, blocks, indexes and log — and
+//! differences it across a fixed number of operations. Sum of file LENGTHS, never resident size:
+//! a resident-set delta follows allocator high-water marks and page reuse, and one taken on this
+//! path went non-monotonic across a sweep and had to be withdrawn.
+//!
+//! # WHAT IT PROVES BEFORE IT REPORTS
+//!
+//! A byte figure is about nothing unless the writes arrived. A write path that accepts and stores
+//! nothing still returns success — that has happened in this comparison, and an entire
+//! amplification figure once measured a no-op. So the last key written is read back and compared
+//! byte for byte, and the run refuses to print a cost unless every operation was accepted and the
+//! read-back matches.
+//!
+//! Usage: whole_store_cost_per_op <string|hash> <ops> <key_bytes> <value_bytes>
+
+use temporalstore_rust::control::{Config, SetConfigRequest};
+use temporalstore_rust::engine::TemporalEngine;
+use temporalstore_rust::types::{Command, CommandResponse, ExecuteRequest};
+
+/// Sum of every file length under `root`, recursively. The directory is the denominator.
+fn tree_bytes(root: &std::path::Path) -> u64 {
+    fn walk(path: &std::path::Path, total: &mut u64) {
+        let Ok(entries) = std::fs::read_dir(path) else { return };
+        for entry in entries.flatten() {
+            let Ok(meta) = entry.metadata() else { continue };
+            if meta.is_dir() {
+                walk(&entry.path(), total);
+            } else {
+                *total += meta.len();
+            }
+        }
+    }
+    let mut total = 0;
+    walk(root, &mut total);
+    total
+}
+
+fn padded(prefix: &str, index: usize, width: usize) -> String {
+    let mut s = format!("{prefix}{index}");
+    // Fixed width, so the payload total is ops * width and a reader can check the arithmetic.
+    while s.len() < width {
+        s.push('x');
+    }
+    s.truncate(width);
+    s
+}
+
+fn main() {
+    let args: Vec<String> = std::env::args().collect();
+    let model = args.get(1).map(String::as_str).unwrap_or("string");
+    let ops: usize = args.get(2).and_then(|a| a.parse().ok()).unwrap_or(200);
+    let key_bytes: usize = args.get(3).and_then(|a| a.parse().ok()).unwrap_or(16);
+    let value_bytes: usize = args.get(4).and_then(|a| a.parse().ok()).unwrap_or(64);
+    assert!(
+        matches!(model, "string" | "hash"),
+        "model must be string|hash, got {model}"
+    );
+
+    let dir = std::env::temp_dir().join(format!(
+        "whole_store_cost_{}_{}",
+        std::process::id(),
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos()
+    ));
+    std::fs::create_dir_all(&dir).unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.join("cache"),
+        dir.join("blocks"),
+        dir.join("indexes"),
+    );
+    engine.load_shard(1);
+    // DURABLE LOGGING ON. Their oplog is unconditional, so a comparison against a configuration
+    // that skips our log would be measuring a different durability promise, not a cheaper one.
+    assert!(
+        engine
+            .set_config(SetConfigRequest {
+                shard_id: 1,
+                config: Config {
+                    version: 2,
+                    async_storage: true,
+                    ..Default::default()
+                },
+            })
+            .ok,
+        "the durability setting under test has to be the one that is set"
+    );
+
+    // Measured AFTER load and config, so the figure is the cost of the WRITES.
+    let before = tree_bytes(&dir);
+    let value = vec![b'v'; value_bytes];
+    let mut accepted = 0usize;
+    let started = std::time::Instant::now();
+    let mut last_key = String::new();
+    for index in 0..ops {
+        let key = padded("k", index, key_bytes);
+        last_key = key.clone();
+        let command = match model {
+            "hash" => Command::HashSet {
+                key: key.clone(),
+                field: "f".to_string(),
+                value: value.clone(),
+            },
+            _ => Command::StringSet {
+                key: key.clone(),
+                value: value.clone(),
+            },
+        };
+        let outcome = engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command,
+        });
+        if outcome.status.ok {
+            accepted += 1;
+        } else {
+            eprintln!("op {index} refused: {:?}", outcome.response);
+        }
+    }
+    let elapsed = started.elapsed();
+    let after = tree_bytes(&dir);
+
+    // ARRIVAL, PROVEN. A success code is not evidence the bytes are stored.
+    let read_back = match model {
+        "hash" => engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::HashGet {
+                key: last_key.clone(),
+                field: "f".to_string(),
+            },
+        }),
+        _ => engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringGet {
+                key: last_key.clone(),
+            },
+        }),
+    };
+    // `Bytes`, not `Value` -- read off the arms in `execute_on_shard` rather than guessed, after
+    // guessing wrong once.
+    let served = match read_back.response {
+        CommandResponse::Bytes { value: Some(got) } => got == value,
+        CommandResponse::Bytes { value: None } => false,
+        other => {
+            eprintln!("unexpected read-back response: {other:?}");
+            false
+        }
+    };
+
+    let grew = after.saturating_sub(before);
+    println!("model              {model}");
+    println!("ops                {ops}");
+    println!("key bytes          {key_bytes}");
+    println!("value bytes        {value_bytes}");
+    println!("denominator        sum of file lengths under the WHOLE data dir (cache+blocks+indexes+log)");
+    println!("bytes before       {before}");
+    println!("bytes after        {after}");
+    println!("bytes delta        {grew}");
+    println!("bytes per op       {:.1}", grew as f64 / ops.max(1) as f64);
+    println!("user bytes per op  {}", key_bytes + value_bytes);
+    println!(
+        "envelope per op    {:.1}",
+        grew as f64 / ops.max(1) as f64 - (key_bytes + value_bytes) as f64
+    );
+    println!("accepted           {accepted}/{ops}");
+    println!("read-back exact    {served}");
+    println!("wall time          {:.3} s", elapsed.as_secs_f64());
+    println!(
+        "loadavg            {}",
+        std::fs::read_to_string("/proc/loadavg")
+            .unwrap_or_default()
+            .split_whitespace()
+            .next()
+            .unwrap_or("?")
+            .to_string()
+    );
+    // REFUSE A FIGURE THAT CANNOT BE ABOUT THE WRITES.
+    assert_eq!(accepted, ops, "every operation must be accepted or the figure is about a subset");
+    assert!(
+        served,
+        "THE READ-BACK DID NOT MATCH, so the bytes above are not the cost of storing this payload"
+    );
+    assert!(grew > 0, "the directory did not grow; nothing durable was written");
+    // REFUSE A PREALLOCATION STEP. `TS_WAL_PREALLOCATE` is ON by default and reserves 256 KiB
+    // segments, so a short run's directory delta is the SEGMENT it reserved rather than the
+    // records it wrote -- and the tell is that two different models report the identical delta.
+    // An earlier harness on this path asserted exactly this and I did not carry it over, so the
+    // first run reported 1310.7 B/op for string AND hash, both of them one 262,144 B step.
+    const PREALLOC_STEP: u64 = 256 * 1024;
+    assert!(
+        grew % PREALLOC_STEP != 0 || grew < PREALLOC_STEP,
+        "THIS IS A PREALLOCATION STEP, NOT A COST: the directory grew {grew} B, an exact multiple          of the {PREALLOC_STEP} B segment this store reserves in advance. Re-run with          TS_WAL_PREALLOCATE=0 so the log's length follows its records."
+    );
+    let _ = std::fs::remove_dir_all(&dir);
+}
