@@ -278,6 +278,7 @@ jobs:
             engine::tests::part4::maintained_component_block_ref_total_matches_the_walk \
             engine::tests::part4::object_block_lookup_refs_per_object_census \
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
+            engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
