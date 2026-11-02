@@ -382,7 +382,7 @@ pub fn execute_redis_command_with_state(
         "RANDOMKEY" if args.len() == 1 => live_matching_keys("*", state, &mut execute)
             .into_iter()
             .next()
-            .map(|key| RespValue::Bulk(Some(key.into_bytes())))
+            .map(|key| RespValue::Bulk(Some(decode_or_raw(&key))))
             .unwrap_or(RespValue::Bulk(None)),
         "FLUSHDB" | "FLUSHALL" if args.len() == 1 || args.len() == 2 => {
             for key in state.keyspace.iter().cloned().collect::<Vec<_>>() {
@@ -644,7 +644,7 @@ pub fn execute_redis_command_with_state(
                     .into_iter()
                     .flat_map(|(field, value)| {
                         vec![
-                            RespValue::Bulk(Some(field.into_bytes())),
+                            RespValue::Bulk(Some(decode_or_raw(&field))),
                             RespValue::Bulk(Some(value)),
                         ]
                     })
@@ -659,7 +659,7 @@ pub fn execute_redis_command_with_state(
             Ok(CommandResponse::HashEntries { entries }) => RespValue::Array(
                 entries
                     .into_iter()
-                    .map(|(field, _)| RespValue::Bulk(Some(field.into_bytes())))
+                    .map(|(field, _)| RespValue::Bulk(Some(decode_or_raw(&field))))
                     .collect(),
             ),
             Ok(_) => RespValue::Error("ERR invalid hkeys response".to_string()),
@@ -696,7 +696,7 @@ pub fn execute_redis_command_with_state(
                         .filter(|(field, _)| redis_pattern_matches(&pattern, field))
                         .flat_map(|(field, value)| {
                             [
-                                RespValue::Bulk(Some(field.into_bytes())),
+                                RespValue::Bulk(Some(decode_or_raw(&field))),
                                 RespValue::Bulk(Some(value)),
                             ]
                         })
