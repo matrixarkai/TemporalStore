@@ -7712,8 +7712,7 @@ impl CoreIndex {
         // dropped, which is what makes merging safe: a block that moved leaves a carried ref behind
         // at its old position, and a stale position could otherwise be served as another object's
         // identity by `BlockKeysByPosition`.
-        // BISECT: prune disabled.
-        // self.prune_refs_to_the_pages_the_index_holds();
+        self.prune_refs_to_the_pages_the_index_holds();
     }
 
     /// DROP EVERY REF THAT NAMES A BLOCK THIS INDEX DOES NOT HOLD.
