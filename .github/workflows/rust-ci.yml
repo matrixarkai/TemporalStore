@@ -353,6 +353,7 @@ jobs:
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
             engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
             engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
+            engine::tests::the_consolidated_object_map::installing_a_control_state_block_keeps_the_rows_block_refs \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
