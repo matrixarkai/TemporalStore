@@ -858,8 +858,8 @@ fn the_unbounded_sweep_integrates_linearly_in_rounds() {
 /// been overturned by a counter.
 ///
 /// AND THE BUDGETED SWEEP IS GATED THREE MORE TIMES ON TOP. `storage_index_gc_report` calls it
-/// only when the log is past `index_gc_index_log_bytes_threshold` (768 KiB), at least
-/// `index_gc_usage_ratio_trigger_basis_points` (40%) of it is removable, and the WAL frontier is
+/// only when at least `index_gc_index_log_bytes_threshold` (1 MiB) of the log is removable, at
+/// least `index_gc_usage_ratio_trigger_basis_points` (50%) of its records are removable, and the WAL frontier is
 /// safe. The post-dump sweep has none of those: past its dump cadence it runs. Both regimes are
 /// driven below -- shipped triggers, where the cycle declines and NAMES which trigger; and
 /// triggers opened with the budget left at its default, where it reaches the sweep.
