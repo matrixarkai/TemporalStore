@@ -1178,12 +1178,33 @@ impl TemporalEngine {
             ..StorageManagerStageReport::default()
         });
 
+        // THE ROUND ALREADY APPLIED THE LIFECYCLE, at `reclaim_wal` above, and this report used to
+        // apply it a SECOND time: `create_dump_manifest` was `request.enable_wal_reclaim`, true on
+        // every shipped round, and the true arm of `storage_merged_dump_load_policy_report` calls
+        // `apply_storage_lifecycle`. So one round dumped twice, and the two stages that did it are
+        // the two largest in the round.
+        //
+        // The plan-only arm is enough for everything this report reads: it needs A manifest, and it
+        // already falls back to the newest one on disk -- which the apply above has just written.
+        //
+        // WHAT THE NAIVE VERSION GOT WRONG, measured rather than assumed. Passing `false` alone
+        // took `dump_manifest_created` to FALSE on every row, because that second apply was what
+        // set it; the on-disk fallback supplies the manifest but not the flag. `policy_ready` did
+        // not move. So the flag is taken from the apply that actually happened, which the round is
+        // holding in `lifecycle_report`, rather than earned by doing the work twice.
         let mut merged_dump_load_policy =
             self.storage_merged_dump_load_policy_report(StorageMergedDumpLoadPolicyRequest {
                 lifecycle: plan_request.clone(),
-                create_dump_manifest: request.enable_wal_reclaim,
+                create_dump_manifest: false,
                 install_dump_manifest: false,
             });
+        if lifecycle_report
+            .as_ref()
+            .and_then(|report| report.dump_manifest.as_ref())
+            .is_some()
+        {
+            merged_dump_load_policy.dump_manifest_created = true;
+        }
         // Its own stage, because it is its own work: this report runs a lifecycle plan, an apply
         // and a recovery-boundary report (which reads every live block).
         //
