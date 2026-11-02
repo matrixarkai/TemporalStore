@@ -50,7 +50,7 @@
 //! 600.
 //!
 //! AND THAT NO LONGER COSTS ANYTHING, which is the half this file now has to say. The consequence it
-//! was built to price was "a page filed under one bucket and summarised under another", and the
+//! was built to price was "a block filed under one bucket and summarised under another", and the
 //! summary walk does not derive a placement any more -- `bucket_storage_summaries` credits each block
 //! to the bucket the walk FILED it in, keeping the derivation only for a model-map entry that has no
 //! filing to read. So the filed and the summarised bucket sets are equal at EVERY range, and a dump

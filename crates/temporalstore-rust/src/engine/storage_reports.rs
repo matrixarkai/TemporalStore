@@ -465,7 +465,7 @@ impl TemporalEngine {
         let summary = self.block_store.slab_summary();
         StorageBlockFormatCompatibilityReport {
             shard_id,
-            block_format: "rust-page-envelope-v6".to_string(),
+            block_format: "rust-block-envelope-v6".to_string(),
             rust_envelope_version: 6,
             compatibility_mode: "rust_envelope_migration_only".to_string(),
             migration_required: true,

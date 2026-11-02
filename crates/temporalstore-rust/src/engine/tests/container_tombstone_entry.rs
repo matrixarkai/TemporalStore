@@ -617,7 +617,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     // direction.
     //
     // Pinned against the folded BLOCK count rather than a literal 1, so a fixture that folds
-    // differently cannot make this vacuous -- and so that it still reads as "one entry a page".
+    // differently cannot make this vacuous -- and so that it still reads as "one entry a block".
     let live_blocks_folded = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");

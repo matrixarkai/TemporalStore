@@ -813,7 +813,7 @@ impl TemporalEngine {
             missing_owner_block_refs,
             object_lifecycle,
             // Against what was PROBED, not against every live block. With a sample budget the
-            // two differ, and reading it as "every page is readable" when only some were tried
+            // two differ, and reading it as "every block is readable" when only some were tried
             // is exactly the false assurance this field exists to avoid.
             all_live_blocks_readable: probed_block_refs == readable_block_refs,
             boundary: StorageRecoveryBoundaryReport::default(),
@@ -1475,7 +1475,7 @@ fn expiry_scan_budget(limit: usize) -> usize {
         self.compact_shard_blocks_relocating(shard_id, budget_bytes, budget_block_refs, None)
     }
 
-    /// The round itself. `drain_block_slab_ids` is `None` for "every live page" -- a
+    /// The round itself. `drain_block_slab_ids` is `None` for "every live block" -- a
     /// direct instruction -- and `Some` for "only the slabs named", which is what the
     /// periodic loop asks for. Everything else about a round is identical either way, so the two
     /// share one body and one set of rules about resuming, budgets and the write guard.

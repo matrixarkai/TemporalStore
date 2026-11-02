@@ -1415,7 +1415,7 @@ fn compacting_a_record_keeps_everything_that_is_not_the_address() {
         matches!(record.page_address(), BlockAddress::One(_)),
         "the write-back left the address arm as a handle"
     );
-    assert_eq!(128, record.block_size(), "the page size did not track the new address");
+    assert_eq!(128, record.block_size(), "the block size did not track the new address");
 
     // --- THE NEGATIVE CONTROL: the wrong write-back must LOSE what the right one keeps. ---
     let wrong = fresh_from_address(&relocated);

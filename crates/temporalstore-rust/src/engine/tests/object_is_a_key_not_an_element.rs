@@ -5,7 +5,7 @@
 //!
 //! `stable_block_object_id` folded the component into the object's identity, so an object held
 //! exactly one block: a hash of twenty-five fields was twenty-five objects that happened to share a
-//! key. #1986 recorded the result as "the object id names a page's triple, not an object" -- a
+//! key. #1986 recorded the result as "the object id names a block's triple, not an object" -- a
 //! DESCRIPTION OF A DEFECT rather than a property to preserve. The parameter is REMOVED here, not
 //! merely ignored, because keeping it and discarding its value would leave every call site
 //! compiling while the meaning changed underneath it.

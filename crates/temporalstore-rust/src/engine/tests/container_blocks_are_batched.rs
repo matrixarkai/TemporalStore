@@ -72,7 +72,7 @@
 //!
 //! ## The fold could report success without folding
 //!
-//! "Pages went down" is also what an idle round reports. So the instrument is two counters inside
+//! "Blocks went down" is also what an idle round reports. So the instrument is two counters inside
 //! the fold itself -- batches written and blocks folded into them -- and every row asserts both are
 //! non-zero before it reads anything else. A round that batched nothing fails here rather than
 //! passing quietly.

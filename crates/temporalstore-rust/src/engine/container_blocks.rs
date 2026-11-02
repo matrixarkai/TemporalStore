@@ -205,7 +205,7 @@ pub(super) const CONTAINER_BLOCK_MAGIC: &[u8] = b"TSCPG1\n";
 /// # WHY EVERY NEW BLOCK TAKES IT, INCLUDING ONE WITH NO REMOVAL IN IT
 ///
 /// The cheaper-looking alternative is to write v1 while a block has no tombstone and v2 only when it
-/// does. That makes "a page is v1 if and only if it holds no removal" an invariant, and nothing
+/// does. That makes "a block is v1 if and only if it holds no removal" an invariant, and nothing
 /// would enforce it -- a writer that took the wrong shape for its contents would produce a block
 /// whose tombstone decodes as an empty live value, which is the resurrection this whole stage
 /// exists to close, reintroduced by a branch. One writer, one shape, and the cost is priced above.

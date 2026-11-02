@@ -5564,7 +5564,7 @@ fn where_a_block_read_miss_allocates() {
     println!("  part                          allocs/read   bytes/read");
     println!("  block-store read alone        {:>11.2} {:>12.0}",
              per(store_allocs), per(store_bytes));
-    println!("  whole miss (read_page_bytes)  {:>11.2} {:>12.0}",
+    println!("  whole miss (read_block_bytes)  {:>11.2} {:>12.0}",
              per(whole_allocs), per(whole_bytes));
     println!("  ---------------------------------------------------------");
     println!("  cache lookup + put + key      {:>11.2} {:>12.0}",
@@ -5615,7 +5615,7 @@ fn what_a_block_read_costs_hit_against_miss() {
         let response = engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
-                key: format!("page-read-{index:03}"),
+                key: format!("block-read-{index:03}"),
                 value: vec![b'v'; 1024],
             },
         });
@@ -5729,7 +5729,7 @@ fn what_a_block_read_costs_hit_against_miss() {
     println!("  path                       allocs/read   bytes/read");
     println!("  shared, cache hit          {:>11.2} {:>12.0}", per(hit_allocs), per(hit_bytes));
     println!("  shared, cache miss         {:>11.2} {:>12.0}", per(miss_allocs), per(miss_bytes));
-    println!("  owning (read_page_bytes)   {:>11.2} {:>12.0}", per(owning_allocs), per(owning_bytes));
+    println!("  owning (read_block_bytes)   {:>11.2} {:>12.0}", per(owning_allocs), per(owning_bytes));
     println!();
     println!(
         "  a miss costs {:+.2} allocations and {:+.0} bytes against a hit",
@@ -7596,7 +7596,7 @@ fn where_a_record_is_kept_everywhere() {
         ("object_block_layouts", shard.object_block_layouts.len()),
         ("bucket_index.bucket_map", buckets.len()),
         ("bucket_index.kind_pool", shard.bucket_index.kind_pool.len()),
-        ("bucket_index.object_page_lookup", shard.bucket_index.object_block_lookup.len()),
+        ("bucket_index.object_block_lookup", shard.bucket_index.object_block_lookup.len()),
         ("  .object_index", object_index),
         ("  .deleted_object_index", deleted_object_index),
         ("  .page_index", block_index),
@@ -8720,7 +8720,7 @@ fn what_the_compaction_preamble_walks() {
         1, shard, 0, u32::MAX,
     );
     report(
-        "  of which: bucket_object_page_ownership",
+        "  of which: bucket_object_block_ownership",
         crate::engine::live_block_scan_entries(),
     );
 
@@ -9559,7 +9559,7 @@ fn what_each_home_costs() {
     let per = freed_by(&mut || shard.dirty_objects.clear());
     freed_rows.push(("dirty_objects", per));
     let per = freed_by(&mut || shard.bucket_index.object_block_lookup.clear());
-    freed_rows.push(("bucket_index.object_page_lookup", per));
+    freed_rows.push(("bucket_index.object_block_lookup", per));
     let per = freed_by(&mut || {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.object_index.clear();

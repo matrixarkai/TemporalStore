@@ -710,7 +710,7 @@ impl TemporalEngine {
         // name, so for a container element that resolved NOTHING and this door answered `None` for
         // elements that were present and served:
         // `container_block_element_key::every_container_kind_reads_back_the_value_it_wrote_through_a_
-        // framed_page` failed at "no stored page for hash hash-key component field-0000".
+        // framed_page` failed at "no stored block for hash hash-key component field-0000".
         //
         // The resident map is keyed BY the element and is where the production readers that used to
         // resolve this way now go, so this door follows them rather than keeping a resolution the
@@ -1722,7 +1722,7 @@ impl TemporalEngine {
     ///
     /// # WHAT THAT FAILURE ACTUALLY WAS, MEASURED, AND IT IS NOT WHAT IT LOOKED LIKE
     ///
-    /// "The page names nothing" reads as a missing frame, and the first reading of it here was that
+    /// "The block names nothing" reads as a missing frame, and the first reading of it here was that
     /// some write path stores an unframed block -- `container_blocks::UNFRAMED_CONTAINER_WRITES`
     /// exists for exactly that class, so it was a plausible cause. IT WAS WRONG. The blocks are
     /// framed. Driven from the proxy binary's own suite with a temporary print on this arm, 24 of

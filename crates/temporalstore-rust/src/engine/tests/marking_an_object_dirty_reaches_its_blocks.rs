@@ -31,7 +31,7 @@
 //! TESTS FIRED THAT ASSERTION IMMEDIATELY, and it was replaced by a rebuild.
 //!
 //! BOTH THE ASSERTION AND THE TWO TESTS WERE ABOUT THE WRONG CONDITION. "Buckets present" is not
-//! "pages present", and "pages present" is not "a LIVE page present" -- a tombstone is a page a
+//! "pages present", and "pages present" is not "a LIVE block present" -- a tombstone is a page a
 //! mark must not dirty. Measured over a 107-name set of mark-reaching tests, 97 verdicts: six
 //! reaches had no blocks at all, two had only tombstones, and the only two reaches with a live block
 //! were the fixtures in this module, each writing into `bucket_map` directly with no filing

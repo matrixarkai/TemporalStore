@@ -1776,8 +1776,8 @@ fn a_carried_element_whose_block_the_fold_did_not_keep_is_not_restored() {
          wrong reason and the finding below is vacuous"
     );
 
-    let kept = b"kept-by-a-live-page".to_vec();
-    let gone = b"removed-page-leftover".to_vec();
+    let kept = b"kept-by-a-live-block".to_vec();
+    let gone = b"removed-block-leftover".to_vec();
     let blob = vec![serde_json::json!({
         "key": "res",
         "set_elements": [
@@ -2852,7 +2852,7 @@ fn a_block_and_an_outcome_that_disagree_about_the_element_refuse_the_load() {
             if rename {
                 for item in record.outcomes.iter_mut() {
                     if item.kind == "hash" && item.component.is_some() {
-                        item.component = Some("a-field-the-page-does-not-hold".to_string());
+                        item.component = Some("a-field-the-block-does-not-hold".to_string());
                     }
                 }
             }

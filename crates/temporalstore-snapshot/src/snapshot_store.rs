@@ -650,7 +650,7 @@ mod tests {
         let slab = shard_root.join("page_segments").join("0001.seg");
         tokio::fs::write(&index, b"index-bytes").await.unwrap();
         tokio::fs::write(&checksums, b"[]").await.unwrap();
-        tokio::fs::write(&slab, b"page-segment-bytes")
+        tokio::fs::write(&slab, b"block-segment-bytes")
             .await
             .unwrap();
 
@@ -705,7 +705,7 @@ mod tests {
             tokio::fs::read(restored.root_dir.join("block_segments/0001.seg"))
                 .await
                 .unwrap(),
-            b"page-segment-bytes"
+            b"block-segment-bytes"
         );
     }
 

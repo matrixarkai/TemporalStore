@@ -7241,7 +7241,7 @@ impl BlockIndex {
     /// wrong. THAT PROTECTION IS THE BRANCH ORDER OF ONE `if`, not a property of the design, which
     /// is why this is a fix and not a tidy-up: reorder those branches and the defect becomes live.
     ///
-    /// What it did cost was reporting. `storage_reporting` computed "any page in log" from the
+    /// What it did cost was reporting. `storage_reporting` computed "any block in log" from the
     /// stored flag, so a bucket whose only log-resident block was a tombstone reported no block in
     /// log while one was in the log. Derived, it reports what is true.
     pub(super) fn log_backed(&self) -> bool {
@@ -7684,7 +7684,7 @@ impl CoreIndex {
         //
         //   * STRIP EVERY CARRIED ROW. Red on
         //     `address_footprint::the_warm_block_is_found_under_the_key_the_other_side_wrote`:
-        //     "a live page with no identity beside it while the inversion DOES name positions". A
+        //     "a live block with no identity beside it while the inversion DOES name positions". A
         //     reconstruct derives its filings from the model maps, and a resident block need not be
         //     derivable from them -- a warmed block, or one in a released bucket. Its row's ref was
         //     the only record of where it is.
@@ -7694,7 +7694,7 @@ impl CoreIndex {
         //
         // So nothing is stripped on the way in. The reconstruct's filings are MERGED into the rows
         // they belong to, and then every ref -- carried or merged -- is PRUNED against the block
-        // index this reconstruct just built. "A ref must name a page the index holds" is a property
+        // index this reconstruct just built. "A ref must name a block the index holds" is a property
         // of the finished state rather than a guess about which refs are stale, and it is the same
         // question `serialize_block_index` asks from the other direction.
         self.bucket_map = bucket_map;

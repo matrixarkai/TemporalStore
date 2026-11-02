@@ -45,7 +45,7 @@
 //!
 //! Every side is counted and asserted non-zero before it is compared. A fixture that folded nothing,
 //! or that read no block, would make two sides agree for the wrong reason. The fold's own counters are
-//! asserted first, because "one page per container" is also what an object with one element looks
+//! asserted first, because "one block per container" is also what an object with one element looks
 //! like -- and the tombstone's own block is asserted to exist, because a removal that wrote no block
 //! would leave the derivation agreeing with the index only because the member was in neither.
 #![allow(clippy::all)]
@@ -68,7 +68,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
 fn load_on(engine: &TemporalEngine) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
-        table_name: "folded-page-membership".to_string(),
+        table_name: "folded-block-membership".to_string(),
         shard_uri: "local://folded-page-membership/1".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket: 1023,
@@ -112,7 +112,7 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
         );
     }
 
-    // FOLD FIRST. The counters are the instrument, because "one page per container" is also what an
+    // FOLD FIRST. The counters are the instrument, because "one block per container" is also what an
     // idle round over a one-element object reports.
     crate::engine::reset_container_batch_counts();
     engine

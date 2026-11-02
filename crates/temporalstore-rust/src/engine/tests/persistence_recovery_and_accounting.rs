@@ -3168,7 +3168,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert!(!report.block_format_compatibility.native_block_header_compatible);
     assert_eq!(
         report.block_format_compatibility.block_format,
-        "rust-page-envelope-v6"
+        "rust-block-envelope-v6"
     );
     assert_eq!(
         report.block_format_compatibility.compatibility_mode,
@@ -3260,7 +3260,7 @@ fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::StringSet {
-                    key: "page-format-key".to_string(),
+                    key: "block-format-key".to_string(),
                     value: vec![11; 512],
                 },
             })
@@ -3271,7 +3271,7 @@ fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
 
     let report = engine.storage_block_format_compatibility_report(1);
     assert_eq!(report.shard_id, 1);
-    assert_eq!(report.block_format, "rust-page-envelope-v6");
+    assert_eq!(report.block_format, "rust-block-envelope-v6");
     assert_eq!(report.rust_envelope_version, 6);
     assert_eq!(report.compatibility_mode, "rust_envelope_migration_only");
     assert!(report.migration_required);
@@ -8126,7 +8126,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
         engine
             .load_shard_with(crate::control::LoadShardRequest {
                 shard_id: 1,
-                table_name: "page-ref-total".to_string(),
+                table_name: "block-ref-total".to_string(),
                 shard_uri: "local://page-ref-total/1".to_string(),
                 start_routing_bucket: 0,
                 end_routing_bucket: 63,
@@ -8739,9 +8739,9 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     let write = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::HashSet {
-            key: "derived-page-key".to_string(),
+            key: "derived-block-key".to_string(),
             field: "f1".to_string(),
-            value: b"derived-page-value".to_vec(),
+            value: b"derived-block-value".to_vec(),
         },
     });
     assert!(write.status.ok, "the write must be acked: {write:?}");
@@ -8752,7 +8752,7 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     let read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::HashGet {
-            key: "derived-page-key".to_string(),
+            key: "derived-block-key".to_string(),
             field: "f1".to_string(),
         },
     });
@@ -8760,7 +8760,7 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     assert_eq!(
         read.response,
         CommandResponse::Bytes {
-            value: Some(b"derived-page-value".to_vec())
+            value: Some(b"derived-block-value".to_vec())
         },
         "a derived block must not read back as missing once its cache entry is gone"
     );
@@ -13976,7 +13976,7 @@ fn what_one_block_costs_to_index() {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
-                key: format!("page-cost-{index:06}"),
+                key: format!("block-cost-{index:06}"),
                 value: vec![b'v'; 64],
             },
         });

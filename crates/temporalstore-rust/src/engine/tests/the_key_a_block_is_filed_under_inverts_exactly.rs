@@ -187,7 +187,7 @@ fn seed(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u32) -> 
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: SHARD,
-        table_name: "the-key-a-page-is-filed-under".to_string(),
+        table_name: "the-key-a-block-is-filed-under".to_string(),
         shard_uri: "local://the-key-a-page-is-filed-under/41".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket,
@@ -1239,7 +1239,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
             TemporalEngine::with_local_dirs(64, cache.clone(), blocks.clone(), indexes.clone());
         let response = engine.load_shard_with(crate::control::LoadShardRequest {
             shard_id: SHARD,
-            table_name: "the-key-a-page-is-filed-under".to_string(),
+            table_name: "the-key-a-block-is-filed-under".to_string(),
             shard_uri: "local://the-key-a-page-is-filed-under/41".to_string(),
             start_routing_bucket: 0,
             end_routing_bucket: SHIPPED_END_BUCKET,
@@ -1299,7 +1299,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     let engine = TemporalEngine::with_local_dirs(64, cache, blocks, indexes);
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: SHARD,
-        table_name: "the-key-a-page-is-filed-under".to_string(),
+        table_name: "the-key-a-block-is-filed-under".to_string(),
         shard_uri: "local://the-key-a-page-is-filed-under/41".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket: SHIPPED_END_BUCKET,

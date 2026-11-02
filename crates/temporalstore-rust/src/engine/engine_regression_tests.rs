@@ -105,9 +105,9 @@ impl BlockObjects {
 /// a removal that named no element.
 ///
 /// THE SECOND IS NOT A DEFECT, AND `identity_of`'s OWN DOC SAYS SO: a deleted block whose removal
-/// named no element "is the one page in this store whose object nothing beside it states".
+/// named no element "is the one block in this store whose object nothing beside it states".
 /// Production's `block_identities_in` skips it through a `filter_map`, with the note that in every
-/// caller it means "this page is not the one I am matching".
+/// caller it means "this block is not the one I am matching".
 ///
 /// `hash_read_union_divergence::an_index_entry_marked_deleted_loses_no_field_and_is_not_counted`
 /// plants exactly that block -- it marks an entry deleted in place, with no tombstone row -- and

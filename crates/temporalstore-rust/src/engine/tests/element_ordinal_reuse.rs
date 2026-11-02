@@ -2086,7 +2086,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
 ///     ACCESSOR hands back `Option<u64>`. A width read off the accessor is four times too generous,
 ///     which is why #1986's rule is to read it off the field.
 ///   * `narrow_block_id` is CHECKED, not saturating, and its panic message names the harm:
-///     "truncating it would name a different page of the same object". Driven here.
+///     "truncating it would name a different block of the same object". Driven here.
 ///   * But `next_block_index_for_object` SATURATES before it ever reaches that check, so the value
 ///     that arrives at the ceiling is `u32::MAX` rather than 65,536 -- still refused, and refused for
 ///     the wrong reason, by the wrong function, with no mention of the object that overflowed. That
@@ -2625,7 +2625,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // order and imposes none of its own, which is what made component order free to respell.
         // It is false now, and the mechanism is the landed change. `SetMembers` no longer walks
         // index entries and answers each from the block it named -- that arm was deleted, because an
-        // entry naming no element "can only be answered by a page that names no element either"
+        // entry naming no element "can only be answered by a block that names no element either"
         // and it returned an EMPTY listing. It asks the PAYLOAD through
         // `container_membership::derive_membership`, which folds every block of the object into a
         // `BTreeMap` KEYED BY THE COMPONENT SPELLING.
