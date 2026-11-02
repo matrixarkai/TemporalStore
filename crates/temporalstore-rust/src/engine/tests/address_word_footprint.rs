@@ -24,7 +24,7 @@
 //!     known direction, so both are reported and the chunk column is the one that decides
 //!     whether a width change survives to the heap.
 //!   * BOTH ROUTING RANGES. At the default range (`0..=u32::MAX`) every key lands in a bucket of
-//!     its own BY CONSTRUCTION, which makes "one page per bucket" an artefact of the fixture
+//!     its own BY CONSTRUCTION, which makes "one block per bucket" an artefact of the fixture
 //!     rather than a fact about the workload. `docs/runtime_tuning.md` tells an operator to set
 //!     `TS_SHARD_END_ROUTING_BUCKET=1023` before the first ingest, and that is the range whose
 //!     numbers describe a store. Both are run and the operator's is named.

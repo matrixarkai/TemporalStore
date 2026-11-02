@@ -6898,7 +6898,7 @@ mod tests {
             staged_blocks: vec![crate::wal::StagedBlock {
                 object_id: 77,
                 component: None,
-                bytes: b"derived-page-bytes".to_vec(),
+                bytes: b"derived-block-bytes".to_vec(),
             }],
                     outcomes: Vec::new(),
         };

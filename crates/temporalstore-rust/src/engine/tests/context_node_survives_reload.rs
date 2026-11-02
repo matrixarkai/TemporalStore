@@ -436,14 +436,14 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     // never fires at all, "survives" says nothing about why. A second orphan gets an address for a
     // block NOTHING holds, so the only live-set lookup that can decide it must fail.
     shard.hashes.replay_install_element(
-        "orphan-dead-page",
+        "orphan-dead-block",
         std::sync::Arc::from("meta"),
         crate::engine::ElementEntry::from_parts(9_999, 1_234_567, 64, None, None),
     );
     assert!(
         shard
             .hashes
-            .get("orphan-dead-page")
+            .get("orphan-dead-block")
             .map(|fields| fields.get("meta").is_some())
             .unwrap_or(false),
         "the dead-block control was not installed, so it cannot test the filter"
@@ -453,7 +453,7 @@ fn a_container_only_element_survives_the_reconcile_when_its_block_is_still_live(
     );
     let dead_after = shard
         .hashes
-        .get("orphan-dead-page")
+        .get("orphan-dead-block")
         .map(|fields| fields.get("meta").is_some())
         .unwrap_or(false);
     println!("[orphan] dead-block control after the reconcile: {dead_after} (must be false)");
@@ -503,8 +503,8 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         let mut persisted: HashMap<String, crate::engine::hash_field_map::HashFieldMap> =
             HashMap::new();
         let fields = persisted.entry("obj".to_string()).or_default();
-        fields.insert(std::sync::Arc::from("on-live-page"), live_address.clone());
-        fields.insert(std::sync::Arc::from("on-dead-page"), dead_address.clone());
+        fields.insert(std::sync::Arc::from("on-live-block"), live_address.clone());
+        fields.insert(std::sync::Arc::from("on-dead-block"), dead_address.clone());
         let mut refused = 0usize;
         let merged = crate::engine::storage_bucket_internals::fill_absent_elements(
             HashMap::new(),
@@ -515,15 +515,15 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         let kept = merged.get("obj");
         println!(
             "[per-kind] hashes: kept_live={} kept_dead={} refused={refused}",
-            kept.map(|f| f.get("on-live-page").is_some()).unwrap_or(false),
-            kept.map(|f| f.get("on-dead-page").is_some()).unwrap_or(false),
+            kept.map(|f| f.get("on-live-block").is_some()).unwrap_or(false),
+            kept.map(|f| f.get("on-dead-block").is_some()).unwrap_or(false),
         );
         assert!(
-            kept.map(|f| f.get("on-live-page").is_some()).unwrap_or(false),
+            kept.map(|f| f.get("on-live-block").is_some()).unwrap_or(false),
             "hashes: an element the derived map never named was dropped even though its block is live"
         );
         assert!(
-            !kept.map(|f| f.get("on-dead-page").is_some()).unwrap_or(false),
+            !kept.map(|f| f.get("on-dead-block").is_some()).unwrap_or(false),
             "hashes: THE FILTER IS INERT -- an element on a block nothing holds was kept too, so the \
              line above proves nothing about liveness"
         );
@@ -535,8 +535,8 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         let mut persisted: HashMap<String, BTreeMap<Vec<u8>, crate::engine::ElementEntry>> =
             HashMap::new();
         let members = persisted.entry("obj".to_string()).or_default();
-        members.insert(b"on-live-page".to_vec(), live_address.clone());
-        members.insert(b"on-dead-page".to_vec(), dead_address.clone());
+        members.insert(b"on-live-block".to_vec(), live_address.clone());
+        members.insert(b"on-dead-block".to_vec(), dead_address.clone());
         let mut refused = 0usize;
         let merged = crate::engine::storage_bucket_internals::fill_absent_elements(
             HashMap::new(),
@@ -547,15 +547,15 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         let kept = merged.get("obj");
         println!(
             "[per-kind] sets: kept_live={} kept_dead={} refused={refused}",
-            kept.map(|m| m.contains_key(b"on-live-page".as_slice())).unwrap_or(false),
-            kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
+            kept.map(|m| m.contains_key(b"on-live-block".as_slice())).unwrap_or(false),
+            kept.map(|m| m.contains_key(b"on-dead-block".as_slice())).unwrap_or(false),
         );
         assert!(
-            kept.map(|m| m.contains_key(b"on-live-page".as_slice())).unwrap_or(false),
+            kept.map(|m| m.contains_key(b"on-live-block".as_slice())).unwrap_or(false),
             "sets: an unnamed member on a live block was dropped"
         );
         assert!(
-            !kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
+            !kept.map(|m| m.contains_key(b"on-dead-block".as_slice())).unwrap_or(false),
             "sets: THE FILTER IS INERT for this kind"
         );
         assert_eq!(1, refused, "sets: exactly the dead-block member should be refused");
@@ -568,8 +568,8 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
             BTreeMap<Vec<u8>, (u64, crate::engine::ElementEntry)>,
         > = HashMap::new();
         let members = persisted.entry("obj".to_string()).or_default();
-        members.insert(b"on-live-page".to_vec(), (7, live_address.clone()));
-        members.insert(b"on-dead-page".to_vec(), (9, dead_address.clone()));
+        members.insert(b"on-live-block".to_vec(), (7, live_address.clone()));
+        members.insert(b"on-dead-block".to_vec(), (9, dead_address.clone()));
         let mut refused = 0usize;
         let merged = crate::engine::storage_bucket_internals::fill_absent_elements(
             HashMap::new(),
@@ -580,16 +580,16 @@ fn the_live_filter_keeps_an_unnamed_element_on_a_live_block_for_every_kind() {
         let kept = merged.get("obj");
         println!(
             "[per-kind] zsets: kept_live={} kept_dead={} refused={refused}",
-            kept.map(|m| m.contains_key(b"on-live-page".as_slice())).unwrap_or(false),
-            kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
+            kept.map(|m| m.contains_key(b"on-live-block".as_slice())).unwrap_or(false),
+            kept.map(|m| m.contains_key(b"on-dead-block".as_slice())).unwrap_or(false),
         );
         assert!(
-            kept.map(|m| m.contains_key(b"on-live-page".as_slice())).unwrap_or(false),
+            kept.map(|m| m.contains_key(b"on-live-block".as_slice())).unwrap_or(false),
             "zsets: an unnamed member on a live block was dropped -- note the address is reached \
              through the VALUE here, so this also checks `CarriedValue` for the pair"
         );
         assert!(
-            !kept.map(|m| m.contains_key(b"on-dead-page".as_slice())).unwrap_or(false),
+            !kept.map(|m| m.contains_key(b"on-dead-block".as_slice())).unwrap_or(false),
             "zsets: THE FILTER IS INERT for this kind"
         );
         assert_eq!(1, refused, "zsets: exactly the dead-block member should be refused");

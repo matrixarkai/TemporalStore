@@ -76,7 +76,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
 fn load_on(engine: &TemporalEngine, end_routing_bucket: u32) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
-        table_name: "flat-page-list".to_string(),
+        table_name: "flat-block-list".to_string(),
         shard_uri: "local://flat-page-list/1".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket,

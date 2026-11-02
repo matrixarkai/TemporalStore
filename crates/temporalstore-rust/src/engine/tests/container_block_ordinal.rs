@@ -98,7 +98,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
 fn load_on(engine: &TemporalEngine, end_routing_bucket: u32) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
-        table_name: "container-page-ordinal".to_string(),
+        table_name: "container-block-ordinal".to_string(),
         shard_uri: "local://container-page-ordinal/1".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket,

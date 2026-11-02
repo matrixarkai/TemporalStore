@@ -29,7 +29,7 @@
 //!
 //! # WHAT IT DID COST: THE REPORT
 //!
-//! `storage_reporting` asks "does any page in this bucket live in the log", and it asked the
+//! `storage_reporting` asks "does any block in this bucket live in the log", and it asked the
 //! stored flag. A bucket whose only log-resident block was a tombstone answered NO while a block was
 //! in the log. The second test below drives exactly that bucket.
 //!

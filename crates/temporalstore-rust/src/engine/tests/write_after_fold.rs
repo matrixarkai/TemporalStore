@@ -202,7 +202,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
         folded_blocks.len()
     );
 
-    // FLOOR: THE FIXTURE ACTUALLY FOLDED. Without this, "one entry per page" is trivially true
+    // FLOOR: THE FIXTURE ACTUALLY FOLDED. Without this, "one entry per block" is trivially true
     // because every element is still its own block and the gate is doing nothing.
     assert_eq!(
         1,
@@ -347,7 +347,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
     let (_, folded_blocks, _) = entry_census(&engine);
-    // FLOOR: the fixture folded, or "one entry per page" below is trivially true.
+    // FLOOR: the fixture folded, or "one entry per block" below is trivially true.
     assert_eq!(
         1,
         folded_blocks.len(),

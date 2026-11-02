@@ -653,7 +653,7 @@ mod tests {
         "block_index_cache_bytes",
         "TS_PAGE_INDEX_CACHE_BYTES",
         "TS_BLOCK_INDEX_CACHE_BYTES",
-        "DEFAULT_PAGE_INDEX_CACHE_BYTES",
+        "DEFAULT_BLOCK_INDEX_CACHE_BYTES",
         "DEFAULT_BLOCK_INDEX_CACHE_BYTES",
     ];
 

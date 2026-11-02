@@ -446,7 +446,7 @@ fn a_block_only_the_model_maps_know_about_is_found_and_filed() {
     let promoted = promote_model_maps_to_bucket_index_authority(SHARD, &mut shard, 0, END);
     let (checks, rebuilds, blocks) = promote_model_map_check_counts();
 
-    // "It noticed" is asserted before, and apart from, "the rebuild put the page back". They are
+    // "It noticed" is asserted before, and apart from, "the rebuild put the block back". They are
     // two claims, and a change that quietly stopped noticing would otherwise be reported here as
     // a failure to repair.
     assert!(

@@ -6989,7 +6989,7 @@ pub(in crate::engine) fn push_object_dirty_onto_its_existing_blocks(
     //     over a 107-name set were this: nothing to mark, nothing lost.
     //   * "has pages" -- satisfied by TOMBSTONES, which a mark must not dirty. The two
     //     non-fixture reaches were this.
-    //   * "has a LIVE page" -- the actual question. Two reaches of 97 verdicts, both hand-built
+    //   * "has a LIVE block" -- the actual question. Two reaches of 97 verdicts, both hand-built
     //     fixtures, each installing a block into `bucket_map` directly with NO filing anywhere in
     //     the process.
     //

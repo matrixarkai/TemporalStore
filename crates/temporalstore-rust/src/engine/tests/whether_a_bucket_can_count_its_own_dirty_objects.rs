@@ -316,7 +316,7 @@ fn whether_a_bucket_can_count_its_own_dirty_objects() {
     let object_total: u64 = by_objects.values().sum();
     let block_total: u64 = by_blocks.values().sum();
 
-    // How many pages the busiest dirty object holds, so "not every object is single-page" is a
+    // How many pages the busiest dirty object holds, so "not every object is single-block" is a
     // measured property of this fixture rather than an expectation about the write path.
     let mut blocks_per_object: BTreeMap<String, u64> = BTreeMap::new();
     for (_bucket, _handle, object_key, _block) in super::blocks_with_identity(&shard.bucket_index) {

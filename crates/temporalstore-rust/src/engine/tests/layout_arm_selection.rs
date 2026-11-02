@@ -38,7 +38,7 @@
 //! THE POSITIVE CONTROL IS WHAT MAKES THAT A MEASUREMENT RATHER THAN AN EMPTY FIXTURE. A
 //! component-free kind CAN hold several blocks under one object id, and the series kind does: a
 //! timestamped series is appended under one `(kind, key, None)` identity and spills into more than
-//! one block. If this module reported "no multi-page objects" without reaching one, the report
+//! one block. If this module reported "no multi-block objects" without reaching one, the report
 //! would be indistinguishable from a fixture that could not produce one -- so the series arm is
 //! seeded, its blocks-per-object MAX is asserted above one, and the refutation is stated only for
 //! the kinds where the ceiling is structural.

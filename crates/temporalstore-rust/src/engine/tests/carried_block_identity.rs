@@ -102,7 +102,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
 fn load_on(engine: &TemporalEngine) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
-        table_name: "carried-page-identity".to_string(),
+        table_name: "carried-block-identity".to_string(),
         shard_uri: "local://carried-page-identity/1".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket: OPERATOR_END,
@@ -1088,7 +1088,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 /// element for any non-empty input and the assertion could only ever fail on an EMPTY one. It was a
 /// real measurement when the id was computed from the element name -- then two blocks of one key
 /// genuinely produced two ids, and collapsing them to one was the thing being shown.
-/// `stable_block_object_id` takes no element at all now, so "every page of this key carries one id"
+/// `stable_block_object_id` takes no element at all now, so "every block of this key carries one id"
 /// is a property of its SIGNATURE and not something a fixture can observe. The only content in that
 /// assertion was its emptiness check, which is kept as an explicit block-count floor with its own
 /// message.

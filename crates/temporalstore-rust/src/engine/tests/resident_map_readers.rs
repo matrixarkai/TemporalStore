@@ -98,7 +98,7 @@
 //!
 //! It can, and #2005 already wrote the question. #2005 fixed a resurrection on this same function
 //! by applying the delta fold's carried elements ONCE, after the block index had settled, asking
-//! "is there still a page at the address this element was carried with?" -- `live_block_key` over the
+//! "is there still a block at the address this element was carried with?" -- `live_block_key` over the
 //! finished bucket index. That fix was complete FOR THE CARRY. It left the other input to the same
 //! merge unasked.
 //!
@@ -663,7 +663,7 @@ fn build_divergence(
 ///
 /// # AND THE MERGE RESURRECTS AGAIN, SO TWO ASSERTIONS ARE TURNED OVER RATHER THAN RE-GOLDENED
 ///
-/// #2017's fix made `fill_absent_elements` ask "is there still a page at this address?". Its premise
+/// #2017's fix made `fill_absent_elements` ask "is there still a block at this address?". Its premise
 /// was ONE BLOCK PER ELEMENT, and the collapse removed it: with one index entry a block, a block
 /// SURVIVES the removal of one of its elements, so the address stays live while the element on it is
 /// dead. Measured here at ghost map 4 against a served 2.

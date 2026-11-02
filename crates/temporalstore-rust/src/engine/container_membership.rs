@@ -73,7 +73,7 @@ pub(super) struct DerivedMembership {
     pub(super) live: BTreeMap<String, Vec<u8>>,
     /// Components the blocks say were REMOVED and nothing later re-added. Kept rather than discarded
     /// because it is what a tombstone-collection decision is made from, and because a guard
-    /// distinguishing "the page names it gone" from "no page mentions it" needs both sides.
+    /// distinguishing "the block names it gone" from "no block mentions it" needs both sides.
     pub(super) removed: BTreeSet<String>,
     /// Distinct block addresses walked.
     pub(super) blocks_read: usize,

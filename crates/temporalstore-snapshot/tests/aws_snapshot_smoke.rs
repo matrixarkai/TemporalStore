@@ -126,7 +126,7 @@ async fn sample_snapshot(root: &Path) -> LocalSnapshot {
     let slab_path = shard_root.join("block_segments/0001.seg");
     tokio::fs::write(&index_path, b"aws-index").await.unwrap();
     tokio::fs::write(&checksums_path, b"[]").await.unwrap();
-    tokio::fs::write(&slab_path, b"aws-page-segment")
+    tokio::fs::write(&slab_path, b"aws-block-segment")
         .await
         .unwrap();
 
@@ -166,6 +166,6 @@ async fn aws_s3_snapshot_round_trip() {
             .unwrap();
     let mut bytes = Vec::new();
     restored_slab.read_to_end(&mut bytes).await.unwrap();
-    assert_eq!(bytes, b"aws-page-segment");
+    assert_eq!(bytes, b"aws-block-segment");
     snapshot_store.delete_snapshot(&snapshot_ref).await.unwrap();
 }

@@ -192,7 +192,7 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 routing_bucket: *routing_bucket,
                 object_key: named.at(*routing_bucket, *handle).to_string(),
                 // THIS `expect` WAS THE MODULE'S OWN CONTROL AND IT CANNOT HOLD. It read
-                // `page.component.as_deref().expect("a zset page is named by its component")`.
+                // `page.component.as_deref().expect("a zset block is named by its component")`.
                 // A zset block entry names no element -- that is the collapse -- so the walk
                 // panicked rather than failing an assertion. The redundancy this module measures
                 // between a component and the block payload is what the collapse DELETED, so the

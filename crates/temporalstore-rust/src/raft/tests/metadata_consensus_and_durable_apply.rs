@@ -2199,7 +2199,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_blocks() {
                 shard_id: 1,
                 command: Command::StringSet {
                     key: "storage-recovered".to_string(),
-                    value: b"page-value".to_vec(),
+                    value: b"block-value".to_vec(),
                 },
             })
             .status
@@ -2247,7 +2247,7 @@ fn local_recovery_proof_covers_raft_wal_write_ahead_log_indexlog_and_blocks() {
             })
             .response,
         CommandResponse::Bytes {
-            value: Some(b"page-value".to_vec())
+            value: Some(b"block-value".to_vec())
         }
     );
 

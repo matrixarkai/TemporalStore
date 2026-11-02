@@ -20,7 +20,7 @@
 //!
 //! FIVE do not decide placement at all. They ATTRIBUTE an already-filed block to a bucket, for a
 //! report, for a dump-reuse comparison, or -- once -- to decide whether to DELETE the record. Each
-//! asked "which bucket is this page in?" and answered it with `block_routing_bucket(key, 0,
+//! asked "which bucket is this block in?" and answered it with `block_routing_bucket(key, 0,
 //! u32::MAX)`: a hash over the WHOLE range, which is the bucket the block is filed under only when
 //! the shard is loaded on the whole range too.
 //!
@@ -300,7 +300,7 @@ fn reader_attribution(
 /// THE CONTROL THIS USED TO BE. While a block's address carried its own routing bucket, that bucket
 /// won and `filed_bucket()` was consulted only where a fallback would otherwise have fired -- so the
 /// old expression and the new one had to be value-identical on a freshly written store, and the
-/// denominator was "every page is routed".
+/// denominator was "every block is routed".
 ///
 /// AN ADDRESS CARRIES NO BUCKET NOW, so there is no old expression to be identical to and no routed
 /// population to assert. What is left is the claim that matters: the walk knows the filing for every
@@ -502,7 +502,7 @@ fn an_eviction_round_over_reconstructed_blocks_drops_the_objects_it_chose() {
             keys.len()
         );
         // DENOMINATOR: the reconstruct filed every block inside the shard's own range, which is what
-        // makes the victim buckets below reachable at all. It used to be "every page is unrouted",
+        // makes the victim buckets below reachable at all. It used to be "every block is unrouted",
         // a statement about addresses; the blocks are what the round acts on.
         bucket_contents(shard)
             .iter()

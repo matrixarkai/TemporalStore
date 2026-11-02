@@ -976,7 +976,7 @@ pub(super) fn storage_topology_snapshot_with_samples_from_entries(
     let stream_slabs = slabs.keys().copied().collect::<Vec<_>>();
     snapshot.stream_samples = (!stream_slabs.is_empty())
         .then(|| StorageStreamSample {
-            stream_id: format!("shard:{shard_id}:page_stream"),
+            stream_id: format!("shard:{shard_id}:block_stream"),
             rollover_count: snapshot.slab_open_count.saturating_sub(1),
             sealed_slab_count: snapshot.slab_sealed_count,
             slabs: stream_slabs
@@ -4142,7 +4142,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///     -- which left TWO live entries for one member at one score. Attempting it turned 12 tests
 ///     red across 5 modules (`element_ordinal_reuse`, `durable_outranks_derived`,
 ///     `container_tombstone_entry`, `container_block_ordinal`, `container_member_shadow`), several
-///     of them control arms that panic with "a zset page is named by its component". Converting
+///     of them control arms that panic with "a zset block is named by its component". Converting
 ///     zset means first taking the score OUT of the component.
 ///   * `hash` -- FOUR OF ITS READERS RESOLVE THROUGH THE INDEX BY COMPONENT, with no resident-map
 ///     fallback. `read_bucket_index_value` -> `bucket_index_block_address` requires
@@ -4360,7 +4360,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///     whether the name is independently recoverable, and under the collapse it is recoverable from
 ///     the BLOCK's own frame and from `shard.hashes`, not from the entry.
 ///   * `container_member_shadow` x3 -- its zset block walk does
-///     `.expect("a zset page is named by its component")`. The redundancy it measures between a
+///     `.expect("a zset block is named by its component")`. The redundancy it measures between a
 ///     component and the block payload is what the collapse DELETED, so two arms are measuring a
 ///     cost that is gone; the third is an inherited red (below).
 ///   * `durable_outranks_derived` x4 -- these plant a state where the index names an element the
@@ -4373,7 +4373,7 @@ pub(super) struct ObjectDeletionFiled(());
 ///     held the element.
 ///   * `element_ordinal_reuse` x4 -- the high-water mark and the freed-ordinal arms drive the
 ///     allocator by blanking or reading INDEX entries. The allocator reads the resident map now.
-///   * `fold_hash_map_completeness` x2 -- both floor on "the page index names N fields".
+///   * `fold_hash_map_completeness` x2 -- both floor on "the block index names N fields".
 ///   * `container_block_ordinal::the_ordinal_names_a_position_and_a_delete_frees_it` -- the retained
 ///     live entry described above.
 ///   * `entry_object_identity` x2 -- `the_whole_object_read_path_asks_for_every_component_of_one_key`

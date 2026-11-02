@@ -523,7 +523,7 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // WHAT STOOD HERE AND WHY IT IS GONE. The note read "a bare equality is satisfied by
     // whatever the type measures; the two neighbours refuse 39 and 41 so this reads as a
     // measurement and not as a number adjusted until it passed", and its two `assert_ne!`
-    // partners carried messages -- "the page entry is 39, so 40 is an upper bound here" --
+    // partners carried messages -- "the block entry is 39, so 40 is an upper bound here" --
     // asserting that 39 and 41 were reachable. They are not: the type is 8-aligned, so they are
     // 7 and 1 mod 8. And the partners could not have run anyway, because the `assert_eq!` below
     // panics first on every change that could have fired them.

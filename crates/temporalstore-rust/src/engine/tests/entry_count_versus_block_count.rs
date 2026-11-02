@@ -258,7 +258,7 @@ fn seed_all_kinds(engine: &TemporalEngine, elements: usize) -> Vec<(&'static str
 /// Live block-index entries and DISTINCT blocks, for one (kind, object key).
 ///
 /// Entries are counted off the block index itself and blocks off the physical identity of the
-/// addresses those entries hold, so "one page, two entries" is visible as the two numbers
+/// addresses those entries hold, so "one block, two entries" is visible as the two numbers
 /// disagreeing rather than having to be inferred.
 fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");

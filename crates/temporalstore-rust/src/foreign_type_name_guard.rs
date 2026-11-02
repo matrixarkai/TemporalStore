@@ -73,7 +73,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
          generic notion of metadata to be dirty.",
     ),
     (
-        "TRIVIAL_PAGE",
+        "TRIVIAL_BLOCK",
         "From the same source and removed by the same change, as REDUNDANT rather than merely \
          foreign: its documented meaning was that the block is deleted, which `BLOCK_DELETED` \
          already carries. Our word for this is `deleted`, which 141 files already use. Two bits \
@@ -102,7 +102,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
          present in one `docs/` file, which this Rust-only scan does not reach.",
     ),
     (
-        "MultiPageObject",
+        "MultiBlockObject",
         "Our word for a stored unit is BLOCK, not block: `ElementEntry`, `block_size`, \
          `block_in_log`, and `page_segment_id` was renamed to `block_slab_id`. A new CamelCase \
          `*Block*` type name is therefore a copy rather than a coinage. Our own layout policies \
@@ -135,7 +135,7 @@ const FOREIGN_NAME_NEEDLES: &[(&str, &str)] = &[
         "CamelCase method, so not Rust, and built on the `slot` vocabulary described above.",
     ),
     (
-        "BlindDumpNewPages",
+        "BlindDumpNewBlocks",
         "CamelCase method, so not Rust, and built on the `page`-for-`block` vocabulary above.",
     ),
     (

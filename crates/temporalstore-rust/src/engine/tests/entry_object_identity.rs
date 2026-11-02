@@ -36,7 +36,7 @@
 //!
 //! WHAT IS NOT CLAIMED, because it is only a missing parameter. `release_bucket_blocks` compares a
 //! resident block against one derived from the model maps through `released_block_identity`, whose
-//! own doc excludes `object_id` because "the model map's copy of the same page may not carry it".
+//! own doc excludes `object_id` because "the model map's copy of the same block may not carry it".
 //! That exclusion is real but it is not a pin on the KEY: `derive_released_block_identities` already
 //! takes the shard, so it could compute the id on the derived side and compare on that. The two
 //! sites in that function that DO need the characters are its lookup probes -- `block_refs_for` and

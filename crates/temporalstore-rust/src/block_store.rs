@@ -5263,7 +5263,7 @@ const RETIRED_NAMES: &[&str] = &[
     fn the_envelope_carries_a_crc_not_a_digest() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let payload = b"digest-lives-with-the-page";
+        let payload = b"digest-lives-with-the-block";
         let address = store.append(payload).unwrap();
 
         let path = slab_path(dir.path(), address.block_slab_id());
@@ -5331,10 +5331,10 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_address_checksum_rejects_corrupt_slab_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let address = store.append(b"verified-page").unwrap();
+        let address = store.append(b"verified-block").unwrap();
         // The address no longer carries a digest. The block does, and a read still verifies
         // against it -- corrupting the slab below must still be caught.
-        assert_eq!(store.read(&address).unwrap(), b"verified-page");
+        assert_eq!(store.read(&address).unwrap(), b"verified-block");
 
         let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
@@ -5419,18 +5419,18 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_slab_records_have_self_describing_envelope() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let address = store.append(b"enveloped-page").unwrap();
+        let address = store.append(b"enveloped-block").unwrap();
         let raw = store.read_slab(address.block_slab_id()).unwrap();
 
         assert_eq!(address.block_id(), Some(0));
-        assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
+        assert_eq!(store.read(&address).unwrap(), b"enveloped-block");
     }
 
     #[test]
     fn block_id_mismatch_rejects_corrupt_address_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let mut address = store.append(b"identity-checked-page").unwrap();
+        let mut address = store.append(b"identity-checked-block").unwrap();
         address.set_block_id(Some(address.block_id().unwrap() + 1));
 
         let err = store.read(&address).unwrap_err();
@@ -6444,7 +6444,7 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_envelope_rejects_corrupt_header_lengths() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let address = store.append(b"header-checked-page").unwrap();
+        let address = store.append(b"header-checked-block").unwrap();
         let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
         // Make the block say it is far larger than the record holds. The size sits at a
@@ -6468,14 +6468,14 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let legacy_address = ElementEntry::from_parts(0, 0, b"alteredpage".len() as u64, None, None);
+        let legacy_address = ElementEntry::from_parts(0, 0, b"alteredblock".len() as u64, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.block_slab_id()),
-            b"alteredpage",
+            b"alteredblock",
         )
         .unwrap();
 
-        assert_eq!(store.read(&legacy_address).unwrap(), b"alteredpage");
+        assert_eq!(store.read(&legacy_address).unwrap(), b"alteredblock");
     }
 
     #[test]

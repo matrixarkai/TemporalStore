@@ -339,7 +339,7 @@ fn the_fold_leaves_the_durable_hash_map_naming_exactly_the_fields_the_blocks_der
 /// `fold_carried_container_elements` merges a carried element only when the finished fold still
 /// holds a block at the address the element was carried with, and it COUNTS the ones it declines.
 /// That gate is correct -- it is what stops a fold resurrecting an element whose block the same fold
-/// removed -- but it means "the map agrees with the page index" and "the map is missing a field the
+/// removed -- but it means "the map agrees with the block index" and "the map is missing a field the
 /// merge declined to restore" can produce the same empty difference if the block is gone too.
 ///
 /// So the counter has to be shown to move. This drives a field whose block the fold does NOT leave

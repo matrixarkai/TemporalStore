@@ -3107,7 +3107,7 @@ fn what_the_object_side_of_the_bucket_node_costs() {
 
         // --- THE BLOCK INDEX, PRICED RATHER THAN NAMED -- AND IT IS NO LONGER THE DOMINANT TERM. ---
         //
-        // This note used to read "the page index is 104 of the node's 176 -- 56.5%" and name it as
+        // This note used to read "the block index is 104 of the node's 176 -- 56.5%" and name it as
         // the next thing to change. It WAS changed: the single block is behind a pointer now, the block
         // index is a 24-byte list header, and it is now a quarter of the node rather than over
         // half. What the note got right is the question it posed -- whether an inline arm earns its

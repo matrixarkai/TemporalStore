@@ -730,7 +730,7 @@ fn the_resident_set_map_and_the_live_block_index_are_not_the_same_population() {
 
     let key = "divergence".to_string();
     let kept = b"kept-member-stays-live".to_vec();
-    let removed = b"removed-member-page-gone".to_vec();
+    let removed = b"removed-member-block-gone".to_vec();
 
     write(
         &engine,

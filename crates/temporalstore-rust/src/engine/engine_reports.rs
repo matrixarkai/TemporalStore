@@ -1856,10 +1856,10 @@ pub fn default_storage_write_sequence() -> Vec<String> {
     public_storage_strings(&[
         "append_record",
         "route_shard_slot",
-        "choose_page",
-        "append_page_buffer",
+        "choose_block",
+        "append_block_buffer",
         "update_page_index",
-        "flush_page_block_segment",
+        "flush_block_block_segment",
         "update_block_index",
         "publish_append_watermark",
     ])
@@ -1880,7 +1880,7 @@ pub fn default_storage_read_sequence() -> Vec<String> {
 pub fn default_storage_cold_scan_sequence() -> Vec<String> {
     public_storage_strings(&[
         "timestamp_page_index_scan",
-        "no_cache_page_read",
+        "no_cache_block_read",
         "bounded_decode",
         "no_hot_cache_promotion",
     ])
@@ -2831,12 +2831,12 @@ pub fn default_storage_index_contract(
         contract_string_list(&[
             "page_address_encode_decode",
             "page_address_stable_order",
-            "timestamp_range_page_lookup",
+            "timestamp_range_block_lookup",
             "slot_index_maps_slot_to_object_page_refs",
             "object_index_maps_model_table_object_key_to_page_chain",
             "page_index_maps_logical_ranges_to_page_addresses",
             "block_index_maps_page_addresses_to_durable_locations",
-            "restart_rebuilds_page_block_object_indexes",
+            "restart_rebuilds_block_block_object_indexes",
         ]),
     );
     contract.insert(
