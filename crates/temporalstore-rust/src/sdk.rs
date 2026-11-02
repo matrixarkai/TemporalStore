@@ -304,6 +304,47 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             }
         }
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
+        v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
+            key: command.key,
+            field: command.field,
+        },
+        v1::command::Kind::HashIncrBy(command) => types::Command::HashIncrBy {
+            key: command.key,
+            field: command.field,
+            increment: command.increment,
+        },
+        v1::command::Kind::ListPush(command) => types::Command::ListPush {
+            key: command.key,
+            member: command.member,
+            left: command.left,
+        },
+        v1::command::Kind::ListPop(command) => types::Command::ListPop {
+            key: command.key,
+            left: command.left,
+        },
+        v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
+            key: command.key,
+            member: command.member,
+        },
+        v1::command::Kind::ZsetAdd(command) => types::Command::ZSetAdd {
+            key: command.key,
+            member: command.member,
+            score: command.score,
+        },
+        v1::command::Kind::ZsetRemove(command) => types::Command::ZSetRemove {
+            key: command.key,
+            member: command.member,
+        },
+        v1::command::Kind::ZsetIncrBy(command) => types::Command::ZSetIncrBy {
+            key: command.key,
+            member: command.member,
+            increment: command.increment,
+        },
+        v1::command::Kind::ZsetPop(command) => types::Command::ZSetPop {
+            key: command.key,
+            min: command.min,
+            count: command.count,
+        },
         v1::command::Kind::StringDelete(command) => {
             types::Command::StringDelete { key: command.key }
         }

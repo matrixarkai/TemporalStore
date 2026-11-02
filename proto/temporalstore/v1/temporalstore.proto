@@ -241,6 +241,15 @@ message Command {
     ContextNodeGet context_node_get = 19;
     CommonExpire common_expire = 20;
     CommonExists common_exists = 21;
+    HashDelete hash_delete = 22;
+    HashIncrBy hash_incr_by = 23;
+    ListPush list_push = 24;
+    ListPop list_pop = 25;
+    SetRemove set_remove = 26;
+    ZSetAdd zset_add = 27;
+    ZSetRemove zset_remove = 28;
+    ZSetIncrBy zset_incr_by = 29;
+    ZSetPop zset_pop = 30;
   }
 }
 
@@ -679,4 +688,54 @@ message RaftAppendEntriesRequest {
 message EngineWalRecordHeader {
   uint64 shard_id = 1;
   uint64 sequence = 2;
+}
+
+message HashDelete {
+  string key = 1;
+  string field = 2;
+}
+
+message HashIncrBy {
+  string key = 1;
+  string field = 2;
+  int64 increment = 3;
+}
+
+message ListPush {
+  string key = 1;
+  bytes member = 2;
+  bool left = 3;
+}
+
+message ListPop {
+  string key = 1;
+  bool left = 2;
+}
+
+message SetRemove {
+  string key = 1;
+  bytes member = 2;
+}
+
+message ZSetAdd {
+  string key = 1;
+  bytes member = 2;
+  double score = 3;
+}
+
+message ZSetRemove {
+  string key = 1;
+  bytes member = 2;
+}
+
+message ZSetIncrBy {
+  string key = 1;
+  bytes member = 2;
+  double increment = 3;
+}
+
+message ZSetPop {
+  string key = 1;
+  bool min = 2;
+  uint64 count = 3;
 }
