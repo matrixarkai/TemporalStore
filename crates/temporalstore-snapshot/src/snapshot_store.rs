@@ -19,6 +19,11 @@ use crate::types::{
 };
 
 const MANIFEST: &str = "manifest.json";
+/// The name a manifest takes once its body is binary.
+///
+/// Same convention as the shared store's binary objects (`wal.protobuf.blob`), rather than a
+/// second spelling for the same idea.
+const MANIFEST_BINARY: &str = "manifest.protobuf.blob";
 const INDEX: &str = "index.bin";
 const CHECKSUMS: &str = "checksums.json";
 
@@ -339,7 +344,7 @@ where
         let keys = self.object_store.list(&prefix).await?;
         let mut snapshots = Vec::new();
         for key in keys {
-            if !key.ends_with(MANIFEST) || key.contains("/.tmp-") {
+            if !is_snapshot_manifest_key(&key) {
                 continue;
             }
             let manifest_bytes = self.object_store.get(&key).await?;
@@ -597,6 +602,26 @@ async fn verify_local_snapshot(snapshot: &LocalSnapshot) -> Result<(), SnapshotS
     Ok(())
 }
 
+/// WHETHER THIS KEY NAMES A SNAPSHOT MANIFEST. THE NAME SAYS WHAT IT IS, NOT HOW IT IS ENCODED.
+///
+/// A KEY FILTER THAT NAMES A CODEC IS A SILENT SKIP WAITING TO HAPPEN, and `list_snapshots` is
+/// the shape where that costs most: it returns a LIST, so a manifest passed over does not read as
+/// a missing file -- the shard simply appears to have fewer snapshots, or none. There is no error
+/// and no log line.
+///
+/// What that breaks here specifically: `garbage_collect` is built on this listing, so a snapshot
+/// it cannot see is a snapshot it can never collect. The leak grows silently, and `keep_last` is
+/// counted against a population that is missing members. `list_snapshots` is also a public trait
+/// method, so a consumer outside this crate sees the same short list.
+///
+/// THE `.tmp-` EXCLUSION IS PART OF THE PREDICATE, NOT A SEPARATE CONCERN. An upload stages under
+/// a temp prefix and publishes the manifest last; a temp manifest appearing in the list would be a
+/// half-written snapshot presented as a complete one. Widening the suffix without carrying the
+/// exclusion across would trade one defect for a worse one.
+fn is_snapshot_manifest_key(key: &str) -> bool {
+    (key.ends_with(MANIFEST) || key.ends_with(MANIFEST_BINARY)) && !key.contains("/.tmp-")
+}
+
 fn prefix_from_ref(snapshot_ref: &SnapshotRef) -> String {
     format!(
         "{}/shards/{}/snapshots/{}-{}-{}/",
@@ -685,6 +710,111 @@ mod tests {
         let listed = snapshots.list_snapshots(42).await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].snapshot_id, uploaded.snapshot_id);
+    }
+
+    /// A MANIFEST IS FOUND BY WHAT IT IS, NOT BY WHAT IT IS CALLED.
+    ///
+    /// The filter read `manifest.json`, so a manifest under any other suffix was skipped -- and a
+    /// skip here produces a SHORT LIST, which is a successful call. `garbage_collect` is built on
+    /// this listing, so an invisible snapshot is one it can never collect.
+    ///
+    /// This re-files a REAL uploaded manifest with ONLY the name changed and asserts the COUNT,
+    /// because `list_snapshots(..).is_ok()` and an empty `Vec` are both "success".
+    #[tokio::test]
+    async fn list_snapshots_finds_a_manifest_filed_under_the_binary_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(FileObjectStore::new(tmp.path().join("objects")));
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store.clone());
+        let local = sample_snapshot(&tmp.path().join("source"), 42, 100).await;
+        let uploaded = snapshots.upload_snapshot(local).await.unwrap();
+
+        // CONTROL: it is found under the old name first, so a failure after the rename is
+        // attributable to the NAME rather than to a fixture that never worked.
+        assert_eq!(snapshots.list_snapshots(42).await.unwrap().len(), 1);
+
+        // DENOMINATOR FIRST: locate the one manifest before renaming it. A prefix that listed
+        // nothing would make the rename a no-op and every assertion below vacuous.
+        let prefix = "cluster-a/shards/42/snapshots/";
+        let manifests: Vec<String> = store
+            .list(prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.ends_with(MANIFEST))
+            .collect();
+        assert_eq!(manifests.len(), 1, "expected one manifest under {prefix}");
+        let old_key = manifests[0].clone();
+
+        // Only the NAME changes.
+        let bytes = store.get(&old_key).await.unwrap();
+        let new_key = format!(
+            "{}{MANIFEST_BINARY}",
+            old_key.strip_suffix(MANIFEST).unwrap()
+        );
+        store.put(&new_key, bytes).await.unwrap();
+        store.delete(&old_key).await.unwrap();
+
+        let listed = snapshots.list_snapshots(42).await.unwrap();
+        assert_eq!(
+            listed.len(),
+            1,
+            "the manifest was passed over because of its NAME, and a short list is what a shard \
+             with fewer snapshots returns"
+        );
+        assert_eq!(listed[0].snapshot_id, uploaded.snapshot_id);
+    }
+
+    /// THE `.tmp-` EXCLUSION SURVIVES THE WIDENING.
+    ///
+    /// An upload stages under a temp prefix and publishes the manifest last, so a temp manifest in
+    /// the list would be a half-written snapshot presented as a complete one. Widening the suffix
+    /// is exactly the change that could drop this, and the old filter spelled the exclusion inline
+    /// where it was easy to lose.
+    #[tokio::test]
+    async fn a_staged_manifest_is_still_excluded_under_either_suffix() {
+        let tmp = TempDir::new().unwrap();
+        let store = Arc::new(FileObjectStore::new(tmp.path().join("objects")));
+        let snapshots =
+            S3SnapshotStore::new("cluster-a", "test", tmp.path().join("local"), store.clone());
+        let local = sample_snapshot(&tmp.path().join("source"), 42, 100).await;
+        snapshots.upload_snapshot(local).await.unwrap();
+        assert_eq!(snapshots.list_snapshots(42).await.unwrap().len(), 1);
+
+        // Stage a copy of the real manifest under a temp prefix, in BOTH spellings.
+        let prefix = "cluster-a/shards/42/snapshots/";
+        let real = store
+            .list(prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|key| key.ends_with(MANIFEST))
+            .expect("one real manifest");
+        let bytes = store.get(&real).await.unwrap();
+        for name in [MANIFEST, MANIFEST_BINARY] {
+            store
+                .put(&format!("{prefix}.tmp-staging/{name}"), bytes.clone())
+                .await
+                .unwrap();
+        }
+
+        // DENOMINATOR: the staged objects really are under the prefix the listing walks, or this
+        // test would be asserting that nothing is excluded because nothing is there.
+        let staged = store
+            .list(prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|k| k.contains("/.tmp-"))
+            .count();
+        assert_eq!(staged, 2, "both staged manifests must be present to be excluded");
+
+        assert_eq!(
+            snapshots.list_snapshots(42).await.unwrap().len(),
+            1,
+            "a staged manifest reached the list, so a half-written snapshot is being presented \
+             as a complete one"
+        );
     }
 
     #[tokio::test]
