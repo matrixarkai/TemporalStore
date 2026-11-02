@@ -167,7 +167,7 @@ lists six steps. Where they apply to a package outside Feast's tree:
 | --- | --- |
 | 1–2. `OnlineStore` + `OnlineStoreConfig` classes, `OnlineStore` suffix | done; Feast resolves `type:` by import path and imports `<ClassName>Config` from the same module, so no entry-point registration is needed |
 | 3. reference it from `feature_store.yaml` | done, documented above |
-| 4. test it against Feast's suite | **partial.** `feast_repo_configuration.py` and `feast_online_store_creator.py` here supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node, so Feast's universal suite *can* be pointed at this store. Running that suite needs Feast's source tree plus its `ci` extra (40-odd optional dependency groups, including cloud SDKs); it has **not** been run here. What HAS been run is `tests/test_feast_api_conformance.py` — five tests driving this provider through Feast's public API against a live node |
+| 4. test it against Feast's suite | **done for the online-store suite, and it passes.** `feast_repo_configuration.py` and `feast_online_store_creator.py` supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node. Feast 0.67.0's own `tests/integration/online_store/test_universal_online.py`, run against this store, reports **5 passed, 14 skipped, 1 error** — see the breakdown below. Plus `tests/test_feast_api_conformance.py` here: five tests driving the provider through Feast's public API against a live node |
 | 5. dependencies | done; `pyproject.toml` keeps Feast itself optional |
 | 6. documentation | this file, plus the benchmark write-up |
 
@@ -189,14 +189,63 @@ TEMPORALSTORE_TEST_ADDR=127.0.0.1:17602 PYTHONPATH="$PWD" python \
 Exit codes are three distinct outcomes, not two: `0` passed, `1` failed, **`2`
 skipped entirely because no node was reachable, which is not a pass.**
 
-To point Feast's own universal suite here, from a Feast checkout:
+### Feast's universal online-store suite: the measured result
+
+`tests/integration/online_store/test_universal_online.py` from Feast 0.67.0,
+run against this store with the hooks above: **5 passed, 14 skipped, 1 error.**
+The parameterisation confirms it was ours —
+`LOCAL:File:TemporalStoreOnlineStoreCreator:python_fs:False`.
+
+**Passed (5):** `test_online_retrieval_success`,
+`test_online_retrieval_with_event_timestamps`, `test_online_list_retrieval`,
+`test_online_retrieval_with_shared_batch_source`, `test_write_to_online_store`.
+
+**Skipped (14), and the reason is the same for every one of them:** `got empty
+parameter set ['environment']`. They are not skipped because this store failed —
+Feast gates them on fixtures that this configuration does not provide. They are
+mostly vector-search (`test_retrieve_online_documents`, `..._v2`,
+`..._milvus_documents`, `test_openai_search*`, `test_retrieve_online_image_search_hybrid`)
+which this provider does not support anyway. **Three of them are worth wanting
+and are not yet covered:** `test_entity_ttl_online_store`,
+`test_online_store_cleanup` and `test_async_online_retrieval_with_event_timestamps`.
+
+**Error (1):** `test_async_online_retrieval_with_event_timestamps_dynamo` — a
+DynamoDB-specific test, unrelated to this store.
+
+### Running it yourself, and the four things that block it
+
+None of these are this store's doing; they are what Feast 0.67.0's test tree
+needs, and each was found by being **named** rather than guessed:
+
+1. **`pytest<8`.** Feast pins `pytest>=6.0.0,<8`. On pytest 9 the run dies with
+   `INTERNALERROR ... Unknown config option: env`, then `timeout`, because
+   pytest 9 fails strictly on options the plugins Feast pins register.
+2. **`FEAST_IS_LOCAL_TEST=True`.** Without it `repo_configuration.py` imports
+   BigQuery and Redshift fixtures at module scope. This is Feast's own switch.
+3. **`-p no:benchmark`.** `pytest-benchmark<4` needs the legacy `py.io`, which
+   modern `py` no longer provides. The online-store tests do not use it.
+4. **`google-cloud-bigquery`, for an import that is never used.**
+   `test_universal_online.py` imports one name, `prep_file_source`, from
+   `tests/utils/data_source_test_creator.py` — a tempfile-and-parquet helper
+   that never touches BigQuery. That module nevertheless does
+   `from google.cloud import bigquery` at module scope for two other functions
+   the online-store suite does not import, so the whole suite is unrunnable
+   without a cloud SDK it has no need for. Install it, or stub the unused
+   import for the run. **The result above was obtained with that import
+   stubbed**, which is sound only because `prep_file_source` does not use it.
 
 ```bash
-pip install pytest pytest-asyncio          # and Feast's `ci` extra for the rest
+pip install 'pytest>=7,<8' pytest-env pytest-timeout pytest-mock \
+            pytest-asyncio assertpy minio testcontainers deltalake \
+            boto3 python-keycloak grpcio 'ibis-framework[duckdb]'
+# from a Feast 0.67.0 checkout, in sdk/python:
+FEAST_IS_LOCAL_TEST=True IS_TEST=True \
 PYTHONPATH=".:/path/to/integrations/feast" \
+TEMPORALSTORE_SERVER_BIN=/path/to/target/release/server \
 FULL_REPO_CONFIGS_MODULE=feast_temporalstore_command.feast_repo_configuration \
 PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
-IS_TEST=True python -m pytest -x --integration sdk/python/tests
+  python -m pytest -p no:benchmark -q --integration \
+  tests/integration/online_store/test_universal_online.py
 ```
 
 ## Wire-format notes worth knowing before you measure anything

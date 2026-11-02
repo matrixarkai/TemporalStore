@@ -358,6 +358,108 @@ documentation now carries this table, and the earlier entity-count sweep's
 refusals at 20,000 and 50,000 entities are explained by it — those runs had the
 flag on.
 
+### Reproduced with no Feast code at all
+
+`tools/repro_async_commit_row_loss.py` drives the data node's own command
+surface with the standard library only — no Feast, no client library, no
+third-party package — and reproduces it:
+
+```
+async_storage=True  hot_set=True   N=20000  (fresh empty shard)
+  LOST = 16,000/20,000     total_records = 20001
+  HashGetAll(lost key) -> 0 fields. The row is counted and holds nothing.
+  after 20s: STILL LOST
+```
+
+16,000 of 20,000 here against 17,500 through the provider: same magnitude, same
+shape — the early batches are lost and the last 4,000 rows (eight batches of
+500) survive. So this is not something a Python integration does to itself; the
+provider's option is only the workload that reaches it.
+
+**One property of the reproduction is worth stating because it cost two runs:
+the failing workload has to be the FIRST thing on the shard.** Run third, after
+two other cells had each left 20,000 rows, the identical cell lost nothing.
+Object footprint matters for the same reason: a first version of the script used
+short keys and one-byte values and did not reproduce, and only matched the
+provider once the keys were the width a serialized entity key produces (62 hex
+characters) and each row carried eleven field slots. The loss tracks what the
+shard is holding against its cache budget, so a smaller row is a different
+experiment rather than a simpler one. The script's defaults encode both.
+
+A caution for anyone extending that script: its first version reported
+20,000 of 20,000 lost on a shard that was holding every row, because the writer
+had been moved to one set of field names and the reader left on another. The
+`HashGetAll` probe is what exposed it — it printed eleven fields present on a
+key the script had just called lost — and the field list is now derived once and
+used by both sides. A reader that builds its own copy of the field list is the
+bug.
+
+## Two operational findings that bear on readiness, not on QPS
+
+### `/server/info` walks every object, under the shard read lock
+
+Observed repeatedly: at roughly 100,000 records `GET /server/info` exceeds 30 s
+while `GET /health` answers in 16 ms, and a concurrent `HashMultiGet` on the
+same node times out. For an operator those two facts together are
+indistinguishable from a hung server, which makes it a readiness problem
+independently of any latency number.
+
+What it walks, read from the source rather than inferred.
+`/server/info` calls `engine.loaded_shard_stats()` → `shard_stats(shard_id)`
+(`engine/engine_persistence.rs:1027`), which takes `self.shards.read()` and
+then calls three things:
+
+* `block_store.stats()` — a struct copy, cheap.
+* `block_store.slab_summary()` — summarises every slab under the block-store
+  mutex.
+* `object_manager_stats(state, start_bucket, end_bucket)` (`engine.rs:7745`) —
+  and this is the walk. `block_ref_count` comes from
+  `bucket_index.object_component_block_refs`, an **incrementally maintained**
+  figure, but when it is `None` the fallback is
+  `object_block_lookup.values().map(BlockRefs::len).sum()`: one pass over every
+  object in the shard, summing each one's block-ref list.
+
+The code already names the consequence — its own comment reads that this "runs
+on the heartbeat timer under the shard read lock, so walking here shows up as
+write contention." That is exactly the measured symptom: the shard held 80,000
+objects and 780,000 block refs, `/health` touches none of it and stayed
+instant, and a write needing the write lock could not get in.
+
+So the lever is not to make the walk faster; it is that an operator-facing
+status endpoint should not take the fallback at all. Either keep
+`object_component_block_refs` populated across the paths that currently leave
+it `None`, or have `/server/info` report the incremental figure and omit the
+derived one rather than computing it on demand.
+
+### Teardown's cost is the delete command, not the batching or the set read
+
+The previous round bounded teardown's batches at 512 commands and it still took
+2,065 s for 20,000 keys, so the remaining cost was worth decomposing before
+optimising anything. Measured on a release build against a fresh empty shard,
+4,000 keys, batch 512:
+
+| teardown step | time | per key | share |
+|---|---:|---:|---:|
+| `SetMembers` read (4,000 members, 260,089 B response) | 0.12 s | — | 0% |
+| **the `CommonDelete` batches** | **30.01 s** | **7.50 ms** | **100%** |
+| dropping the tracking set itself (one key, 4,000 members) | 0.02 s | — | 0% |
+| *(for scale: writing the same 4,000 hashes)* | *1.54 s* | *0.39 ms* | — |
+
+**A delete costs 19.5x a write of the same keys**, and neither of the two parts
+that looked suspicious contributes anything measurable: the big `SetMembers`
+response is 0% and dropping a 4,000-member set is 0%.
+
+The per-batch profile says it is not flat per-key work either: **the first batch
+took 7.95 s and the last 0.43 s**, an 18x spread across eight batches of the
+same size. Something is paid once, early, rather than per key.
+
+It also does not extrapolate: 7.50 ms/key at 4,000 keys against 103 ms/key
+implied by the 2,065 s at 20,000 keys — 14x worse per key for 5x the keys. The
+two runs differ in host load and in what the hot tracking set had done to the
+shard, so the right reading is that per-key delete cost itself grows with the
+shard, and a single-point measurement of it is not a rate. Anyone optimising
+this should start at `CommonDelete`, not at the batching.
+
 ## A note on the shard a read is answered from
 
 A read is answered out of a shard of some size, so a sweep that lets each point
