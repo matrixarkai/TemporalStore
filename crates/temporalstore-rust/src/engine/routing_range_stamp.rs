@@ -124,7 +124,11 @@ pub(crate) fn read_routing_range_stamp(
     shard_id: ShardId,
 ) -> Option<RoutingRangeStamp> {
     let bytes = fs::read(routing_range_stamp_path(index_dir, shard_id)).ok()?;
-    serde_json::from_slice(&bytes).ok()
+    // BOTH SHAPES, same as the published object. The stamp travels to the shared store and back,
+    // so a store that has seen a binary stamp can land one here; a reader that understood only
+    // JSON would answer None, and None on this path means "unstamped", which is REFUSED by name.
+    // A widened reader is what keeps that refusal meaning what it says.
+    crate::shared_store::decode_routing_range_stamp(&bytes).ok()
 }
 
 pub(crate) fn write_routing_range_stamp(

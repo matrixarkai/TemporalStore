@@ -781,7 +781,7 @@ where
             Err(err) => return Err(err.into()),
         };
         if let Some(bytes) = &current_bytes {
-            let current: ShardLease = serde_json::from_slice(bytes)?;
+            let current: ShardLease = decode_shard_lease(bytes)?;
             if current.load_version >= load_version {
                 return Err(SharedStoreReplicationError::StaleOwnership {
                     shard_id,
@@ -794,7 +794,7 @@ where
             load_version,
             owner: owner.into(),
         };
-        let new_bytes = Bytes::from(serde_json::to_vec(&lease)?);
+        let new_bytes = Bytes::from(encode_shard_lease(&lease)?);
         match self
             .object_store
             .compare_and_swap(&key, current_bytes, new_bytes)
@@ -825,7 +825,7 @@ where
             }
             Err(err) => return Err(err.into()),
         };
-        let current: ShardLease = serde_json::from_slice(&bytes)?;
+        let current: ShardLease = decode_shard_lease(&bytes)?;
         if current.load_version != load_version {
             return Err(SharedStoreReplicationError::StoreConditionFailed {
                 detail: format!(
@@ -1173,7 +1173,7 @@ where
         self.object_store
             .put(
                 &self.index_routing_range_key(shard_id),
-                Bytes::from(serde_json::to_vec(
+                Bytes::from(encode_routing_range_stamp(
                     &crate::engine::routing_range_stamp::RoutingRangeStamp {
                         start_routing_bucket,
                         end_routing_bucket,
@@ -1340,7 +1340,7 @@ where
                 what: "no routing-range object beside the published index".to_string(),
             })?;
         let routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp =
-            serde_json::from_slice(&range_bytes).map_err(|err| {
+            decode_routing_range_stamp(&range_bytes).map_err(|err| {
                 SharedStoreReplicationError::RoutingRangeMissing {
                     shard_id,
                     what: format!("the routing-range object did not decode: {err}"),
@@ -1729,7 +1729,7 @@ where
             .get(&self.replay_cursor_key(shard_id))
             .await
         {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Ok(bytes) => Ok(Some(decode_replay_cursor(&bytes)?)),
             Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(err) => Err(err.into()),
         }
@@ -1756,7 +1756,7 @@ where
         self.object_store
             .put(
                 &self.replay_cursor_key(cursor.shard_id),
-                Bytes::from(serde_json::to_vec_pretty(cursor)?),
+                Bytes::from(encode_replay_cursor(cursor)?),
             )
             .await?;
         Ok(())
@@ -2967,6 +2967,153 @@ fn is_checkpoint_manifest_key(key: &str) -> bool {
 /// node silently losing the lineage for data that is still perfectly present.
 fn is_bucket_dump_manifest_key(key: &str) -> bool {
     key.ends_with(".json") || key.ends_with(SHARED_STORE_BINARY_OBJECT_SUFFIX)
+}
+
+/// THE FIRST BYTE OF A BINARY SHARED-STORE OBJECT.
+///
+/// ONE BYTE IS ENOUGH, AND THIS ONE IS CHOSEN SO IT CANNOT BE MISTAKEN. A bare JSON object on
+/// disk starts with `{` (0x7B), optionally behind JSON whitespace (space, tab, CR, LF). 0x01 is
+/// none of those and is not valid JSON in any position, so a reader can decide the shape from
+/// `bytes[0]` with no chance of reading a JSON document as protobuf or the reverse.
+///
+/// It is NOT a codec/shape pair like the index log's container byte. There is one binary shape per
+/// object here and no compression arm, so a second field would encode a choice nobody is making.
+pub(crate) const SHARED_OBJECT_CONTAINER_PROTOBUF: u8 = 0x01;
+
+/// The binary body of an object, or `None` when the bytes are the JSON shape.
+///
+/// THE ONLY PLACE THAT DECIDES. Every reader below calls this, so the two shapes cannot be told
+/// apart two different ways -- which is how a sniffing reader usually goes wrong.
+fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
+    match bytes.split_first() {
+        Some((&SHARED_OBJECT_CONTAINER_PROTOBUF, body)) => Some(body),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lets a test exercise the binary writer without touching process-wide environment, which
+    /// would race every other test in the binary.
+    static PROTOBUF_OBJECTS_ON_THIS_THREAD: std::cell::Cell<bool> =
+        std::cell::Cell::new(false);
+}
+
+#[cfg(test)]
+pub(crate) fn write_shared_objects_as_protobuf_on_this_thread(on: bool) {
+    PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.set(on));
+}
+
+/// WHETHER THE WRITER TAKES THE BINARY ARM. OFF BY DEFAULT, AND THE READER DOES NOT CONSULT IT.
+///
+/// Reading the binary shape is UNCONDITIONAL; only writing it is gated. That asymmetry is the
+/// point: a store written by a node with this on must stay readable by a node with it off, so the
+/// reader cannot be allowed to depend on the flag. Same arrangement the index log uses.
+fn write_shared_objects_as_protobuf() -> bool {
+    #[cfg(test)]
+    if PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.get()) {
+        return true;
+    }
+    matches!(
+        std::env::var("TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn encode_shared_object_protobuf<M: Message>(message: &M) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + message.encoded_len());
+    out.push(SHARED_OBJECT_CONTAINER_PROTOBUF);
+    message
+        .encode(&mut out)
+        .expect("a Vec sink cannot run out of room");
+    out
+}
+
+// ---- the shard lease
+
+fn decode_shard_lease(bytes: &[u8]) -> Result<ShardLease, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreShardLease::decode(body)?;
+        return Ok(ShardLease {
+            load_version: proto.load_version,
+            owner: proto.owner,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_shard_lease(lease: &ShardLease) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+            load_version: lease.load_version,
+            owner: lease.owner.clone(),
+        }));
+    }
+    Ok(serde_json::to_vec(lease)?)
+}
+
+// ---- the replay cursor
+
+fn decode_replay_cursor(
+    bytes: &[u8],
+) -> Result<SharedStoreReplayCursor, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreReplayCursorObject::decode(body)?;
+        return Ok(SharedStoreReplayCursor {
+            shard_id: proto.shard_id,
+            last_wal_index: proto.last_wal_index,
+            last_replay_time_ms: proto.last_replay_time_ms,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_replay_cursor(
+    cursor: &SharedStoreReplayCursor,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(
+            &v1::SharedStoreReplayCursorObject {
+                shard_id: cursor.shard_id,
+                last_wal_index: cursor.last_wal_index,
+                last_replay_time_ms: cursor.last_replay_time_ms,
+            },
+        ));
+    }
+    Ok(serde_json::to_vec_pretty(cursor)?)
+}
+
+// ---- the routing-range stamp published beside the index
+
+pub(crate) fn decode_routing_range_stamp(
+    bytes: &[u8],
+) -> Result<crate::engine::routing_range_stamp::RoutingRangeStamp, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreRoutingRangeStamp::decode(body)?;
+        return Ok(crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: proto.start_routing_bucket,
+            end_routing_bucket: proto.end_routing_bucket,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_routing_range_stamp(
+    stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(
+            &v1::SharedStoreRoutingRangeStamp {
+                start_routing_bucket: stamp.start_routing_bucket,
+                end_routing_bucket: stamp.end_routing_bucket,
+            },
+        ));
+    }
+    Ok(serde_json::to_vec(stamp)?)
 }
 
 fn parse_wal_index(key: &str) -> Option<u64> {
@@ -7364,6 +7511,138 @@ mod tests {
              shard with no checkpoints returns"
         );
         assert_eq!(found[0].checkpoint_wal_index, 1);
+    }
+
+    /// EVERY WIDENED READER ACCEPTS BOTH SHAPES, AND THE CONTAINER BYTE CANNOT BE JSON.
+    ///
+    /// This is the whole point of a reader-first change, so it is asserted directly rather than
+    /// inferred from a round trip: for each object, the JSON bytes a shipped build writes TODAY
+    /// must still decode, and the binary bytes a later build will write must decode too. If only
+    /// the second held, every store already on disk would be unreadable -- silently, because the
+    /// reader would simply fail to parse and the caller would see an error it has no remedy for.
+    #[test]
+    fn the_widened_object_readers_accept_both_shapes() {
+        // DENOMINATOR FIRST: three objects, and the loop below is written per object rather than
+        // generically, so this count is what says none of them was quietly dropped.
+        let mut checked = 0;
+
+        // ---- the shard lease
+        let lease = ShardLease {
+            load_version: 7,
+            owner: "owner-a".to_string(),
+        };
+        let json = serde_json::to_vec(&lease).unwrap();
+        assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
+        assert_eq!(decode_shard_lease(&json).unwrap(), lease, "JSON lease must still decode");
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+            load_version: lease.load_version,
+            owner: lease.owner.clone(),
+        });
+        assert_eq!(binary[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+        assert_eq!(decode_shard_lease(&binary).unwrap(), lease, "binary lease must decode");
+        checked += 1;
+
+        // ---- the replay cursor
+        let cursor = SharedStoreReplayCursor {
+            shard_id: 3,
+            last_wal_index: 41,
+            last_replay_time_ms: 1234,
+        };
+        let json = serde_json::to_vec_pretty(&cursor).unwrap();
+        assert_eq!(decode_replay_cursor(&json).unwrap(), cursor, "JSON cursor must still decode");
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreReplayCursorObject {
+            shard_id: cursor.shard_id,
+            last_wal_index: cursor.last_wal_index,
+            last_replay_time_ms: cursor.last_replay_time_ms,
+        });
+        assert_eq!(decode_replay_cursor(&binary).unwrap(), cursor, "binary cursor must decode");
+        checked += 1;
+
+        // ---- the routing-range stamp
+        let stamp = crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 16,
+            end_routing_bucket: 31,
+        };
+        let json = serde_json::to_vec(&stamp).unwrap();
+        assert_eq!(
+            decode_routing_range_stamp(&json).unwrap(),
+            stamp,
+            "JSON stamp must still decode"
+        );
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreRoutingRangeStamp {
+            start_routing_bucket: stamp.start_routing_bucket,
+            end_routing_bucket: stamp.end_routing_bucket,
+        });
+        assert_eq!(
+            decode_routing_range_stamp(&binary).unwrap(),
+            stamp,
+            "binary stamp must decode"
+        );
+        checked += 1;
+
+        assert_eq!(checked, 3, "three objects are widened in this change");
+
+        // The container byte is the whole basis of the sniff, so pin what it is NOT. A JSON
+        // document can begin with whitespace before its brace; none of those is 0x01.
+        assert_ne!(SHARED_OBJECT_CONTAINER_PROTOBUF, b'{');
+        for ws in [b' ', b'\t', b'\r', b'\n'] {
+            assert_ne!(
+                SHARED_OBJECT_CONTAINER_PROTOBUF, ws,
+                "the container byte must not be JSON whitespace"
+            );
+        }
+        assert!(
+            shared_object_protobuf_body(b"{\"load_version\":1,\"owner\":\"x\"}").is_none(),
+            "a JSON object must not be taken for the binary shape"
+        );
+        assert!(
+            shared_object_protobuf_body(b"").is_none(),
+            "an empty object is not the binary shape"
+        );
+    }
+
+    /// THE WRITER IS STILL JSON BY DEFAULT, AND THE READER DOES NOT CONSULT THE GATE.
+    ///
+    /// The asymmetry is the safety property: a store written with the flag ON must stay readable
+    /// by a node with it OFF. A test that only flipped the flag and round-tripped would pass even
+    /// if the reader had been made conditional, which is the mistake that breaks existing stores.
+    #[tokio::test]
+    async fn the_object_writer_is_json_until_asked_and_the_reader_never_cares() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        // ---- default: JSON on disk. The key comes from the SAME helper the writer uses, so this
+        // cannot drift from the real layout the way a hand-spelled prefix would.
+        replicator.acquire_shard_lease(1, 1, "owner-a").await.unwrap();
+        let lease_key = replicator.lease_key(1);
+        let default_bytes = store.get(&lease_key).await.unwrap();
+        assert_eq!(
+            default_bytes[0], b'{',
+            "the shipped default must still write the JSON shape"
+        );
+        // And it validates, through the widened reader.
+        replicator.validate_shard_lease(1, 1).await.unwrap();
+
+        // ---- asked: binary on disk, and still readable.
+        write_shared_objects_as_protobuf_on_this_thread(true);
+        replicator.acquire_shard_lease(1, 2, "owner-b").await.unwrap();
+        let binary_bytes = store.get(&lease_key).await.unwrap();
+        assert_eq!(
+            binary_bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "with the gate on, the lease must be written in the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&binary_bytes).is_err(),
+            "the binary object must not parse as JSON, or the container byte proves nothing"
+        );
+
+        // THE LOAD-BEARING ASSERTION: turn the writer back OFF and read the binary object. A
+        // reader that consulted the gate would fail here, which is exactly the regression that
+        // would make a mixed-version cluster unable to read its own store.
+        write_shared_objects_as_protobuf_on_this_thread(false);
+        replicator.validate_shard_lease(1, 2).await.unwrap();
+        // A stale fence is still refused, so the widening did not weaken the check itself.
+        assert!(replicator.validate_shard_lease(1, 1).await.is_err());
     }
 
     #[tokio::test]
