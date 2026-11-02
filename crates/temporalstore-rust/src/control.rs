@@ -96,9 +96,27 @@ impl Config {
     }
 
     /// Gate for bounded distinct: convert oversized exact CHANGE sets to fixed-size HLL sketches
-    /// (approximate distinct counts past the threshold). Off by default so distinct stays exact.
+    /// (approximate distinct counts past the threshold).
+    ///
+    /// DEFAULT ON, AND WHAT THAT CHANGES IS THE BOUND RATHER THAN THE MECHANISM. The sketch, its
+    /// 4,096-register width and the `DistinctBucket::{Exact,Sketch}` stored form all already
+    /// existed and are already paid for by the index format stamp; only this flag was off. With it
+    /// off, a distinct count keeps every member it has ever been shown, so the resident cost of
+    /// ONE key is O(its cardinality) with no ceiling -- and a high-cardinality feature is exactly
+    /// the case where that member set is the largest thing in the shard. A store cannot be shipped
+    /// with an unbounded per-key footprint on a model whose whole purpose is high cardinality.
+    ///
+    /// WHAT IT COSTS, SAID PLAINLY: past [`crate::engine::hll::DISTINCT_SKETCH_THRESHOLD`] the
+    /// answer becomes an estimate. Buckets below the threshold stay exact, and
+    /// `count_changes` still answers exactly whenever no bucket in the window is sketched -- one
+    /// sketched bucket anywhere in the range makes the whole answer an estimate, because a sketch
+    /// cannot be unmerged back into members. That is a deliberate trade of exactness past 4,096
+    /// for a ceiling, not an accuracy regression below it.
+    ///
+    /// `flag_or(.., true)` rather than `flag(..)`, so an operator who needs exact distinct counts
+    /// at any cardinality opts out explicitly and nothing silently re-bounds them.
     pub fn control_distinct_sketch_enabled(&self) -> bool {
-        self.flag("control_distinct_sketch")
+        self.flag_or("control_distinct_sketch", true)
     }
 }
 
