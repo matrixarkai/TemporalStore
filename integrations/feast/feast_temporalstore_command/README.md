@@ -134,6 +134,71 @@ what was written unless something recorded it.
   report success for work it did not do. Set `key_ttl_seconds` if you want rows
   to age out on their own.
 
+## What of Feast's `OnlineStore` contract is covered
+
+**Tested against `feast==0.67.0`.** Read from that version's
+`OnlineStore` class rather than from its documentation, because the two differ:
+only four methods are abstract, and several of the rest raise instead of
+no-opping, which decides whether inheriting them is safe or a latent failure.
+
+Partial is written as partial below. Nothing here is rounded up.
+
+| method | required? | status |
+| --- | --- | --- |
+| `online_write_batch` | **abstract** | **implemented** — one `/batch_execute`; parameters identical to the base class |
+| `online_read` | **abstract** | **implemented** — one `/batch_execute` for N entities |
+| `update` | **abstract** | **implemented** — nothing to create (the surface is schemaless); views being removed are swept through the teardown path |
+| `teardown` | **abstract** | **partial** — exact only with `track_keys_for_teardown`, which is off by default and **must not be combined with async commit** (see that option's docs: 17,500 of 20,000 rows were lost). With it off, teardown logs that it cannot enumerate instead of claiming success |
+| `online_read_async` | optional, **base raises** | **implemented** — without it `get_online_features_async` fails outright |
+| `online_write_batch_async` | optional, **base raises** | **implemented** |
+| `close` | optional, base is `pass` | **implemented** — the base no-op leaks a keep-alive connection per thread |
+| `plan` | optional, base returns `[]` | **inherited, and correct** — a schemaless surface needs no infra objects |
+| `initialize` | optional, base is `pass` | inherited; nothing to initialise |
+| `retrieve_online_documents`, `retrieve_online_documents_v2` | optional, **base raises** | **not implemented — vector search is not supported by this provider** |
+| `read_precomputed_vectors`, `write_precomputed_vector` | optional, base no-ops | **not implemented**; the inherited no-op answers `None`, so a repo relying on precomputed vectors gets nothing rather than an error |
+| `get_online_features`, `get_online_features_async` | provided by Feast | inherited and exercised — these are what the conformance tests call |
+
+### Against Feast's own process for a new online store
+
+Feast's `docs/how-to-guides/customizing-feast/adding-support-for-a-new-online-store.md`
+lists six steps. Where they apply to a package outside Feast's tree:
+
+| step | status |
+| --- | --- |
+| 1–2. `OnlineStore` + `OnlineStoreConfig` classes, `OnlineStore` suffix | done; Feast resolves `type:` by import path and imports `<ClassName>Config` from the same module, so no entry-point registration is needed |
+| 3. reference it from `feature_store.yaml` | done, documented above |
+| 4. test it against Feast's suite | **partial.** `feast_repo_configuration.py` and `feast_online_store_creator.py` here supply `AVAILABLE_ONLINE_STORES`, `FULL_REPO_CONFIGS` and an `OnlineStoreCreator` that starts a data node, so Feast's universal suite *can* be pointed at this store. Running that suite needs Feast's source tree plus its `ci` extra (40-odd optional dependency groups, including cloud SDKs); it has **not** been run here. What HAS been run is `tests/test_feast_api_conformance.py` — five tests driving this provider through Feast's public API against a live node |
+| 5. dependencies | done; `pyproject.toml` keeps Feast itself optional |
+| 6. documentation | this file, plus the benchmark write-up |
+
+Feast's bar for a plugin to stop being "contrib" is its own CI running the full
+suite against the store, plus two owning contributors. **Neither is met**, so
+treat this as alpha.
+
+### Running the conformance tests
+
+```bash
+cd integrations/feast
+# starts its own node from target/release/server, tears it down after
+PYTHONPATH="$PWD" python feast_temporalstore_command/tests/test_feast_api_conformance.py
+# or point at a node you already run -- it must be an EMPTY shard
+TEMPORALSTORE_TEST_ADDR=127.0.0.1:17602 PYTHONPATH="$PWD" python \
+  feast_temporalstore_command/tests/test_feast_api_conformance.py
+```
+
+Exit codes are three distinct outcomes, not two: `0` passed, `1` failed, **`2`
+skipped entirely because no node was reachable, which is not a pass.**
+
+To point Feast's own universal suite here, from a Feast checkout:
+
+```bash
+pip install pytest pytest-asyncio          # and Feast's `ci` extra for the rest
+PYTHONPATH=".:/path/to/integrations/feast" \
+FULL_REPO_CONFIGS_MODULE=feast_temporalstore_command.feast_repo_configuration \
+PYTEST_PLUGINS=feast_temporalstore_command.feast_online_store_creator \
+IS_TEST=True python -m pytest -x --integration sdk/python/tests
+```
+
 ## Wire-format notes worth knowing before you measure anything
 
 The command surface is asymmetric about byte payloads, and it matters to

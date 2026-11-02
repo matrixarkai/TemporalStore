@@ -141,6 +141,66 @@ class ClientProtocolTest(unittest.TestCase):
         self.assertIn('[["f","dg=="]]', json.dumps(document, separators=(",", ":")))
 
 
+class ConnectionLifetimeTest(unittest.TestCase):
+    """`close()` must release connections opened on OTHER threads.
+
+    This runs without a server on purpose: `http.client.HTTPConnection` does
+    not connect when it is constructed, so the pooling and release logic can be
+    exercised offline, which is the half that was wrong.
+    """
+
+    def test_close_releases_every_threads_connection_not_just_the_callers(self):
+        import threading as _threading
+
+        client = TemporalStoreClient(host="127.0.0.1", port=1)
+        opened = []
+
+        def open_one():
+            opened.append(client._connection())
+
+        threads = [_threading.Thread(target=open_one) for _ in range(4)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join()
+
+        # DENOMINATOR FIRST: four distinct connections really exist, or the
+        # assertion below would pass over an empty population.
+        self.assertEqual(len(opened), 4)
+        self.assertEqual(len({id(c) for c in opened}), 4, "one connection per thread")
+        self.assertEqual(len(client._all_connections), 4)
+
+        # The closing thread is the main thread, which opened NONE of them --
+        # exactly the case a per-thread-only close cannot handle.
+        client.close()
+        self.assertEqual(
+            len(client._all_connections),
+            0,
+            "close() left connections registered; a per-thread close would "
+            "have released only the caller's, and under the async path the "
+            "caller never owns any",
+        )
+        for conn in opened:
+            self.assertIsNone(conn.sock, "a registered connection was not closed")
+
+    def test_close_is_idempotent_and_safe_from_a_thread_that_never_asked(self):
+        client = TemporalStoreClient(host="127.0.0.1", port=1)
+        client.close()
+        client.close()
+        self.assertEqual(len(client._all_connections), 0)
+
+    def test_a_thread_reopens_after_a_close(self):
+        # close() clears the per-thread slots, so the next call rebuilds rather
+        # than handing back a closed socket.
+        client = TemporalStoreClient(host="127.0.0.1", port=1)
+        first = client._connection()
+        client.close()
+        second = client._connection()
+        self.assertIsNot(first, second)
+        self.assertEqual(len(client._all_connections), 1)
+        client.close()
+
+
 class PackageImportTest(unittest.TestCase):
     def test_importing_the_package_does_not_pull_feast_or_pydantic_in(self):
         """The lazy ``__init__`` is only real if nothing drags Feast in eagerly.
@@ -543,6 +603,83 @@ class OnlineStoreTest(unittest.TestCase):
         self.assertEqual(len(deleted), rows + 1, "no key may be deleted twice")
         self.assertEqual(deleted[-1], set_key, "the tracking set is dropped last")
 
+    def test_the_async_read_answers_and_emits_the_same_one_round_trip(self):
+        """Feast's async serving path calls this, and the base class raises.
+
+        So a store with only the four abstract methods fails outright on
+        `get_online_features_async`. Asserted on the commands emitted, not just
+        on a value coming back, because the async path must not become a second
+        request builder that can drift from the sync one.
+        """
+        import asyncio
+
+        from google.protobuf.timestamp_pb2 import Timestamp
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        event = Timestamp()
+        event.FromDatetime(self.datetime(2026, 3, 4, tzinfo=self.timezone.utc))
+        client = self._install(
+            [
+                {
+                    "status": {"ok": True, "code": "ok", "message": ""},
+                    "responses": [
+                        ok(
+                            {
+                                "kind": "values",
+                                "values": [
+                                    list(ValueProto(int64_val=42).SerializeToString()),
+                                    list(event.SerializeToString()),
+                                ],
+                            }
+                        )
+                    ],
+                }
+            ]
+        )
+        results = asyncio.run(
+            self.store.online_read_async(
+                self.config, self.view, [self._entity_key(1)], ["trips"]
+            )
+        )
+        self.assertEqual(len(client.sent), 1, "an async read is ONE round trip too")
+        self.assertEqual(client.sent[0][0], "/batch_execute")
+        self.assertEqual(results[0][1]["trips"].int64_val, 42)
+
+    def test_the_async_write_emits_the_same_commands_as_the_sync_write(self):
+        import asyncio
+
+        from feast.protos.feast.types.Value_pb2 import Value as ValueProto
+
+        now = self.datetime(2026, 1, 1, tzinfo=self.timezone.utc)
+        rows = [(self._entity_key(1), {"trips": ValueProto(int64_val=1)}, now, None)]
+        self.config.online_store.skip_dedup = True
+
+        sync_client = self._install()
+        self.store.online_write_batch(self.config, self.view, rows, None)
+        sync_sent = sync_client.sent
+
+        async_client = self._install()
+        asyncio.run(
+            self.store.online_write_batch_async(self.config, self.view, rows, None)
+        )
+        # Byte-for-byte the same request, because the async method IS the sync
+        # path on a worker thread rather than a second encoder.
+        self.assertEqual(
+            json.dumps(async_client.sent, sort_keys=True, default=list),
+            json.dumps(sync_sent, sort_keys=True, default=list),
+        )
+
+    def test_closing_the_store_releases_the_client(self):
+        self._install()
+        self.assertIsNotNone(self.store._client)
+        self.store.close()
+        self.assertIsNone(
+            self.store._client,
+            "close() must drop the client; the inherited close is `pass`, "
+            "which leaks a keep-alive connection per thread",
+        )
+
     def test_teardown_without_key_tracking_says_so_instead_of_claiming_success(self):
         client = self._install()
         with self.assertLogs("feast_temporalstore_command.online_store", level="WARNING") as logs:
@@ -557,8 +694,8 @@ class OnlineStoreTest(unittest.TestCase):
 # `skipUnless` either way, so a count of collected tests cannot tell a run with
 # Feast from a run without it, and cannot tell either from a run where the whole
 # Feast tier silently stopped executing.
-MINIMUM_EXECUTED_WITHOUT_FEAST = 9
-MINIMUM_EXECUTED_WITH_FEAST = 19
+MINIMUM_EXECUTED_WITHOUT_FEAST = 12
+MINIMUM_EXECUTED_WITH_FEAST = 25
 
 
 def main() -> int:
