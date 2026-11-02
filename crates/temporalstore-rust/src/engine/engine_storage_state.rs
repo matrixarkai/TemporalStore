@@ -1588,7 +1588,227 @@ impl Serialize for BucketNodeAt<'_> {
     }
 }
 
-pub(super) type BucketMap = BTreeMap<u32, BucketNode>;
+/// How many bucket nodes the dirty-bucket questions have looked at, across every call.
+///
+/// A round's cost in nodes, counted where the looking happens, so it is a measurement and not
+/// arithmetic about a loop. `Relaxed`: it is a tally and nothing orders against it.
+pub(crate) static BUCKET_NODE_SCAN_VISITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn count_bucket_node_scan_visits(nodes: u64) {
+    BUCKET_NODE_SCAN_VISITS.fetch_add(nodes, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn bucket_node_scan_visits() -> u64 {
+    BUCKET_NODE_SCAN_VISITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn reset_bucket_node_scan_visits() {
+    BUCKET_NODE_SCAN_VISITS.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// The bucket nodes, and the set of those that are dirty, kept exact by construction.
+///
+/// WHY THIS IS NOT A BARE `BTreeMap`. "Which buckets are dirty" was answered by walking every node
+/// and testing a flag -- three times in a round, on a store that is idle, at a cost of the bucket
+/// count. A list pushed to when a bucket first goes dirty answers it without the walk. The flag is
+/// set from about twenty places, so a list maintained AT those places is a list one forgotten site
+/// makes stale, and a stale list here is a bucket never dumped.
+///
+/// SO THE MAP MAINTAINS IT, NOT THE SITES. No `&mut BucketNode` leaves this type except through
+/// [`BucketMut`], which compares the flag on the way out and moves the bucket in or out of the set
+/// when it changed. The operations that cannot say what they did to the flags -- a sweep with
+/// `values_mut`, a `retain` -- throw the set away instead of guessing, and the next read derives
+/// it again with the walk it used to be. Either the set is exact or it is absent; there is no third
+/// state, and an absent set costs what the old walk cost, once.
+///
+/// NOT SERIALIZED, and not a field of anything that is: it is derived from the flags, which are.
+/// A `OnceLock` so a read through `&self` can fill it and a `&mut self` operation can drop it.
+#[derive(Debug, Default, Clone)]
+pub(super) struct BucketMap {
+    nodes: BTreeMap<u32, BucketNode>,
+    dirty: std::sync::OnceLock<BTreeSet<u32>>,
+}
+
+impl BucketMap {
+    pub(super) fn get(&self, routing_bucket: &u32) -> Option<&BucketNode> {
+        self.nodes.get(routing_bucket)
+    }
+
+    pub(super) fn contains_key(&self, routing_bucket: &u32) -> bool {
+        self.nodes.contains_key(routing_bucket)
+    }
+
+    pub(super) fn len(&self) -> usize {
+        self.nodes.len()
+    }
+
+    pub(super) fn is_empty(&self) -> bool {
+        self.nodes.is_empty()
+    }
+
+    pub(super) fn iter(&self) -> std::collections::btree_map::Iter<'_, u32, BucketNode> {
+        self.nodes.iter()
+    }
+
+    pub(super) fn keys(&self) -> std::collections::btree_map::Keys<'_, u32, BucketNode> {
+        self.nodes.keys()
+    }
+
+    pub(super) fn values(&self) -> std::collections::btree_map::Values<'_, u32, BucketNode> {
+        self.nodes.values()
+    }
+
+    /// THE DIRTY BUCKETS, in ascending order. The set when it is held; otherwise one walk, kept.
+    pub(super) fn dirty_buckets(&self) -> &BTreeSet<u32> {
+        self.dirty.get_or_init(|| {
+            count_bucket_node_scan_visits(self.nodes.len() as u64);
+            self.nodes
+                .iter()
+                .filter(|(_routing_bucket, bucket)| bucket.dirty())
+                .map(|(routing_bucket, _bucket)| *routing_bucket)
+                .collect()
+        })
+    }
+
+    pub(super) fn get_mut(&mut self, routing_bucket: &u32) -> Option<BucketMut<'_>> {
+        let node = self.nodes.get_mut(routing_bucket)?;
+        Some(BucketMut {
+            was_dirty: node.dirty(),
+            routing_bucket: *routing_bucket,
+            node,
+            dirty: &mut self.dirty,
+        })
+    }
+
+    pub(super) fn range<R: std::ops::RangeBounds<u32>>(
+        &self,
+        bounds: R,
+    ) -> std::collections::btree_map::Range<'_, u32, BucketNode> {
+        self.nodes.range(bounds)
+    }
+
+    /// The only entry shape the engine uses: find the bucket or file a new one.
+    pub(super) fn entry(&mut self, routing_bucket: u32) -> BucketEntry<'_> {
+        BucketEntry { map: self, routing_bucket }
+    }
+
+    pub(super) fn insert(&mut self, routing_bucket: u32, node: BucketNode) -> Option<BucketNode> {
+        let now_dirty = node.dirty();
+        let replaced = self.nodes.insert(routing_bucket, node);
+        if let Some(set) = self.dirty.get_mut() {
+            if now_dirty {
+                set.insert(routing_bucket);
+            } else {
+                set.remove(&routing_bucket);
+            }
+        }
+        replaced
+    }
+
+    pub(super) fn remove(&mut self, routing_bucket: &u32) -> Option<BucketNode> {
+        let removed = self.nodes.remove(routing_bucket);
+        if let Some(set) = self.dirty.get_mut() {
+            set.remove(routing_bucket);
+        }
+        removed
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.nodes.clear();
+        self.dirty = std::sync::OnceLock::new();
+    }
+
+    /// Every node mutably, and the dirty set DISCARDED: a sweep can set or clear the flag on any
+    /// node and this type does not see which.
+    pub(super) fn values_mut(
+        &mut self,
+    ) -> std::collections::btree_map::ValuesMut<'_, u32, BucketNode> {
+        self.dirty = std::sync::OnceLock::new();
+        self.nodes.values_mut()
+    }
+
+    /// As [`BucketMap::values_mut`], with the keys.
+    pub(super) fn iter_mut(
+        &mut self,
+    ) -> std::collections::btree_map::IterMut<'_, u32, BucketNode> {
+        self.dirty = std::sync::OnceLock::new();
+        self.nodes.iter_mut()
+    }
+
+    pub(super) fn retain(&mut self, keep: impl FnMut(&u32, &mut BucketNode) -> bool) {
+        self.dirty = std::sync::OnceLock::new();
+        self.nodes.retain(keep);
+    }
+}
+
+pub(super) struct BucketEntry<'a> {
+    map: &'a mut BucketMap,
+    routing_bucket: u32,
+}
+
+impl<'a> BucketEntry<'a> {
+    /// The bucket if it is there, else the one `make` builds, filed first so the dirty set
+    /// already describes it when the borrow starts.
+    pub(super) fn or_insert_with(self, make: impl FnOnce() -> BucketNode) -> BucketMut<'a> {
+        if !self.map.nodes.contains_key(&self.routing_bucket) {
+            self.map.insert(self.routing_bucket, make());
+        }
+        self.map
+            .get_mut(&self.routing_bucket)
+            .expect("the bucket was filed above")
+    }
+}
+
+impl<'a> IntoIterator for &'a BucketMap {
+    type Item = (&'a u32, &'a BucketNode);
+    type IntoIter = std::collections::btree_map::Iter<'a, u32, BucketNode>;
+    fn into_iter(self) -> Self::IntoIter {
+        self.nodes.iter()
+    }
+}
+
+/// A bucket node borrowed for writing, which tells the map what it did to the dirty flag.
+///
+/// The comparison is made when the borrow ends, so it sees the net effect of however many
+/// `set_dirty` calls the holder made, and a holder that sets and clears the flag leaves the set
+/// where it found it.
+pub(super) struct BucketMut<'a> {
+    node: &'a mut BucketNode,
+    dirty: &'a mut std::sync::OnceLock<BTreeSet<u32>>,
+    routing_bucket: u32,
+    was_dirty: bool,
+}
+
+impl std::ops::Deref for BucketMut<'_> {
+    type Target = BucketNode;
+    fn deref(&self) -> &BucketNode {
+        self.node
+    }
+}
+
+impl std::ops::DerefMut for BucketMut<'_> {
+    fn deref_mut(&mut self) -> &mut BucketNode {
+        self.node
+    }
+}
+
+impl Drop for BucketMut<'_> {
+    fn drop(&mut self) {
+        let now_dirty = self.node.dirty();
+        if now_dirty == self.was_dirty {
+            return;
+        }
+        // An absent set needs no maintenance: it is derived from the flags when it is next read.
+        if let Some(set) = self.dirty.get_mut() {
+            if now_dirty {
+                set.insert(self.routing_bucket);
+            } else {
+                set.remove(&self.routing_bucket);
+            }
+        }
+    }
+}
 /// The object ids a bucket holds.
 ///
 /// Almost always exactly one: keys route one to a bucket, and even an object with many components

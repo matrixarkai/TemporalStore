@@ -316,7 +316,7 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
         // planting a state this engine does not produce, and the test would have been measuring
         // that instead of the stale entry it is about.
         let handle = crate::engine::state::block_index_handle(&planted_key, &block);
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)
@@ -328,6 +328,9 @@ fn a_derivation_drops_the_entry_no_element_carries_any_more() {
             "the handle the bucket filed the plant under is not the one composed from the \
              identity beside it, so the lookup row below would name a position the block is not at"
         );
+        // The guard reports the dirty flag when it is dropped, so its borrow of the bucket map ends
+        // here rather than at the last use.
+        drop(bucket);
         shard
             .bucket_index
             .insert_object_block_lookup(routing_bucket, assigned, &planted_key, &block);

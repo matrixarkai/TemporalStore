@@ -234,12 +234,40 @@ pub(crate) static DIRTY_SUMMARY_VISITS: std::sync::atomic::AtomicU64 =
 /// `bucket_map` does not hold, and such a bucket has no node to mark, so the set loop contributes
 /// nothing to its count and `dirty_object_count > 0` was already false for it.
 pub(super) fn dirty_bucket_nodes(shard: &ShardState) -> BTreeSet<u32> {
-    shard
-        .bucket_index
-        .bucket_map
+    dirty_bucket_claims(shard).into_keys().collect()
+}
+
+/// THE DIRTY BUCKETS AND THE LOG POSITIONS EACH ONE HOLDS, read off the map's own dirty set.
+///
+/// This is [`dirty_bucket_nodes`] with the two claims the callers used to fetch separately. Each of
+/// them built a `HashMap` over EVERY bucket -- the dump ordering for `first_dirty_wal_sequence` and
+/// the reclaim plan for both claims -- and then looked it up only for buckets this set names, so a
+/// clean store paid an allocation per bucket per round for answers nobody read. A claim of a CLEAN
+/// bucket is never consulted: the dump ordering sorts dirty summaries, and the reclaim plan reads a
+/// claim only after the dirty test. Restricting the map to dirty buckets therefore changes no
+/// answer; it changes how many nodes are looked at to get it.
+///
+/// The cost is the number of DIRTY buckets, not the number of buckets: the set is maintained by the
+/// map (see [`BucketMap`]) and walked only when a sweep has discarded it.
+///
+/// `(wal, index_log)`, 0 meaning no claim recorded, exactly as the node holds them.
+pub(super) fn dirty_bucket_claims(shard: &ShardState) -> BTreeMap<u32, (u64, u64)> {
+    let buckets = &shard.bucket_index.bucket_map;
+    let dirty = buckets.dirty_buckets();
+    crate::engine::state::count_bucket_node_scan_visits(dirty.len() as u64);
+    dirty
         .iter()
-        .filter(|(_routing_bucket, bucket)| bucket.dirty())
-        .map(|(routing_bucket, _bucket)| *routing_bucket)
+        .filter_map(|routing_bucket| {
+            buckets.get(routing_bucket).map(|bucket| {
+                (
+                    *routing_bucket,
+                    (
+                        bucket.first_dirty_wal_sequence,
+                        bucket.first_dirty_index_log_sequence,
+                    ),
+                )
+            })
+        })
         .collect()
 }
 

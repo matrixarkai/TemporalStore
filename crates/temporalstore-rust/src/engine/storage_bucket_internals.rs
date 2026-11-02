@@ -1434,7 +1434,7 @@ pub(super) fn mark_object_dirty(
     // exactly two sites that mark an object dirty, and the invariant the tests pin is that BOTH
     // push: a mark that does not reach its blocks leaves the bucket reading clean.
     super::push_object_dirty_onto_its_existing_blocks(shard, object_key);
-    let bucket = shard
+    let mut bucket = shard
         .bucket_index
         .bucket_map
         .entry(routing_bucket)
@@ -1445,6 +1445,7 @@ pub(super) fn mark_object_dirty(
         });
     bucket.set_dirty(true);
     bucket.dirty_generation = bucket.dirty_generation.saturating_add(1).max(1);
+    drop(bucket);
     note_bucket_flags_stale(shard, routing_bucket);
 }
 
@@ -1553,7 +1554,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         // block from the index entirely when an explicit bucket sat outside the range, and bounded it
         // by showing the engine does not produce that state. It now cannot be produced at all.
         let object_id = expected_live_block_object_id(shard_id, &entry);
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .entry(routing_bucket)
@@ -1645,7 +1646,7 @@ pub(super) fn rebuild_bucket_block_ownership(
         if live_again {
             continue;
         }
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .entry(routing_bucket)
@@ -2298,11 +2299,11 @@ pub(super) fn settle_released_bucket_object_delete(
         let routing_bucket =
             block_routing_bucket(object_key, start_routing_bucket, end_routing_bucket);
         let object_id = stable_block_object_id(shard_id, model_id, object_key);
-        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+        let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         if bucket.object_index.remove(&object_id) {
-            classify_bucket_layout_in_place(bucket);
+            classify_bucket_layout_in_place(&mut bucket);
             settled = true;
         }
     }
@@ -2615,7 +2616,7 @@ pub(super) fn release_bucket_blocks(
                 );
             }
         }
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)
@@ -2647,7 +2648,7 @@ pub(super) fn reload_released_bucket(
     if !shard.bucket_index.released_buckets.contains(&routing_bucket) {
         return false;
     }
-    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         // Held across the derivation below. Under the shard write lock nothing can observe it
         // today; it is the state a queued concurrent loader would wait on if this ever became
         // asynchronous, and setting it is what makes that a wiring change rather than a design.
@@ -2680,7 +2681,7 @@ pub(super) fn reload_released_bucket(
             object_id,
         ));
     }
-    let bucket = shard
+    let mut bucket = shard
         .bucket_index
         .bucket_map
         .get_mut(&routing_bucket)
@@ -2695,11 +2696,13 @@ pub(super) fn reload_released_bucket(
         installed.push((handle, object_key, block));
     }
     bucket.set_meta_loaded(true);
-    bucket.set_in_memory(!bucket.block_index.is_empty());
+    let resident = !bucket.block_index.is_empty();
+    bucket.set_in_memory(resident);
     bucket.set_loading(false);
     if bucket.block_index.is_empty() {
         // Everything the bucket held was deleted while it was released. Nothing routes here any
         // more, so the node goes rather than lingering with a stale object index.
+        drop(bucket);
         shard.bucket_index.bucket_map.remove(&routing_bucket);
         shard.bucket_index.released_buckets.remove(&routing_bucket);
         return true;
@@ -2719,7 +2722,8 @@ pub(super) fn reload_released_bucket(
             )
         })
         .collect();
-    update_bucket_layout_with_live_objects(bucket, &live_object_ids);
+    update_bucket_layout_with_live_objects(&mut bucket, &live_object_ids);
+    drop(bucket);
     for (handle, object_key, block) in installed {
         shard
             .bucket_index
@@ -4754,7 +4758,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
             ..
         } = &mut shard.bucket_index;
         for (routing_bucket, handle) in targets {
-            let Some(bucket) = bucket_map.get_mut(&routing_bucket) else {
+            let Some(mut bucket) = bucket_map.get_mut(&routing_bucket) else {
                 continue;
             };
             let before = bucket.block_index.len();
@@ -4765,7 +4769,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
             );
             if bucket.block_index.len() != before {
                 touched.push(routing_bucket);
-                classify_bucket_layout_in_place(bucket);
+                classify_bucket_layout_in_place(&mut bucket);
             }
             if let Some(object_id) = object_id {
                 bucket.deleted_object_index.insert(object_id);
@@ -4773,7 +4777,7 @@ pub(super) fn drop_live_object_entries(shard: &mut ShardState, kind: &str, objec
         }
         if let Some(object_id) = object_id {
             for routing_bucket in tombstoned {
-                if let Some(bucket) = bucket_map.get_mut(&routing_bucket) {
+                if let Some(mut bucket) = bucket_map.get_mut(&routing_bucket) {
                     bucket.deleted_object_index.insert(object_id);
                 }
             }
@@ -4847,7 +4851,7 @@ pub(super) fn insert_container_tombstone_entry(
         true,
         true,
     );
-    let bucket = shard
+    let mut bucket = shard
         .bucket_index
         .bucket_map
         .entry(routing_bucket)
@@ -4892,6 +4896,7 @@ pub(super) fn insert_container_tombstone_entry(
     // The `unwrap_or_else` arm is reachable and correct. A tombstone can be the last thing left
     // naming an object, and then this row IS the identity -- which is what the note above says
     // about a deleted block never being in the object lookup.
+    drop(bucket);
     let shared_object_key = shard
         .bucket_index
         .shared_object_key(kind, object_key)
@@ -4901,7 +4906,7 @@ pub(super) fn insert_container_tombstone_entry(
                 .any_shared_object_key(object_key)
         })
         .unwrap_or_else(|| Arc::from(object_key));
-    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
         bucket.record_tombstone_element(
             &shared_object_key,
             stored_model_kind(kind),
@@ -4909,8 +4914,8 @@ pub(super) fn insert_container_tombstone_entry(
             &address,
         );
     }
-    if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
-        classify_bucket_layout_in_place(bucket);
+    if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        classify_bucket_layout_in_place(&mut bucket);
     }
     // THIS CALL COULD NOT DO ANYTHING, AND MINTING ITS ARGUMENT COST AN ALLOCATION.
     //
@@ -5270,7 +5275,7 @@ fn upsert_bucket_index_block_inner(
             block_refs.iter().map(|block_ref| block_ref.routing_bucket).collect()
         };
         for block_ref in block_refs {
-            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
+            let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&block_ref.routing_bucket) else {
                 continue;
             };
             touched_buckets.push(block_ref.routing_bucket);
@@ -5292,7 +5297,7 @@ fn upsert_bucket_index_block_inner(
                 if !buckets_still_holding.contains(&block_ref.routing_bucket) {
                     bucket.object_index.remove(&removed_object_id);
                 }
-                classify_bucket_layout_in_place(bucket);
+                classify_bucket_layout_in_place(&mut bucket);
             }
         }
     }
@@ -5357,7 +5362,7 @@ fn upsert_bucket_index_block_inner(
             })
     });
     if let Some(tombstoned_block) = sweep {
-        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             bucket
                 .block_index
                 .retain(
@@ -5372,7 +5377,7 @@ fn upsert_bucket_index_block_inner(
                             == tombstoned_block)
                 });
             touched_buckets.push(routing_bucket);
-            classify_bucket_layout_in_place(bucket);
+            classify_bucket_layout_in_place(&mut bucket);
         }
     }
     let mut block_ref_key: u64 = 0;
@@ -5384,7 +5389,7 @@ fn upsert_bucket_index_block_inner(
     let filed_object_key = Arc::clone(&entry.object_key);
     let block_index = BlockIndex::new(entry.kind, address, entry.dirty, entry.deleted);
     {
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .entry(routing_bucket)
@@ -5393,7 +5398,8 @@ fn upsert_bucket_index_block_inner(
                 flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                 ..BucketNode::default()
             });
-        bucket.set_dirty(bucket.dirty() | dirty);
+        let next_flag = bucket.dirty() | dirty;
+        bucket.set_dirty(next_flag);
         bucket.set_deleted(false);
         if dirty {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
@@ -5420,7 +5426,7 @@ fn upsert_bucket_index_block_inner(
             block_index.clone(),
             &mut shard.bucket_index.block_slab_live,
         );
-        classify_bucket_layout_in_place(bucket);
+        classify_bucket_layout_in_place(&mut bucket);
         touched_buckets.push(routing_bucket);
     }
     shard
@@ -5560,12 +5566,12 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
     // first iteration, so the condition lives where the cost does. An additive publish reaches
     // this loop with nothing to iterate; nothing already filed is disturbed, exactly as before.
     for routing_bucket in target_buckets {
-        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+        let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         // NAMED BEFORE THE MUTATION, for the reason at `state::block_identities_in`.
         let names = crate::engine::state::block_identities_in(
-            bucket,
+            &bucket,
             &crate::engine::state::BlockKeysByPosition::from_parts(&shard.bucket_index.objects, &shard.bucket_index.object_block_lookup),
         );
         let before = bucket.block_index.len();
@@ -5593,18 +5599,21 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         if bucket.block_index.len() != before {
             removed_any = true;
             touched_buckets.insert(routing_bucket);
-            bucket.set_dirty(bucket.dirty() | dirty);
-            bucket.set_deleted(bucket.block_index.is_empty());
+            let next_flag = bucket.dirty() | dirty;
+            bucket.set_dirty(next_flag);
+            let next_flag = bucket.block_index.is_empty();
+            bucket.set_deleted(next_flag);
             if dirty {
                 bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
             }
-            bucket.set_in_memory(!bucket.block_index.is_empty());
+            let next_flag = !bucket.block_index.is_empty();
+            bucket.set_in_memory(next_flag);
             // THE REPAIR AT THE REMOVAL SITE. A delta over the id this call superseded stood
             // here and was wrong; `repair_object_index_against_its_blocks` carries the measurement
             // that says so. The pass is over this bucket's own blocks, which this loop is already
             // walking, and it asks for no whole-shard inversion.
-            repair_object_index_against_its_blocks(shard_id, bucket, &names);
-            classify_bucket_layout_in_place(bucket);
+            repair_object_index_against_its_blocks(shard_id, &mut bucket, &names);
+            classify_bucket_layout_in_place(&mut bucket);
         }
     }
 
@@ -5669,7 +5678,7 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
             filed_routing_bucket: routing_bucket,
             filing_is_known: true,
         };
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .entry(routing_bucket)
@@ -5678,7 +5687,8 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
                 flags: BucketFlags::default().with(BucketFlags::META_LOADED, true).with(BucketFlags::IN_MEMORY, true),
                 ..BucketNode::default()
             });
-        bucket.set_dirty(bucket.dirty() | dirty);
+        let next_flag = bucket.dirty() | dirty;
+        bucket.set_dirty(next_flag);
         bucket.set_deleted(false);
         if dirty || touched_buckets.insert(routing_bucket) {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
@@ -5706,7 +5716,8 @@ pub(super) fn sync_bucket_index_object_blocks_with_mode(
         // the label needs re-deriving. `update_bucket_layout` would rebuild the set by walking every
         // block in the bucket -- once per address published, which is what made a write cost the
         // whole object rather than the part of it being written.
-        classify_bucket_layout_in_place(bucket);
+        classify_bucket_layout_in_place(&mut bucket);
+        drop(bucket);
         // The bucket borrow has to end before the lookup, which borrows the index itself.
         // FILED AS IT IS PLACED, WHICH IS THE WHOLE OF THIS CHANGE.
         //
@@ -6598,12 +6609,12 @@ pub(super) fn refresh_pending_bucket_runtime_flags(shard: &mut ShardState) {
     let shard_id = shard.shard_id();
     let pending = std::mem::take(&mut shard.buckets_pending_flag_refresh);
     for routing_bucket in pending {
-        let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+        let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         refresh_one_bucket_runtime_flags(
             shard_id,
-            bucket,
+            &mut bucket,
             now,
             &shard.dirty_objects,
             expiry,
@@ -6675,7 +6686,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
         .collect();
     let mut touched_buckets: BTreeSet<u32> = BTreeSet::new();
     for (routing_bucket, handle) in live_targets {
-        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             if let Some(block) = bucket.block_index.get_mut(&handle) {
                 block.set_dirty(false);
                 touched_buckets.insert(routing_bucket);
@@ -6683,7 +6694,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
         }
     }
     for (routing_bucket, triple) in tombstoned {
-        if let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
+        if let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) {
             for block in bucket.block_index.blocks_mut_unaccounted() {
                 if block.deleted() && crate::engine::state::tombstone_block_key(&block.address) == triple
                 {
@@ -6701,7 +6712,7 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
     let index = &mut shard.bucket_index;
     let keys = crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
     for routing_bucket in touched_buckets {
-        let Some(bucket) = index.bucket_map.get_mut(&routing_bucket) else {
+        let Some(mut bucket) = index.bucket_map.get_mut(&routing_bucket) else {
             continue;
         };
         {
@@ -6714,8 +6725,8 @@ pub(super) fn clear_published_object_dirty_state(shard: &mut ShardState, object_
                 .any(|block| block.dirty());
             bucket.set_dirty(any_block_dirty);
             match shard_id {
-                Some(shard_id) => update_bucket_layout(shard_id, bucket, &keys),
-                None => classify_bucket_layout_in_place(bucket),
+                Some(shard_id) => update_bucket_layout(shard_id, &mut bucket, &keys),
+                None => classify_bucket_layout_in_place(&mut bucket),
             }
         }
     }
@@ -6807,7 +6818,7 @@ pub(super) fn rebuild_bucket_first_index(
                 .or_default()
                 .insert(object_id);
         }
-        let bucket = bucket_index
+        let mut bucket = bucket_index
             .bucket_map
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
@@ -6816,11 +6827,13 @@ pub(super) fn rebuild_bucket_first_index(
                 ..BucketNode::default()
             });
         let block_dirty = shard.dirty_objects.contains(entry.object_key.as_ref()) || entry.dirty;
-        bucket.set_dirty(bucket.dirty() | block_dirty);
+        let next_flag = bucket.dirty() | block_dirty;
+        bucket.set_dirty(next_flag);
         if block_dirty {
             bucket.dirty_generation = bucket.dirty_generation.saturating_add(1);
         }
-        bucket.set_in_memory(bucket.in_memory() | true);
+        let next_flag = bucket.in_memory() | true;
+        bucket.set_in_memory(next_flag);
         bucket.object_index.insert(object_id);
         let object_key = Arc::clone(&entry.object_key);
         let handle = bucket.insert_block(
@@ -6836,7 +6849,7 @@ pub(super) fn rebuild_bucket_first_index(
             filed_blocks.push((routing_bucket, handle, object_key, placed.clone()));
         }
         update_bucket_layout_with_live_objects(
-            bucket,
+            &mut bucket,
             live_object_ids_by_bucket
                 .get(&routing_bucket)
                 .unwrap_or(&no_live_objects),
@@ -6846,7 +6859,7 @@ pub(super) fn rebuild_bucket_first_index(
     // manager's object_count matches the deserialize/reconcile load path (which never dropped
     // them); a live block entry re-adding the same id is a no-op (BTreeSet).
     for (routing_bucket, deleted) in prior_deleted_object_index {
-        let bucket = bucket_index
+        let mut bucket = bucket_index
             .bucket_map
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
@@ -6895,7 +6908,7 @@ pub(super) fn rebuild_bucket_first_index(
         if live_again {
             continue;
         }
-        let bucket = bucket_index
+        let mut bucket = bucket_index
             .bucket_map
             .entry(routing_bucket)
             .or_insert_with(|| BucketNode {
@@ -6926,7 +6939,7 @@ pub(super) fn rebuild_bucket_first_index(
         // bucket -- and for a bucket that holds only refiled tombstones it is empty, which is the
         // clear arm of the reconcile firing exactly where it used to.
         update_bucket_layout_with_live_objects(
-            bucket,
+            &mut bucket,
             live_object_ids_by_bucket
                 .get(&routing_bucket)
                 .unwrap_or(&no_live_objects),

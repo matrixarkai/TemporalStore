@@ -1997,7 +1997,7 @@ fn every_written_block_sits_in_exactly_one_list_and_a_planted_loss_shows_up() {
         let mut shards = engine.shards.write().expect("engine lock poisoned");
         let shard = shards.get_mut(&1).expect("shard is loaded");
         let mut live = BlockSlabLiveIndex::default();
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)

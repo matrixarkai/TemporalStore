@@ -245,7 +245,7 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
             .collect();
         let mut marked = 0usize;
         for (routing_bucket, handle) in targets {
-            let Some(bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
+            let Some(mut bucket) = shard.bucket_index.bucket_map.get_mut(&routing_bucket) else {
                 continue;
             };
             let Some(block) = bucket.block_index.get_mut(&handle) else {
