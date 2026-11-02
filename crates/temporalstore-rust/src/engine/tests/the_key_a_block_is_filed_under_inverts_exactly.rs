@@ -187,7 +187,7 @@ fn seed(keys: usize, width: usize, shape: KeyShape, end_routing_bucket: u32) -> 
     );
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: SHARD,
-        table_name: "the-key-a-page-is-filed-under".to_string(),
+        table_name: "the-key-a-block-is-filed-under".to_string(),
         shard_uri: "local://the-key-a-page-is-filed-under/41".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket,
@@ -475,14 +475,14 @@ fn the_renderer_and_the_parse_are_inverse_on_every_block_of_the_shipped_corpus()
                 parts.object_key, &**object_key
             );
             assert_eq!(
-                Some(block.model_id),
+                Some(block.model_id()),
                 crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
                     parts.kind
                 ),
                 "[CLAUSE every-block-inverts] the kind read back out of {key:?} is {:?} and the \
                  block holds {:?}",
                 parts.kind,
-                block.model_id.as_str()
+                block.model_id().as_str()
             );
             assert_eq!(
                 "", parts.component,
@@ -756,7 +756,7 @@ fn the_new_reader_reads_the_old_formats_bytes_and_rebuilds_the_identity_it_carri
     let mut rebuilt: Vec<(String, String)> = blocks
         .iter()
         .map(|(_, _, object_key, block)| {
-            (object_key.to_string(), block.model_id.as_str().to_string())
+            (object_key.to_string(), block.model_id().as_str().to_string())
         })
         .collect();
     rebuilt.sort();
@@ -909,12 +909,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     let keys: Vec<String> = [&log_resident, &first_block_in_a_slab, &first_block_with_no_generation]
         .iter()
         .map(|address| {
-            let block = crate::engine::state::BlockIndex {
-                model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-                address: (*address).clone(),
-                dirty: false,
-                deleted: false,
-            };
+            let block = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, (*address).clone(), false, false);
             crate::engine::state::block_index_written_key("k", &block)
         })
         .collect();
@@ -943,12 +938,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
     let later_block = ElementEntry::from_parts(SLAB, OFFSET, LENGTH, Some(3), None);
     let later_key = crate::engine::state::block_index_written_key(
         "k",
-        &crate::engine::state::BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-            address: later_block,
-            dirty: false,
-            deleted: false,
-        },
+        &crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, later_block, false, false),
     );
     assert_ne!(
         keys[0], later_key,
@@ -958,12 +948,7 @@ fn the_presence_bits_of_an_address_are_not_in_the_key_it_renders() {
 
     // AND THE TWO COLLIDING STATES ARE NOT INTERCHANGEABLE, which is what makes the collision a
     // data-loss bug rather than a representation detail.
-    let as_block = |address: &ElementEntry| crate::engine::state::BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: address.clone(),
-        dirty: false,
-        deleted: false,
-    };
+    let as_block = |address: &ElementEntry| crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, address.clone(), false, false);
     assert_ne!(
         as_block(&log_resident).log_backed(),
         as_block(&first_block_in_a_slab).log_backed(),
@@ -1239,7 +1224,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
             TemporalEngine::with_local_dirs(64, cache.clone(), blocks.clone(), indexes.clone());
         let response = engine.load_shard_with(crate::control::LoadShardRequest {
             shard_id: SHARD,
-            table_name: "the-key-a-page-is-filed-under".to_string(),
+            table_name: "the-key-a-block-is-filed-under".to_string(),
             shard_uri: "local://the-key-a-page-is-filed-under/41".to_string(),
             start_routing_bucket: 0,
             end_routing_bucket: SHIPPED_END_BUCKET,
@@ -1266,7 +1251,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
             for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
                 identities_before.insert(
                     handle,
-                    (object_key.to_string(), block.model_id.as_str().to_string()),
+                    (object_key.to_string(), block.model_id().as_str().to_string()),
                 );
             }
         }
@@ -1299,7 +1284,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
     let engine = TemporalEngine::with_local_dirs(64, cache, blocks, indexes);
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: SHARD,
-        table_name: "the-key-a-page-is-filed-under".to_string(),
+        table_name: "the-key-a-block-is-filed-under".to_string(),
         shard_uri: "local://the-key-a-page-is-filed-under/41".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket: SHIPPED_END_BUCKET,
@@ -1338,7 +1323,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         for (_, handle, object_key, block) in super::blocks_with_identity(&decoded.bucket_index) {
             at_the_decode.insert(
                 handle,
-                (object_key.to_string(), block.model_id.as_str().to_string()),
+                (object_key.to_string(), block.model_id().as_str().to_string()),
             );
         }
         println!(
@@ -1393,7 +1378,7 @@ fn a_reload_reads_every_object_back_and_a_key_never_written_is_absent() {
         for (_, handle, object_key, block) in super::blocks_with_identity(&shard.bucket_index) {
             after.insert(
                 handle,
-                (object_key.to_string(), block.model_id.as_str().to_string()),
+                (object_key.to_string(), block.model_id().as_str().to_string()),
             );
         }
         assert_eq!(

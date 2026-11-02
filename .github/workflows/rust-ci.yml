@@ -130,6 +130,20 @@ jobs:
       # Run the assertions: compiling a report does not enforce its byte ceilings.
       - name: One append storage cost and recovery
         run: cargo run --release --locked -p temporalstore-rust --features matrixobject --example one_append_amplification_report
+      # The scale report asserts the shape of BOTH sides -- bytes and block lookups per
+      # entry, the per-replica star write, and now what a read actually fetched. None of it
+      # ran here: the only example this job ran was the one above, so every assertion in it
+      # was decoration. It is run at a small sweep because the assertions compare rounds
+      # against each other and two sizes is enough to tell a constant from a line, while the
+      # shipped default sweep takes minutes.
+      - name: The shared store's read and write shape at scale
+        run: |
+          set -o pipefail
+          MATRIXARK_SCALE_SIZES=200,400 cargo run --release --locked -p temporalstore-rust --features matrixobject --example scale_shared_store_report | tee /tmp/scale-shape.log
+          # The report exits 0 only by reaching its own assertions; this is what catches it
+          # exiting early with nothing asserted.
+          grep -q 'Converged on every node at every size' /tmp/scale-shape.log
+          grep -q 'fetched/returned' /tmp/scale-shape.log
 
       - name: cargo build (release service binaries)
         run: cargo build --release -p temporalstore-rust --bin matrixark_rust_metaserver --bin matrixark_rust_datanode
@@ -176,6 +190,13 @@ jobs:
       #     while the guard beside it, which asserts `Default`, stayed green
       #   - and those shipped values are non-zero, which the equality above cannot say on its
       #     own: if every bound went to 0 in `Default` too, both sides would agree
+      #   - the durable command encoding: the four guards below say which write commands reach
+      #     the shared WAL as protobuf and which still reach it as JSON. They were pinned
+      #     NOWHERE until now, so they ran only in the advisory step above -- and that step is
+      #     `continue-on-error`, so the roster could have gone stale, or a write could have
+      #     rejoined the JSON arm, behind a green check. Two of the four assert a DENOMINATOR
+      #     (the case count, the parsed variant count) because both read source text or a fixed
+      #     list, and a list that shrank to nothing would otherwise satisfy every claim in them
       - name: cargo test (read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -195,12 +216,23 @@ jobs:
             block_store::tests::policy_gc_plans_and_applies_byte_bounded_destroy \
             engine::tests::what_each_maintenance_bound_costs_per_round::the_shipped_bounds_fit_inside_the_shipped_interval \
             data_node::tests::part3::the_block_gc_budget_reaches_the_periodic_loop \
+            index_log::index_log_sweep_bound::the_default_entry_budget_belongs_to_the_path_that_runs_when_asked \
             data_node::tests::part3::an_idle_shard_stops_accumulating_slabs \
             data_node::tests::part3::a_dump_manifest_holds_back_the_slabs_its_whole_shard_index_will_install \
+            engine::tests::part4::the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log \
             data_node::tests::part3::the_shipped_default_bounds_the_log_by_size \
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
+            shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::the_widened_object_readers_accept_both_shapes \
+            shared_store::tests::the_object_writer_is_json_until_asked_and_the_reader_never_cares \
+            shared_store::tests::restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix \
+            shared_store::tests::list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix \
+            raft::wal_proto::tests::the_raft_wal_names_every_command_it_still_carries_as_text \
+            shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
+            shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \
@@ -269,6 +301,7 @@ jobs:
             engine::tests::blocks_per_bucket::the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth \
             engine::tests::index_bytes_per_key::the_span_keyed_table_the_arena_lever_needs_is_not_a_dependency \
             engine::tests::index_bytes_per_key::what_the_one_word_handle_costs_in_the_allocation \
+            engine::tests::index_bytes_per_key::what_keying_the_block_list_by_address_would_cost \
             engine::tests::flat_block_list::what_a_retain_leaves_in_the_block_lists_capacity \
             engine::tests::flat_block_list::what_the_published_arm_cannot_see_in_container_capacity \
             engine::tests::flat_block_list::what_the_slots_owned_element_headroom_costs \
@@ -276,6 +309,8 @@ jobs:
             engine::tests::part4::maintained_component_block_ref_total_matches_the_walk \
             engine::tests::part4::object_block_lookup_refs_per_object_census \
             engine::tests::part4::bucket_dump_manifest_rejects_object_lifecycle_mismatch \
+            engine::tests::part4::the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible \
+            engine::tests::a_reconstruct_prunes_the_refs_it_invalidates::a_reconstruct_prunes_the_refs_it_invalidates \
             wal::tests::the_commit_window_is_honoured_by_an_uncovered_barrier ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \

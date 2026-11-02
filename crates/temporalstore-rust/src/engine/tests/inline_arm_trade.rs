@@ -295,12 +295,12 @@ fn arm_census(engine: &TemporalEngine) -> ArmCensus {
 /// in this module is taken over entries the engine itself filed, because a synthesised entry could
 /// differ from a real one in `Arc` sharing and that is exactly what a clone-based instrument sees.
 fn one_real_block_free_standing() -> BlockIndex {
-    BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: crate::block_store::ElementEntry::from_parts(1, 64, 32, Some(7), Some(11)),
-        dirty: false,
-        deleted: false,
-    }
+    BlockIndex::new(
+        crate::engine::storage_bucket_internals::StoredModelKind::String,
+        crate::block_store::ElementEntry::from_parts(1, 64, 32, Some(7), Some(11)),
+        false,
+        false,
+    )
 }
 
 fn one_real_block(engine: &TemporalEngine) -> BlockIndex {
@@ -638,9 +638,29 @@ fn the_shape_that_shipped_is_the_live_declaration_and_boxing_recovers_what_dropp
         "the inline entry is {keep} B against the shipped {live} B. If holding a whole entry inline \
          were not wider than holding a pointer, there was never a width to recover"
     );
+    // NOT 'EXACTLY A HANDLE PLUS AN ENTRY' -- THAT WAS TRUE BY COINCIDENCE AND IS NOW FALSE.
+    //
+    // `ShapeKeep` is an ENUM with an inline `One(u64, BlockIndex)` arm. Its `Vec` arm owns the
+    // only pointer niche here and `One` cannot share it, so the enum must carry a tag and pays a
+    // whole word for it. At a 24-byte entry that came to 8 + 24 = 32 and the tag happened to land
+    // in the `One` arm's padding, so `keep == 8 + entry` held -- for an arithmetic reason nobody
+    // had checked. At 16 the pair is 24 and the enum is still 32, so the equality breaks while
+    // nothing about the SHAPE changed.
+    //
+    // The relation is asserted instead, with the tag named, so the next width change moves both
+    // sides together. This is the same correction made in two other arms tonight: a comparison
+    // against `8 + size_of::<BlockIndex>()` is a PROXY for an inline arm, and the proxy collided
+    // with its subject when the entry narrowed. MEASURE THE ENUM, NOT THE VARIANT.
+    assert!(
+        keep > 8 + std::mem::size_of::<BlockIndex>(),
+        "the inline mirror is {keep} B and a bare handle-plus-entry pair is {} B; the mirror must \
+         cost MORE, because its `One` arm has no niche for the tag -- if they are equal the mirror \
+         is not carrying a tag and is not a faithful stand-in for an inline arm",
+        8 + std::mem::size_of::<BlockIndex>()
+    );
     assert_eq!(
         keep,
-        8 + std::mem::size_of::<BlockIndex>(),
+        8 + std::mem::size_of::<BlockIndex>() + 8,
         "the inline arm was exactly a handle plus an entry, and `ShapeKeep` is {keep} B against {}",
         8 + std::mem::size_of::<BlockIndex>()
     );
@@ -1737,7 +1757,7 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
         // pretending to recover the one this block belongs to.
         let wide_block = MirrorWideEntry {
             object_key: std::sync::Arc::from("mirror-of-a-wide-entry"),
-            model_id: block.model_id,
+            model_id: block.model_id(),
             // The MIRROR models the entry as it was WHEN IT WAS WIDE, so it keeps the slot and
             // fills it with the absence a real entry no longer has a field for.
             component: None,
@@ -1749,8 +1769,8 @@ fn what_the_narrower_entry_is_worth_on_the_heap_now_that_it_is_behind_a_pointer(
                 routing_bucket: 0,
                 present: 0,
             },
-            dirty: block.dirty,
-            deleted: block.deleted,
+            dirty: block.dirty(),
+            deleted: block.deleted(),
             log_backed: block.log_backed(),
         };
 

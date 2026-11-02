@@ -287,7 +287,7 @@ enum Scale {
 impl Scale {
     fn label(self) -> &'static str {
         match self {
-            Scale::PerBlock => "per-page",
+            Scale::PerBlock => "per-block",
             Scale::PerBucket => "per-bucket",
             Scale::PerShard => "per-shard",
         }

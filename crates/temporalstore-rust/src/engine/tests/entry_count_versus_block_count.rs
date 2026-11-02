@@ -258,7 +258,7 @@ fn seed_all_kinds(engine: &TemporalEngine, elements: usize) -> Vec<(&'static str
 /// Live block-index entries and DISTINCT blocks, for one (kind, object key).
 ///
 /// Entries are counted off the block index itself and blocks off the physical identity of the
-/// addresses those entries hold, so "one page, two entries" is visible as the two numbers
+/// addresses those entries hold, so "one block, two entries" is visible as the two numbers
 /// disagreeing rather than having to be inferred.
 fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> (usize, usize) {
     let shards = engine.shards.read().expect("engine lock poisoned");
@@ -270,10 +270,10 @@ fn entries_and_blocks(engine: &TemporalEngine, kind: &str, object_key: &str) -> 
     let mut blocks: BTreeSet<(u64, u64, u64)> = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted {
+            if block.deleted() {
                 continue;
             }
-            if block.model_id.as_str() != kind {
+            if block.model_id().as_str() != kind {
                 continue;
             }
             match keys.live_identity(bucket.routing_bucket, *handle) {
@@ -541,18 +541,13 @@ fn how_many_index_entries_each_kind_files_for_the_same_element_count() {
 fn block_at(slab: u64, offset: u64, length: u64) -> (std::sync::Arc<str>, BlockIndex) {
     (
         std::sync::Arc::from("one-object"),
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-            address: crate::block_store::ElementEntry::from_parts(
+        BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Hash, crate::block_store::ElementEntry::from_parts(
                 slab,
                 offset,
                 length,
                 Some(0),
                 Some(1),
-            ),
-            dirty: false,
-            deleted: false,
-        },
+            ), false, false),
     )
 }
 
@@ -792,8 +787,8 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
                     .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
             .filter(|(routing_bucket, handle, block)| {
-                !block.deleted
-                    && block.model_id.as_str() == kind
+                !block.deleted()
+                    && block.model_id().as_str() == kind
                     && keys
                         .live_identity(*routing_bucket, *handle)
                         .is_some_and(|(_, named)| &**named == key)
@@ -816,8 +811,8 @@ fn the_maps_the_delta_fold_restores_do_not_include_the_container_maps() {
                 .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
         })
         .filter(|(routing_bucket, handle, block)| {
-            !block.deleted
-                && block.model_id.as_str() == "feature"
+            !block.deleted()
+                && block.model_id().as_str() == "feature"
                 && keys
                     .live_identity(*routing_bucket, *handle)
                     .is_some_and(|(_, named)| &**named == "fold-f")
@@ -904,8 +899,8 @@ fn what_one_element_read_fetches_today_and_what_a_batched_block_would_fetch() {
                     .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
             .filter(|(routing_bucket, handle, block)| {
-                !block.deleted
-                    && block.model_id.as_str() == "hash"
+                !block.deleted()
+                    && block.model_id().as_str() == "hash"
                     && keys
                         .live_identity(*routing_bucket, *handle)
                         .is_some_and(|(_, named)| &**named == "read-h")

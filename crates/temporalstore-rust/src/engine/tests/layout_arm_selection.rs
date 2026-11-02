@@ -38,7 +38,7 @@
 //! THE POSITIVE CONTROL IS WHAT MAKES THAT A MEASUREMENT RATHER THAN AN EMPTY FIXTURE. A
 //! component-free kind CAN hold several blocks under one object id, and the series kind does: a
 //! timestamped series is appended under one `(kind, key, None)` identity and spills into more than
-//! one block. If this module reported "no multi-page objects" without reaching one, the report
+//! one block. If this module reported "no multi-block objects" without reaching one, the report
 //! would be indistinguishable from a fixture that could not produce one -- so the series arm is
 //! seeded, its blocks-per-object MAX is asserted above one, and the refutation is stated only for
 //! the kinds where the ceiling is structural.
@@ -275,7 +275,7 @@ fn population(engine: &TemporalEngine) -> Population {
             // it feeds still has a subject: it compares grouping by the engine's object id against
             // grouping by (kind, key), and those two can still disagree.
             *out.component_free_by_object_id.entry(id).or_default() += 1;
-            let kind_key = format!("{:?}\u{1}{}", entry.model_id, object_key);
+            let kind_key = format!("{:?}\u{1}{}", entry.model_id(), object_key);
             *out.by_kind_key.entry(kind_key.clone()).or_default() += 1;
             *out.component_free_by_kind_key.entry(kind_key).or_default() += 1;
         }
@@ -326,7 +326,7 @@ fn bucket_key_breakdown(engine: &TemporalEngine) -> Vec<Vec<usize>> {
             *per_key
                 .entry(format!(
                     "{:?}\u{1}{}",
-                    entry.model_id,
+                    entry.model_id(),
                     named.at(node.routing_bucket, *handle)
                 ))
                 .or_default() += 1;

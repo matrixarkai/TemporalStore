@@ -102,7 +102,7 @@ fn components_the_blocks_state(
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
@@ -143,12 +143,12 @@ fn entry_counts(engine: &TemporalEngine, object_key: &str) -> (usize, usize) {
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            if block.deleted {
+            if block.deleted() {
                 tombstoned += 1;
             } else {
                 live += 1;

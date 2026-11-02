@@ -781,7 +781,7 @@ where
             Err(err) => return Err(err.into()),
         };
         if let Some(bytes) = &current_bytes {
-            let current: ShardLease = serde_json::from_slice(bytes)?;
+            let current: ShardLease = decode_shard_lease(bytes)?;
             if current.load_version >= load_version {
                 return Err(SharedStoreReplicationError::StaleOwnership {
                     shard_id,
@@ -794,7 +794,7 @@ where
             load_version,
             owner: owner.into(),
         };
-        let new_bytes = Bytes::from(serde_json::to_vec(&lease)?);
+        let new_bytes = Bytes::from(encode_shard_lease(&lease)?);
         match self
             .object_store
             .compare_and_swap(&key, current_bytes, new_bytes)
@@ -825,7 +825,7 @@ where
             }
             Err(err) => return Err(err.into()),
         };
-        let current: ShardLease = serde_json::from_slice(&bytes)?;
+        let current: ShardLease = decode_shard_lease(&bytes)?;
         if current.load_version != load_version {
             return Err(SharedStoreReplicationError::StoreConditionFailed {
                 detail: format!(
@@ -1173,7 +1173,7 @@ where
         self.object_store
             .put(
                 &self.index_routing_range_key(shard_id),
-                Bytes::from(serde_json::to_vec(
+                Bytes::from(encode_routing_range_stamp(
                     &crate::engine::routing_range_stamp::RoutingRangeStamp {
                         start_routing_bucket,
                         end_routing_bucket,
@@ -1340,7 +1340,7 @@ where
                 what: "no routing-range object beside the published index".to_string(),
             })?;
         let routing_range: crate::engine::routing_range_stamp::RoutingRangeStamp =
-            serde_json::from_slice(&range_bytes).map_err(|err| {
+            decode_routing_range_stamp(&range_bytes).map_err(|err| {
                 SharedStoreReplicationError::RoutingRangeMissing {
                     shard_id,
                     what: format!("the routing-range object did not decode: {err}"),
@@ -1372,7 +1372,7 @@ where
             .list(&self.checkpoints_prefix(shard_id))
             .await?
         {
-            if !key.ends_with("/manifest.json") {
+            if !is_checkpoint_manifest_key(&key) {
                 continue;
             }
             manifests.push(serde_json::from_slice(&self.object_store.get(&key).await?)?);
@@ -1441,7 +1441,7 @@ where
             .list(&self.bucket_dump_prefix(shard_id))
             .await?
         {
-            if !key.ends_with(".json") {
+            if !is_bucket_dump_manifest_key(&key) {
                 continue;
             }
             let manifest: crate::BucketDumpManifest =
@@ -1729,7 +1729,7 @@ where
             .get(&self.replay_cursor_key(shard_id))
             .await
         {
-            Ok(bytes) => Ok(Some(serde_json::from_slice(&bytes)?)),
+            Ok(bytes) => Ok(Some(decode_replay_cursor(&bytes)?)),
             Err(ObjectStoreError::NotFound(_)) => Ok(None),
             Err(err) => Err(err.into()),
         }
@@ -1756,7 +1756,7 @@ where
         self.object_store
             .put(
                 &self.replay_cursor_key(cursor.shard_id),
-                Bytes::from(serde_json::to_vec_pretty(cursor)?),
+                Bytes::from(encode_replay_cursor(cursor)?),
             )
             .await?;
         Ok(())
@@ -2934,6 +2934,188 @@ fn parse_block_slab_id(key: &str) -> Option<u64> {
         .ok()
 }
 
+/// THE SUFFIX A BINARY SHARED-STORE OBJECT CARRIES.
+///
+/// Already the convention in this module for the objects that are binary today -- the WAL blob and
+/// its offset index are `wal.protobuf.blob` and `wal.offset_index.protobuf.blob` -- so the manifests
+/// take the same suffix rather than inventing a second spelling for the same idea.
+pub(crate) const SHARED_STORE_BINARY_OBJECT_SUFFIX: &str = ".protobuf.blob";
+
+/// WHETHER THIS OBJECT IS A CHECKPOINT MANIFEST. THE NAME SAYS WHAT IT IS, NOT HOW IT IS ENCODED.
+///
+/// A KEY FILTER THAT NAMES A CODEC IS A SILENT SKIP WAITING TO HAPPEN. This read `/manifest.json`,
+/// so a manifest filed under any other suffix was passed over -- and `list_checkpoints` returns a
+/// LIST, so being passed over produces an empty result that is byte-for-byte what a shard with no
+/// checkpoints at all returns. There is no error, no log line, and nothing for a caller to notice:
+/// restore would simply conclude the shard had never been checkpointed.
+///
+/// That is why this is widened BEFORE any writer moves, not alongside it. The reader-first law in
+/// this repo is about bytes already on disk, and the same reasoning covers names already on disk --
+/// a reader that will not look at a name cannot be fixed after the fact by the writer that chose it.
+/// Which CODEC the body uses is decided by reading the body, not the name.
+fn is_checkpoint_manifest_key(key: &str) -> bool {
+    key.ends_with("/manifest.json")
+        || key.ends_with(&format!("/manifest{SHARED_STORE_BINARY_OBJECT_SUFFIX}"))
+}
+
+/// The same rule for a bucket-dump manifest, and the consequence here is worse.
+///
+/// `restore_bucket_dump_manifests` returns a COUNT, and a skipped manifest makes that count smaller
+/// without making it an error. A dump manifest is the durable reclaim watermark: a successor that
+/// does not inherit one treats every live generation as never dumped, which is exactly the state
+/// publishing these was added to prevent. So the failure mode is not "a file was missed" -- it is a
+/// node silently losing the lineage for data that is still perfectly present.
+fn is_bucket_dump_manifest_key(key: &str) -> bool {
+    key.ends_with(".json") || key.ends_with(SHARED_STORE_BINARY_OBJECT_SUFFIX)
+}
+
+/// THE FIRST BYTE OF A BINARY SHARED-STORE OBJECT.
+///
+/// ONE BYTE IS ENOUGH, AND THIS ONE IS CHOSEN SO IT CANNOT BE MISTAKEN. A bare JSON object on
+/// disk starts with `{` (0x7B), optionally behind JSON whitespace (space, tab, CR, LF). 0x01 is
+/// none of those and is not valid JSON in any position, so a reader can decide the shape from
+/// `bytes[0]` with no chance of reading a JSON document as protobuf or the reverse.
+///
+/// It is NOT a codec/shape pair like the index log's container byte. There is one binary shape per
+/// object here and no compression arm, so a second field would encode a choice nobody is making.
+pub(crate) const SHARED_OBJECT_CONTAINER_PROTOBUF: u8 = 0x01;
+
+/// The binary body of an object, or `None` when the bytes are the JSON shape.
+///
+/// THE ONLY PLACE THAT DECIDES. Every reader below calls this, so the two shapes cannot be told
+/// apart two different ways -- which is how a sniffing reader usually goes wrong.
+fn shared_object_protobuf_body(bytes: &[u8]) -> Option<&[u8]> {
+    match bytes.split_first() {
+        Some((&SHARED_OBJECT_CONTAINER_PROTOBUF, body)) => Some(body),
+        _ => None,
+    }
+}
+
+#[cfg(test)]
+thread_local! {
+    /// Lets a test exercise the binary writer without touching process-wide environment, which
+    /// would race every other test in the binary.
+    static PROTOBUF_OBJECTS_ON_THIS_THREAD: std::cell::Cell<bool> =
+        std::cell::Cell::new(false);
+}
+
+#[cfg(test)]
+pub(crate) fn write_shared_objects_as_protobuf_on_this_thread(on: bool) {
+    PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.set(on));
+}
+
+/// WHETHER THE WRITER TAKES THE BINARY ARM. OFF BY DEFAULT, AND THE READER DOES NOT CONSULT IT.
+///
+/// Reading the binary shape is UNCONDITIONAL; only writing it is gated. That asymmetry is the
+/// point: a store written by a node with this on must stay readable by a node with it off, so the
+/// reader cannot be allowed to depend on the flag. Same arrangement the index log uses.
+fn write_shared_objects_as_protobuf() -> bool {
+    #[cfg(test)]
+    if PROTOBUF_OBJECTS_ON_THIS_THREAD.with(|flag| flag.get()) {
+        return true;
+    }
+    matches!(
+        std::env::var("TS_SHARED_STORE_PROTOBUF_OBJECTS_ENABLED")
+            .unwrap_or_default()
+            .trim()
+            .to_ascii_lowercase()
+            .as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn encode_shared_object_protobuf<M: Message>(message: &M) -> Vec<u8> {
+    let mut out = Vec::with_capacity(1 + message.encoded_len());
+    out.push(SHARED_OBJECT_CONTAINER_PROTOBUF);
+    message
+        .encode(&mut out)
+        .expect("a Vec sink cannot run out of room");
+    out
+}
+
+// ---- the shard lease
+
+fn decode_shard_lease(bytes: &[u8]) -> Result<ShardLease, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreShardLease::decode(body)?;
+        return Ok(ShardLease {
+            load_version: proto.load_version,
+            owner: proto.owner,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_shard_lease(lease: &ShardLease) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+            load_version: lease.load_version,
+            owner: lease.owner.clone(),
+        }));
+    }
+    Ok(serde_json::to_vec(lease)?)
+}
+
+// ---- the replay cursor
+
+fn decode_replay_cursor(
+    bytes: &[u8],
+) -> Result<SharedStoreReplayCursor, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreReplayCursorObject::decode(body)?;
+        return Ok(SharedStoreReplayCursor {
+            shard_id: proto.shard_id,
+            last_wal_index: proto.last_wal_index,
+            last_replay_time_ms: proto.last_replay_time_ms,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_replay_cursor(
+    cursor: &SharedStoreReplayCursor,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(
+            &v1::SharedStoreReplayCursorObject {
+                shard_id: cursor.shard_id,
+                last_wal_index: cursor.last_wal_index,
+                last_replay_time_ms: cursor.last_replay_time_ms,
+            },
+        ));
+    }
+    Ok(serde_json::to_vec_pretty(cursor)?)
+}
+
+// ---- the routing-range stamp published beside the index
+
+pub(crate) fn decode_routing_range_stamp(
+    bytes: &[u8],
+) -> Result<crate::engine::routing_range_stamp::RoutingRangeStamp, SharedStoreReplicationError> {
+    if let Some(body) = shared_object_protobuf_body(bytes) {
+        let proto = v1::SharedStoreRoutingRangeStamp::decode(body)?;
+        return Ok(crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: proto.start_routing_bucket,
+            end_routing_bucket: proto.end_routing_bucket,
+        });
+    }
+    Ok(serde_json::from_slice(bytes)?)
+}
+
+fn encode_routing_range_stamp(
+    stamp: &crate::engine::routing_range_stamp::RoutingRangeStamp,
+) -> Result<Vec<u8>, SharedStoreReplicationError> {
+    if write_shared_objects_as_protobuf() {
+        return Ok(encode_shared_object_protobuf(
+            &v1::SharedStoreRoutingRangeStamp {
+                start_routing_bucket: stamp.start_routing_bucket,
+                end_routing_bucket: stamp.end_routing_bucket,
+            },
+        ));
+    }
+    Ok(serde_json::to_vec(stamp)?)
+}
+
 fn parse_wal_index(key: &str) -> Option<u64> {
     key.rsplit('/')
         .next()?
@@ -3541,6 +3723,53 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 ttl_ms: *ttl_ms,
             })
         }
+        Command::HashDelete { key, field } => v1::command::Kind::HashDelete(v1::HashDelete {
+            key: key.clone(),
+            field: field.clone(),
+        }),
+        Command::HashIncrBy { key, field, increment } => {
+            v1::command::Kind::HashIncrBy(v1::HashIncrBy {
+                key: key.clone(),
+                field: field.clone(),
+                increment: *increment,
+            })
+        }
+        Command::ListPush { key, member, left } => v1::command::Kind::ListPush(v1::ListPush {
+            key: key.clone(),
+            member: member.clone(),
+            left: *left,
+        }),
+        Command::ListPop { key, left } => v1::command::Kind::ListPop(v1::ListPop {
+            key: key.clone(),
+            left: *left,
+        }),
+        Command::SetRemove { key, member } => v1::command::Kind::SetRemove(v1::SetRemove {
+            key: key.clone(),
+            member: member.clone(),
+        }),
+        Command::ZSetAdd { key, member, score } => v1::command::Kind::ZsetAdd(v1::ZSetAdd {
+            key: key.clone(),
+            member: member.clone(),
+            score: *score,
+        }),
+        Command::ZSetRemove { key, member } => {
+            v1::command::Kind::ZsetRemove(v1::ZSetRemove {
+                key: key.clone(),
+                member: member.clone(),
+            })
+        }
+        Command::ZSetIncrBy { key, member, increment } => {
+            v1::command::Kind::ZsetIncrBy(v1::ZSetIncrBy {
+                key: key.clone(),
+                member: member.clone(),
+                increment: *increment,
+            })
+        }
+        Command::ZSetPop { key, min, count } => v1::command::Kind::ZsetPop(v1::ZSetPop {
+            key: key.clone(),
+            min: *min,
+            count: *count,
+        }),
         Command::CommonExists { key } => {
             v1::command::Kind::CommonExists(v1::CommonExists { key: key.clone() })
         }
@@ -3666,6 +3895,100 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             family: aggregator.clone(),
             start_ms: *start_ms,
             end_ms: *end_ms,
+        }),
+        Command::ControlStateIncrementWithOptions {
+            key,
+            timestamp_ms,
+            amount,
+            precision_ms,
+            ttl_ms,
+        } => v1::command::Kind::ControlStateIncrementWithOptions(
+            v1::ControlStateIncrementWithOptions {
+                key: key.clone(),
+                timestamp_ms: *timestamp_ms,
+                amount: *amount,
+                precision_ms: *precision_ms,
+                ttl_ms: *ttl_ms,
+            },
+        ),
+        Command::ControlStateChangeAdd {
+            key,
+            timestamp_ms,
+            value,
+            precision_ms,
+            ttl_ms,
+        } => v1::command::Kind::ControlStateChangeAdd(v1::ControlStateChangeAdd {
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            value: value.clone(),
+            precision_ms: *precision_ms,
+            ttl_ms: *ttl_ms,
+        }),
+        Command::ControlStateSet {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+        } => v1::command::Kind::ControlStateSet(v1::ControlStateSet {
+            family: sdk::control_state_family_to_proto(*family) as i32,
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            amount: *amount,
+        }),
+        Command::ControlStateSetAndGet {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+            start_ms,
+            end_ms,
+            aggregator,
+        } => v1::command::Kind::ControlStateSetAndGet(v1::ControlStateSetAndGet {
+            family: sdk::control_state_family_to_proto(*family) as i32,
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            amount: *amount,
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            aggregator: aggregator.clone(),
+        }),
+        Command::ControlStateSetAndGetWithOptions {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+            start_ms,
+            end_ms,
+            aggregator,
+            precision_ms,
+            ttl_ms,
+            uuid,
+        } => v1::command::Kind::ControlStateSetAndGetWithOptions(
+            v1::ControlStateSetAndGetWithOptions {
+                family: sdk::control_state_family_to_proto(*family) as i32,
+                key: key.clone(),
+                timestamp_ms: *timestamp_ms,
+                amount: *amount,
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+                aggregator: aggregator.clone(),
+                precision_ms: *precision_ms,
+                ttl_ms: *ttl_ms,
+                uuid: uuid.clone(),
+            },
+        ),
+        Command::ControlStateSelectionSet {
+            key,
+            value,
+            occur_time_ms,
+            ttl_ms,
+            selection_type,
+        } => v1::command::Kind::ControlStateSelectionSet(v1::ControlStateSelectionSet {
+            key: key.clone(),
+            value: value.clone(),
+            occur_time_ms: *occur_time_ms,
+            ttl_ms: *ttl_ms,
+            selection_type: sdk::control_state_selection_type_to_proto(*selection_type) as i32,
         }),
         _ => return None,
     };
@@ -6898,7 +7221,7 @@ mod tests {
             staged_blocks: vec![crate::wal::StagedBlock {
                 object_id: 77,
                 component: None,
-                bytes: b"derived-page-bytes".to_vec(),
+                bytes: b"derived-block-bytes".to_vec(),
             }],
                     outcomes: Vec::new(),
         };
@@ -7069,6 +7392,257 @@ mod tests {
             inherited[0].wal_sequence, dumped.wal_sequence,
             "the reclaim watermark has to survive the move, not merely the file"
         );
+    }
+
+    /// A MANIFEST IS FOUND BY WHAT IT IS, NOT BY WHAT IT IS CALLED.
+    ///
+    /// The filter used to read `.json`, so a manifest under any other suffix was skipped -- and a
+    /// skip is indistinguishable from a shard that never dumped, because both answer zero. This
+    /// re-files a REAL published manifest under the binary suffix and asserts the COUNT, which is
+    /// the only assertion that can tell those two apart: `restore(...).is_ok()` is true of both.
+    #[tokio::test]
+    async fn restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let dumped = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        replicator
+            .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
+            .await
+            .unwrap();
+
+        // DENOMINATOR FIRST: find the object this test is about before renaming it. A prefix that
+        // listed nothing would make the rename a no-op and every assertion below vacuous.
+        let prefix = format!("{TEST_CLUSTER_ID}/shards/1/shared/slot_dumps/");
+        let keys = store.list(&prefix).await.unwrap();
+        assert_eq!(keys.len(), 1, "expected one published manifest under {prefix}, got {keys:?}");
+        let old_key = keys[0].clone();
+        assert!(
+            old_key.ends_with(".json"),
+            "the writer still files manifests as .json; this test re-files one: {old_key}"
+        );
+
+        // Re-file it under the name a writer will use once the body moves. Only the NAME changes.
+        let bytes = store.get(&old_key).await.unwrap();
+        let new_key = format!(
+            "{}{SHARED_STORE_BINARY_OBJECT_SUFFIX}",
+            old_key.strip_suffix(".json").unwrap()
+        );
+        store.put(&new_key, bytes).await.unwrap();
+        store.delete(&old_key).await.unwrap();
+
+        let successor = test_engine(dir.path(), "successor");
+        successor.load_shard(1);
+        assert!(successor.list_bucket_dump_manifests(1).is_empty());
+
+        let restored = replicator
+            .restore_bucket_dump_manifests(1, &successor)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored, 1,
+            "restore skipped the manifest because of its NAME -- and answered zero, which is \
+             what a shard that never dumped also answers"
+        );
+        let inherited = successor.list_bucket_dump_manifests(1);
+        assert_eq!(inherited.len(), 1);
+        assert_eq!(inherited[0].manifest_id, dumped.manifest_id);
+    }
+
+    /// The same, for the checkpoint manifest, where the skip produces an EMPTY LIST.
+    ///
+    /// `list_checkpoints` is what `restore_checkpoint` and the collectors are built on, so a
+    /// manifest passed over by name does not read as a missing file -- it reads as a shard that was
+    /// never checkpointed.
+    #[tokio::test]
+    async fn list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        // The control for the rename: it is found under the old name first, so a failure after the
+        // rename is attributable to the NAME and not to the fixture never having worked.
+        assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
+
+        let prefix = format!("{TEST_CLUSTER_ID}/shards/1/shared/checkpoints/");
+        let manifests: Vec<String> = store
+            .list(&prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.ends_with("/manifest.json"))
+            .collect();
+        assert_eq!(manifests.len(), 1, "expected one manifest under {prefix}");
+        let old_key = manifests[0].clone();
+        let bytes = store.get(&old_key).await.unwrap();
+        let new_key = format!(
+            "{}manifest{SHARED_STORE_BINARY_OBJECT_SUFFIX}",
+            old_key.strip_suffix("manifest.json").unwrap()
+        );
+        store.put(&new_key, bytes).await.unwrap();
+        store.delete(&old_key).await.unwrap();
+
+        let found = replicator.list_checkpoints(1).await.unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "the checkpoint was passed over because of its NAME, and an empty list is what a \
+             shard with no checkpoints returns"
+        );
+        assert_eq!(found[0].checkpoint_wal_index, 1);
+    }
+
+    /// EVERY WIDENED READER ACCEPTS BOTH SHAPES, AND THE CONTAINER BYTE CANNOT BE JSON.
+    ///
+    /// This is the whole point of a reader-first change, so it is asserted directly rather than
+    /// inferred from a round trip: for each object, the JSON bytes a shipped build writes TODAY
+    /// must still decode, and the binary bytes a later build will write must decode too. If only
+    /// the second held, every store already on disk would be unreadable -- silently, because the
+    /// reader would simply fail to parse and the caller would see an error it has no remedy for.
+    #[test]
+    fn the_widened_object_readers_accept_both_shapes() {
+        // DENOMINATOR FIRST: three objects, and the loop below is written per object rather than
+        // generically, so this count is what says none of them was quietly dropped.
+        let mut checked = 0;
+
+        // ---- the shard lease
+        let lease = ShardLease {
+            load_version: 7,
+            owner: "owner-a".to_string(),
+        };
+        let json = serde_json::to_vec(&lease).unwrap();
+        assert_eq!(json[0], b'{', "the JSON shape must still start with a brace");
+        assert_eq!(decode_shard_lease(&json).unwrap(), lease, "JSON lease must still decode");
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreShardLease {
+            load_version: lease.load_version,
+            owner: lease.owner.clone(),
+        });
+        assert_eq!(binary[0], SHARED_OBJECT_CONTAINER_PROTOBUF);
+        assert_eq!(decode_shard_lease(&binary).unwrap(), lease, "binary lease must decode");
+        checked += 1;
+
+        // ---- the replay cursor
+        let cursor = SharedStoreReplayCursor {
+            shard_id: 3,
+            last_wal_index: 41,
+            last_replay_time_ms: 1234,
+        };
+        let json = serde_json::to_vec_pretty(&cursor).unwrap();
+        assert_eq!(decode_replay_cursor(&json).unwrap(), cursor, "JSON cursor must still decode");
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreReplayCursorObject {
+            shard_id: cursor.shard_id,
+            last_wal_index: cursor.last_wal_index,
+            last_replay_time_ms: cursor.last_replay_time_ms,
+        });
+        assert_eq!(decode_replay_cursor(&binary).unwrap(), cursor, "binary cursor must decode");
+        checked += 1;
+
+        // ---- the routing-range stamp
+        let stamp = crate::engine::routing_range_stamp::RoutingRangeStamp {
+            start_routing_bucket: 16,
+            end_routing_bucket: 31,
+        };
+        let json = serde_json::to_vec(&stamp).unwrap();
+        assert_eq!(
+            decode_routing_range_stamp(&json).unwrap(),
+            stamp,
+            "JSON stamp must still decode"
+        );
+        let binary = encode_shared_object_protobuf(&v1::SharedStoreRoutingRangeStamp {
+            start_routing_bucket: stamp.start_routing_bucket,
+            end_routing_bucket: stamp.end_routing_bucket,
+        });
+        assert_eq!(
+            decode_routing_range_stamp(&binary).unwrap(),
+            stamp,
+            "binary stamp must decode"
+        );
+        checked += 1;
+
+        assert_eq!(checked, 3, "three objects are widened in this change");
+
+        // The container byte is the whole basis of the sniff, so pin what it is NOT. A JSON
+        // document can begin with whitespace before its brace; none of those is 0x01.
+        assert_ne!(SHARED_OBJECT_CONTAINER_PROTOBUF, b'{');
+        for ws in [b' ', b'\t', b'\r', b'\n'] {
+            assert_ne!(
+                SHARED_OBJECT_CONTAINER_PROTOBUF, ws,
+                "the container byte must not be JSON whitespace"
+            );
+        }
+        assert!(
+            shared_object_protobuf_body(b"{\"load_version\":1,\"owner\":\"x\"}").is_none(),
+            "a JSON object must not be taken for the binary shape"
+        );
+        assert!(
+            shared_object_protobuf_body(b"").is_none(),
+            "an empty object is not the binary shape"
+        );
+    }
+
+    /// THE WRITER IS STILL JSON BY DEFAULT, AND THE READER DOES NOT CONSULT THE GATE.
+    ///
+    /// The asymmetry is the safety property: a store written with the flag ON must stay readable
+    /// by a node with it OFF. A test that only flipped the flag and round-tripped would pass even
+    /// if the reader had been made conditional, which is the mistake that breaks existing stores.
+    #[tokio::test]
+    async fn the_object_writer_is_json_until_asked_and_the_reader_never_cares() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        // ---- default: JSON on disk. The key comes from the SAME helper the writer uses, so this
+        // cannot drift from the real layout the way a hand-spelled prefix would.
+        replicator.acquire_shard_lease(1, 1, "owner-a").await.unwrap();
+        let lease_key = replicator.lease_key(1);
+        let default_bytes = store.get(&lease_key).await.unwrap();
+        assert_eq!(
+            default_bytes[0], b'{',
+            "the shipped default must still write the JSON shape"
+        );
+        // And it validates, through the widened reader.
+        replicator.validate_shard_lease(1, 1).await.unwrap();
+
+        // ---- asked: binary on disk, and still readable.
+        write_shared_objects_as_protobuf_on_this_thread(true);
+        replicator.acquire_shard_lease(1, 2, "owner-b").await.unwrap();
+        let binary_bytes = store.get(&lease_key).await.unwrap();
+        assert_eq!(
+            binary_bytes[0], SHARED_OBJECT_CONTAINER_PROTOBUF,
+            "with the gate on, the lease must be written in the binary shape"
+        );
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&binary_bytes).is_err(),
+            "the binary object must not parse as JSON, or the container byte proves nothing"
+        );
+
+        // THE LOAD-BEARING ASSERTION: turn the writer back OFF and read the binary object. A
+        // reader that consulted the gate would fail here, which is exactly the regression that
+        // would make a mixed-version cluster unable to read its own store.
+        write_shared_objects_as_protobuf_on_this_thread(false);
+        replicator.validate_shard_lease(1, 2).await.unwrap();
+        // A stale fence is still refused, so the widening did not weaken the check itself.
+        assert!(replicator.validate_shard_lease(1, 1).await.is_err());
     }
 
     #[tokio::test]
@@ -10367,8 +10941,13 @@ mod tests {
 /// THE SET IS AN INTERSECTION, AND THE OTHER TWO TERMS MATTER. Only writes reach this log:
 /// `data_node::mirror_write` returns early unless `is_write_command` admits the command, so a
 /// read's JSON arm is unreachable here and counting it as work would be counting an arm no caller
-/// can take. Of 99 variants, 51 are writes and 18 are proto-mapped -- but only 10 of those 18 are
-/// writes, which is why the remainder is 41 and not 33.
+/// can take. A count of `serde_json` lines in this file answers a different question again, since
+/// the file carries its own test module.
+///
+/// THE PROSE COUNT IS NOT THE GUARD. The list below is the ground truth, and
+/// `no_write_command_quietly_joins_the_json_fallback` recomputes the intersection from source text
+/// on every run. An arithmetic summary written beside it goes stale the moment a batch lands, as
+/// the pre-existing "41" silently did once nine writes were covered.
 ///
 /// THE LIST ONLY SHRINKS. Adding a write command without a proto mapping fails this test, and
 /// covering one requires deleting its name here, in the same change. So the work left is visible
@@ -10395,27 +10974,262 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "ContextWriteExtractedEvent",
     "ContextWriteIndexRef",
     "ContextWritePackAudit",
-    "ControlStateChangeAdd",
-    "ControlStateIncrementWithOptions",
-    "ControlStateSelectionSet",
-    "ControlStateSet",
-    "ControlStateSetAndGet",
-    "ControlStateSetAndGetWithOptions",
     "FeatureAppendWithPolicy",
     "FeatureDelete",
     "FeatureReplace",
-    "HashDelete",
-    "HashIncrBy",
-    "ListPop",
-    "ListPush",
     "SeenCheck",
-    "SetRemove",
     "StringSetConditional",
-    "ZSetAdd",
-    "ZSetIncrBy",
-    "ZSetPop",
-    "ZSetRemove",
 ];
+
+/// THE NINE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// `command_to_sdk_proto` compiling says nothing about what the WAL writes: the frame chooses the
+/// encoding, so a mapping can exist while the frame still takes the JSON arm. This drives each
+/// command through `encode_wal_proto_frame` and reads back what the frame actually declared.
+#[test]
+fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
+    let cases: Vec<(&str, Command)> = vec![
+        ("HashDelete", Command::HashDelete { key: "k".into(), field: "f".into() }),
+        ("HashIncrBy", Command::HashIncrBy { key: "k".into(), field: "f".into(), increment: -7 }),
+        ("ListPush", Command::ListPush { key: "k".into(), member: b"m".to_vec(), left: true }),
+        ("ListPop", Command::ListPop { key: "k".into(), left: false }),
+        ("SetRemove", Command::SetRemove { key: "k".into(), member: b"m".to_vec() }),
+        ("ZSetAdd", Command::ZSetAdd { key: "k".into(), member: b"m".to_vec(), score: 1.5 }),
+        ("ZSetRemove", Command::ZSetRemove { key: "k".into(), member: b"m".to_vec() }),
+        ("ZSetIncrBy", Command::ZSetIncrBy { key: "k".into(), member: b"m".to_vec(), increment: -0.25 }),
+        ("ZSetPop", Command::ZSetPop { key: "k".into(), min: true, count: 3 }),
+    ];
+    // DENOMINATOR FIRST: nine is the number this batch covered, and a shorter list would make
+    // every assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 9, "this test covers the nine commands the batch mapped");
+
+    for (name, command) in cases {
+        // Every one of them must be a WRITE, or it would never reach this log at all and the
+        // test would be asserting something about an unreachable path.
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // The frame carries a four-byte big-endian length ahead of the message, so the message
+        // itself starts at byte 4. Reading the declared encoding needs the frame, not the entry.
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not              take it",
+            frame.command_encoding
+        );
+        // The declared id is written by the same code that chose the arm, so it cannot be the only
+        // witness: the payload itself must not be JSON.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // And the whole entry must come back, through the path replay uses.
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+/// THE SIX CONTROL-STATE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// A MAPPING IS NOT A FORMAT. `command_to_sdk_proto` compiling proves only that a mapping exists;
+/// `encode_wal_proto_frame` is what chooses the arm, so the mapping can be there while the frame
+/// still reaches for `serde_json`. Every case here goes through the real frame and is checked
+/// three ways: the frame DECLARES protobuf, the payload does NOT parse as JSON, and the command
+/// comes back field for field.
+///
+/// THE FAMILY TAG IS THE POINT OF THIS FAMILY. Five of the six carry either a family or a
+/// selection end, and those are proto ENUMS rather than strings, so a wrong number here files a
+/// write under the wrong family rather than failing loudly. Each case below names a DIFFERENT
+/// family/end so a mapping that collapsed them all onto Counter could not pass.
+#[test]
+fn the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip() {
+    use crate::types::{ControlStateFamily, ControlStateSelectionType};
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ControlStateIncrementWithOptions",
+            Command::ControlStateIncrementWithOptions {
+                key: "k".into(),
+                timestamp_ms: 11,
+                amount: -9,
+                // Explicit presence, both arms: Some(0) is a caller that sent zero and must not
+                // come back as None, and None must not come back as Some(0).
+                precision_ms: Some(0),
+                ttl_ms: None,
+            },
+        ),
+        (
+            "ControlStateChangeAdd",
+            Command::ControlStateChangeAdd {
+                key: "k".into(),
+                timestamp_ms: 12,
+                value: b"v".to_vec(),
+                precision_ms: None,
+                ttl_ms: Some(0),
+            },
+        ),
+        (
+            "ControlStateSet",
+            Command::ControlStateSet {
+                family: ControlStateFamily::Counter,
+                key: "k".into(),
+                timestamp_ms: 13,
+                amount: 4,
+            },
+        ),
+        (
+            "ControlStateSetAndGet",
+            Command::ControlStateSetAndGet {
+                family: ControlStateFamily::Distinct,
+                key: "k".into(),
+                timestamp_ms: 14,
+                amount: 5,
+                start_ms: 1,
+                end_ms: 2,
+                aggregator: "change".into(),
+            },
+        ),
+        (
+            "ControlStateSetAndGetWithOptions",
+            Command::ControlStateSetAndGetWithOptions {
+                family: ControlStateFamily::Selection,
+                key: "k".into(),
+                timestamp_ms: 15,
+                amount: 6,
+                start_ms: 3,
+                end_ms: 4,
+                aggregator: "sum".into(),
+                precision_ms: Some(60_000),
+                ttl_ms: None,
+                // An EMPTY uuid that is present: it must not come back as None, or idempotency
+                // silently stops applying to the caller that sent one.
+                uuid: Some(String::new()),
+            },
+        ),
+        (
+            "ControlStateSelectionSet",
+            Command::ControlStateSelectionSet {
+                key: "k".into(),
+                value: b"v".to_vec(),
+                occur_time_ms: 16,
+                ttl_ms: 7,
+                selection_type: ControlStateSelectionType::Last,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: six is the number this batch covered, and a shorter list would make
+    // every assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 6, "this test covers the six control-state writes the batch mapped");
+
+    for (name, command) in cases {
+        // Every one must be a WRITE, or it would never reach this log and the test would be
+        // asserting something about an unreachable path.
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // The frame carries a four-byte big-endian length ahead of the message, so the message
+        // starts at byte 4. Reading the declared encoding needs the frame, not the entry.
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        // The declared id is written by the same code that chose the arm, so it cannot be the
+        // only witness: the payload itself must not be JSON.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // And the whole entry must come back, through the path replay uses.
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+/// AN UNKNOWN FAMILY TAG IS REFUSED, NOT DEFAULTED.
+///
+/// Zero is UNSPECIFIED. The cheap decoder for a proto3 enum is `try_from(..).unwrap_or_default()`,
+/// which turns both "a build that did not know the family" and "a record from a newer build" into
+/// Counter -- filing a distinct-count write under the counter family with nothing to show it
+/// happened. This pins the refusal so that shortcut cannot be reintroduced quietly.
+#[test]
+fn an_unknown_control_state_tag_is_refused_rather_than_defaulted() {
+    // DENOMINATOR FIRST: the three tags that must be ACCEPTED, so a decoder that refused
+    // everything could not pass this test by refusing the two bad numbers as well.
+    for (number, expected) in [
+        (1, crate::types::ControlStateFamily::Counter),
+        (2, crate::types::ControlStateFamily::Distinct),
+        (3, crate::types::ControlStateFamily::Selection),
+    ] {
+        assert_eq!(
+            sdk::control_state_family_from_proto(number).expect("a known family must decode"),
+            expected,
+            "family number {number} decoded to the wrong family"
+        );
+    }
+
+    // 0 is UNSPECIFIED; 99 is a number only a newer build would write.
+    for number in [0, 99, -1] {
+        assert!(
+            sdk::control_state_family_from_proto(number).is_err(),
+            "family number {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
+    for number in [0, 99, -1] {
+        assert!(
+            sdk::control_state_selection_type_from_proto(number).is_err(),
+            "selection type {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
+    assert_eq!(
+        sdk::control_state_selection_type_from_proto(1).expect("First must decode"),
+        crate::types::ControlStateSelectionType::First
+    );
+    assert_eq!(
+        sdk::control_state_selection_type_from_proto(2).expect("Last must decode"),
+        crate::types::ControlStateSelectionType::Last
+    );
+}
 
 #[test]
 fn no_write_command_quietly_joins_the_json_fallback() {

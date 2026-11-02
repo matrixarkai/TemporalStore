@@ -29,7 +29,7 @@
 //!   * A BLOCK CARRIED IN THE RECORD, or NO BLOCK AT ALL. There is no third option in production:
 //!     every `append_value` call site passes `Some(object_id)`, and `append_value_inner` stages
 //!     unconditionally for those, so a block that reaches a slab is always also in its record. The
-//!     cell "page in the block store but not in the record" does not exist, and the no-page cell
+//!     cell "block in the block store but not in the record" does not exist, and the no-page cell
 //!     is a REMOVAL.
 //!
 //! # Why the count is per RESULT and not per record

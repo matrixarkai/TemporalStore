@@ -105,9 +105,9 @@ impl BlockObjects {
 /// a removal that named no element.
 ///
 /// THE SECOND IS NOT A DEFECT, AND `identity_of`'s OWN DOC SAYS SO: a deleted block whose removal
-/// named no element "is the one page in this store whose object nothing beside it states".
+/// named no element "is the one block in this store whose object nothing beside it states".
 /// Production's `block_identities_in` skips it through a `filter_map`, with the note that in every
-/// caller it means "this page is not the one I am matching".
+/// caller it means "this block is not the one I am matching".
 ///
 /// `hash_read_union_divergence::an_index_entry_marked_deleted_loses_no_field_and_is_not_counted`
 /// plants exactly that block -- it marks an entry deleted in place, with no tombstone row -- and
@@ -142,7 +142,7 @@ pub(super) fn blocks_with_identity(
         for (handle, block) in &bucket.block_index {
             let Some(beside) = keys.identity_of(bucket, *handle, block) else {
                 assert!(
-                    block.deleted,
+                    block.deleted(),
                     "the LIVE block at handle {handle} in bucket {} is named by nothing beside \n                     it, and a live block is named by the object lookup unless the index is in \n                     the one window the decoder closed by filing as it decodes",
                     bucket.routing_bucket
                 );
@@ -699,3 +699,5 @@ mod what_the_slot_index_floor_is;
 mod what_each_maintenance_bound_costs_per_round;
 #[path = "tests/what_one_hash_field_write_costs_durably.rs"]
 mod what_one_hash_field_write_costs_durably;
+#[path = "tests/a_reconstruct_prunes_the_refs_it_invalidates.rs"]
+mod a_reconstruct_prunes_the_refs_it_invalidates;

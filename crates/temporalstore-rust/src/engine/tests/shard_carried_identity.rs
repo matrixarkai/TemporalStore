@@ -307,7 +307,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
                 // is still an equality between two answers rather than between one and itself.
                 let derived = crate::engine::hashing::stable_block_object_id(
                     carried,
-                    block.model_id.as_str(),
+                    block.model_id().as_str(),
                     object_key,
                 );
                 blocks_here += 1;
@@ -317,7 +317,7 @@ fn the_id_a_served_shard_carries_derives_the_object_id_already_stored_on_its_blo
                     differed.push(format!(
                         "shard {routed_under} kind {} key {} derived {derived}, which the bucket's \
                          own object index does not hold",
-                        block.model_id.as_str(),
+                        block.model_id().as_str(),
                         object_key
                     ));
                 }

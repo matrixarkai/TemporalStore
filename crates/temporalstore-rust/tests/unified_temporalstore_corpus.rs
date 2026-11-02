@@ -3872,7 +3872,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
     engine.execute(ExecuteRequest {
         shard_id,
         command: Command::StringSet {
-            key: "unified-page-gc".to_string(),
+            key: "unified-block-gc".to_string(),
             value: b"v1".to_vec(),
         },
     });
@@ -3883,7 +3883,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
     engine.execute(ExecuteRequest {
         shard_id,
         command: Command::StringSet {
-            key: "unified-page-gc".to_string(),
+            key: "unified-block-gc".to_string(),
             value: b"v2".to_vec(),
         },
     });
@@ -3907,7 +3907,7 @@ fn verify_storage_gc_dependency_retention_matrix(shard_id: u64) {
             reason: "shared-store follower is behind segment zero".to_string(),
         }],
         vec![BucketDumpRaftSnapshotRef {
-            snapshot_id: "unified-raft-page-snapshot".to_string(),
+            snapshot_id: "unified-raft-block-snapshot".to_string(),
             shard_id,
             last_included_index: 7,
             last_included_term: 2,

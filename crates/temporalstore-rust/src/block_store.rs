@@ -110,7 +110,7 @@ pub enum BlockStoreError {
 /// generation -- rather than an `Option` wrapped around each value. It is in-memory only and
 /// never a wire field, which is what lets the bit numbering keep the hole the retired
 /// routing-bucket bit left instead of paying a renumbering to close it.
-const ADDRESS_HAS_BLOCK_ID: u8 = 1 << 0;
+const ADDRESS_HAS_BLOCK_ID: u16 = 1 << 0;
 /// Whether this address HAS a generation. Its VALUE is derived from the two identities above and
 /// is not stored; this bit is all that is left of the field, and it costs nothing because the
 /// presence byte was already here. See [`BlockAddress::generation`].
@@ -119,7 +119,37 @@ const ADDRESS_HAS_BLOCK_ID: u8 = 1 << 0;
 /// id's with the field itself -- and neither position is reused: these bits are in-memory only
 /// -- `present` is not a wire field -- so the numbering is free to have holes and a hole is
 /// cheaper to read than a renumbering.
-const ADDRESS_HAS_GENERATION: u8 = 1 << 3;
+const ADDRESS_HAS_GENERATION: u16 = 1 << 3;
+
+/// THE HOLDER'S BITS, AND THIS TYPE DOES NOT INTERPRET THEM.
+///
+/// The tail here was SEVEN bytes inside an eight-byte rounding -- `length` 4, `block_id` 2,
+/// `present` 1 -- so a second byte was ALREADY PAID FOR and widening the presence byte to a WORD
+/// costs nothing. Every reconstruction of this type now reads `4 + 2 + 2`, eight in eight, and
+/// the width assertions are what fail if that is wrong -- at CONST EVALUATION, which takes the
+/// whole test target down rather than reporting one red test. Four of them say it independently
+/// and they all had to move together.
+///
+/// WHY THE HOLDER OWNS THE MEANING AND THIS TYPE DOES NOT. `ElementEntry` is the payload the
+/// index-log row and the resident entry SHARE, and the single place `length`, `block_id` and
+/// log-residence are defined. Teaching it a holder's flags would undo exactly that, and this
+/// crate already took one such consolidation apart and deliberately put it back. So these eight
+/// bits are SPACE, not semantics: nothing in this file reads them, and the holder that sets them
+/// is the only thing that knows what they mean.
+///
+/// IN-MEMORY ONLY, like the presence bits beside them and for the same reason --
+/// `wire_form_survives_the_packing` asserts the serialized form carries no `present` key at all.
+const HOLDER_BITS_SHIFT: u32 = 8;
+const HOLDER_BITS_MASK: u16 = 0xFF00;
+const PRESENCE_BITS_MASK: u16 = 0x00FF;
+
+// THE TWO HALVES MUST NOT OVERLAP, asserted rather than left to the numbering looking right. A
+// presence bit that strayed above bit 7 would be silently readable AND writable as a holder flag,
+// and no other assertion in this file would fail.
+const _: () = assert!(HOLDER_BITS_MASK & PRESENCE_BITS_MASK == 0);
+const _: () = assert!(ADDRESS_HAS_BLOCK_ID & HOLDER_BITS_MASK == 0);
+const _: () = assert!(ADDRESS_HAS_GENERATION & HOLDER_BITS_MASK == 0);
+const _: () = assert!(HOLDER_BITS_MASK >> HOLDER_BITS_SHIFT == 0xFF);
 
 /// The address as it travels on the wire and on disk.
 ///
@@ -445,7 +475,7 @@ pub struct BlockAddress {
 /// THE FLOOR WAS 24 WHILE `object_id` WAS HELD, and the payload arithmetic said the field had to
 /// LEAVE rather than narrow. It has left, so the floor below is 16 and the paragraphs that
 /// follow are the record of why narrowing was never going to do it. Reaching 16 needs a tail of 8 over an eight-aligned group of 8, and
-/// the tail is `object_id` plus the length (4), the block id (2) and the presence byte (1). So
+/// the tail is `object_id` plus the length (4), the block id (2) and the flag word (2). So
 /// `object_id` at four bytes leaves a tail of 11 and the struct at 24, at two bytes a tail of 9 and
 /// the struct at 24, and only at ONE byte or GONE does the tail fit. That is this file's own rule
 /// read forwards: a narrowing of one field is worth nothing, and here even the narrowing is worth
@@ -569,8 +599,8 @@ const _: () = assert!(std::mem::size_of::<BlockAddress>() == 8);
 ///
 /// # WHAT THE THREE SIBLINGS COST WHEN THEY LEFT, WHICH WAS NOTHING
 ///
-/// `length` (4), `block_id` (2) and `present` (1) did not vanish. They RELOCATED onto
-/// [`ElementEntry`], and 8 + 4 + 2 + 1 = 15 rounds to 16 -- exactly what this structure cost
+/// `length` (4), `block_id` (2) and `present` (2, a flag word) did not vanish. They RELOCATED onto
+/// [`ElementEntry`], and 8 + 4 + 2 + 2 = 16 exactly -- the same 16 this structure cost
 /// while it held them. The word sheds eight bytes and the holder sheds none, at every population
 /// that holds an address: the model map level-2 value, the `BTreeMap` stride over it, the
 /// optional holder, the row payload and the index entry are all unmoved.
@@ -615,7 +645,7 @@ const _: () = {
 /// this fails.
 const _: () = {
     let group = std::mem::size_of::<BlockAddress>(); // 8 -- the word
-    let tail = 4 + 2 + 1; // length, block id, presence byte
+    let tail = 4 + 2 + 2; // length, block id, flag WORD
     assert!(group + (tail + 7) / 8 * 8 == std::mem::size_of::<ElementEntry>());
 };
 
@@ -3201,7 +3231,7 @@ mod address_size_tests {
             ("address", offset_of!(ElementEntry, address), size_of::<BlockAddress>()),
             ("length", offset_of!(ElementEntry, length), size_of::<u32>()),
             ("block_id", offset_of!(ElementEntry, block_id), size_of::<u16>()),
-            ("present", offset_of!(ElementEntry, present), size_of::<u8>()),
+            ("present", offset_of!(ElementEntry, present), size_of::<u16>()),
         ];
 
         let (covered, padding) = account(&fields, total, align_of::<ElementEntry>());
@@ -3210,10 +3240,18 @@ mod address_size_tests {
         // turns on. The word shed seven bytes of sibling; the holder took exactly those seven and
         // rounded to the same sixteen the word used to occupy while it held them. Nothing was
         // saved -- the bytes moved.
+        // EIGHT NOW, NOT SEVEN, AND THE MESSAGE BELOW ALREADY SAID SO. The flag word widened to
+        // a `u16` when the entry's holder began borrowing its high byte: 4 + 2 + 2 = 8. The
+        // literal was the only part of this assertion that did not follow, which is the whole
+        // argument for stating a sum in its message -- the message was right and checkable
+        // against the number beside it.
+        //
+        // AND THE WIDENING WAS FREE. The siblings were 4 + 2 + 1 = 7 inside an eight-byte
+        // rounding, so the second presence byte was already paid for.
         assert_eq!(
             covered - word_total,
-            7,
-            "the siblings are the length (4), the block id (2) and the presence byte (1)"
+            8,
+            "the siblings are the length (4), the block id (2) and the flag word (2)"
         );
         assert_eq!(
             (word_total + 7).div_ceil(8) * 8,
@@ -3237,24 +3275,42 @@ mod address_size_tests {
         println!("  tail padding {}", total - cursor);
         println!("  field bytes {covered}, padding {padding}, total {total}");
 
-        assert_eq!(covered, 15, "the payload is 15 bytes of field");
-        assert_eq!(padding, 1, "and one of alignment");
+        assert_eq!(covered, 16, "the payload is 16 bytes of field");
+        // ZERO PADDING NOW, AND THIS IS THE DIRECT EVIDENCE THAT WIDENING THE FLAG WORD WAS FREE.
+        //
+        // The payload was 8 + 4 + 2 + 1 = 15 bytes of field with ONE byte of alignment padding
+        // behind it. Widening the presence byte to a presence WORD spent exactly that byte: the
+        // payload is 16 of field with NONE left, and `total` did not move. So the second byte of
+        // flags -- the eight bits the entry's holder borrows for its spelling and its two flags --
+        // cost nothing at all, which is the claim the packing rests on, asserted here rather than
+        // argued in prose.
+        //
+        // AND THERE IS NOTHING LEFT TO SPEND. A further field on this structure now costs a whole
+        // eight-byte word, which is the same floor the entry above it hit for the same reason.
+        assert_eq!(padding, 0, "and none of alignment: the presence word spent the last byte");
         assert_eq!(covered + padding, total);
         assert_eq!(total, 16);
         assert_eq!(align_of::<ElementEntry>(), 8);
 
         // The reconstruction, not the total: the eight-aligned group plus the rounded tail.
         let eight_aligned: usize = 1 * 8;
-        let tail: usize = 4 + 2 + 1;
+        let tail: usize = 4 + 2 + 2;
         assert_eq!(eight_aligned + tail.div_ceil(8) * 8, total);
 
         // AND THIS STEP DID PAY ON ITS OWN, which is the one thing the per-field rule above never
         // said. `object_id` was a WHOLE eight-byte field in the eight-aligned group, so the group
         // went 16 -> 8 while the tail stayed 7 and rounded to 8: the payload 23 -> 15 and the width
         // 24 -> 16. Stated over the measured payload so it cannot drift.
+        // TWENTY-FOUR, NOT TWENTY-THREE, AND THE EXTRA BYTE IS THE WIDENED FLAG WORD.
+        //
+        // The payload was 15 bytes of field when the presence was a BYTE, so before the object id
+        // left it was 23. The presence is a WORD now -- the holder borrows its high eight bits --
+        // which took the payload to 16 and this baseline to 24. The STEP is unchanged at 8: a
+        // whole eight-byte field leaving the eight-aligned group. Only the base moved, and it
+        // moved for a different change.
         assert_eq!(
             covered + 8,
-            23,
+            24,
             "the payload was 23 bytes before the object id left; it is {covered} now, so the step \
              this change claims is not the step it took"
         );
@@ -3285,10 +3341,19 @@ mod address_size_tests {
         // per-bucket ordinal worth nothing unless it fitted in 255 objects. Kept as the record of
         // what this width is the floor OF, now measured from the shed payload rather than towards
         // it.
-        assert_eq!(covered, 15, "8 address + 4 length + 2 block id + 1 present");
+        assert_eq!(covered, 16, "8 address + 4 length + 2 block id + 2 flag word");
+        // THE CONCLUSION HAS INVERTED: NOT EVEN AN 8-BIT ID FITS NOW.
+        //
+        // The paragraph above reasons from a 15-byte payload: an id at ONE byte fits inside 16
+        // and at TWO pushes to 24. The payload is 16 -- the presence byte became a WORD and spent
+        // the spare byte -- so an id of ANY width pushes to 24. 16 is still the floor, but it is
+        // now a floor with nothing above it rather than one with a byte of room.
+        //
+        // This is the same consumption the entry above it records: the packing collected the
+        // rounding waste once, and what it cost is every cheap future addition.
         assert_eq!(
             (covered + 1).div_ceil(8) * 8,
-            16,
+            24,
             "an 8-bit object id would still fit inside 16"
         );
         assert_eq!(
@@ -3315,8 +3380,13 @@ mod address_size_tests {
         // The loop above is only worth having if it actually ran over every field: a `fields` list
         // that lost its wide entries would make it vacuous, and this change removed one.
         assert_eq!(
+            // FOUR NOW, AND THE FOURTH IS THE FLAG WORD ITSELF. The filter takes fields of two
+            // bytes or more, and the presence byte became a presence WORD when the holder began
+            // borrowing its high eight bits -- so it joined the population the one-field rule is
+            // asserted over. The rule is unchanged; its denominator grew by the very change that
+            // widened the word.
             fields.iter().filter(|(_, _, width)| *width >= 2).count(),
-            3,
+            4,
             "denominator: address, length and block_id are the three fields the one-field rule is \
              asserted over -- it was four while `object_id` was one of them"
         );
@@ -5263,7 +5333,7 @@ const RETIRED_NAMES: &[&str] = &[
     fn the_envelope_carries_a_crc_not_a_digest() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let payload = b"digest-lives-with-the-page";
+        let payload = b"digest-lives-with-the-block";
         let address = store.append(payload).unwrap();
 
         let path = slab_path(dir.path(), address.block_slab_id());
@@ -5294,7 +5364,7 @@ const RETIRED_NAMES: &[&str] = &[
         // low, with no spare bit and nothing beside it.
         //
         // THE HOLDER IS THAT WORD PLUS THE THREE FIELDS THAT USED TO SIT INSIDE IT -- `length`
-        // (4), `block_id` (2) and the presence byte (1). 8 + 4 + 2 + 1 = 15 in 16, which is
+        // (4), `block_id` (2) and the flag word (2). 8 + 4 + 2 + 2 = 16 in 16, which is
         // exactly what the address cost while it held them. THE MOVE WAS WORTH ZERO BYTES: the
         // word shed eight and the holder took eight back, here and at every other holder in the
         // engine. `engine::tests::address_footprint::the_priced_shapes_for_an_address_and_its_siblings`
@@ -5331,10 +5401,10 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_address_checksum_rejects_corrupt_slab_bytes() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let address = store.append(b"verified-page").unwrap();
+        let address = store.append(b"verified-block").unwrap();
         // The address no longer carries a digest. The block does, and a read still verifies
         // against it -- corrupting the slab below must still be caught.
-        assert_eq!(store.read(&address).unwrap(), b"verified-page");
+        assert_eq!(store.read(&address).unwrap(), b"verified-block");
 
         let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
@@ -5419,18 +5489,18 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_slab_records_have_self_describing_envelope() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let address = store.append(b"enveloped-page").unwrap();
+        let address = store.append(b"enveloped-block").unwrap();
         let raw = store.read_slab(address.block_slab_id()).unwrap();
 
         assert_eq!(address.block_id(), Some(0));
-        assert_eq!(store.read(&address).unwrap(), b"enveloped-page");
+        assert_eq!(store.read(&address).unwrap(), b"enveloped-block");
     }
 
     #[test]
     fn block_id_mismatch_rejects_corrupt_address_metadata() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let mut address = store.append(b"identity-checked-page").unwrap();
+        let mut address = store.append(b"identity-checked-block").unwrap();
         address.set_block_id(Some(address.block_id().unwrap() + 1));
 
         let err = store.read(&address).unwrap_err();
@@ -6444,7 +6514,7 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_envelope_rejects_corrupt_header_lengths() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let address = store.append(b"header-checked-page").unwrap();
+        let address = store.append(b"header-checked-block").unwrap();
         let path = slab_path(dir.path(), address.block_slab_id());
         let mut slab = fs::read(&path).unwrap();
         // Make the block say it is far larger than the record holds. The size sits at a
@@ -6468,14 +6538,14 @@ const RETIRED_NAMES: &[&str] = &[
     fn block_address_without_checksum_keeps_legacy_read_compatibility() {
         let dir = tempfile::tempdir().unwrap();
         let store = BlockStore::new(dir.path());
-        let legacy_address = ElementEntry::from_parts(0, 0, b"alteredpage".len() as u64, None, None);
+        let legacy_address = ElementEntry::from_parts(0, 0, b"alteredblock".len() as u64, None, None);
         fs::write(
             slab_path(dir.path(), legacy_address.block_slab_id()),
-            b"alteredpage",
+            b"alteredblock",
         )
         .unwrap();
 
-        assert_eq!(store.read(&legacy_address).unwrap(), b"alteredpage");
+        assert_eq!(store.read(&legacy_address).unwrap(), b"alteredblock");
     }
 
     #[test]
@@ -9633,7 +9703,7 @@ mod shorter_struct_against_an_existing_row {
 /// are walking. A reader here takes the kind of the map it is reading.
 ///
 /// A free byte is the easiest kind of redundant stored fact to ship, which is why this says so.
-#[derive(Debug, Clone, Default, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(try_from = "BlockAddressWire", into = "BlockAddressWire")]
 pub struct ElementEntry {
     /// WHERE the element lives: one opaque word, the slab in the high half and the offset in the
@@ -9668,7 +9738,148 @@ pub struct ElementEntry {
     /// routing-bucket and object-id bits left, because nothing stored depends on it and a hole is
     /// cheaper to read than a renumbering. `wire_form_survives_the_packing` holds that: it asserts the
     /// serialized form carries no `present` key at all.
-    present: u8,
+    present: u16,
+}
+
+// EQUALITY AND HASHING EXCLUDE THE HOLDER'S LENT BITS, AND THAT IS NOT A REFINEMENT -- A DERIVE
+// HERE IS WRONG BY CONSTRUCTION AND SHIPPED A REAL DEFECT.
+//
+// The high eight bits of `present` are STORAGE LENT TO THE HOLDER: `BlockIndex` keeps its model
+// spelling and its dirty and deleted flags there. They are not part of WHERE the element lives,
+// so two addresses naming the same bytes must compare equal whether or not a holder is currently
+// borrowing that space.
+//
+// WHAT THE DERIVE DID, MEASURED RATHER THAN FEARED. `bucket_dump_install_preflight_report`
+// compares a dump manifest's entries against the resident ones:
+//
+//     (Some(manifest_address), Some(current_address)) => {
+//         if manifest_address != current_address { stale_block_conflicts.push(object_key); }
+//     }
+//
+// The manifest side is deserialized, so its holder bits are ZERO -- `present` is not a wire
+// field. The current side is resident and lives inside a `BlockIndex`, so its holder bits carry
+// the spelling and both flags. Under a derived `PartialEq` those never match, so EVERY block read
+// as a stale conflict and every merged dump install refused its own preflight. That is a
+// production defect, not a test artefact.
+//
+// `Hash` is written to agree with `Eq`, because a type where equal values hash differently
+// breaks every `HashMap` holding it, silently.
+impl ElementEntry {
+    /// The flag word with the holder's lent bits masked off: the presence bits alone, which ARE
+    /// part of this address's identity because they say whether the block id and generation exist.
+    fn identity_flags(&self) -> u16 {
+        self.present & PRESENCE_BITS_MASK
+    }
+}
+
+impl PartialEq for ElementEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.address == other.address
+            && self.length == other.length
+            && self.block_id == other.block_id
+            && self.identity_flags() == other.identity_flags()
+    }
+}
+
+impl Eq for ElementEntry {}
+/// THE HOLDER'S LENT BITS ARE NOT PART OF THE ADDRESS'S IDENTITY.
+///
+/// This module exists because a DERIVED `PartialEq` here shipped a production defect: the dump
+/// install preflight compares a manifest's addresses against the resident ones, the manifest side
+/// is deserialized with zero holder bits and the resident side is held by a `BlockIndex` with its
+/// spelling and flags in those bits, so every block compared unequal and every merged install
+/// refused its own preflight. Nothing in the type system objects to that, so it is asserted here.
+///
+/// rust-internal: drives this crate's own address equality, no product behaviour
+#[cfg(test)]
+mod lent_bits_are_not_address_identity {
+    use super::*;
+    use std::collections::hash_map::DefaultHasher;
+    use std::hash::{Hash, Hasher};
+
+    fn digest(address: &ElementEntry) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        address.hash(&mut hasher);
+        hasher.finish()
+    }
+
+    #[test]
+    fn an_address_is_equal_whether_or_not_a_holder_borrows_its_flag_word() {
+        let bare = ElementEntry::from_parts(7, 4_096, 64, Some(3), Some(11));
+        let mut held = bare.clone();
+        held.set_holder_bits(0b0101_1010);
+
+        // THE BITS MUST ACTUALLY DIFFER, or this asserts nothing at all.
+        assert_eq!(0, bare.holder_bits(), "a bare address must carry no holder bits");
+        assert_eq!(
+            0b0101_1010,
+            held.holder_bits(),
+            "set_holder_bits dropped its write, so the comparison below is vacuous"
+        );
+
+        assert_eq!(
+            bare, held,
+            "an address held by a `BlockIndex` compared unequal to the same address off the wire. \
+             That is the dump-preflight defect: the manifest side has zero holder bits and the \
+             resident side does not, so every block reads as a stale conflict"
+        );
+        assert_eq!(
+            digest(&bare),
+            digest(&held),
+            "equal addresses hashed differently, which breaks every map holding one silently"
+        );
+    }
+
+    #[test]
+    fn every_identity_term_still_separates_two_addresses() {
+        // THE CONTROLS. Masking the lent bits must not mask anything that IS identity -- an
+        // equality that ignores too much is worse than one that ignores too little, because it
+        // makes a stale conflict invisible instead of universal.
+        let base = ElementEntry::from_parts(7, 4_096, 64, Some(3), Some(11));
+        let cases = [
+            ("slab", ElementEntry::from_parts(8, 4_096, 64, Some(3), Some(11))),
+            ("offset", ElementEntry::from_parts(7, 8_192, 64, Some(3), Some(11))),
+            ("length", ElementEntry::from_parts(7, 4_096, 65, Some(3), Some(11))),
+            ("block id", ElementEntry::from_parts(7, 4_096, 64, Some(4), Some(11))),
+            ("block id absent", ElementEntry::from_parts(7, 4_096, 64, None, Some(11))),
+        ];
+        for (term, other) in &cases {
+            assert_ne!(
+                &base, other,
+                "two addresses differing in {term} compared EQUAL, so this equality ignores part \
+                 of the address itself and a real stale conflict would go unreported"
+            );
+        }
+        println!("  {} identity terms each separate two addresses", cases.len());
+
+        // AND THE TERM THAT IS NOT INDEPENDENT, asserted rather than dropped in silence.
+        //
+        // "generation absent" was a sixth case here and it was WRONG. `try_from_parts` sets
+        // `has_generation = block_id.is_some()` and its fifth argument is inert, so a generation
+        // cannot be varied on its own at all. The control failed and the CONTROL was at fault:
+        // the equality it accused is correct. Deleting the case silently would leave the next
+        // reader free to re-add it, so the derivation it tripped over is pinned here instead.
+        let with_object_id = ElementEntry::from_parts(7, 4_096, 64, Some(3), Some(11));
+        let without_object_id = ElementEntry::from_parts(7, 4_096, 64, Some(3), None);
+        assert_eq!(
+            with_object_id, without_object_id,
+            "the fifth argument is inert, so these are one address; if they ever differ, it is no",
+        );
+        assert_eq!(
+            with_object_id.generation().is_some(),
+            with_object_id.block_id().is_some(),
+            "a generation exists exactly when a block id does, which is why generation presence",
+        );
+    }
+}
+
+impl std::hash::Hash for ElementEntry {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.address.hash(state);
+        self.length.hash(state);
+        self.block_id.hash(state);
+        self.identity_flags().hash(state);
+    }
 }
 
 /// SIXTEEN BYTES, AND THAT IS THE SAME SIXTEEN THE ADDRESS USED TO COST ON ITS OWN.
@@ -9789,7 +10000,7 @@ impl ElementEntry {
                 block_id,
             });
         }
-        let mut present = 0u8;
+        let mut present = 0u16;
         if block_id.is_some() {
             present |= ADDRESS_HAS_BLOCK_ID;
         }
@@ -9884,12 +10095,26 @@ impl ElementEntry {
         self.block_id()
     }
 
-    fn set_present(&mut self, bit: u8, on: bool) {
+    fn set_present(&mut self, bit: u16, on: bool) {
         if on {
             self.present |= bit;
         } else {
             self.present &= !bit;
         }
+    }
+
+    /// The eight bits this type sets aside for whatever holds it, returned verbatim.
+    ///
+    /// This type assigns them NO meaning -- see the note on [`HOLDER_BITS_SHIFT`]. Neither
+    /// accessor disturbs the presence bits beside them.
+    pub fn holder_bits(&self) -> u8 {
+        ((self.present & HOLDER_BITS_MASK) >> HOLDER_BITS_SHIFT) as u8
+    }
+
+    /// Replace the holder's eight bits, leaving every presence bit exactly as it was.
+    pub fn set_holder_bits(&mut self, bits: u8) {
+        self.present =
+            (self.present & PRESENCE_BITS_MASK) | (u16::from(bits) << HOLDER_BITS_SHIFT);
     }
 
     /// The slab and offset packed into one word, which is what the stored form carries.

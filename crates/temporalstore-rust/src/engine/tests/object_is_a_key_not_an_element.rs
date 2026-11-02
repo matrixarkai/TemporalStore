@@ -5,7 +5,7 @@
 //!
 //! `stable_block_object_id` folded the component into the object's identity, so an object held
 //! exactly one block: a hash of twenty-five fields was twenty-five objects that happened to share a
-//! key. #1986 recorded the result as "the object id names a page's triple, not an object" -- a
+//! key. #1986 recorded the result as "the object id names a block's triple, not an object" -- a
 //! DESCRIPTION OF A DEFECT rather than a property to preserve. The parameter is REMOVED here, not
 //! merely ignored, because keeping it and discarding its value would leave every call site
 //! compiling while the meaning changed underneath it.
@@ -176,7 +176,7 @@ fn blocks_and_index_rows(
     let mut rows: BTreeSet<u64> = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted || block.model_id.as_str() != kind {
+            if block.deleted() || block.model_id().as_str() != kind {
                 continue;
             }
             if !keys.contains(&**named.at(bucket.routing_bucket, *handle)) {
@@ -221,8 +221,8 @@ fn live_block_count(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     let mut held = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if !block.deleted
-                && block.model_id.as_str() == kind
+            if !block.deleted()
+                && block.model_id().as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 held += 1;

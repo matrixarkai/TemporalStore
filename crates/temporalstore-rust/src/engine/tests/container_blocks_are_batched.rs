@@ -72,7 +72,7 @@
 //!
 //! ## The fold could report success without folding
 //!
-//! "Pages went down" is also what an idle round reports. So the instrument is two counters inside
+//! "Blocks went down" is also what an idle round reports. So the instrument is two counters inside
 //! the fold itself -- batches written and blocks folded into them -- and every row asserts both are
 //! non-zero before it reads anything else. A round that batched nothing fails here rather than
 //! passing quietly.
@@ -164,8 +164,8 @@ fn addresses_and_entries(engine: &TemporalEngine, kind: &str, object_key: &str) 
     let mut entries = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted
-                || block.model_id.as_str() != kind
+            if block.deleted()
+                || block.model_id().as_str() != kind
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
@@ -920,8 +920,8 @@ fn what_the_fold_is_worth_per_element_in_bytes() {
             let mut total = 0u64;
             for bucket in shard.bucket_index.bucket_map.values() {
                 for (handle, block) in &bucket.block_index {
-                    if block.deleted
-                        || block.model_id.as_str() != kind
+                    if block.deleted()
+                        || block.model_id().as_str() != kind
                         || &**named.at(bucket.routing_bucket, *handle) != "priced"
                     {
                         continue;

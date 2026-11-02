@@ -6820,9 +6820,9 @@ fn an_expired_key_is_removed_in_a_bounded_number_of_rounds() {
 /// and 0 refs at every size -- 3,430 ms down to ~650 at 32,000 keys -- and both are wrong. The
 /// suite is what refused them, and between them they map out why the check is harder than it looks.
 ///
-///   1. "every live page is already on the newest slab" -- 14 tests fail. It reads slab
+///   1. "every live block is already on the newest slab" -- 14 tests fail. It reads slab
 ///      MEMBERSHIP, so it skips a shard whose single slab is mostly garbage.
-///   2. "stale_page_estimate == 0 && live_block_slab_count <= 1" -- 3 tests fail, among them
+///   2. "stale_block_estimate == 0 && live_block_slab_count <= 1" -- 3 tests fail, among them
 ///      `feature_compaction_rewrites_shared_packed_block_once`. It reads dead space and spread, and
 ///      still misses shards that are fully live, on one slab, and want REPACKING.
 ///
@@ -7509,7 +7509,7 @@ fn why_a_stale_slab_below_the_floor_survives() {
         }
     }
 
-    eprintln!("  round  slabs  floor  live_by_page  live_by_manifest  manifests  removed  ret_live  ret_current");
+    eprintln!("  round  slabs  floor  live_by_block  live_by_manifest  manifests  removed  ret_live  ret_current");
     let options = StorageManagerOptions::default();
     for round in 0..ROUNDS {
         let engine = runtime.engine();
@@ -10712,7 +10712,7 @@ fn what_the_two_selection_rules_move_at_both_corpus_sizes() {
 /// is the control for the draining round below.
 ///
 /// At suite scale the distinction has been invisible, which is why it was never measured: a few
-/// thousand small records fit in ONE slab against the 1 GiB target, so "every live page" and "the
+/// thousand small records fit in ONE slab against the 1 GiB target, so "every live block" and "the
 /// blocks on the holed slab" are the same set. The fixture rolls between batches so the shard
 /// spans slabs, and holes exactly one of them.
 #[test]

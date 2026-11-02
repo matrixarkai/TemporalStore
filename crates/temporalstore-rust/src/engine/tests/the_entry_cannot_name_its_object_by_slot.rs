@@ -341,21 +341,16 @@ fn both_gone_field_sum() -> usize {
 /// left the declaration (E0560), because it builds a real entry rather than listing widths beside
 /// one. A parallel literal would have gone on summing a field that was no longer there.
 fn live_entry_field_sum() -> usize {
-    let probe = BlockIndex {
-        model_id: StoredModelKind::String,
-        address: an_address(),
-        dirty: false,
-        deleted: false,
-    };
+    let probe = BlockIndex::new(StoredModelKind::String, an_address(), false, false);
     // FOUR TERMS NOW. The `object_key` term went with the field, and this function is the one
     // that EARNED its shape twice: it builds a real `BlockIndex` and reads `size_of_val` off each
     // field, so a field leaving the declaration stops it compiling. A parallel list of widths
     // would have gone on summing a term that was no longer there, which is what happened to four
     // mirrors elsewhere in this tree.
-    std::mem::size_of_val(&probe.model_id)
+    std::mem::size_of_val(&probe.model_id())
         + std::mem::size_of_val(&probe.address)
-        + std::mem::size_of_val(&probe.dirty)
-        + std::mem::size_of_val(&probe.deleted)
+        + std::mem::size_of_val(&probe.dirty())
+        + std::mem::size_of_val(&probe.deleted())
 }
 
 /// rust-internal: arithmetic over this crate's own types, no external surface
@@ -642,7 +637,7 @@ fn entries_naming(engine: &TemporalEngine, routing_bucket: u32, object_id: u64) 
         if block.object_id(SHARD, named.at(routing_bucket, *handle)) != object_id {
             continue;
         }
-        if block.deleted {
+        if block.deleted() {
             tombstoned += 1;
         } else {
             live += 1;

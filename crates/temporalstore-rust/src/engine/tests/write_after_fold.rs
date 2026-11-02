@@ -131,7 +131,7 @@ fn entry_census(engine: &TemporalEngine) -> (usize, std::collections::BTreeSet<(
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
             let object_key = named.at(bucket.routing_bucket, *handle);
-            if block.deleted || block.model_id.as_str() != "set" || &**object_key != KEY {
+            if block.deleted() || block.model_id().as_str() != "set" || &**object_key != KEY {
                 continue;
             }
             live += 1;
@@ -202,7 +202,7 @@ fn a_write_after_a_fold_files_the_same_entry_the_projection_would() {
         folded_blocks.len()
     );
 
-    // FLOOR: THE FIXTURE ACTUALLY FOLDED. Without this, "one entry per page" is trivially true
+    // FLOOR: THE FIXTURE ACTUALLY FOLDED. Without this, "one entry per block" is trivially true
     // because every element is still its own block and the gate is doing nothing.
     assert_eq!(
         1,
@@ -347,7 +347,7 @@ fn a_rewrite_after_a_fold_leaves_one_entry_per_block_today() {
         .compact_shard_blocks(1)
         .expect("the fold round must succeed");
     let (_, folded_blocks, _) = entry_census(&engine);
-    // FLOOR: the fixture folded, or "one entry per page" below is trivially true.
+    // FLOOR: the fixture folded, or "one entry per block" below is trivially true.
     assert_eq!(
         1,
         folded_blocks.len(),
@@ -432,8 +432,8 @@ fn a_component_less_kind_rewritten_still_resolves_to_one_block() {
         let mut blocks = std::collections::BTreeSet::new();
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, block) in &bucket.block_index {
-                if block.deleted
-                    || block.model_id.as_str() != "string"
+                if block.deleted()
+                    || block.model_id().as_str() != "string"
                     || &**named.at(bucket.routing_bucket, *handle) != key
                 {
                     continue;
@@ -500,8 +500,8 @@ fn tombstones(engine: &TemporalEngine) -> Vec<Option<String>> {
     let mut out = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted
-                && block.model_id.as_str() == "set"
+            if block.deleted()
+                && block.model_id().as_str() == "set"
                 && &**named.at(bucket.routing_bucket, *handle) == KEY
             {
                 out.push(

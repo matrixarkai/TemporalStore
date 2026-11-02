@@ -102,7 +102,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
 fn load_on(engine: &TemporalEngine) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
-        table_name: "carried-page-identity".to_string(),
+        table_name: "carried-block-identity".to_string(),
         shard_uri: "local://carried-page-identity/1".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket: OPERATOR_END,
@@ -208,7 +208,7 @@ fn live_blocks(engine: &TemporalEngine, kind: &str) -> Vec<(String, Option<Strin
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted || block.model_id.as_str() != kind {
+            if block.deleted() || block.model_id().as_str() != kind {
                 continue;
             }
             let at = (
@@ -586,7 +586,7 @@ fn a_wal_resident_address_carries_no_ordinal_to_read_back() {
         let mut durable = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for block in bucket.block_index.values() {
-                if block.deleted || block.model_id.as_str() != "hash" {
+                if block.deleted() || block.model_id().as_str() != "hash" {
                     continue;
                 }
                 if crate::wal_record::is_wal_resident(block.address.block_slab_id()) {
@@ -1088,7 +1088,7 @@ fn every_carried_block_keeps_its_bytes_and_gains_an_element_through_both_encoder
 /// element for any non-empty input and the assertion could only ever fail on an EMPTY one. It was a
 /// real measurement when the id was computed from the element name -- then two blocks of one key
 /// genuinely produced two ids, and collapsing them to one was the thing being shown.
-/// `stable_block_object_id` takes no element at all now, so "every page of this key carries one id"
+/// `stable_block_object_id` takes no element at all now, so "every block of this key carries one id"
 /// is a property of its SIGNATURE and not something a fixture can observe. The only content in that
 /// assertion was its emptiness check, which is kept as an explicit block-count floor with its own
 /// message.
@@ -1132,8 +1132,8 @@ fn a_hash_blocks_field_name_is_held_beside_the_id_and_survives_a_component_free_
                         .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
                 })
                 .filter(|(routing_bucket, handle, block)| {
-                    !block.deleted
-                        && block.model_id.as_str() == "hash"
+                    !block.deleted()
+                        && block.model_id().as_str() == "hash"
                         && &**named.at(*routing_bucket, *handle) == key
                 })
                 .count();

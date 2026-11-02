@@ -98,7 +98,7 @@
 //!
 //! It can, and #2005 already wrote the question. #2005 fixed a resurrection on this same function
 //! by applying the delta fold's carried elements ONCE, after the block index had settled, asking
-//! "is there still a page at the address this element was carried with?" -- `live_block_key` over the
+//! "is there still a block at the address this element was carried with?" -- `live_block_key` over the
 //! finished bucket index. That fix was complete FOR THE CARRY. It left the other input to the same
 //! merge unasked.
 //!
@@ -663,7 +663,7 @@ fn build_divergence(
 ///
 /// # AND THE MERGE RESURRECTS AGAIN, SO TWO ASSERTIONS ARE TURNED OVER RATHER THAN RE-GOLDENED
 ///
-/// #2017's fix made `fill_absent_elements` ask "is there still a page at this address?". Its premise
+/// #2017's fix made `fill_absent_elements` ask "is there still a block at this address?". Its premise
 /// was ONE BLOCK PER ELEMENT, and the collapse removed it: with one index entry a block, a block
 /// SURVIVES the removal of one of its elements, so the address stays live while the element on it is
 /// dead. Measured here at ghost map 4 against a served 2.
@@ -711,7 +711,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
                 bucket
                     .block_index
                     .values()
-                    .filter(|block| !block.deleted)
+                    .filter(|block| !block.deleted())
                     .count()
             })
             .sum();
@@ -803,7 +803,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             .bucket_map
             .values()
             .flat_map(|bucket| bucket.block_index.values())
-            .filter(|block| !block.deleted)
+            .filter(|block| !block.deleted())
             .map(|block| {
                 (
                     block.address.block_slab_id(),
@@ -1113,7 +1113,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
         !shard.bucket_index.bucket_map.values().any(|bucket| bucket
             .block_index
             .values()
-            .any(|block| !block.deleted
+            .any(|block| !block.deleted()
                 && block.address.block_slab_id() == dead_address.block_slab_id()
                 && block.address.offset() == dead_address.offset())),
         "the fabricated address matches a live block, so the subjects below would be kept for the \
@@ -1285,7 +1285,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.set_dirty(false);
             for block in bucket.block_index.blocks_mut_unaccounted() {
-                block.dirty = false;
+                block.set_dirty(false);
             }
         }
         crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
@@ -1304,7 +1304,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
             .bucket_map
             .values()
             .flat_map(|bucket| bucket.block_index.values())
-            .filter(|block| !block.deleted && block.model_id.as_str() == "set")
+            .filter(|block| !block.deleted() && block.model_id().as_str() == "set")
             .count();
         (
             outcome.released_buckets.len(),

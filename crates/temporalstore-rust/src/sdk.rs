@@ -304,6 +304,47 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
             }
         }
         v1::command::Kind::StringGet(command) => types::Command::StringGet { key: command.key },
+        v1::command::Kind::HashDelete(command) => types::Command::HashDelete {
+            key: command.key,
+            field: command.field,
+        },
+        v1::command::Kind::HashIncrBy(command) => types::Command::HashIncrBy {
+            key: command.key,
+            field: command.field,
+            increment: command.increment,
+        },
+        v1::command::Kind::ListPush(command) => types::Command::ListPush {
+            key: command.key,
+            member: command.member,
+            left: command.left,
+        },
+        v1::command::Kind::ListPop(command) => types::Command::ListPop {
+            key: command.key,
+            left: command.left,
+        },
+        v1::command::Kind::SetRemove(command) => types::Command::SetRemove {
+            key: command.key,
+            member: command.member,
+        },
+        v1::command::Kind::ZsetAdd(command) => types::Command::ZSetAdd {
+            key: command.key,
+            member: command.member,
+            score: command.score,
+        },
+        v1::command::Kind::ZsetRemove(command) => types::Command::ZSetRemove {
+            key: command.key,
+            member: command.member,
+        },
+        v1::command::Kind::ZsetIncrBy(command) => types::Command::ZSetIncrBy {
+            key: command.key,
+            member: command.member,
+            increment: command.increment,
+        },
+        v1::command::Kind::ZsetPop(command) => types::Command::ZSetPop {
+            key: command.key,
+            min: command.min,
+            count: command.count,
+        },
         v1::command::Kind::StringDelete(command) => {
             types::Command::StringDelete { key: command.key }
         }
@@ -399,7 +440,127 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
         v1::command::Kind::CommonExists(command) => {
             types::Command::CommonExists { key: command.key }
         }
+        v1::command::Kind::ControlStateIncrementWithOptions(command) => {
+            types::Command::ControlStateIncrementWithOptions {
+                key: command.key,
+                timestamp_ms: command.timestamp_ms,
+                amount: command.amount,
+                precision_ms: command.precision_ms,
+                ttl_ms: command.ttl_ms,
+            }
+        }
+        v1::command::Kind::ControlStateChangeAdd(command) => {
+            types::Command::ControlStateChangeAdd {
+                key: command.key,
+                timestamp_ms: command.timestamp_ms,
+                value: command.value,
+                precision_ms: command.precision_ms,
+                ttl_ms: command.ttl_ms,
+            }
+        }
+        v1::command::Kind::ControlStateSet(command) => types::Command::ControlStateSet {
+            family: control_state_family_from_proto(command.family)?,
+            key: command.key,
+            timestamp_ms: command.timestamp_ms,
+            amount: command.amount,
+        },
+        v1::command::Kind::ControlStateSetAndGet(command) => {
+            types::Command::ControlStateSetAndGet {
+                family: control_state_family_from_proto(command.family)?,
+                key: command.key,
+                timestamp_ms: command.timestamp_ms,
+                amount: command.amount,
+                start_ms: command.start_ms,
+                end_ms: command.end_ms,
+                aggregator: command.aggregator,
+            }
+        }
+        v1::command::Kind::ControlStateSetAndGetWithOptions(command) => {
+            types::Command::ControlStateSetAndGetWithOptions {
+                family: control_state_family_from_proto(command.family)?,
+                key: command.key,
+                timestamp_ms: command.timestamp_ms,
+                amount: command.amount,
+                start_ms: command.start_ms,
+                end_ms: command.end_ms,
+                aggregator: command.aggregator,
+                precision_ms: command.precision_ms,
+                ttl_ms: command.ttl_ms,
+                uuid: command.uuid,
+            }
+        }
+        v1::command::Kind::ControlStateSelectionSet(command) => {
+            types::Command::ControlStateSelectionSet {
+                key: command.key,
+                value: command.value,
+                occur_time_ms: command.occur_time_ms,
+                ttl_ms: command.ttl_ms,
+                selection_type: control_state_selection_type_from_proto(command.selection_type)?,
+            }
+        }
     })
+}
+
+/// THE FAMILY TAG, RUST SPELLING TO WIRE NUMBER.
+///
+/// Infallible in this direction on purpose: every Rust variant has a number, so an encoder cannot
+/// fail here and `command_to_sdk_proto` keeps its `Option` for "no mapping exists" alone rather
+/// than overloading it with "the mapping broke".
+pub(crate) fn control_state_family_to_proto(
+    family: types::ControlStateFamily,
+) -> v1::ControlStateFamily {
+    match family {
+        types::ControlStateFamily::Counter => v1::ControlStateFamily::Counter,
+        types::ControlStateFamily::Distinct => v1::ControlStateFamily::Distinct,
+        types::ControlStateFamily::Selection => v1::ControlStateFamily::Selection,
+    }
+}
+
+/// THE FAMILY TAG BACK, AND IT REFUSES RATHER THAN GUESSING.
+///
+/// Zero is UNSPECIFIED and is not a family. A record carrying it was written by a build that did
+/// not know the family, and defaulting it to Counter would file somebody else's distinct-count
+/// write under the counter family silently. An unknown number is the same case from the other
+/// side -- a record from a NEWER build -- and gets the same refusal, by number, so the message
+/// says what was actually on the wire.
+pub(crate) fn control_state_family_from_proto(
+    family: i32,
+) -> Result<types::ControlStateFamily, TonicStatus> {
+    match v1::ControlStateFamily::try_from(family) {
+        Ok(v1::ControlStateFamily::Counter) => Ok(types::ControlStateFamily::Counter),
+        Ok(v1::ControlStateFamily::Distinct) => Ok(types::ControlStateFamily::Distinct),
+        Ok(v1::ControlStateFamily::Selection) => Ok(types::ControlStateFamily::Selection),
+        Ok(v1::ControlStateFamily::Unspecified) | Err(_) => {
+            Err(TonicStatus::invalid_argument(format!(
+                "control-state family {family} is not a family this build can file a write under"
+            )))
+        }
+    }
+}
+
+pub(crate) fn control_state_selection_type_to_proto(
+    selection_type: types::ControlStateSelectionType,
+) -> v1::ControlStateSelectionType {
+    match selection_type {
+        types::ControlStateSelectionType::First => v1::ControlStateSelectionType::First,
+        types::ControlStateSelectionType::Last => v1::ControlStateSelectionType::Last,
+    }
+}
+
+/// Same refusal rule as the family tag: UNSPECIFIED and unknown are both "this build cannot say
+/// which end of the window the write keeps", and keeping the wrong end is a silent wrong answer.
+pub(crate) fn control_state_selection_type_from_proto(
+    selection_type: i32,
+) -> Result<types::ControlStateSelectionType, TonicStatus> {
+    match v1::ControlStateSelectionType::try_from(selection_type) {
+        Ok(v1::ControlStateSelectionType::First) => Ok(types::ControlStateSelectionType::First),
+        Ok(v1::ControlStateSelectionType::Last) => Ok(types::ControlStateSelectionType::Last),
+        Ok(v1::ControlStateSelectionType::Unspecified) | Err(_) => {
+            Err(TonicStatus::invalid_argument(format!(
+                "control-state selection type {selection_type} is not one this build can keep"
+            )))
+        }
+    }
 }
 
 fn nonzero_limit(limit: u32) -> Option<usize> {

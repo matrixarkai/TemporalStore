@@ -1731,7 +1731,36 @@ fn the_bucket_index_holds_one_block_out_of_line_and_the_series_maps_hold_none() 
     // holds a handle AND its entry, so an inline map is at least `(u64, BlockIndex)` wide. That is
     // the width the control below constructs and measures, and asserting against it restores the
     // gap the original `<` had -- twenty-four against thirty-two -- without weakening the relation.
-    let pair = std::mem::size_of::<(u64, BlockIndex)>();
+    // THE PAIR STOPPED BEING A DISCRIMINATOR, SO THE CONTROL IS NOW THE ENUM.
+    //
+    // The comment above explains that comparing against the PAIR restored "the gap the original
+    // `<` had -- twenty-four against thirty-two". That gap existed because `(u64, BlockIndex)` was
+    // 8 + 24 = 32 while the boxed map was 24. The entry is 16 now, so the pair is 8 + 16 = 24 --
+    // EXACTLY the boxed map's width -- and `split < pair` is 24 < 24, false. The guard did not
+    // find a defect; its yardstick collided with the thing it was measuring.
+    //
+    // AN INLINE MAP IS AN ENUM, NOT A PAIR, and that is what restores the gap for a real reason
+    // rather than an arithmetic coincidence. `One(u64, BlockIndex)` carries 24 bytes of payload
+    // with no spare value to put a tag in -- the `Vec` arm's pointer niche is the only niche here
+    // and the `One` arm cannot share it -- so an inline map costs 32 against the shipped 24. The
+    // mirror below is that declaration, measured rather than computed, so the next width change
+    // moves both sides together instead of silently erasing the gap again.
+    //
+    // This is the rule already written down for the sibling campaign: MEASURE THE ENUM, NOT THE
+    // VARIANT. A niche makes a `Vec` arm free and no arithmetic over field widths can see that.
+    #[allow(dead_code)]
+    enum MirrorInlineMap {
+        Empty,
+        One(u64, BlockIndex),
+        Many(Vec<(u64, BlockIndex)>),
+    }
+    let pair = std::mem::size_of::<MirrorInlineMap>();
+    assert!(
+        pair > std::mem::size_of::<(u64, BlockIndex)>(),
+        "the inline mirror must cost MORE than the bare pair, or it is not carrying a tag and is \
+         not a faithful stand-in for an inline arm: mirror {pair} B, pair {} B",
+        std::mem::size_of::<(u64, BlockIndex)>()
+    );
     assert!(
         split < pair,
         "BlockIndexMap must NOT be able to hold a handle and a whole {block}-byte BlockIndex inline \
@@ -2017,7 +2046,7 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
         let mut blocks_here = 0usize;
         for (handle, block) in bucket.block_index.iter() {
             blocks_here += 1;
-            model_ids.insert(block.model_id.to_string());
+            model_ids.insert(block.model_id().to_string());
             let named_key = keys
                 .identity_of(bucket, *handle, block)
                 .map(|beside| std::sync::Arc::clone(beside.object_key))
@@ -2031,12 +2060,12 @@ fn the_capacity_ceilings_each_narrowing_would_impose() {
             max_block_id = max_block_id.max(block.address.block_id().unwrap_or(0));
             longest.push((block.address.length(), named_key.to_string()));
             if named_key.as_ref() == "big_value" || named_key.as_ref() == "empty_value" {
-                named.insert(named_key.to_string(), (block.address.length(), block.deleted));
+                named.insert(named_key.to_string(), (block.address.length(), block.deleted()));
             }
-            if !block.deleted {
+            if !block.deleted() {
                 live_blocks += 1;
                 if block.address.length() == 0 {
-                    live_zero_length.push((block.model_id.to_string(), named_key.to_string()));
+                    live_zero_length.push((block.model_id().to_string(), named_key.to_string()));
                 }
             } else if block.address.length() == 0 {
                 deleted_zero_length += 1;
@@ -2764,12 +2793,7 @@ fn two_buckets_holding_one_object_id_are_reported_as_one_object() {
         bucket.object_index.insert(object_id);
         bucket.block_index.insert(
             &"one-key",
-            BlockIndex {
-                model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-                address: ElementEntry::from_parts(1, offset, 64, Some(0), None),
-                dirty: false,
-                deleted: false,
-            },
+            BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, ElementEntry::from_parts(1, offset, 64, Some(0), None), false, false),
             &mut Default::default(),
         );
         let placed: Vec<(u64, BlockIndex)> = bucket
@@ -3255,7 +3279,13 @@ fn the_priced_shapes_for_an_address_and_its_siblings() {
     // passed. The claim is about the ADDRESS FIELD: it is sixteen bytes wide before the relocation
     // and sixteen after, so the entry's width cannot move BECAUSE OF the relocation whatever else
     // it is carrying. The assert below says exactly that in its message.
-    const WAS_ENTRY: usize = 24;
+    // SIXTEEN, AND THE BASE MOVED FOR A REASON THIS ARM IS NOT ABOUT. This constant is the
+    // entry's width BEFORE the change this arm prices -- the siblings relocating into the
+    // address -- and that change still moves it by zero. What moved it from 24 to 16 is the
+    // separate tail packing: the spelling and both flags became bits in the address's flag word.
+    // So the claim below is unchanged and only its base is restated, which is the distinction
+    // between re-pricing a claim and re-dating its premise.
+    const WAS_ENTRY: usize = 16;
     const WAS_ENTRY_MAP: usize = 24;
 
     println!("\n=== the address word itself ===");

@@ -760,7 +760,7 @@ fn local_dirs_constructor_applies_block_store_compression_options() {
         },
     );
     engine.load_shard(1);
-    let value = b"engine-page-policy-".repeat(80);
+    let value = b"engine-block-policy-".repeat(80);
     engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::StringSet {

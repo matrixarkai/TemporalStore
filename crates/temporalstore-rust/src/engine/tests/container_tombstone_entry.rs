@@ -210,12 +210,12 @@ fn entry_counts(engine: &TemporalEngine, kind: &str, key: &str) -> (usize, usize
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != kind
+            if block.model_id().as_str() != kind
                 || &**named.at(bucket.routing_bucket, *handle) != key
             {
                 continue;
             }
-            if block.deleted {
+            if block.deleted() {
                 tombstoned += 1;
             } else {
                 live += 1;
@@ -233,8 +233,8 @@ fn tombstoned_components(engine: &TemporalEngine, kind: &str, key: &str) -> BTre
     let mut held = BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted
-                && block.model_id.as_str() == kind
+            if block.deleted()
+                && block.model_id().as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 // AN ENTRY NAMES NO ELEMENT, so this set is always empty. It is restated where
@@ -617,7 +617,7 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
     // direction.
     //
     // Pinned against the folded BLOCK count rather than a literal 1, so a fixture that folds
-    // differently cannot make this vacuous -- and so that it still reads as "one entry a page".
+    // differently cannot make this vacuous -- and so that it still reads as "one entry a block".
     let live_blocks_folded = {
         let shards = engine.shards.read().expect("engine lock poisoned");
         let shard = shards.get(&1).expect("shard is loaded");
@@ -633,8 +633,8 @@ fn a_removal_retains_one_entry_and_nothing_yet_collects_it() {
                     .map(move |(handle, block)| (bucket.routing_bucket, *handle, block))
             })
             .filter(|(routing_bucket, handle, block)| {
-                !block.deleted
-                    && block.model_id.as_str() == "set"
+                !block.deleted()
+                    && block.model_id().as_str() == "set"
                     && &**named.at(*routing_bucket, *handle) == key
             })
             .map(|(_, _, block)| {

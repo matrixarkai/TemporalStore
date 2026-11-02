@@ -1,0 +1,10 @@
+# SPDX-License-Identifier: Apache-2.0
+# Copyright 2026 MatrixArkAI
+# The TemporalStore arm of the comparison. Only the online_store block differs from the other.
+project: feast_bench
+registry: data/registry.db
+provider: local
+online_store:
+    type: feast_temporalstore.online_store.TemporalStoreOnlineStore
+    connection_string: localhost:6399
+entity_key_serialization_version: 3

@@ -241,6 +241,21 @@ message Command {
     ContextNodeGet context_node_get = 19;
     CommonExpire common_expire = 20;
     CommonExists common_exists = 21;
+    HashDelete hash_delete = 22;
+    HashIncrBy hash_incr_by = 23;
+    ListPush list_push = 24;
+    ListPop list_pop = 25;
+    SetRemove set_remove = 26;
+    ZSetAdd zset_add = 27;
+    ZSetRemove zset_remove = 28;
+    ZSetIncrBy zset_incr_by = 29;
+    ZSetPop zset_pop = 30;
+    ControlStateIncrementWithOptions control_state_increment_with_options = 31;
+    ControlStateChangeAdd control_state_change_add = 32;
+    ControlStateSet control_state_set = 33;
+    ControlStateSetAndGet control_state_set_and_get = 34;
+    ControlStateSetAndGetWithOptions control_state_set_and_get_with_options = 35;
+    ControlStateSelectionSet control_state_selection_set = 36;
   }
 }
 
@@ -679,4 +694,166 @@ message RaftAppendEntriesRequest {
 message EngineWalRecordHeader {
   uint64 shard_id = 1;
   uint64 sequence = 2;
+}
+
+message HashDelete {
+  string key = 1;
+  string field = 2;
+}
+
+message HashIncrBy {
+  string key = 1;
+  string field = 2;
+  int64 increment = 3;
+}
+
+message ListPush {
+  string key = 1;
+  bytes member = 2;
+  bool left = 3;
+}
+
+message ListPop {
+  string key = 1;
+  bool left = 2;
+}
+
+message SetRemove {
+  string key = 1;
+  bytes member = 2;
+}
+
+message ZSetAdd {
+  string key = 1;
+  bytes member = 2;
+  double score = 3;
+}
+
+message ZSetRemove {
+  string key = 1;
+  bytes member = 2;
+}
+
+message ZSetIncrBy {
+  string key = 1;
+  bytes member = 2;
+  double increment = 3;
+}
+
+message ZSetPop {
+  string key = 1;
+  bool min = 2;
+  uint64 count = 3;
+}
+
+
+// WHICH CONTROL-STATE FAMILY A WRITE IS FILED UNDER.
+//
+// The Rust side spells these Counter/Distinct/Selection. The JSON form pinned the historical
+// short tags (h/cpc/fol) so a rename carried no migration, and this enum pins the WIRE NUMBERS
+// for the same reason: neither spelling is load-bearing once the number is what reaches disk.
+//
+// UNSPECIFIED is zero and is not a family. A record carrying it is a record written by a build
+// that did not know the family, and the decoder refuses it by name rather than guessing Counter.
+enum ControlStateFamily {
+  CONTROL_STATE_FAMILY_UNSPECIFIED = 0;
+  CONTROL_STATE_FAMILY_COUNTER = 1;
+  CONTROL_STATE_FAMILY_DISTINCT = 2;
+  CONTROL_STATE_FAMILY_SELECTION = 3;
+}
+
+// Which end of a selection window a write keeps. Same refusal rule for UNSPECIFIED.
+enum ControlStateSelectionType {
+  CONTROL_STATE_SELECTION_TYPE_UNSPECIFIED = 0;
+  CONTROL_STATE_SELECTION_TYPE_FIRST = 1;
+  CONTROL_STATE_SELECTION_TYPE_LAST = 2;
+}
+
+// `precision_ms` and `ttl_ms` are OPTIONAL, not zero-defaulted. Absent and zero are different
+// requests here -- absent means "use the store default", zero is a value a caller can send --
+// so these carry proto3 explicit presence rather than collapsing the two onto 0.
+message ControlStateIncrementWithOptions {
+  string key = 1;
+  uint64 timestamp_ms = 2;
+  int64 amount = 3;
+  optional uint64 precision_ms = 4;
+  optional uint64 ttl_ms = 5;
+}
+
+message ControlStateChangeAdd {
+  string key = 1;
+  uint64 timestamp_ms = 2;
+  bytes value = 3;
+  optional uint64 precision_ms = 4;
+  optional uint64 ttl_ms = 5;
+}
+
+message ControlStateSet {
+  ControlStateFamily family = 1;
+  string key = 2;
+  uint64 timestamp_ms = 3;
+  int64 amount = 4;
+}
+
+message ControlStateSetAndGet {
+  ControlStateFamily family = 1;
+  string key = 2;
+  uint64 timestamp_ms = 3;
+  int64 amount = 4;
+  uint64 start_ms = 5;
+  uint64 end_ms = 6;
+  string aggregator = 7;
+}
+
+message ControlStateSetAndGetWithOptions {
+  ControlStateFamily family = 1;
+  string key = 2;
+  uint64 timestamp_ms = 3;
+  int64 amount = 4;
+  uint64 start_ms = 5;
+  uint64 end_ms = 6;
+  string aggregator = 7;
+  optional uint64 precision_ms = 8;
+  optional uint64 ttl_ms = 9;
+  // The idempotency key. Absent is not the empty string: an empty uuid is a caller that sent one
+  // and it happened to be empty, which dedups differently from a caller that sent none.
+  optional string uuid = 10;
+}
+
+message ControlStateSelectionSet {
+  string key = 1;
+  bytes value = 2;
+  uint64 occur_time_ms = 3;
+  uint64 ttl_ms = 4;
+  ControlStateSelectionType selection_type = 5;
+}
+
+// ===========================================================================================
+// DURABLE SHARED-STORE OBJECTS, BINARY SHAPE.
+//
+// These are the small scalar objects the shared object store keeps beside a shard: the
+// single-writer lease, the replay cursor, and the routing range stamped next to a published
+// index. They are written as JSON today; every reader accepts BOTH shapes, and the writer takes
+// the binary arm only when asked. See `SHARED_OBJECT_CONTAINER_PROTOBUF` in `shared_store.rs`
+// for why one leading byte is enough to tell the two apart.
+//
+// The two manifests and the WAL entry envelope are NOT here yet. The manifests carry nested
+// report structures, and the WAL envelope carries a `Command`, which cannot be modelled while
+// the command roster still names writes the proto does not describe.
+// ===========================================================================================
+
+message SharedStoreShardLease {
+  uint64 load_version = 1;
+  string owner = 2;
+}
+
+message SharedStoreReplayCursorObject {
+  uint64 shard_id = 1;
+  uint64 last_wal_index = 2;
+  uint64 last_replay_time_ms = 3;
+}
+
+message SharedStoreRoutingRangeStamp {
+  uint32 start_routing_bucket = 1;
+  uint32 end_routing_bucket = 2;
 }

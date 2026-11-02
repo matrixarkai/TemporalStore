@@ -138,7 +138,7 @@ impl RecordFlags {
     //
     // BIT 9 IS A HOLE, AND IT IS THE RECORD OF A BIT REMOVED AS REDUNDANT.
     //
-    // It held a second flag whose documented meaning was "the page is deleted" -- which is
+    // It held a second flag whose documented meaning was "the block is deleted" -- which is
     // exactly what `BLOCK_DELETED` at bit 7 already says. Two bits for one fact is worse than
     // either of them alone, because nothing stops them disagreeing and then no reader knows
     // which to believe. So the fact keeps one bit and the other is gone.
@@ -1126,7 +1126,7 @@ pub(super) struct ObjectSlot {
     /// `index_bytes_per_key::what_folding_the_block_refs_into_the_slot_would_save`.
     ///
     /// `Option` AND NOT A BARE `BlockRefs`, WHICH COSTS PART OF THAT SAVING AND IS NOT OPTIONAL.
-    /// `BlockRefs` has no empty arm, so "this object names no page" would have to be spelled
+    /// `BlockRefs` has no empty arm, so "this object names no block" would have to be spelled
     /// `Many(vec![])` -- and `CoreIndex::remove_object_block_lookup_ref` records what that breaks:
     /// `block_refs_for` would answer `Some(&[])` where a caller distinguishes "names nothing" by
     /// `None`, and the re-add after a removal would take the wrong branch and leak a tombstone. A

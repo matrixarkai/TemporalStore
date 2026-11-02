@@ -1856,10 +1856,10 @@ pub fn default_storage_write_sequence() -> Vec<String> {
     public_storage_strings(&[
         "append_record",
         "route_shard_slot",
-        "choose_page",
-        "append_page_buffer",
+        "choose_block",
+        "append_block_buffer",
         "update_page_index",
-        "flush_page_block_segment",
+        "flush_block_block_segment",
         "update_block_index",
         "publish_append_watermark",
     ])
@@ -1880,7 +1880,7 @@ pub fn default_storage_read_sequence() -> Vec<String> {
 pub fn default_storage_cold_scan_sequence() -> Vec<String> {
     public_storage_strings(&[
         "timestamp_page_index_scan",
-        "no_cache_page_read",
+        "no_cache_block_read",
         "bounded_decode",
         "no_hot_cache_promotion",
     ])
@@ -2831,12 +2831,12 @@ pub fn default_storage_index_contract(
         contract_string_list(&[
             "page_address_encode_decode",
             "page_address_stable_order",
-            "timestamp_range_page_lookup",
+            "timestamp_range_block_lookup",
             "slot_index_maps_slot_to_object_page_refs",
             "object_index_maps_model_table_object_key_to_page_chain",
             "page_index_maps_logical_ranges_to_page_addresses",
             "block_index_maps_page_addresses_to_durable_locations",
-            "restart_rebuilds_page_block_object_indexes",
+            "restart_rebuilds_block_block_object_indexes",
         ]),
     );
     contract.insert(
@@ -3057,6 +3057,10 @@ pub struct StorageIndexGcReport {
     pub removable_records_before_budget: usize,
     pub budget_exhausted: bool,
     pub bytes_before: u64,
+    /// The bytes of `bytes_before` that sit below the retain floor: what the byte threshold is
+    /// compared against.
+    #[serde(default)]
+    pub removable_bytes_before: u64,
     pub bytes_after: u64,
     pub threshold_triggered: bool,
     pub usage_ratio_triggered: bool,
@@ -3493,7 +3497,7 @@ pub struct StorageManagerCycleRequest {
 /// | bound | value | what it bounds |
 /// |---|---|---|
 /// | index-log records per round | 200 | records the sweep removes through its budgeted loop. Whole sealed pieces are unlinked by name and do NOT pass through it, so a round removes far more than this; see `what_each_maintenance_bound_costs_per_round` |
-/// | index-log size before a sweep | 1 MiB | the log must reach this before a sweep is worth its gate cost. Below it the stage declines and says so |
+/// | removable index-log bytes before a sweep | 1 MiB | the bytes already below the retain floor must reach this before a sweep is worth its gate cost. Below it the stage declines and says so |
 /// | removable share before a sweep | 50% | half the log must be removable before it is rewritten, so a rewrite never copies more live records than it drops |
 /// | hot buckets expired per round | 100 | due keys taken from the in-memory deadline order. Measured biting exactly: 320 due, 100 taken |
 /// | cold buckets expired per round | 5 | due keys whose record has left memory. Twenty times smaller than hot because each one costs a load before it can be expired |
@@ -3503,13 +3507,15 @@ pub struct StorageManagerCycleRequest {
 /// | compacted slab destroy grace | 24 h | how long a vacated slab stays readable after the collector decides it is dead |
 ///
 /// A round's cost is the bound TIMES the loop rate, so these values and the loop interval are one
-/// setting. At the shipped 1,000 ms interval a round of 200 index-log records is 200 records a
-/// second; the same bounds on a 30 ms loop would be 6,660. Changing one without the other changes
+/// setting. At a 1,000 ms interval a round of 200 index-log records is 200 records a second;
+/// the same bounds on a 30 ms loop would be 6,660. The data server ships a 30,000 ms interval
+/// (`MATRIXARK_STORAGE_MANAGER_INTERVAL_MS`), where the same round is under 7 records a second. Changing one without the other changes
 /// the maintenance throughput by that ratio, which is the thing to check before either moves.
 pub const DEFAULT_INDEX_GC_MAX_ENTRIES_PER_ROUND: usize = 200;
-/// Index-log size below which a sweep is not worth running. Matches the post-dump sweep's
-/// reclaimable-bytes threshold, so the two things that rewrite this log agree about when it is
-/// too small to bother with.
+/// Removable index-log bytes below which a sweep is not worth running. The quantity is the bytes
+/// of records already below the retain floor, not the size of the whole log: a large log that is
+/// nearly all live has nothing to give. The post-dump sweep asks the same question of the same
+/// bytes with its own floor (`DEFAULT_INDEX_GC_MIN_RECLAIMABLE_BYTES`).
 pub const DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD: u64 = 1024 * 1024;
 /// Share of the log's records that must be removable before a sweep runs, in basis points.
 pub const DEFAULT_INDEX_GC_USAGE_RATIO_TRIGGER_BASIS_POINTS: u64 = 5_000;
@@ -3775,6 +3781,11 @@ pub struct StorageManagerStageReport {
     pub last_run_unix_ms: u64,
     #[serde(default)]
     pub duration_ms: u64,
+    /// The stage's own time in MICROSECONDS. `duration_ms` truncates to whole
+    /// milliseconds, so every stage of a sub-millisecond round reports 0 there and the
+    /// breakdown cannot name the stage that paid. Additive: `duration_ms` is unchanged.
+    #[serde(default)]
+    pub duration_us: u64,
     #[serde(default)]
     pub skipped_reason: String,
     #[serde(default)]
@@ -3951,6 +3962,9 @@ pub struct StorageManagerCycleReport {
     /// time and tile this; they used to all be a copy of this number.
     #[serde(default)]
     pub duration_ms: u64,
+    /// The whole round in MICROSECONDS, beside `duration_ms`.
+    #[serde(default)]
+    pub duration_us: u64,
     pub dry_run: bool,
     pub native_stage_order: Vec<String>,
     pub completed: bool,

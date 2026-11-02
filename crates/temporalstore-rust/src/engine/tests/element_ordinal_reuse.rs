@@ -388,10 +388,10 @@ fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<(Option<Stri
     for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if block.deleted {
+        if block.deleted() {
             continue;
         }
-        if block.model_id.as_str() == kind && &*object_key == key {
+        if block.model_id().as_str() == kind && &*object_key == key {
             held.push((None::<String>, block.address.block_id()));
         }
     }
@@ -415,7 +415,7 @@ fn tombstone_ordinals_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<
     for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if block.deleted && block.model_id.as_str() == kind && &*object_key == key {
+        if block.deleted() && block.model_id().as_str() == kind && &*object_key == key {
             held.push(block.address.block_id());
         }
     }
@@ -431,7 +431,7 @@ fn tombstoned_blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> usize
     for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if block.model_id.as_str() == kind && &*object_key == key && block.deleted {
+        if block.model_id().as_str() == kind && &*object_key == key && block.deleted() {
             count += 1;
         }
     }
@@ -1316,8 +1316,8 @@ fn what_an_element_ordinal_would_mean_for_each_kind() {
                 for (_routing_bucket, _handle, object_key, block) in
                     super::blocks_with_identity(&shard.bucket_index)
                 {
-                    if block.model_id.as_str() == kind && &*object_key == key {
-                        if !block.deleted {
+                    if block.model_id().as_str() == kind && &*object_key == key {
+                        if !block.deleted() {
                             live += 1;
                         }
                         // TOMBSTONES INCLUDED, so the fold sees every statement about the object
@@ -1737,11 +1737,12 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // over-count happened to equal the width. The comment above says "the literal is how a stale
     // sum and a stale slack came to agree with each other once before"; this is the second time,
     // in a sum built from types rather than a literal, because the TERM LIST was what had drifted.
-    let field_bytes_now =
-        std::mem::size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-            + std::mem::size_of::<crate::block_store::ElementEntry>()
-            + std::mem::size_of::<bool>()
-            + std::mem::size_of::<bool>();
+    // THE SUM IS THE ADDRESS ALONE. The spelling and the two flags are not fields of the entry
+    // any more -- five bits and two bits inside the flag word the address lends its holder -- so a
+    // sum of FIELDS that still adds them describes a type this engine does not have. It summed to
+    // 19 against a 16-byte entry, which made the slack below underflow: a panic in debug, and in
+    // release a wrap to 18446744073709551613 that printed as though it were a measurement.
+    let field_bytes_now = std::mem::size_of::<crate::block_store::ElementEntry>();
     // ADDITION, NOT SUBSTITUTION. There is no name left to trade.
     let field_bytes_with_u16 = field_bytes_now + u16_ordinal;
     let field_bytes_with_u32 = field_bytes_now + u32_ordinal;
@@ -1756,9 +1757,15 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
          u32 {field_bytes_with_u32} in {width_with_u32}"
     );
 
+    // SIXTEEN, AND THE SLACK IS NOW ZERO, which matters more to this arm than the width does.
+    // It priced an element ordinal against the entry's spare bytes: 19 B of field in 24 left
+    // five free, so a u16 ordinal was free and a u32 was free. The tail is empty now, so the
+    // entry has NO slack and any added field costs a whole eight-byte word. The arithmetic below
+    // re-derives from `size_of` so it follows on its own -- but the CONCLUSION it reaches has
+    // INVERTED, and that is said here rather than left for a reader to notice.
     assert_eq!(
-        entry_now, 24,
-        "the block entry is {entry_now} bytes, not the 24 this arithmetic is written against; \
+        entry_now, 16,
+        "the block entry is {entry_now} bytes, not the 16 this arithmetic is written against; \
          re-derive the field sum before trusting the two numbers above"
     );
     // FIVE BYTES OF SLACK, NOT ZERO, AND THIS IS THE ASSERTION THAT WAS WRONG. It read
@@ -1770,8 +1777,14 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     //
     // THE SLACK IS ASSERTED AS THE DIFFERENCE, which is the form that names the quantity the
     // conclusion below turns on rather than only that two sums met.
+    // ZERO, AND THE CONCLUSION BELOW HAS INVERTED RATHER THAN MOVED.
+    //
+    // Five bytes of slack were what made an element ordinal free: 19 B of field in 24 left room
+    // for a u16 and even a u32. The tail is empty now and 16 is a multiple of 8, so `+ u16` takes
+    // the field sum to 18 and the WIDTH to 24 -- a whole word, per block. The arithmetic below
+    // re-derives from `size_of` and so follows on its own; what changed is the answer it reaches.
     assert_eq!(
-        5,
+        0,
         entry_now - field_bytes_now,
         "the reconstructed field sum is {field_bytes_now} B inside a {entry_now} B entry, so the \
          slack is {} and not the five every figure below is priced against",
@@ -1813,9 +1826,21 @@ fn the_width_an_element_ordinal_would_take_and_the_ceiling_that_implies() {
     // plus eight is twenty-seven and does not. The u16 is FREE and the u32 costs a whole word.
     // On the forty-byte entry both cost a word and the choice between them was width-neutral; it
     // is not any more, and that is a decision this arm had no reason to record until now.
+    // WIDTH-NEUTRAL AGAIN, AND THIS ARM ALREADY RECORDED THE FIRST HALF OF THAT CIRCLE.
+    //
+    // The comment above says: "On the forty-byte entry both cost a word and the choice between
+    // them was width-neutral; it is not any more." At 40 B of entry, 19 + 2 and 19 + 4 both
+    // rounded to the same word. At 24 they diverged -- the u16 fitted the five bytes of slack and
+    // the u32 did not. At 16 THERE IS NO SLACK AT ALL, so 16 + 2 and 16 + 4 both round to 24 and
+    // the two are neutral once more.
+    //
+    // So the choice between a u16 and a u32 ordinal has been width-neutral, then width-bearing,
+    // then width-neutral, across three entry widths -- and the conclusion a reader takes from
+    // this arm depends entirely on which of the three they are standing on. That is the argument
+    // for deriving the pair from `size_of` rather than quoting it, which the lines below do.
     assert_eq!(
         (width_with_u16, width_with_u32),
-        (24, 32),
+        (24, 24),
         "a u16 ordinal takes the entry to {width_with_u16} B and a u32 to {width_with_u32} B, not \
          24 and 32 -- the five bytes of slack above are what the u16 fits inside and the u32 \
          does not, and if the u16 starts crossing then the slack has gone"
@@ -1875,7 +1900,7 @@ fn component_census(engine: &TemporalEngine) -> Vec<(String, String, Option<usiz
         super::blocks_with_identity(&shard.bucket_index)
     {
         rows.push((
-            block.model_id.as_str().to_string(),
+            block.model_id().as_str().to_string(),
             object_key.to_string(),
             None::<usize>,
         ));
@@ -2086,7 +2111,7 @@ fn what_an_element_ordinal_would_have_saved_a_block() {
 ///     ACCESSOR hands back `Option<u64>`. A width read off the accessor is four times too generous,
 ///     which is why #1986's rule is to read it off the field.
 ///   * `narrow_block_id` is CHECKED, not saturating, and its panic message names the harm:
-///     "truncating it would name a different page of the same object". Driven here.
+///     "truncating it would name a different block of the same object". Driven here.
 ///   * But `next_block_index_for_object` SATURATES before it ever reaches that check, so the value
 ///     that arrives at the ceiling is `u32::MAX` rather than 65,536 -- still refused, and refused for
 ///     the wrong reason, by the wrong function, with no mention of the object that overflowed. That
@@ -2473,12 +2498,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
     // COMMENT whose wording the ban matched. A fourth absence check would be defeated by a rename.
     // The literal below names every field of `BlockIndex` with no `..`, so a component field
     // returning to the entry is a COMPILE ERROR here rather than a silently passing grep.
-    let _no_component_field_exists = crate::engine::state::BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::Set,
-        address: crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)),
-        dirty: false,
-        deleted: false,
-    };
+    let _no_component_field_exists = crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::Set, crate::block_store::ElementEntry::from_parts(1, 0, 1, Some(0), Some(0)), false, false);
 
     // AND THE WEAK HALF, KEPT AND LABELLED AS SUCH. A rename defeats it, which is exactly why it
     // is not carrying the claim on its own. What it adds to the literal above is the direction: the
@@ -2625,7 +2645,7 @@ fn the_component_ordering_property_is_consumed_by_the_set_listing() {
         // order and imposes none of its own, which is what made component order free to respell.
         // It is false now, and the mechanism is the landed change. `SetMembers` no longer walks
         // index entries and answers each from the block it named -- that arm was deleted, because an
-        // entry naming no element "can only be answered by a page that names no element either"
+        // entry naming no element "can only be answered by a block that names no element either"
         // and it returned an EMPTY listing. It asks the PAYLOAD through
         // `container_membership::derive_membership`, which folds every block of the object into a
         // `BTreeMap` KEYED BY THE COMPONENT SPELLING.

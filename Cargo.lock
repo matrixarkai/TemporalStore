@@ -793,7 +793,7 @@ dependencies = [
 [[package]]
 name = "matrixobjectstore-rs"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=e8505d578e34e69c2247c256be3eb86f8e7a2470#e8505d578e34e69c2247c256be3eb86f8e7a2470"
+source = "git+https://github.com/matrixarkai/MatrixObject.git?rev=e90e5af238d4f51a254709fcfe9469732e45a281#e90e5af238d4f51a254709fcfe9469732e45a281"
 dependencies = [
  "fs2",
  "libc",
@@ -804,8 +804,9 @@ dependencies = [
 [[package]]
 name = "matrixraft"
 version = "0.1.0"
-source = "git+https://github.com/matrixarkai/MatrixRaft.git?rev=a894a016f10a38fd3fd21ecbde9cb27367247476#a894a016f10a38fd3fd21ecbde9cb27367247476"
+source = "git+https://github.com/matrixarkai/MatrixRaft.git?rev=58fb9573db087635877323dfbc2bb2ddf2e65702#58fb9573db087635877323dfbc2bb2ddf2e65702"
 dependencies = [
+ "prost 0.11.9",
  "serde",
  "serde_json",
  "thiserror 2.0.21",

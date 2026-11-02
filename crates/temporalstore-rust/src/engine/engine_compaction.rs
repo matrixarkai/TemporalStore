@@ -739,7 +739,7 @@ pub const CONTAINER_BATCH_ELEMENT_CAP: usize = 128;
 /// The byte target a rewritten container block is chunked against.
 ///
 /// The SAME target the timestamped chunker uses (`context_block_target_bytes`), deliberately, so the
-/// engine has one answer to "how big should a page be" rather than two that can drift. A container
+/// engine has one answer to "how big should a block be" rather than two that can drift. A container
 /// block and a packed series block are read by the same block store through the same cache with the
 /// same record header; nothing about a container makes a different size right, and a second constant
 /// would be a second thing to tune.
@@ -1045,7 +1045,7 @@ fn flush_container_batch(
 
 /// Batches written and blocks folded into them, so a guard can assert a round actually batched.
 ///
-/// A COUNTER AND NOT A DERIVED FIGURE. "Pages went down" is measurable from the store, and it is
+/// A COUNTER AND NOT A DERIVED FIGURE. "Blocks went down" is measurable from the store, and it is
 /// also what a round that relocated nothing reports, so a test that only looked at the store could
 /// not tell batching from an idle round. These two say what this code DID.
 static CONTAINER_BATCHES_WRITTEN: std::sync::atomic::AtomicU64 =

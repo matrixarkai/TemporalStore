@@ -31,7 +31,7 @@
 //! TESTS FIRED THAT ASSERTION IMMEDIATELY, and it was replaced by a rebuild.
 //!
 //! BOTH THE ASSERTION AND THE TWO TESTS WERE ABOUT THE WRONG CONDITION. "Buckets present" is not
-//! "pages present", and "pages present" is not "a LIVE page present" -- a tombstone is a page a
+//! "pages present", and "pages present" is not "a LIVE block present" -- a tombstone is a page a
 //! mark must not dirty. Measured over a 107-name set of mark-reaching tests, 97 verdicts: six
 //! reaches had no blocks at all, two had only tombstones, and the only two reaches with a live block
 //! were the fixtures in this module, each writing into `bucket_map` directly with no filing
@@ -63,17 +63,14 @@ fn a_shard_holding_one_clean_block(object_key: &str) -> (ShardState, u32) {
     bucket.set_in_memory(true);
     let mut live = BlockSlabLiveIndex::default();
     bucket.insert_block(&object_key, 
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name(
-                "string",
-            )
-            .expect("`string` is a stored model spelling"),
-            address: Default::default(),
+        BlockIndex::new(
+            crate::engine::storage_bucket_internals::StoredModelKind::from_stored_name( "string", ) .expect("`string` is a stored model spelling"),
+            Default::default(),
             // CLEAN, which is the only interesting starting state: a block that is already dirty
             // would satisfy every assertion below whatever the mark did.
-            dirty: false,
-            deleted: false,
-        },
+            false,
+            false,
+        ),
         &mut live,
     );
     shard.bucket_index.bucket_map.insert(routing_bucket, bucket);
@@ -127,7 +124,7 @@ fn any_block_dirty(shard: &ShardState, routing_bucket: u32) -> bool {
         .expect("the fixture bucket must exist")
         .block_index
         .values()
-        .any(|block| block.dirty)
+        .any(|block| block.dirty())
 }
 
 #[test]

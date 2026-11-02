@@ -3168,7 +3168,7 @@ fn storage_production_readiness_reports_warnings_without_blocking_dirty_shard() 
     assert!(!report.block_format_compatibility.native_block_header_compatible);
     assert_eq!(
         report.block_format_compatibility.block_format,
-        "rust-page-envelope-v6"
+        "rust-block-envelope-v6"
     );
     assert_eq!(
         report.block_format_compatibility.compatibility_mode,
@@ -3260,7 +3260,7 @@ fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
             .execute(ExecuteRequest {
                 shard_id: 1,
                 command: Command::StringSet {
-                    key: "page-format-key".to_string(),
+                    key: "block-format-key".to_string(),
                     value: vec![11; 512],
                 },
             })
@@ -3271,7 +3271,7 @@ fn storage_block_format_compatibility_report_counts_zones_and_header_gaps() {
 
     let report = engine.storage_block_format_compatibility_report(1);
     assert_eq!(report.shard_id, 1);
-    assert_eq!(report.block_format, "rust-page-envelope-v6");
+    assert_eq!(report.block_format, "rust-block-envelope-v6");
     assert_eq!(report.rust_envelope_version, 6);
     assert_eq!(report.compatibility_mode, "rust_envelope_migration_only");
     assert!(report.migration_required);
@@ -4642,7 +4642,7 @@ fn dirty_objects_versus_the_blocks_own_dirty_flags() {
     let blocks_marked_dirty: std::collections::BTreeSet<String> =
         super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
-            .filter(|(_, _, _, block)| block.dirty)
+            .filter(|(_, _, _, block)| block.dirty())
             .map(|(_, _, object_key, _)| object_key.to_string())
             .collect();
     let any_block_at_all: std::collections::BTreeSet<String> =
@@ -4876,10 +4876,10 @@ fn blocks_of_one_kind_spend_one_byte_and_share_one_static_spelling() {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, block) in bucket.block_index.iter() {
             blocks += 1;
-            let spelling = block.model_id.as_str().as_ptr();
-            match first_of_kind.get(block.model_id.as_str()) {
+            let spelling = block.model_id().as_str().as_ptr();
+            match first_of_kind.get(block.model_id().as_str()) {
                 None => {
-                    first_of_kind.insert(block.model_id.to_string(), spelling);
+                    first_of_kind.insert(block.model_id().to_string(), spelling);
                 }
                 Some(first) => {
                     if *first == spelling {
@@ -5222,7 +5222,7 @@ fn the_block_and_the_lookup_point_at_one_object_key() {
             let Some(refs) = shard
                 .bucket_index
                 .object_block_lookup
-                .key_ptr(block.model_id.as_str(), handed_out.as_ref())
+                .key_ptr(block.model_id().as_str(), handed_out.as_ref())
             else {
                 continue;
             };
@@ -5445,12 +5445,7 @@ fn rewriting_a_block_does_not_reuse_its_index_key() {
 /// number; this one states the reason.
 #[test]
 fn installing_the_same_block_twice_replaces_it() {
-    let block = || crate::engine::state::BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)),
-        dirty: false,
-        deleted: false,
-    };
+    let block = || crate::engine::state::BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, ElementEntry::from_parts(1, 0, 4, Some(1), Some(30)), false, false);
 
     let mut map = crate::engine::state::BlockIndexMap::default();
     let mut live = crate::engine::state::BlockSlabLiveIndex::default();
@@ -7014,8 +7009,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
         // so for such a bucket the buffer is held until a re-add clears the tombstones or a later
         // stage collects them. That is stated here rather than left to be rediscovered from the
         // per-key ceiling above, which is the assertion that would eventually fail for it.
-        let live = bucket.block_index.values().filter(|block| !block.deleted).count();
-        let tombstoned = bucket.block_index.values().filter(|block| block.deleted).count();
+        let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
+        let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
         let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
         // RESTATED: THE LIVE ENTRY IS RETAINED TOO, NOT ONLY A TOMBSTONE ADDED.
         //
@@ -7103,8 +7098,8 @@ fn a_bucket_holding_one_block_holds_no_node() {
                     .any(|(handle, _)| &**named.at(bucket.routing_bucket, *handle) == "wide")
             })
             .expect("the object must still be filed");
-        let live = bucket.block_index.values().filter(|block| !block.deleted).count();
-        let tombstoned = bucket.block_index.values().filter(|block| block.deleted).count();
+        let live = bucket.block_index.values().filter(|block| !block.deleted()).count();
+        let tombstoned = bucket.block_index.values().filter(|block| block.deleted()).count();
         let resident = shard.hashes.get("wide").map_or(0, |fields| fields.len());
         // THE TOMBSTONE CLAIM HELD AND WAS CHECKED RATHER THAN ADJUSTED. The message below is the
         // one this arm shipped with, and the measurement still agrees with it: writing a field back
@@ -7644,11 +7639,11 @@ fn block_index_identity_string_cardinality() {
     for bucket in shard.bucket_index.bucket_map.values() {
         for (_ref_key, block) in bucket.block_index.iter() {
             blocks += 1;
-            distinct_models.insert(block.model_id.as_str());
+            distinct_models.insert(block.model_id().as_str());
             // One address per spelling for the whole process, and not an allocation: the entry
             // holds one byte and reads the registry's `&'static str` through it.
-            model_allocations.insert(block.model_id.as_str().as_ptr());
-            model_bytes += block.model_id.as_str().len();
+            model_allocations.insert(block.model_id().as_str().as_ptr());
+            model_bytes += block.model_id().as_str().len();
             // THE COMPONENT HALF OF THIS CENSUS HAS NO SUBJECT LEFT.
             //
             // It measured whether an entry's element name was a SHARED allocation -- distinct
@@ -8126,7 +8121,7 @@ fn maintained_component_block_ref_total_matches_the_walk() {
         engine
             .load_shard_with(crate::control::LoadShardRequest {
                 shard_id: 1,
-                table_name: "page-ref-total".to_string(),
+                table_name: "block-ref-total".to_string(),
                 shard_uri: "local://page-ref-total/1".to_string(),
                 start_routing_bucket: 0,
                 end_routing_bucket: 63,
@@ -8301,7 +8296,7 @@ fn bucket_object_index_already_matches_a_from_scratch_recompute() {
         let recomputed: std::collections::BTreeSet<u64> = bucket
             .block_index
             .iter()
-            .filter(|(_, block)| !block.deleted)
+            .filter(|(_, block)| !block.deleted())
             .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
             .collect();
         // Mirrors update_bucket_layout: an empty live set over an empty block index leaves the
@@ -8739,9 +8734,9 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     let write = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::HashSet {
-            key: "derived-page-key".to_string(),
+            key: "derived-block-key".to_string(),
             field: "f1".to_string(),
-            value: b"derived-page-value".to_vec(),
+            value: b"derived-block-value".to_vec(),
         },
     });
     assert!(write.status.ok, "the write must be acked: {write:?}");
@@ -8752,7 +8747,7 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     let read = engine.execute(ExecuteRequest {
         shard_id: 1,
         command: Command::HashGet {
-            key: "derived-page-key".to_string(),
+            key: "derived-block-key".to_string(),
             field: "f1".to_string(),
         },
     });
@@ -8760,7 +8755,7 @@ fn an_evicted_derived_block_is_served_from_its_wal_record() {
     assert_eq!(
         read.response,
         CommandResponse::Bytes {
-            value: Some(b"derived-page-value".to_vec())
+            value: Some(b"derived-block-value".to_vec())
         },
         "a derived block must not read back as missing once its cache entry is gone"
     );
@@ -10388,6 +10383,118 @@ fn the_storage_cycle_records_how_long_its_stages_take() {
     // reported the time since the cycle began and the total came to eight times the wall clock.
     // Deliberately NOT asserting some stage exceeds zero -- a quick cycle rounds every stage to
     // zero milliseconds, and that assertion would fail on a fast machine for no reason.
+}
+
+/// The same round, in MICROSECONDS -- the assertion the millisecond field cannot make.
+///
+/// The test above says it out loud: "a quick cycle rounds every stage to zero milliseconds", so it
+/// deliberately does not assert that any stage exceeds zero. That is not a quirk of the fixture, it
+/// is the resolution of the field. `StageSpan::close` took `elapsed().as_millis()`, so an idle
+/// round -- which is most rounds on most shards -- reported 0 ms for every stage and the breakdown
+/// could not name the stage that paid.
+///
+/// Measured against the design being followed, whose own per-stage counters are microsecond
+/// denominated and whose whole idle round sits at a few hundred of them: every stage of it would
+/// have read 0 in this report. `duration_us` is published beside `duration_ms`, never instead of
+/// it, so the existing gauge and every assertion on it are untouched.
+///
+/// Two properties, both of which fail if the field is dropped or wired back to milliseconds:
+/// the microsecond rows TILE the round the same way the millisecond rows do, and at least one row
+/// is NON-ZERO on a round whose millisecond rows may legitimately all be zero.
+#[test]
+fn the_stage_clock_reports_microseconds_so_a_sub_millisecond_stage_is_visible() {
+    let dir = tempfile::tempdir().unwrap();
+    let engine = TemporalEngine::with_local_dirs(
+        1 << 20,
+        dir.path().join("cache"),
+        dir.path().join("blocks"),
+        dir.path().join("indexes"),
+    );
+    engine.load_shard(1);
+    for index in 0..400 {
+        engine.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: format!("k{index:06}"),
+                value: vec![118u8; 128],
+            },
+        });
+    }
+
+    // Drain to the idle round, which is the case the millisecond field cannot describe. The first
+    // round has the written records to reclaim; by the fourth there is nothing left to do.
+    let mut cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+        shard_id: 1,
+        ..Default::default()
+    });
+    for _ in 0..3 {
+        cycle = engine.run_storage_manager_cycle(StorageManagerCycleRequest {
+            shard_id: 1,
+            ..Default::default()
+        });
+    }
+
+    assert!(!cycle.stages.is_empty(), "the cycle should have run stages");
+
+    // Printed, because the per-stage attribution on an IDLE round is the figure that had no
+    // representable value before this field existed.
+    eprintln!(
+        "  IDLE round: {} us total ({} ms), {} stages",
+        cycle.duration_us,
+        cycle.duration_ms,
+        cycle.stages.len()
+    );
+    for stage in &cycle.stages {
+        eprintln!(
+            "    {:<26} {:>9} us  {:>5} ms  walk_entries={}",
+            stage.stage, stage.duration_us, stage.duration_ms, stage.walk.live_block_entries
+        );
+    }
+
+    let total_us: u64 = cycle.stages.iter().map(|stage| stage.duration_us).sum();
+    let total_ms: u64 = cycle.stages.iter().map(|stage| stage.duration_ms).sum();
+    eprintln!("  stage totals: {total_us} us against a round of {} us", cycle.duration_us);
+
+    assert!(
+        cycle.duration_us >= total_us,
+        "the microsecond rows must tile the round the way the millisecond rows do: they sum to          {total_us} us on a round that took {} us, so one interval is charged to two stages",
+        cycle.duration_us
+    );
+    assert!(
+        cycle.duration_us > 0,
+        "the round itself reported 0 us, so the microsecond clock is not running at all"
+    );
+    assert!(
+        cycle.stages.iter().any(|stage| stage.duration_us > 0),
+        "every one of the {} stage rows reports 0 us. The millisecond rows sum to {total_ms} ms on          this round, which is exactly the case this field exists for: if the round took measurable          time, at least one stage must be able to say so",
+        cycle.stages.len()
+    );
+
+    // AND WHICH STAGES SURVEY THE SHARD ON A ROUND WITH NOTHING TO DO.
+    //
+    // The walk counter is deterministic where the clock is not -- the same fixture gives the same
+    // entry count on every run, so this is assertable where a duration is not. Measured on this
+    // fixture: `plan` walks the shard once, `reclaim_wal` five times and
+    // `merged_dump_load_policy` about six, for ~12 whole-shard walks on an IDLE round, while the
+    // seven stages below walk NOTHING.
+    //
+    // Pinned as the invariant rather than as the total: these seven must not start surveying the
+    // shard. The three that do are the round's whole cost and bringing them down is its own
+    // change; a pin on the TOTAL would have to be edited by that change and would therefore guard
+    // nothing in the meantime.
+    for stage in &cycle.stages {
+        if matches!(
+            stage.stage.as_str(),
+            "plan" | "reclaim_wal" | "merged_dump_load_policy"
+        ) {
+            continue;
+        }
+        assert_eq!(
+            stage.walk.live_block_entries, 0,
+            "stage `{}` walked {} live-block entries on a round with nothing to reclaim. Only the              lifecycle plan and the two stages built on it survey the shard; a stage that starts              doing so turns an idle round into another whole-shard pass",
+            stage.stage, stage.walk.live_block_entries
+        );
+    }
 }
 
 /// A COLD RELOAD, not a synthetic apply loop: a fresh engine rebuilds the shard from disk.
@@ -13781,7 +13888,7 @@ fn the_maintained_object_index_matches_a_full_rebuild() {
         let rebuilt: crate::engine::state::ObjectIndex = bucket
             .block_index
             .iter()
-            .filter(|(_, block)| !block.deleted)
+            .filter(|(_, block)| !block.deleted())
             .map(|(handle, block)| block.object_id(1, named.at(*routing_bucket, *handle)))
             .collect();
         checked += 1;
@@ -13906,7 +14013,7 @@ fn whether_a_context_block_reaches_the_bucket_index() {
     let mut kinds: std::collections::BTreeMap<String, usize> = std::collections::BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for block in bucket.block_index.values() {
-            *kinds.entry(block.model_id.clone().to_string()).or_insert(0) += 1;
+            *kinds.entry(block.model_id().clone().to_string()).or_insert(0) += 1;
         }
     }
     // And the context keys the model map holds, so the two can be compared.
@@ -13976,7 +14083,7 @@ fn what_one_block_costs_to_index() {
         engine.execute(ExecuteRequest {
             shard_id: 1,
             command: Command::StringSet {
-                key: format!("page-cost-{index:06}"),
+                key: format!("block-cost-{index:06}"),
                 value: vec![b'v'; 64],
             },
         });
@@ -14321,7 +14428,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                 (
                     (bucket, handle.to_string()),
                     (
-                        block.model_id.to_string(),
+                        block.model_id().to_string(),
                         object_key.to_string(),
                         None::<String>,
                     ),
@@ -14351,7 +14458,7 @@ fn maintaining_the_index_during_ingest_matches_rebuilding_it() {
                 (
                     (bucket, handle.to_string()),
                     (
-                        block.model_id.to_string(),
+                        block.model_id().to_string(),
                         object_key.to_string(),
                         None::<String>,
                     ),
@@ -15994,7 +16101,7 @@ fn a_no_block_command_leaves_the_index_matching_a_rebuild() {
         let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(routing_bucket, _handle, object_key, block)| {
-                format!("{routing_bucket}|{}|{}|{}", block.model_id, object_key, "-")
+                format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
             })
             .collect();
         rows.sort();
@@ -16105,7 +16212,7 @@ fn a_no_block_command_in_a_batch_does_not_rebuild_the_index() {
         let mut rows: Vec<String> = super::blocks_with_identity(&shard.bucket_index)
             .into_iter()
             .map(|(routing_bucket, _handle, object_key, block)| {
-                format!("{routing_bucket}|{}|{}|{}", block.model_id, object_key, "-")
+                format!("{routing_bucket}|{}|{}|{}", block.model_id(), object_key, "-")
             })
             .collect();
         rows.sort();
@@ -19377,7 +19484,7 @@ fn a_released_bucket_reloads_the_exact_block_list_it_released() {
         .map(|(routing_bucket, _handle, object_key, block)| {
             (
                 routing_bucket,
-                block.model_id.to_string(),
+                block.model_id().to_string(),
                 object_key.to_string(),
                 None::<String>,
                 block.address.block_slab_id(),
@@ -21701,4 +21808,124 @@ fn raft_snapshot_slab_retention_is_decided_by_a_log_sequence_not_a_slab_id() {
         at_high, candidates.len(),
         "NON-VACUITY: at least one reading must differ from block-everything, or this test cannot distinguish the predicate from the literal true"
     );
+}
+
+/// The index-GC byte threshold is compared against the bytes that can be REMOVED, not against the
+/// size of the whole log.
+///
+/// A log is worth sweeping when enough of it is garbage, and a large log that is nearly all live
+/// has none to give. The removable-share trigger already says "enough of the records"; the byte
+/// threshold says "enough bytes to pay for the rewrite", and that has to be a count of the bytes
+/// the sweep would drop. Measured against the whole log, a 1.13 MB log that is 60% removable
+/// (about 0.68 MB) cleared a 1 MiB threshold and was swept for less than the threshold named.
+///
+/// TWO LOGS, one each side of the line, at the same removable share: the small one is past the
+/// threshold in total bytes and under it in removable bytes, which is the case the two readings
+/// disagree on; the large one is past it both ways. A threshold set to the measured figure fires,
+/// and one byte more does not.
+#[test]
+fn the_index_gc_byte_threshold_counts_removable_bytes_not_the_whole_log() {
+    struct RollingThreshold;
+    impl Drop for RollingThreshold {
+        fn drop(&mut self) {
+            crate::index_log::set_index_log_segment_bytes_for_test(None);
+        }
+    }
+
+    let threshold = crate::engine::reports::DEFAULT_INDEX_GC_INDEX_LOG_BYTES_THRESHOLD;
+    for (records, expect_fires) in [(6_000usize, false), (18_000usize, true)] {
+        let _rolling = RollingThreshold;
+        crate::index_log::set_index_log_segment_bytes_for_test(Some(
+            crate::index_log::DEFAULT_INDEX_LOG_SEGMENT_BYTES,
+        ));
+        let engine = TemporalEngine::default();
+        engine.load_shard(1);
+        let store = engine.index_log_store();
+        for value in 0..records {
+            store
+                .append_json(
+                    1,
+                    format!("{{\"value\":{value},\"pad\":\"{}\"}}", "v".repeat(160)).as_bytes(),
+                )
+                .expect("index-log append");
+        }
+        let floor = (records * 6 / 10) as u64;
+        let log_bytes = store.log_len_bytes(1);
+        let probe = |threshold: u64, dry_run: bool| {
+            engine.storage_index_gc_report(
+                &crate::engine::reports::StorageLifecyclePlan {
+                    shard_id: 1,
+                    ..crate::engine::reports::StorageLifecyclePlan::default()
+                },
+                &crate::engine::reports::StorageWalReclaimPlan {
+                    shard_id: 1,
+                    safe_to_reclaim: true,
+                    retain_from_index_log_sequence: floor,
+                    ..crate::engine::reports::StorageWalReclaimPlan::default()
+                },
+                None,
+                &crate::engine::reports::StorageManagerCycleRequest {
+                    shard_id: 1,
+                    dry_run,
+                    index_gc_index_log_bytes_threshold: threshold,
+                    ..crate::engine::reports::StorageManagerCycleRequest::default()
+                },
+            )
+        };
+
+        let measured = probe(threshold, true);
+        let removable = measured.removable_bytes_before;
+        println!(
+            "  {records:>6} records: log {log_bytes} B, removable {removable} B, share {} bp, \
+             threshold {threshold} B -> fires {}",
+            measured.usage_ratio_basis_points, measured.threshold_triggered
+        );
+
+        // DENOMINATORS. The whole log is past the threshold in BOTH arms, and the share trigger is
+        // met in both, so the only thing that can separate them is the bytes removable.
+        assert!(
+            log_bytes >= threshold,
+            "{records} records wrote {log_bytes} B, under the {threshold} B threshold: the cheap \
+             size test would skip before the comparison this test is about"
+        );
+        assert!(
+            measured.usage_ratio_triggered,
+            "{records} records: the removable-share trigger must be met in both arms, or the \
+             share and not the bytes is what separates them ({} bp)",
+            measured.usage_ratio_basis_points
+        );
+        assert!(
+            removable > 0 && removable < measured.bytes_before,
+            "removable bytes must be a part of the log: {removable} of {} B",
+            measured.bytes_before
+        );
+
+        assert_eq!(
+            measured.threshold_triggered, expect_fires,
+            "{records} records: {removable} removable bytes of a {log_bytes} B log against a \
+             {threshold} B threshold"
+        );
+        assert!(
+            probe(removable, true).threshold_triggered,
+            "a threshold equal to the removable bytes ({removable} B) must fire"
+        );
+        assert!(
+            !probe(removable + 1, true).threshold_triggered,
+            "a threshold one byte over the removable bytes ({removable} B) must not fire"
+        );
+
+        // AND THE DECISION IS THE ONE THAT ACTS. A round that is not a dry run reports the same
+        // reason the comparison gives, and sweeps exactly when the comparison fires.
+        let real = probe(threshold, false);
+        assert_eq!(
+            real.applied, expect_fires,
+            "{records} records: the sweep ran or declined against the comparison: {real:?}"
+        );
+        if !expect_fires {
+            assert_eq!(
+                real.skipped_reason, "index-log byte threshold not reached",
+                "{records} records: declined for the wrong reason"
+            );
+        }
+    }
 }

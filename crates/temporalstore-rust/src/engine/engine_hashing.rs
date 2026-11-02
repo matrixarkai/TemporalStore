@@ -161,7 +161,7 @@ pub(super) fn stable_object_hash_update_u64_decimal(hash: &mut u64, mut value: u
 ///
 /// The component USED to be folded in here, and the consequence was that an object held exactly
 /// one block: a hash of twenty-five fields was twenty-five objects that happened to share a key.
-/// #1986 recorded the result as "the object id names a page's triple, not an object" -- a
+/// #1986 recorded the result as "the object id names a block's triple, not an object" -- a
 /// description of this defect, not a property to preserve.
 ///
 /// THE PARAMETER IS REMOVED RATHER THAN IGNORED. Keeping `component: Option<&str>` and dropping

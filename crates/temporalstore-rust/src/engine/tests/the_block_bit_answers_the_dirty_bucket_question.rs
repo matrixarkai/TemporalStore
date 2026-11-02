@@ -70,7 +70,7 @@ fn by_block_bit(engine: &crate::TemporalEngine) -> BTreeSet<u32> {
         .bucket_map
         .iter()
         .filter_map(|(id, bucket)| {
-            let dirty = bucket.dirty() || bucket.block_index.values().any(|block| block.dirty);
+            let dirty = bucket.dirty() || bucket.block_index.values().any(|block| block.dirty());
             dirty.then_some(*id)
         })
         .collect()

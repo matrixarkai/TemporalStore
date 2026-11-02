@@ -76,7 +76,7 @@ fn engine_on(dir: &std::path::Path) -> TemporalEngine {
 fn load_on(engine: &TemporalEngine, end_routing_bucket: u32) {
     let response = engine.load_shard_with(crate::control::LoadShardRequest {
         shard_id: 1,
-        table_name: "flat-page-list".to_string(),
+        table_name: "flat-block-list".to_string(),
         shard_uri: "local://flat-page-list/1".to_string(),
         start_routing_bucket: 0,
         end_routing_bucket,
@@ -321,18 +321,13 @@ fn block(
 ) -> (std::sync::Arc<str>, BlockIndex) {
     (
         std::sync::Arc::from(object_key),
-        BlockIndex {
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-            address: crate::block_store::ElementEntry::from_parts(
+        BlockIndex::new(crate::engine::storage_bucket_internals::StoredModelKind::String, crate::block_store::ElementEntry::from_parts(
                 slab,
                 offset,
                 32,
                 Some(7),
                 Some(11),
-            ),
-            dirty: false,
-            deleted: false,
-        },
+            ), false, false),
     )
 }
 
@@ -1821,7 +1816,7 @@ fn the_stored_block_index_is_byte_for_byte_what_the_tree_wrote() {
     for (at, (_, entry)) in blocks.iter().enumerate() {
         let mut entry = entry.clone();
         if at == 7 {
-            entry.deleted = true;
+            entry.set_deleted(true);
         }
         injected.insert(&object_key, entry, &mut live);
     }

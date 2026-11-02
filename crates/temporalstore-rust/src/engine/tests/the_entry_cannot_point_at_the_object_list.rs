@@ -240,7 +240,7 @@ fn blocks_and_index_rows(
     for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if block.deleted || block.model_id.as_str() != kind {
+        if block.deleted() || block.model_id().as_str() != kind {
             continue;
         }
         if !keys.contains(&*object_key) {
@@ -272,7 +272,7 @@ fn blocks_of_key(engine: &TemporalEngine, kind: &str, key: &str) -> usize {
     for (_routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if !block.deleted && block.model_id.as_str() == kind && &*object_key == key {
+        if !block.deleted() && block.model_id().as_str() == kind && &*object_key == key {
             held += 1;
         }
     }
@@ -367,13 +367,21 @@ fn a_u8_ordinal_buys_nothing_over_a_u16_because_both_tails_round_the_same() {
         // holds rather than totalled as a literal, which is what makes deleting a row safe: a
         // list that stops matching the type fails at the reconstruction rather than describing a
         // structure that moved.
-        ("model_id", offset_of!(BlockIndex, model_id), size_of::<StoredModelKind>()),
+        // THE THREE PACKED FIELDS HAVE NO OFFSETS, WHICH IS WHY THEY ARE NOT LISTED.
+        //
+        // `model_id`, `dirty` and `deleted` are five bits and two bits inside the flag word
+        // `ElementEntry` lends its holder. An offset can only speak about a FIELD, so their rows
+        // are gone rather than moved -- and `offset_of!` of a field that does not exist does not
+        // compile, which is how this table refused the leg that packed them.
+        //
+        // What replaces the check for them is the same kind of claim one level down: that their
+        // bits do not collide and fit the eight borrowed, asserted beside the packed accessors in
+        // `engine_storage_state.rs`. A bit budget is to a packed field what an offset is to a
+        // declared one.
         // The `component` row is gone with the field: sixteen bytes between `model_id` and
         // `address`, and the whole of the 56 -> 40 step. The reconstruction assertion below is
         // what keeps this list honest against the type.
         ("address", offset_of!(BlockIndex, address), size_of::<ElementEntry>()),
-        ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
-        ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
     ];
     let (covered, slack) = account(&entry_fields, entry_total);
 
@@ -512,14 +520,14 @@ fn the_object_list_holds_ids_and_the_entry_already_answers_the_id_without_one() 
         for (handle, block) in &bucket.block_index {
             // Only the kind this fixture seeded, so an incidental block of another kind cannot
             // decide the assertion below.
-            if block.deleted || block.model_id.as_str() != "hash" {
+            if block.deleted() || block.model_id().as_str() != "hash" {
                 continue;
             }
             blocks_seen += 1;
             let object_key = ordinal_names.at(bucket.routing_bucket, *handle);
             // What the entry can answer WITHOUT an ordinal, from the address alone.
             let from_address = block.object_id(1, object_key);
-            let recomputed = stable_block_object_id(1, block.model_id.as_str(), object_key);
+            let recomputed = stable_block_object_id(1, block.model_id().as_str(), object_key);
             if from_address == recomputed {
                 id_already_answered += 1;
             }

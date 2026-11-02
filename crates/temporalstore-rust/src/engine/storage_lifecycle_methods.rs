@@ -897,7 +897,7 @@ impl TemporalEngine {
                 bucket.first_dirty_wal_sequence = 0;
                 bucket.first_dirty_index_log_sequence = 0;
                 for block in bucket.block_index.blocks_mut_unaccounted() {
-                    block.dirty = false;
+                    block.set_dirty(false);
                 }
             }
         }
@@ -1625,7 +1625,7 @@ impl TemporalEngine {
         //
         // Everything below this point measures the index log, and this report is built on EVERY
         // maintenance round -- every 30 s on the periodic loop -- whether or not the collector can
-        // possibly run. With the shipped defaults (`enable_index_gc: true`, a 768 KiB byte
+        // possibly run. With the shipped defaults (`enable_index_gc: true`, a 1 MiB byte
         // threshold) a shard whose index log is under that threshold paid for those measurements
         // every round purely to establish that it was never eligible.
         // `what_the_index_gc_gate_costs` measures that round.
@@ -1635,12 +1635,12 @@ impl TemporalEngine {
         // it skips even that piece walk on a log too small to collect.
         //
         // WHY THE CHEAP BYTE TEST IS SOUND, which is the part worth checking rather than
-        // assuming. `log_len_bytes` sums the on-disk length of every piece, and `bytes_before`
-        // below is now that same sum taken by `gate_summary` -- they are the SAME quantity, so
-        // this test and the one further down cannot disagree about a log. It used to be an
-        // inequality (the file length against the sum of the record frames a scan handed back,
-        // where the file can only ever be the larger), and it was sound then for that reason;
-        // it is sound now by equality. Do NOT reintroduce a second way of measuring this log.
+        // assuming. The threshold is compared further down against the REMOVABLE bytes, which
+        // are a part of the log and so can never exceed its length. `log_len_bytes` sums the
+        // on-disk length of every piece, and `bytes_before` below is that same sum taken by
+        // `gate_summary`. A log shorter than the threshold therefore cannot hold that many
+        // removable bytes, and this test declines exactly the logs the later one would.
+        // Do NOT reintroduce a second way of measuring this log.
         //
         // ONLY TWO CONDITIONS SKIP, deliberately. `dry_run` does NOT: a dry run exists to report
         // what a real round WOULD do, so it still pays for the numbers it was asked for. Nor does
@@ -1699,6 +1699,7 @@ impl TemporalEngine {
             .gate_summary(request.shard_id, wal_plan.retain_from_index_log_sequence);
         let records_before = gate.records;
         let bytes_before = gate.bytes;
+        let removable_bytes_before = gate.removable_bytes;
         let removable_records_before_budget = gate.removable_records;
         let usage_ratio_basis_points = if records_before == 0 {
             0
@@ -1706,7 +1707,7 @@ impl TemporalEngine {
             (removable_records_before_budget as u64).saturating_mul(10_000) / records_before as u64
         };
         let threshold_triggered = request.index_gc_index_log_bytes_threshold == 0
-            || bytes_before >= request.index_gc_index_log_bytes_threshold;
+            || removable_bytes_before >= request.index_gc_index_log_bytes_threshold;
         let usage_ratio_triggered = request.index_gc_usage_ratio_trigger_basis_points == 0
             || usage_ratio_basis_points >= request.index_gc_usage_ratio_trigger_basis_points;
         let dirty_buckets_committed_before_truncate = plan.selected_dump_buckets.is_empty()
@@ -1789,6 +1790,7 @@ impl TemporalEngine {
                 .map(|report| report.budget_exhausted)
                 .unwrap_or(false),
             bytes_before,
+            removable_bytes_before,
             bytes_after,
             threshold_triggered,
             usage_ratio_triggered,
@@ -1934,12 +1936,12 @@ impl TemporalEngine {
                 let mut physical_bytes = 0u64;
                 let mut dirty_object_count = 0u64;
                 for block in bucket.block_index.values() {
-                    if block.deleted {
+                    if block.deleted() {
                         continue;
                     }
                     logical_bytes = logical_bytes.saturating_add(block.address.length());
                     physical_bytes = physical_bytes.saturating_add(block.address.length());
-                    if block.dirty {
+                    if block.dirty() {
                         dirty_object_count = dirty_object_count.saturating_add(1);
                     }
                 }
@@ -2151,7 +2153,7 @@ impl TemporalEngine {
                                 let dirty = bucket
                                     .block_index
                                     .values()
-                                    .filter(|block| !block.deleted && block.dirty)
+                                    .filter(|block| !block.deleted() && block.dirty())
                                     .count() as u64;
                                 (*routing_bucket, dirty)
                             })
