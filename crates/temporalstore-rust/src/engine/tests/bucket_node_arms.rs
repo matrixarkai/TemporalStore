@@ -698,19 +698,26 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
         "an address is {} bytes, not 16",
         size_of::<crate::block_store::ElementEntry>()
     );
-    // 24, HAVING BEEN 40 AND 56: the entry stopped naming its element, and then stopped carrying
+    // 16, HAVING BEEN 24, 40 AND 56: the entry stopped naming its element, then stopped carrying
     // its object identity at all. The proposal this arm refuses -- a block's address fitting in a
     // tagged 64-bit word -- is refused by the ADDRESS being 16 bytes on its own, asserted just
     // above, so the entry's width moving does not soften it: the entry is still three words, the
     // address inside it is still two, and a 64-bit word is one.
     //
     // AND THE REFUSAL IS NOW CARRIED ENTIRELY BY THE ADDRESS, which is the thing to notice rather
-    // than the literal. The entry has shed thirty-two bytes across two changes and the refusal has
+    // than the literal. The entry has shed FORTY bytes across THREE changes and the refusal has
     // not moved an inch, because it never rested on the entry's total: 16 > 8 is the whole of it.
+    //
+    // THE THIRD CHANGE IS ALSO THE FIRST THAT TOOK NO FIELD OUT. The entry is now exactly its
+    // address -- the spelling and both flags became bits inside the flag word that address
+    // already carries -- so entry width and address width have CONVERGED. That is worth saying
+    // here because this arm's refusal reads the address, and a reader could now mistake the two
+    // pins below for one claim stated twice. They are not: the address being 16 is what refuses
+    // the tagged-word proposal, and the entry being 16 is a consequence of the packing.
     assert_eq!(
-        24,
+        16,
         size_of::<BlockIndex>(),
-        "a block entry is {} bytes, not 24",
+        "a block entry is {} bytes, not 16",
         size_of::<BlockIndex>()
     );
     assert!(
@@ -722,20 +729,14 @@ fn a_simple_bucket_holds_no_general_case_to_take_away() {
 }
 
 fn block_fixture() -> BlockIndex {
-    BlockIndex {
+    BlockIndex::new(
         // Was `"m"`, a spelling no arm of the walk emits and the registry does not declare.
         // The field's type could not say so when it was a free-form string.
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: crate::block_store::ElementEntry::from_parts(
-            1,
-            64,
-            32,
-            Some(9),
-            Some(11),
-        ),
-        dirty: false,
-        deleted: false,
-    }
+        crate::engine::storage_bucket_internals::StoredModelKind::String,
+        crate::block_store::ElementEntry::from_parts( 1, 64, 32, Some(9), Some(11), ),
+        false,
+        false,
+    )
 }
 
 // =============================================================================================
@@ -1070,16 +1071,17 @@ fn the_tagged_node_is_fifty_six_bytes_and_every_arm_reconstructs() {
         "the tagged node is {} bytes, not 56",
         size_of::<TaggedNode>()
     );
-    // 40, not 56 and not 72: this payload holds a block entry, and the entry has shed sixteen bytes
+    // 32, not 40, 56 or 72: this payload holds a block entry, and the entry has shed bytes again
     // for the second time -- it stopped naming its element, and then stopped carrying its object
     // identity -- on top of the eight its address shed with the object id. The reconstruction above
     // is symbolic and followed on its own ALL THREE times; this literal has had to be edited all
-    // three, which is the standing argument for reconstructing rather than totalling, now made by
-    // a third instance of exactly the edit it predicts.
+    // four, which is the standing argument for reconstructing rather than totalling, now made by
+    // a FOURTH instance of exactly the edit it predicts -- and this time the edit is -8 rather
+    // than -16, because the step was a tail reaching zero rather than a field departing.
     assert_eq!(
-        40,
+        32,
         size_of::<SimpleLayout>(),
-        "the simple payload is {} bytes, not 40",
+        "the simple payload is {} bytes, not 32",
         size_of::<SimpleLayout>()
     );
 

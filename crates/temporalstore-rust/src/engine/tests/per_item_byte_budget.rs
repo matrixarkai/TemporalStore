@@ -141,9 +141,13 @@ fn budget() -> Vec<Budgeted> {
             // struct -- did not fire, because 40 bytes of claimed field fit inside a 40-byte
             // struct exactly. It fires the moment the width moves, which is how this was found:
             // the sixth live instance of a decomposition that had stopped describing the type.
-            fields: size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-                + size_of::<ElementEntry>()
-                + 2 * size_of::<bool>(),
+            // AND NOW THE SUM IS THE ADDRESS AND NOTHING BESIDE IT. The three terms above are
+            // not fields of this structure any more: the spelling is five bits and the two
+            // flags are one bit each, all three inside the flag word `ElementEntry` lends its
+            // holder. Leaving them here would fire the row's own impossibility check -- 19
+            // bytes of claimed field inside a 16-byte struct -- which is the check that found
+            // the last decomposition to stop describing this type, and it would be right.
+            fields: size_of::<ElementEntry>(),
             per_item: true,
         },
         Budgeted {
@@ -373,7 +377,12 @@ fn every_per_item_structure_states_its_width_and_its_padding() {
     // -- "BlockIndex is 39, so 40 is an upper bound here" -- asserted a reachability an
     // 8-aligned type does not have. The alignments are pinned below instead, where this
     // module's own `padding()` column is taken over them.
-    assert_eq!(24, size_of::<BlockIndex>(), "BlockIndex width moved");
+    // SIXTEEN, AND IT IS THE ADDRESS EXACTLY. The 24 this read was 19 bytes of field rounded
+    // up to a multiple of eight, so five of every twenty-four were standing empty. The
+    // spelling and the two flags moved into the flag word the address already carries, which
+    // emptied the tail completely -- and a tail pays nothing until it reaches zero, because a
+    // remainder of one byte rounds up the same whole word a remainder of three does.
+    assert_eq!(16, size_of::<BlockIndex>(), "BlockIndex width moved");
     assert_eq!(24, size_of::<BlockIndexMap>(), "BlockIndexMap width moved");
     assert_eq!(96, size_of::<BucketNode>(), "BucketNode width moved");
     assert_eq!(16, size_of::<BlockLookupRef>(), "BlockLookupRef width moved");
@@ -762,7 +771,16 @@ fn only_the_structures_that_hold_an_address_moved() {
                 // address alone accounts for 8. The two name terms are named and subtracted for
                 // one reason: without them the row fails saying "something else moved with it
                 // unaccounted", which is true and reads as an address defect.
-                "BlockIndex" => 32i64,
+                //
+                // AND EIGHT MORE, WHICH IS THE TAIL AND NOT THE ADDRESS. The spelling and the
+                // two flags are no longer fields at all: five bits and two bits now sit in the
+                // flag word the address lends its holder. Those three bytes of field were
+                // nineteen inside a twenty-four-byte struct, so emptying the tail returned the
+                // whole word the aligner was rounding up to -- 24 -> 16. That is a tail, not
+                // an address, so it is named and subtracted here like the two names above it.
+                // 16 + 16 + 8 = 40, and the address claim below stays checked against a live
+                // `size_of`.
+                "BlockIndex" => 40i64,
                 _ => 0,
             };
             assert_eq!(

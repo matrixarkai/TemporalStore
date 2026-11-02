@@ -170,7 +170,7 @@ fn ids_by_object_key(engine: &TemporalEngine) -> BTreeMap<String, Vec<u64>> {
     let mut by_key: BTreeMap<String, Vec<u64>> = BTreeMap::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted {
+            if block.deleted() {
                 continue;
             }
             let Some((_, named)) = keys.live_identity(bucket.routing_bucket, *handle) else {
@@ -194,12 +194,7 @@ fn entry_named(object_key: &str, component: Option<&str>) -> (Arc<str>, BlockInd
     let object_id = stable_block_object_id(1, FIXTURE_KIND.as_str(), object_key);
     (
         Arc::from(object_key),
-        BlockIndex {
-            model_id: FIXTURE_KIND,
-            address: ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)),
-            dirty: false,
-            deleted: false,
-        },
+        BlockIndex::new(FIXTURE_KIND, ElementEntry::from_parts(9, 4_096, 96, Some(7), Some(object_id)), false, false),
     )
 }
 
@@ -654,13 +649,21 @@ fn the_entry_is_unchanged_and_the_nodes_duplicated_slot_id_is_worth_nothing() {
         // other way: `field_width` infers `T` from the field it is HANDED, so a row for a field
         // that does not exist does not compile. That is the property this list was built for and
         // this is the second field it has caught leaving.
-        ("model_id", field_width(&sample.model_id), offset_of!(BlockIndex, model_id)),
+        // THE THREE PACKED FIELDS HAVE NO OFFSETS, WHICH IS WHY THEY ARE NOT LISTED.
+        //
+        // `model_id`, `dirty` and `deleted` are five bits and two bits inside the flag word
+        // `ElementEntry` lends its holder. An offset can only speak about a FIELD, so their rows
+        // are gone rather than moved -- and `offset_of!` of a field that does not exist does not
+        // compile, which is how this table refused the leg that packed them.
+        //
+        // What replaces the check for them is the same kind of claim one level down: that their
+        // bits do not collide and fit the eight borrowed, asserted beside the packed accessors in
+        // `engine_storage_state.rs`. A bit budget is to a packed field what an offset is to a
+        // declared one.
         // The `component` row is gone with the field. `field_width` infers from the field it is
         // handed, so a row for a field that does not exist cannot be written at all -- which is
         // the property this list was built for.
         ("address", field_width(&sample.address), offset_of!(BlockIndex, address)),
-        ("dirty", field_width(&sample.dirty), offset_of!(BlockIndex, dirty)),
-        ("deleted", field_width(&sample.deleted), offset_of!(BlockIndex, deleted)),
     ];
     println!("\n=== the block entry, field by field at its REAL offset ===");
     for (name, width, offset) in &widths {

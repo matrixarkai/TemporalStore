@@ -235,8 +235,8 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
                     .block_index
                     .iter()
                     .filter(|(handle, block)| {
-                        !block.deleted
-                            && block.model_id.as_str() == "hash"
+                        !block.deleted()
+                            && block.model_id().as_str() == "hash"
                             && &**named.at(*routing_bucket, **handle) == PLANTED_KEY
                     })
                     .map(|(handle, _)| (*routing_bucket, *handle))
@@ -251,8 +251,8 @@ fn an_index_entry_marked_deleted_loses_no_field_and_is_not_counted() {
             let Some(block) = bucket.block_index.get_mut(&handle) else {
                 continue;
             };
-            if !block.deleted {
-                block.deleted = true;
+            if !block.deleted() {
+                block.set_deleted(true);
                 marked += 1;
             }
         }
@@ -309,8 +309,8 @@ fn live_hash_entries(engine: &TemporalEngine, key: &str) -> usize {
     let mut live = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if !block.deleted
-                && block.model_id.as_str() == "hash"
+            if !block.deleted()
+                && block.model_id().as_str() == "hash"
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 live += 1;
@@ -369,8 +369,8 @@ fn under_the_gate_a_hash_entry_names_no_field_so_the_divergence_is_unreachable()
         let mut live = 0usize;
         for bucket in shard.bucket_index.bucket_map.values() {
             for (handle, block) in &bucket.block_index {
-                if block.deleted
-                    || block.model_id.as_str() != "hash"
+                if block.deleted()
+                    || block.model_id().as_str() != "hash"
                     || &**named.at(bucket.routing_bucket, *handle) != PLANTED_KEY
                 {
                     continue;

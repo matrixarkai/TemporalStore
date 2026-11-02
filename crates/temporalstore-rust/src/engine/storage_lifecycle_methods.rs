@@ -909,7 +909,7 @@ impl TemporalEngine {
                 bucket.first_dirty_wal_sequence = 0;
                 bucket.first_dirty_index_log_sequence = 0;
                 for block in bucket.block_index.blocks_mut_unaccounted() {
-                    block.dirty = false;
+                    block.set_dirty(false);
                 }
             }
         }
@@ -1966,12 +1966,12 @@ impl TemporalEngine {
                 let mut physical_bytes = 0u64;
                 let mut dirty_object_count = 0u64;
                 for block in bucket.block_index.values() {
-                    if block.deleted {
+                    if block.deleted() {
                         continue;
                     }
                     logical_bytes = logical_bytes.saturating_add(block.address.length());
                     physical_bytes = physical_bytes.saturating_add(block.address.length());
-                    if block.dirty {
+                    if block.dirty() {
                         dirty_object_count = dirty_object_count.saturating_add(1);
                     }
                 }
@@ -2183,7 +2183,7 @@ impl TemporalEngine {
                                 let dirty = bucket
                                     .block_index
                                     .values()
-                                    .filter(|block| !block.deleted && block.dirty)
+                                    .filter(|block| !block.deleted() && block.dirty())
                                     .count() as u64;
                                 (*routing_bucket, dirty)
                             })

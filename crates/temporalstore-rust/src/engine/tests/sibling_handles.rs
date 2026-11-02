@@ -59,12 +59,7 @@ fn batched_block_address() -> ElementEntry {
 fn entry_at(object_key: &str, address: ElementEntry) -> (std::sync::Arc<str>, BlockIndex) {
     (
         std::sync::Arc::from(object_key),
-        BlockIndex {
-            model_id: StoredModelKind::Hash,
-            address,
-            dirty: false,
-            deleted: false,
-        },
+        BlockIndex::new(StoredModelKind::Hash, address, false, false),
     )
 }
 

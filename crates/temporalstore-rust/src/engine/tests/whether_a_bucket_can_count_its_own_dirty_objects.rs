@@ -138,7 +138,7 @@ fn derived_distinct_objects(shard: &crate::engine::state::ShardState) -> BTreeMa
     for (routing_bucket, _handle, object_key, block) in
         super::blocks_with_identity(&shard.bucket_index)
     {
-        if block.dirty {
+        if block.dirty() {
             per_bucket
                 .entry(routing_bucket)
                 .or_default()
@@ -170,7 +170,7 @@ fn node_state(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, (bool, 
 fn derived_dirty_blocks(shard: &crate::engine::state::ShardState) -> BTreeMap<u32, u64> {
     let mut per_bucket: BTreeMap<u32, u64> = BTreeMap::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
-        let dirty = bucket.block_index.values().filter(|block| block.dirty).count() as u64;
+        let dirty = bucket.block_index.values().filter(|block| block.dirty()).count() as u64;
         if dirty > 0 {
             per_bucket.insert(*routing_bucket, dirty);
         }

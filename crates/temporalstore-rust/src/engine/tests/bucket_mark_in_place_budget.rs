@@ -127,9 +127,13 @@ fn the_break_even_compaction_cap_is_under_one_entry_per_bucket() {
     // `size_of::<BlockAddress>()`, so a scan for a stale address width could not see it, and
     // `cargo check` cannot see an `assert_eq!` in a test body. It failed on the first run of the
     // suite, which is the only thing that could have found it.
-    assert_eq!(entry, 24, "the block entry moved; re-price the retained-entry cost");
+    // SIXTEEN, AND THE RE-PRICING THIS MESSAGE ASKS FOR IS THE LINE BELOW: a retained entry now
+    // costs a 24-byte stride rather than 32, so one retained entry per bucket is three words
+    // instead of four. The comment above is right that only RUNNING this could have found it --
+    // the assertion names no literal beside `size_of`, so no width scan could see it.
+    assert_eq!(entry, 16, "the block entry moved; re-price the retained-entry cost");
     assert_eq!(
-        stride, 32,
+        stride, 24,
         "the retained-entry stride is {stride}; the cap arithmetic below prices one retained entry \
          at the stride and not at the entry, so a stride that moves without the entry means the \
          pair above has drifted"

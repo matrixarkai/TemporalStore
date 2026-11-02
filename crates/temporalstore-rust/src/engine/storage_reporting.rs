@@ -546,7 +546,7 @@ pub(super) fn storage_physical_index_report(
             };
             let already_present = bucket.block_indexes.iter().any(|existing| {
                 existing.object_key.as_str() == beside.object_key.as_ref()
-                    && existing.model_id.as_str() == block.model_id.as_str()
+                    && existing.model_id.as_str() == block.model_id().as_str()
                     // THE COMPONENT TERM IS DROPPED AS A TAUTOLOGY. It compared
                     // `existing.component` against `block.component`; the report row's component
                     // is filled from an index entry and an index entry has no element name, so
@@ -560,7 +560,7 @@ pub(super) fn storage_physical_index_report(
             }
             let mut block_index = StoragePhysicalBlockIndex {
                 object_key: beside.object_key.to_string(),
-                model_id: block.model_id.clone().to_string(),
+                model_id: block.model_id().clone().to_string(),
                 // `None`, AND THE REPORT'S SLOT IS KEPT. `StoragePhysicalBlockIndex::component` is
                 // a PUBLIC field of a serialized report, so retiring it is a schema change and not
                 // part of a width step; it is filled from an index entry, and an index entry names
@@ -575,8 +575,8 @@ pub(super) fn storage_physical_index_report(
                 object_id: Some(block.object_id(shard_id, beside.object_key)),
                 stored_slab_id: block.address.slab_id(),
                 checksum: None,
-                dirty: block.dirty,
-                deleted: block.deleted,
+                dirty: block.dirty(),
+                deleted: block.deleted(),
                 log_backed: block.log_backed(),
                 native_packed_block_index_len: NATIVE_PACKED_BLOCK_INDEX_SIZE,
                 native_packed_block_index_hex: String::new(),

@@ -187,12 +187,12 @@ fn a_folded_blocks_membership_now_states_the_member_the_live_index_no_longer_nam
     let named = super::BlockObjects::of(&shard.bucket_index);
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != "folded"
             {
                 continue;
             }
-            if block.deleted {
+            if block.deleted() {
                 tombstone_entries += 1;
             } else {
                 live_entries += 1;

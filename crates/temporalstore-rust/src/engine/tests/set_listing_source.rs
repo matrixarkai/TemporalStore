@@ -127,12 +127,12 @@ fn block_and_entry_counts(
     let mut tombstoned = 0usize;
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
             }
-            if block.deleted {
+            if block.deleted() {
                 tombstoned += 1;
                 continue;
             }
@@ -160,7 +160,7 @@ fn components_the_blocks_still_state(
     let mut stated = std::collections::BTreeSet::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
             {
                 continue;
@@ -201,9 +201,9 @@ fn live_block_addresses(engine: &TemporalEngine, object_key: &str) -> Vec<Elemen
     let mut addresses = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.model_id.as_str() != "set"
+            if block.model_id().as_str() != "set"
                 || &**named.at(bucket.routing_bucket, *handle) != object_key
-                || block.deleted
+                || block.deleted()
             {
                 continue;
             }
@@ -268,9 +268,9 @@ fn drop_live_entries(engine: &TemporalEngine, object_key: &str, how_many: usize)
                 &mut shard.bucket_index.block_slab_live,
                 crate::engine::state::StaleCause::Removed,
                 |handle, block| {
-                let mine = block.model_id.as_str() == "set"
+                let mine = block.model_id().as_str() == "set"
                     && &**named.at(routing_bucket, *handle) == object_key
-                    && !block.deleted;
+                    && !block.deleted();
                 if mine && dropped < how_many {
                     dropped += 1;
                     return false;

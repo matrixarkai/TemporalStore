@@ -4351,14 +4351,14 @@ fn deep_compare_the_index_a_reconstruct_produces() {
                 rows.push(format!(
                     "{routing_bucket}|{field_key}|{}|{}|{:?}|{}|{}|{}|{}|{}|{}|{}|{}",
                     object_key,
-                    block.model_id,
+                    block.model_id(),
                     None::<std::sync::Arc<str>>,
                     block.object_id(1, object_key),
                     block.address.block_slab_id(),
                     block.address.offset(),
                     block.address.length(),
-                    block.dirty,
-                    block.deleted,
+                    block.dirty(),
+                    block.deleted(),
                     block.log_backed(),
                     bucket.layout as u8 as u32,
                 ));

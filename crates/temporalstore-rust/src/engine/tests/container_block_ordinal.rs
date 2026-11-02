@@ -146,10 +146,10 @@ fn blocks_of(engine: &TemporalEngine, kind: &str, key: &str) -> Vec<Option<u64>>
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted {
+            if block.deleted() {
                 continue;
             }
-            if block.model_id.as_str() == kind
+            if block.model_id().as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 held.push(block.address.block_id());
@@ -179,8 +179,8 @@ fn tombstone_blocks_of(
     let mut held = Vec::new();
     for bucket in shard.bucket_index.bucket_map.values() {
         for (handle, block) in &bucket.block_index {
-            if block.deleted
-                && block.model_id.as_str() == kind
+            if block.deleted()
+                && block.model_id().as_str() == kind
                 && &**named.at(bucket.routing_bucket, *handle) == key
             {
                 held.push((

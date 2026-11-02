@@ -185,7 +185,7 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
     let mut blocks = Vec::new();
     for (routing_bucket, bucket) in &shard.bucket_index.bucket_map {
         for (handle, block) in bucket.block_index.iter() {
-            if block.model_id.as_str() != "zset" {
+            if block.model_id().as_str() != "zset" {
                 continue;
             }
             blocks.push(ZsetBlock {
@@ -200,8 +200,8 @@ fn zset_blocks(engine: &TemporalEngine) -> Vec<ZsetBlock> {
                 // are restated where they are read.
                 component: String::new(),
                 address: block.address.clone(),
-                dirty: block.dirty,
-                deleted: block.deleted,
+                dirty: block.dirty(),
+                deleted: block.deleted(),
                 log_backed: block.log_backed(),
             });
         }
@@ -342,18 +342,11 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
         // ONE BYTE since #1974, not a sixteen-byte fat pointer. The compiler did NOT catch this
         // line when the field's type changed -- `size_of` of the wrong type still compiles -- so
         // the reconstruction assertion below is what caught it, which is the reason it exists.
-        (
-            "model_id",
-            offset_of!(BlockIndex, model_id),
-            size_of::<crate::engine::storage_bucket_internals::StoredModelKind>(),
-        ),
         // THE `component` ROW IS GONE WITH THE FIELD -- sixteen bytes of fat pointer between
         // `model_id` and `address`, which is the whole of the 56 -> 40 step. The reconstruction
         // assertion below is what makes removing the row safe: a row that no longer matches a
         // field fails there rather than silently describing a type that moved.
         ("address", offset_of!(BlockIndex, address), size_of::<crate::block_store::ElementEntry>()),
-        ("dirty", offset_of!(BlockIndex, dirty), size_of::<bool>()),
-        ("deleted", offset_of!(BlockIndex, deleted), size_of::<bool>()),
     ];
     let (index_covered, index_padding) = account(&index_fields, index_total);
 
@@ -432,12 +425,47 @@ fn every_byte_of_a_zset_members_index_shadow_is_accounted_for() {
         .filter(|(name, _, _)| matches!(*name, "dirty" | "deleted"))
         .map(|(_, _, width)| *width)
         .sum();
+    // THE FLAGS CONTRIBUTE ZERO BYTES OF FIELD, AND THE VACUITY GUARD WAS RIGHT TO SAY SO.
+    //
+    // It asserted `flag_bytes > 0` so that the packing arithmetic below could not compare the
+    // struct's width against itself. The filter looks for `dirty` and `deleted` BY NAME in the
+    // field table, and neither is a field any more: they are one bit each inside the flag word
+    // the address lends its holder. So the guard fired on exactly the condition it was written
+    // for -- its subject disappeared -- rather than on a defect.
+    //
+    // The claim is restated as the zero it now is, and the NON-VACUITY check moves to the term
+    // that still exists: the table must still find the address. Without that, a table that stopped
+    // enumerating anything would make every row below vacuous in a way no `> 0` on a departed
+    // field could catch.
+    let address_bytes: usize = index_fields
+        .iter()
+        .filter(|(name, _, _)| *name == "address")
+        .map(|(_, _, width)| *width)
+        .sum();
     assert!(
-        flag_bytes > 0,
+        address_bytes > 0,
+        "VACUITY: no address field was found in the table by name, so this budget is enumerating"
+    );
+    assert_eq!(
+        0, flag_bytes,
+        "the flags are back to being FIELDS of this structure, worth {flag_bytes} B, so the"
+    );
+    assert!(
+        address_bytes > 0,
         "VACUITY: no flag field was found in the table by name, so the assertion below would be \
          comparing the struct's width against itself"
     );
-    let with_flags_packed = index_covered - flag_bytes + 1;
+    // WITH NO FLAG BYTES THERE IS NOTHING TO PACK, so the packed width IS the current width.
+    //
+    // The `- flag_bytes + 1` form assumes a byte is being ADDED to replace the ones removed. At
+    // zero flags that adds a byte to a structure that lost none, so it reported the struct
+    // growing 16 -> 24 and concluded that packing WOULD now reclaim a byte -- the opposite of
+    // the truth, from arithmetic that no longer had a subject.
+    let with_flags_packed = if flag_bytes == 0 {
+        index_covered
+    } else {
+        index_covered - flag_bytes + 1
+    };
     assert_eq!(
         with_flags_packed.div_ceil(word) * word,
         index_total,

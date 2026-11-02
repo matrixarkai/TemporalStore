@@ -102,7 +102,7 @@ pub(super) fn runtime_report(shard: &ShardState) -> BucketStoreRuntimeReport {
             report.ttl_bucket_count = report.ttl_bucket_count.saturating_add(1);
         }
         report.max_dirty_generation = report.max_dirty_generation.max(bucket.dirty_generation);
-        let deleted_block_ref_count = bucket.block_index.values().filter(|block| block.deleted).count();
+        let deleted_block_ref_count = bucket.block_index.values().filter(|block| block.deleted()).count();
         report.deleted_block_ref_count = report
             .deleted_block_ref_count
             .saturating_add(deleted_block_ref_count);
@@ -198,8 +198,8 @@ pub(super) fn bucket_index_block_address(
             let Some(block) = bucket.block_index.get(&block_ref.block_ref_key) else {
                 continue;
             };
-            if !block.deleted
-                && block.model_id.as_str() == model_id
+            if !block.deleted()
+                && block.model_id().as_str() == model_id
                 // THE IDENTITY IS NOT RE-COMPARED -- see the note above this function on why a
                 // block reached through its own object's ref list has already been matched on it.
                 //
@@ -274,7 +274,7 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
             else {
                 continue;
             };
-            if block.model_id.as_str() == model_id {
+            if block.model_id().as_str() == model_id {
                 addresses.push(block.address.clone());
             }
         }
@@ -288,7 +288,7 @@ pub(super) fn bucket_index_all_block_addresses_with_tombstones(
             // identity. Bounded by the removals this bucket has seen, against the whole-shard block
             // walk it replaces.
             if let Some(block) = bucket.block_index.values().find(|block| {
-                block.deleted
+                block.deleted()
                     && crate::engine::state::tombstone_block_key(&block.address) == row.block
             }) {
                 addresses.push(block.address.clone());
@@ -309,7 +309,7 @@ pub(super) fn bucket_index_component_block_addresses(
             .filter_map(|block_ref| {
                 let bucket = shard.bucket_index.bucket_map.get(&block_ref.routing_bucket)?;
                 let block = bucket.block_index.get(&block_ref.block_ref_key)?;
-                if !block.deleted && block.model_id.as_str() == model_id {
+                if !block.deleted() && block.model_id().as_str() == model_id {
                     // `None` IN THE FIRST SLOT, AND THAT SLOT IS NOW DEAD ON BOTH ARMS -- said
                     // here rather than left to be rediscovered. `released_component_block_addresses`
                     // already hardcodes `(None, address)`, and this arm's `block.component` was

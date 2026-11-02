@@ -136,7 +136,7 @@ fn live_blocks(shard: &ShardState) -> usize {
             bucket
                 .block_index
                 .values()
-                .filter(|block| !block.deleted)
+                .filter(|block| !block.deleted())
                 .count()
         })
         .sum()

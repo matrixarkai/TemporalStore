@@ -226,10 +226,9 @@ const _: () = assert!(align_of::<TheIdCarriedAsAFieldInstead>() == 8);
 /// the case.
 #[allow(dead_code)]
 struct TheLiveEntryForComparison {
-    model_id: StoredModelKind,
+    // ONE FIELD: the other three became bits in the flag word the address lends its holder, so a
+    // mirror cannot declare them and still mirror the live entry.
     address: ElementEntry,
-    dirty: bool,
-    deleted: bool,
 }
 
 const _: () = assert!(size_of::<TheLiveEntryForComparison>() == size_of::<BlockIndex>());
@@ -261,13 +260,13 @@ const _: () = assert!(size_of::<TheLiveEntryWithOneWordTooMany>() != size_of::<B
 /// zero claim was true OF THE MIRROR and of nothing else.
 #[allow(dead_code)]
 struct TheEntryWithNoIdentityTerm {
-    model_id: StoredModelKind,
+    // ONE FIELD: the other three became bits in the flag word the address lends its holder, so a
+    // mirror cannot declare them and still mirror the live entry.
     address: ElementEntry,
-    dirty: bool,
-    deleted: bool,
 }
 
-const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == 24);
+// SIXTEEN, because the entry this mirrors has no tail left to round up.
+const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == 16);
 
 /// AND THIS MIRROR IS NOW THE LIVE ENTRY, WHICH IS ASSERTED RATHER THAN LEFT TO BE NOTICED.
 ///
@@ -288,8 +287,16 @@ const _: () = assert!(size_of::<TheEntryWithNoIdentityTerm>() == size_of::<Block
 /// The map arm holds the key beside the entry either way, so this is what a block costs resident.
 /// It was 48 with the identity on the entry and the proposal's side was 32; the identity left and
 /// the live element IS 32. The second assertion of this pair is the equality above.
-const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
-const _: () = assert!(size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 32);
+// THE STRIDE IS 24 NOW, AND IT IS WRITTEN AS THE SUM OF ITS PARTS.
+//
+// `== 32` was a handle plus an entry that carried a three-byte tail. The tail is empty, so the
+// entry is its address and the stride is the handle plus that. Spelled as the sum because the
+// 24 is a consequence: a literal would pass if the handle widened while the entry shrank.
+const _: () =
+    assert!(size_of::<(u64, BlockIndex)>() == size_of::<u64>() + size_of::<BlockIndex>());
+const _: () = assert!(size_of::<(u64, BlockIndex)>() == 24);
+// TWENTY-FOUR, like the live pair: the mirror lost its tail with the entry it mirrors.
+const _: () = assert!(size_of::<(u64, TheEntryWithNoIdentityTerm)>() == 24);
 
 /// PER OBJECT, TOTAL AGAINST TOTAL. What a persisted key-to-id map holds for one object, payload
 /// only: one shared pointer to the characters and one id.
@@ -349,7 +356,10 @@ fn an_assigned_durable_id_is_priced_and_the_numbers_are_reconstructed_from_the_t
     println!("  the proposal is worse by              {:>3} B   and that is a FLOOR", proposal_per_object - today_per_object);
 
     assert_eq!(size_of::<TheIdCarriedAsAFieldInstead>(), 32);
-    assert_eq!(size_of::<TheEntryWithNoIdentityTerm>(), 24);
+    // SIXTEEN: this mirror is the entry with its identity term gone, and that entry is now its
+    // address alone -- the spelling and both flags are bits in the word the address lends its
+    // holder, so there is no tail for the mirror to carry either.
+    assert_eq!(size_of::<TheEntryWithNoIdentityTerm>(), 16);
     assert!(
         proposal_per_object > today_per_object,
         "the per-object total is the denominator this proposal loses in"
@@ -446,7 +456,14 @@ const _: fn(&crate::engine::state::ShardState) -> Vec<crate::engine::storage_buc
 /// SO THE CLAIM IS STATED AS THE TWO WIDTHS IT IS ABOUT. The element was 48 and is 32; the sixteen
 /// is the shared pointer that left, which is pinned as a term rather than as a subtraction. A
 /// reader who wants the saving reads it off the pair.
-const _: () = assert!(size_of::<(u64, BlockIndex)>() == 32);
+// THE STRIDE IS 24 NOW, AND IT IS WRITTEN AS THE SUM OF ITS PARTS.
+//
+// `== 32` was a handle plus an entry that carried a three-byte tail. The tail is empty, so the
+// entry is its address and the stride is the handle plus that. Spelled as the sum because the
+// 24 is a consequence: a literal would pass if the handle widened while the entry shrank.
+const _: () =
+    assert!(size_of::<(u64, BlockIndex)>() == size_of::<u64>() + size_of::<BlockIndex>());
+const _: () = assert!(size_of::<(u64, BlockIndex)>() == 24);
 const _: () = assert!(size_of::<Arc<str>>() == 16);
 
 // =================================================================================================

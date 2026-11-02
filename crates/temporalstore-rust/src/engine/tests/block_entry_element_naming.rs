@@ -528,12 +528,18 @@ fn the_shard_index_writes_a_durable_map_for_all_four_container_kinds() {
 /// 48 by holding BOTH names one word each and declined it on soundness; this mirror reaches it by
 /// dropping one field, which is the step #2005 named.
 #[allow(dead_code)]
+/// THE LIVE SHAPE, which is what this arm reconstructs. It was carrying two readings at once.
+///
+/// It modelled 'the live entry minus its component' AND 'the historical three-bool tail', and
+/// those agreed for as long as the live entry HAD a three-bool tail. The packing separated them:
+/// the spelling and both flags are bits in the word the address lends its holder, so the live
+/// entry is its address alone and the two readings differ by a whole word.
+///
+/// This arm is named for reconstructing the live entry and its stride, so it keeps the live
+/// reading. The historical three-bool tail is modelled by the mirrors in `blocks_per_bucket`,
+/// which compare against each other rather than against the live type.
 struct MirrorEntryNoComponent {
-    model_id: StoredModelKind,
     address: ElementEntry,
-    dirty: bool,
-    deleted: bool,
-    log_backed: bool,
 }
 
 fn round_up_to_eight(bytes: usize) -> usize {
@@ -554,10 +560,13 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // reconstruction read `+ size_of::<Option<Arc<str>>>()` for the component and came to 56;
     // without it, 35; without the key's sixteen-byte fat pointer, NINETEEN, which rounds to the
     // twenty-four the live type measures.
-    let live_fields = size_of::<StoredModelKind>() // model_id
-        + size_of::<ElementEntry>()                  // address
-        + 2 * size_of::<bool>()                      // dirty, deleted
-        ;
+    // THE SUM IS THE ADDRESS ALONE NOW, and the terms below it are not fields of this type any
+    // more: the spelling is five bits and the two flags are one bit each, all three inside the
+    // flag word that `ElementEntry` lends its holder. Leaving them in a sum of FIELDS is exactly
+    // the defect the comment below describes -- a decomposition that kept adding bytes for terms
+    // 65c7fc562 had retired, and passed because both values rounded to the same word. This time
+    // the rounding does NOT hide it: 19 rounds to 24 and the type is 16.
+    let live_fields = size_of::<ElementEntry>(); // address -- and nothing beside it
     // THE `kind` AND `routing_bucket` TERMS ARE GONE FROM THIS SUM TOO, and they were a SEVENTH
     // live instance of a decomposition that had stopped describing the type: `65c7fc562` retired
     // both from `BlockIndex` and this sum kept adding their five bytes. It passed because forty and
@@ -588,15 +597,23 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // the step down from was that PLUS the key's own sixteen-byte fat pointer, which left on the
     // next leg -- so 56 is still the right number for the entry this module was written against,
     // and it is reconstructed from the types rather than left as a literal nobody can check.
+    // THIRTY-TWO, BECAUSE THE FIELD SET SHRANK UNDER THE NAME SLOT. Today's field set is the
+    // address alone at 16, and a name slot adds 16, so an entry carrying one again lands exactly
+    // on 32 with nothing to round. It was 40 when the field set was 19 and the sum rounded up.
+    // Derived from the types either way; this literal is the part that moves.
     assert_eq!(
-        40,
+        32,
         round_up_to_eight(live_fields + component_width),
         "the entry with a name slot added back is {} B, not the forty today's field set plus a \
          name slot comes to",
         round_up_to_eight(live_fields + component_width)
     );
+    // FORTY-EIGHT, NOT FIFTY-SIX: the baseline this module measures its step DOWN from moved with
+    // the entry. The saving it reports is a DIFFERENCE, so quoting the old base makes the
+    // difference wrong even when the step is right -- which is the failure this arm's own message
+    // names. Derived two assertions above; this literal is what has to follow it.
     assert_eq!(
-        56,
+        48,
         round_up_to_eight(live_fields + component_width + size_of::<Arc<str>>()),
         "the entry this module measured the step DOWN from is {} B, not the 56 it quotes -- so \
          the saving it reports is against the wrong baseline",
@@ -617,7 +634,12 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // change. The field is off the mirror now. Its `log_backed` bool is a fourth term the live
     // entry does not carry either; that one is deliberate and predates this change, because the
     // flag was a field when the mirror was written and the tail it models is the three-bool one.
-    let mirror_fields = live_fields;
+    // THE MIRROR'S OWN SHAPE, NOT THE LIVE ONE. The paragraph above says the mirror DELIBERATELY
+    // keeps a `log_backed` bool and models the three-bool tail, so it is a historical shape by
+    // design. Aliasing its field sum to `live_fields` was fine while the two agreed and silently
+    // became a claim about a different struct when the live entry's tail reached zero: 16 B of
+    // field reconstructing to 16 against a mirror that is still 24.
+    let mirror_fields = size_of::<ElementEntry>();
     assert_eq!(
         round_up_to_eight(mirror_fields),
         size_of::<MirrorEntryNoComponent>(),
@@ -658,7 +680,7 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // `MirrorEntryNoComponent`; the component left and they converged on 40; the IDENTITY then
     // left as well and they converged again on 24. The mirror had to lose its own `object_key` to
     // follow, which the convergence equality above is what caught.
-    assert_eq!(24, size_of::<BlockIndex>(), "the entry pin moved");
+    assert_eq!(16, size_of::<BlockIndex>(), "the entry pin moved");
     // THE `!= 39` AND `!= 41` PARTNERS ARE GONE, dominated by the equality above them, which
     // panics first and so left them unreachable on every change that could have fired them.
     // The width is also pinned as a const beside `BlockIndex` in `engine_storage_state.rs`, with the alignment
@@ -669,13 +691,22 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // the same two words, because 8 + 24 lands on a multiple of eight with no rounding to
     // absorb any of it. This is the pin the module doc calls the one that can still move, and
     // it is reconstructed from the width above rather than quoted beside it.
-    assert_eq!(32, live_stride, "the stride pin moved");
+    // TWENTY-FOUR, AND THE STRIDE MOVED WITH THE ENTRY AGAIN. An element is a handle plus an
+    // entry: 8 + 16 = 24, which lands on a multiple of eight with no rounding to absorb any of
+    // it, exactly as 8 + 24 = 32 did before. So the element went 48 -> 32 -> 24 across two entry
+    // changes, and this is the pin the module doc calls the one that can still move -- moving.
+    assert_eq!(24, live_stride, "the stride pin moved");
     assert_eq!(
-        24,
+        16,
         size_of::<MirrorEntryNoComponent>(),
         "the component-less entry is not 24"
     );
-    assert_eq!(32, mirror_stride, "the component-less stride is not 32");
+    // TWENTY-FOUR, AND THIS IS THE THIRD PIN IN THIS ARM THAT THE ENTRY DRAGGED WITH IT. The
+    // mirror is the live field set with the name slot left out, and the live field set is now the
+    // address word alone -- so the mirror is 16 and its stride 8 + 16 = 24, the same as the live
+    // one. The equality two assertions below is the claim; these two literals only say where both
+    // sides landed, and they land together because the mirror and the live entry are one shape.
+    assert_eq!(24, mirror_stride, "the component-less stride is not 24");
 
     // THE STEP IS NOW ZERO, AND THAT IS THE STEP BEING TAKEN RATHER THAN BEING WORTHLESS.
     //
@@ -698,8 +729,13 @@ fn the_entry_and_its_stride_are_reconstructed_from_the_fields_not_quoted() {
     // entry gives forty, and a handle plus forty strides at forty-eight. The sixty-four this
     // module quoted its eight bytes a block against was that plus the key's own sixteen, which
     // left on the next leg -- and that baseline is pinned from the types two assertions above.
+    // FORTY NOW, BECAUSE THE BASELINE MOVED AGAIN. The comment above already records this going
+    // 64 -> 48 when the key left the entry; it is 48 -> 40 now that the tail reached zero. Today's
+    // field set is 16, a name slot adds 16 to make 32, and a handle plus that strides at 40.
+    // Derived from the types rather than quoted, so the next baseline move follows on its own --
+    // this literal is the only part that has had to be edited each time.
     assert_eq!(
-        48,
+        40,
         round_up_to_eight(size_of::<u64>() + round_up_to_eight(live_fields + component_width)),
         "the stride of an entry with a name slot added back is {} B, not the 48 the per-block \
          saving was quoted against",
@@ -805,12 +841,7 @@ fn a_hash_block_naming_no_field_is_skipped_while_a_genuine_empty_field_name_is_k
     // The block entry first. `component` is `skip_serializing_if = "Option::is_none"`, so a `None`
     // leaves the key out entirely and reads back as `None` -- an absent component round-trips as a
     // STABLE shape rather than as damage.
-    let nameless_entry = BlockIndex {
-        model_id: stored_model_kind("hash"),
-        address: ElementEntry::default(),
-        dirty: false,
-        deleted: false,
-    };
+    let nameless_entry = BlockIndex::new(stored_model_kind("hash"), ElementEntry::default(), false, false);
     let encoded = serde_json::to_string(&crate::engine::state::BlockEntryAt {
         block: &nameless_entry,
     })
@@ -1418,12 +1449,12 @@ fn the_stored_block_handle_decides_nothing_the_fold_files() {
                     // that still holds it, so the census row is unchanged. The object
                     // key is the same move one field later.
                     bucket.routing_bucket,
-                    block.model_id.as_str().to_string(),
+                    block.model_id().as_str().to_string(),
                     named.at(bucket.routing_bucket, *allocated).as_ref().to_string(),
                     block.address.block_slab_id(),
                     block.address.offset(),
                     block.address.length(),
-                    block.deleted,
+                    block.deleted(),
                     *allocated,
                 ));
             }

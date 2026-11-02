@@ -378,12 +378,7 @@ fn an_entry_names_its_object_from_its_own_terms() {
     use std::sync::Arc;
 
     let entry_key: Arc<str> = Arc::from("named-key");
-    let entry = BlockIndex {
-        model_id: stored_model_kind("string"),
-        address: ElementEntry::from_parts(1, 2, 3, Some(4), None),
-        dirty: false,
-        deleted: false,
-    };
+    let entry = BlockIndex::new(stored_model_kind("string"), ElementEntry::from_parts(1, 2, 3, Some(4), None), false, false);
     // THE DERIVATION IS THE AUTHORITY, and this compares against it rather than against a second
     // copy -- there is no second copy, which is the change being recorded.
     let expected = crate::engine::hashing::stable_block_object_id(1, "string", "named-key");

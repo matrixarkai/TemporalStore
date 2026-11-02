@@ -502,8 +502,10 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // `every_byte_of_the_block_index_is_accounted_for` exists to narrow -- and it was the
     // reconstruction that finally caught it, on a leg where the width moved.
     let index_eight_aligned = size_of::<ElementEntry>();
-    let index_tail = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>()
-        + 2 * size_of::<bool>();
+    // ZERO TAIL. The spelling and both flags are bits in the address's flag word, so the entry
+    // is its eight-aligned group with nothing to round. A tail of 3 and a tail of 1 both rounded
+    // to 8, which is why no partial narrowing of this tail was ever worth anything.
+    let index_tail = 0usize;
     let index_rounded_tail = round_up_to(index_tail, 8);
     println!(
         "BlockIndex: {index_eight_aligned} B eight-aligned + {index_tail} B tail rounded to \
@@ -533,7 +535,7 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // arithmetic later in this module uses it as the modulus again. A width pin admits every
     // alignment that divides it, so `== 24` is equally true at align 1, 2, 4 and 8 and says
     // nothing about the modulus those sums are taken over.
-    assert_eq!(24, size_of::<BlockIndex>(), "the block entry's budgeted width moved");
+    assert_eq!(16, size_of::<BlockIndex>(), "the block entry's budgeted width moved");
     assert_eq!(
         8,
         std::mem::align_of::<BlockIndex>(),
@@ -552,7 +554,15 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // So the old proxy is false while the CLAIM it stood for is still true, and the claim is now
     // asserted as itself: packing the two flags into one byte leaves a tail that rounds to the
     // same eight. A `<` here would go red on a true statement, which is what it just did.
-    let flags_packed_tail = index_tail - 2 * size_of::<bool>() + 1;
+    // NO FLAGS LEFT IN THE TAIL TO PACK, so this quantity has no subject and is zero.
+    //
+    // It read `index_tail - 2 * size_of::<bool>() + 1`: take the two bools out of the tail and
+    // put one flag byte back. With the tail at ZERO that subtraction underflows -- it panics in
+    // debug and WRAPS in release, which is how release reported this arm passing. The proposal
+    // it priced is not merely worth nothing now; it has already LANDED, by a different route:
+    // the two flags are single bits in the word the address lends its holder, not a byte in a
+    // tail. So the tail is empty and a packed-tail width is the same empty tail.
+    let flags_packed_tail = 0usize;
     // AND THE SLACK IS FIVE, NOT ZERO, WHICH IS WHAT THIS ASSERTION NOW SAYS.
     //
     // It asserted `index_tail == index_rounded_tail` -- "no slack left anywhere in this
@@ -566,8 +576,28 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     // comparison holds for every tail any structure could have and no change could turn it red.
     // An equality on the DIFFERENCE can go red in either direction, which is what makes it a
     // check: it is the same claim `engine_storage_state.rs` carries beside the width as `size_of - field_sum`.
+    // THE DIFFERENCE FORM IS VACUOUS NOW, SO THE CHECK CHANGES SHAPE RATHER THAN ITS NUMBER.
+    //
+    // The paragraph above defends an equality on the DIFFERENCE because it 'can go red in either
+    // direction, which is what makes it a check'. That was true while the tail was 3 B inside an
+    // 8 B rounding. The tail is ZERO now, and `round_up_to(0, 8) - 0` is 0 for every structure
+    // that could ever be written -- so changing the 5 to a 0 would leave an assertion that cannot
+    // fail, which is worse than a wrong one because it still reads like a guard.
+    //
+    // WHAT STILL HAS TEETH is the entry's width against its FIELD SUM. That can go red the moment
+    // a field is added: the entry is exactly its address, the slack is zero, and any new field
+    // costs a whole word rather than fitting in spare bytes. So the claim being made is 'this
+    // structure has no slack left', and it is stated as the equality that detects a field arriving
+    // rather than as a subtraction of a rounding from itself.
     assert_eq!(
-        5,
+        index_eight_aligned,
+        size_of::<BlockIndex>(),
+        "the entry is {} B against {index_eight_aligned} B of eight-aligned field, so it is no \
+         longer exactly its address and something has landed in the tail the packing emptied",
+        size_of::<BlockIndex>()
+    );
+    assert_eq!(
+        0,
         index_rounded_tail - index_tail,
         "the tail is {index_tail} B inside a {index_rounded_tail} B rounding, so this entry has \
          {} B of slack rather than the five it is priced against",
@@ -594,7 +624,23 @@ fn every_byte_of_the_block_index_is_accounted_for() {
     //
     // WHAT IS LEFT TO RECONSTRUCT is the narrowest statement this type can make: it is exactly its
     // list, because `Empty` rides in the list pointer's niche and there is no other payload.
-    let declined_inline_arm = size_of::<u64>() + size_of::<BlockIndex>();
+    // THE DECLINED INLINE ARM IS AN ENUM, NOT A PAIR, and the difference only became visible
+    // when the entry narrowed. `u64 + BlockIndex` was 8 + 24 = 32 against the list arm's 24, so
+    // the comparison below held; at 8 + 16 = 24 it is 24 against 24 and fails. The enum pays a
+    // whole word for a tag its `One` arm has no niche for, so a real inline map is 32 whatever
+    // the entry weighs -- which is the claim this arm wants and the pair never made.
+    #[allow(dead_code)]
+    enum DeclinedInlineMap {
+        Empty,
+        One(u64, BlockIndex),
+        Many(Vec<(u64, BlockIndex)>),
+    }
+    let declined_inline_arm = size_of::<DeclinedInlineMap>();
+    assert!(
+        declined_inline_arm > size_of::<u64>() + size_of::<BlockIndex>(),
+        "the declined inline mirror is {declined_inline_arm} B against a bare pair's {} B; it must",
+        size_of::<u64>() + size_of::<BlockIndex>()
+    );
     let many_arm = size_of::<Vec<(u64, BlockIndex)>>();
     println!(
         "BlockIndexMap: list arm {many_arm} B, size_of = {} (the declined inline arm would have \
@@ -734,10 +780,27 @@ enum MirrorInlineAddress {
 /// The block entry with `deleted` removed -- encoded instead as a length of zero, which removes a
 /// field rather than narrowing one.
 #[allow(dead_code)]
+/// THE HISTORICAL FOUR-FIELD SHAPE MINUS `deleted`, kept as history.
+///
+/// This mirror exists to show that removing a TAIL FIELD does not move the width, because the
+/// tail sits inside one rounding. The live entry has NO TAIL -- the spelling and both flags are
+/// bits in the word the address lends its holder -- so there is no field left to remove and the
+/// claim has no subject on today's type. It is preserved against the shape it was written for,
+/// so the reasoning stays checkable rather than being deleted along with its subject.
 struct MirrorBlockNoDeleted {
     model_id: crate::engine::storage_bucket_internals::StoredModelKind,
     address: ElementEntry,
     dirty: bool,
+    log_backed: bool,
+}
+
+/// The same shape WITH `deleted`, which is what the one above is compared against now.
+#[allow(dead_code)]
+struct MirrorBlockWithDeleted {
+    model_id: crate::engine::storage_bucket_internals::StoredModelKind,
+    address: ElementEntry,
+    dirty: bool,
+    deleted: bool,
     log_backed: bool,
 }
 
@@ -1078,20 +1141,42 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
     // That is a stronger statement than the one it replaces and it is the same shape of correction
     // #1968 had to make in the other direction: a claim about what a tail can do is a claim about
     // the tail's WIDTH, and it goes stale the moment anything else lands in it.
+    // COMPARED AGAINST ITS OWN ERA, NOT AGAINST THE LIVE ENTRY. The live entry is 16 and these
+    // mirrors are 24, because they declare three terms that are no longer fields. Asserting the
+    // live width against them would be comparing two different shapes; asserting them against
+    // EACH OTHER still makes the original point -- dropping a tail field moves nothing.
     assert_eq!(
-        size_of::<BlockIndex>(),
+        size_of::<MirrorBlockWithDeleted>(),
         size_of::<MirrorBlockNoDeleted>(),
         "removing the `deleted` field moved the entry's width; the tail is no longer sitting \
          inside one rounding and the note above is stale"
     );
+    // AGAINST ITS OWN ERA, for the reason the mirror above it is. `MirrorBlockOneFlagByte` folds
+    // THREE FLAGS into one byte, and the live entry has no flag bytes at all -- they are single
+    // bits in the word the address lends its holder. So this mirror is 24 and the live entry is
+    // 16, and comparing them asserts that two different shapes have the same width.
+    //
+    // The original point survives against the historical pair: folding three flag bytes into one
+    // moves nothing, because the tail they sat in rounded to the same word either way. That is
+    // still worth asserting -- and it is now the SECOND reading of this arm's history, after the
+    // packing made the whole tail vanish rather than merely narrow.
     assert_eq!(
-        size_of::<BlockIndex>(),
+        size_of::<MirrorBlockWithDeleted>(),
         size_of::<MirrorBlockOneFlagByte>(),
         "folding the three flags into one byte moved the entry's width, which would mean they had \
          been costing more than three bytes and they are not"
     );
+    // AGAINST ITS OWN ERA, the third of these in this arm. `MirrorBlockNoFlags` drops the flags
+    // from the HISTORICAL four-field shape; the live entry never had them as fields to drop. So
+    // the live comparison reads as 'removing all three flags moved the entry from 16 B to 24 B',
+    // which is backwards -- removing fields cannot grow a struct, and what it is really seeing is
+    // two different shapes.
+    //
+    // The claim survives between the historical pair: dropping all three flags moves nothing,
+    // because the tail they sat in rounded to the same word with or without them. That was the
+    // whole reason the tail had to reach ZERO before it paid anything.
     assert_eq!(
-        size_of::<BlockIndex>(),
+        size_of::<MirrorBlockWithDeleted>(),
         size_of::<MirrorBlockNoFlags>(),
         "removing ALL THREE flags moved the entry from {} B to {} B. That used to be the one flag \
          change that crossed the rounding, and it stopped being one when the model spelling joined \
@@ -1102,8 +1187,19 @@ fn what_the_common_case_could_hold_inline_and_what_this_engines_block_entry_forb
     );
     // AND THE BOUND ON THAT NEGATIVE. A claim that nothing in the tail can pay is worth having
     // only if something COULD: emptying the tail entirely does cross, by a whole word.
+    // THIS BOUND PREDICTED THE PACKING, AND THE PACKING HAPPENED -- so it can no longer be
+    // stated against the live entry, because the live entry IS the empty-tail shape.
+    //
+    // The bound exists so that 'nothing in the tail can pay' is worth saying: it is worth saying
+    // only if something COULD, and emptying the tail entirely crosses by a whole word. That is
+    // exactly what then landed -- the spelling and both flags became bits in the word the address
+    // lends its holder -- so `MirrorBlockEmptyTail` and the live entry are now the same shape at
+    // 16 B, and `16 < 16` is false.
+    //
+    // Bounded against the HISTORICAL shape instead, where it still has content: 16 against 24,
+    // a whole word, which is the saving this branch measured at 8 B per block entry.
     assert!(
-        size_of::<MirrorBlockEmptyTail>() < size_of::<BlockIndex>(),
+        size_of::<MirrorBlockEmptyTail>() < size_of::<MirrorBlockWithDeleted>(),
         "an entry with NO tail at all is {} B against {} B; if even that does not cross, this \
          reconstruction is not describing the rounding it claims to",
         size_of::<MirrorBlockEmptyTail>(),
@@ -1815,39 +1911,27 @@ fn reading_a_block_out_of_line_costs_a_dependent_load_an_inline_entry_did_not() 
 fn block_for(seed: u64) -> (Arc<str>, BlockIndex) {
     (
         Arc::from(format!("key-{seed}").as_str()),
-        BlockIndex {
-        // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
-        // fixture typo that a free-form string field could not catch.
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-            address: ElementEntry::from_parts(
-                7,
-                seed * 128,
-                64,
-                Some(seed),
-                Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)),
-            ),
-            dirty: false,
-            deleted: false,
-        },
+        BlockIndex::new(
+            // Was `"strings"`, which is not a spelling the registry declares -- the plural was a
+            // fixture typo that a free-form string field could not catch.
+            crate::engine::storage_bucket_internals::StoredModelKind::String,
+            ElementEntry::from_parts( 7, seed * 128, 64, Some(seed), Some(seed.wrapping_mul(0x9E37_79B9_7F4A_7C15)), ),
+            false,
+            false,
+        ),
     )
 }
 
 fn component_block(seed: u64, component: &str) -> (Arc<str>, BlockIndex) {
     (
         Arc::from("container"),
-        BlockIndex {
+        BlockIndex::new(
             // Was `"hashes"`, likewise not a declared spelling.
-            model_id: crate::engine::storage_bucket_internals::StoredModelKind::Hash,
-            address: ElementEntry::from_parts(
-                9,
-                seed * 256,
-                96,
-                Some(seed),
-                Some(seed.wrapping_mul(0x1000_0000_01B3)),
-            ),
-            dirty: true,
-            deleted: false,
-        },
+            crate::engine::storage_bucket_internals::StoredModelKind::Hash,
+            ElementEntry::from_parts( 9, seed * 256, 96, Some(seed), Some(seed.wrapping_mul(0x1000_0000_01B3)), ),
+            true,
+            false,
+        ),
     )
 }
 
@@ -1870,7 +1954,7 @@ fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &Bloc
     // object key and that two blocks differing only in it render different keys. So the term is
     // covered where it is now observable, rather than compared where it no longer exists.
     assert_eq!(
-        left.model_id, right.model_id,
+        left.model_id(), right.model_id(),
         "{context}: block {handle} changed model_id"
     );
     // THE COMPONENT COMPARISON IS GONE WITH THE FIELD. It was one of the six identity terms this
@@ -1879,9 +1963,9 @@ fn assert_same_block(context: &str, handle: u64, left: &BlockIndex, right: &Bloc
         left.address, right.address,
         "{context}: block {handle} changed address"
     );
-    assert_eq!(left.dirty, right.dirty, "{context}: block {handle} changed dirty");
+    assert_eq!(left.dirty(), right.dirty(), "{context}: block {handle} changed dirty");
     assert_eq!(
-        left.deleted, right.deleted,
+        left.deleted(), right.deleted(),
         "{context}: block {handle} changed deleted"
     );
     // THE LOG-RESIDENT COMPARISON IS GONE RATHER THAN REWRITTEN, because it could no longer
@@ -2504,8 +2588,13 @@ fn the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth() {
     let model_id = size_of::<crate::engine::storage_bucket_internals::StoredModelKind>();
     let address = size_of::<ElementEntry>();
     let flags = 2 * size_of::<bool>();
-    let field_sum = model_id + address + flags;
-    let tail_now = model_id + flags;
+    // THE TAIL REACHED ZERO, WHICH IS WHAT THIS ARM WAS BUILT TO WATCH FOR. It was written while
+    // the tail was 3 B inside an 8 B rounding, and its whole point was that emptying it is worth
+    // a word while narrowing it is worth nothing. `model_id` and `flags` stay as COUNTERFACTUAL
+    // widths -- what those terms would cost as fields -- and are deliberately not added into a
+    // sum that describes the live type.
+    let field_sum = address;
+    let tail_now = 0usize;
     println!();
     println!("=== inside the {} B block entry, as it now stands ===", size_of::<BlockIndex>());
     println!("  address (eight-aligned group) : {address:>4} B");
@@ -2606,27 +2695,48 @@ fn the_block_entry_reconstructs_and_what_emptying_its_tail_is_worth() {
 
     // AND WHAT IT IS WORTH IS PER BLOCK, ON THE LIST STRIDE, which is where the slope lives.
     //
-    // `index_bytes_per_key::which_term_carries_the_bucket_map_slope` decomposes `bucket_map`s 48.0
-    // B/key marginal and finds 33.8 of it in ONE term, `Vec<(u64, BlockIndex)>`, at 1.056 blocks a
-    // key on the shipped routing range. So every byte off this stride is worth about 1.06 B/key,
+    // `index_bytes_per_key::which_term_carries_the_bucket_map_slope` decomposes `bucket_map`s
+    // marginal and finds most of it in ONE term, `Vec<(u64, BlockIndex)>`, at 1.056 blocks a key
+    // on the shipped routing range. BOTH TREES MEASURED 2026-11-02: 48.0 B/key with 33.8 in that
+    // term before this fold, 40.0 with 25.3 after. So every byte off this stride is worth about
+    // 1.06 B/key -- and the 48.0 a reader finds quoted elsewhere is the BEFORE figure,
     // and the per-bucket terms beside it saturate at 1,024 buckets and are worth nothing per key
     // however large they are in absolute terms.
     let stride_now = size_of::<(u64, BlockIndex)>();
     let stride_folded = size_of::<u64>() + size_of::<MirrorTaillessBlockIndex>();
     println!(
-        "  list stride {stride_now} B -> {stride_folded} B, so {} B a block",
+        "  list stride {stride_now} B, tailless mirror {stride_folded} B, so {} B a block left to \
+         collect",
         stride_now - stride_folded
     );
     println!();
+    // THE FOLD THIS BLOCK WAS BUILT TO PRICE HAS LANDED, SO THE COUNTERFACTUAL IS NOW THE ACTUAL.
+    //
+    // This read `assert_eq!(32, stride_now)` beside `assert!(stride_folded < stride_now)`: the
+    // live stride against a mirror of the entry with its tail emptied, 32 against 24, and the
+    // STRICT INEQUALITY WAS THE CLAIM -- that emptying the tail would be worth something. The tail
+    // is empty now (`tail_now` is asserted at zero above), so the mirror describes the LIVE type
+    // and both sides are 24.
+    //
+    // NEITHER OBVIOUS REPAIR IS A GUARD. Renumbering the 32 to 24 leaves the inequality asserting
+    // 24 < 24, which cannot hold. Weakening it to `<=` leaves an arm that passes whether or not
+    // the fold ever happened -- it would have passed on the old 32 B stride too, which is the
+    // failure this arm already suffered once and was pinned in CI to prevent. So the claim is
+    // INVERTED into the one that is now true and that goes red if the entry regrows a tail: the
+    // live stride EQUALS the tailless mirror, and a mirror narrower than the live type would mean
+    // a further fold exists that nothing here has priced.
     assert_eq!(
-        32, stride_now,
-        "the shipped list stride is {stride_now} B rather than 32, so the slope this is priced \
-         against was taken at a different stride"
+        24, stride_now,
+        "the shipped list stride is {stride_now} B rather than 24; the eight bytes a block this \
+         fold collected were measured against a 32 B stride, so a different stride here means the \
+         saving below is priced against something that no longer ships"
     );
     assert_eq!(24, stride_folded, "the folded stride is {stride_folded} B rather than 24");
-    assert!(
-        stride_folded < stride_now,
-        "the folded stride is not narrower than the one that ships, so this is not a saving"
+    assert_eq!(
+        stride_folded, stride_now,
+        "the tailless mirror strides at {stride_folded} B and the live type at {stride_now} B. \
+         Equal is the only passing state: narrower means a fold is still available and unpriced, \
+         wider means a field has landed back in the tail this arm asserts is empty"
     );
 
     // The address is now the LARGEST group in the entry, and it is the one group that cannot

@@ -87,10 +87,14 @@ fn a_reconstruct_prunes_the_refs_it_invalidates() {
 
 /// A minimal live block entry at the position the ref names.
 fn block_entry_for(address: &crate::ElementEntry) -> crate::engine::state::BlockIndex {
-    crate::engine::state::BlockIndex {
-        model_id: crate::engine::storage_bucket_internals::StoredModelKind::String,
-        address: address.clone(),
-        dirty: false,
-        deleted: false,
-    }
+    // THROUGH THE CONSTRUCTOR, because the entry no longer has those three as FIELDS: the model
+    // spelling and both flags are bits in the word the address lends its holder. The arguments are
+    // the same four values in the same order, so this fixture still builds the same entry -- it is
+    // only that a struct literal can no longer say so.
+    crate::engine::state::BlockIndex::new(
+        crate::engine::storage_bucket_internals::StoredModelKind::String,
+        address.clone(),
+        false,
+        false,
+    )
 }

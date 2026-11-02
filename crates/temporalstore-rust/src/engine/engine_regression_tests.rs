@@ -142,7 +142,7 @@ pub(super) fn blocks_with_identity(
         for (handle, block) in &bucket.block_index {
             let Some(beside) = keys.identity_of(bucket, *handle, block) else {
                 assert!(
-                    block.deleted,
+                    block.deleted(),
                     "the LIVE block at handle {handle} in bucket {} is named by nothing beside \n                     it, and a live block is named by the object lookup unless the index is in \n                     the one window the decoder closed by filing as it decodes",
                     bucket.routing_bucket
                 );

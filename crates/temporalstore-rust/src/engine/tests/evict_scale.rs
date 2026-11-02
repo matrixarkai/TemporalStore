@@ -232,7 +232,7 @@ fn slabs_spanned_by(engine: &TemporalEngine, buckets: &BTreeSet<u32>) -> BTreeSe
     for routing_bucket in buckets {
         if let Some(bucket) = shard.bucket_index.bucket_map.get(routing_bucket) {
             for block in bucket.block_index.values() {
-                if !block.deleted {
+                if !block.deleted() {
                     slabs.insert(block.address.block_slab_id());
                 }
             }
@@ -1911,7 +1911,7 @@ fn releasing_a_mixed_batch_releases_exactly_the_clean_buckets_and_leaves_the_res
             let blocks_clean = bucket
                 .block_index
                 .values()
-                .all(|block| !block.dirty && !block.deleted);
+                .all(|block| !block.dirty() && !block.deleted());
             if bucket.in_memory()
                 && !bucket.loading()
                 && !bucket.deleted()

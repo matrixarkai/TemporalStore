@@ -711,7 +711,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
                 bucket
                     .block_index
                     .values()
-                    .filter(|block| !block.deleted)
+                    .filter(|block| !block.deleted())
                     .count()
             })
             .sum();
@@ -803,7 +803,7 @@ fn the_resident_map_readers_asked_in_the_over_complete_state() {
             .bucket_map
             .values()
             .flat_map(|bucket| bucket.block_index.values())
-            .filter(|block| !block.deleted)
+            .filter(|block| !block.deleted())
             .map(|block| {
                 (
                     block.address.block_slab_id(),
@@ -1113,7 +1113,7 @@ fn both_inputs_to_the_merge_now_answer_the_same_live_block_question() {
         !shard.bucket_index.bucket_map.values().any(|bucket| bucket
             .block_index
             .values()
-            .any(|block| !block.deleted
+            .any(|block| !block.deleted()
                 && block.address.block_slab_id() == dead_address.block_slab_id()
                 && block.address.offset() == dead_address.offset())),
         "the fabricated address matches a live block, so the subjects below would be kept for the \
@@ -1285,7 +1285,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
         for bucket in shard.bucket_index.bucket_map.values_mut() {
             bucket.set_dirty(false);
             for block in bucket.block_index.blocks_mut_unaccounted() {
-                block.dirty = false;
+                block.set_dirty(false);
             }
         }
         crate::engine::storage_bucket_internals::refresh_bucket_runtime_flags(shard);
@@ -1304,7 +1304,7 @@ fn a_bucket_holding_a_container_block_is_never_released() {
             .bucket_map
             .values()
             .flat_map(|bucket| bucket.block_index.values())
-            .filter(|block| !block.deleted && block.model_id.as_str() == "set")
+            .filter(|block| !block.deleted() && block.model_id().as_str() == "set")
             .count();
         (
             outcome.released_buckets.len(),

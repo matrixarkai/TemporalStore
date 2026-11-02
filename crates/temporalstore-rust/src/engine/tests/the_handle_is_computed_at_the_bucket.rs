@@ -39,12 +39,12 @@ use crate::engine::storage_bucket_internals::stored_model_kind;
 use std::sync::Arc;
 
 fn block(object: &str, component: Option<&str>, slab: u64, offset: u32, length: u32) -> BlockIndex {
-    BlockIndex {
-        model_id: stored_model_kind("hash"),
-        address: ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
-        dirty: false,
-        deleted: false,
-    }
+    BlockIndex::new(
+        stored_model_kind("hash"),
+        ElementEntry::from_parts(slab, offset as u64, length as u64, Some(7), Some(11)),
+        false,
+        false,
+    )
 }
 
 /// The entries driven, EACH WITH ITS OBJECT KEY BESIDE IT RATHER THAN ON IT.
