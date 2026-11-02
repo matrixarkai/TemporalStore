@@ -1372,7 +1372,7 @@ where
             .list(&self.checkpoints_prefix(shard_id))
             .await?
         {
-            if !key.ends_with("/manifest.json") {
+            if !is_checkpoint_manifest_key(&key) {
                 continue;
             }
             manifests.push(serde_json::from_slice(&self.object_store.get(&key).await?)?);
@@ -1441,7 +1441,7 @@ where
             .list(&self.bucket_dump_prefix(shard_id))
             .await?
         {
-            if !key.ends_with(".json") {
+            if !is_bucket_dump_manifest_key(&key) {
                 continue;
             }
             let manifest: crate::BucketDumpManifest =
@@ -2932,6 +2932,41 @@ fn parse_block_slab_id(key: &str) -> Option<u64> {
         .strip_suffix(".seg")?
         .parse()
         .ok()
+}
+
+/// THE SUFFIX A BINARY SHARED-STORE OBJECT CARRIES.
+///
+/// Already the convention in this module for the objects that are binary today -- the WAL blob and
+/// its offset index are `wal.protobuf.blob` and `wal.offset_index.protobuf.blob` -- so the manifests
+/// take the same suffix rather than inventing a second spelling for the same idea.
+pub(crate) const SHARED_STORE_BINARY_OBJECT_SUFFIX: &str = ".protobuf.blob";
+
+/// WHETHER THIS OBJECT IS A CHECKPOINT MANIFEST. THE NAME SAYS WHAT IT IS, NOT HOW IT IS ENCODED.
+///
+/// A KEY FILTER THAT NAMES A CODEC IS A SILENT SKIP WAITING TO HAPPEN. This read `/manifest.json`,
+/// so a manifest filed under any other suffix was passed over -- and `list_checkpoints` returns a
+/// LIST, so being passed over produces an empty result that is byte-for-byte what a shard with no
+/// checkpoints at all returns. There is no error, no log line, and nothing for a caller to notice:
+/// restore would simply conclude the shard had never been checkpointed.
+///
+/// That is why this is widened BEFORE any writer moves, not alongside it. The reader-first law in
+/// this repo is about bytes already on disk, and the same reasoning covers names already on disk --
+/// a reader that will not look at a name cannot be fixed after the fact by the writer that chose it.
+/// Which CODEC the body uses is decided by reading the body, not the name.
+fn is_checkpoint_manifest_key(key: &str) -> bool {
+    key.ends_with("/manifest.json")
+        || key.ends_with(&format!("/manifest{SHARED_STORE_BINARY_OBJECT_SUFFIX}"))
+}
+
+/// The same rule for a bucket-dump manifest, and the consequence here is worse.
+///
+/// `restore_bucket_dump_manifests` returns a COUNT, and a skipped manifest makes that count smaller
+/// without making it an error. A dump manifest is the durable reclaim watermark: a successor that
+/// does not inherit one treats every live generation as never dumped, which is exactly the state
+/// publishing these was added to prevent. So the failure mode is not "a file was missed" -- it is a
+/// node silently losing the lineage for data that is still perfectly present.
+fn is_bucket_dump_manifest_key(key: &str) -> bool {
+    key.ends_with(".json") || key.ends_with(SHARED_STORE_BINARY_OBJECT_SUFFIX)
 }
 
 fn parse_wal_index(key: &str) -> Option<u64> {
@@ -7210,6 +7245,125 @@ mod tests {
             inherited[0].wal_sequence, dumped.wal_sequence,
             "the reclaim watermark has to survive the move, not merely the file"
         );
+    }
+
+    /// A MANIFEST IS FOUND BY WHAT IT IS, NOT BY WHAT IT IS CALLED.
+    ///
+    /// The filter used to read `.json`, so a manifest under any other suffix was skipped -- and a
+    /// skip is indistinguishable from a shard that never dumped, because both answer zero. This
+    /// re-files a REAL published manifest under the binary suffix and asserts the COUNT, which is
+    /// the only assertion that can tell those two apart: `restore(...).is_ok()` is true of both.
+    #[tokio::test]
+    async fn restore_finds_a_bucket_dump_manifest_filed_under_the_binary_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        let dumped = primary.create_bucket_dump_manifest(1, Vec::new()).unwrap();
+        replicator
+            .publish_bucket_dump_manifests(1, &primary.list_bucket_dump_manifests(1))
+            .await
+            .unwrap();
+
+        // DENOMINATOR FIRST: find the object this test is about before renaming it. A prefix that
+        // listed nothing would make the rename a no-op and every assertion below vacuous.
+        let prefix = format!("{TEST_CLUSTER_ID}/shards/1/shared/slot_dumps/");
+        let keys = store.list(&prefix).await.unwrap();
+        assert_eq!(keys.len(), 1, "expected one published manifest under {prefix}, got {keys:?}");
+        let old_key = keys[0].clone();
+        assert!(
+            old_key.ends_with(".json"),
+            "the writer still files manifests as .json; this test re-files one: {old_key}"
+        );
+
+        // Re-file it under the name a writer will use once the body moves. Only the NAME changes.
+        let bytes = store.get(&old_key).await.unwrap();
+        let new_key = format!(
+            "{}{SHARED_STORE_BINARY_OBJECT_SUFFIX}",
+            old_key.strip_suffix(".json").unwrap()
+        );
+        store.put(&new_key, bytes).await.unwrap();
+        store.delete(&old_key).await.unwrap();
+
+        let successor = test_engine(dir.path(), "successor");
+        successor.load_shard(1);
+        assert!(successor.list_bucket_dump_manifests(1).is_empty());
+
+        let restored = replicator
+            .restore_bucket_dump_manifests(1, &successor)
+            .await
+            .unwrap();
+        assert_eq!(
+            restored, 1,
+            "restore skipped the manifest because of its NAME -- and answered zero, which is \
+             what a shard that never dumped also answers"
+        );
+        let inherited = successor.list_bucket_dump_manifests(1);
+        assert_eq!(inherited.len(), 1);
+        assert_eq!(inherited[0].manifest_id, dumped.manifest_id);
+    }
+
+    /// The same, for the checkpoint manifest, where the skip produces an EMPTY LIST.
+    ///
+    /// `list_checkpoints` is what `restore_checkpoint` and the collectors are built on, so a
+    /// manifest passed over by name does not read as a missing file -- it reads as a shard that was
+    /// never checkpointed.
+    #[tokio::test]
+    async fn list_checkpoints_finds_a_manifest_filed_under_the_binary_suffix() {
+        let dir = tempfile::tempdir().unwrap();
+        let (store, replicator) = test_shared_store(dir.path());
+
+        let primary = test_engine(dir.path(), "primary");
+        primary.load_shard(1);
+        primary.execute(ExecuteRequest {
+            shard_id: 1,
+            command: Command::StringSet {
+                key: "k".to_string(),
+                value: b"v".to_vec(),
+            },
+        });
+        replicator
+            .publish_checkpoint(1, 1, &primary, &primary.block_store())
+            .await
+            .unwrap();
+        // The control for the rename: it is found under the old name first, so a failure after the
+        // rename is attributable to the NAME and not to the fixture never having worked.
+        assert_eq!(replicator.list_checkpoints(1).await.unwrap().len(), 1);
+
+        let prefix = format!("{TEST_CLUSTER_ID}/shards/1/shared/checkpoints/");
+        let manifests: Vec<String> = store
+            .list(&prefix)
+            .await
+            .unwrap()
+            .into_iter()
+            .filter(|key| key.ends_with("/manifest.json"))
+            .collect();
+        assert_eq!(manifests.len(), 1, "expected one manifest under {prefix}");
+        let old_key = manifests[0].clone();
+        let bytes = store.get(&old_key).await.unwrap();
+        let new_key = format!(
+            "{}manifest{SHARED_STORE_BINARY_OBJECT_SUFFIX}",
+            old_key.strip_suffix("manifest.json").unwrap()
+        );
+        store.put(&new_key, bytes).await.unwrap();
+        store.delete(&old_key).await.unwrap();
+
+        let found = replicator.list_checkpoints(1).await.unwrap();
+        assert_eq!(
+            found.len(),
+            1,
+            "the checkpoint was passed over because of its NAME, and an empty list is what a \
+             shard with no checkpoints returns"
+        );
+        assert_eq!(found[0].checkpoint_wal_index, 1);
     }
 
     #[tokio::test]
