@@ -3541,6 +3541,53 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
                 ttl_ms: *ttl_ms,
             })
         }
+        Command::HashDelete { key, field } => v1::command::Kind::HashDelete(v1::HashDelete {
+            key: key.clone(),
+            field: field.clone(),
+        }),
+        Command::HashIncrBy { key, field, increment } => {
+            v1::command::Kind::HashIncrBy(v1::HashIncrBy {
+                key: key.clone(),
+                field: field.clone(),
+                increment: *increment,
+            })
+        }
+        Command::ListPush { key, member, left } => v1::command::Kind::ListPush(v1::ListPush {
+            key: key.clone(),
+            member: member.clone(),
+            left: *left,
+        }),
+        Command::ListPop { key, left } => v1::command::Kind::ListPop(v1::ListPop {
+            key: key.clone(),
+            left: *left,
+        }),
+        Command::SetRemove { key, member } => v1::command::Kind::SetRemove(v1::SetRemove {
+            key: key.clone(),
+            member: member.clone(),
+        }),
+        Command::ZSetAdd { key, member, score } => v1::command::Kind::ZsetAdd(v1::ZSetAdd {
+            key: key.clone(),
+            member: member.clone(),
+            score: *score,
+        }),
+        Command::ZSetRemove { key, member } => {
+            v1::command::Kind::ZsetRemove(v1::ZSetRemove {
+                key: key.clone(),
+                member: member.clone(),
+            })
+        }
+        Command::ZSetIncrBy { key, member, increment } => {
+            v1::command::Kind::ZsetIncrBy(v1::ZSetIncrBy {
+                key: key.clone(),
+                member: member.clone(),
+                increment: *increment,
+            })
+        }
+        Command::ZSetPop { key, min, count } => v1::command::Kind::ZsetPop(v1::ZSetPop {
+            key: key.clone(),
+            min: *min,
+            count: *count,
+        }),
         Command::CommonExists { key } => {
             v1::command::Kind::CommonExists(v1::CommonExists { key: key.clone() })
         }
@@ -10404,18 +10451,76 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "FeatureAppendWithPolicy",
     "FeatureDelete",
     "FeatureReplace",
-    "HashDelete",
-    "HashIncrBy",
-    "ListPop",
-    "ListPush",
     "SeenCheck",
-    "SetRemove",
     "StringSetConditional",
-    "ZSetAdd",
-    "ZSetIncrBy",
-    "ZSetPop",
-    "ZSetRemove",
 ];
+
+/// THE NINE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// `command_to_sdk_proto` compiling says nothing about what the WAL writes: the frame chooses the
+/// encoding, so a mapping can exist while the frame still takes the JSON arm. This drives each
+/// command through `encode_wal_proto_frame` and reads back what the frame actually declared.
+#[test]
+fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
+    let cases: Vec<(&str, Command)> = vec![
+        ("HashDelete", Command::HashDelete { key: "k".into(), field: "f".into() }),
+        ("HashIncrBy", Command::HashIncrBy { key: "k".into(), field: "f".into(), increment: -7 }),
+        ("ListPush", Command::ListPush { key: "k".into(), member: b"m".to_vec(), left: true }),
+        ("ListPop", Command::ListPop { key: "k".into(), left: false }),
+        ("SetRemove", Command::SetRemove { key: "k".into(), member: b"m".to_vec() }),
+        ("ZSetAdd", Command::ZSetAdd { key: "k".into(), member: b"m".to_vec(), score: 1.5 }),
+        ("ZSetRemove", Command::ZSetRemove { key: "k".into(), member: b"m".to_vec() }),
+        ("ZSetIncrBy", Command::ZSetIncrBy { key: "k".into(), member: b"m".to_vec(), increment: -0.25 }),
+        ("ZSetPop", Command::ZSetPop { key: "k".into(), min: true, count: 3 }),
+    ];
+    // DENOMINATOR FIRST: nine is the number this batch covered, and a shorter list would make
+    // every assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 9, "this test covers the nine commands the batch mapped");
+
+    for (name, command) in cases {
+        // Every one of them must be a WRITE, or it would never reach this log at all and the
+        // test would be asserting something about an unreachable path.
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // The frame carries a four-byte big-endian length ahead of the message, so the message
+        // itself starts at byte 4. Reading the declared encoding needs the frame, not the entry.
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not              take it",
+            frame.command_encoding
+        );
+        // The declared id is written by the same code that chose the arm, so it cannot be the only
+        // witness: the payload itself must not be JSON.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // And the whole entry must come back, through the path replay uses.
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
 
 #[test]
 fn no_write_command_quietly_joins_the_json_fallback() {
