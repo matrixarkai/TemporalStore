@@ -530,6 +530,18 @@ struct SharedStoreWalFrameProto {
     /// one costs five bytes far more often than it costs one. Fixed is four, always.
     #[prost(fixed32, tag = "11")]
     command_crc32c: u32,
+    /// THE ENTRIES A [`WAL_FRAME_FORMAT_BATCH`] FRAME CARRIES, each a complete frame.
+    ///
+    /// Empty in every other format, and a frame written before this field existed omits it, so
+    /// prost reads the omission as an empty list and every frame ever written still decodes.
+    ///
+    /// Recursive on purpose: an inner entry is a whole `SharedStoreWalFrameProto`, declaring its
+    /// own `frame_format` and carrying its own CRC, so the verification an entry gets inside a
+    /// batch is the SAME arm it gets travelling alone. One level only -- a batch inside a batch is
+    /// refused, because nothing produces one and a reader that accepted it would be guessing at a
+    /// shape no writer defines.
+    #[prost(message, repeated, tag = "12")]
+    batch_entries: Vec<SharedStoreWalFrameProto>,
 }
 
 #[derive(Clone, PartialEq, Message)]
@@ -3074,6 +3086,52 @@ const WAL_FRAME_FORMAT_CRC32C: u32 = 3;
 /// plant rather than by this paragraph.
 const WAL_FRAME_FORMAT_NO_SIZE: u32 = 4;
 
+/// A BATCH frame: one record carrying MANY entries, each a complete frame of its own.
+///
+/// # WHY A CONTAINER AND NOT A WIDER FRAME
+///
+/// Our per-append envelope is 56.7 B against a native oplog's ~14.6 B, fitted over a payload
+/// sweep (`1.0007 * payload + 56.7`, worst residual 4.7 B). The MARGINAL rate already matches, so
+/// the envelope is the whole difference, and at a feature point's payload the envelope dominates.
+///
+/// The cause is not field widths. A native oplog record is `{ version, repeated item, sequence }`
+/// serialised ONCE PER FLUSH, so its header amortises across every item in the flush. Ours is per
+/// ENTRY. `publish_wal_entries_batch` already coalesces a group commit onto two object-store
+/// appends, but it concatenates N SEPARATE length-prefixed frames into the first and N sidecars
+/// into the second -- two durability barriers for N entries, and still N frames. That was
+/// measured: batching recovers NOTHING of the envelope and costs +4.2 B/entry at batch 64,
+/// because there are two objects at every batch size and each entry still carries its own frame.
+///
+/// So the only thing that divides the envelope is putting N entries under ONE frame, which is
+/// what this format is.
+///
+/// # THE INNER ENTRIES ARE ORDINARY FRAMES, WHICH IS THE POINT
+///
+/// `batch_entries` holds complete frames, each declaring its own `frame_format`. So an inner
+/// entry is verified by exactly the arm that verifies it when it travels alone -- no second
+/// verification path and no "batch mode" branch inside the check. A batch of format-4 entries is
+/// N format-4 verifications plus one outer header.
+///
+/// # ONE CRC PER ENTRY, NOT ONE OVER THE BATCH
+///
+/// A per-batch CRC would be cheaper, and it is the wrong trade for a reason specific to what this
+/// field is for. [`WAL_FRAME_FORMAT_CRC32C`]'s own argument is that the digest answers "did these
+/// bytes survive the trip", with exactly one production reader, which recomputes it over the bytes
+/// it just read. A single-entry range read is that reader. With one CRC over the batch it could
+/// not verify its own entry without reading and hashing every OTHER entry in the batch -- which
+/// defeats the exact-range read the sidecar exists to enable, and makes one corrupt entry
+/// indistinguishable from N corrupt ones. Four bytes and a tag per entry is the price of keeping a
+/// single-entry read self-sufficient, and it is small against an outer header being divided.
+///
+/// # WHAT AN OLDER READER DOES WITH ONE
+///
+/// Refuses it, and names it. That is not behaviour added for this format: the `other` arm of
+/// [`decode_wal_proto_frame_exact`] already refuses any format it does not know, deliberately,
+/// because "verifying the field that happens to be empty would report a checksum mismatch --
+/// blaming the data for a version skew". So the reader half ships before any writer, which is the
+/// order formats 1 -> 2 and 3 were shipped in. Nothing writes this format yet.
+const WAL_FRAME_FORMAT_BATCH: u32 = 5;
+
 /// WHICH FORMAT A WRITER EMITS BY DEFAULT. The narrowest this build can write.
 ///
 /// # WHAT THE DEPLOY REQUIREMENT IS
@@ -3230,6 +3288,10 @@ fn encode_wal_proto_frame(
         command_payload.len() as u64
     };
     let frame = SharedStoreWalFrameProto {
+        // NOTHING WRITES A BATCH YET, and this field is named rather than defaulted because the
+        // initializer is exhaustive on purpose: a writer that gains a field has to say what it
+        // puts there. The writer flip is a separate change; see `WAL_FRAME_FORMAT_BATCH`.
+        batch_entries: Vec::new(),
         shard_id: entry.shard_id,
         wal_index: entry.wal_index,
         command_byte_size,
@@ -3341,6 +3403,30 @@ fn decode_wal_proto_frame_exact(
         )));
     }
     let frame = SharedStoreWalFrameProto::decode(&bytes[4..])?;
+    // A BATCH IS NOT ONE ENTRY, AND PICKING ONE WOULD BE A WRONG ANSWER RATHER THAN A SLOW ONE.
+    // This range holds many entries; a caller that wants them calls
+    // `decode_wal_proto_frame_entries`. Returning the first would silently drop the rest, and
+    // every caller of this function is a single-entry read that would then report success.
+    if frame.frame_format == WAL_FRAME_FORMAT_BATCH {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!(
+                "shared-store WAL frame at {checksum_source} is a batch of {} entries, which an \
+                 exact single-entry read cannot answer; read it with the batch decoder",
+                frame.batch_entries.len()
+            ),
+        )));
+    }
+    wal_entry_from_frame(frame, checksum_source)
+}
+
+/// One decoded frame to the entry it stands for: the verification and the conversion that
+/// `decode_wal_proto_frame_exact` has always done, named so a batch's inner entries go through
+/// exactly it rather than through a copy of it.
+fn wal_entry_from_frame(
+    frame: SharedStoreWalFrameProto,
+    checksum_source: &str,
+) -> Result<SharedStoreWalEntry, SharedStoreReplicationError> {
     // DISPATCH PER FRAME, not per log. Which shape a frame carries is a property of the frame, so
     // a blob holding both -- what a rolling restart leaves -- walks end to end either way.
     match frame.frame_format {
@@ -3380,8 +3466,8 @@ fn decode_wal_proto_frame_exact(
                 format!(
                     "unsupported shared-store WAL frame format {other} at {checksum_source}: \
                      this build understands {WAL_FRAME_FORMAT_HEX_DIGEST}, \
-                     {WAL_FRAME_FORMAT_RAW_DIGEST}, {WAL_FRAME_FORMAT_CRC32C} and \
-                     {WAL_FRAME_FORMAT_NO_SIZE}"
+                     {WAL_FRAME_FORMAT_RAW_DIGEST}, {WAL_FRAME_FORMAT_CRC32C}, \
+                     {WAL_FRAME_FORMAT_NO_SIZE} and {WAL_FRAME_FORMAT_BATCH}"
                 ),
             )));
         }
@@ -3445,6 +3531,65 @@ fn decode_wal_proto_frame_exact(
             })
             .collect(),
     })
+}
+
+/// Every entry a frame stands for: N for a [`WAL_FRAME_FORMAT_BATCH`] frame, one for every other.
+///
+/// A single-entry format goes through [`decode_wal_proto_frame_exact`] unchanged, so this adds no
+/// second path for the formats that exist today -- a reader that asks for entries and gets one back
+/// has exercised exactly the code it always did.
+fn decode_wal_proto_frame_entries(
+    bytes: &[u8],
+    checksum_source: &str,
+) -> Result<Vec<SharedStoreWalEntry>, SharedStoreReplicationError> {
+    if bytes.len() < 4 {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::UnexpectedEof,
+            "truncated protobuf WAL frame length",
+        )));
+    }
+    let len = u32::from_be_bytes(
+        bytes[0..4]
+            .try_into()
+            .expect("length slice is exactly 4 bytes"),
+    ) as usize;
+    if bytes.len() != len + 4 {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "protobuf WAL frame range does not match frame length",
+        )));
+    }
+    let frame = SharedStoreWalFrameProto::decode(&bytes[4..])?;
+    if frame.frame_format != WAL_FRAME_FORMAT_BATCH {
+        // Not a batch: one entry, decoded by the path that has always decoded it.
+        return decode_wal_proto_frame_exact(bytes, checksum_source).map(|entry| vec![entry]);
+    }
+    // A BATCH CARRYING NOTHING IS REFUSED. No writer emits one, and an empty batch read as a
+    // success would make a lost group commit look like a group commit of zero writes.
+    if frame.batch_entries.is_empty() {
+        return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            format!("shared-store WAL batch frame at {checksum_source} carries no entries"),
+        )));
+    }
+    let mut entries = Vec::with_capacity(frame.batch_entries.len());
+    for (position, inner) in frame.batch_entries.into_iter().enumerate() {
+        // ONE LEVEL ONLY. Nothing writes a batch inside a batch, so accepting one would be the
+        // reader inventing a shape, and the recursion would have no defined depth.
+        if inner.frame_format == WAL_FRAME_FORMAT_BATCH {
+            return Err(SharedStoreReplicationError::Io(std::io::Error::new(
+                std::io::ErrorKind::InvalidData,
+                format!(
+                    "shared-store WAL batch frame at {checksum_source} holds a batch at position {position}; batches do not nest"
+                ),
+            )));
+        }
+        // The inner POSITION is named in the checksum source, so a mismatch says which entry of
+        // which batch failed rather than only which range of the log.
+        let inner_source = format!("{checksum_source}#{position}");
+        entries.push(wal_entry_from_frame(inner, &inner_source)?);
+    }
+    Ok(entries)
 }
 
 fn decode_wal_proto_blob(
@@ -10613,4 +10758,211 @@ fn no_write_command_quietly_joins_the_json_fallback() {
     );
 }
 
+}
+
+/// WHAT A BATCH FRAME CARRIES, AND WHAT IT SAVES, measured at the FORMAT rather than on a store.
+///
+/// # WHY THESE FIGURES NEED NO WRITER AND NO RELEASE BUILD
+///
+/// The envelope this format exists to divide is bytes in a frame. A frame is produced by
+/// `encode_wal_proto_frame` from an entry, with no object store, no durability barrier and no
+/// optimisation level involved -- so N separate frames against one batch frame carrying the same N
+/// entries is an exact byte comparison, identical in debug and release. The 56.7 B/entry envelope
+/// in the constant's doc was fitted on the two-object SHARED STORE surface over a payload sweep;
+/// what these tests measure is the FRAME leg of it, which is the leg a batch divides. Those are
+/// different surfaces and this module does not mix them.
+///
+/// # WHAT THEY DO NOT SHOW
+///
+/// The sidecar. A batch divides the frame header; the 23.8 B/entry sidecar leg is divided only if
+/// one sidecar comes to cover a batch, and that is a change to how a reader ADDRESSES an entry
+/// (`read_wal_entry_from_offset_metadata` finds an entry by its own `[start, end)`), not to this
+/// format. It is deliberately not in this PR, and no figure here should be read as including it.
+#[cfg(test)]
+mod a_batch_frame_carries_many_entries {
+    use super::*;
+
+    fn entry(wal_index: u64, payload_len: usize) -> SharedStoreWalEntry {
+        SharedStoreWalEntry {
+            shard_id: 7,
+            wal_index,
+            command: Some(Command::StringSet {
+                key: format!("k{wal_index}"),
+                value: vec![b'v'; payload_len],
+            }),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        }
+    }
+
+    /// One entry's frame as the production encoder writes it, with the 4-byte prefix stripped so
+    /// it can be carried inside a batch. Going through the real encoder is the point: an inner
+    /// entry is then exactly what a writer would have put on its own.
+    fn inner_proto(entry: &SharedStoreWalEntry) -> SharedStoreWalFrameProto {
+        let framed = encode_wal_proto_frame(entry, WAL_FRAME_FORMAT_DEFAULT).unwrap();
+        SharedStoreWalFrameProto::decode(&framed[4..]).unwrap()
+    }
+
+    fn batch_frame(inners: Vec<SharedStoreWalFrameProto>) -> Vec<u8> {
+        let outer = SharedStoreWalFrameProto {
+            frame_format: WAL_FRAME_FORMAT_BATCH,
+            batch_entries: inners,
+            ..Default::default()
+        };
+        let encoded = outer.encode_to_vec();
+        let mut out = Vec::with_capacity(4 + encoded.len());
+        out.extend_from_slice(&(encoded.len() as u32).to_be_bytes());
+        out.extend_from_slice(&encoded);
+        out
+    }
+
+    #[test]
+    fn a_batch_frame_decodes_to_every_entry_it_carries() {
+        let entries: Vec<_> = (1..=3).map(|index| entry(index, 16)).collect();
+        let framed = batch_frame(entries.iter().map(inner_proto).collect());
+        let decoded = decode_wal_proto_frame_entries(&framed, "batch-test").unwrap();
+        assert_eq!(decoded.len(), 3, "a batch of three must decode to three entries");
+        for (position, (got, want)) in decoded.iter().zip(entries.iter()).enumerate() {
+            assert_eq!(got.wal_index, want.wal_index, "entry {position} kept its index");
+            assert_eq!(got.shard_id, want.shard_id, "entry {position} kept its shard");
+            assert_eq!(
+                got.command, want.command,
+                "entry {position}'s command must survive the batch byte for byte"
+            );
+        }
+    }
+
+    /// THE CONTROL. Every format that exists today must come back unchanged through the new
+    /// reader, or the comparison above is against a path nothing uses.
+    #[test]
+    fn a_single_entry_frame_still_decodes_through_the_path_it_always_did() {
+        let one = entry(9, 32);
+        let framed = encode_wal_proto_frame(&one, WAL_FRAME_FORMAT_DEFAULT).unwrap();
+        let through_entries = decode_wal_proto_frame_entries(&framed, "single-test").unwrap();
+        assert_eq!(through_entries.len(), 1, "a lone frame is one entry");
+        let through_exact = decode_wal_proto_frame_exact(&framed, "single-test").unwrap();
+        assert_eq!(
+            through_entries[0].wal_index, through_exact.wal_index,
+            "the two readers must agree on a frame that is not a batch"
+        );
+        assert_eq!(through_entries[0].command, through_exact.command);
+    }
+
+    #[test]
+    fn an_exact_read_refuses_a_batch_rather_than_returning_its_first_entry() {
+        let entries: Vec<_> = (1..=3).map(|index| entry(index, 8)).collect();
+        let framed = batch_frame(entries.iter().map(inner_proto).collect());
+        let refusal = decode_wal_proto_frame_exact(&framed, "exact-test")
+            .expect_err("an exact single-entry read cannot answer a batch");
+        let text = refusal.to_string();
+        assert!(
+            text.contains("batch of 3"),
+            "the refusal must say how many entries it declined to choose between, got: {text}"
+        );
+    }
+
+    /// ONE CRC PER ENTRY IS WHAT MAKES THIS POSSIBLE: a corrupt entry is caught on its own, and
+    /// the position tells a reader WHICH entry rather than only which range of the log.
+    #[test]
+    fn a_corrupt_entry_inside_a_batch_is_refused_and_named_by_its_position() {
+        let entries: Vec<_> = (1..=3).map(|index| entry(index, 16)).collect();
+        let mut inners: Vec<_> = entries.iter().map(inner_proto).collect();
+        // Flip one byte of the MIDDLE entry's payload, leaving its CRC as written.
+        let payload = &mut inners[1].command_payload;
+        assert!(!payload.is_empty(), "the fixture must carry a payload to corrupt");
+        payload[0] ^= 0xff;
+        let framed = batch_frame(inners);
+        let refusal = decode_wal_proto_frame_entries(&framed, "corrupt-test")
+            .expect_err("a corrupt entry inside a batch must be refused");
+        let text = refusal.to_string();
+        assert!(
+            text.contains("corrupt-test#1"),
+            "the refusal must name the POSITION of the bad entry, got: {text}"
+        );
+    }
+
+    #[test]
+    fn a_batch_that_nests_a_batch_is_refused() {
+        let inner_batch = SharedStoreWalFrameProto {
+            frame_format: WAL_FRAME_FORMAT_BATCH,
+            batch_entries: vec![inner_proto(&entry(1, 8))],
+            ..Default::default()
+        };
+        let framed = batch_frame(vec![inner_proto(&entry(2, 8)), inner_batch]);
+        let refusal = decode_wal_proto_frame_entries(&framed, "nest-test")
+            .expect_err("batches must not nest");
+        let text = refusal.to_string();
+        assert!(
+            text.contains("batches do not nest") && text.contains("position 1"),
+            "the refusal must say batches do not nest and where, got: {text}"
+        );
+    }
+
+    #[test]
+    fn an_empty_batch_is_refused_rather_than_read_as_zero_writes() {
+        let framed = batch_frame(Vec::new());
+        let refusal = decode_wal_proto_frame_entries(&framed, "empty-test")
+            .expect_err("an empty batch is not a successful read of nothing");
+        assert!(
+            refusal.to_string().contains("carries no entries"),
+            "got: {}",
+            refusal
+        );
+    }
+
+    /// THE FIGURE THIS FORMAT EXISTS FOR, in bytes, at the frame surface.
+    ///
+    /// N separate frames against one batch frame carrying the same N entries. Swept over N so the
+    /// per-entry saving is a LINE rather than one point -- a single N cannot distinguish a fixed
+    /// saving from one that amortises, and amortising is the whole claim.
+    #[test]
+    fn a_batch_frame_costs_less_per_entry_than_the_separate_frames_it_replaces() {
+        const PAYLOAD: usize = 16;
+        println!(
+            "{:<6} {:<16} {:<16} {:<14} {:<14} {}",
+            "N", "separate B", "batched B", "sep B/entry", "batch B/entry", "saved B/entry"
+        );
+        let mut saved_per_entry = Vec::new();
+        for n in [1usize, 4, 16, 64] {
+            let entries: Vec<_> = (1..=n as u64).map(|index| entry(index, PAYLOAD)).collect();
+            let separate: usize = entries
+                .iter()
+                .map(|e| encode_wal_proto_frame(e, WAL_FRAME_FORMAT_DEFAULT).unwrap().len())
+                .sum();
+            let batched = batch_frame(entries.iter().map(inner_proto).collect()).len();
+            // The batch must still decode to all N, or the byte figure is for a frame that is not
+            // a substitute for the N it replaces.
+            let decoded = decode_wal_proto_frame_entries(
+                &batch_frame(entries.iter().map(inner_proto).collect()),
+                "measure",
+            )
+            .unwrap();
+            assert_eq!(decoded.len(), n, "the measured batch must carry all {n} entries");
+            let sep_each = separate as f64 / n as f64;
+            let batch_each = batched as f64 / n as f64;
+            println!(
+                "{:<6} {:<16} {:<16} {:<14.2} {:<14.2} {:+.2}",
+                n, separate, batched, sep_each, batch_each, sep_each - batch_each
+            );
+            saved_per_entry.push(sep_each - batch_each);
+        }
+        // AT N = 1 A BATCH IS DEARER, and that is the honest shape: one entry under a container
+        // pays the container. The claim is that the saving GROWS with N, not that it is free.
+        assert!(
+            saved_per_entry[0] < 0.0,
+            "at N=1 a batch must cost MORE per entry, not less; got {:+.2}",
+            saved_per_entry[0]
+        );
+        assert!(
+            saved_per_entry[3] > saved_per_entry[1],
+            "the per-entry saving must GROW with N: {:+.2} at N=4 against {:+.2} at N=64",
+            saved_per_entry[1],
+            saved_per_entry[3]
+        );
+        assert!(
+            saved_per_entry[3] > 0.0,
+            "at N=64 a batch must cost less per entry than separate frames; got {:+.2}",
+            saved_per_entry[3]
+        );
+    }
 }
