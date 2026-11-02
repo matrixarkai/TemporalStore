@@ -176,6 +176,13 @@ jobs:
       #     while the guard beside it, which asserts `Default`, stayed green
       #   - and those shipped values are non-zero, which the equality above cannot say on its
       #     own: if every bound went to 0 in `Default` too, both sides would agree
+      #   - the durable command encoding: the four guards below say which write commands reach
+      #     the shared WAL as protobuf and which still reach it as JSON. They were pinned
+      #     NOWHERE until now, so they ran only in the advisory step above -- and that step is
+      #     `continue-on-error`, so the roster could have gone stale, or a write could have
+      #     rejoined the JSON arm, behind a green check. Two of the four assert a DENOMINATOR
+      #     (the case count, the parsed variant count) because both read source text or a fixed
+      #     list, and a list that shrank to nothing would otherwise satisfy every claim in them
       - name: cargo test (read-safety guards, hard gate)
         timeout-minutes: 20
         run: |
@@ -202,6 +209,10 @@ jobs:
             data_node::tests::part3::a_maintenance_round_counts_as_a_run_on_the_path_the_server_actually_uses \
             data_node::tests::part3::the_periodic_loop_actually_reclaims_the_index_log \
             engine::compaction::compaction_selection_tests::the_drain_set_spends_the_round_budget_on_the_best_value_slabs_first \
+            shared_store::tests::the_covered_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip \
+            shared_store::tests::an_unknown_control_state_tag_is_refused_rather_than_defaulted \
+            shared_store::tests::no_write_command_quietly_joins_the_json_fallback \
             data_node::tests::part3::every_source_path_a_test_spells_out_still_names_a_file ; do
             echo "--- $t ---"
             cargo test --release -p temporalstore-rust --lib "$t" \

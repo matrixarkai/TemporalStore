@@ -3714,6 +3714,100 @@ fn command_to_sdk_proto(command: &Command) -> Option<v1::Command> {
             start_ms: *start_ms,
             end_ms: *end_ms,
         }),
+        Command::ControlStateIncrementWithOptions {
+            key,
+            timestamp_ms,
+            amount,
+            precision_ms,
+            ttl_ms,
+        } => v1::command::Kind::ControlStateIncrementWithOptions(
+            v1::ControlStateIncrementWithOptions {
+                key: key.clone(),
+                timestamp_ms: *timestamp_ms,
+                amount: *amount,
+                precision_ms: *precision_ms,
+                ttl_ms: *ttl_ms,
+            },
+        ),
+        Command::ControlStateChangeAdd {
+            key,
+            timestamp_ms,
+            value,
+            precision_ms,
+            ttl_ms,
+        } => v1::command::Kind::ControlStateChangeAdd(v1::ControlStateChangeAdd {
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            value: value.clone(),
+            precision_ms: *precision_ms,
+            ttl_ms: *ttl_ms,
+        }),
+        Command::ControlStateSet {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+        } => v1::command::Kind::ControlStateSet(v1::ControlStateSet {
+            family: sdk::control_state_family_to_proto(*family) as i32,
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            amount: *amount,
+        }),
+        Command::ControlStateSetAndGet {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+            start_ms,
+            end_ms,
+            aggregator,
+        } => v1::command::Kind::ControlStateSetAndGet(v1::ControlStateSetAndGet {
+            family: sdk::control_state_family_to_proto(*family) as i32,
+            key: key.clone(),
+            timestamp_ms: *timestamp_ms,
+            amount: *amount,
+            start_ms: *start_ms,
+            end_ms: *end_ms,
+            aggregator: aggregator.clone(),
+        }),
+        Command::ControlStateSetAndGetWithOptions {
+            family,
+            key,
+            timestamp_ms,
+            amount,
+            start_ms,
+            end_ms,
+            aggregator,
+            precision_ms,
+            ttl_ms,
+            uuid,
+        } => v1::command::Kind::ControlStateSetAndGetWithOptions(
+            v1::ControlStateSetAndGetWithOptions {
+                family: sdk::control_state_family_to_proto(*family) as i32,
+                key: key.clone(),
+                timestamp_ms: *timestamp_ms,
+                amount: *amount,
+                start_ms: *start_ms,
+                end_ms: *end_ms,
+                aggregator: aggregator.clone(),
+                precision_ms: *precision_ms,
+                ttl_ms: *ttl_ms,
+                uuid: uuid.clone(),
+            },
+        ),
+        Command::ControlStateSelectionSet {
+            key,
+            value,
+            occur_time_ms,
+            ttl_ms,
+            selection_type,
+        } => v1::command::Kind::ControlStateSelectionSet(v1::ControlStateSelectionSet {
+            key: key.clone(),
+            value: value.clone(),
+            occur_time_ms: *occur_time_ms,
+            ttl_ms: *ttl_ms,
+            selection_type: sdk::control_state_selection_type_to_proto(*selection_type) as i32,
+        }),
         _ => return None,
     };
     Some(v1::Command { kind: Some(kind) })
@@ -10414,8 +10508,13 @@ mod tests {
 /// THE SET IS AN INTERSECTION, AND THE OTHER TWO TERMS MATTER. Only writes reach this log:
 /// `data_node::mirror_write` returns early unless `is_write_command` admits the command, so a
 /// read's JSON arm is unreachable here and counting it as work would be counting an arm no caller
-/// can take. Of 99 variants, 51 are writes and 18 are proto-mapped -- but only 10 of those 18 are
-/// writes, which is why the remainder is 41 and not 33.
+/// can take. A count of `serde_json` lines in this file answers a different question again, since
+/// the file carries its own test module.
+///
+/// THE PROSE COUNT IS NOT THE GUARD. The list below is the ground truth, and
+/// `no_write_command_quietly_joins_the_json_fallback` recomputes the intersection from source text
+/// on every run. An arithmetic summary written beside it goes stale the moment a batch lands, as
+/// the pre-existing "41" silently did once nine writes were covered.
 ///
 /// THE LIST ONLY SHRINKS. Adding a write command without a proto mapping fails this test, and
 /// covering one requires deleting its name here, in the same change. So the work left is visible
@@ -10442,12 +10541,6 @@ const COMMANDS_STILL_ENCODED_AS_JSON: &[&str] = &[
     "ContextWriteExtractedEvent",
     "ContextWriteIndexRef",
     "ContextWritePackAudit",
-    "ControlStateChangeAdd",
-    "ControlStateIncrementWithOptions",
-    "ControlStateSelectionSet",
-    "ControlStateSet",
-    "ControlStateSetAndGet",
-    "ControlStateSetAndGetWithOptions",
     "FeatureAppendWithPolicy",
     "FeatureDelete",
     "FeatureReplace",
@@ -10520,6 +10613,189 @@ fn the_covered_writes_are_framed_as_protobuf_and_round_trip() {
             "{name} did not survive the round trip"
         );
     }
+}
+
+/// THE SIX CONTROL-STATE WRITES THIS BATCH COVERED, DRIVEN THROUGH THE REAL FRAME.
+///
+/// A MAPPING IS NOT A FORMAT. `command_to_sdk_proto` compiling proves only that a mapping exists;
+/// `encode_wal_proto_frame` is what chooses the arm, so the mapping can be there while the frame
+/// still reaches for `serde_json`. Every case here goes through the real frame and is checked
+/// three ways: the frame DECLARES protobuf, the payload does NOT parse as JSON, and the command
+/// comes back field for field.
+///
+/// THE FAMILY TAG IS THE POINT OF THIS FAMILY. Five of the six carry either a family or a
+/// selection end, and those are proto ENUMS rather than strings, so a wrong number here files a
+/// write under the wrong family rather than failing loudly. Each case below names a DIFFERENT
+/// family/end so a mapping that collapsed them all onto Counter could not pass.
+#[test]
+fn the_covered_control_state_writes_are_framed_as_protobuf_and_round_trip() {
+    use crate::types::{ControlStateFamily, ControlStateSelectionType};
+
+    let cases: Vec<(&str, Command)> = vec![
+        (
+            "ControlStateIncrementWithOptions",
+            Command::ControlStateIncrementWithOptions {
+                key: "k".into(),
+                timestamp_ms: 11,
+                amount: -9,
+                // Explicit presence, both arms: Some(0) is a caller that sent zero and must not
+                // come back as None, and None must not come back as Some(0).
+                precision_ms: Some(0),
+                ttl_ms: None,
+            },
+        ),
+        (
+            "ControlStateChangeAdd",
+            Command::ControlStateChangeAdd {
+                key: "k".into(),
+                timestamp_ms: 12,
+                value: b"v".to_vec(),
+                precision_ms: None,
+                ttl_ms: Some(0),
+            },
+        ),
+        (
+            "ControlStateSet",
+            Command::ControlStateSet {
+                family: ControlStateFamily::Counter,
+                key: "k".into(),
+                timestamp_ms: 13,
+                amount: 4,
+            },
+        ),
+        (
+            "ControlStateSetAndGet",
+            Command::ControlStateSetAndGet {
+                family: ControlStateFamily::Distinct,
+                key: "k".into(),
+                timestamp_ms: 14,
+                amount: 5,
+                start_ms: 1,
+                end_ms: 2,
+                aggregator: "change".into(),
+            },
+        ),
+        (
+            "ControlStateSetAndGetWithOptions",
+            Command::ControlStateSetAndGetWithOptions {
+                family: ControlStateFamily::Selection,
+                key: "k".into(),
+                timestamp_ms: 15,
+                amount: 6,
+                start_ms: 3,
+                end_ms: 4,
+                aggregator: "sum".into(),
+                precision_ms: Some(60_000),
+                ttl_ms: None,
+                // An EMPTY uuid that is present: it must not come back as None, or idempotency
+                // silently stops applying to the caller that sent one.
+                uuid: Some(String::new()),
+            },
+        ),
+        (
+            "ControlStateSelectionSet",
+            Command::ControlStateSelectionSet {
+                key: "k".into(),
+                value: b"v".to_vec(),
+                occur_time_ms: 16,
+                ttl_ms: 7,
+                selection_type: ControlStateSelectionType::Last,
+            },
+        ),
+    ];
+    // DENOMINATOR FIRST: six is the number this batch covered, and a shorter list would make
+    // every assertion below true of whatever happened to remain.
+    assert_eq!(cases.len(), 6, "this test covers the six control-state writes the batch mapped");
+
+    for (name, command) in cases {
+        // Every one must be a WRITE, or it would never reach this log and the test would be
+        // asserting something about an unreachable path.
+        assert!(
+            crate::engine::is_write_command(&command),
+            "{name} is not a write command, so the shared WAL would never carry it"
+        );
+
+        let entry = SharedStoreWalEntry {
+            shard_id: 1,
+            wal_index: 1,
+            command: Some(command.clone()),
+            staged_blocks: Vec::new(),
+            outcomes: Vec::new(),
+        };
+        let bytes = encode_wal_proto_frame(&entry, WAL_FRAME_FORMAT_DEFAULT)
+            .unwrap_or_else(|e| panic!("{name} must frame: {e:?}"));
+
+        // The frame carries a four-byte big-endian length ahead of the message, so the message
+        // starts at byte 4. Reading the declared encoding needs the frame, not the entry.
+        let frame = SharedStoreWalFrameProto::decode(&bytes[4..])
+            .unwrap_or_else(|e| panic!("{name}'s frame must decode: {e:?}"));
+        assert_eq!(
+            frame.command_encoding, WAL_COMMAND_ENCODING_SDK_PROTO,
+            "{name} is still framed as encoding {} -- the mapping exists but the frame did not \
+             take it",
+            frame.command_encoding
+        );
+        // The declared id is written by the same code that chose the arm, so it cannot be the
+        // only witness: the payload itself must not be JSON.
+        assert!(
+            serde_json::from_slice::<serde_json::Value>(&frame.command_payload).is_err(),
+            "{name}'s payload parses as JSON, so the bytes are still JSON whatever the id says"
+        );
+
+        // And the whole entry must come back, through the path replay uses.
+        let back = decode_wal_proto_frame_exact(&bytes, "round-trip test")
+            .unwrap_or_else(|e| panic!("{name} must decode back: {e:?}"));
+        assert_eq!(
+            back.command.as_ref(),
+            Some(&command),
+            "{name} did not survive the round trip"
+        );
+    }
+}
+
+/// AN UNKNOWN FAMILY TAG IS REFUSED, NOT DEFAULTED.
+///
+/// Zero is UNSPECIFIED. The cheap decoder for a proto3 enum is `try_from(..).unwrap_or_default()`,
+/// which turns both "a build that did not know the family" and "a record from a newer build" into
+/// Counter -- filing a distinct-count write under the counter family with nothing to show it
+/// happened. This pins the refusal so that shortcut cannot be reintroduced quietly.
+#[test]
+fn an_unknown_control_state_tag_is_refused_rather_than_defaulted() {
+    // DENOMINATOR FIRST: the three tags that must be ACCEPTED, so a decoder that refused
+    // everything could not pass this test by refusing the two bad numbers as well.
+    for (number, expected) in [
+        (1, crate::types::ControlStateFamily::Counter),
+        (2, crate::types::ControlStateFamily::Distinct),
+        (3, crate::types::ControlStateFamily::Selection),
+    ] {
+        assert_eq!(
+            sdk::control_state_family_from_proto(number).expect("a known family must decode"),
+            expected,
+            "family number {number} decoded to the wrong family"
+        );
+    }
+
+    // 0 is UNSPECIFIED; 99 is a number only a newer build would write.
+    for number in [0, 99, -1] {
+        assert!(
+            sdk::control_state_family_from_proto(number).is_err(),
+            "family number {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
+    for number in [0, 99, -1] {
+        assert!(
+            sdk::control_state_selection_type_from_proto(number).is_err(),
+            "selection type {number} was accepted, so an unknown tag is being guessed at"
+        );
+    }
+    assert_eq!(
+        sdk::control_state_selection_type_from_proto(1).expect("First must decode"),
+        crate::types::ControlStateSelectionType::First
+    );
+    assert_eq!(
+        sdk::control_state_selection_type_from_proto(2).expect("Last must decode"),
+        crate::types::ControlStateSelectionType::Last
+    );
 }
 
 #[test]
