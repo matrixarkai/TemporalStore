@@ -584,6 +584,71 @@ pub fn sdk_command_to_types(command: v1::Command) -> Result<types::Command, Toni
                 min_age_ms: command.min_age_ms,
             }
         }
+        v1::command::Kind::ContextMarkEmbeddingDirty(command) => {
+            types::Command::ContextMarkEmbeddingDirty {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                event_time_ms: command.event_time_ms,
+                reason: command.reason,
+                propagate_depth: command.propagate_depth,
+                clear: command.clear,
+            }
+        }
+        v1::command::Kind::ContextMarkSummaryDirty(command) => {
+            types::Command::ContextMarkSummaryDirty {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                event_time_ms: command.event_time_ms,
+                reason: command.reason,
+                propagate_depth: command.propagate_depth,
+            }
+        }
+        v1::command::Kind::ContextCompressEvents(command) => {
+            types::Command::ContextCompressEvents {
+                tenant_hash: command.tenant_hash,
+                node_hash: command.node_hash,
+                source_start_ms: command.source_start_ms,
+                source_end_ms: command.source_end_ms,
+                compressed_time_ms: command.compressed_time_ms,
+                // Absent stays absent: "no cap" must not arrive as a cap of zero.
+                max_source_events: command.max_source_events.map(|count| count as usize),
+                min_confidence: command.min_confidence,
+                min_importance: command.min_importance,
+            }
+        }
+        v1::command::Kind::ContextUpsertChildRef(command) => {
+            // A nested message is always optional on the wire, so an absent one is REFUSED by
+            // name. The write has no meaning without the record it is upserting, and defaulting
+            // it would file a child ref of all zeros.
+            let child_ref = command
+                .child_ref
+                .ok_or_else(|| TonicStatus::invalid_argument("context child ref missing"))?;
+            types::Command::ContextUpsertChildRef {
+                tenant_hash: command.tenant_hash,
+                child_ref: types::ContextChildRef {
+                    parent_hash: child_ref.parent_hash,
+                    child_hash: child_ref.child_hash,
+                    updated_at_ms: child_ref.updated_at_ms,
+                },
+            }
+        }
+        v1::command::Kind::ContextWriteIndexRef(command) => {
+            let index_ref = command
+                .index_ref
+                .ok_or_else(|| TonicStatus::invalid_argument("context index ref missing"))?;
+            types::Command::ContextWriteIndexRef {
+                tenant_hash: command.tenant_hash,
+                index_name: command.index_name,
+                index_value_hash: command.index_value_hash,
+                scope_hash: command.scope_hash,
+                event_time_ms: command.event_time_ms,
+                index_ref: types::ContextIndexRef {
+                    primary_node_hash: index_ref.primary_node_hash,
+                    primary_event_time_ms: index_ref.primary_event_time_ms,
+                    event_id_hash: index_ref.event_id_hash,
+                },
+            }
+        }
     })
 }
 
