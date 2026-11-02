@@ -11,7 +11,7 @@ pub(super) fn redis_keys_response(
     state: &mut RedisCommandState,
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let pattern = string_arg(pattern);
+    let pattern = text_arg(pattern);
     RespValue::Array(
         live_matching_keys(&pattern, state, execute)
             .into_iter()
@@ -38,7 +38,7 @@ pub(super) fn redis_scan_response(
                 let Some(value) = args.get(index + 1) else {
                     return RespValue::Error("ERR syntax error".to_string());
                 };
-                pattern = string_arg(value);
+                pattern = text_arg(value);
                 index += 2;
             }
             "COUNT" => {
@@ -88,7 +88,7 @@ pub(super) fn parse_scan_tail_options(args: &[Vec<u8>]) -> Result<(String, usize
                 let Some(value) = args.get(index + 1) else {
                     return Err("ERR syntax error".to_string());
                 };
-                pattern = string_arg(value);
+                pattern = text_arg(value);
                 index += 2;
             }
             "COUNT" => {
@@ -171,14 +171,24 @@ pub(super) fn sorted_matching_keys(pattern: &str, state: &RedisCommandState) -> 
     let mut keys = state
         .keyspace
         .iter()
-        .filter(|key| redis_pattern_matches(pattern, key))
+        .filter(|key| redis_pattern_matches_bytes(pattern.as_bytes(), &decode_or_raw(key)))
         .cloned()
         .collect::<Vec<_>>();
     keys.sort();
     keys
 }
 
-pub(super) fn redis_pattern_matches(pattern: &str, value: &str) -> bool {
+/// A GLOB AGAINST THE BYTES A NAME STANDS FOR, NOT AGAINST ITS STORED SPELLING.
+///
+/// THIS IS THE BUG THE WRITER WOULD HAVE SHIPPED. Once a write stores a non-text name tagged,
+/// the stored spelling is `ESC` + base64 -- so a client's pattern stops matching exactly the
+/// names this work exists to support, and `HSCAN`/`SCAN`/`SSCAN` answer with NOTHING for them.
+/// Silently: a scan that finds no match is indistinguishable from a scan over an empty keyspace.
+///
+/// The matcher was already byte-wise inside; it only narrowed to `&str` at its boundary. So the
+/// fix is to let callers hand it the DECODED bytes, which is what the client's pattern was always
+/// written against.
+pub(super) fn redis_pattern_matches_bytes(pattern: &[u8], value: &[u8]) -> bool {
     fn matches_parts(pattern: &[u8], value: &[u8]) -> bool {
         match pattern.split_first() {
             None => value.is_empty(),
@@ -192,14 +202,19 @@ pub(super) fn redis_pattern_matches(pattern: &str, value: &str) -> bool {
             }),
         }
     }
-    matches_parts(pattern.as_bytes(), value.as_bytes())
+    matches_parts(pattern, value)
+}
+
+/// The `&str` spelling, kept for callers whose value is text by construction.
+pub(super) fn redis_pattern_matches(pattern: &str, value: &str) -> bool {
+    redis_pattern_matches_bytes(pattern.as_bytes(), value.as_bytes())
 }
 
 pub(super) fn redis_type_response(
     key: &[u8],
     execute: &mut impl FnMut(Command) -> Result<CommandResponse, String>,
 ) -> RespValue {
-    let key = string_arg(key);
+    let key = name_arg(key);
     match execute(Command::StringGet { key: key.clone() }) {
         Ok(CommandResponse::Bytes { value: Some(_) }) => {
             return RespValue::SimpleString("string".to_string());
