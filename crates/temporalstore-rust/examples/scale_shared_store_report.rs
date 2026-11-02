@@ -662,11 +662,15 @@ async fn main() {
     println!("    tracks the corpus; APPEND STILL DOES, and the block-read columns above are blind to");
     println!("    it because the remaining work does no reading at all. Measured by instruction count");
     println!("    (callgrind, deterministic where a timing here is not): per-append instructions still");
-    println!("    double when the corpus doubles -- 374k at 200 entries, 623k at 400, 1,251k at 800.");
+    println!("    double when the corpus doubles -- 374k at 200 entries, 623k at 400, 1,251k at 800,");
+    println!("    all three taken BEFORE the two changes this pin now carries, so read them as the");
+    println!("    shape of the curve and not as its height.");
     println!("    It is MatrixObject's per-mutation bookkeeping, not this log's shape: begin/end of a");
     println!("    chunk mutation batch builds a replica status whose `physical_bytes` and");
-    println!("    `discarded_bytes` fold over EVERY block the replica holds, and begin also exports a");
-    println!("    whole-state undo snapshot. Raising the chunk tier to 64 MiB changes it by 2.7%, so it");
+    println!("    `discarded_bytes` fold over EVERY block the replica holds, and begin exports an undo");
+    println!("    whose page map is now filled one page per first touch -- that copy is gone -- but");
+    println!("    whose CHUNK map is still copied whole, and a chunk record is a deep value with two");
+    println!("    range vectors. Raising the chunk tier to 64 MiB changes it by 2.7%, so it");
     println!("    is block-count and not chunk-count; raising the block tier to 1 MiB makes it 16x worse,");
     println!("    because then each append re-checksums one growing block instead of folding over many.");
     println!("    Flat appends need that bookkeeping to be maintained rather than recomputed. Until it");
