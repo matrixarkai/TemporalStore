@@ -371,7 +371,7 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
             .find(|(_, bucket)| !bucket.block_index.is_empty())
             .expect("the workload filed at least one block")
             .0;
-        let bucket = shard
+        let mut bucket = shard
             .bucket_index
             .bucket_map
             .get_mut(&routing_bucket)
@@ -395,11 +395,11 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         let index = &mut shard.bucket_index;
         let block_keys =
             crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
-        let bucket = index
+        let mut bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &block_keys);
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut bucket, &block_keys);
     }
     let after_plant = engine.object_index_divergence_report();
     println!("  after the planted rebuild: {after_plant:?}");
@@ -461,11 +461,11 @@ fn the_divergence_counter_moves_on_a_planted_disagreement_and_not_on_a_clean_reb
         let index = &mut shard.bucket_index;
         let block_keys =
             crate::engine::state::BlockKeysByPosition::from_parts(&index.objects, &index.object_block_lookup);
-        let bucket = index
+        let mut bucket = index
             .bucket_map
             .get_mut(&routing_bucket)
             .expect("the planted bucket");
-        crate::engine::storage_bucket_internals::update_bucket_layout(1, bucket, &block_keys);
+        crate::engine::storage_bucket_internals::update_bucket_layout(1, &mut bucket, &block_keys);
     }
     let after_clean = engine.object_index_divergence_report();
     println!("  after a clean rebuild of the same bucket: {after_clean:?}");

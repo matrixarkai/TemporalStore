@@ -410,6 +410,8 @@ mod bucket_node_arms;
 mod bucket_node_container_header;
 #[path = "tests/bucket_flag_masks.rs"]
 mod bucket_flag_masks;
+#[path = "tests/the_dirty_buckets_are_a_set_the_map_keeps.rs"]
+mod the_dirty_buckets_are_a_set_the_map_keeps;
 #[path = "tests/inline_arm_trade.rs"]
 mod inline_arm_trade;
 #[path = "tests/layout_arm_selection.rs"]

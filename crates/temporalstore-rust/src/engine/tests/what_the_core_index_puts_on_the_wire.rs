@@ -504,7 +504,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
             ..
         } = &mut index;
         for (routing_bucket, object_key, entry) in &placed {
-            let node = bucket_map
+            let mut node = bucket_map
                 .get_mut(routing_bucket)
                 .expect("the bucket was just inserted");
             node.insert_block(object_key, entry.clone(), block_slab_live);
@@ -539,7 +539,7 @@ fn a_decode_files_every_block_into_the_object_lookup() {
     // production does not reach. This fixture now files what that producer files.
     for (routing_bucket, object_key, entry) in &placed {
         if entry.deleted {
-            let bucket = index
+            let mut bucket = index
                 .bucket_map
                 .get_mut(routing_bucket)
                 .expect("the bucket holding the tombstone was just inserted");
@@ -666,7 +666,7 @@ fn the_identity_beside_a_deleted_block_is_its_tombstone_row_and_it_composes_the_
             block_slab_live,
             ..
         } = &mut index;
-        let node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
+        let mut node = bucket_map.get_mut(&7).expect("the bucket was just inserted");
         // ONE KEY FOR BOTH BLOCKS, WHICH IS WHAT THE FIXTURE MEANT. The two differ in their
         // address and their `deleted` bit; they are the same object by construction, so passing
         // the literal twice says that, where reading one copy off each block did not.
